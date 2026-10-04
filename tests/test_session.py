@@ -1004,6 +1004,14 @@ class TestResolveSession:
 
         assert result == "c-app-1"
 
+    def test_given_lowercase_codex_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
+        has_session = MagicMock(returncode=1, stdout="")
+        list_sessions = MagicMock(returncode=0, stdout="cx-app-1\n")
+        with patch("subprocess.run", side_effect=[has_session, list_sessions]):
+            result = resolve_session("cx-APP-", "1")
+
+        assert result == "cx-app-1"
+
 
 class TestResolveSessionEdgeCases:
     def test_resolve_session_when_no_name_and_current_session_matches_then_returns_it(self):
@@ -1696,6 +1704,27 @@ class TestFindNextIndex:
             result = find_next_index("c-APP-")
 
         assert result == 2
+
+    def test_given_live_codex_session_when_finding_index_then_skips_occupied_slot(self):
+        def mock_run(cmd, **kwargs):
+            assert cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]
+            return MagicMock(returncode=0, stdout="cx-session-1\n")
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = find_next_index("cx-session-")
+
+        assert result == 2
+
+    def test_given_live_codex_session_when_naming_a_new_one_then_it_gets_the_next_slot(self):
+        def mock_run(cmd, **kwargs):
+            if cmd[1] == "list-sessions":
+                return MagicMock(returncode=0, stdout="cx-app-1\n")
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            tmux_name, ai_name = build_session_name("cx", "app", "")
+
+        assert (tmux_name, ai_name) == ("cx-app-2", "app-2")
 
 
 # --- find_recent_session ---

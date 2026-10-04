@@ -705,6 +705,19 @@ def test_given_worktree_with_live_process_when_finding_index_then_skips_to_next(
         assert find_next_index("c-kg-", use_tmux=False) == 2
 
 
+def test_given_live_bare_codex_worktree_when_finding_index_then_skips_to_next(tmp_path):
+    (tmp_path / ".worktrees" / "kg-1").mkdir(parents=True)
+
+    def _live(path):
+        return path.name == "kg-1"
+
+    with (
+        patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
+        patch("ai_cli.session._worktree_has_live_session", side_effect=_live),
+    ):
+        assert find_next_index("cx-kg-", use_tmux=False) == 2
+
+
 def test_given_bare_mode_when_building_session_name_then_no_tmux_call():
     with (
         patch("ai_cli.session.subprocess.run") as mock_run,

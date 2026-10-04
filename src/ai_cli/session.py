@@ -265,6 +265,13 @@ def is_current_project_resolved() -> bool:
         return False
 
 
+# The engine segment of a tmux session name. ``cx`` must precede the single-letter
+# class: a bare ``[cgp]`` matches the ``c`` of ``cx-...`` and then fails on the ``x``,
+# which is how every Codex launch silently lost its auto-index (the prefix stopped
+# parsing, so the slot scan was skipped and the index was always 1).
+_ENGINE_SEGMENT = r"(cx|[cgp])"
+
+
 class SessionSlotAmbiguityError(RuntimeError):
     """Raised when more than one live session could satisfy an explicit slot."""
 
@@ -340,7 +347,7 @@ def find_next_index(prefix: str, use_tmux: bool = True) -> int:
     """
     if not use_tmux:
         return _find_next_index_from_worktrees(prefix)
-    match = re.fullmatch(r"([cgp])(?:-r)?-(.+)-", prefix)
+    match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
     if not match:
         return 1
     engine_short, project_prefix = match.groups()
@@ -361,7 +368,7 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
     indexes would climb forever, since bare mode has no session-exit hook to
     remove the worktree (the tmux path's EXIT trap does that).
     """
-    ai_prefix = re.sub(r"^[cgp](-r)?-", "", prefix)
+    ai_prefix = re.sub(r"^" + _ENGINE_SEGMENT + r"(?:-r)?-", "", prefix)
     try:
         repo_root = detect_repo_root()
     except RuntimeError:
@@ -547,7 +554,7 @@ def resolve_session(prefix: str, name: str) -> str:
     if res.returncode == 0:
         return f"{prefix}{name}"
     if name.isdigit():
-        match = re.fullmatch(r"([cgp])(?:-r)?-(.+)-", prefix)
+        match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
         if match:
             engine_short, project_prefix = match.groups()
             expected_prefix = prefix.casefold()

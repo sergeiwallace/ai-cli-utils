@@ -3780,6 +3780,27 @@ def _session_options(func):
         is_flag=True,
         help="Print the resolved launch plan and exit; creates and starts nothing",
     )(func)
+    func = click.option(
+        "-F",
+        "--firstmate",
+        is_flag=True,
+        help="Launch as this machine's chief-of-staff / firstmate session (one per machine)",
+    )(func)
+    # The chief options ride on every engine command because --firstmate does: they are
+    # refused rather than ignored without it, so a typo cannot silently launch an
+    # ordinary session that looks like it was aimed at the chief home.
+    func = click.option(
+        "-k",
+        "--machine-key",
+        default="",
+        help=f"With -F: machine key naming the chief home (default: ${_chief_of_staff.MACHINE_KEY_ENV})",
+    )(func)
+    func = click.option(
+        "-H",
+        "--fm-home",
+        default="",
+        help="With -F: chief home directory (default: $XDG_STATE_HOME/firstmate/chief-of-staff/<machine-key>)",
+    )(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -3792,78 +3813,27 @@ def _session_options(func):
     return click.option("--project-prefix", default="", hidden=True)(func)
 
 
-@_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
-@_session_options
-def cmd_c(ctx, **options):
-    # Pure delegation: every option is forwarded by name. Spelling the
-    # parameter list out four times meant a new option had to be threaded
-    # through eight places, and missing one is silent -- click accepts the
-    # option, the wrapper drops it.
-    _session_command("c")(ctx, **options)
+def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> None:
+    """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
+    Shared by ``--firstmate`` on every engine command and by ``ai cos`` (the Claude
+    shorthand), so there is one place that resolves the home, enforces one chief per
+    machine, records the registration other sessions read, and exports FM_HOME and the
+    role. Refuses rather than guesses: no home, a home without its transport policy, or a
+    chief already running all exit 1 before anything is created.
 
-@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
-@_session_options
-def cmd_g(ctx, **options):
-    # Pure delegation: every option is forwarded by name. Spelling the
-    # parameter list out four times meant a new option had to be threaded
-    # through eight places, and missing one is silent -- click accepts the
-    # option, the wrapper drops it.
-    _session_command("g")(ctx, **options)
+    The positional NAME becomes the optional suffix in ``firstmate[-<suffix>]``; the index
+    and the sanitization come from the ordinary session-naming path, so the chief's tmux
+    session and worktree are named like every other session.
 
-
-@_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
-@_session_options
-def cmd_p(ctx, **options):
-    # Pure delegation: every option is forwarded by name. Spelling the
-    # parameter list out four times meant a new option had to be threaded
-    # through eight places, and missing one is silent -- click accepts the
-    # option, the wrapper drops it.
-    _session_command("p")(ctx, **options)
-
-
-@_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
-@_session_options
-def cmd_cx(ctx, **options):
-    # Pure delegation: every option is forwarded by name. Spelling the
-    # parameter list out four times meant a new option had to be threaded
-    # through eight places, and missing one is silent -- click accepts the
-    # option, the wrapper drops it.
-    _session_command("cx")(ctx, **options)
-
-
-@_cli_group.command(
-    "cos",
-    context_settings=SESSION_CONTEXT,
-    help="Launch this machine's chief-of-staff Claude Code session (one per machine; Firstmate home under XDG state)",
-)
-@click.option(
-    "-k",
-    "--machine-key",
-    default="",
-    help=f"Machine key naming the chief home (default: ${_chief_of_staff.MACHINE_KEY_ENV})",
-)
-@click.option(
-    "-H",
-    "--fm-home",
-    default="",
-    help="Chief home directory (default: $XDG_STATE_HOME/firstmate/chief-of-staff/<machine-key>)",
-)
-@_session_options
-def cmd_cos(ctx, machine_key, fm_home, **options):
-    """Launch the chief-of-staff: validate its home, register it, then launch `ai c cos`.
-
-    Refuses rather than guesses: no home, a home without its transport policy, or a
-    chief already running on this machine (attach to it instead) all exit 1 before
-    anything is created. The session name is fixed (`cos`), it runs from the current
-    directory with worktree isolation off (it coordinates; it does not edit), and the
-    pane inherits FM_HOME and AI_SESSION_ROLE=chief-of-staff so hooks and skills can tell
-    what it is.
+    Worktree isolation stays ON (the caller's ``-W`` still wins). The fleet's worktree model
+    makes every main tree read-only, so a session running in the repo root is the anomaly --
+    and the chief is asked to carry its own worktree naming convention.
     """
-    if options.get("name"):
-        raise click.UsageError("the chief-of-staff session name is fixed; do not pass a positional name")
     if options.get("remote"):
         raise click.UsageError("a chief-of-staff runs on the machine it coordinates; -R/--remote is not supported")
+    suffix = str(options.get("name") or "")
+    session_name = f"{_chief_of_staff.SESSION_NAME}-{suffix}" if suffix else _chief_of_staff.SESSION_NAME
     try:
         home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
         _chief_of_staff.validate_chief_home(home)
@@ -3893,7 +3863,7 @@ def cmd_cos(ctx, machine_key, fm_home, **options):
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
     try:
         tmux_target, ai_name = _session.build_session_name(
-            "c", prefix, _chief_of_staff.SESSION_NAME, config, is_remote=is_remote, use_tmux=not bare
+            engine, prefix, session_name, config, is_remote=is_remote, use_tmux=not bare
         )
     except _session.SessionSlotAmbiguityError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -3915,9 +3885,84 @@ def cmd_cos(ctx, machine_key, fm_home, **options):
         print(f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", file=sys.stderr)
     os.environ[_chief_of_staff.FM_HOME_ENV] = str(home)
     os.environ[_chief_of_staff.ROLE_ENV] = _chief_of_staff.ROLE
-    options["name"] = _chief_of_staff.SESSION_NAME
-    options["no_worktree"] = True
-    _session_command("c")(ctx, **options)
+    options["name"] = session_name
+
+
+def _dispatch_session(engine: str, ctx, options: dict) -> None:
+    """Route one engine command's options to the ordinary or the chief-of-staff launch.
+
+    The chief options are not part of ``_session_command``'s signature, so they are
+    consumed here; without ``-F`` they are a usage error rather than a silent no-op.
+    """
+    firstmate = options.pop("firstmate", False)
+    machine_key = options.pop("machine_key", "")
+    fm_home = options.pop("fm_home", "")
+    if firstmate:
+        _prepare_firstmate_launch(engine, machine_key, fm_home, options)
+    elif machine_key or fm_home:
+        raise click.UsageError(
+            "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
+            "add -F/--firstmate (or use `ai cos`) to launch one"
+        )
+    _session_command(engine)(ctx, **options)
+
+
+@_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
+@_session_options
+def cmd_c(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _dispatch_session("c", ctx, options)
+
+
+@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
+@_session_options
+def cmd_g(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _dispatch_session("g", ctx, options)
+
+
+@_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
+@_session_options
+def cmd_p(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _dispatch_session("p", ctx, options)
+
+
+@_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
+@_session_options
+def cmd_cx(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _dispatch_session("cx", ctx, options)
+
+
+@_cli_group.command(
+    "cos",
+    context_settings=SESSION_CONTEXT,
+    help="Launch this machine's chief-of-staff Claude Code session (shorthand for `ai c --firstmate`)",
+)
+@_session_options
+def cmd_cos(ctx, **options):
+    """Launch the chief-of-staff as a Claude session: `ai cos [SUFFIX]` == `ai c -F [SUFFIX]`.
+
+    Everything that makes a session the chief -- resolving and validating the Firstmate
+    home, one chief per machine, the registration other sessions read, FM_HOME and
+    AI_SESSION_ROLE=chief-of-staff in the pane -- lives in the shared --firstmate path, so
+    this command is only the engine choice.
+    """
+    options["firstmate"] = True
+    _dispatch_session("c", ctx, options)
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
