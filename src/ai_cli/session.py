@@ -26,7 +26,7 @@ from .config import (
     resolve_project_prefix,
 )
 from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypassed
-from .git_repair import _git_env, repair_bare_worktree_config
+from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -1233,11 +1233,18 @@ def create_worktree(
             # the caller happened to be standing in. The checkout still appears at
             # the requested path, so the only symptom is a later, misleading
             # `fatal: branch 'wt-<name>' does not exist` from the upstream step.
+            #
+            # Both adds carry the creator attestation (`_creator_env`): a flat
+            # `<repo>/.worktrees/<name>` is exactly what ai-harness's post-checkout backstop
+            # undoes unless the creating process identifies itself as this launcher, and the
+            # slot name is declared alongside so the marker admits only the path it names.
+            # No other git call here carries it — they create nothing.
+            creator_env = _creator_env("ai-c", wt_dir.name)
             res = subprocess.run(
                 ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
                 capture_output=True,
                 cwd=repo_root,
-                env=_git_env(),
+                env=creator_env,
                 check=False,
             )
             created = res.returncode == 0
@@ -1247,7 +1254,7 @@ def create_worktree(
                     ["git", "worktree", "add", str(wt_dir), branch],
                     capture_output=True,
                     cwd=repo_root,
-                    env=_git_env(),
+                    env=creator_env,
                     check=False,
                 )
                 created = res.returncode == 0
