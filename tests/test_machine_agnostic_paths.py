@@ -26,6 +26,14 @@ import ai_cli.trust as trust
 from ai_cli.main import cmd_trust_backfill
 from ai_cli.setup import _is_managed_platform
 
+#: Captured at import, which is before any fixture has run. ``conftest`` installs an autouse
+#: fixture that replaces this resolver with a constant naming the checkout's parent, so that
+#: launch tests resolve a project wherever the repository is cloned. These tests are the ones
+#: that exercise resolution itself, so they put the real implementation back and let the
+#: config.toml they write be the only thing that answers -- which is also what makes them a
+#: test of the call sites rather than of the fixture.
+_REAL_GET_PROJECTS_DIR = config._get_projects_dir
+
 
 def _foreign_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_body: str = "") -> Path:
     """Point this process at a home directory and config.toml that are not this machine's.
@@ -35,6 +43,7 @@ def _foreign_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_body: 
     environment, so a patched ``Path.home`` with the real ``XDG_CONFIG_HOME`` still reads the
     operator's live configuration and the test's answer becomes whatever that file says.
     """
+    monkeypatch.setattr(config, "_get_projects_dir", _REAL_GET_PROJECTS_DIR)
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
