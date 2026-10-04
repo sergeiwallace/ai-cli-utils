@@ -793,7 +793,11 @@ def run_copier_update(
         raise ValueError("inspect=True requires isolate=True and push=False")
 
     if projects_dir is None:
-        projects_dir = Path.home() / "projects"
+        # The configured root, not a literal ~/projects: a machine whose projects live
+        # elsewhere reported "projects directory not found" and updated nothing.
+        from .config import _get_projects_dir
+
+        projects_dir = _get_projects_dir()
 
     if not projects_dir.exists():
         print(f"Error: projects directory not found: {projects_dir}", file=sys.stderr)

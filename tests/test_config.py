@@ -295,8 +295,14 @@ class TestDetectMachineProfile:
             result = detect_machine_profile()
         assert result["host_id"] == "acn-windows"
 
-    def test_when_ai_host_unset_then_falls_back_to_hostname(self):
+    def test_when_ai_host_unset_and_no_marker_then_falls_back_to_hostname(self, tmp_path, monkeypatch):
+        """The marker has to be absent too, or this asserts about the host running the suite.
+
+        Clearing the environment alone left the on-disk marker in play, so the test passed on a
+        machine without one and failed on a machine with one.
+        """
         env = {k: v for k, v in os.environ.items() if k != "AI_HOST"}
+        monkeypatch.setattr("ai_cli.config.MACHINE_MARKER_FILE", tmp_path / "no-such-marker")
         with patch.dict(os.environ, env, clear=True), patch("socket.gethostname", return_value="my-box"):
             result = detect_machine_profile()
         assert result["host_id"] == "my-box"

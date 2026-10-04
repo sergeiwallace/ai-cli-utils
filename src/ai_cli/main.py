@@ -5029,11 +5029,19 @@ def cmd_deploy(force, quiet, verbose):
     help="Register Claude Code workspace trust for every repo under a root "
     "(fixes 'workspace has not been trusted' permission drops, GH #72896)",
 )
-@click.option("--root", "-r", default="~/projects", help="Root to scan for git repos (default: ~/projects)")
+@click.option(
+    "--root",
+    "-r",
+    default=None,
+    help="Root to scan for git repos (default: the configured [project] projects_dir)",
+)
 def cmd_trust_backfill(root):
     from .trust import backfill_projects_trust
 
-    added = backfill_projects_trust(root)
+    # Resolved at invocation rather than declared as the literal "~/projects": a click
+    # default is evaluated at import time and cannot read configuration, so a machine whose
+    # projects live elsewhere silently backfilled nothing.
+    added = backfill_projects_trust(Path(root).expanduser() if root else _get_projects_dir())
     if added:
         print(f"Registered workspace trust for {len(added)} workspace(s) in ~/.claude.json:")
         for key in added:

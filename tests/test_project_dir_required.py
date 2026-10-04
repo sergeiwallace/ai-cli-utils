@@ -20,7 +20,9 @@ from ai_cli.config import ProjectPrefixError, resolve_project_prefix_by_name
 from ai_cli.main import _resolve_remote_project, cli
 
 _BARE_CONFIG = {"session": {"use_tmux": False}}
-_HOST = {"host_id": "test-host", "os_type": "linux"}
+#: Every key ``detect_machine_profile`` returns, including which tier supplied the host_id --
+#: ``ensure_machine_profile_registered`` reads that one to report a hostname it had to guess.
+_HOST = {"host_id": "test-host", "os_type": "linux", "host_id_source": "AI_HOST"}
 
 
 @pytest.fixture
