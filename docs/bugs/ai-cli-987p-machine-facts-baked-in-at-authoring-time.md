@@ -20,15 +20,20 @@ answer about the wrong machine.
 
 ### Host identity
 
+Measured on an EC2 Linux host. The machine's own name is redacted here because this is a public
+repository and the repository's hygiene gate forbids it; the lease hostname is shown in the
+documentation address range rather than the real one, for the same reason. The shape is what
+matters and the shape is unaltered.
+
 ```text
 $ env -u AI_HOST python -c "from ai_cli.config import detect_machine_profile; print(detect_machine_profile())"
-{'host_id': 'ip-100-120-40-17', 'os_type': 'linux'}
+{'host_id': 'ip-192-0-2-17', 'os_type': 'linux'}
 
 $ cat /etc/ai-harness/machine
-sem-kg-ec2
+<the machine's name>
 ```
 
-`ip-100-120-40-17` is the EC2 lease's DNS name. It changes when the instance is replaced. The
+The `ip-...` value is the EC2 lease's DNS name. It changes when the instance is replaced. The
 marker file sitting beside it, written by whatever provisioned the machine, held the stable
 answer and nothing read it.
 
@@ -83,10 +88,9 @@ All three outlive the lease whose name they would have recorded.
 
 ## Hypotheses rejected
 
-**That the hostname fallback is harmless because `AI_HOST` is always set.** Measured false in
-this repository's own Bash tool calls on the affected host: `AI_HOST` was unset while
-`/etc/ai-harness/machine` held the answer. The fallback is reached exactly where it is least
-observed.
+**That the hostname fallback is harmless because `AI_HOST` is always set.** Measured false on
+the affected host: in a non-interactive shell `AI_HOST` was unset while `/etc/ai-harness/machine`
+held the answer. The fallback is reached exactly where it is least observed.
 
 **That `~/user-default-efs` in `canonical_worktrees` is the same bug.** It is not, and this was
 checked rather than assumed. `AI-CLI-hgna` already fixed it: the path is accepted only when
@@ -113,7 +117,7 @@ running the suite, because on the author's machine a hardcoded `~/projects` and 
 ```text
 11 failed, 1 passed
 
-assert 'ip-100-120-40-17' == 'sem-kg-ec2'
+assert 'ip-192-0-2-17' == 'build-host-1'
 assert False is True
  +  where False = _is_managed_platform()
 assert 78 == 0

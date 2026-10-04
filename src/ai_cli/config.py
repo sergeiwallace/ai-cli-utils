@@ -107,8 +107,8 @@ def detect_machine_profile() -> dict[str, str]:
     it is absent in precisely the contexts that tend to register a machine for the first time --
     a git hook, ``ai update``, a cron job, an agent shell -- and the hostname that stood in for
     it is not an identity on a cloud host.  Measured on one EC2 Linux box with ``AI_HOST``
-    unset: ``host_id`` resolved to ``ip-100-120-40-17``, the lease's DNS name, which changes on
-    every replacement, while the marker beside it said ``sem-kg-ec2``.  That value is not
+    unset: ``host_id`` resolved to ``ip-192-0-2-17``, the lease's DNS name, which changes on
+    every replacement, while the marker beside it named the machine.  That value is not
     cosmetic -- it keys the per-machine profile persisted in config.toml (written once and never
     revisited) and the machine_name of a chief-of-staff registration, both of which outlive the
     lease.
