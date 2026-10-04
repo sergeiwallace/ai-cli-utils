@@ -3277,6 +3277,7 @@ class TestSelfUpdatePreservesEditableInstall:
 
     # --- the real uv behaviour the whole fix rests on ---------------------
 
+    @pytest.mark.unconstrained_memory
     def test_given_editable_venv_when_plain_install_runs_then_marker_is_destroyed(self, tmp_path):
         """The mechanism itself, against real uv — not a mock of it.
 
@@ -3284,6 +3285,18 @@ class TestSelfUpdatePreservesEditableInstall:
         a plain install over an editable one really does remove the marker the
         fleet installer looks for. If uv ever stopped doing this, the fix would
         be unnecessary and this test is how we would find out.
+
+        ``unconstrained_memory`` because this launches a REAL external binary, the
+        same reason ``TestCdpStartRealChromeBoundary`` carries it. ``RLIMIT_AS`` is
+        inherited by children, so uv runs inside whatever is left of the worker's
+        2 GiB address-space ceiling — and uv is a Rust binary that reserves a large
+        virtual mapping, so when that remainder is too small its allocator aborts and
+        uv dies with SIGABRT rather than failing cleanly. The remainder depends on how
+        much address space the worker already holds, which depends on which tests
+        xdist happened to give it, so this was latent: adding six unrelated tests
+        elsewhere in the suite reshuffled the distribution and turned it red with no
+        change to this code path. The guard exists to bound a runaway *pytest*
+        process; the memory of a subprocess it shells out to was never its target.
         """
         uv = shutil.which("uv")
         if uv is None:

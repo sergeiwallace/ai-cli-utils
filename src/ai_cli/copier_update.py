@@ -34,7 +34,7 @@ from pathlib import Path
 
 import yaml
 
-from .git_repair import _git_env, repair_bare_worktree_config
+from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 
 EX_CONFIG = 78
 EX_TEMPFAIL = 75
@@ -733,11 +733,15 @@ def _update_one_isolated(
 
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
     repair_bare_worktree_config(root)
+    # This temp worktree is flat under `<repo>/.worktrees/`, which ai-harness's
+    # post-checkout backstop undoes for anything but a trusted creator, so the add
+    # identifies itself. No canonical leaf: `copier-update` is not a session slot, and the
+    # backstop matches a declared leaf only for the `ai-c` creator.
     add = subprocess.run(
         ["git", "-C", str(root), "worktree", "add", str(wt_dir), "-b", branch, base],
         capture_output=True,
         text=True,
-        env=_git_env(),
+        env=_creator_env("ai-copier-update"),
         check=False,
     )
     repair_bare_worktree_config(root)

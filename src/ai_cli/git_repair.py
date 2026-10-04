@@ -16,7 +16,10 @@ Two layers of defense:
 1. ``_git_env()`` — strip git-targeting env vars before every git subprocess
    call that touches repo/worktree structure, so it always targets the repo
    passed via ``-C``/``cwd``, never one redirected by an inherited
-   ``GIT_DIR``/``GIT_WORK_TREE``.
+   ``GIT_DIR``/``GIT_WORK_TREE``. ``_creator_env()`` extends it with the
+   worktree-creator attestation that ai-harness's ``post-checkout`` backstop
+   reads, and belongs here because that attestation must ride on the same
+   scrubbed environment every ``git worktree add`` already uses.
 2. ``repair_bare_worktree_config()`` — a deterministic backstop: assert +
    repair a normal working tree's ``core.bare``/``core.worktree`` regardless
    of source. This covers corruption paths we don't control (e.g. Claude
@@ -116,6 +119,37 @@ def _git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     for var in _GIT_TARGETING_VARS:
         env.pop(var, None)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return env
+
+
+def _creator_env(creator: str, canonical_leaf: str | None = None) -> dict[str, str]:
+    """``_git_env()`` plus the worktree-creator attestation, for a ``git worktree add``.
+
+    ai-harness installs a ``post-checkout`` backstop
+    (``scripts/worktree_creation_guard.py``) that undoes a worktree created flat under
+    ``<repo>/.worktrees/``, because that root is reserved for a Claude Code session's own
+    checkout. The backstop admits a creation only when the creating process's environment
+    names a trusted creator, so this launcher has to identify itself or every ``ai c <n>``
+    would have its own session home removed at creation.
+
+    The two variable names are a cross-repo contract and are spelled as literals on both
+    sides deliberately: the backstop runs as a standalone hook script in another repository
+    and cannot import anything from here, so a shared constant would only hide a drift that
+    the tests on each side are what actually catch.
+
+    ``canonical_leaf`` is the exact destination directory name, and only the ``ai-c``
+    creator carries one — the backstop admits ``ai-c`` for that ONE declared path rather
+    than for the canonical leaf *shape*, so passing a session's own slot name is what
+    distinguishes it from a hand-run ``git worktree add .worktrees/<name>``. When no leaf is
+    given the variable is removed rather than left alone: the attestation must describe this
+    call, never a value inherited from whatever launched the process.
+    """
+    env = _git_env()
+    env["AIH_WORKTREE_CREATOR"] = creator
+    if canonical_leaf is None:
+        env.pop("AIH_WORKTREE_CANONICAL_LEAF", None)
+    else:
+        env["AIH_WORKTREE_CANONICAL_LEAF"] = canonical_leaf
     return env
 
 
