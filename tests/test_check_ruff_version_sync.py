@@ -74,3 +74,13 @@ def test_given_no_ruff_hook_in_precommit_when_checked_then_no_errors(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
 
     assert check(tmp_path) == []
+
+
+def test_given_this_repository_when_checked_then_its_own_ruff_pins_agree():
+    """The invariant held only at commit time, so a dependency bump could land one half.
+
+    A renovate bump of pyproject's `ruff==` pin without the pre-commit `rev` left the
+    tree in a state where every commit was refused by the hook while the suite stayed
+    green -- the tests above all run against synthetic trees.
+    """
+    assert check(Path(__file__).resolve().parent.parent) == []
