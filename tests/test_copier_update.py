@@ -874,12 +874,15 @@ def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writ
         def home():
             return tmp_path
 
-    with patch("ai_cli.copier_update.Path", CopierPath):
-        with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-            with patch("shutil.which", return_value="/usr/bin/copier"):
-                exit_code, _, stderr = run_cli(
-                    ["ai", "copier-update", "--no-push", "--inspect-output", str(inspection_output)]
-                )
+    # The projects root is resolved from configuration now, not from Path.home(), so the
+    # CopierPath redirect above no longer reaches it.
+    with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
+        with patch("ai_cli.copier_update.Path", CopierPath):
+            with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+                with patch("shutil.which", return_value="/usr/bin/copier"):
+                    exit_code, _, stderr = run_cli(
+                        ["ai", "copier-update", "--no-push", "--inspect-output", str(inspection_output)]
+                    )
 
     assert exit_code == 0
     assert stderr == ""

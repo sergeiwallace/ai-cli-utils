@@ -2461,7 +2461,13 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
             print(f"Error: {e}", file=sys.stderr)
             return 1
     else:
-        local_projects_root = Path.home() / "projects"
+        # Same root the branch above resolves, minus its requirement that the directory
+        # exist: a memories-only pull has nothing to repath if it is missing, so refusing
+        # would be worse than proceeding. What it must not do is disagree with the other
+        # branch about where this machine keeps its projects.
+        from .config import _get_projects_dir
+
+        local_projects_root = _get_projects_dir().expanduser()
 
     if not force and is_cc_active_locally():
         print(

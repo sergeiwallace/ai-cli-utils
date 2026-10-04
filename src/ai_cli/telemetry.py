@@ -29,8 +29,19 @@ CREATE INDEX IF NOT EXISTS idx_events_subject_ts ON events(subject, ts);
 
 
 def _get_machine_id() -> str:
-    """Return a stable machine identifier."""
-    return socket.gethostname()
+    """Return a stable machine identifier.
+
+    Resolved through the same tiers as the rest of the package rather than from the hostname
+    directly: a hostname is not stable on a cloud host, and every event row this labels outlives
+    the lease whose DNS name it would otherwise carry. Imported lazily, and with a fallback, so
+    telemetry can never be the reason a launch fails.
+    """
+    try:
+        from .config import detect_machine_profile
+
+        return detect_machine_profile()["host_id"]
+    except Exception:
+        return socket.gethostname()
 
 
 def _is_enabled() -> bool:

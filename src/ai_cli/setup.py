@@ -1,8 +1,8 @@
 """
 ai setup — configure Claude Code session config based on detected environment.
 
-Detects whether a managed AI platform (~/projects/CLAUDE.md) is present and
-switches CLAUDE.md to the appropriate variant:
+Detects whether a managed AI platform (a CLAUDE.md at the configured projects root, by
+default ~/projects) is present and switches CLAUDE.md to the appropriate variant:
   - managed platform detected: lean CLAUDE.md is already correct, no action needed
   - no managed platform: copy CLAUDE-full.md → CLAUDE.md and mark assume-unchanged in git
 """
@@ -13,8 +13,22 @@ import sys
 from pathlib import Path
 
 
+def _managed_platform_config() -> Path:
+    """Return where the shared, projects-wide CLAUDE.md would be on this machine.
+
+    Resolved from ``[project] projects_dir`` rather than a literal ``~/projects``. On at least
+    one managed host ``~/projects`` exists but is near-empty and the real root is elsewhere,
+    which made this detection answer "no managed platform" there. That answer is destructive
+    rather than merely wrong: the caller then copies CLAUDE-full.md over CLAUDE.md and marks it
+    assume-unchanged, so the swap does not show up in git status afterwards.
+    """
+    from .config import _get_projects_dir
+
+    return _get_projects_dir() / "CLAUDE.md"
+
+
 def _is_managed_platform() -> bool:
-    return (Path.home() / "projects" / "CLAUDE.md").exists()
+    return _managed_platform_config().exists()
 
 
 def _repo_root_from(cwd: Path) -> Path | None:
@@ -85,9 +99,11 @@ def run_setup(cwd: Path | None = None) -> int:
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"
 
+    shared_config = _managed_platform_config()
+
     if _is_managed_platform():
-        print("managed platform detected (~/projects/CLAUDE.md found)")
-        print("✓ Using lean CLAUDE.md — ~/projects/CLAUDE.md provides shared AI orchestration rules")
+        print(f"managed platform detected ({shared_config} found)")
+        print(f"✓ Using lean CLAUDE.md — {shared_config} provides shared AI orchestration rules")
         return 0
 
     # Not on managed platform — switch to self-contained config
@@ -110,7 +126,7 @@ def run_setup(cwd: Path | None = None) -> int:
         check=False,
     )
 
-    print("No managed platform detected (~/projects/CLAUDE.md not found)")
+    print(f"No managed platform detected ({shared_config} not found)")
     print("✓ Switched to standalone config: CLAUDE-full.md → CLAUDE.md")
     print("  Git will ignore local changes to CLAUDE.md (assume-unchanged)")
     return 0

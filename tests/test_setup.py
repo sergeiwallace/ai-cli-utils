@@ -2,7 +2,25 @@ import subprocess
 from pathlib import Path
 from unittest.mock import call, patch
 
+import pytest
+
 from ai_cli.setup import _is_managed_platform, _repo_root_from, run_setup
+
+
+@pytest.fixture(autouse=True)
+def _projects_root_follows_home(monkeypatch):
+    """Let this module's ``Path.home`` redirects decide the projects root again.
+
+    ``_is_managed_platform`` resolves the root through ``[project] projects_dir`` rather than a
+    literal ``~/projects``, and ``conftest`` pins that resolver to this checkout's parent for
+    every test in the suite. Without this, each test below asks about a directory it never
+    created, and the two that expect False pass for a reason they do not state.
+
+    A lambda rather than a constant: the ``Path.home`` redirect happens inside each test, after
+    this fixture has already run.
+    """
+    monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: Path.home() / "projects")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

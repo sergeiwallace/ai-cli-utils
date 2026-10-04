@@ -78,22 +78,65 @@ def resolve_base_dir(env_var: str, fallback: Path) -> Path:
     return fallback
 
 
-def detect_machine_profile() -> dict[str, str]:
-    """Return detected host_id and os_type for this machine.
+#: On-disk host-identity marker, written by whatever provisioned the machine. Read when
+#: ``AI_HOST`` is not in the environment. Tests and administrators point it elsewhere by
+#: reassigning this name; it is deliberately not a config key, because a per-machine config
+#: file cannot be the place a machine learns its own identity.
+MACHINE_MARKER_FILE = Path("/etc/ai-harness/machine")
 
-    host_id: AI_HOST env var → socket.gethostname() fallback
-    os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'
+#: ``host_id_source`` when nothing identified the machine and its hostname stood in.
+HOST_ID_SOURCE_HOSTNAME = "hostname"
+
+
+def _read_machine_marker(marker_file: Path) -> str | None:
+    """Return the host id recorded in *marker_file*, or None when there is none."""
+    try:
+        return marker_file.read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeError):
+        return None
+
+
+def detect_machine_profile() -> dict[str, str]:
+    """Return this machine's host_id, os_type, and which tier supplied the host_id.
+
+    host_id: the ``AI_HOST`` environment variable, then :data:`MACHINE_MARKER_FILE`, then
+    ``socket.gethostname()``.
+    os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'.
+
+    The marker tier is the point.  ``AI_HOST`` is exported by an interactive login profile, so
+    it is absent in precisely the contexts that tend to register a machine for the first time --
+    a git hook, ``ai update``, a cron job, an agent shell -- and the hostname that stood in for
+    it is not an identity on a cloud host.  Measured on one EC2 Linux box with ``AI_HOST``
+    unset: ``host_id`` resolved to ``ip-192-0-2-17``, the lease's DNS name, which changes on
+    every replacement, while the marker beside it named the machine.  That value is not
+    cosmetic -- it keys the per-machine profile persisted in config.toml (written once and never
+    revisited) and the machine_name of a chief-of-staff registration, both of which outlive the
+    lease.
+
+    ``host_id_source`` is returned rather than logged here, because this function is also called
+    on read-only paths that only want to name the machine in a message.  The caller that
+    *persists* the identity is the one that should say which tier answered.
     """
-    host_id = os.environ.get("AI_HOST") or socket.gethostname()
+    host_id = os.environ.get("AI_HOST", "").strip()
+    source = "AI_HOST"
+    if not host_id:
+        host_id = _read_machine_marker(MACHINE_MARKER_FILE) or ""
+        source = str(MACHINE_MARKER_FILE)
+    if not host_id:
+        host_id = socket.gethostname()
+        source = HOST_ID_SOURCE_HOSTNAME
     os_type = _OS_TYPE_MAP.get(sys.platform, sys.platform)
-    return {"host_id": host_id, "os_type": os_type}
+    return {"host_id": host_id, "os_type": os_type, "host_id_source": source}
 
 
 def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     """Write detected host_id / os_type into config.toml if not already set.
 
     Returns True if the file was modified (caller should reload config).
-    Prints a one-time status message when a new profile is written.
+    Prints a one-time status message when a new profile is written, naming the tier the
+    host_id came from.  This is the only write of it: the keys are skipped once present, so a
+    host_id guessed here is the machine's identity from then on, and a guess reported as a
+    detection is one nobody ever goes back to check.
     """
     machine = config.get("machine", {})
     missing = [k for k in ("host_id", "os_type") if not machine.get(k)]
@@ -120,9 +163,18 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
 
     _write_secure_config(config_path, "".join(lines))
     print(
-        f"Machine profile registered: {profile['host_id']} ({profile['os_type']})",
+        f"Machine profile registered: {profile['host_id']} ({profile['os_type']}) from {profile['host_id_source']}",
         file=sys.stderr,
     )
+    if "host_id" in missing and profile["host_id_source"] == HOST_ID_SOURCE_HOSTNAME:
+        print(
+            f"warning: nothing identified this machine, so its {HOST_ID_SOURCE_HOSTNAME} "
+            f"{profile['host_id']!r} was recorded as the durable host_id. AI_HOST is unset and "
+            f"{MACHINE_MARKER_FILE} is absent or empty. On a cloud host a hostname names a lease "
+            f"rather than a machine, and this value is not re-detected: set [machine] host_id in "
+            f"{config_path} if it is wrong.",
+            file=sys.stderr,
+        )
     return True
 
 
@@ -377,7 +429,9 @@ nats_servers = ["nats://localhost:4222"]
 
 [machine]
 ## Identifier for this machine.
-## Auto-detected from AI_HOST env var, then hostname; set manually to override.
+## Auto-detected from the AI_HOST env var, then /etc/ai-harness/machine, then the hostname;
+## set manually to override. Worth setting by hand on a cloud host, where the hostname names
+## a lease rather than a machine and this key is written once and never re-detected.
 ## Example values: "mac", "hetzner", "work-laptop", "acn-windows"
 # host_id = ""
 ## OS type for this machine. Auto-detected from sys.platform on first run.

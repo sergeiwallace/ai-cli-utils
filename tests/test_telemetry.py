@@ -99,15 +99,28 @@ class TestIsEnabled:
 
 
 class TestGetMachineId:
-    def test_get_machine_id_when_called_then_returns_hostname(self):
-        """Line 34: actual body of _get_machine_id."""
+    def test_get_machine_id_when_the_machine_is_identified_then_that_identity_is_used(self, monkeypatch):
+        """The hostname is the last resort, not the identity: see ai_cli.config."""
+        from ai_cli.telemetry import _get_machine_id
+
+        monkeypatch.setenv("AI_HOST", "some-machine")
+
+        result = _get_machine_id()
+        assert result == "some-machine"
+        assert isinstance(result, str)
+
+    def test_get_machine_id_when_nothing_identifies_the_machine_then_falls_back_to_hostname(
+        self, tmp_path, monkeypatch
+    ):
         import socket
 
         from ai_cli.telemetry import _get_machine_id
 
+        monkeypatch.delenv("AI_HOST", raising=False)
+        monkeypatch.setattr("ai_cli.config.MACHINE_MARKER_FILE", tmp_path / "no-such-marker")
+
         result = _get_machine_id()
         assert result == socket.gethostname()
-        assert isinstance(result, str)
         assert len(result) > 0
 
 
