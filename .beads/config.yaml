@@ -91,7 +91,21 @@ dolt.shared-server: true
 # Retired 2026-09-16 (AIH-mssv2). The store on the shared Dolt server is authoritative and
 # `bd dolt push`/`pull` is the cross-machine transport (verified fast-forward d3c9ee98 -> 5900fafb).
 # Auto-export rewrote this repo's git-tracked .beads/*.jsonl on every bd write, which is the
-# git-conflict friction this retires. The mirror files stay TRACKED for now: untracking them
-# records a deletion that removes interactions.jsonl from every other machine's working tree on
-# pull, and that file is append-only and NOT regenerable (AIH-tvan). Export on demand with
-# `bd export -o .beads/issues.jsonl` after a three-axis check.
+# git-conflict friction this retires.
+#
+# interactions.jsonl is now UNTRACKED and gitignored (2026-10-04, AIH-bq0gl D-4,
+# docs/designs/aih-bq0gl-dolt-only-beads-stores.md in ai-harness). The earlier reason to keep
+# it tracked -- append-only, NOT regenerable, and the Dolt `interactions` table held 0 rows, so
+# git was its only copy (AIH-tvan, AIH-0zmda) -- was discharged first, not waived: its 392
+# records were imported into the store's `interactions` table, published with
+# bd_dolt_publish.py, and proved present on refs/dolt/data per record before it was untracked.
+#
+# issues.jsonl STAYS TRACKED here, unlike the other repos on this host, and that is a BLOCK not
+# an oversight (AIH-ik03t). The committed mirror held 9 records, 7 comments and 1 dependency
+# edge the store lacked. All of those were reconciled INTO the store by the hm7xu D-2 rules and
+# published, and the field-level gate (check_beads_divergence.py --mirror-retirement-gate) is
+# satisfied by content. But bd_mirror_redundancy_proof.py keys its comments population on the
+# literal comment id, bd derives that id from content INCLUDING created_at, and no bd write can
+# set a comment's created_at -- so those 7 comments can never carry their original identity and
+# the proof cannot reach exit 0. Export on demand with `bd export -o /tmp/<file>` after a
+# three-axis check; never write the export back into .beads/.

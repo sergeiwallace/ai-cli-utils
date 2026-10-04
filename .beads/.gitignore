@@ -95,3 +95,19 @@ bd.db
 # shared fact: committing it would let one machine's timer vouch for every other
 # clone's.
 .displayid-sweep-heartbeat.json
+
+# interactions.jsonl is RETIRED (2026-10-04, AIH-bq0gl D-4,
+# docs/designs/aih-bq0gl-dolt-only-beads-stores.md in ai-harness): its 392 records were
+# imported into this store's Dolt `interactions` table, published with bd_dolt_publish.py and
+# proved present on refs/dolt/data per record, so git is no longer its only copy. Never
+# re-track it.
+#
+# issues.jsonl is DELIBERATELY NOT LISTED HERE: it is still TRACKED in this repo. Its
+# retirement is blocked by AIH-ik03t -- the redundancy proof's comments population keys on a
+# comment id that encodes created_at, which no bd write can set, so the 7 comments that existed
+# only in the committed mirror cannot be given their original identity and the proof cannot
+# reach exit 0. The 9 committed-only records, those 7 comments and the 1 committed-only
+# dependency edge WERE reconciled into the store (present by content, published to the remote);
+# only the identity axis of the guard is unsatisfiable. Do not untrack issues.jsonl until
+# AIH-ik03t is resolved.
+interactions.jsonl
