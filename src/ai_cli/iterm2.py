@@ -15,6 +15,7 @@ from pathlib import Path
 
 import portalocker
 
+from . import launch_reporter
 from .config import get_xdg_config_home, get_xdg_state_home
 
 # Default iTerm2 config written to ~/.config/ai-cli-utils/iterm2.toml on first use.
@@ -279,6 +280,13 @@ def _iterm2_session_type(engine: str) -> str:
     )
 
 
+#: Deadline for the pane-rename Apple Event. The script walks every window, tab
+#: and session, so its cost grows with the whole iTerm2 UI tree; a bigger number
+#: only widens the window in which a busy app still answers, and is paid by every
+#: launch that does hang. The deadline stays short and the timeout is survivable.
+_RENAME_TIMEOUT_SECONDS = 5
+
+
 def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
     """Set the Name of the iTerm2 session on physical terminal ``tty`` (macOS only).
 
@@ -310,7 +318,32 @@ def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
     end repeat
     return "miss"
 end tell"""
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5, text=True, check=False)
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            timeout=_RENAME_TIMEOUT_SECONDS,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # The rename is cosmetic and a non-zero exit is already survivable
+        # (``check=False``), but a timeout arrives as an exception rather than an
+        # exit code — so the one failure mode that is not an exit code used to
+        # take the whole launch down, after the worktree had been created and
+        # reported ready. Warn and continue, the same outcome a failed worktree
+        # sync produces. ``OSError`` covers osascript being absent or
+        # unexecutable, which is the same cosmetic failure by another route.
+        reason = (
+            f"osascript did not answer within {_RENAME_TIMEOUT_SECONDS}s"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else f"osascript could not be run ({exc})"
+        )
+        launch_reporter.active().warning(
+            f"iTerm2 pane rename to {name!r} failed: {reason}. "
+            "Continuing the launch — the tab may keep its previous name."
+        )
+        return False
     return "ok" in (result.stdout or "")
 
 
