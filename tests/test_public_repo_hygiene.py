@@ -608,8 +608,8 @@ def test_given_the_machine_local_dolt_server_state_when_checked_then_it_is_ignor
 
     # Control first: a probe that reports everything as ignored would pass the real
     # assertion while measuring nothing.
-    assert not ignored(".beads/issues.jsonl"), (
-        "the tracked task-store export reports as ignored, so this probe cannot fail"
+    assert not ignored(".beads/config.yaml"), (
+        "a tracked task-store file reports as ignored, so this probe cannot fail"
         " and proves nothing about the rule below"
     )
 
