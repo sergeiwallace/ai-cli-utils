@@ -111,3 +111,7 @@ bd.db
 # only the identity axis of the guard is unsatisfiable. Do not untrack issues.jsonl until
 # AIH-ik03t is resolved.
 interactions.jsonl
+
+# Both JSONL sidecars are RETIRED (AIH-bq0gl D-4, AIH-hm7xu D-1): the shared Dolt server is the store and
+# bd_dolt_publish.py (ai-harness) publishes it to refs/dolt/data on the GitHub remote. Never re-track either file.
+issues.jsonl
