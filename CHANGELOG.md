@@ -111,6 +111,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fzf` now goes straight to the plain list and prints one line on stderr naming
   `fzf` as the optional dependency. A test asserts no package manager is invoked.
 
+- A session launch could die on a cosmetic iTerm2 tab rename. The rename runs an
+  AppleScript that walks every window, tab and session comparing `tty`, under a
+  five-second deadline; when iTerm2 was momentarily busy the Apple Event did not
+  answer in time and `subprocess.TimeoutExpired` propagated out of the launcher.
+  `check=False` already made a non-zero exit survivable, so a timeout — the one
+  failure mode that is not an exit code — was the only way this cosmetic step
+  could be fatal, and it was fatal *late*: the traceback arrived after the
+  worktree had been created, synchronized and reported ready, discarding all of
+  it from the user's point of view. The timeout (and an unrunnable `osascript`)
+  is now caught where the non-zero exit already was, reported as
+  `[launch] Warning: iTerm2 pane rename ...` naming the cause, and the launch
+  continues to hand off — the same outcome a failed worktree sync already
+  produces. The deadline was deliberately not raised: a longer one only narrows
+  the window and is paid in full by every launch that does hang.
 - A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and
   print `ai-cli: could not promote child process group to terminal
   foreground` forever. The generated supervisor's child wrapper stops itself

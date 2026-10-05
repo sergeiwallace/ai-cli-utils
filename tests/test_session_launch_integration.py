@@ -10,6 +10,7 @@ resolution.
 
 import contextlib
 import dataclasses
+import io
 import json
 import os
 import shutil
@@ -23,7 +24,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 
-from ai_cli import tmux_ownership, tmux_setup
+from ai_cli import launch_reporter, tmux_ownership, tmux_setup
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -994,3 +995,116 @@ def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propaga
     assert iterm_env_updates == [], (
         f"re-attach must not propagate ITERM_SESSION_ID (tty-based rename), got {iterm_env_updates!r}"
     )
+
+
+def _reattach_launch_with_rename(iterm_run, tmp_path):
+    """Run a re-attaching launch for real through the iTerm2 pane rename.
+
+    ``_emit_iterm2_profile_setup`` is deliberately NOT mocked — the rename is the
+    code under test, and every other test in this file stubs the whole emit out.
+    ``iterm_run`` services the subprocess calls iterm2.py makes, so the caller
+    decides how osascript behaves. Returns the reporter's output.
+    """
+
+    class _OK:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        return _OK()
+
+    stream = io.StringIO()
+    reporter = launch_reporter.LaunchReporter(stream=stream)
+    previous = reporter.activate()
+    try:
+        with (
+            patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+            patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as execute,
+            patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "TMUX": ""}, clear=False),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path / "state"),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.icon_generator.generate_session_icon", return_value=None),
+            patch("ai_cli.icon_generator.generate_dynamic_profile"),
+            patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys000"),
+            patch("ai_cli.iterm2.subprocess.run", side_effect=iterm_run),
+            patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**_base_launch_kwargs(name="1"))
+    finally:
+        launch_reporter.activate(previous)
+
+    assert execute.call_args[0][0] == "tmux"
+    return stream.getvalue()
+
+
+def _osascript_calls(calls):
+    return [c for c in calls if c and c[0] == "osascript"]
+
+
+def test_given_the_iterm2_pane_rename_times_out_when_launching_then_the_launch_still_hands_off(tmp_path):
+    """A hung cosmetic rename must not take the launch down.
+
+    A reported launch crashed with ``TimeoutExpired`` out of the osascript
+    rename *after* ``[launch] Worktree: ready`` — the work was done and then
+    thrown away from the user's point of view.
+    The required outcome is the one a failed worktree sync already produces:
+    warn, naming the cause, and continue to the hand-off.
+    """
+
+    class _OK:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def iterm_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "osascript":
+            raise subprocess.TimeoutExpired(cmd=list(cmd), timeout=5)
+        return _OK()
+
+    out = _reattach_launch_with_rename(iterm_run, tmp_path)
+
+    assert _osascript_calls(calls), f"the rename was never attempted: {calls!r}"
+    assert "Ready: handing off to Claude Code (myproject-1)" in out, out
+    # A silent swallow would also reach the hand-off, so the warning must name
+    # the cause for the two outcomes to be distinguishable.
+    assert "Warning: iTerm2 pane rename" in out, out
+    assert "osascript did not answer within 5s" in out, out
+
+
+def test_given_the_iterm2_pane_rename_answers_when_launching_then_it_renames_and_nothing_warns(tmp_path):
+    """Negative control: the same launch path still performs the rename.
+
+    Disabling or skipping the rename would satisfy the timeout test above on its
+    own; it cannot satisfy this one.
+    """
+
+    class _OK:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    calls: list[list[str]] = []
+
+    def iterm_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return _OK()
+
+    out = _reattach_launch_with_rename(iterm_run, tmp_path)
+
+    rename = _osascript_calls(calls)
+    assert len(rename) == 1, f"expected exactly one osascript rename, got {rename!r}"
+    assert "/dev/ttys000" in rename[0][2]
+    assert 'set name of s to "c-myproject-1"' in rename[0][2]
+    assert "Ready: handing off to Claude Code (myproject-1)" in out, out
+    assert "Warning" not in out, out
