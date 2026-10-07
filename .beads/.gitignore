@@ -121,3 +121,8 @@ issues.jsonl
 # endpoint on every OTHER machine, and that guard tests presence on disk, so untracking
 # the file is not enough -- it has to be ignored.
 dolt-server-config.yaml
+
+# Added by bd (missing required patterns): the literal line `bd doctor` tests for. The
+# gate.lock files it protects are already matched by the *.lock patterns above, so this is
+# the exact string the check wants, not new coverage.
+*.gate.lock*
