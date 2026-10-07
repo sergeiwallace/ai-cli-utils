@@ -115,3 +115,9 @@ interactions.jsonl
 # Both JSONL sidecars are RETIRED (AIH-bq0gl D-4, AIH-hm7xu D-1): the shared Dolt server is the store and
 # bd_dolt_publish.py (ai-harness) publishes it to refs/dolt/data on the GitHub remote. Never re-track either file.
 issues.jsonl
+
+# A machine-local Dolt server endpoint config, never shared (AIH-v9tbf). One machine's
+# cfg_dir committed here makes dolt_server.py refuse to infer this repo's database
+# endpoint on every OTHER machine, and that guard tests presence on disk, so untracking
+# the file is not enough -- it has to be ignored.
+dolt-server-config.yaml
