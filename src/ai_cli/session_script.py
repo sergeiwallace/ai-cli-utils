@@ -1037,8 +1037,16 @@ with open(path, 'w') as f:
         # supervisor is cycling instead of hosting an interactive session. The
         # supervisor starts each replacement in a fresh shell, so retain the
         # count in its per-session state directory rather than a shell variable.
+        # A run that outlived the healthy window was a working session, not a
+        # failed start, so its exit begins a new sequence; without this the
+        # count spanned the supervisor's whole life and a days-old session
+        # stopped restarting on its third exit ever.
         agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
         [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
+        _healthy_agent_seconds=60
+        if (( $(date +%s) - start_ts >= _healthy_agent_seconds )); then
+          agent_exit_count=0
+        fi
         agent_exit_count=$((agent_exit_count + 1))
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then

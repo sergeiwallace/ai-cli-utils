@@ -118,6 +118,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double Ctrl+C exit never fired. The session now disarms those modes, restores a
   cooked line discipline and drops the input queued while nothing read the pane,
   before and after every agent run. (`AI-CLI-9la0`)
+- **A long-lived session stopped auto-restarting on its third agent exit ever.**
+  The "3 consecutive agent exits" breaker never reset, so exits days apart added
+  up. A run that lasted at least 60 seconds now starts a new count.
 - **`ai cx` could only ever be session 1.** Three places matched the engine
   segment of a session name with `[cgp]`, which matches the `c` of `cx-…` and
   then fails on the `x`, so the prefix stopped parsing for every Codex launch:

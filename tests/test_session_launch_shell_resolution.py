@@ -626,6 +626,85 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     assert launches.read_text().strip() == "3", "the breaker must stop the third consecutive failure"
 
 
+def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_session_keeps_restarting(
+    real_tmux_socket, tmp_path
+):
+    """The consecutive-exit breaker must count only consecutive SHORT runs.
+
+    The counter lives for the supervisor's whole life and nothing reset it, so a
+    long-lived session tripped the breaker on its third agent exit ever, however
+    many days apart: kg-2's counter read 2 after six days of uptime, so its next
+    restart would have stopped auto-restart. Here each stand-in agent outlives the
+    healthy-run window (shrunk in the disposable rendered script, as the breaker
+    test above shrinks its guard) and the session must still launch a fourth.
+    """
+    bin_dir = _clean_bin(tmp_path, "healthy-bin")
+    id_binary = shutil.which("id")
+    assert id_binary is not None
+    (bin_dir / "id").symlink_to(id_binary)
+    fake_bin = tmp_path / "healthy-fakes"
+    fake_bin.mkdir()
+    launches = tmp_path / "agent-launches"
+    fourth = tmp_path / "fourth-launch"
+    fake_pi = fake_bin / "pi"
+    fake_pi.write_text(
+        "#!/bin/sh\n"
+        f'count=$(cat "{launches}" 2>/dev/null || echo 0)\n'
+        "count=$((count + 1))\n"
+        f'printf "%s\\n" "$count" > "{launches}"\n'
+        f'if [ "$count" -ge 4 ]; then touch "{fourth}"; sleep 60; fi\n'
+        "sleep 6\n"
+        "exit 0\n"
+    )
+    fake_pi.chmod(0o755)
+    fake_ai = fake_bin / "ai"
+    fake_ai.write_text(
+        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+    )
+    fake_ai.chmod(0o755)
+
+    script = tmp_path / "healthy-session.sh"
+    rendered = get_engine_script(
+        "p", "healthy", "p-myproject-healthy", "p-myproject-", "myproject", worktree_dir=str(tmp_path)
+    )
+    script.write_text(rendered.replace("_healthy_agent_seconds=60", "_healthy_agent_seconds=4"))
+    session_name = "healthy-agent-exits"
+    shell = shutil.which("bash")
+    assert shell is not None
+    runner = tmp_path / "healthy-runner.sh"
+    runner.write_text(
+        f"#!{shell}\n"
+        f'while true; do "{shell}" "{script}" --ai-cli-child-body; [ "$?" -eq 77 ] && break; done\n'
+        "sleep 60\n"
+    )
+    runner.chmod(0o755)
+    created = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "new-session", "-d", "-s", session_name, shell, str(runner)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": os.pathsep.join((str(fake_bin), str(bin_dir))),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+        },
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+
+    deadline = time.monotonic() + _OBSERVE_SECONDS
+    while time.monotonic() < deadline and not fourth.exists():
+        time.sleep(0.1)
+    pane = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    launch_count = launches.read_text().strip() if launches.exists() else "missing"
+    assert fourth.exists(), f"the session stopped restarting healthy agents after {launch_count} launches: {pane!r}"
+    assert "AI CLI keeps failing to start" not in pane, pane
+
+
 def _start_restarting_claude_session(
     sock: str, tmp_path: Path, shell: str, session_name: str, fake_claude: str
 ) -> None:
