@@ -626,6 +626,171 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     assert launches.read_text().strip() == "3", "the breaker must stop the third consecutive failure"
 
 
+def _start_restarting_claude_session(
+    sock: str, tmp_path: Path, shell: str, session_name: str, fake_claude: str
+) -> None:
+    """Run the generated Claude Code child body in a real pane, restarted the way the supervisor does.
+
+    ``fake_claude`` is the body of the stand-in ``claude``; everything else the
+    template reaches for (``ai``, ``direnv``) is a silent fake, and the stand-ins
+    for ``stty``/``python3`` are the real binaries so the template's own terminal
+    handling runs for real.
+    """
+    bin_dir = _clean_bin(tmp_path, "restart-bin")
+    for tool, resolved in (("id", shutil.which("id")), ("stty", shutil.which("stty")), ("python3", sys.executable)):
+        assert resolved is not None, f"{tool} is required by this test"
+        (bin_dir / tool).symlink_to(resolved)
+    fake_bin = tmp_path / "restart-fakes"
+    fake_bin.mkdir()
+    (fake_bin / "claude").write_text(fake_claude)
+    (fake_bin / "ai").write_text(
+        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+    )
+    for fake in fake_bin.iterdir():
+        fake.chmod(0o755)
+
+    script = tmp_path / "restart-session.sh"
+    script.write_text(
+        get_engine_script("c", "restart", session_name, "c-myproject-", "myproject", worktree_dir=str(tmp_path))
+    )
+    runner = tmp_path / "restart-runner.sh"
+    runner.write_text(
+        f"#!{shell}\n"
+        f'while true; do "{shell}" "{script}" --ai-cli-child-body; [ "$?" -eq 77 ] && break; done\n'
+        "sleep 60\n"
+    )
+    runner.chmod(0o755)
+    # extended-keys is what makes tmux honour an application's modifyOtherKeys
+    # request; it is set on the server before the pane exists, as on the live host.
+    created = subprocess.run(
+        [
+            "tmux",
+            "-S",
+            sock,
+            "start-server",
+            ";",
+            "set-option",
+            "-s",
+            "extended-keys",
+            "on",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-x",
+            "120",
+            "-y",
+            "30",
+            shell,
+            str(runner),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": os.pathsep.join((str(fake_bin), str(bin_dir))),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+        },
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+
+
+@pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+def test_given_agent_dies_with_mouse_and_extended_keys_on_when_session_restarts_then_new_agent_gets_plain_keys(
+    real_tmux_socket, tmp_path, shell_name
+):
+    """A relaunched agent must not inherit the input state a dead agent left behind (AI-CLI-9la0).
+
+    Claude Code turns on SGR mouse tracking and xterm modifyOtherKeys, and tmux keeps
+    both as pane state until the application turns them off. An agent that dies
+    without doing so leaves them armed for whatever runs next in the pane, so the
+    replacement receives mouse motion as ``CSI < 35 ; x ; y M`` text and Ctrl+C as
+    ``CSI 27 ; 5 ; 99 ~``: the exact bytes pasted from the kg-2 pane. Keys pressed
+    while nothing reads the pane queue up and reach the replacement as input too.
+
+    The first stand-in agent arms the modes, puts the terminal in raw mode, has
+    keys typed at it, and is SIGKILLed. The second stand-in behaves like Claude
+    Code: it records the line discipline it was handed, enters raw mode itself,
+    and reads. Ctrl+C pressed through tmux must reach it as the single byte 0x03,
+    with nothing queued ahead of it, from a terminal it received in cooked mode.
+    """
+    shell = shutil.which(shell_name)
+    if shell is None:
+        pytest.skip(f"{shell_name} is not installed")
+    session_name = f"restart-modes-{shell_name}"
+    launches = tmp_path / "launches"
+    first_armed = tmp_path / "first-armed"
+    second_started = tmp_path / "second-started"
+    inherited_stty = tmp_path / "second-inherited-stty"
+    received = tmp_path / "second-received"
+    reader = tmp_path / "read_tty.py"
+    reader.write_text(
+        "import os, select, sys, time\n"
+        "buf = b''\n"
+        "end = time.monotonic() + 20\n"
+        "while time.monotonic() < end:\n"
+        "    if select.select([0], [], [], 0.1)[0]:\n"
+        "        buf += os.read(0, 256)\n"
+        "        open(sys.argv[1], 'wb').write(buf)\n"
+    )
+    fake_claude = (
+        "#!/bin/sh\n"
+        f'count=$(cat "{launches}" 2>/dev/null || echo 0)\n'
+        "count=$((count + 1))\n"
+        f'printf "%s\\n" "$count" > "{launches}"\n'
+        'if [ "$count" -eq 1 ]; then\n'
+        "  stty raw -echo\n"
+        "  printf '\\033[?1049h\\033[?1003h\\033[?1006h\\033[>4;2m'\n"
+        f'  touch "{first_armed}"\n'
+        # Outlive the fast-crash guard (elapsed < 3) so the session restarts.
+        "  sleep 4\n"
+        "  kill -9 $$\n"
+        "fi\n"
+        f'stty -a > "{inherited_stty}"\n'
+        "stty raw -echo\n"
+        f'touch "{second_started}"\n'
+        f'"{sys.executable}" "{reader}" "{received}"\n'
+        "sleep 30\n"
+    )
+    _start_restarting_claude_session(real_tmux_socket, tmp_path, shell, session_name, fake_claude)
+
+    assert _wait_for_file(first_armed), "the first agent never started"
+    time.sleep(0.3)
+    subprocess.run(["tmux", "-S", real_tmux_socket, "send-keys", "-t", session_name, "-l", "typed"], check=True)
+    subprocess.run(["tmux", "-S", real_tmux_socket, "send-keys", "-t", session_name, "M-BSpace"], check=True)
+
+    assert _wait_for_file(second_started), "the session never relaunched its agent after the first one died"
+    flags = subprocess.run(
+        [
+            "tmux",
+            "-S",
+            real_tmux_socket,
+            "display-message",
+            "-p",
+            "-t",
+            session_name,
+            "#{mouse_any_flag}|#{pane_key_mode}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    time.sleep(0.5)
+    subprocess.run(["tmux", "-S", real_tmux_socket, "send-keys", "-t", session_name, "C-c"], check=True)
+
+    _wait_for_file(received, timeout=10)
+    time.sleep(0.5)
+    raw = received.read_bytes() if received.exists() else b""
+    assert raw == b"\x03", f"the relaunched agent read {raw!r} for one Ctrl+C; pane mouse|keys at relaunch: {flags}"
+    assert flags.split("|")[0] == "0", f"mouse tracking was still armed when the agent relaunched: {flags}"
+    line_discipline = inherited_stty.read_text().split()
+    assert {"icanon", "echo", "isig"} <= set(line_discipline), (
+        f"the relaunched agent was handed a raw terminal: {inherited_stty.read_text()!r}"
+    )
+
+
 # --- `ai c --once` launch path ---------------------------------------------------
 #
 # The --once branch builds its own tmux argv (three call sites, one per engine
