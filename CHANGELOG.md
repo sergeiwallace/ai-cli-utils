@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c` now requires a way to submit its auto-compact prompt. Either transport
+  satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
+  bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The
+  transport is fixed by the terminal that owns the engine process and cannot be
+  added later, so a session started without one did not fail at launch — it failed
+  hours later with a full context and no managed way to compact.
+
+  Three outcomes. A transport resolves and the launch proceeds. A transport was
+  achievable here and is not available (`[session] use_pty = false` with no tmux,
+  or a pty that will not allocate) and the launch is **refused**, naming what each
+  side failed on, above every write it would perform, so nothing is left to clean
+  up. Or no transport is implementable on the platform at all — `os.openpty` is
+  POSIX-only, so a Windows host without tmux can satisfy neither side — and the
+  launch **proceeds** with one notice naming the upgrade path. Windows is not
+  refused: a condition no in-process action can satisfy is not a guard, and what is
+  lost there is harness-*driven* compaction, not compaction itself, since the
+  engine's own auto-compact needs no terminal.
+
+  The pty carries the submission only: your terminal stays the terminal, and the
+  pty path provides no detach/reattach and no scrollback.
+
 - `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
   shorthand. It resolves the chief home from `-k/--machine-key` (default
@@ -192,7 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, and `Path("") / "ai-cli-utils"` is the **relative** path
   `ai-cli-utils`, so everything built on it resolved against the cwd. Measured
   side by side with `XDG_STATE_HOME=""`, the old code produced
-  `ai-cli-utils/remote-ps-cache.json` and the new code produces an absolute path
+  `ai-cli-utils/remote-ps-cache.json` <!-- gitignored-path-ok: named as the WRONG location the bug wrote to, not cited as evidence; nothing is meant to resolve there --> and the new code produces an absolute path
   under `$HOME`. One site made this more than misplaced clutter: the CC
   update-staging reaper *deletes* under its resolved path, so a relative base
   aimed a delete at `<cwd>/claude/staging`. All seven base-directory reads now go

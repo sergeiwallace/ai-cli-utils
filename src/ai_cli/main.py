@@ -22,6 +22,7 @@ import click
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
 from . import chief_of_staff as _chief_of_staff
+from . import compact_transport as _compact_transport
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
@@ -2756,6 +2757,44 @@ def _do_session_launch(
                 "    - launch with -b/--bare, which uses no tmux at all."
             )
             sys.exit(1)
+
+    # The session's auto-compact prompt is submitted through the terminal that owns
+    # the engine process, and a running process's controlling terminal cannot be
+    # relocated afterwards -- so the transport is settled HERE, at launch, or never.
+    # Either one satisfies it: tmux where tmux hosts the session, a harness-owned pty
+    # on the bare paths.
+    #
+    # A transport that was achievable here and is not available is a REFUSAL, and it
+    # exits rather than warning: a session the harness cannot compact does not fail
+    # now, it fails hours later when it fills its context, which is the defect this
+    # exists to kill. The refusal sits above every write this launch performs -- the
+    # dry-run exit, workspace trust, the worktree, the session record -- for the same
+    # reason the tmux version refusal above does: once any of those exist, refusing
+    # has already cost the operator cleanup.
+    #
+    # A platform with NO pty API is the separate third case and must not refuse.
+    # `os.openpty` is POSIX-only, so a Windows host without tmux can satisfy neither
+    # side however it is configured, and refusing would strand the launch route there
+    # -- reintroducing the resolved P1 AI-CLI-vs8 and breaking the launcher's contract
+    # that a missing enhancement degrades a launch rather than blocking it. It still
+    # says so once, because silent degradation is the shape being eliminated.
+    #
+    # A remote dispatch is excluded, like the tmux probes above it: the terminal that
+    # will own the session is on the REMOTE host, so a local probe would be a verdict
+    # about the wrong machine.
+    if not remote:
+        compact_transport = _compact_transport.resolve(
+            tmux_usable=not bare,
+            tmux_detail=tmux_reason,
+            config=config,
+        )
+        if compact_transport.must_refuse:
+            reporter.error(_compact_transport.refusal_message(compact_transport))
+            sys.exit(1)
+        if compact_transport.platform_limited:
+            reporter.warning(_compact_transport.advisory_message(compact_transport))
+        else:
+            reporter.detail("Compact transport", compact_transport.detail)
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""

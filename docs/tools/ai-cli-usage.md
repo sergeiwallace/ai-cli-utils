@@ -105,8 +105,10 @@ Auto-runs `git pull --rebase --autostash` at session start to keep worktree curr
 wins outright if the machine sets it; with no setting tmux is the default rather than
 an opt-in; a tmux that cannot be used gets one recovery attempt, described below; and
 if it still cannot be used the launch continues in bare mode with a notice naming what
-was lost. It is never fatal — tmux is an enhancement, and a missing enhancement must not
-block a launch. Windows skips the recovery because no native tmux exists there. The
+was lost. A missing tmux is not by itself fatal — tmux is an enhancement, and a missing
+enhancement must not block a launch — but the launch still has to come away with *some*
+way to submit the auto-compact prompt; see "The submission transport is required" below.
+Windows skips the recovery because no native tmux exists there. The
 decision is made **after argument validation and before any worktree is created**, so a
 launch that has to fall back does not leave a worktree behind first.
 
@@ -137,6 +139,40 @@ library reads as unusable instead of `OK`.
 A tmux that runs but answers `tmux -V` in an unexpected shape is reported as
 *unconfirmed*, not unusable, and the launch stays under tmux — losing detach/reattach over
 an unparsed version string would be worse than the fault being guarded against.
+
+**The submission transport is required: tmux OR a harness-owned pty.** A session's
+auto-compact prompt is submitted through the terminal that owns the engine process, and
+a running process's controlling terminal cannot be relocated into one it does not already
+own — so the transport is settled at launch or never. Either satisfies the requirement:
+tmux where tmux hosts the session, and a harness-owned pty on the bare paths. There are three outcomes:
+
+1. **A transport resolves** and the launch proceeds.
+2. **A transport was achievable here and is not available** — `[session] use_pty = false`
+   with no tmux, or a pty that would not allocate. The launch is **refused**, naming what
+   each side failed on, before any worktree, branch or session record exists. A session
+   started without a transport does not fail now, it fails hours later when it fills its
+   context and the harness has no way to compact it.
+3. **No transport is implementable on this platform at all.** `os.openpty` is POSIX-only,
+   so a Windows host without tmux can satisfy neither side however it is configured. This
+   **proceeds**, with one notice naming the upgrade path.
+
+Case 3 does not refuse, and not out of politeness: a condition no in-process action can
+satisfy is not a guard, and refusing would strand `ai c` on every Windows host. What is
+lost there is harness-*driven* compaction (the harness choosing when, so it can
+checkpoint first), not compaction itself — the engine's own auto-compact needs no
+terminal and still applies. tmux runs on Windows under MSYS2/Cygwin/WSL, so the upgrade
+is reachable; a native pseudo-console (ConPTY) would also serve but needs a dependency
+this package does not carry.
+
+Set `[session] use_pty = false` to make tmux the only accepted transport; every bare
+launch is then refused rather than started without a managed compaction path. That is an
+explicit opt-out, so it refuses on every platform, including ones with no pty API.
+
+The pty carries the submission and nothing else. Your own terminal stays the terminal, so
+resize (SIGWINCH) and Ctrl-C keep reaching the engine from there, and the pty path
+deliberately provides **no detach/reattach and no scrollback** — those are what tmux is
+for, and reimplementing them here would be reimplementing a multiplexer badly. `TIOCSTI`
+is never used: it is privileged and denied on macOS.
 
 **Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
 and conversation resume all still apply — tmux is not a prerequisite for any of them.
