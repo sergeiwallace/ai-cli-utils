@@ -75,8 +75,14 @@ export:
     # mirror converges and the divergence gates keep seeing fresh JSONL. Set here rather
     # than via BD_EXPORT_GIT_ADD because an env var reaches only the callers we wired.
     git-add: false
-sync:
-    remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
+# sync.remote DELETED (AIH-gv9j2 option C, decided by Sergei 2026-10-08; implemented by AIH-3ptlf).
+# The Dolt sync remote lives in the shared server's per-database `dolt_remotes` table, which is
+# machine-local by construction, and its URL is per-machine (git+https with a keyring PAT on acn-mac,
+# a git+ssh host alias on sem-kg-ec2), so a tracked value here is wrong on every machine but one.
+# ai-harness's install.sh provisions the remote on each host from `git remote get-url origin`
+# (idempotent, via `call dolt_remote('add', ...)` on the live server); bd_dolt_publish.py pushes with
+# --no-adopt and works with this key absent. Never run `bd dolt remote add` to "fix" this: it
+# rewrites AND commits this key.
 # Shared Dolt server mode (AIH-1yh2c, 2026-09-16). FLEET POLICY, deliberately tracked:
 # every machine runs its Beads store on the shared Dolt server, so this key carries the
 # same value everywhere. Nothing machine-specific belongs in this file or metadata.json --
