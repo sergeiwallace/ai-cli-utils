@@ -2,12 +2,16 @@
 
 A session's auto-compact prompt is submitted through the terminal that owns the
 engine process, and a running process's controlling terminal cannot be relocated
-afterwards (AIH-jouu3, AIH-gbtr6) -- so the transport is settled at launch or never.
-Before this, a launch on a machine with neither started anyway and went silent hours
-later when the session filled its context, which is the whole of AIH-loaa9.
+afterwards -- so the transport is settled at launch or never. Before this, a launch
+on a machine with neither started anyway and went silent hours later when the session
+filled its context.
 
-The two-way control is at the real entry point: with neither transport the launch is
-refused and nothing is created; with either one it proceeds and execs.
+Three outcomes, and the third is what keeps this portable. A transport resolves and
+the launch proceeds; a transport was achievable here and withheld, so the launch is
+refused and nothing is created; or no transport is implementable on this platform at
+all, which proceeds with one notice. ``os.openpty`` is POSIX-only, so refusing the
+third case would strand ``ai c`` on every Windows host and reintroduce the resolved
+P1 ``AI-CLI-vs8``.
 """
 
 import ast
@@ -20,6 +24,12 @@ import pytest
 
 from ai_cli import compact_transport
 from ai_cli.main import _do_session_launch
+
+_NO_PTY_PLATFORM = compact_transport.PtyProbe(
+    False,
+    "this platform has no os.openpty(), so a pty cannot be allocated (it is POSIX-only)",
+    platform_supported=False,
+)
 
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "openpty"),
@@ -174,6 +184,91 @@ def test_given_tmux_hosts_the_session_when_the_transport_resolves_then_the_pty_i
     assert probes == [], "resolving to tmux must not allocate a pty"
 
 
+# --- a platform with no pty API proceeds; it is not refused ---------------------
+
+
+def test_given_a_platform_with_no_pty_api_when_ai_c_launches_bare_then_it_proceeds(real_repo, tmp_path, monkeypatch):
+    """The portability control: Windows has no os.openpty() and no tmux.
+
+    Refusing here would strand the launch route on every Windows host and
+    reintroduce the resolved P1 AI-CLI-vs8. Nothing the operator can do in-process
+    satisfies the condition, so it is not a guard -- it degrades and says so.
+    """
+    with patch("ai_cli.compact_transport.probe_pty", return_value=_NO_PTY_PLATFORM):
+        code, execs = _run_launch(real_repo, tmp_path, monkeypatch)
+
+    assert code == 0, "a platform that cannot host any transport must not be refused"
+    assert len(execs) == 1, "the launch must still reach the engine"
+
+
+def test_given_a_platform_with_no_pty_api_when_ai_c_launches_then_it_says_so_once(
+    real_repo, tmp_path, monkeypatch, capsys
+):
+    """Degraded, not silent: silent degradation is the shape being eliminated."""
+    with patch("ai_cli.compact_transport.probe_pty", return_value=_NO_PTY_PLATFORM):
+        _run_launch(real_repo, tmp_path, monkeypatch)
+    output = capsys.readouterr().err
+
+    assert "harness cannot drive compaction" in output
+    assert "auto-compact still applies" in output, "must not claim the session is uncompactable"
+    assert "Install tmux" in output, "must name the upgrade path"
+
+
+def test_given_no_pty_api_when_the_transport_resolves_then_it_is_platform_limited_not_a_refusal():
+    resolved = compact_transport.resolve(
+        tmux_usable=False,
+        tmux_detail="no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)",
+        config={},
+        probe=lambda: _NO_PTY_PLATFORM,
+    )
+
+    assert not resolved.usable
+    assert resolved.platform_limited
+    assert not resolved.must_refuse, "a condition no in-process action can satisfy must not refuse"
+
+
+def test_given_an_explicit_opt_out_on_a_pty_less_platform_when_resolved_then_it_still_refuses():
+    """`use_pty = false` is the operator asking for tmux-or-nothing, not a platform gap."""
+    probes: list[int] = []
+
+    def spy_probe():
+        probes.append(1)
+        return _NO_PTY_PLATFORM
+
+    resolved = compact_transport.resolve(
+        tmux_usable=False,
+        tmux_detail="--bare requested",
+        config={"session": {"use_pty": False}},
+        probe=spy_probe,
+    )
+
+    assert resolved.must_refuse
+    assert not resolved.platform_limited
+    assert probes == [], "an explicit opt-out must not allocate a pty to find out"
+
+
+def test_given_no_openpty_when_the_probe_runs_then_it_reports_the_platform_unsupported():
+    """The platform split is derived from the missing API, not hardcoded per-OS.
+
+    A stand-in for ``os`` that simply lacks ``openpty`` is the honest simulation of
+    Windows here: that absence, not ``sys.platform``, is what the probe reads.
+    """
+
+    class _OsWithoutOpenpty:
+        """Everything the probe touches except the one API Windows does not have."""
+
+        setsid = staticmethod(lambda: None)
+
+    assert not hasattr(_OsWithoutOpenpty, "openpty"), "the stand-in must actually lack openpty"
+
+    with patch("ai_cli.compact_transport.os", _OsWithoutOpenpty):
+        result = compact_transport.probe_pty()
+
+    assert not result.usable
+    assert not result.platform_supported
+    assert "os.openpty()" in result.detail
+
+
 # --- the probe reads, it does not trust its own write ---------------------------
 
 
@@ -229,7 +324,7 @@ def test_given_the_pty_probe_when_allocation_fails_then_the_errno_is_reported():
 
 
 def test_given_the_submission_transport_when_implemented_then_tiocsti_is_never_used():
-    """TIOCSTI is denied on this platform and requires privilege (AIH-loaa9).
+    """TIOCSTI is denied on this platform and requires privilege.
 
     Read from the AST rather than by grepping the text: the module's own docstring
     explains why TIOCSTI is excluded, and a text search would match that explanation

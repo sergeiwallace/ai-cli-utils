@@ -144,15 +144,29 @@ an unparsed version string would be worse than the fault being guarded against.
 auto-compact prompt is submitted through the terminal that owns the engine process, and
 a running process's controlling terminal cannot be relocated into one it does not already
 own — so the transport is settled at launch or never. Either satisfies the requirement:
-tmux where tmux hosts the session, and a harness-owned pty on the bare paths. When
-neither can be established the launch is **refused**, naming what each side failed on,
-before any worktree, branch or session record exists. That is deliberate: a session
-started without a transport does not fail now, it fails hours later when it fills its
-context and has no way to compact.
+tmux where tmux hosts the session, and a harness-owned pty on the bare paths. There are three outcomes:
+
+1. **A transport resolves** and the launch proceeds.
+2. **A transport was achievable here and is not available** — `[session] use_pty = false`
+   with no tmux, or a pty that would not allocate. The launch is **refused**, naming what
+   each side failed on, before any worktree, branch or session record exists. A session
+   started without a transport does not fail now, it fails hours later when it fills its
+   context and the harness has no way to compact it.
+3. **No transport is implementable on this platform at all.** `os.openpty` is POSIX-only,
+   so a Windows host without tmux can satisfy neither side however it is configured. This
+   **proceeds**, with one notice naming the upgrade path.
+
+Case 3 does not refuse, and not out of politeness: a condition no in-process action can
+satisfy is not a guard, and refusing would strand `ai c` on every Windows host. What is
+lost there is harness-*driven* compaction (the harness choosing when, so it can
+checkpoint first), not compaction itself — the engine's own auto-compact needs no
+terminal and still applies. tmux runs on Windows under MSYS2/Cygwin/WSL, so the upgrade
+is reachable; a native pseudo-console (ConPTY) would also serve but needs a dependency
+this package does not carry.
 
 Set `[session] use_pty = false` to make tmux the only accepted transport; every bare
-launch is then refused rather than started uncompactable. Pty allocation is POSIX-only,
-so a Windows host without tmux is refused.
+launch is then refused rather than started without a managed compaction path. That is an
+explicit opt-out, so it refuses on every platform, including ones with no pty API.
 
 The pty carries the submission and nothing else. Your own terminal stays the terminal, so
 resize (SIGWINCH) and Ctrl-C keep reaching the engine from there, and the pty path

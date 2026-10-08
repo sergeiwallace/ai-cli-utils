@@ -2760,17 +2760,24 @@ def _do_session_launch(
 
     # The session's auto-compact prompt is submitted through the terminal that owns
     # the engine process, and a running process's controlling terminal cannot be
-    # relocated afterwards -- so the transport is settled HERE, at launch, or never
-    # (AIH-jouu3, AIH-gbtr6). Either one satisfies it: tmux where tmux hosts the
-    # session, a harness-owned pty on the bare paths.
+    # relocated afterwards -- so the transport is settled HERE, at launch, or never.
+    # Either one satisfies it: tmux where tmux hosts the session, a harness-owned pty
+    # on the bare paths.
     #
-    # Neither is a REFUSAL, by Sergei's decision on AIH-loaa9: a session that cannot
-    # be compacted does not fail now, it fails silently hours later when it fills its
-    # context, which is the entire defect. So this exits rather than warning, and it
-    # sits above every write this launch performs -- the dry-run exit, workspace
-    # trust, the worktree, the session record -- for the same reason the tmux version
-    # refusal above does: once any of those exist, refusing has already cost the
-    # operator cleanup.
+    # A transport that was achievable here and is not available is a REFUSAL, and it
+    # exits rather than warning: a session the harness cannot compact does not fail
+    # now, it fails hours later when it fills its context, which is the defect this
+    # exists to kill. The refusal sits above every write this launch performs -- the
+    # dry-run exit, workspace trust, the worktree, the session record -- for the same
+    # reason the tmux version refusal above does: once any of those exist, refusing
+    # has already cost the operator cleanup.
+    #
+    # A platform with NO pty API is the separate third case and must not refuse.
+    # `os.openpty` is POSIX-only, so a Windows host without tmux can satisfy neither
+    # side however it is configured, and refusing would strand the launch route there
+    # -- reintroducing the resolved P1 AI-CLI-vs8 and breaking the launcher's contract
+    # that a missing enhancement degrades a launch rather than blocking it. It still
+    # says so once, because silent degradation is the shape being eliminated.
     #
     # A remote dispatch is excluded, like the tmux probes above it: the terminal that
     # will own the session is on the REMOTE host, so a local probe would be a verdict
@@ -2781,10 +2788,13 @@ def _do_session_launch(
             tmux_detail=tmux_reason,
             config=config,
         )
-        if not compact_transport.usable:
+        if compact_transport.must_refuse:
             reporter.error(_compact_transport.refusal_message(compact_transport))
             sys.exit(1)
-        reporter.detail("Compact transport", compact_transport.detail)
+        if compact_transport.platform_limited:
+            reporter.warning(_compact_transport.advisory_message(compact_transport))
+        else:
+            reporter.detail("Compact transport", compact_transport.detail)
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""

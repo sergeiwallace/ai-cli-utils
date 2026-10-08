@@ -9,17 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai c` now requires a way to submit its auto-compact prompt and **refuses at
-  launch** when it can get neither, naming what each side failed on. Either
-  transport satisfies it: tmux where tmux hosts the session, or a harness-owned
-  pty on the bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable
-  tmux). The transport is fixed by the terminal that owns the engine process and
-  cannot be added later, so a session started without one did not fail at launch
-  — it failed silently hours later with a full context and no way to compact. The
-  refusal sits above every write the launch performs, so nothing is left to clean
-  up. `[session] use_pty = false` makes tmux the only accepted transport. The pty
-  carries the submission only: your terminal stays the terminal, and the pty path
-  provides no detach/reattach and no scrollback.
+- `ai c` now requires a way to submit its auto-compact prompt. Either transport
+  satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
+  bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The
+  transport is fixed by the terminal that owns the engine process and cannot be
+  added later, so a session started without one did not fail at launch — it failed
+  hours later with a full context and no managed way to compact.
+
+  Three outcomes. A transport resolves and the launch proceeds. A transport was
+  achievable here and is not available (`[session] use_pty = false` with no tmux,
+  or a pty that will not allocate) and the launch is **refused**, naming what each
+  side failed on, above every write it would perform, so nothing is left to clean
+  up. Or no transport is implementable on the platform at all — `os.openpty` is
+  POSIX-only, so a Windows host without tmux can satisfy neither side — and the
+  launch **proceeds** with one notice naming the upgrade path. Windows is not
+  refused: a condition no in-process action can satisfy is not a guard, and what is
+  lost there is harness-*driven* compaction, not compaction itself, since the
+  engine's own auto-compact needs no terminal.
+
+  The pty carries the submission only: your terminal stays the terminal, and the
+  pty path provides no detach/reattach and no scrollback.
 
 - `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
