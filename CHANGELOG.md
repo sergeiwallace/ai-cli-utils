@@ -192,7 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, and `Path("") / "ai-cli-utils"` is the **relative** path
   `ai-cli-utils`, so everything built on it resolved against the cwd. Measured
   side by side with `XDG_STATE_HOME=""`, the old code produced
-  `ai-cli-utils/remote-ps-cache.json` and the new code produces an absolute path
+  `ai-cli-utils/remote-ps-cache.json` <!-- gitignored-path-ok: named as the WRONG location the bug wrote to, not cited as evidence; nothing is meant to resolve there --> and the new code produces an absolute path
   under `$HOME`. One site made this more than misplaced clutter: the CC
   update-staging reaper *deletes* under its resolved path, so a relative base
   aimed a delete at `<cwd>/claude/staging`. All seven base-directory reads now go
