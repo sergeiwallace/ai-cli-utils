@@ -351,6 +351,15 @@ stale_session_timeout = 15
 ## sessions surviving a dropped SSH connection, and remote access from another
 ## device. If you only run sessions in a local terminal, false is fine.
 # use_tmux = true
+## Allow a harness-owned pty to carry the auto-compact prompt injection on the bare
+## paths? Default true. A session's submission transport is fixed by the terminal
+## that owns it and cannot be added later, so `ai c` requires EITHER tmux or a pty
+## and refuses at launch when it can get neither. Setting this false makes tmux the
+## only accepted transport: every bare launch is then refused rather than started
+## without a way to compact. The pty carries the submission only -- your own
+## terminal stays the terminal, and the pty path gives you no detach/reattach and no
+## scrollback (install tmux for those).
+# use_pty = true
 
 [stale_session_reaper]
 ## The independently started reaper evaluates candidates in observe mode by default.

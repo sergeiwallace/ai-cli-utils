@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c` now requires a way to submit its auto-compact prompt and **refuses at
+  launch** when it can get neither, naming what each side failed on. Either
+  transport satisfies it: tmux where tmux hosts the session, or a harness-owned
+  pty on the bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable
+  tmux). The transport is fixed by the terminal that owns the engine process and
+  cannot be added later, so a session started without one did not fail at launch
+  — it failed silently hours later with a full context and no way to compact. The
+  refusal sits above every write the launch performs, so nothing is left to clean
+  up. `[session] use_pty = false` makes tmux the only accepted transport. The pty
+  carries the submission only: your terminal stays the terminal, and the pty path
+  provides no detach/reattach and no scrollback.
+
 - `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
   shorthand. It resolves the chief home from `-k/--machine-key` (default

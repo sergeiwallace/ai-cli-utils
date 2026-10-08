@@ -22,6 +22,7 @@ import click
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
 from . import chief_of_staff as _chief_of_staff
+from . import compact_transport as _compact_transport
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
@@ -2756,6 +2757,34 @@ def _do_session_launch(
                 "    - launch with -b/--bare, which uses no tmux at all."
             )
             sys.exit(1)
+
+    # The session's auto-compact prompt is submitted through the terminal that owns
+    # the engine process, and a running process's controlling terminal cannot be
+    # relocated afterwards -- so the transport is settled HERE, at launch, or never
+    # (AIH-jouu3, AIH-gbtr6). Either one satisfies it: tmux where tmux hosts the
+    # session, a harness-owned pty on the bare paths.
+    #
+    # Neither is a REFUSAL, by Sergei's decision on AIH-loaa9: a session that cannot
+    # be compacted does not fail now, it fails silently hours later when it fills its
+    # context, which is the entire defect. So this exits rather than warning, and it
+    # sits above every write this launch performs -- the dry-run exit, workspace
+    # trust, the worktree, the session record -- for the same reason the tmux version
+    # refusal above does: once any of those exist, refusing has already cost the
+    # operator cleanup.
+    #
+    # A remote dispatch is excluded, like the tmux probes above it: the terminal that
+    # will own the session is on the REMOTE host, so a local probe would be a verdict
+    # about the wrong machine.
+    if not remote:
+        compact_transport = _compact_transport.resolve(
+            tmux_usable=not bare,
+            tmux_detail=tmux_reason,
+            config=config,
+        )
+        if not compact_transport.usable:
+            reporter.error(_compact_transport.refusal_message(compact_transport))
+            sys.exit(1)
+        reporter.detail("Compact transport", compact_transport.detail)
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
