@@ -591,6 +591,22 @@ def get_engine_script(
       printf '%s\n' "ai-cli: Ctrl+C again within 3s to exit" >&2
     }}
     trap '_child_record_int' INT
+    # Input modes an agent arms (SGR mouse tracking, modifyOtherKeys, the kitty
+    # keyboard stack, bracketed paste, focus events) are PANE state in tmux and
+    # outlive the process that armed them. An agent that dies without disarming
+    # them, along with a raw-mode line discipline, hands the pane to its
+    # replacement in that state: mouse motion arrives as `CSI < 35;x;y M` text and
+    # Ctrl+C as `CSI 27;5;99 ~` bytes instead of SIGINT, so neither the new agent
+    # nor this wrapper's double Ctrl+C exit can be reached (AI-CLI-9la0). Reset on
+    # both sides of every agent, then drop the reports already queued.
+    _reset_agent_terminal() {{
+      [[ -t 0 ]] || return 0
+      if [[ -t 1 ]]; then
+        printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1005l\\033[?1006l\\033[?1015l\\033[>4m\\033[<u\\033[?2004l\\033[?1004l\\033[?1049l\\033[?25h'
+      fi
+      stty sane 2>/dev/null || true
+      python3 -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
+    }}
     run_agent() {{
       agent_attempted=true
       if ! $agent_direnv_initialized; then
@@ -616,6 +632,7 @@ def get_engine_script(
       # reopening the controlling terminal works for both while preserving the
       # background PID used for signal forwarding. Prefer the resolved device:
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
+      _reset_agent_terminal
       if [[ -t 0 && -r /dev/tty ]]; then
         _agent_tty=$(tty 2>/dev/null)
         if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
@@ -630,6 +647,7 @@ def get_engine_script(
       wait "$active_agent_pid"
       agent_exit_code=$?
       active_agent_pid=""
+      _reset_agent_terminal
       if [[ -f "$_child_int_exit_file" ]]; then
         exit 77
       fi
