@@ -34,10 +34,10 @@ What genuinely needs a human, and why each one cannot be scripted:
 2. **Layouts** — `~/.config/iterm2/layouts/*.yaml` are *your* definitions. Their absence is the
    supported zero-config state: `ai c N` applies `<name>.yaml` if it exists and launches
    normally if it does not. Nothing ships a default, because a pane arrangement is a preference.
-3. **A window arrangement** — `assets/iterm2-arrangements/*.iterm2arrangement` is imported
-   through the iTerm2 GUI (Window → Save/Restore Window Arrangement). Check the file for
-   machine-identifying content before importing or copying one; an arrangement captures whatever
-   was on screen, including hostnames.
+3. **A window arrangement** — saved and restored through the iTerm2 GUI (Window →
+   Save/Restore Window Arrangement). This package ships none: an arrangement is personal, and a
+   saved one captures every session's screen and scrollback, so never commit one to a public
+   repository.
 4. **The ntfy → iTerm2 bridge** — needs a working ntfy/NATS path first; see the section below.
 
 ## Essential Configuration
