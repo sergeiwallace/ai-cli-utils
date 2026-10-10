@@ -317,9 +317,11 @@ def test_given_a_selection_rule_when_restoring_then_a_filtered_session_is_skippe
     assert "c-r-myproject-2: restored (new tab)" in out
 
 
-def test_given_confirm_when_the_user_declines_then_nothing_is_restored(machine):
+def test_given_confirm_when_the_user_declines_then_neither_iterm2_nor_the_registry_changes(machine):
     machine.config("confirm = true")
-    machine.sessions(_record("c-myproject-1"))
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9"))
+    before = machine.registry.read_bytes()
 
     code, out, _ = _restore(stdin="n\n")
 
@@ -327,6 +329,21 @@ def test_given_confirm_when_the_user_declines_then_nothing_is_restored(machine):
     assert "c-myproject-1: would restore (new tab): cd /work/myproject && ai c 1" in out
     assert "restore cancelled; nothing changed" in out
     assert machine.system.typed() == []
+    assert machine.registry.read_bytes() == before
+
+
+def test_given_confirm_when_the_user_accepts_then_dead_records_are_pruned_and_sessions_restored(machine):
+    machine.config("confirm = true")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9"))
+
+    code, out, _ = _restore(stdin="y\n")
+
+    assert code == 0
+    assert "c-myproject-1: restored (new tab)" in out
+    assert [r["name"] for r in json.loads(machine.registry.read_text(encoding="utf-8"))["sessions"]] == [
+        "c-myproject-1"
+    ]
 
 
 def test_given_confirm_when_run_at_startup_then_it_never_asks(machine):
@@ -481,7 +498,7 @@ def test_given_iterm2_stops_answering_when_restoring_then_it_stops_reports_the_r
     code, out, _ = _restore()
 
     assert code == 1
-    assert "stopped: iTerm2 did not answer in 10s; the registry is unchanged" in out
+    assert "stopped: iTerm2 did not answer in 10s; the sessions below stay in the registry" in out
     assert "c-myproject-1: not restored (iTerm2 did not answer in 10s)" in out
     assert "c-myproject-2: not restored (iTerm2 did not answer in 10s)" in out
     assert not [line for line in _lines(out) if ": restored (" in line]

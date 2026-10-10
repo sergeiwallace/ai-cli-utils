@@ -361,8 +361,9 @@ def restore(
             echo(f"restore disabled by {disabled}")
         return 0
     settings = config["restore"]
+    previewing = dry_run or (settings["confirm"] and not startup)
 
-    dead = [_Entry(r, "dead", reason) for r, reason in _session_registry.prune(dry_run=dry_run)]
+    dead = [_Entry(r, "dead", reason) for r, reason in _session_registry.prune(dry_run=previewing)]
     dead_ids = {e.record.get("id") for e in dead}
     live = [r for r in _session_registry.load_registry()["sessions"] if r.get("id") not in dead_ids]
     if not live and not dead:
@@ -374,7 +375,7 @@ def restore(
     name = arrangement if arrangement is not None else settings["default_arrangement"]
     wants_arrangement = bool(name) and "arrangement" in settings["mode"]
 
-    if dry_run or (settings["confirm"] and not startup):
+    if previewing:
         entries, already_open = _placed(selected, settings, startup, echo)
         if wants_arrangement:
             echo(_arrangement_plan(name, settings, startup))
@@ -387,6 +388,7 @@ def restore(
         if not ask(f"Restore {len(entries)} session(s)?"):
             echo("restore cancelled; nothing changed")
             return 0
+        _session_registry.prune()
 
     if wants_arrangement and not startup:
         echo(_restore_arrangement(name, settings["use_it2"]))
@@ -401,7 +403,7 @@ def restore(
                     entry.detail = "new tab"
                 _write_into_new_tab(text)
         except Iterm2NotAnswering as exc:
-            echo(f"stopped: {exc}; the registry is unchanged")
+            echo(f"stopped: {exc}; the sessions below stay in the registry")
             for remaining in entries[index:]:
                 echo(f"{remaining.name}: not restored ({exc})")
             return 1
