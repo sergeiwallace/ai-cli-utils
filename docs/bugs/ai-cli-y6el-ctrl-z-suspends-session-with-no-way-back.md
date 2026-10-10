@@ -248,6 +248,18 @@ before anyone can press Ctrl+Z.
 (`['INT', 'READ=hello'] == ['READ=hello', 'INT']`). The test sent SIGINT once the events file
 existed, but `printf ... >>` creates the file before writing the line. It now waits for the line.
 
+**Measurements**, all at `a732a00` with `-n 4` on a 16-CPU host under CPU pressure
+(`/proc/pressure/cpu` `some avg60` about 39%):
+
+| Run | Result |
+|---|---|
+| full suite, 3 in a row | `3457 passed, 4 skipped` each time |
+| `tests/test_ctrl_z_suspend.py`, 20 in a loop alongside the full runs | `6 passed` each time |
+| the 2139 + Ctrl+Z + probe suites under a pty (`script -qec`) | `65 passed` |
+
+The new negative controls were red on `9e27683`'s code: the stale-reading test ended a process
+in state `S`, and the own-group test left the stopped process resumed (`S`) instead of ending it.
+
 <!-- /doc:region name="round_2" -->
 
 <!-- doc:region name="fix_log" kind="append_only" -->
