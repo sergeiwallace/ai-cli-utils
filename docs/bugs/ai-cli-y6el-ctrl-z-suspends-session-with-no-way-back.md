@@ -24,6 +24,7 @@ suite frozen red before the fix.
 - [Fix](#fix)
 - [Verification](#verification)
 - [Relationship to AI-CLI-2139](#relationship-to-ai-cli-2139)
+- [Round 2: liveness races under load](#round-2-liveness-races-under-load)
 - [Fix Log](#fix-log)
 
 <!-- doc:region name="summary" kind="replaceable" -->
@@ -141,7 +142,7 @@ no-op: the session flashes its suspend notice and comes back within about a seco
   picker and `ai attach` continue any pane foreground group of the session that is stopped,
   before attaching. This covers a session that is found already stopped: one started from an
   older template, or one whose watchdog died.
-- **Reconciled with AI-CLI-2139** (`main._resume_suspended_cc_session`). See below.
+- **Reconciled with AI-CLI-2139** (`main._settle_stopped_cc_session`). See below.
 
 Cost: one Python process per session, waking once a second to read `/proc/<pgid>/stat` and make
 one `tcgetpgrp` call. On a host without `/proc` (macOS) the state read is one `ps` per second.
@@ -186,6 +187,69 @@ reconciliation test reproduced that.
 
 <!-- /doc:region name="relationship_2139" -->
 
+<!-- doc:region name="round_2" kind="replaceable" -->
+
+## Round 2: liveness races under load
+
+A full-suite run with `-n 4` at `9e27683` failed one test, the 2139 reconciliation one:
+`left in state 'Z', not resumed`, with the launcher reporting
+`pid 2333083 was present in state T, not gone. Ended it and everything it wrapped`. It passed
+serially. Ending a stopped session is this bug's outage, so it was treated as a product defect
+until proved otherwise. Three separate races turned up.
+
+**1. The fixture stopped its process before the process had a terminal (fixture).**
+`pty.fork()` returns in the parent before the child has called `setsid()` and taken the pty
+as its controlling terminal. The fixture sent SIGSTOP as soon as `/proc` showed the child
+running, which is immediately. A fork-then-stop probe of that exact pattern, 300 attempts on an
+idle host:
+
+| Child at the moment it stopped | Count |
+|---|---|
+| leads its own terminal's foreground (what the test meant) | 116 |
+| still in the parent's group, no terminal (`tty_nr 0`, `tpgid -1`) | 163 |
+| own session, no terminal yet | 21 |
+
+A stopped process with no terminal is 2139's case, so the launcher ending it was correct for
+the process the fixture actually built. Serial runs passed because the 50 ms poll usually let
+the child finish `login_tty` first. The fixture now waits until the child has exec'd `sleep` and
+its group is its terminal's foreground.
+
+**2. The decision was made on a stale reading (product).** The liveness walk classifies a
+record's process as stopped, and the Ctrl+Z path then read the process again to decide between
+resume and reclaim. The in-pane watchdog continues a suspended group on its own schedule. When
+it won that gap, the resume check saw a running process and declined, and the fallback
+reclaimed it: frozen red as
+`test_given_suspended_session_continued_after_liveness_classified_it_when_checked_then_not_ended`,
+which at `9e27683` printed `pid ... was present in state S, not gone. Ended it`. The fix
+(`main._settle_stopped_cc_session`) reads the state once more, from the same probe that
+classified it, and that one reading decides: running means in use, unreadable means left alone,
+and only a process still stopped and not suspended in place is reclaimed. The group and the
+terminal's foreground it is paired with do not change across a Ctrl+Z or a SIGCONT (nothing in
+the pane has job control to move them), so the decision still describes one moment. Using the
+probe rather than `/proc` directly keeps macOS and Windows on 2139's existing path.
+
+**3. A launcher run from a terminal "resumed" a process in its own group (product).** Run from
+an interactive shell, the launcher's process group is its terminal's foreground, and so is any
+process it forked. `test_given_stopped_session_in_the_callers_own_process_group_...` in the 2139
+suite therefore failed from a terminal (`resumed process group N`) and passed under xdist,
+whose workers have no terminal. Ctrl+Z stops the whole group, and the launcher reading this is
+in that group and running, so a stopped process there was not suspended in place. It is
+excluded and reclaimed. Frozen as
+`test_given_stopped_session_in_a_terminal_launchers_own_group_when_checked_then_reclaimed_not_resumed`,
+which runs its launcher on a pty of its own so the result does not depend on the runner.
+
+**What cannot be told apart.** A process stopped before it has attached to any terminal looks
+exactly like one with no terminal at all (`tty_nr 0`), so it is still reclaimed as 2139's case.
+In an `ai c` pane that state does not occur: Claude Code is in the pane's foreground group long
+before anyone can press Ctrl+Z.
+
+**Also fixed on the way.** The first verification run failed an unrelated test,
+`test_stale_session_reaper.py::..._child_receives_signal_and_stdin[bash]`
+(`['INT', 'READ=hello'] == ['READ=hello', 'INT']`). The test sent SIGINT once the events file
+existed, but `printf ... >>` creates the file before writing the line. It now waits for the line.
+
+<!-- /doc:region name="round_2" -->
+
 <!-- doc:region name="fix_log" kind="append_only" -->
 
 ## Fix Log
@@ -193,6 +257,9 @@ reconciliation test reproduced that.
 | Date | Commit | Notes |
 |------|--------|-------|
 | 2026-10-10 | `e3952dd` | Frozen regression suite committed red (4 failed). |
-| 2026-10-10 | see branch | In-pane watchdog, re-attach resume, 2139 reconciliation; frozen suite 4/4. |
+| 2026-10-10 | `9e27683` | In-pane watchdog, re-attach resume, 2139 reconciliation; frozen suite 4/4. |
+| 2026-10-10 | `5caba0a` | Round 2: fixture race fixed; stale-reading and own-group races frozen red. |
+| 2026-10-10 | `7733ab1` | Round 2: decide on one fresh reading; exclude the caller's own group. |
+| 2026-10-10 | `b104ba1` | Pre-existing reaper-test race (SIGINT on file existence) fixed. |
 
 <!-- /doc:region name="fix_log" -->

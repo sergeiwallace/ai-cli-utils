@@ -118,7 +118,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   foreground group within about a second, and `ai c <n>`, `ai c -r`, `ai attach` and
   the `ai ls` picker resume a stopped pane before attaching. A session process stopped
   in its own terminal is now resumed instead of ended by the AI-CLI-2139
-  reclamation, which still ends a stopped process with no terminal attached.
+  reclamation, which still ends a stopped process with no terminal attached. That
+  decision is made on a fresh reading of the process, so a session the watchdog has
+  just resumed is never ended on a stale one.
 
 - **An auto-restarted agent could be handed a pane that turned every key into
   escape text.** Claude Code arms SGR mouse tracking and modifyOtherKeys, and tmux
