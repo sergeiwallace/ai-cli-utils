@@ -269,6 +269,18 @@ def test_given_session_whose_pane_foreground_is_stopped_when_ai_c_reattaches_the
 # --- AC-3 reconciled with AI-CLI-2139: resume what is suspended, reclaim what is orphaned ---
 
 
+def _leads_its_terminal_foreground(pid: int) -> bool:
+    """True once ``pid`` has exec'd ``sleep`` and its group is its own terminal's foreground."""
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    comm = line.partition("(")[2].rpartition(")")[0]
+    fields = line.rpartition(")")[2].split()
+    pgrp, tty_nr, tpgid = int(fields[2]), int(fields[4]), int(fields[5])
+    return comm == "sleep" and tty_nr != 0 and pgrp == pid == tpgid
+
+
 @pytest.fixture
 def suspended_in_terminal():
     """A real process that leads its own terminal's foreground group, then is stopped.
@@ -288,7 +300,11 @@ def suspended_in_terminal():
             os.execvp("sleep", ["sleep", "300"])
         spawned.append(pid)
         masters.append(master)
-        assert _wait_for(lambda: _state(pid) in {"S", "R"}), "the terminal sleeper never started"
+        # Waiting for "running" is not enough: forkpty returns in the parent before the
+        # child has called setsid() and taken its terminal, and a child stopped in that
+        # gap really does have no terminal -- 2139's case, not this one. Measured: 184
+        # of 300 fork-then-stop attempts landed in the gap with no load at all.
+        assert _wait_for(lambda: _leads_its_terminal_foreground(pid)), "the sleeper never took its terminal"
         os.kill(pid, signal.SIGSTOP)
         assert _wait_for(lambda: _state(pid) == "T"), "the terminal sleeper never stopped"
         return pid
@@ -333,3 +349,121 @@ def test_given_session_record_for_a_process_suspended_in_its_terminal_when_liven
     assert _wait_for(lambda: _state(pid) in {"S", "R"}, timeout=5), f"left in state {_state(pid)!r}, not resumed"
     assert verdict == (True, pid), "a resumed session is in use and must still block a second launch"
     assert (sessions / f"{pid}.json").exists(), "a resumed session's record must not be pruned"
+
+
+@pytest.mark.skipif(not _HAS_PROC, reason="the CC session registry records procStart from /proc")
+def test_given_suspended_session_continued_after_liveness_classified_it_when_checked_then_not_ended(
+    tmp_path, monkeypatch, suspended_in_terminal
+):
+    """The in-pane watchdog and a launcher's liveness check run independently of each other.
+
+    If the watchdog continues the group after the launcher has classified the
+    process as stopped, the launcher is holding a stale reading. It must decide on
+    what the process is now, which is running and in use, and never end it. The
+    interleaving is forced by continuing the real group the moment the real
+    classification returns; nothing about the process or its terminal is faked.
+    """
+    from ai_cli.main import _cc_session_is_live
+    from ai_cli.process_probe import ProcfsProbe
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "dddddddd-0000-4000-8000-0000000000d5"
+    pid = suspended_in_terminal()
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    record = {"pid": pid, "sessionId": session_id, "procStart": _proc_start(pid), "name": "ctrlz-5"}
+    (sessions / f"{pid}.json").write_text(json.dumps(record))
+
+    classify = ProcfsProbe.is_abandoned
+
+    def classify_then_watchdog_wins(self, target: int) -> bool:
+        stopped = classify(self, target)
+        if stopped and target == pid:
+            os.killpg(pid, signal.SIGCONT)
+            assert _wait_for(lambda: _state(pid) in {"S", "R"}, timeout=5), "the watchdog stand-in did not resume it"
+        return stopped
+
+    monkeypatch.setattr(ProcfsProbe, "is_abandoned", classify_then_watchdog_wins)
+
+    verdict = _cc_session_is_live(Path(f"/x/{session_id}.jsonl"))
+
+    assert _state(pid) in {"S", "R"}, f"a session the watchdog had already resumed was ended (state {_state(pid)!r})"
+    assert verdict == (True, pid), "a running session is in use and must still block a second launch"
+    assert (sessions / f"{pid}.json").exists(), "a running session's record must not be pruned"
+
+
+_LAUNCHER_IN_A_TERMINAL = """
+import json, os, signal, sys, time
+from pathlib import Path
+from ai_cli.main import _cc_session_is_live
+
+def stat(pid):
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+    except OSError:
+        return None
+
+me = stat(os.getpid())
+leader = os.fork()
+if leader == 0:
+    time.sleep(300)
+    os._exit(0)
+os.kill(leader, signal.SIGSTOP)
+while stat(leader)[0] != "T":
+    time.sleep(0.01)
+sessions = Path.home() / ".claude" / "sessions"
+sessions.mkdir(parents=True)
+session_id = sys.argv[1]
+(sessions / f"{leader}.json").write_text(json.dumps(
+    {"pid": leader, "sessionId": session_id, "procStart": int(stat(leader)[19]), "name": "myproject-6"}))
+_cc_session_is_live(Path(f"/x/{session_id}.jsonl"))
+deadline = time.monotonic() + 15
+while time.monotonic() < deadline and stat(leader) is not None and stat(leader)[0] not in "ZX":
+    time.sleep(0.05)
+left = stat(leader)
+print("RESULT " + json.dumps({
+    "launcher_leads_terminal_foreground": int(me[4]) != 0 and int(me[2]) == int(me[5]),
+    "left_state": left[0] if left else None,
+}), flush=True)
+os.kill(leader, signal.SIGKILL)
+"""
+
+
+@pytest.mark.skipif(not _HAS_PROC, reason="the CC session registry records procStart from /proc")
+def test_given_stopped_session_in_a_terminal_launchers_own_group_when_checked_then_reclaimed_not_resumed(tmp_path):
+    """A launcher run from a terminal shares its foreground group with anything it forked.
+
+    A process stopped in that group sits in its terminal's foreground, but it was
+    not suspended there: Ctrl+Z stops the whole group, and the launcher reading
+    this is in the same group and running. So it is 2139's stopped process and is
+    reclaimed, not "resumed". The launcher here runs in a real terminal of its own,
+    so the answer does not depend on whether the test runner has one (before this,
+    the 2139 own-group test passed under xdist and failed from an interactive shell).
+    """
+    import pty
+
+    pid, master = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = str(tmp_path)
+        os.execv(
+            sys.executable, [sys.executable, "-c", _LAUNCHER_IN_A_TERMINAL, "eeeeeeee-0000-4000-8000-0000000000e6"]
+        )
+    output = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output += chunk
+    finally:
+        os.close(master)
+        os.waitpid(pid, 0)
+    text = output.decode(errors="replace")
+    result_line = next((line for line in text.splitlines() if line.startswith("RESULT ")), None)
+    assert result_line is not None, text
+    result = json.loads(result_line.removeprefix("RESULT "))
+    assert result["launcher_leads_terminal_foreground"], f"precondition: the launcher must own its terminal: {text}"
+    assert result["left_state"] in {None, "Z", "X"}, f"stopped process left in state {result['left_state']!r}: {text}"
