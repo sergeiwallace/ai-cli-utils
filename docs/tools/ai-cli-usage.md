@@ -29,6 +29,7 @@ source: internal
   - [ai cc-usage](#ai-cc-usage)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
+  - [ai iterm2 sessions](#ai-iterm2-sessions)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
@@ -465,6 +466,14 @@ ai color <palette-name|#hex>
 ```text
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
+
+### ai iterm2 sessions
+
+```bash
+ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
+```
+
+Lists the sessions `ai c` has recorded, local and remote, with the iTerm2 window, tab and pane each was last seen in. `--prune` removes records whose session is proved gone (`--probe-remote` also asks each remote host over ssh), `--refresh` re-reads every position in one AppleScript pass (macOS), and `--json` prints the registry as stored. The registry, its lifecycle and the `[iterm2.persistence]` switches are described in [iTerm2 session persistence](../iterm2-persistence.md).
 
 ### ai vpn-watch
 
