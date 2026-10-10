@@ -54,6 +54,60 @@ PROMOTE_CHILD_SNIPPET = (
     "os.killpg(pgid, signal.SIGCONT)"
 )
 
+# The child body's Ctrl+Z watchdog, run as `python3 -c SUSPEND_WATCHDOG_SNIPPET <child-body-pid>` (AI-CLI-y6el).
+#
+# Claude Code reads Ctrl+Z in raw mode, restores the terminal, prints "Run `fg` to bring Claude Code
+# back", and sends SIGTSTP to its own process group. Here that group is the pane's terminal foreground
+# group: this child body, its watcher, the agent and every MCP server, all of which stop. Nothing in
+# the pane has job control (the supervisor is a non-interactive `set +m` shell, and `wait` in such a
+# shell does not return for a stopped child), so `fg` is only text echoed into a line buffer no
+# running process reads. Measured: the only way out was to kill the session, losing every background
+# agent and shell it owned.
+#
+# So the stop is undone from outside the stopped group: once a second, if the terminal's foreground
+# group is stopped, continue it. Claude Code repaints on SIGCONT. The watchdog moves itself into its
+# own process group first, or the same SIGTSTP would stop it too, and stays in this session, because
+# tcgetpgrp only answers for the caller's own controlling terminal (so it opens /dev/tty, never the
+# stdin zsh may have redirected). It ends with its owner, checked by pid rather than parentage: where
+# `python3` is a `uv run` shim the parent is uv, not the child body.
+#
+# It must not contain a single quote: the template wraps it in one.
+SUSPEND_WATCHDOG_SNIPPET = """\
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+os.setpgid(0, 0)
+owner = int(sys.argv[1])
+procfs = os.path.exists("/proc/self/stat")
+def state(pid):
+    if procfs:
+        try:
+            with open("/proc/%d/stat" % pid, "rb") as stat:
+                return stat.read().rpartition(b")")[2].split()[0].decode()
+        except (OSError, IndexError):
+            return None
+    return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()[:1]
+try:
+    tty = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+except OSError:
+    sys.exit(0)
+while True:
+    try:
+        os.kill(owner, 0)
+        group = os.tcgetpgrp(tty)
+    except OSError:
+        break
+    if group > 0 and group != os.getpgrp() and state(group) == "T":
+        try:
+            os.killpg(group, signal.SIGCONT)
+        except OSError:
+            pass
+        else:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            sys.stderr.write("%s ai-cli: resumed process group %d, which Ctrl+Z had stopped\\n" % (stamp, group))
+            sys.stderr.flush()
+    time.sleep(1)
+"""
+
 
 def resolve_session_shell() -> str | None:
     """Absolute path of the shell that should interpret the session script.
@@ -884,7 +938,15 @@ def get_engine_script(
     # (bash treats it as a harmless error). `2>/dev/null` hid the message and did
     # nothing about the signal. watcher_pid is legitimately empty both before a
     # watcher starts and after the branch above stops one and resets it.
-    trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    _suspend_watchdog_pid=""
+    trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
+    # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
+    # reload carries it into a running session at its next agent restart.
+    if [[ -t 0 ]]; then
+      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
+      _suspend_watchdog_pid=$!
+    fi
 
     agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do

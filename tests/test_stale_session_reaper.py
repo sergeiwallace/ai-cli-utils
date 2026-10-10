@@ -2104,6 +2104,12 @@ fi
     process.stdin.write("hello\n")
     process.stdin.flush()
     _wait_for_path(events, process)
+    # The `>>` redirection creates the file before printf writes to it, so existence
+    # alone let the SIGINT land in between and its trap line come first. Wait for
+    # the line itself.
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+    while time.monotonic() < deadline and "READ=hello" not in events.read_text(encoding="utf-8"):
+        time.sleep(0.02)
     os.killpg(process.pid, signal.SIGINT)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

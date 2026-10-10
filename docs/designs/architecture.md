@@ -54,7 +54,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
 | `process_manager.py` | Circus daemon bootstrap and quota-watch lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
-| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals |
+| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals; its Ctrl+Z watchdog (`SUSPEND_WATCHDOG_SNIPPET`) continues a stopped pane foreground group, since the pane has no job-control shell to run `fg` |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
@@ -74,6 +74,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `session_adopt.py` | Adopts an externally started Claude Code session into a managed session slot |
 | `session_audit.py` | Surveys titled Claude Code sessions and identifies sessions that cannot be resumed by `ai c` |
 | `stale_session_reaper.py` | Fail-closed stale tmux session evaluation and explicit reaping |
+| `suspended_session.py` | Launcher-side resume of a session Ctrl+Z left stopped: continues a pane foreground group before re-attach, and tells a process suspended in its own terminal (resumed) from AI-CLI-2139's abandoned one (reclaimed) |
 | `trust.py` | Claude Code workspace-trust registration and backfill |
 | `workspace.py` | Workspace-wide git pull/rebase operations across repositories and worktrees |
 | `data/statusline-command.sh` | Shell script deployed by `ai update`; called by the iTerm2 statusline |

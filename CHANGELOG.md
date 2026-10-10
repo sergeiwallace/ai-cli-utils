@@ -110,6 +110,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An accidental Ctrl+Z froze an `ai c` session with no way back** (AI-CLI-y6el).
+  Claude Code stops its whole process group on Ctrl+Z and says to run `fg`, but an
+  `ai c` pane has no job-control shell to run it, so nothing typed into the pane
+  could ever resume it, and the only way out was a kill that lost every background
+  agent and shell. Each session now runs a small watchdog that continues a stopped
+  foreground group within about a second, and `ai c <n>`, `ai c -r`, `ai attach` and
+  the `ai ls` picker resume a stopped pane before attaching. A session process stopped
+  in its own terminal is now resumed instead of ended by the AI-CLI-2139
+  reclamation, which still ends a stopped process with no terminal attached. That
+  decision is made on a fresh reading of the process, so a session the watchdog has
+  just resumed is never ended on a stale one.
+
 - **An auto-restarted agent could be handed a pane that turned every key into
   escape text.** Claude Code arms SGR mouse tracking and modifyOtherKeys, and tmux
   keeps both as pane state after the process exits. When an agent died without
