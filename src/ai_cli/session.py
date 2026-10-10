@@ -968,6 +968,51 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _remove_stale_slot_registrations(repo_root: Path, wt_dir: Path, branch: str) -> None:
+    """Drop the stale registrations that belong to this slot, and no others.
+
+    A repo-wide ``git worktree prune`` dropped every registration whose directory
+    was missing, with its index and HEAD, including other slots'. Only an entry git
+    itself marks ``prunable``, whose directory is gone, and which sits at this slot's
+    path or holds this slot's branch is removed. ``git worktree remove`` without
+    ``--force`` is the targeted form: on a missing directory it deletes nothing on
+    disk and drops just that one admin entry, and it still refuses a locked one.
+    An unreadable listing removes nothing.
+    """
+    try:
+        res = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=_git_env(),
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if res.returncode != 0 or not isinstance(res.stdout, str):
+        return
+    target = wt_dir.resolve()
+    for record in res.stdout.split("\n\n"):
+        lines = record.splitlines()
+        path_line = next((line for line in lines if line.startswith("worktree ")), None)
+        if path_line is None or not any(line.startswith("prunable") for line in lines):
+            continue
+        path = Path(path_line[len("worktree ") :].strip())
+        if os.path.lexists(path):
+            continue
+        if path.resolve() != target and f"branch refs/heads/{branch}" not in lines:
+            continue
+        subprocess.run(
+            ["git", "worktree", "remove", str(path)],
+            capture_output=True,
+            cwd=repo_root,
+            env=_git_env(),
+            check=False,
+        )
+
+
 def _worktree_holding_branch(repo_root: Path, branch: str) -> Path | None:
     """Return the worktree that has ``branch`` checked out, or None.
 
@@ -1164,12 +1209,10 @@ def create_worktree(
     # a launcher can report "created" only for the git command it actually won.
     try:
         with portalocker.Lock(str(lock_path), mode="a", timeout=20):
-            # Verify it is still registered as a valid worktree; prune stale entries first.
-            # Compare filesystem identity too: on a case-insensitive filesystem, a
-            # differently-cased prefix can spell the same live checkout.
-            subprocess.run(
-                ["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False
-            )
+            # Verify it is still registered as a valid worktree; clear this slot's own
+            # stale entry first. Compare filesystem identity too: on a case-insensitive
+            # filesystem, a differently-cased prefix can spell the same live checkout.
+            _remove_stale_slot_registrations(repo_root, wt_dir, f"wt-{ai_name}")
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if registered is not None:
                 branch = _current_branch(registered)

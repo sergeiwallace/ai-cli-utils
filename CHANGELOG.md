@@ -122,6 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision is made on a fresh reading of the process, so a session the watchdog has
   just resumed is never ended on a stale one.
 
+- `ai c` no longer prunes every stale worktree registration in the repository on
+  launch. It removes only this slot's own stale entry (one git marks `prunable`,
+  whose directory is gone, at the slot's path or holding its `wt-<name>` branch),
+  so another slot's registration, with its index and HEAD, survives. An
+  unreadable worktree listing removes nothing.
+
 - `ai copier-update` no longer destroys the temp worktree a conflicted or
   rejected run left for manual resolution. The pre-clean at the start of each
   repo's update now removes a leftover only when it is provably disposable (a
