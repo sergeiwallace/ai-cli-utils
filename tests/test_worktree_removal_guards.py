@@ -93,6 +93,16 @@ def _registered(repo: Path) -> str:
     return _git("worktree", "list", "--porcelain", cwd=repo).stdout
 
 
+def _is_registered(repo: Path, path: Path) -> bool:
+    """Compare parsed, resolved paths: git prints ``D:/...`` where ``str(path)`` gives ``D:\\...``."""
+    listed = {
+        Path(line[len("worktree ") :]).resolve()
+        for line in _registered(repo).splitlines()
+        if line.startswith("worktree ")
+    }
+    return path.resolve() in listed
+
+
 def test_given_leftover_with_uncommitted_edit_when_copier_update_runs_then_it_is_kept_and_reported(project, capsys):
     wt = _leftover(project)
     (wt / "tracked.txt").write_text("<<<<<<< a human is resolving this\n")
@@ -174,7 +184,7 @@ def test_given_clean_leftover_at_base_when_copier_update_runs_then_it_is_cleared
     assert rc == 0
     assert "kept" not in capsys.readouterr().out.lower()
     assert not wt.exists(), "a nochange run tears its own worktree down"
-    assert "copier-update" not in _registered(project)
+    assert not _is_registered(project, wt)
 
 
 def test_given_leftover_commit_since_pushed_elsewhere_when_copier_update_runs_then_it_is_cleared(project, tmp_path):
@@ -205,7 +215,7 @@ def test_given_leftover_registered_with_missing_dir_when_copier_update_runs_then
 
     rc, calls = _run_update(project)
 
-    assert str(wt) in _registered(project), "the registration (and its index) must survive"
+    assert _is_registered(project, wt), "the registration (and its index) must survive"
     assert calls == []
     out = capsys.readouterr().out
     assert str(wt) in out
@@ -292,7 +302,7 @@ def test_given_another_slots_stale_registration_when_ai_c_launches_then_it_survi
     slot = create_worktree("session-1")
 
     assert slot == repo / ".worktrees" / "session-1"
-    assert f"worktree {other}\n" in _registered(repo), "another slot's registration must not be pruned"
+    assert _is_registered(repo, other), "another slot's registration must not be pruned"
 
 
 def test_given_this_slots_stale_registration_when_ai_c_launches_then_only_it_is_cleared(repo):
@@ -304,9 +314,8 @@ def test_given_this_slots_stale_registration_when_ai_c_launches_then_only_it_is_
 
     assert slot == repo / ".worktrees" / "session-1"
     assert slot.is_dir()
-    listing = _registered(repo)
-    assert f"worktree {slot}\n" in listing
-    assert f"worktree {other}\n" in listing
+    assert _is_registered(repo, slot)
+    assert _is_registered(repo, other)
 
 
 def test_given_this_slots_branch_held_by_stale_registration_elsewhere_when_ai_c_launches_then_it_is_cleared(repo):
@@ -317,9 +326,8 @@ def test_given_this_slots_branch_held_by_stale_registration_elsewhere_when_ai_c_
     slot = create_worktree("session-1")
 
     assert slot == repo / ".worktrees" / "session-1"
-    listing = _registered(repo)
-    assert f"worktree {stale}\n" not in listing
-    assert f"worktree {other}\n" in listing
+    assert not _is_registered(repo, stale)
+    assert _is_registered(repo, other)
 
 
 def test_given_worktree_listing_fails_when_ai_c_launches_then_no_registration_is_removed(repo):
@@ -340,4 +348,4 @@ def test_given_worktree_listing_fails_when_ai_c_launches_then_no_registration_is
             create_worktree("session-1")
 
     assert removals == []
-    assert "session-1" in _registered(repo)
+    assert _is_registered(repo, repo / ".worktrees" / "session-1")
