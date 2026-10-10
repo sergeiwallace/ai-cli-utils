@@ -442,12 +442,12 @@ def test_given_stopped_session_in_a_terminal_launchers_own_group_when_checked_th
     """
     import pty
 
+    # Built before the fork: the child of a multi-threaded runner should do nothing but exec.
+    argv = [sys.executable, "-c", _LAUNCHER_IN_A_TERMINAL, "eeeeeeee-0000-4000-8000-0000000000e6"]
+    env = {**os.environ, "HOME": str(tmp_path)}
     pid, master = pty.fork()
     if pid == 0:
-        os.environ["HOME"] = str(tmp_path)
-        os.execv(
-            sys.executable, [sys.executable, "-c", _LAUNCHER_IN_A_TERMINAL, "eeeeeeee-0000-4000-8000-0000000000e6"]
-        )
+        os.execve(sys.executable, argv, env)
     output = b""
     try:
         while True:
