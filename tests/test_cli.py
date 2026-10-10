@@ -1019,11 +1019,15 @@ class TestCliResumePath:
                 with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.resolve_session", return_value="c-session-1"):
-                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                with pytest.raises(SystemExit):
-                                    cli()
+                            # Re-attaching resumes a pane Ctrl+Z left stopped (AI-CLI-y6el);
+                            # that probe drives tmux, which this unit test must not reach.
+                            with patch("ai_cli.main._resume_suspended_panes") as mock_resume:
+                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                    with pytest.raises(SystemExit):
+                                        cli()
                             assert mock_exec.call_args[0][0] == "tmux"
                             assert "attach-session" in mock_exec.call_args[0][1]
+                            mock_resume.assert_called_once_with("c-session-1")
 
     def test_cli_when_resume_and_no_session_then_exits_1(self, capsys):
         with patch("sys.argv", ["ai", "c", "-r", "nonexistent"]):

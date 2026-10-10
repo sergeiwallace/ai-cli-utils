@@ -28,9 +28,10 @@ So: exiting is two steps, not one. Exit, then **verify the process is gone**.
 Use `/exit`, or Ctrl-D at an empty prompt. Let the session close itself so its shutdown work
 (transcript flush, worktree state, cleanup traps) runs.
 
-Do **not** suspend the session with Ctrl-Z when you mean to leave it. A suspended process is
-exactly the stopped state this procedure exists to catch: nothing resumes it, nothing reaps it,
-and it keeps its session name reserved.
+Ctrl-Z does not exit. In an `ai c` session it does not even suspend for long: Claude Code says
+"Run `fg` to bring Claude Code back", but an `ai c` pane has no job-control shell, so `fg` and
+every other key would go nowhere. The session's watchdog resumes it within about a second
+instead. See [Recovering from an accidental Ctrl-Z](#recovering-from-an-accidental-ctrl-z).
 
 ### 2. Verify the process is gone — by absence, not by a return code
 
@@ -66,7 +67,8 @@ ps -o pid=,stat=,args= -p <pid>
 ### 4. End an abandoned process — or just relaunch
 
 The simplest route is to relaunch the session: `ai c <n>` detects a recorded process that is
-present but not running, ends it and its process group, prunes the stale registry record, prints
+present but not running and no longer owns its terminal (a Ctrl-Z'd session that still does is
+resumed instead, see below), ends it and its process group, prunes the stale registry record, prints
 what it found and what it did, and then resumes the session. That is the intended path, and it
 is why this normally needs no manual step.
 
@@ -96,6 +98,28 @@ signal the pid alone (`kill -TERM "$pid"; kill -CONT "$pid"`).
 gone. Deleting a record whose process is still alive hides a live session from every tool that
 reads the registry, which is a worse failure than the one you were fixing.
 
+## Recovering from an accidental Ctrl-Z
+
+In an `ai c` session there is **no key to type**: wait a second and the session comes back by
+itself, the same process with every background agent and shell intact. Do not kill it.
+
+If a pane is still frozen after a few seconds (a session started before this watchdog existed,
+or one whose watchdog has died), run `ai c <n>` for it from any other terminal. Re-attaching
+continues a stopped pane and prints `ai-cli: '<session>' was suspended (Ctrl+Z); resumed its
+process group <pgid>.` `ai attach <session>` and `ai c -r` do the same. By hand, continue the
+pane's foreground group:
+
+```bash
+pane_pid=$(tmux display-message -p -t <session> '#{pane_pid}')
+tpgid=$(ps -o tpgid= -p "$pane_pid" | tr -d ' ')
+ps -o stat= -p "$tpgid"     # a leading T = stopped
+kill -CONT -"$tpgid"
+```
+
+A stopped process that still owns its terminal's foreground is a suspended session, not an
+abandoned one, so step 4 above never ends it: the launcher resumes it and keeps treating the
+name as in use. Bug record: [Ctrl+Z suspends an `ai c` session](../bugs/ai-cli-y6el-ctrl-z-suspends-session-with-no-way-back.md).
+
 ## Platform note
 
 The stopped-state detection reads `/proc/<pid>/stat`, so the automatic reclamation in step 4
@@ -107,3 +131,4 @@ and step 4's manual escalation are the whole procedure. Do the check with
 ## Related
 
 - [Bug record: exiting a session can leave its process stopped, not dead](../bugs/ai-cli-2139-session-exit-leaves-stopped-process.md)
+- [Bug record: Ctrl+Z suspends an `ai c` session and no key resumes it](../bugs/ai-cli-y6el-ctrl-z-suspends-session-with-no-way-back.md)

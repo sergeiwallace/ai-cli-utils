@@ -1,6 +1,6 @@
 """Ctrl+Z in an ``ai c`` session must not leave it frozen with no way back (AI-CLI-y6el).
 
-Measured on sem-kg-ec2 against a throwaway ``ai c`` session (see
+Measured on a Linux host against a throwaway ``ai c`` session (see
 docs/bugs/ai-cli-y6el-ctrl-z-suspends-session-with-no-way-back.md): Claude Code
 reads Ctrl+Z in raw mode, restores the terminal, prints "Run `fg` to bring Claude
 Code back", and sends SIGTSTP to its own process group. That group is the pane's
