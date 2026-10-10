@@ -6,10 +6,10 @@
 enabled = true
 
 [iterm2.tab_title]
-## Include type symbol (* for CC, ✦ for Gemini) in tab and pane titles
-show_type_symbol = true
+## Include type symbol (* for CC, ✦ for Gemini, π for Pi) in tab and pane titles
+show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
-show_status_symbol = true
+show_status_symbol = false
 
 [iterm2.color]
 ## Set tab/pane background color on session launch
@@ -21,7 +21,9 @@ collision_avoidance = true
 [iterm2.palette]
 ## Named tab background colors available for auto-rotation.
 ## Add your own entries — they are included in the rotation pool.
-## For each custom color, add a matching entry in [iterm2.color_schemes] below.
+## Icon tint is auto-derived from each tab color via HSL color theory.
+##
+## Standard colors:
 red         = "#e74c3c"
 orange      = "#e67e22"
 yellow      = "#f0b429"
@@ -32,23 +34,53 @@ blue        = "#1e88e5"
 purple      = "#5e35b1"
 pink        = "#d81b60"
 cyan        = "#00acc1"
+##
+## Extended palette:
 deep_orange = "#ff5722"
 lime        = "#7cb342"
-# indigo    = "#4f46e5"
-# rose      = "#f43f5e"
+indigo      = "#3949ab"
+rose        = "#f43f5e"
+amber       = "#ffb300"
+emerald     = "#059669"
+violet      = "#7c3aed"
+slate       = "#475569"
+warm_white  = "#f5f0e8"
+charcoal    = "#2d2d2d"
+##
+## Add custom colors below. Use any name; hex value required.
+## Example: my_color = "#a259ff"
 
-[iterm2.color_schemes]
-## Maps each palette color to [claude_profile, gemini_profile].
-## Pairings chosen by color theory: warm tab → cool icon, cool tab → warm icon.
-red         = ["ClaudeCode-White",  "GeminiCLI-White"]
-orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
-green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
-teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
-sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
-purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
-cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
-deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+[iterm2.defaults]
+## Settings applied to all sessions unless overridden by a project or session block.
+## tab_color: palette color name (e.g. "blue") or omit for auto-rotation
+## icon_color: hex tint for the Claude/Gemini icon; omit to auto-derive from tab_color
+# tab_color  = "blue"
+# icon_color = "#ffffff"
+
+## Per-project overrides — add one block per project directory name.
+## Falls back to lowest free slot if the preferred color is already occupied.
+##
+## [iterm2.projects.myproject]
+## tab_color  = "teal"
+## icon_color = "#ffd700"   # omit to auto-derive
+
+## Per-session overrides — add one block per tmux session name.
+##
+## [iterm2.sessions."c-myapp-1"]
+## tab_color  = "purple"
+## icon_color = "#ffd700"   # omit to auto-derive
+
+[iterm2.base_profiles]
+## Parent iTerm2 profile each generated session profile inherits from.
+## Default (recommended): every session parents to the built-in "Default" and
+## the generator supplies name/color/icon/keymap/Semantic-History itself — no
+## hand-maintained profiles required. Override with the exact name of a custom
+## profile only if you deliberately want a session type to inherit from it.
+cc         = "Default"
+gemini     = "Default"
+pi         = "Default"
+codex      = "Default"
+shell      = "Default"
+chrome     = "Default"
+caffeinate = "Default"
+ssh        = "Default"
