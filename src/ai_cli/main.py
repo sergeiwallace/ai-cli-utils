@@ -30,6 +30,7 @@ from . import launch_reporter as _launch_reporter
 from . import native_deps as _native_deps
 from . import process_manager as _process_manager
 from . import session as _session
+from . import session_registry as _session_registry
 from . import session_script as _session_script
 from . import stale_session_reaper as _stale_session_reaper
 from . import tmux_ownership as _tmux_ownership
@@ -2477,6 +2478,51 @@ def _exit_missing_project_dir(project_name: str, project_dir: Path, source: str,
     sys.exit(1)
 
 
+def _relaunch_argv(name: str, session_name: str) -> list[str]:
+    """The ``ai`` command line that brings back this exact session when re-run.
+
+    The launching command line as typed, unless re-running it would allocate a fresh
+    slot: with no name, or a name without a trailing index (``ai c foo`` takes the next
+    free ``foo-N``), the resolved session name is added or put in its place, and
+    ``build_session_name`` maps a full session name back to the same slot.
+    """
+    argv = ["ai", *sys.argv[1:]]
+    if name and (name.isdigit() or name.rsplit("-", 1)[-1].isdigit()):
+        return argv
+    if name and name in argv[1:]:
+        argv[len(argv) - 1 - argv[::-1].index(name)] = session_name
+        return argv
+    return [*argv, session_name]
+
+
+def _track_launch(
+    reporter: LaunchReporter, *, kind: str, name: str, session_name: str, remote: dict | None = None
+) -> str | None:
+    """Record this launch in the iTerm2 session registry and return the record id.
+
+    Bookkeeping never changes a launch's outcome: any failure (a bad config key, an
+    unwritable state directory, an iTerm2 that does not answer) is one warning, and the
+    session launches untracked.
+    """
+    try:
+        outcome = _session_registry.track_launch(
+            kind=kind, name=session_name, relaunch_argv=_relaunch_argv(name, session_name), remote=remote
+        )
+    except Exception as exc:
+        reporter.warning(f"iTerm2 session registry not updated ({exc}); launching anyway")
+        return None
+    if outcome.warning:
+        reporter.warning(f"iTerm2 session registry: {outcome.warning}")
+    return outcome.record_id
+
+
+def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
+    try:
+        _session_registry.mark_ended(record_id)
+    except Exception as exc:
+        reporter.warning(f"iTerm2 session registry not updated after a clean exit ({exc})")
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -2565,9 +2611,11 @@ def _do_session_launch(
     is_remote = _session._resolve_is_remote(is_remote)
 
     remote_cfg: dict | None = None
+    remote_alias = ""
     if remote:
         try:
             remote_cfg = _config.get_remote_machine(config, remote_machine)
+            remote_alias = _config.resolve_remote_machine_alias(config, remote_machine)
         except _config.RemoteMachineError as exc:
             reporter.error(str(exc))
             sys.exit(1)
@@ -2976,6 +3024,9 @@ def _do_session_launch(
         )
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
+        # The ssh_config/remote-machine ALIAS only: the registry never holds a host, user
+        # or key path, and relaunch_argv is the `ai` command line, never this ssh one.
+        _registry_remote = {"alias": remote_alias, "session": _r_ai_name}
         ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
 
         diagnostic_ssh_args = ["ssh", "-T", "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -3003,6 +3054,7 @@ def _do_session_launch(
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
+            _track_launch(reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote)
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
@@ -3026,6 +3078,9 @@ def _do_session_launch(
                 reporter.error("remote SSH transport is not supported on Windows")
                 sys.exit(1)
             reporter.phase("Transport").outcome("SSH selected")
+            _record_id = _track_launch(
+                reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
+            )
             reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
             # Runs the session in-process instead of `execvp`-ing a shell (AI-CLI-w679).
             # The exec was what made this path fragile: it replaced this process, so a
@@ -3040,6 +3095,7 @@ def _do_session_launch(
                     _cleanup_cmd,
                     max_attempts=remote_cfg.get("reconnect_attempts", 10),
                     backoff_seconds=remote_cfg.get("reconnect_backoff", 2.0),
+                    on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
                 )
             )
 
@@ -3134,6 +3190,8 @@ def _do_session_launch(
         if not session:
             reporter.error(f"no matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session)
         reporter.handoff(engine=_engine_display_name(engine), session=session)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
@@ -3404,6 +3462,8 @@ def _do_session_launch(
         # must be optional (an absent one made `direnv exec` fail closed at 127).
         _session_shell = _session_shell_or_exit()
         _direnv = _direnv_prefix(target_root)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if engine == "c":
             command = ["claude"]
             if not _is_root():
@@ -3559,6 +3619,8 @@ def _do_session_launch(
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
@@ -3677,6 +3739,8 @@ def _do_session_launch(
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(identity.session_id)
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
 
