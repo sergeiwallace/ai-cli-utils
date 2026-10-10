@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -81,6 +82,7 @@ def run_ssh_with_reconnect(
     max_attempts: int = 10,
     backoff_seconds: float = 2.0,
     max_backoff_seconds: float = 30.0,
+    on_clean_exit: Callable[[], None] | None = None,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -98,6 +100,10 @@ def run_ssh_with_reconnect(
 
     Returns ssh's last exit code. Reconnects are bounded and backed off so a host that is
     genuinely gone produces a handful of attempts rather than an infinite loop.
+
+    ``on_clean_exit`` runs once when ssh exited 0, the one status that means the remote
+    session itself ended. Every other way out (130, a dropped link, giving up) leaves the
+    remote session presumed alive and does not call it.
     """
     attempt = 0
     delay = backoff_seconds
@@ -126,6 +132,8 @@ def run_ssh_with_reconnect(
             )
             time.sleep(delay)
             delay = min(delay * 2, max_backoff_seconds)
+        if returncode == 0 and on_clean_exit is not None:
+            on_clean_exit()
     finally:
         restore_terminal()
         subprocess.run(cleanup_cmd, capture_output=True, check=False)

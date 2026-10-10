@@ -527,6 +527,17 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
     machine. New configurations use ``[remote.machines.<alias>]`` and select a
     default with ``[remote] default``.
     """
+    selected = resolve_remote_machine_alias(config, alias)
+    remote = config.get("remote", {})
+    return remote["machines"][selected] if selected else remote
+
+
+def resolve_remote_machine_alias(config: dict, alias: str = "") -> str:
+    """Return the ``[remote.machines]`` alias a launch with *alias* selects.
+
+    Returns "" for a legacy flat ``[remote]`` table, which has no alias. Raises
+    :class:`RemoteMachineError` exactly when :func:`get_remote_machine` would.
+    """
     remote = config.get("remote", {})
     if not isinstance(remote, dict):
         raise RemoteMachineError("[remote] must be a table")
@@ -537,7 +548,7 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
             raise RemoteMachineError(
                 f"Remote machine '{alias}' is not configured. Configured aliases: none (legacy [remote] is the default)"
             )
-        return remote
+        return ""
     if not isinstance(machines, dict):
         raise RemoteMachineError("[remote.machines] must be a table")
 
@@ -551,7 +562,7 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
             raise RemoteMachineError(f"No default remote machine is configured. Configured aliases: {available}")
     if not isinstance(selected, str) or selected not in machines or not isinstance(machines[selected], dict):
         raise RemoteMachineError(f"Remote machine '{selected}' is not configured. Configured aliases: {available}")
-    return machines[selected]
+    return selected
 
 
 # --- Prefix registry ---
