@@ -43,11 +43,15 @@ _DOCUMENTED_DEFAULTS = {
 
 @pytest.fixture
 def iterm2_toml(tmp_path, monkeypatch):
-    """The iterm2.toml the loader reads, under a per-test XDG config home."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    path = tmp_path / "config" / "ai-cli-utils" / "iterm2.toml"
-    path.parent.mkdir(parents=True)
-    return path
+    """The iterm2.toml the loader reads, under a per-test config dir.
+
+    Patches the loader's directory source rather than ``XDG_CONFIG_HOME``, which
+    ``get_xdg_config_home`` ignores on Windows in favour of ``APPDATA``.
+    """
+    config_dir = tmp_path / "config" / "ai-cli-utils"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setattr("ai_cli.iterm2.get_xdg_config_home", lambda: config_dir)
+    return config_dir / "iterm2.toml"
 
 
 def test_given_shipped_default_config_when_reference_copy_read_then_it_is_identical():
