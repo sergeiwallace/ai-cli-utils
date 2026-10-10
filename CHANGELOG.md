@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai iterm2 sessions --adopt [--dry-run]` records the sessions that were already
+  running before the iTerm2 session registry existed, so `ai iterm2 restore` can bring
+  them back: each local tmux session named `c-<prefix>-<n>` (re-attached with
+  `ai c -p <project> <slot>`) and each running `ai c -R` launcher (re-run with its own
+  command line). A session that already has a record is left alone, a command line that
+  cannot be read or parsed is skipped with its pid and the reason, and tracking switched
+  off is a refusal naming the key. Run it once after installing. See
+  `docs/iterm2-persistence.md`.
+
 - `ai iterm2 restore [--startup] [--dry-run] [--only local|remote] [--arrangement NAME]`
   re-attaches the sessions in the iTerm2 session registry after an iTerm2 restart
   (macOS). It opens the saved arrangement on demand (through iTerm2's `it2` when it

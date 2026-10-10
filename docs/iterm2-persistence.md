@@ -105,7 +105,7 @@ Path: `$XDG_STATE_HOME/ai-cli-utils/iterm2-sessions.json`, which is `~/.local/st
 | `remote` | For remote sessions: `alias` is the `[remote.machines.<alias>]` name from `config.toml` (empty for a legacy single `[remote]` table), and `session` is the remote tmux session. |
 | `iterm2` | The pane: `window`, `tab` and `pane` (0-based) with the iTerm2 `session_uuid`, and the pane's `tty`. `null` when the launch was not inside iTerm2. At launch the position comes from `ITERM_SESSION_ID`; a refresh takes it from iTerm2's window list, front to back. |
 | `launched_at`, `refreshed_at` | UTC timestamps of the launch and of the last time the position was confirmed. |
-| `launcher_pid` | The launching process. Locally it becomes the tmux client; for a remote session it is the process holding the ssh connection. |
+| `launcher_pid` | The launching process. Locally it becomes the tmux client; for a remote session it is the process holding the ssh connection. `null` for a local session recorded by `--adopt`, which has no launcher. |
 | `ended_at` | Set when the remote ssh connection ended with exit status 0, which means the remote session was exited on purpose. |
 
 A record is removed only when its session is proved gone:
@@ -117,6 +117,7 @@ A record is removed only when its session is proved gone:
 
 ```text
 ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
+ai iterm2 sessions -a|--adopt [-d|--dry-run]
 ```
 
 - With no option, lists the recorded sessions.
@@ -126,6 +127,25 @@ ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
 - `-j`, `--json` prints the registry as JSON, unredacted (it is your own file), after any prune or refresh. Status lines go to stderr so stdout stays valid JSON.
 
 Prune runs before refresh when both are given.
+
+### Adopting sessions that predate the registry: `--adopt`
+
+A record is written when `ai c` launches a session, so a session that was already running when you installed this version, or one started some other way than `ai c` (a `tmux new-session` by hand, say), has no record and `ai iterm2 restore` cannot bring it back. `ai iterm2 sessions --adopt` records what is live now. Run it once after installing, and again after starting any session outside `ai c`. It only adds records, so re-running it is harmless; it is a separate option rather than part of `--refresh` so that nothing is ever recorded without you asking.
+
+- **Local sessions:** every tmux session named `c-<prefix>-<n>`. Prefixes and slot names can both contain hyphens, so the name is split against your registered project prefixes rather than by position; the record's `relaunch_argv` is `ai c -p <project> <slot>`, after checking that `-p <project>` resolves back to that prefix. A name that no registered prefix splits, or that more than one splits, is skipped with the reason. A `c-r-` session was launched on this machine by another one, and that machine re-attaches it, so it is skipped too. Other tmux sessions are not candidates.
+- **Remote sessions:** every running `ai c -R` launcher process, matched on its own command line (the ssh process it starts is not a candidate, and neither is any other ssh client). `relaunch_argv` is that command line, `remote.alias` is its `-m` value or your configured default, and `remote.session` is the remote tmux name, derived the way the launcher derives it, when the command line names both `-p` and a numeric slot. Otherwise `remote.session` is `null` and the line says why: the remote host chose the slot, and re-running the command line opens a new remote session rather than re-attaching the old one. `cwd` is the launcher's working directory when it can be read.
+- **Position:** a local session's pane is the one its tmux client is attached to, and a remote session's is the pane of its launcher; both come from one AppleScript pass (macOS). A detached session, or one whose pane iTerm2 does not list, is recorded with `iterm2: null`. If iTerm2 does not answer, sessions are still adopted without positions and `--refresh` fills them in later.
+
+A session that already has a record (same kind and name, or a remote launcher whose own launch was recorded) is left unchanged. A launcher whose command line cannot be read, or that `ai c` itself would not parse, is skipped with its pid and the reason; a command is never guessed. Each candidate gets one line, `adopted`, `already recorded` or `skipped (<reason>)`, and a count line follows:
+
+```text
+adopted c-myproject-1  local  window 0 tab 0 pane 0  relaunch: ai c -p myproject 1
+adopted c-r-myproject-2  remote on devbox  pid 48377  window 0 tab 1 pane 0  relaunch: ai c 2 -R -p myproject
+skipped pid 48410 (argv does not parse as ai c -R (Option '-p' requires an argument.))
+2 adopted, 0 already recorded, 1 skipped
+```
+
+`-d`, `--dry-run` prints the same plan with `would adopt` and writes and creates nothing. The include and exclude rules of `[iterm2.persistence.tracking]` apply exactly as at launch, and with `enabled = false` there (or in `[iterm2.persistence]`) `--adopt` refuses, naming the key. `--adopt` cannot be combined with `--prune`, `--refresh` or `--json`.
 
 ## Restore: `ai iterm2 restore`
 
