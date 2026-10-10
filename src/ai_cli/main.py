@@ -4596,6 +4596,57 @@ def _describe_session_record(record: dict) -> str:
     return f"{record.get('name')}  {record.get('kind')}{host}  {where}  refreshed {record.get('refreshed_at')}{ended}"
 
 
+def _parse_claude_launch_args(args: list[str]) -> dict:
+    """Parse ``ai c`` arguments with ``ai c``'s own option parser; ValueError when they do not parse."""
+    # --help is eager: parsing it prints the help and ends the parse, and no launcher runs with it.
+    if any(arg in ("-h", "--help") for arg in args):
+        raise ValueError("it asks for --help")
+    try:
+        # Not resilient: a launcher argv the real parser rejects (``-p`` with no value)
+        # must surface as unparseable rather than parse as if the option were absent.
+        ctx = cmd_c.make_context("c", list(args))
+    except click.ClickException as exc:
+        raise ValueError(exc.format_message()) from exc
+    return {**ctx.params, "extra_args": list(ctx.args)}
+
+
+def _describe_adopt_line(line: "_session_registry.AdoptLine", dry_run: bool) -> str:
+    if line.verdict == "skipped":
+        return f"skipped {line.label} ({line.reason})"
+    record = line.record or {}
+    verb = "would adopt" if dry_run and line.verdict == "adopted" else line.verdict
+    position = record.get("iterm2")
+    where = _iterm2_restore._where(position) if isinstance(position, dict) else "no iTerm2 position"
+    remote = record.get("remote")
+    kind = f"remote on {remote.get('alias') or 'default remote'}" if isinstance(remote, dict) else "local"
+    pid = f"  pid {record['launcher_pid']}" if record.get("launcher_pid") else ""
+    note = f"  ({line.note})" if line.note else ""
+    relaunch = shlex.join(str(part) for part in record.get("relaunch_argv") or [])
+    return f"{verb} {line.label}  {kind}{pid}  {where}  relaunch: {relaunch}{note}"
+
+
+def _adopt_sessions(dry_run: bool) -> None:
+    try:
+        outcome = _session_registry.adopt(
+            parse_launch=_parse_claude_launch_args, remote_config=_config.load_config(), dry_run=dry_run
+        )
+    except _session_registry.AdoptRefused as exc:
+        raise click.ClickException(f"adopt refused: {exc}") from exc
+    except (_iterm2.PersistenceConfigError, _session_registry.RegistryError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    for note in outcome.notes:
+        click.echo(note)
+    for line in outcome.lines:
+        click.echo(_describe_adopt_line(line, dry_run))
+    adopted = outcome.count("adopted")
+    counts = (
+        f"{adopted} to adopt" if dry_run else f"{adopted} adopted",
+        f"{outcome.count('already recorded')} already recorded",
+        f"{outcome.count('skipped')} skipped",
+    )
+    click.echo(", ".join(counts) + (" (dry run: registry not written)" if dry_run else ""))
+
+
 @cmd_iterm2_group.command("sessions", help="List the sessions recorded for iTerm2 restore; prune or refresh them")
 @click.option("-p", "--prune", is_flag=True, help="Remove records whose session is proved gone")
 @click.option(
@@ -4606,9 +4657,23 @@ def _describe_session_record(record: dict) -> str:
 )
 @click.option("-r", "--refresh", is_flag=True, help="Recompute each record's iTerm2 window/tab/pane (macOS)")
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print the registry as JSON (status lines go to stderr)")
-def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json):
+@click.option(
+    "-a",
+    "--adopt",
+    is_flag=True,
+    help="Record live ai c sessions (local tmux, remote ai c -R launchers) that have no record yet",
+)
+@click.option("-d", "--dry-run", is_flag=True, help="With --adopt, print what would be adopted and write nothing")
+def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run):
     if probe_remote and not prune:
         raise click.UsageError("-P/--probe-remote requires -p/--prune")
+    if dry_run and not adopt:
+        raise click.UsageError("-d/--dry-run requires -a/--adopt")
+    if adopt:
+        if prune or refresh or as_json:
+            raise click.UsageError("-a/--adopt cannot be combined with --prune, --refresh or --json")
+        _adopt_sessions(dry_run)
+        return
     try:
         if prune:
             removed = _session_registry.prune(

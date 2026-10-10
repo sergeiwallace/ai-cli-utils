@@ -27,7 +27,9 @@ from pathlib import Path
 
 import portalocker
 
+from . import config as _config
 from . import iterm2 as _iterm2
+from . import session as _session
 from .config import get_remote_machine, get_xdg_state_home
 
 LOGGER = logging.getLogger(__name__)
@@ -151,6 +153,32 @@ def _not_tracked_because(kind: str, name: str, config: dict) -> str | None:
     return None
 
 
+def _new_record(
+    *,
+    kind: str,
+    name: str,
+    relaunch_argv: list[str],
+    cwd: str | None,
+    remote: dict | None,
+    iterm2: dict | None,
+    launcher_pid: int | None,
+) -> dict:
+    now = _now()
+    return {
+        "id": str(uuid.uuid4()),
+        "kind": kind,
+        "name": name,
+        "relaunch_argv": list(relaunch_argv),
+        "cwd": cwd,
+        "remote": remote,
+        "iterm2": iterm2,
+        "launched_at": now,
+        "refreshed_at": now,
+        "launcher_pid": launcher_pid,
+        "ended_at": None,
+    }
+
+
 def record_launch(
     *,
     kind: str,
@@ -173,20 +201,15 @@ def record_launch(
         LOGGER.debug("session %s not recorded in the iTerm2 session registry: %s", name, reason)
         return None
     position = parse_iterm_session_id(iterm_session_id)
-    now = _now()
-    record = {
-        "id": str(uuid.uuid4()),
-        "kind": kind,
-        "name": name,
-        "relaunch_argv": list(relaunch_argv),
-        "cwd": cwd,
-        "remote": remote,
-        "iterm2": None if position is None else {**position, "tty": tty or None},
-        "launched_at": now,
-        "refreshed_at": now,
-        "launcher_pid": launcher_pid,
-        "ended_at": None,
-    }
+    record = _new_record(
+        kind=kind,
+        name=name,
+        relaunch_argv=relaunch_argv,
+        cwd=cwd,
+        remote=remote,
+        iterm2=None if position is None else {**position, "tty": tty or None},
+        launcher_pid=launcher_pid,
+    )
 
     def upsert(doc: dict) -> bool:
         doc["sessions"] = [r for r in doc["sessions"] if not _same_session(r, record)] + [record]
@@ -415,3 +438,288 @@ def refresh(skip_ids: Iterable[str] = ()) -> RefreshOutcome:
 
     _mutate(apply)
     return RefreshOutcome(len(updated), len(records))
+
+
+# --- Adopting sessions that predate the registry (D-10) ------------------------------
+
+#: Bound on the one ``tmux list-sessions`` call adoption makes.
+ADOPT_TMUX_TIMEOUT_SECONDS = 5
+# A short-flag cluster carrying -R (``-R``, ``-Rr``); ``--remote`` is matched exactly.
+_REMOTE_SHORT_FLAG = re.compile(r"^-[A-Za-z]*R[A-Za-z]*$")
+
+
+class AdoptRefused(RuntimeError):
+    """Configuration turns tracking off, so nothing may be adopted; the message names the key."""
+
+
+@dataclass
+class AdoptLine:
+    """One candidate session and what adoption did (or, in a dry run, would do) with it."""
+
+    verdict: str  # "adopted" | "already recorded" | "skipped"
+    label: str
+    reason: str = ""
+    record: dict | None = None
+    note: str = ""
+    tty: str = ""
+    started: float | None = None  # the launcher process's start time (remote)
+
+
+@dataclass(frozen=True)
+class AdoptOutcome:
+    lines: list[AdoptLine]
+    notes: list[str]
+
+    def count(self, verdict: str) -> int:
+        return sum(1 for line in self.lines if line.verdict == verdict)
+
+
+def _is_slot(value: str) -> bool:
+    """A slot ``build_session_name`` maps back to one existing session: ``N`` or ``<name>-N``."""
+    return bool(value) and (value.isdigit() or value.rsplit("-", 1)[-1].isdigit())
+
+
+def _local_candidate(name: str, projects: dict[str, str]) -> AdoptLine:
+    """Derive the ``ai c -p <project> <slot>`` that re-attaches tmux session ``name``.
+
+    The prefix and the slot are split against the registered prefixes, never by
+    position: prefixes and slot names both contain hyphens, so only a registry match
+    tells them apart, and anything but exactly one match is skipped.
+    """
+    if name.casefold().startswith("c-r-"):
+        return AdoptLine(
+            "skipped", name, "c-r- names a session another machine launched here; that machine re-attaches it"
+        )
+    body = name[2:]
+    matches = [
+        (prefix, project, body[len(prefix) + 1 :])
+        for prefix, project in sorted(projects.items())
+        if body.casefold().startswith(f"{prefix}-") and _is_slot(body[len(prefix) + 1 :])
+    ]
+    if not matches:
+        return AdoptLine("skipped", name, "no registered project prefix splits it into c-<prefix>-<n>")
+    if len(matches) > 1:
+        return AdoptLine("skipped", name, f"ambiguous: prefixes {', '.join(m[0] for m in matches)} all match")
+    prefix, project, slot = matches[0]
+    # The relaunch resolves -p exactly this way; proving it lands on the same prefix is
+    # what makes `ai c -p <project> <slot>` re-attach this session rather than mint one.
+    try:
+        resolved = _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+    except _config.ProjectPrefixError as exc:
+        return AdoptLine("skipped", name, f"-p {project} does not resolve ({exc})")
+    if resolved.casefold() != prefix:
+        return AdoptLine("skipped", name, f"-p {project} resolves to prefix {resolved!r}, not {prefix!r}")
+    record = _new_record(
+        kind="local",
+        name=name,
+        relaunch_argv=["ai", "c", "-p", project, slot],
+        cwd=None,
+        remote=None,
+        iterm2=None,
+        launcher_pid=None,
+    )
+    return AdoptLine("adopted", name, record=record)
+
+
+def _local_candidates() -> tuple[list[AdoptLine], list[str]]:
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ADOPT_TMUX_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], [f"local sessions not scanned (tmux could not be run: {exc})"]
+    # tmux exits 1 with "no server running" when there are no sessions at all.
+    listed = (result.stdout or "").splitlines() if result.returncode == 0 else []
+    names = [n for n in listed if n.startswith("c-")]
+    if not names:
+        return [], []
+    try:
+        projects = _config.registered_project_names()
+    except _config.ProjectPrefixError as exc:
+        return [AdoptLine("skipped", n, f"project registry unreadable ({exc})") for n in names], []
+    return [_local_candidate(n, projects) for n in names], []
+
+
+def _ai_args(cmdline: list[str] | None) -> list[str] | None:
+    """The arguments after ``ai`` when ``cmdline`` runs the ``ai`` entry point, else None."""
+    if not cmdline:
+        return None
+    if Path(cmdline[0]).stem.lower() == "ai":
+        return list(cmdline[1:])
+    if len(cmdline) > 1 and Path(cmdline[0]).stem.lower().startswith("python") and Path(cmdline[1]).stem == "ai":
+        return list(cmdline[2:])
+    return None
+
+
+def _is_remote_launch(args: list[str]) -> bool:
+    return bool(args) and args[0] == "c" and any(a == "--remote" or _REMOTE_SHORT_FLAG.match(a) for a in args[1:])
+
+
+def _remote_session(project: str, slot: str) -> tuple[str | None, str]:
+    """The remote tmux name the launcher derives for an explicit slot, or (None, why not)."""
+    if not project:
+        return None, "no -p in the argv, so the remote prefix came from the launcher's directory"
+    if not slot.isdigit():
+        return None, "no numeric slot in the argv, so the remote host allocated it"
+    try:
+        prefix = _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+    except _config.ProjectPrefixError as exc:
+        return None, f"-p {project} does not resolve ({exc})"
+    return _session._new_session_display_name("c", prefix, slot, True), ""
+
+
+def _remote_candidate(
+    proc, args: list[str], parse_launch: Callable[[list[str]], dict], remote_config: dict
+) -> AdoptLine:
+    pid = proc.info["pid"]
+    label = f"pid {pid}"
+    try:
+        params = parse_launch(args[1:])
+    except ValueError as exc:
+        return AdoptLine("skipped", label, f"argv does not parse as ai c -R ({exc})")
+    if not params.get("remote"):
+        return AdoptLine("skipped", label, "argv does not parse as an ai c -R invocation")
+    extra = params.get("extra_args") or []
+    slot = str(params.get("name") or (extra[0] if extra else ""))
+    try:
+        alias = _config.resolve_remote_machine_alias(remote_config, str(params.get("remote_machine") or ""))
+    except _config.RemoteMachineError as exc:
+        return AdoptLine("skipped", label, f"remote machine does not resolve ({exc})")
+    session, why = _remote_session(str(params.get("project") or ""), slot)
+    relaunch_argv = ["ai", *args]
+    try:
+        cwd = proc.cwd()
+    except Exception:
+        cwd = None
+    record = _new_record(
+        kind="remote",
+        name=session or shlex.join(relaunch_argv),
+        relaunch_argv=relaunch_argv,
+        cwd=cwd,
+        remote={"alias": alias, "session": session},
+        iterm2=None,
+        launcher_pid=pid,
+    )
+    note = "" if session else f"remote session unknown: {why}"
+    return AdoptLine(
+        "adopted",
+        session or label,
+        record=record,
+        note=note,
+        tty=proc.info.get("terminal") or "",
+        started=proc.info.get("create_time"),
+    )
+
+
+def _remote_candidates(parse_launch: Callable[[list[str]], dict], remote_config: dict) -> list[AdoptLine]:
+    """One line per live ``ai c -R`` launcher (never its ssh child), from one process pass."""
+    import psutil
+
+    me = os.getpid()
+    try:
+        user = psutil.Process(me).username()
+    except psutil.Error:
+        user = None
+    lines: list[AdoptLine] = []
+    procs = psutil.process_iter(["pid", "name", "cmdline", "terminal", "username", "create_time"])
+    for proc in sorted(procs, key=lambda p: p.info["pid"]):
+        info = proc.info
+        if info["pid"] == me:
+            continue
+        cmdline = info.get("cmdline")
+        if cmdline is None:
+            # Unreadable argv. Reported only where it could be a launcher (this user's
+            # python or ai process on a terminal), and never guessed at.
+            name = str(info.get("name") or "").lower()
+            if info.get("terminal") and info.get("username") == user and ("python" in name or name == "ai"):
+                lines.append(AdoptLine("skipped", f"pid {info['pid']}", "argv cannot be read"))
+            continue
+        args = _ai_args(cmdline)
+        if args is not None and _is_remote_launch(args):
+            lines.append(_remote_candidate(proc, args, parse_launch, remote_config))
+    return lines
+
+
+def _already_recorded(existing: dict, line: AdoptLine) -> bool:
+    """Same kind and name, or (remote) the same launcher process a launch already recorded.
+
+    A pid match counts only when the record was written after the process started, so a
+    record left by an earlier process that held the same pid is not mistaken for it.
+    """
+    record = line.record or {}
+    if _same_session(existing, record):
+        return True
+    if record.get("kind") != "remote" or existing.get("kind") != "remote" or line.started is None:
+        return False
+    if existing.get("launcher_pid") != record.get("launcher_pid"):
+        return False
+    try:
+        written = datetime.strptime(str(existing.get("launched_at")), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return written.timestamp() + 1 >= line.started
+
+
+def _fill_positions(lines: list[AdoptLine]) -> list[str]:
+    """Set each new record's iTerm2 position from its tty, in one AppleScript pass (macOS)."""
+    for line in lines:
+        if line.record is not None and line.record["kind"] == "local":
+            try:
+                line.tty = _iterm2._iterm_pane_tty_for_tmux_session(line.record["name"])
+            except OSError:
+                line.tty = ""
+    wanted = [line for line in lines if line.record is not None and line.tty]
+    if not wanted or sys.platform != "darwin":
+        return []
+    try:
+        panes = _iterm2._iterm2_panes_by_tty(REFRESH_TIMEOUT_SECONDS)
+    except _iterm2.Iterm2PaneLookupError as exc:
+        return [f"positions not read ({exc}); run `ai iterm2 sessions --refresh` once iTerm2 answers"]
+    for line in wanted:
+        if line.record is not None and line.tty in panes:
+            line.record["iterm2"] = {**panes[line.tty], "tty": line.tty}
+    return []
+
+
+def adopt(*, parse_launch: Callable[[list[str]], dict], remote_config: dict, dry_run: bool = False) -> AdoptOutcome:
+    """Record the live ``ai c`` sessions that have no record yet (they predate the registry).
+
+    Local: every tmux session named ``c-<prefix>-<n>``. Remote: every live process whose
+    argv is an ``ai c -R`` launch, read with ``parse_launch`` (the ``ai c`` option
+    parser). A session already recorded is left unchanged; a candidate whose relaunch
+    command cannot be derived is skipped with the reason. With ``dry_run`` the same
+    verdicts are returned and nothing is written or created.
+    """
+    config = _iterm2.load_persistence_config()
+    if not config["enabled"]:
+        raise AdoptRefused("[iterm2.persistence] enabled = false")
+    if not config["tracking"]["enabled"]:
+        raise AdoptRefused("[iterm2.persistence.tracking] enabled = false")
+    lines, notes = _local_candidates()
+    lines += _remote_candidates(parse_launch, remote_config)
+    for line in lines:
+        if line.record is not None and (rule := _not_tracked_because(line.record["kind"], line.record["name"], config)):
+            line.verdict, line.reason, line.record = "skipped", rule, None
+    notes += _fill_positions(lines)
+
+    def classify(doc: dict) -> bool:
+        added = False
+        for line in lines:
+            if line.record is None:
+                continue
+            if any(_already_recorded(existing, line) for existing in doc["sessions"]):
+                line.verdict = "already recorded"
+            else:
+                doc["sessions"].append(line.record)
+                added = True
+        return added
+
+    if dry_run:
+        classify(load_registry())
+    else:
+        _mutate(classify)
+    return AdoptOutcome(lines, notes)

@@ -1345,3 +1345,25 @@ def get_project_aliases() -> dict:
         add(p.get("task_prefix", "").lower(), p.get("name", ""))
 
     return aliases
+
+
+def registered_project_names() -> dict[str, str]:
+    """Map every registered task prefix (lowercased) to the project name ``-p`` accepts for it.
+
+    Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
+    and includes the root-keyed ``[project_registry]`` table (keyed by the root's
+    directory name, which is what ``resolve_project_prefix_by_name`` matches there).
+    Tier order matches that resolver: the first registry naming a prefix wins. Raises
+    :class:`ProjectPrefixError` when a registry cannot be read.
+    """
+    names: dict[str, str] = {}
+    fleet_path = get_fleet_registry_path()
+    if fleet_path is not None and fleet_path.is_file():
+        for entry in _projects_table_entries(fleet_path).values():
+            names.setdefault(entry["prefix"].lower(), entry["name"])
+    for p in load_project_registry():
+        if p.get("task_prefix") and p.get("name"):
+            names.setdefault(str(p["task_prefix"]).lower(), str(p["name"]))
+    for root, entry in _registry_entries().items():
+        names.setdefault(entry["prefix"].lower(), Path(root).name)
+    return names
