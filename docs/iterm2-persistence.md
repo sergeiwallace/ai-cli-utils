@@ -2,7 +2,7 @@
 
 Quitting iTerm2 does not end an `ai` session. A local session keeps running in its tmux server, and a remote `ai c -R` session keeps running in the remote host's tmux. What a quit loses is the map of which session was in which window, tab and pane. `ai` keeps that map in a small machine-local registry so the sessions can be found and re-attached afterwards.
 
-This page covers the configuration section and the registry. Restoring sessions into iTerm2 is a separate, later step and is not described here yet.
+This page covers the configuration section, the registry, and `ai iterm2 restore`, which brings the recorded sessions back into iTerm2 after a restart.
 
 ## Configuration
 
@@ -35,7 +35,7 @@ A launch that a rule filters out is logged at debug level with the rule that fil
 
 ### `[iterm2.persistence.restore]`
 
-These keys are read and validated now so a typo is caught early. They take effect once restore ships.
+What each key does to a run is described under [Restore keys](#restore-keys).
 
 | Key | Default | Effect |
 |---|---|---|
@@ -126,3 +126,56 @@ ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
 - `-j`, `--json` prints the registry as JSON, unredacted (it is your own file), after any prune or refresh. Status lines go to stderr so stdout stays valid JSON.
 
 Prune runs before refresh when both are given.
+
+## Restore: `ai iterm2 restore`
+
+```text
+ai iterm2 restore [-s|--startup] [-d|--dry-run] [-o|--only local|remote] [-a|--arrangement NAME]
+```
+
+Restore brings the recorded sessions back into iTerm2 after a restart. It types each session's `relaunch_argv` (preceded by `cd <cwd> &&`) into a pane, so a local session re-attaches to its tmux session and a remote one re-dials through the usual `ai c -R` reconnect ladder, which reports a dead remote session on its own. Restore is macOS-only; elsewhere it prints `restore is macOS/iTerm2 only` and exits 0.
+
+- `-s`, `--startup` marks the run as iTerm2's startup hook (see below).
+- `-d`, `--dry-run` prints the plan and changes nothing: the arrangement line, then each session in launch order with the pane it would go to and the exact command, then every skipped or dead record with its reason. It reads iTerm2's pane list and the process table to make the plan, but types nothing, opens nothing and does not prune the registry.
+- `-o`, `--only local|remote` restores one kind only.
+- `-a`, `--arrangement NAME` opens this saved arrangement instead of `default_arrangement`.
+
+### What a run does, in order
+
+1. Reads `[iterm2.persistence]` from `iterm2.toml`. A switched-off run names the key that switched it off and exits 0: `restore disabled by [iterm2.persistence] enabled=false`, `... [iterm2.persistence.restore] enabled=false`, or, on demand, `... on_demand=false`. A `--startup` run with `on_startup = false` exits 0 without output.
+2. Prunes the registry by the liveness rules above (a dry run only reports what it would remove; with `confirm = true` nothing is removed until you answer yes). Remote hosts are not probed, so a remote session is re-dialled unless it ended cleanly.
+3. Selects records: `include_local`/`include_remote`, `--only`, `include`/`exclude`, `remote_hosts`, then `max_sessions` (the most recently refreshed first). Selected sessions launch in their recorded window, tab and pane order, so tabs come back in the order they had.
+4. Opens the arrangement, on demand only, when `mode` includes `"arrangement"` and a name is set (`--arrangement` or `default_arrangement`). With `use_it2 = true` it asks iTerm2's bundled `it2` utility for the saved arrangements and restores the named one; a name that is not saved is reported and the run continues with sessions only. When `it2` is absent, raises a permission prompt that is not answered within 15 seconds, or `use_it2 = false`, it prints `arrangement: open it via Window > Restore Window Arrangement > <name>` and continues. On `--startup` the arrangement is not opened again, because iTerm2's own "open default arrangement at startup" preference already opened it.
+5. Reads every iTerm2 pane once (one AppleScript pass). At startup an empty answer is retried once a second for up to 15 seconds while iTerm2 finishes opening its windows.
+6. Places each session:
+   - A session that already has a client (a local session attached in some terminal, or a remote session whose ssh connection is still running) is skipped as `already open`, because re-attaching it would pull it out of the pane showing it.
+   - With `fill_arrangement = true`, a session whose recorded pane still exists and is an idle shell is typed into that pane. The pane is found by its iTerm2 session UUID, or, when that UUID is gone (an arrangement restore assigns new ones), by its recorded window, tab and pane, which is the last refreshed position.
+   - Every other session opens a new tab in the frontmost window (a new window when there is none).
+   - `stagger_seconds` passes between launches.
+7. Prints one line per record: `<name>: restored (window W tab T pane P)` or `restored (new tab)`, `<name>: skipped (<rule>)`, or `<name>: dead (<reason>)`.
+
+A pane counts as an idle shell when the only process in its terminal's foreground process group is a shell (`zsh`, `bash`, `fish` and similar), read from one `ps` pass. iTerm2's own `is at shell prompt` needs shell integration and `is processing` is false for a quiet Claude Code session, so neither is used. A pane whose state cannot be read is treated as busy.
+
+If iTerm2 stops answering an AppleScript call (10 seconds), restore stops, prints `stopped: ...; the sessions below stay in the registry` and one `not restored` line for each session it had not yet launched, and exits 1. Restore never edits a record after its prune, so those sessions are still there for the next run. If only the pane list times out, the run continues with new tabs.
+
+### Startup vs on demand
+
+Both are the same command. On demand (no flag) it honours `on_demand`, opens the arrangement itself and, with `confirm = true`, prints the plan and asks before acting. At startup (`--startup`, run by an iTerm2 `AutoLaunch.scpt` that the machine's installer sets up) it honours `on_startup`, leaves the arrangement to iTerm2 and never asks.
+
+### Restore keys
+
+| Key | Effect on `ai iterm2 restore` |
+|---|---|
+| `enabled` | `false`: every run prints the key and exits 0. |
+| `on_startup` | `false`: a `--startup` run exits 0 silently. |
+| `on_demand` | `false`: a run without `--startup` prints the key and exits 0. |
+| `mode` | `"sessions"` never opens an arrangement; `"arrangement"` opens it and skips every session; `"arrangement+sessions"` does both. |
+| `default_arrangement` | The saved arrangement opened on demand; `--arrangement` overrides it. Empty opens none. |
+| `use_it2` | `true` opens the arrangement with `it2`; `false` prints the menu path instead. Never used at startup. |
+| `fill_arrangement` | `true` types a session into its recorded pane when that pane is an idle shell; `false` always opens a new tab. |
+| `include_local`, `include_remote` | `false` skips that kind (`skipped (include_local=false)`). |
+| `include`, `exclude` | Session-name globs; a session failing `include` or matching `exclude` is skipped with the glob. |
+| `remote_hosts` | Non-empty: a remote session whose alias is not listed is skipped (`remote_hosts does not list '<alias>'`). |
+| `max_sessions` | `N > 0`: only the N most recently refreshed sessions are restored; the rest are `skipped (max_sessions=N)`. |
+| `stagger_seconds` | Pause between launches. |
+| `confirm` | `true`: on demand, print the plan and ask before touching iTerm2. Never asks at startup. |

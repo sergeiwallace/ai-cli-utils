@@ -30,6 +30,7 @@ source: internal
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
   - [ai iterm2 sessions](#ai-iterm2-sessions)
+  - [ai iterm2 restore](#ai-iterm2-restore)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
@@ -474,6 +475,14 @@ ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
 ```
 
 Lists the sessions `ai c` has recorded, local and remote, with the iTerm2 window, tab and pane each was last seen in. `--prune` removes records whose session is proved gone (`--probe-remote` also asks each remote host over ssh), `--refresh` re-reads every position in one AppleScript pass (macOS), and `--json` prints the registry as stored. The registry, its lifecycle and the `[iterm2.persistence]` switches are described in [iTerm2 session persistence](../iterm2-persistence.md).
+
+### ai iterm2 restore
+
+```bash
+ai iterm2 restore [-s|--startup] [-d|--dry-run] [-o|--only local|remote] [-a|--arrangement NAME]
+```
+
+Re-attaches the recorded sessions after an iTerm2 restart (macOS). It opens the saved arrangement on demand, then types each session's `ai` command into its recorded pane when that pane is an idle shell, or into a new tab, and prints one `restored`, `skipped` or `dead` line per session. `--dry-run` prints the plan and changes nothing; `--startup` is the form iTerm2's startup hook runs. Off unless `[iterm2.persistence.restore] enabled = true`; see [Restore](../iterm2-persistence.md#restore-ai-iterm2-restore).
 
 ### ai vpn-watch
 

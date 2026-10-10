@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai iterm2 restore [--startup] [--dry-run] [--only local|remote] [--arrangement NAME]`
+  re-attaches the sessions in the iTerm2 session registry after an iTerm2 restart
+  (macOS). It opens the saved arrangement on demand (through iTerm2's `it2` when it
+  answers, else it prints the menu path), then types each session's `ai` command into
+  its recorded pane when that pane is an idle shell, or into a new tab, staggered, and
+  prints one `restored`, `skipped` or `dead` line per session. A session that is
+  already attached is skipped rather than pulled out of the pane showing it. Off
+  unless `[iterm2.persistence.restore] enabled = true`; `--startup` is the form an
+  iTerm2 startup hook runs. See `docs/iterm2-persistence.md`.
+
 - `ai c` now requires a way to submit its auto-compact prompt. Either transport
   satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
   bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The

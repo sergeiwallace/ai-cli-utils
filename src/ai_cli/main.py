@@ -26,6 +26,7 @@ from . import compact_transport as _compact_transport
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
+from . import iterm2_restore as _iterm2_restore
 from . import launch_reporter as _launch_reporter
 from . import native_deps as _native_deps
 from . import process_manager as _process_manager
@@ -4629,6 +4630,33 @@ def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json):
         click.echo("no sessions recorded")
     for record in doc["sessions"]:
         click.echo(_describe_session_record(record))
+
+
+@cmd_iterm2_group.command("restore", help="Re-attach the recorded sessions in iTerm2 (macOS)")
+@click.option(
+    "-s",
+    "--startup",
+    is_flag=True,
+    help="Run as iTerm2's startup hook: honour on_startup, never open the arrangement, never ask",
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Print the plan; change neither iTerm2 nor the registry")
+@click.option("-o", "--only", type=click.Choice(["local", "remote"]), default=None, help="Restore one kind only")
+@click.option(
+    "-a", "--arrangement", default=None, metavar="NAME", help="Saved arrangement to open instead of default_arrangement"
+)
+def cmd_iterm2_restore(startup, dry_run, only, arrangement):
+    try:
+        code = _iterm2_restore.restore(
+            startup=startup,
+            dry_run=dry_run,
+            only=only,
+            arrangement=arrangement,
+            echo=click.echo,
+            ask=lambda question: click.confirm(question, default=False),
+        )
+    except (_iterm2.PersistenceConfigError, _session_registry.RegistryError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    sys.exit(code)
 
 
 @_cli_group.command("color", help="Reassign iTerm2 color for the current ai session")
