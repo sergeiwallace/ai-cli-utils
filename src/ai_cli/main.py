@@ -535,25 +535,39 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     return False
 
 
-def _resume_suspended_cc_session(record: dict) -> bool:
-    """Resume a session process Ctrl+Z stopped in its own terminal, rather than ending it.
+def _settle_stopped_cc_session(entry: Path, record: dict) -> bool:
+    """Resume, leave, or reclaim this session's process found stopped; return whether it is in use.
 
     State ``T`` covers two different things (AI-CLI-y6el). A process stopped with
     nothing attached is abandoned, and :func:`_reclaim_abandoned_cc_session` ends it.
     A process stopped while its group still owns its terminal's foreground is a
     session the operator suspended in place -- in an ``ai c`` pane, by an accidental
     Ctrl+Z -- and ending that one throws away every agent and shell it owns. It is
-    resumed and stays in use. Like reclamation, it acts only on a process whose
-    ``procStart`` proves it is this session.
+    resumed and stays in use.
+
+    The stopped reading that routed here is an earlier one, and the in-pane watchdog
+    continues a suspended group on its own schedule. Deciding on that reading ended a
+    process that had already been resumed, so the state is read once more and that
+    one reading decides: running now means in use, unreadable means left alone, and
+    only a process that is still stopped and was not suspended in place is reclaimed.
     """
     try:
         pid = int(cast(Any, record.get("pid")))
     except (TypeError, ValueError):
         return False
-    if probe_for().start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+    probe = probe_for()
+    if probe.start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+        # Unidentified: reclamation reports that and leaves the process alone.
+        _reclaim_abandoned_cc_session(entry, record)
         return False
-    group = _suspended_session.resume_if_suspended_in_terminal(pid)
+    state = probe.state(pid)
+    if state is None:
+        return False
+    if state not in probe.abandoned_states:
+        return True
+    group = _suspended_session.resume_if_suspended_in_terminal(pid, state)
     if group is None:
+        _reclaim_abandoned_cc_session(entry, record)
         return False
     name = str(record.get("name") or "")
     label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
@@ -622,12 +636,8 @@ def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple
                 # Scoped to the session being resumed: this walk visits every
                 # record, so ending someone else's abandoned process here would
                 # turn each launch into a fleet-wide reaper.
-                if this_session:
-                    if _resume_suspended_cc_session(record):
-                        if not live[0]:
-                            live = (True, record.get("pid"))
-                    else:
-                        _reclaim_abandoned_cc_session(entry, record)
+                if this_session and _settle_stopped_cc_session(entry, record) and not live[0]:
+                    live = (True, record.get("pid"))
                 continue
             if state == "live" and this_session and not live[0]:
                 live = (True, record.get("pid"))

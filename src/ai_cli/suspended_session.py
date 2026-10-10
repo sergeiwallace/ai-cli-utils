@@ -51,19 +51,34 @@ def _terminal_view(pid: int) -> tuple[int, int, str] | None:
         return None
 
 
-def resume_if_suspended_in_terminal(pid: int) -> int | None:
-    """Continue ``pid``'s process group if it is stopped while owning its terminal's foreground.
+#: What each process probe calls a job-control stop: ``T`` from ``/proc`` and ``ps``,
+#: ``stopped`` from psutil. A tracing stop is not one; that process belongs to its debugger.
+JOB_CONTROL_STOP_STATES = frozenset({"T", "stopped"})
 
-    Returns the group that was continued, or None when ``pid`` is not in that state.
-    Only job-control stop (``T``) qualifies; a traced process (``t``) belongs to its
-    debugger.
+
+def resume_if_suspended_in_terminal(pid: int, state: str | None = None) -> int | None:
+    """Continue ``pid``'s process group if it was suspended in place; return that group, else None.
+
+    Suspended in place means: job-control stopped, its group owns its terminal's
+    foreground, and that group is not the caller's own. The last condition matters
+    for a launcher run from a terminal: it shares its foreground group with what it
+    forked, but Ctrl+Z stops the whole group, and the caller is running.
+
+    ``state`` is the caller's own fresh reading, when it has one. The state is the
+    only thing a Ctrl+Z or the in-pane watchdog's SIGCONT changes; the group and the
+    terminal's foreground stay put (nothing in an ``ai c`` pane has job control to
+    move them). So a caller judging on its own state reading and this function's
+    group reading is still judging one moment.
     """
     sigcont = getattr(signal, "SIGCONT", None)
     view = _terminal_view(pid)
     if sigcont is None or view is None:
         return None
-    pgid, foreground, state = view
-    if state != "T" or pgid <= 0 or pgid != foreground:
+    pgid, foreground, viewed_state = view
+    if state is None:
+        state = viewed_state
+    own_group = os.getpgrp() if hasattr(os, "getpgrp") else -1
+    if state not in JOB_CONTROL_STOP_STATES or pgid <= 0 or pgid != foreground or pgid == own_group:
         return None
     try:
         os.killpg(pgid, sigcont)
