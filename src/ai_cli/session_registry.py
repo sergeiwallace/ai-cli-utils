@@ -590,10 +590,12 @@ def _remote_candidate(
     except _config.RemoteMachineError as exc:
         return AdoptLine("skipped", label, f"remote machine does not resolve ({exc})")
     session, why = _remote_session(str(params.get("project") or ""), slot)
+    import psutil
+
     relaunch_argv = ["ai", *args]
     try:
         cwd = proc.cwd()
-    except Exception:
+    except (psutil.Error, OSError):
         cwd = None
     record = _new_record(
         kind="remote",
