@@ -453,6 +453,69 @@ end tell"""
     return "ok" in (result.stdout or "")
 
 
+class Iterm2PaneLookupError(RuntimeError):
+    """iTerm2 could not be asked for its panes; the message says why."""
+
+
+# One pass over every window, tab and session. The running check comes first so a
+# lookup never launches iTerm2. `tab` is spelled `character id 9` because inside the
+# tell block `tab` names iTerm2's tab class.
+_LIST_PANES_SCRIPT = """if application "iTerm2" is not running then return "not-running"
+set sep to character id 9
+set out to ""
+tell application "iTerm2"
+    set wIdx to 0
+    repeat with w in windows
+        set tIdx to 0
+        repeat with t in tabs of w
+            set sIdx to 0
+            repeat with s in sessions of t
+                try
+                    set out to out & wIdx & sep & tIdx & sep & sIdx & sep & (tty of s) & sep & (unique id of s) & linefeed
+                end try
+                set sIdx to sIdx + 1
+            end repeat
+            set tIdx to tIdx + 1
+        end repeat
+        set wIdx to wIdx + 1
+    end repeat
+end tell
+return out"""
+
+
+def _iterm2_panes_by_tty(timeout: float) -> dict[str, dict]:
+    """Map each iTerm2 pane's tty to its 0-based window/tab/pane and session UUID (macOS only).
+
+    Windows are numbered in iTerm2's front-to-back order. Raises
+    :class:`Iterm2PaneLookupError` when iTerm2 is not running, does not answer within
+    ``timeout`` seconds, or osascript fails; never launches iTerm2.
+    """
+    if sys.platform != "darwin":
+        raise Iterm2PaneLookupError("iTerm2 is macOS-only")
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _LIST_PANES_SCRIPT], capture_output=True, timeout=timeout, text=True, check=False
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Iterm2PaneLookupError(f"iTerm2 did not answer in {timeout:g}s") from exc
+    except OSError as exc:
+        raise Iterm2PaneLookupError(f"osascript could not run: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        raise Iterm2PaneLookupError(f"osascript exited {result.returncode}{f': {detail[-1]}' if detail else ''}")
+    output = (result.stdout or "").strip()
+    if output == "not-running":
+        raise Iterm2PaneLookupError("iTerm2 is not running")
+    panes: dict[str, dict] = {}
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 5 or not all(field.isdigit() for field in fields[:3]) or not fields[3]:
+            continue
+        window, tab, pane, tty, session_uuid = fields
+        panes[tty] = {"session_uuid": session_uuid, "window": int(window), "tab": int(tab), "pane": int(pane)}
+    return panes
+
+
 def _iterm_pane_tty_for_tmux_session(tmux_session: str) -> str:
     """Return the client tty a tmux session is currently displayed on, or "".
 
