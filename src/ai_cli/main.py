@@ -4509,6 +4509,60 @@ def cmd_layout(args):
     sys.exit(run_layout_command(list(args)))
 
 
+@_cli_group.group("iterm2", help="iTerm2 session tracking")
+def cmd_iterm2_group():
+    pass
+
+
+def _describe_session_record(record: dict) -> str:
+    position = record.get("iterm2")
+    where = (
+        f"window {position['window']} tab {position['tab']} pane {position['pane']}"
+        if isinstance(position, dict)
+        else "not in iTerm2"
+    )
+    remote = record.get("remote")
+    host = f" on {remote.get('alias') or 'default remote'}" if isinstance(remote, dict) else ""
+    ended = "  ended" if record.get("ended_at") else ""
+    return f"{record.get('name')}  {record.get('kind')}{host}  {where}  refreshed {record.get('refreshed_at')}{ended}"
+
+
+@cmd_iterm2_group.command("sessions", help="List the sessions recorded for iTerm2 restore; prune or refresh them")
+@click.option("-p", "--prune", is_flag=True, help="Remove records whose session is proved gone")
+@click.option(
+    "-P",
+    "--probe-remote",
+    is_flag=True,
+    help="With --prune, ask each remote host over ssh whether its tmux session still exists",
+)
+@click.option("-r", "--refresh", is_flag=True, help="Recompute each record's iTerm2 window/tab/pane (macOS)")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the registry as JSON (status lines go to stderr)")
+def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json):
+    if probe_remote and not prune:
+        raise click.UsageError("-P/--probe-remote requires -p/--prune")
+    try:
+        if prune:
+            removed = _session_registry.prune(
+                probe_remote=probe_remote, remote_config=_config.load_config() if probe_remote else None
+            )
+            for record, reason in removed:
+                click.echo(f"removed {record.get('name')} ({reason})", err=as_json)
+            if not removed:
+                click.echo("nothing to prune", err=as_json)
+        if refresh:
+            click.echo(_session_registry.refresh().summary(), err=as_json)
+        doc = _session_registry.load_registry()
+    except (_session_registry.RegistryError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(doc, indent=2))
+        return
+    if not doc["sessions"]:
+        click.echo("no sessions recorded")
+    for record in doc["sessions"]:
+        click.echo(_describe_session_record(record))
+
+
 @_cli_group.command("color", help="Reassign iTerm2 color for the current ai session")
 @click.argument("color_arg")
 def cmd_color(color_arg):

@@ -11,6 +11,7 @@ import textwrap
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import run_cli
 
 from ai_cli import session_registry
 from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
@@ -533,3 +534,258 @@ def test_remote_dial_argv_is_unchanged_by_tracking(state_home, iterm2_toml, outs
 
     assert dialled[0][0] == "ssh"
     assert shlex.join(dialled[0]) == shlex.join(dialled[1])
+
+
+def test_given_a_clean_remote_exit_when_sessions_are_pruned_then_that_record_is_removed(
+    state_home, iterm2_toml, outside_iterm2
+):
+    _launch_remote(["ai", "c", "-R", "2"], ssh_exit_codes=[0])
+    tmux, _ = _fake_tmux_and_ssh()
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=tmux):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--prune"])
+
+    assert code == 0
+    assert "removed c-r-myproject-2 (remote session exited cleanly)" in out
+    assert _sessions(state_home) == []
+
+
+# --- T-1.3 liveness, refresh, prune: `ai iterm2 sessions` -------------------------
+
+
+def _seed(name, *, kind="local", remote=None, tty="", iterm_session_id=None, launcher_pid=0):
+    return session_registry.record_launch(
+        kind=kind,
+        name=name,
+        relaunch_argv=["ai", "c", name],
+        cwd=None,
+        remote=remote,
+        tty=tty,
+        iterm_session_id=iterm_session_id,
+        launcher_pid=launcher_pid,
+        config=_PERSISTENCE_DEFAULTS,
+    )
+
+
+def _fake_tmux_and_ssh(*, live_local=(), clients=None, remote_answers=None):
+    """Stand in for tmux (local) and ssh (remote probe).
+
+    ``live_local``: local session names tmux reports as existing. ``clients``: session ->
+    the client tty `tmux list-clients` reports. ``remote_answers``: remote session ->
+    the exit code the probe's ssh returns.
+    """
+    calls: list[list[str]] = []
+    clients = clients or {}
+    remote_answers = remote_answers or {}
+
+    def run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["tmux", "has-session"]:
+            return subprocess.CompletedProcess(cmd, 0 if cmd[3].removeprefix("=") in live_local else 1, b"", b"")
+        if cmd[:2] == ["tmux", "list-clients"]:
+            tty = clients.get(cmd[3], "")
+            return subprocess.CompletedProcess(cmd, 0 if tty else 1, f"{tty}\n" if tty else "", "")
+        if cmd[0] == "ssh":
+            session = shlex.split(cmd[-1])[-1].removeprefix("=")
+            return subprocess.CompletedProcess(cmd, remote_answers.get(session, 255), b"", b"")
+        raise AssertionError(f"unexpected command {cmd}")
+
+    return run, calls
+
+
+def test_given_a_dead_and_a_detached_local_session_when_pruned_then_only_the_dead_record_is_removed(state_home):
+    _seed("c-myproject-1")
+    _seed("c-myproject-2")
+    # c-myproject-2 exists with no client attached: it is alive.
+    tmux, _ = _fake_tmux_and_ssh(live_local={"c-myproject-2"}, clients={})
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=tmux):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--prune"])
+
+    assert code == 0
+    assert "removed c-myproject-1 (tmux session no longer exists)" in out
+    assert [r["name"] for r in _sessions(state_home)] == ["c-myproject-2"]
+
+
+def test_given_tmux_cannot_be_run_when_pruned_then_no_local_record_is_removed(state_home):
+    """An unanswered question is not proof of death."""
+    _seed("c-myproject-1")
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=FileNotFoundError("tmux")):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "-p"])
+
+    assert code == 0
+    assert "nothing to prune" in out
+    assert [r["name"] for r in _sessions(state_home)] == ["c-myproject-1"]
+
+
+def test_given_remote_records_when_pruned_without_probe_then_only_a_cleanly_ended_one_is_removed(state_home):
+    ended = _seed("c-r-myproject-1", kind="remote", remote={"alias": "example-box", "session": "c-r-myproject-1"})
+    _seed("c-r-myproject-2", kind="remote", remote={"alias": "example-box", "session": "c-r-myproject-2"})
+    session_registry.mark_ended(ended["id"])
+    tmux, calls = _fake_tmux_and_ssh()
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=tmux):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--prune"])
+
+    assert code == 0
+    assert "removed c-r-myproject-1 (remote session exited cleanly)" in out
+    assert [r["name"] for r in _sessions(state_home)] == ["c-r-myproject-2"]
+    assert not [c for c in calls if c[0] == "ssh"], "no remote host is dialled without --probe-remote"
+
+
+def test_given_probe_remote_when_pruned_then_only_a_session_the_remote_tmux_denies_is_removed(state_home):
+    for n in (1, 2, 3):
+        _seed(f"c-r-myproject-{n}", kind="remote", remote={"alias": "example-box", "session": f"c-r-myproject-{n}"})
+    # 1: remote tmux has it. 2: remote tmux says no such session. 3: ssh itself failed.
+    tmux, calls = _fake_tmux_and_ssh(
+        remote_answers={"c-r-myproject-1": 0, "c-r-myproject-2": 1, "c-r-myproject-3": 255}
+    )
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=tmux):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--prune", "--probe-remote"], config=_REMOTE_CONFIG)
+
+    assert code == 0
+    assert "removed c-r-myproject-2 (remote probe found no such tmux session)" in out
+    assert [r["name"] for r in _sessions(state_home)] == ["c-r-myproject-1", "c-r-myproject-3"]
+    ssh_calls = [c for c in calls if c[0] == "ssh"]
+    assert len(ssh_calls) == 3
+    assert "exampleuser@192.0.2.10" in ssh_calls[0]
+
+
+def test_given_probe_remote_without_prune_when_invoked_then_it_is_a_usage_error(state_home):
+    code, _, err = run_cli(["ai", "iterm2", "sessions", "--probe-remote"])
+
+    assert code == 1
+    assert "requires -p/--prune" in err
+
+
+def _pane_listing(*rows):
+    return "".join("\t".join(str(field) for field in row) + "\n" for row in rows)
+
+
+def test_given_records_when_refreshed_on_macos_then_positions_follow_the_live_ttys_in_one_applescript_pass(
+    state_home, monkeypatch
+):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _seed("c-myproject-1", iterm_session_id="w0t0p0:00000000-0000-0000-0000-000000000001", tty="/dev/ttys001")
+    _seed(
+        "c-r-myproject-2",
+        kind="remote",
+        remote={"alias": "example-box", "session": "c-r-myproject-2"},
+        iterm_session_id="w0t1p0:00000000-0000-0000-0000-000000000002",
+        tty="/dev/ttys002",
+        launcher_pid=4242,
+    )
+    stale = _seed("c-myproject-3", iterm_session_id="w0t2p0:00000000-0000-0000-0000-000000000003", tty="/dev/ttys003")
+    tmux, _ = _fake_tmux_and_ssh(clients={"c-myproject-1": "/dev/ttys011", "c-myproject-3": "/dev/ttys099"})
+    launcher = MagicMock()
+    launcher.create_time.return_value = 0.0
+    launcher.terminal.return_value = "/dev/ttys012"
+    listing = _pane_listing(
+        (1, 0, 0, "/dev/ttys011", "AAAAAAAA-0000-0000-0000-000000000011"),
+        (1, 2, 1, "/dev/ttys012", "AAAAAAAA-0000-0000-0000-000000000012"),
+    )
+    applescript_passes = []
+
+    def run(cmd, *args, **kwargs):
+        if cmd[0] == "osascript":
+            applescript_passes.append(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, listing, "")
+        return tmux(cmd, *args, **kwargs)
+
+    with (
+        patch("ai_cli.iterm2.subprocess.run", side_effect=run),
+        patch("psutil.Process", return_value=launcher) as process,
+    ):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--refresh"])
+
+    assert code == 0
+    assert "refreshed 2 of 3 recorded position(s)" in out
+    assert len(applescript_passes) == 1
+    assert applescript_passes[0]["timeout"] == session_registry.REFRESH_TIMEOUT_SECONDS
+    process.assert_called_once_with(4242)
+    by_name = {r["name"]: r for r in _sessions(state_home)}
+    assert by_name["c-myproject-1"]["iterm2"] == {
+        "session_uuid": "AAAAAAAA-0000-0000-0000-000000000011",
+        "window": 1,
+        "tab": 0,
+        "pane": 0,
+        "tty": "/dev/ttys011",
+    }
+    assert by_name["c-r-myproject-2"]["iterm2"]["tty"] == "/dev/ttys012"
+    assert (by_name["c-r-myproject-2"]["iterm2"]["tab"], by_name["c-r-myproject-2"]["iterm2"]["pane"]) == (2, 1)
+    assert by_name["c-myproject-3"]["iterm2"] == stale["iterm2"], "a tty iTerm2 does not show keeps its position"
+    assert by_name["c-myproject-3"]["refreshed_at"] == stale["refreshed_at"]
+
+
+def test_given_iterm2_does_not_answer_when_refreshed_then_skip_is_reported_exit_0_and_registry_unchanged(
+    state_home, monkeypatch
+):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _seed("c-myproject-1", iterm_session_id="w0t0p0:00000000-0000-0000-0000-000000000001", tty="/dev/ttys001")
+    before = _registry_file(state_home).read_bytes()
+    tmux, _ = _fake_tmux_and_ssh(clients={"c-myproject-1": "/dev/ttys011"})
+
+    def run(cmd, *args, **kwargs):
+        if cmd[0] == "osascript":
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return tmux(cmd, *args, **kwargs)
+
+    with patch("ai_cli.iterm2.subprocess.run", side_effect=run):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "--refresh"])
+
+    assert code == 0
+    assert f"refresh skipped (iTerm2 did not answer in {session_registry.REFRESH_TIMEOUT_SECONDS}s)" in out
+    assert _registry_file(state_home).read_bytes() == before
+
+
+def test_given_a_non_macos_platform_when_refreshed_then_it_is_skipped_and_nothing_is_run(state_home, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    _seed("c-myproject-1")
+
+    with patch("ai_cli.iterm2.subprocess.run", side_effect=AssertionError("nothing may be run")):
+        code, out, _ = run_cli(["ai", "iterm2", "sessions", "-r"])
+
+    assert code == 0
+    assert "refresh skipped (iTerm2 is macOS-only)" in out
+
+
+def test_given_records_when_listed_as_json_then_the_registry_is_printed_unredacted_and_exit_is_0(state_home):
+    _seed("c-myproject-1", iterm_session_id=_ITERM_SESSION_ID, tty=_PANE_TTY)
+    _seed("c-r-myproject-2", kind="remote", remote={"alias": "example-box", "session": "c-r-myproject-2"})
+
+    code, out, _ = run_cli(["ai", "iterm2", "sessions", "--json"])
+
+    assert code == 0
+    assert json.loads(out) == json.loads(_registry_file(state_home).read_text(encoding="utf-8"))
+
+
+def test_given_prune_and_json_when_invoked_then_stdout_stays_valid_json(state_home):
+    _seed("c-myproject-1")
+    tmux, _ = _fake_tmux_and_ssh()
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=tmux):
+        code, out, err = run_cli(["ai", "iterm2", "sessions", "-p", "-j"])
+
+    assert code == 0
+    assert json.loads(out)["sessions"] == []
+    assert "removed c-myproject-1" in err
+
+
+def test_given_no_registry_when_listed_then_it_says_so_and_creates_nothing(state_home):
+    code, out, _ = run_cli(["ai", "iterm2", "sessions"])
+
+    assert code == 0
+    assert "no sessions recorded" in out
+    assert not state_home.exists()
+
+
+def test_given_a_corrupt_registry_when_listed_then_the_error_names_the_file(state_home):
+    _registry_file(state_home).parent.mkdir(parents=True)
+    _registry_file(state_home).write_text("{not json", encoding="utf-8")
+
+    code, _, err = run_cli(["ai", "iterm2", "sessions"])
+
+    assert code == 1
+    assert "iterm2-sessions.json is not valid JSON" in err
