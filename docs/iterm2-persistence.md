@@ -10,6 +10,8 @@ The settings live in `~/.config/ai-cli-utils/iterm2.toml` (on Windows, the same 
 
 Every key has a built-in default equal to the value below, so a file without these tables behaves exactly as if it contained them. Tracking is on by default because it only writes one owner-only file. Restore is off by default because it opens windows and runs commands, so each machine has to opt in.
 
+The shipped file carries these tables commented out, as a template: TOML allows a table to be defined only once, so the live definition is either an installer-managed block or your own uncommented copy.
+
 A key with the wrong type (for example `include = "c-*"` instead of `include = ["c-*"]`), an unknown key, or a `mode` outside the allowed values is an error that names the key and the expected type. `ai` never falls back to the default for a key it could not read. At launch, such an error is printed as a single warning and the session launches untracked.
 
 ### `[iterm2.persistence]`

@@ -107,57 +107,58 @@ chrome     = "Default"
 caffeinate = "Default"
 ssh        = "Default"
 
-[iterm2.persistence]
+# [iterm2.persistence]
 ## Master switch for session tracking and restore. false = write nothing, restore nothing.
 ## Reference: docs/iterm2-persistence.md in the ai-cli-utils repository.
-enabled = true
+# enabled = true
 
-[iterm2.persistence.tracking]
+# [iterm2.persistence.tracking]
 ## Record each `ai c` launch in the session registry (~/.local/state/ai-cli-utils/iterm2-sessions.json)
-enabled = true
+# enabled = true
 ## Record local tmux sessions
-include_local = true
+# include_local = true
 ## Record `ai c -R` sessions
-include_remote = true
+# include_remote = true
 ## Session-name globs; empty = every session
-include = []
+# include = []
 ## Session-name globs removed after include
-exclude = []
+# exclude = []
 ## Re-read every record's window/tab/pane after each `ai c` launch (one AppleScript pass)
-refresh_on_launch = true
+# refresh_on_launch = true
 
-[iterm2.persistence.restore]
+# [iterm2.persistence.restore]
 ## Opt in per machine; the default never opens windows
-enabled = false
+# enabled = false
 ## Run when iTerm2 starts (needs the startup hook) ...
-on_startup = false
+# on_startup = false
 ## ... and/or on demand
-on_demand = true
+# on_demand = true
 ## "arrangement" | "sessions" | "arrangement+sessions"
-mode = "arrangement+sessions"
+# mode = "arrangement+sessions"
 ## Saved-arrangement name to restore first; empty = none
-default_arrangement = ""
+# default_arrangement = ""
 ## On demand only: let `it2 window arrange restore` open the arrangement; false = print the menu path
-use_it2 = true
+# use_it2 = true
 ## Place a session into its recorded pane of the open arrangement when that pane is an idle shell
-fill_arrangement = true
-include_local = true
-include_remote = true
-include = []
-exclude = []
+# fill_arrangement = true
+# include_local = true
+# include_remote = true
+# include = []
+# exclude = []
 ## Remote aliases allowed to re-dial; empty = any recorded alias
-remote_hosts = []
+# remote_hosts = []
 ## 0 = unlimited, else the most recent N
-max_sessions = 0
+# max_sessions = 0
 ## Pause between launches so several ssh dials do not race one credential refresh
-stagger_seconds = 1.0
+# stagger_seconds = 1.0
 ## true = print the plan and ask before touching iTerm2 (never at startup)
-confirm = false
+# confirm = false
 """
 
 #: Every ``[iterm2.persistence]`` key and its default. A nested dict is a sub-table; the
-#: type of each default is the type the key must hold. Kept equal to the tables in
-#: ``_DEFAULT_ITERM2_CONFIG`` (a test pins it) so a file without them behaves the same.
+#: type of each default is the type the key must hold. Kept equal to the commented-out
+#: template tables in ``_DEFAULT_ITERM2_CONFIG`` (a test pins it); those ship commented so
+#: an installer-managed block or the user's own edit is the only live definition.
 _PERSISTENCE_DEFAULTS: dict = {
     "enabled": True,
     "tracking": {

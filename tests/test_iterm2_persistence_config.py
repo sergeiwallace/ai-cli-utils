@@ -63,13 +63,25 @@ def test_given_toml_without_persistence_section_when_loaded_then_every_key_is_it
     assert load_persistence_config() == _DOCUMENTED_DEFAULTS
 
 
+def _uncommented(text: str) -> str:
+    """The shipped text with every single-``#`` template line turned live."""
+    return "\n".join(line[2:] if line.startswith("# ") else line for line in text.splitlines())
+
+
+def test_given_shipped_default_config_when_parsed_then_it_defines_no_persistence_table():
+    """An installer writes [iterm2.persistence] in its own block; TOML forbids a second definition."""
+    shipped = tomllib.loads(_DEFAULT_ITERM2_CONFIG)
+
+    assert "persistence" not in shipped["iterm2"]
+
+
 def test_given_no_toml_when_loaded_then_the_shipped_file_yields_the_documented_defaults(iterm2_toml):
-    """First use writes the shipped file; its persistence tables must equal the code defaults."""
+    """First use writes the shipped file; its commented persistence template must equal the code defaults."""
     assert not iterm2_toml.exists()
 
     assert load_persistence_config() == _DOCUMENTED_DEFAULTS
-    shipped = tomllib.loads(iterm2_toml.read_text(encoding="utf-8"))
-    assert shipped["iterm2"]["persistence"] == _DOCUMENTED_DEFAULTS
+    template = tomllib.loads(_uncommented(iterm2_toml.read_text(encoding="utf-8")))
+    assert template["iterm2"]["persistence"] == _DOCUMENTED_DEFAULTS
 
 
 def test_given_partial_section_when_loaded_then_set_keys_win_and_the_rest_default(iterm2_toml):
