@@ -304,11 +304,14 @@ def _death_reason(record: dict, probe_remote: bool, remote_config: dict) -> str 
     return None
 
 
-def prune(*, probe_remote: bool = False, remote_config: dict | None = None) -> list[tuple[dict, str]]:
+def prune(
+    *, probe_remote: bool = False, remote_config: dict | None = None, dry_run: bool = False
+) -> list[tuple[dict, str]]:
     """Remove records whose session is proved gone; return each removed record with its reason.
 
     Local: ``tmux has-session`` fails (a detached session is alive). Remote: a clean exit
     was recorded, or ``probe_remote`` asked the remote tmux and it has no such session.
+    With ``dry_run`` the same verdicts are returned and the registry is not written.
     """
     if not registry_path().exists():
         return []
@@ -319,8 +322,8 @@ def prune(*, probe_remote: bool = False, remote_config: dict | None = None) -> l
         if reason is not None:
             verdicts[record.get("id")] = reason
     removed: list[tuple[dict, str]] = []
-    if not verdicts:
-        return removed
+    if not verdicts or dry_run:
+        return [(record, verdicts[record.get("id")]) for record in snapshot if record.get("id") in verdicts]
 
     def drop(doc: dict) -> bool:
         kept = []
