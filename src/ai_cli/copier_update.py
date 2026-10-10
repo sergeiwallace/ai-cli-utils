@@ -811,6 +811,14 @@ def _update_one_isolated(
     wt_dir = root / ".worktrees" / _WT_NAME
     branch = _WT_BRANCH
 
+    # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
+    # not whatever the local main tree happens to be at. Fall back to HEAD offline.
+    # Fetched before the leftover check so a commit a human has since pushed by hand
+    # counts as on the base.
+    subprocess.run(
+        ["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True, env=_git_env(), check=False
+    )
+
     # Clear a leftover temp worktree/branch from a prior interrupted run, but keep
     # one a conflicted or rejected run left for a human to resolve.
     hold = _leftover_hold_reason(root, wt_dir, branch)
@@ -818,11 +826,6 @@ def _update_one_isolated(
         return "kept", f"{wt_dir}: {hold}"
     _cleanup_worktree(root, wt_dir, branch)
 
-    # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
-    # not whatever the local main tree happens to be at. Fall back to HEAD offline.
-    subprocess.run(
-        ["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True, env=_git_env(), check=False
-    )
     probe = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"],
         capture_output=True,

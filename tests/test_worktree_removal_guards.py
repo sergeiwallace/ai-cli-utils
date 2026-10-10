@@ -177,6 +177,25 @@ def test_given_clean_leftover_at_base_when_copier_update_runs_then_it_is_cleared
     assert "copier-update" not in _registered(project)
 
 
+def test_given_leftover_commit_since_pushed_elsewhere_when_copier_update_runs_then_it_is_cleared(project, tmp_path):
+    """The base is fetched before the check, so a hand-pushed pushfail commit is on the base."""
+    remote = tmp_path / "remote.git"
+    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    _git("remote", "add", "origin", str(remote), cwd=project)
+    _git("push", "-q", "origin", "main", cwd=project)
+    _git("fetch", "-q", "origin", cwd=project)
+    wt = _leftover(project)
+    (wt / "tracked.txt").write_text("the update a push rejected\n")
+    _git("commit", "-q", "-am", "chore: copier update from project-template", cwd=wt)
+    _git("push", "-q", str(remote), "HEAD:main", cwd=wt)
+    _git("update-ref", "refs/remotes/origin/main", "HEAD~1", cwd=wt)
+
+    rc, calls = _run_update(project)
+
+    assert calls == [wt]
+    assert rc == 0
+
+
 def test_given_leftover_registered_with_missing_dir_when_copier_update_runs_then_registration_is_kept(project, capsys):
     """AC-3: a checkout whose state cannot be read is kept, never deleted."""
     wt = _leftover(project)
