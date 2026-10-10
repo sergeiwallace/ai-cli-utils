@@ -1,4 +1,4 @@
-"""The iTerm2 session registry: launch records, liveness, refresh (AIH-krf96 T-1.2..T-1.4)."""
+"""The iTerm2 session registry: launch records, liveness, refresh."""
 
 import json
 import logging

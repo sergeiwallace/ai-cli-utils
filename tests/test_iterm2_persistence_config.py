@@ -1,4 +1,4 @@
-"""The shipped iTerm2 defaults and the ``[iterm2.persistence]`` loader (AIH-krf96 T-1.1)."""
+"""The shipped iTerm2 defaults and the ``[iterm2.persistence]`` loader."""
 
 import tomllib
 from pathlib import Path
