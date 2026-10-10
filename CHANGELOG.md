@@ -122,6 +122,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision is made on a fresh reading of the process, so a session the watchdog has
   just resumed is never ended on a stale one.
 
+- `ai copier-update` no longer destroys the temp worktree a conflicted or
+  rejected run left for manual resolution. The pre-clean at the start of each
+  repo's update now removes a leftover only when it is provably disposable (a
+  clean checkout and branch at the base commit). One holding uncommitted or
+  staged changes, commits not on the base, a `MERGE_HEAD` or other in-progress
+  operation, or any state it cannot read is kept and reported as `LEFTOVER KEPT`
+  with its path and reason (exit 3). Its teardown no longer runs a repo-wide
+  `git worktree prune`.
+
 - **An auto-restarted agent could be handed a pane that turned every key into
   escape text.** Claude Code arms SGR mouse tracking and modifyOtherKeys, and tmux
   keeps both as pane state after the process exits. When an agent died without

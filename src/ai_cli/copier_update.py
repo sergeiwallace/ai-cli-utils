@@ -7,7 +7,8 @@ Two modes:
   ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. The temp worktree is left in place only when there
-  are merge conflicts or the push fails (never clobbering a session's main tree).
+  are merge conflicts or the push fails (never clobbering a session's main tree), and
+  a later run keeps such a leftover rather than removing it.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -548,7 +550,11 @@ def _repo_root(path: Path) -> Path | None:
 
 
 def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
-    """Remove the temp worktree and its branch (best-effort, idempotent)."""
+    """Remove the temp worktree and its branch (best-effort, idempotent).
+
+    Targets only this worktree: a repo-wide ``git worktree prune`` here would drop
+    every other registration whose directory is missing, with its index and HEAD.
+    """
     # Repair backstop (AI-CLI-99) before AND after the worktree teardown — root
     # is the repo's normal main working tree and must never end up bare / with
     # a stale core.worktree, regardless of what a leaked GIT_* env would do.
@@ -559,9 +565,97 @@ def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
         env=_git_env(),
         check=False,
     )
-    subprocess.run(["git", "-C", str(root), "worktree", "prune"], capture_output=True, env=_git_env(), check=False)
     subprocess.run(["git", "-C", str(root), "branch", "-D", branch], capture_output=True, env=_git_env(), check=False)
     repair_bare_worktree_config(root)
+
+
+_GIT_READ_TIMEOUT = 30
+_IN_PROGRESS_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG")
+
+
+def _git_read(args: list[str]) -> str | None:
+    """Run a read-only git command; None when it errors or times out."""
+    try:
+        r = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+            timeout=_GIT_READ_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _leftover_hold_reason(root: Path, wt_dir: Path, branch: str) -> str | None:
+    """Why a prior run's temp worktree/branch must be kept, or None when it is disposable.
+
+    A conflict or pushfail deliberately leaves the worktree for a human, so the
+    pre-clean removes only what it can prove holds nothing: no worktree and no
+    branch, or a clean checkout and branch at the base commit. Any state it cannot
+    read is kept.
+    """
+    listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+    if listing is None:
+        return "could not read the worktree list"
+    target = wt_dir.resolve()
+    registered = any(
+        Path(line[len("worktree ") :].strip()).resolve() == target
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    )
+    exists = os.path.lexists(wt_dir)
+    branch_tip = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
+    if branch_tip is None:
+        return f"could not read branch {branch}"
+    has_branch = bool(branch_tip.strip())
+
+    if not registered and not exists and not has_branch:
+        return None
+    if exists and not registered:
+        return "directory exists but is not a registered worktree, so its state cannot be read"
+    if registered and not exists:
+        return "registered but its directory is missing, so its state cannot be read"
+
+    base_name = (
+        "origin/main" if _git_read(["-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"]) else "HEAD"
+    )
+    base = _git_read(["-C", str(root), "rev-parse", "--verify", base_name])
+    if base is None:
+        return f"could not read base {base_name}"
+    base = base.strip()
+
+    def commits_ahead(rev_args: list[str], tip: str) -> int | None:
+        out = _git_read([*rev_args, "rev-list", "--count", f"{base}..{tip}"])
+        return int(out.strip()) if out is not None and out.strip().isdigit() else None
+
+    if registered:
+        git_dir = _git_read(["-C", str(wt_dir), "rev-parse", "--absolute-git-dir"])
+        if git_dir is None:
+            return "could not read its git directory"
+        in_progress = [m for m in _IN_PROGRESS_MARKERS if os.path.lexists(Path(git_dir.strip()) / m)]
+        if in_progress:
+            return f"operation in progress ({', '.join(in_progress)})"
+        status = _git_read(["-C", str(wt_dir), "status", "--porcelain"])
+        if status is None:
+            return "could not read its status"
+        if status.strip():
+            return "uncommitted or staged changes"
+        ahead = commits_ahead(["-C", str(wt_dir)], "HEAD")
+        if ahead is None:
+            return "could not count its commits"
+        if ahead:
+            return f"{ahead} commit(s) not on {base_name}"
+
+    if has_branch:
+        ahead = commits_ahead(["-C", str(root)], f"refs/heads/{branch}")
+        if ahead is None:
+            return f"could not count commits on {branch}"
+        if ahead:
+            return f"branch {branch} has {ahead} commit(s) not on {base_name}"
+    return None
 
 
 def _snapshot_staged_files(worktree_dir: Path) -> dict[str, bytes | None] | None:
@@ -697,8 +791,10 @@ def _update_one_isolated(
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
     On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is
-    left in place (detail carries the info needed to resolve it manually). When
-    inspect=True, an ok result contains copied content before that cleanup.
+    left in place (detail carries the info needed to resolve it manually). A
+    leftover from a prior run that is not provably disposable returns ``kept`` with
+    its path and reason, and nothing is removed. When inspect=True, an ok result
+    contains copied content before that cleanup.
     """
     root = _repo_root(project_dir)
     if root is None:
@@ -715,7 +811,11 @@ def _update_one_isolated(
     wt_dir = root / ".worktrees" / _WT_NAME
     branch = _WT_BRANCH
 
-    # Clear any leftover temp worktree/branch from a prior interrupted run.
+    # Clear a leftover temp worktree/branch from a prior interrupted run, but keep
+    # one a conflicted or rejected run left for a human to resolve.
+    hold = _leftover_hold_reason(root, wt_dir, branch)
+    if hold is not None:
+        return "kept", f"{wt_dir}: {hold}"
     _cleanup_worktree(root, wt_dir, branch)
 
     # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
@@ -879,6 +979,11 @@ def _run_isolated(
             has_partial_mutation = True
         elif status == "pushfail":
             print("✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
+            print(f"    {detail}")
+            failed += 1
+            has_partial_mutation = True
+        elif status == "kept":
+            print("✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:")
             print(f"    {detail}")
             failed += 1
             has_partial_mutation = True
