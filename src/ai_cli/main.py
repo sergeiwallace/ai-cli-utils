@@ -11,6 +11,7 @@ import sys
 import time
 import uuid as uuid_module
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -49,6 +50,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
+from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -1924,6 +1926,41 @@ def _launch_install_origin() -> InstallOrigin:
     # An ordinary copied environment may have come from PyPI, another index, a
     # wheel, or a direct URL. Do not call it PyPI without source metadata.
     return InstallOrigin.UNKNOWN
+
+
+@dataclass(frozen=True)
+class _LaunchClient:
+    checkout: Path
+    check: ClientCheck
+
+
+def _sync_launch_client(config: dict, origin: InstallOrigin) -> "_LaunchClient | None":
+    """Fast-forward this machine's editable client checkout before a remote launch.
+
+    Only an editable install runs straight from its checkout, so only then is the
+    checkout's position the client's version. ``_auto_update_if_stale`` cannot see
+    a checkout that is behind: it fingerprints the files on disk, and an unpulled
+    checkout's files match what was last installed from them.
+    """
+    if origin is not InstallOrigin.EDITABLE_CHECKOUT:
+        return None
+    checkout = _find_aicli_project_path(config)
+    if checkout is None or not (checkout / ".git").exists():
+        return None
+    return _LaunchClient(checkout, sync_client_checkout(checkout))
+
+
+def _install_decision(client: "_LaunchClient | None", reinstalled: bool) -> str:
+    if client is not None:
+        check = client.check
+        if check.state is ClientState.SYNCED:
+            return f"fast-forwarded {check.behind} commit(s) from origin/main; restarting"
+        if check.state is ClientState.BEHIND:
+            return f"{check.behind} commit(s) behind origin/main, not updated"
+    decision = "reinstalled; restarting" if reinstalled else "current"
+    if client is not None and client.check.state is ClientState.UNCHECKED:
+        return f"{decision} locally; could not check origin/main ({client.check.reason})"
+    return decision
 
 
 def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
@@ -3897,10 +3934,19 @@ def _session_command(engine: str):
                 _ensure_dolt_server()
                 trigger_background_update()
                 with reporter.phase("Install", "checking installed version") as install_phase:
-                    reexec = _auto_update_if_stale(config) is True
                     origin = _launch_install_origin()
-                    decision = "reinstalled; restarting" if reexec else "current"
+                    client = _sync_launch_client(config, origin) if remote else None
+                    reexec = _auto_update_if_stale(config) is True
+                    decision = _install_decision(client, reexec)
+                    reexec = reexec or (client is not None and client.check.state is ClientState.SYNCED)
                     install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
+                if client is not None and client.check.state is ClientState.BEHIND:
+                    reporter.warning(
+                        f"this machine's ai-cli-utils checkout {client.checkout} is {client.check.behind} "
+                        f"commit(s) behind origin/main and was NOT updated: {client.check.reason}.\n"
+                        f"  The launch continues on the older client. Fix it, then re-run the launch:\n"
+                        f"    {client.check.fix}"
+                    )
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
