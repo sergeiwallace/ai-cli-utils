@@ -286,11 +286,13 @@ def get_engine_script(
         exec 2> >(while IFS= read -r _ai_log_line; do
           printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_log_line" >> "$_ai_launch_log"
           # Relay, never pass through: a child line that carries no tag gets [session].
-          case "$_ai_log_line" in
-            "") ;;
-            "["*"] "*) printf '%s\n' "$_ai_log_line" >&3 ;;
-            *) printf '[session] %s\n' "$_ai_log_line" >&3 ;;
-          esac
+          # No `case` here: bash 3.2 (macOS /bin/bash) ends a process substitution at
+          # the first unparenthesized case-pattern `)`, so the whole script fails to parse.
+          if [[ "$_ai_log_line" == "["*"] "* ]]; then
+            printf '%s\n' "$_ai_log_line" >&3
+          elif [[ -n "$_ai_log_line" ]]; then
+            printf '[session] %s\n' "$_ai_log_line" >&3
+          fi
         done)
       fi
       # These descriptors belong only to the supervisor that exported them.
@@ -908,10 +910,10 @@ def get_engine_script(
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
         sym="▶"
         case "$_st" in
-          done)     sym="✓" ;;
-          error)    sym="✗" ;;
-          resuming) sym="↻" ;;
-          waiting)  sym="⏸" ;;
+          (done)     sym="✓" ;;
+          (error)    sym="✗" ;;
+          (resuming) sym="↻" ;;
+          (waiting)  sym="⏸" ;;
         esac
         sym="$sym "
       fi
