@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Each iTerm2 session-registry record now carries why its session ended (`exit`:
+  `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
+  was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`
+  records one. Before relaunching, `ai iterm2 restore` classifies each record whose
+  session is proved gone, relaunches it only when
+  `[iterm2.persistence.restore.relaunch.scenarios]` allows its cause (a manual exit is
+  not relaunched by default), lists the rest as skipped with their cause, and launches
+  each relaunched session with `AIH_LAUNCH_REASON=<cause>`.
+  `[iterm2.persistence.restore.relaunch] on_terminal_reopen = false` makes
+  `restore --startup` relaunch nothing. A registry written by an earlier version reads
+  as having no exit causes and is upgraded on its next change.
+
 - `ai iterm2 sessions --adopt [--dry-run]` records the sessions that were already
   running before the iTerm2 session registry existed, so `ai iterm2 restore` can bring
   them back: each local tmux session named `c-<prefix>-<n>` (re-attached with
