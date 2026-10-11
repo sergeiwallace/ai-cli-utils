@@ -7,11 +7,12 @@ All active transport loops subscribe to ``vpn.state.changed`` and switch transpo
 import asyncio
 import contextlib
 import json
-import sys
 from datetime import UTC, datetime
 
+from . import output as _out
 from .config import get_xdg_state_home
 from .messaging import NATSClient
+from .output import Tag
 from .transport import _is_vpn_active
 
 
@@ -34,7 +35,7 @@ async def _vpn_watch_loop(config: dict) -> None:
     await nc.connect()
 
     last_vpn = _is_vpn_active()
-    print(f"vpn-watch: started (VPN {'active' if last_vpn else 'inactive'})", file=sys.stderr)
+    _out.emit(Tag.VPN, f"started (VPN {'active' if last_vpn else 'inactive'})", err=True)
 
     try:
         while True:
@@ -62,7 +63,7 @@ async def _vpn_watch_loop(config: dict) -> None:
             except OSError:
                 pass  # Not covered: requires filesystem write failure
 
-            print(f"vpn-watch: VPN {state_str} at {ts}", file=sys.stderr)
+            _out.emit(Tag.VPN, f"VPN {state_str} at {ts}", err=True)
 
             # Publish to NATS (core publish — ephemeral notification, no durability needed)
             if nc.nc:

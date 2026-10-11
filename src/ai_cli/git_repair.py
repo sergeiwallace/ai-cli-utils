@@ -77,6 +77,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import output as _out
+from .output import Tag
+
 # Vars that redirect git's repo/worktree targeting. Stripping these prevents a
 # subprocess from silently operating on a different repo/worktree than the one
 # named via -C/cwd. Innocuous GIT_* vars (SSH, prompts, author/committer
@@ -178,10 +181,7 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
             env=_git_env(),
             check=False,
         )
-        print(
-            f"WARNING: repaired core.bare=true corruption on {repo_root} (reset to false)",
-            file=sys.stderr,
-        )
+        _out.warning(Tag.GIT, f"repaired core.bare=true corruption on {repo_root} (reset to false)")
         repaired = True
 
     worktree_cfg = subprocess.run(
@@ -198,10 +198,7 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
             env=_git_env(),
             check=False,
         )
-        print(
-            f"WARNING: repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)",
-            file=sys.stderr,
-        )
+        _out.warning(Tag.GIT, f"repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)")
         repaired = True
 
     return repaired
@@ -405,23 +402,26 @@ def _repair_beads_issues_autostash_strand(repo_root: Path, new_unmerged: set[str
             dropped_stashes.append(stash_id)
 
     if dropped_stashes:
-        print(
+        _out.emit(
+            Tag.GIT,
             "Auto-resolved a beads-only autostash strand: regenerated "
             f"{_BEADS_ISSUES_MIRROR} from the live bd store, dropped stash "
             f"{', '.join(dropped_stashes)}.",
-            file=sys.stderr,
+            err=True,
         )
     elif new_stashes:
-        print(
+        _out.emit(
+            Tag.GIT,
             "Auto-resolved a beads-only autostash strand: regenerated "
             f"{_BEADS_ISSUES_MIRROR} from the live bd store; left newly created "
             "stash entries in place because their contents were not safely verified.",
-            file=sys.stderr,
+            err=True,
         )
     else:
-        print(
+        _out.emit(
+            Tag.GIT,
             f"Auto-resolved a beads-only autostash strand: regenerated {_BEADS_ISSUES_MIRROR} from the live bd store.",
-            file=sys.stderr,
+            err=True,
         )
     return True
 

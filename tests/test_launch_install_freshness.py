@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -257,7 +258,7 @@ class TestQuietOutput:
 
         out = capsys.readouterr().out.strip().splitlines()
         assert len(out) == 1, f"expected exactly one line, got {out}"
-        assert out[0].startswith("ai-cli-utils 0.1.0.post")
+        assert out[0].startswith("[update] ai-cli-utils 0.1.0.post")
         assert "installed (cache-bypassing reinstall)" in out[0]
 
     def test_given_a_quiet_launch_when_it_reinstalls_then_git_and_uv_output_is_captured(self, project, state):
@@ -301,17 +302,24 @@ class TestQuietOutput:
 
 class TestEscapeHatches:
     def test_given_the_verbose_env_var_when_a_session_launches_then_the_full_transcript_is_shown(
-        self, project, state, tmp_path
+        self, project, state, tmp_path, capsys
     ):
-        """AC-5: the operator can always watch the whole update happen."""
+        """AC-5: the operator can always see the whole update, every line tagged.
+
+        The transcript is relayed through ``ai_cli.output`` rather than inherited, so
+        uv's own lines arrive as ``[update] ...`` (AI-CLI-9brz).
+        """
         launch = _Launch(project, state, installed_root=tmp_path / "installed")
 
         with patch.dict(os.environ, {UPDATE_VERBOSE_ENV: "1"}):
             launch.launch()
 
         assert launch.updates and "--quiet" not in launch.updates[0]
-        assert launch.update_kwargs[0].get("capture_output") is False
-        assert launch.uv_kwargs[0].get("capture_output") is False
+        emitted = capsys.readouterr()
+        lines = (emitted.out + emitted.err).splitlines()
+        assert "[update] Resolved 1 package" in lines
+        assert "[update] Installed 1 package" in lines
+        assert all(re.match(r"^\[[a-z0-9_-]+\] ", line) for line in lines), lines
 
     def test_given_verbose_and_quiet_together_when_update_runs_then_verbose_wins(self, project, capsys):
         calls = []

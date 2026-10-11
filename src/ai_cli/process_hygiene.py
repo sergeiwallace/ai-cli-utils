@@ -28,6 +28,8 @@ from pathlib import Path
 import psutil
 
 from . import config
+from . import output as _out
+from .output import Tag
 
 ORPHAN_THRESHOLD = 80
 SUSPECT_THRESHOLD = 40
@@ -559,6 +561,10 @@ def collect_remote_processes(
     return procs, None
 
 
+def _ps_line(line: str) -> None:
+    _out.emit(Tag.PS, line)
+
+
 def _parse_remote_ps(stdout: str) -> list[ProcessInfo]:
     """Parse remote ``ps`` output and return scored ``ProcessInfo`` list."""
     rows: list[dict] = []
@@ -627,7 +633,7 @@ def auto_clean_orphans(
     run mode). Processes whose captured identity is missing or no longer matches
     are reported and skipped.
     """
-    out = stdout_fn or print
+    out = stdout_fn or _ps_line
     killed: list[ProcessInfo] = []
     for proc in processes:
         if proc.verdict != "orphaned":
@@ -738,10 +744,10 @@ def cmd_ps(
 
     *args* is the remainder of ``sys.argv`` after ``"ps"``.
     *config* is the loaded config dict.
-    *stdout_fn* is injectable for testing (defaults to print).
+    *stdout_fn* is injectable for testing (defaults to a `[ps]` line).
     Returns an exit code (0 or 1).
     """
-    out = stdout_fn or print
+    out = stdout_fn or _ps_line
 
     from .config import get_remote_machine
 
@@ -843,7 +849,7 @@ def cmd_ps(
 
         if not force:
             try:
-                answer = input(f"\nKill {len(to_kill)} orphan(s)? [y/N] ").strip().lower()
+                answer = _out.ask(Tag.PS, f"Kill {len(to_kill)} orphan(s)? [y/N]").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
             if answer != "y":

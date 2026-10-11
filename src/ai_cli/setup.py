@@ -9,8 +9,10 @@ default ~/projects) is present and switches CLAUDE.md to the appropriate variant
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
+
+from . import output as _out
+from .output import Tag
 
 
 def _managed_platform_config() -> Path:
@@ -51,7 +53,7 @@ def run_setup(cwd: Path | None = None) -> int:
     working_dir = cwd or Path.cwd()
     repo_root = _repo_root_from(working_dir)
     if repo_root is None:
-        print("Error: not inside a git repository", file=sys.stderr)
+        _out.error(Tag.SETUP, "not inside a git repository")
         return 1
 
     # Install-time native-dependency bootstrap. This is the cross-platform entry
@@ -80,7 +82,7 @@ def run_setup(cwd: Path | None = None) -> int:
 
         ensure_tmux()
     except Exception as exc:
-        print(f"note: could not verify tmux ({exc}); sessions will fall back to bare mode", file=sys.stderr)
+        _out.emit(Tag.SETUP, f"note: could not verify tmux ({exc}); sessions will fall back to bare mode", err=True)
 
     # zsh, the interpreter a session prefers to run under. Provisioned here rather
     # than at launch because a package-manager solve is minutes, and a launch must
@@ -94,7 +96,7 @@ def run_setup(cwd: Path | None = None) -> int:
 
         ensure_zsh(allow_root=can_prompt_for_root())
     except Exception as exc:
-        print(f"note: could not verify zsh ({exc}); sessions will run under bash", file=sys.stderr)
+        _out.emit(Tag.SETUP, f"note: could not verify zsh ({exc}); sessions will run under bash", err=True)
 
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"
@@ -102,18 +104,18 @@ def run_setup(cwd: Path | None = None) -> int:
     shared_config = _managed_platform_config()
 
     if _is_managed_platform():
-        print(f"managed platform detected ({shared_config} found)")
-        print(f"✓ Using lean CLAUDE.md — {shared_config} provides shared AI orchestration rules")
+        _out.emit(Tag.SETUP, f"managed platform detected ({shared_config} found)")
+        _out.emit(Tag.SETUP, f"✓ Using lean CLAUDE.md — {shared_config} provides shared AI orchestration rules")
         return 0
 
     # Not on managed platform — switch to self-contained config
     if not claude_full_md.exists():
-        print(f"Error: CLAUDE-full.md not found in {repo_root}", file=sys.stderr)
-        print("  Re-clone the repository or restore CLAUDE-full.md from git history", file=sys.stderr)
+        _out.error(Tag.SETUP, f"CLAUDE-full.md not found in {repo_root}")
+        _out.emit(Tag.SETUP, "  Re-clone the repository or restore CLAUDE-full.md from git history", err=True)
         return 1
 
     if not claude_md.exists():
-        print(f"Error: CLAUDE.md not found in {repo_root}", file=sys.stderr)
+        _out.error(Tag.SETUP, f"CLAUDE.md not found in {repo_root}")
         return 1
 
     shutil.copy2(claude_full_md, claude_md)
@@ -126,7 +128,7 @@ def run_setup(cwd: Path | None = None) -> int:
         check=False,
     )
 
-    print(f"No managed platform detected ({shared_config} not found)")
-    print("✓ Switched to standalone config: CLAUDE-full.md → CLAUDE.md")
-    print("  Git will ignore local changes to CLAUDE.md (assume-unchanged)")
+    _out.emit(Tag.SETUP, f"No managed platform detected ({shared_config} not found)")
+    _out.emit(Tag.SETUP, "✓ Switched to standalone config: CLAUDE-full.md → CLAUDE.md")
+    _out.emit(Tag.SETUP, "  Git will ignore local changes to CLAUDE.md (assume-unchanged)")
     return 0
