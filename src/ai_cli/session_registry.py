@@ -34,8 +34,16 @@ from .config import get_remote_machine, get_xdg_state_home
 
 LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+#: Schema 2 added each record's ``exit`` and ``boot_id``. A schema-1 file is read with both
+#: null and is written back as schema 2 by the next change, never by a read alone.
+SCHEMA_VERSION = 2
+_READABLE_SCHEMAS = (1, 2)
 REGISTRY_FILENAME = "iterm2-sessions.json"
+#: Why a session's previous run ended.
+EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "unknown")
+LINUX_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+#: Bound on the one read-only ``sysctl`` call that reads the macOS boot identity.
+BOOT_ID_TIMEOUT_SECONDS = 5
 #: Bound on the one AppleScript pass a refresh makes; iTerm2 that does not answer in
 #: this long is skipped rather than waited on.
 REFRESH_TIMEOUT_SECONDS = 5
@@ -85,9 +93,42 @@ def load_registry() -> dict:
         raise RegistryError(f"{path} is not valid JSON ({exc.msg}); move it aside to start a new registry") from exc
     if not isinstance(doc, dict) or not isinstance(doc.get("sessions"), list):
         raise RegistryError(f"{path} is not a session registry")
-    if doc.get("schema") != SCHEMA_VERSION:
-        raise RegistryError(f"{path} has schema {doc.get('schema')!r}; this version reads schema {SCHEMA_VERSION}")
+    if doc.get("schema") not in _READABLE_SCHEMAS:
+        readable = " or ".join(str(s) for s in _READABLE_SCHEMAS)
+        raise RegistryError(f"{path} has schema {doc.get('schema')!r}; this version reads schema {readable}")
+    doc["schema"] = SCHEMA_VERSION
+    for record in doc["sessions"]:
+        if isinstance(record, dict):
+            record.setdefault("exit", None)
     return doc
+
+
+def current_boot_id() -> str | None:
+    """This host's boot identity, or None when it cannot be read (and on Windows).
+
+    Linux: the kernel's per-boot ``boot_id``. macOS: ``kern.bootsessionuuid``, read with
+    one read-only ``sysctl`` call that only ever runs on macOS.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            return LINUX_BOOT_ID_PATH.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=BOOT_ID_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        return (result.stdout or "").strip() or None
+    return None
 
 
 @contextlib.contextmanager
@@ -176,6 +217,8 @@ def _new_record(
         "refreshed_at": now,
         "launcher_pid": launcher_pid,
         "ended_at": None,
+        "exit": None,
+        "boot_id": current_boot_id(),
     }
 
 
@@ -220,18 +263,62 @@ def record_launch(
 
 
 def mark_ended(record_id: str) -> None:
-    """Mark a record as cleanly ended so the next prune removes it."""
+    """Mark a record as cleanly ended (a manual exit) so the next prune removes it."""
     if not registry_path().exists():
         return
 
     def mark(doc: dict) -> bool:
         for record in doc["sessions"]:
             if record.get("id") == record_id:
-                record["ended_at"] = _now()
+                now = _now()
+                record["ended_at"] = now
+                if record.get("exit") is None:
+                    record["exit"] = {"cause": "manual_exit", "at": now, "evidence": {"source": "on_clean_exit"}}
                 return True
         return False
 
     _mutate(mark)
+
+
+def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None = None) -> list[dict]:
+    """Set the ``exit`` of every record whose id or name is ``name_or_id``; return those records.
+
+    Also sets ``ended_at`` when it is unset. An empty list means nothing matched and
+    nothing was written.
+    """
+    if cause not in EXIT_CAUSES:
+        raise ValueError(f"cause must be one of {', '.join(EXIT_CAUSES)}, got {cause!r}")
+    if not registry_path().exists():
+        return []
+    stamp = at or _now()
+    marked: list[dict] = []
+
+    def mark(doc: dict) -> bool:
+        for record in doc["sessions"]:
+            if name_or_id in (record.get("id"), record.get("name")):
+                record["exit"] = {"cause": cause, "at": stamp, "evidence": dict(evidence)}
+                if not record.get("ended_at"):
+                    record["ended_at"] = stamp
+                marked.append(record)
+        return bool(marked)
+
+    _mutate(mark)
+    return marked
+
+
+def remove(record_ids: Iterable[str]) -> None:
+    """Remove the records with these ids (ones a caller has already proved gone)."""
+    ids = set(record_ids)
+    if not ids or not registry_path().exists():
+        return
+
+    def drop(doc: dict) -> bool:
+        kept = [r for r in doc["sessions"] if r.get("id") not in ids]
+        changed = len(kept) != len(doc["sessions"])
+        doc["sessions"] = kept
+        return changed
+
+    _mutate(drop)
 
 
 @dataclass(frozen=True)

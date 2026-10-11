@@ -11,11 +11,14 @@ import textwrap
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import run_cli
+from conftest import TEST_BOOT_ID, run_cli
 
 from ai_cli import session_registry
 from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch, cli
+
+# Taken at import, before conftest's autouse fixture pins the reader for every test.
+_REAL_CURRENT_BOOT_ID = getattr(session_registry, "current_boot_id", None)
 
 _ITERM_SESSION_ID = "w0t3p1:ABCDEF01-2345-6789-ABCD-EF0123456789"
 _PANE_TTY = "/dev/ttys042"
@@ -214,6 +217,8 @@ def test_given_tracking_enabled_when_local_session_launched_then_one_record_exis
     }
     assert record["launcher_pid"] == os.getpid()
     assert record["ended_at"] is None
+    assert record["exit"] is None
+    assert record["boot_id"] == TEST_BOOT_ID
 
 
 def test_given_an_unnamed_launch_when_recorded_then_relaunch_argv_names_the_resolved_session(
@@ -481,6 +486,8 @@ def test_given_ssh_exits_zero_when_the_remote_wrapper_returns_then_the_record_is
     assert code == 0
     (record,) = _sessions(state_home)
     assert record["ended_at"] is not None
+    assert record["exit"]["cause"] == "manual_exit"
+    assert record["exit"]["evidence"] == {"source": "on_clean_exit"}
 
 
 @pytest.mark.parametrize(
@@ -789,3 +796,185 @@ def test_given_a_corrupt_registry_when_listed_then_the_error_names_the_file(stat
 
     assert code == 1
     assert "iterm2-sessions.json is not valid JSON" in err
+
+
+# --- Exit causes -----------------------------------------------------------------
+
+
+def _schema_1_record(name):
+    """A record as schema 1 wrote it: no ``exit`` and no ``boot_id``."""
+    return {
+        "id": f"id-{name}",
+        "kind": "local",
+        "name": name,
+        "relaunch_argv": ["ai", "c", name],
+        "cwd": None,
+        "remote": None,
+        "iterm2": None,
+        "launched_at": "2026-01-01T09:00:00Z",
+        "refreshed_at": "2026-01-01T09:00:00Z",
+        "launcher_pid": None,
+        "ended_at": None,
+    }
+
+
+def _write_schema_1(state_home, *records):
+    path = _registry_file(state_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps({"schema": 1, "machine": "test", "sessions": list(records)})
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def test_given_a_schema_1_registry_when_listed_then_every_record_reads_exit_null_and_the_file_is_not_rewritten(
+    state_home,
+):
+    original = _write_schema_1(state_home, _schema_1_record("c-myproject-1"), _schema_1_record("c-myproject-2"))
+
+    code, out, err = run_cli(["ai", "iterm2", "sessions", "--json"])
+
+    assert (code, err) == (0, "")
+    assert [r["exit"] for r in json.loads(out)["sessions"]] == [None, None]
+    assert _registry_file(state_home).read_text(encoding="utf-8") == original
+
+
+def test_given_a_schema_1_registry_when_an_exit_is_recorded_then_the_file_is_rewritten_as_schema_2(state_home):
+    _write_schema_1(state_home, _schema_1_record("c-myproject-1"), _schema_1_record("c-myproject-2"))
+
+    code, _, _ = run_cli(["ai", "iterm2", "sessions", "--record-exit", "c-myproject-1", "--cause", "manual_exit"])
+
+    assert code == 0
+    doc = json.loads(_registry_file(state_home).read_text(encoding="utf-8"))
+    assert doc["schema"] == 2
+    assert doc["sessions"][0]["exit"]["cause"] == "manual_exit"
+    assert doc["sessions"][1]["exit"] is None
+
+
+def test_given_a_registry_newer_than_this_version_when_read_then_the_error_names_both_schemas(state_home):
+    path = _registry_file(state_home)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"schema": 3, "machine": "test", "sessions": []}), encoding="utf-8")
+
+    code, _, err = run_cli(["ai", "iterm2", "sessions"])
+
+    assert code == 1
+    assert "has schema 3" in err
+
+
+def test_given_a_recorded_session_when_record_exit_is_called_then_the_record_carries_cause_time_and_evidence(
+    state_home,
+):
+    _seed("c-myproject-1")
+    _seed("c-myproject-2")
+
+    code, out, _ = run_cli(
+        [
+            "ai",
+            "iterm2",
+            "sessions",
+            "--record-exit",
+            "c-myproject-1",
+            "--cause",
+            "manual_exit",
+            "--evidence",
+            '{"reason": "prompt_input_exit"}',
+        ]
+    )
+
+    assert code == 0
+    assert "c-myproject-1: exit recorded (cause=manual_exit)" in out
+    first, second = _sessions(state_home)
+    assert first["exit"]["cause"] == "manual_exit"
+    assert first["exit"]["evidence"] == {"reason": "prompt_input_exit"}
+    assert first["exit"]["at"].endswith("Z")
+    assert first["ended_at"] is not None
+    assert second["exit"] is None
+    assert second["ended_at"] is None
+
+
+def test_given_a_record_id_when_record_exit_is_called_then_that_record_is_the_one_marked(state_home):
+    record = _seed("c-myproject-1")
+
+    code, _, _ = run_cli(["ai", "iterm2", "sessions", "--record-exit", record["id"], "--cause", "host_reboot"])
+
+    assert code == 0
+    assert _sessions(state_home)[0]["exit"]["cause"] == "host_reboot"
+
+
+def test_given_no_such_session_when_record_exit_is_called_then_it_fails_naming_it_and_writes_nothing(state_home):
+    _seed("c-myproject-1")
+    before = _registry_file(state_home).read_bytes()
+
+    code, _, err = run_cli(["ai", "iterm2", "sessions", "--record-exit", "c-other-9", "--cause", "manual_exit"])
+
+    assert code == 1
+    assert "no recorded session named c-other-9" in err
+    assert _registry_file(state_home).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        pytest.param(["--record-exit", "c-myproject-1"], "--cause", id="cause-missing"),
+        pytest.param(["--cause", "manual_exit"], "--record-exit", id="cause-without-record-exit"),
+        pytest.param(["--record-exit", "c-myproject-1", "--cause", "reboot"], "reboot", id="cause-not-a-class"),
+        pytest.param(
+            ["--record-exit", "c-myproject-1", "--cause", "manual_exit", "--evidence", "{not json"],
+            "--evidence",
+            id="evidence-not-json",
+        ),
+        pytest.param(
+            ["--record-exit", "c-myproject-1", "--cause", "manual_exit", "--evidence", "[1]"],
+            "--evidence",
+            id="evidence-not-an-object",
+        ),
+        pytest.param(
+            ["--record-exit", "c-myproject-1", "--cause", "manual_exit", "--prune"], "--prune", id="with-prune"
+        ),
+    ],
+)
+def test_given_a_malformed_record_exit_when_invoked_then_it_is_a_usage_error_and_nothing_is_written(
+    state_home, args, message
+):
+    _seed("c-myproject-1")
+    before = _registry_file(state_home).read_bytes()
+
+    code, _, err = run_cli(["ai", "iterm2", "sessions", *args])
+
+    assert code == 1
+    assert message in err
+    assert _registry_file(state_home).read_bytes() == before
+
+
+def test_given_linux_when_the_boot_identity_is_read_then_it_comes_from_the_kernel_boot_id_file(tmp_path, monkeypatch):
+    boot_file = tmp_path / "boot_id"
+    boot_file.write_text("6724abcd-0000\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(session_registry, "LINUX_BOOT_ID_PATH", boot_file)
+
+    assert _REAL_CURRENT_BOOT_ID() == "6724abcd-0000"
+    boot_file.unlink()
+    assert _REAL_CURRENT_BOOT_ID() is None
+
+
+def test_given_macos_when_the_boot_identity_is_read_then_it_asks_sysctl_for_the_boot_session_uuid(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    calls = []
+
+    def run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="A1B2-C3\n", stderr="")
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=run):
+        assert _REAL_CURRENT_BOOT_ID() == "A1B2-C3"
+    assert calls == [["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"]]
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=OSError("no sysctl")):
+        assert _REAL_CURRENT_BOOT_ID() is None
+
+
+def test_given_another_platform_when_the_boot_identity_is_read_then_it_is_none_and_runs_nothing(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with patch("ai_cli.session_registry.subprocess.run", side_effect=AssertionError("ran a program")):
+        assert _REAL_CURRENT_BOOT_ID() is None

@@ -1820,6 +1820,7 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
 #: both are forwarded only when set, so an ordinary launch is unchanged.
 _TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
+_LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
 
 
 def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
@@ -1847,6 +1848,10 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
 
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
+
+    ``AIH_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
+    forwarded, empty when unset: the first relaunch after a reboot starts the tmux
+    server, whose global environment then holds that reason for every later session.
     """
     flags: list[str] = []
     for var in _TMUX_FORWARDED_VARS:
@@ -1855,6 +1860,7 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
             value = value or str(Path.home() / ".local" / "state")
         if value:
             flags += ["-e", f"{var}={value}"]
+    flags += ["-e", f"{_LAUNCH_REASON_VAR}={env.get(_LAUNCH_REASON_VAR, '')}"]
     return flags
 
 
@@ -4647,6 +4653,29 @@ def _adopt_sessions(dry_run: bool) -> None:
     click.echo(", ".join(counts) + (" (dry run: registry not written)" if dry_run else ""))
 
 
+def _record_session_exit(name: str | None, cause: str | None, evidence: str | None, *, combined: bool) -> None:
+    if name is None:
+        raise click.UsageError("-c/--cause and -e/--evidence require -x/--record-exit")
+    if cause is None:
+        raise click.UsageError("-x/--record-exit requires -c/--cause")
+    if combined:
+        raise click.UsageError("-x/--record-exit cannot be combined with --prune, --refresh, --json or --adopt")
+    try:
+        parsed = json.loads(evidence) if evidence is not None else {}
+    except json.JSONDecodeError as exc:
+        raise click.UsageError(f"-e/--evidence is not valid JSON ({exc.msg})") from exc
+    if not isinstance(parsed, dict):
+        raise click.UsageError("-e/--evidence must be a JSON object")
+    try:
+        marked = _session_registry.record_exit(name, cause=cause, evidence=parsed)
+    except (_session_registry.RegistryError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not marked:
+        raise click.ClickException(f"no recorded session named {name} in {_session_registry.registry_path()}")
+    for record in marked:
+        click.echo(f"{record.get('name')}: exit recorded (cause={cause})")
+
+
 @cmd_iterm2_group.command("sessions", help="List the sessions recorded for iTerm2 restore; prune or refresh them")
 @click.option("-p", "--prune", is_flag=True, help="Remove records whose session is proved gone")
 @click.option(
@@ -4664,11 +4693,36 @@ def _adopt_sessions(dry_run: bool) -> None:
     help="Record live ai c sessions (local tmux, remote ai c -R launchers) that have no record yet",
 )
 @click.option("-d", "--dry-run", is_flag=True, help="With --adopt, print what would be adopted and write nothing")
-def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run):
+@click.option(
+    "-x",
+    "--record-exit",
+    "record_exit",
+    default=None,
+    metavar="NAME",
+    help="Record why the session NAME (or record id) ended; needs --cause",
+)
+@click.option(
+    "-c",
+    "--cause",
+    type=click.Choice(_session_registry.EXIT_CAUSES),
+    default=None,
+    help="With --record-exit, the exit cause",
+)
+@click.option(
+    "-e",
+    "--evidence",
+    default=None,
+    metavar="JSON",
+    help="With --record-exit, a JSON object stored as the exit's evidence",
+)
+def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run, record_exit, cause, evidence):
     if probe_remote and not prune:
         raise click.UsageError("-P/--probe-remote requires -p/--prune")
     if dry_run and not adopt:
         raise click.UsageError("-d/--dry-run requires -a/--adopt")
+    if record_exit is not None or cause is not None or evidence is not None:
+        _record_session_exit(record_exit, cause, evidence, combined=prune or refresh or as_json or adopt)
+        return
     if adopt:
         if prune or refresh or as_json:
             raise click.UsageError("-a/--adopt cannot be combined with --prune, --refresh or --json")
