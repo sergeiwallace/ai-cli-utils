@@ -240,7 +240,7 @@ def test_the_reload_comparison_requires_both_values_to_be_known(engine: str) -> 
         "mtime is what produced the infinite reload loop"
     )
     # And the reload line must be unreachable except through that guard.
-    reload_line = 'echo "ai-cli session script updated — reloading..."'
+    reload_line = 'echo "[session] session script updated — reloading..."'
     assert script.count(reload_line) == 1
     guard_at = script.index(guard)
     assert guard_at < script.index(reload_line)
