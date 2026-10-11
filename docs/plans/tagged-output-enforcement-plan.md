@@ -2,7 +2,7 @@
 title: "Every output line carries a log type tag, enforced by design"
 category: plan
 tags: [output, logging, launch, cli-ux, enforcement]
-status: in-progress
+status: implemented
 task: AI-CLI-9brz
 source: session-2026-10-11
 ---
@@ -58,6 +58,17 @@ Measured at base `c221d40` with an AST scan of `src/ai_cli/` (the scan becomes t
 
 So of 523 Python output call sites, only the two reporter writes carried a tag by construction.
 
+Found during implementation, and converted with the rest:
+
+| Output path | Sites |
+|---|---|
+| `print` passed as a value (`out = stdout_fn or print`, `process_hygiene.py`) | 2 |
+| prompts: `input(prompt)` 3, `click.confirm` 3 | 6 |
+| `subprocess.run(..., capture_output=<flag>)`, inheriting the terminal whenever the flag is false (`ai update`, uv installs, `git checkout`, the layout script) | 5 |
+| a child `ai update` whose already-tagged output was replayed under a second tag (`[update] [update] ...`) | 1 |
+| the generated script's stderr relay, which passed child lines (direnv, git) through untagged | 1 |
+| `launch_logging._log_level` reading `Error:`/`Warning:` at column 0, so tagged lines lost their level in the launch log | 1 |
+
 ## Design
 
 One module, `src/ai_cli/output.py`, is the only code that writes to the terminal.
@@ -93,8 +104,12 @@ lets the child inherit stdout or stderr. Allowlist, each entry named in the test
 |---|---|
 | `output.py` | the interface itself |
 | `launch_logging.py` | wraps `sys.stderr` to mirror already-rendered lines into the launch log file; originates none |
-| `ssh`/`mosh` transports (`transport.py`, three calls) | interactive terminal handoff: the remote session owns the terminal |
-| `sudo -v` (`native_deps.py`) | the password prompt must reach the terminal; capturing it hangs the install |
+| `ssh`/`mosh` transports (`transport.py` `run_ssh_with_reconnect`, `_run_transport_loop`) | interactive terminal handoff: the remote session owns the terminal |
+| `sudo -v` (`native_deps.py` `_authenticate_root`) | the password prompt must reach the terminal; capturing it hangs the install |
+
+circusd, which daemonizes and logs to its own `logoutput` file, now gets `DEVNULL` rather than an
+allowlist entry: a pipe would be held open by the daemon, and an inherited terminal is the bypass.
+The macOS `open -na` and the iTerm2 layout script run through `run_relayed`.
 
 The generated session shell script gets the same rule at its own level: a test renders it and fails on
 any `echo` / `printf` user message that does not start with `[session] ` or another tag.
@@ -103,37 +118,39 @@ any `echo` / `printf` user message that does not start with `[session] ` or anot
 
 ### T-01: `ai_cli.output`
 
-- [ ] `Tag`, `Untagged`, `emit`, `warning`, `error`, `raw`, `run_relayed`, logging handler.
-- [ ] `emit` with a non-`Tag` raises `TypeError`; `raw` with a non-`Untagged` reason raises `TypeError`.
-- [ ] TTY colour, and no `\x1b` on a non-TTY or under `NO_COLOR`.
-- [ ] `LaunchReporter` renders through it; its existing tests stay green.
+- [x] `Tag`, `Untagged`, `emit`, `warning`, `error`, `raw`, `run_relayed`, logging handler.
+- [x] `emit` with a non-`Tag` raises `TypeError`; `raw` with a non-`Untagged` reason raises `TypeError`.
+- [x] TTY colour, and no `\x1b` on a non-TTY or under `NO_COLOR`.
+- [x] `LaunchReporter` renders through it; its existing tests stay green.
 
 ### T-02: Route every Python output site through it
 
-- [ ] Every site in the inventory converted; hand-copied prefixes (`[memory-watch]`, `ai-cli:`,
+- [x] Every site in the inventory converted; hand-copied prefixes (`[memory-watch]`, `ai-cli:`,
       `ai-cli-utils:`, leading `Error:`/`Warning:`) become the tag or the label.
-- [ ] `--json`, `ai internal` replies, statusline, `--version`, help and escape sequences go through `raw`.
-- [ ] Click usage errors render tagged (`[cli] Error: ...`).
+- [x] `--json`, `ai internal` replies, statusline, `--version`, help and escape sequences go through `raw`.
+- [x] Click usage errors render tagged (`[cli] Error: ...`).
 
 ### T-03: Child-process relay
 
-- [ ] The dolt supervisor, circusd and macOS `open -na` run through `run_relayed` (or have no terminal
+- [x] The dolt supervisor, circusd and macOS `open -na` run through `run_relayed` (or have no terminal
       output at all), so `dolt_server: healthy (socket accepted)` prints as `[dolt_server] healthy (socket accepted)`.
 
 ### T-04: Enforcement
 
-- [ ] AST test with the allowlist above; adding a raw `print` turns it red (mutation control).
-- [ ] Rendered session-script test.
+- [x] AST test with the allowlist above; adding a raw `print` turns it red (mutation control).
+- [x] Session-script test: scans `session_script.py` for every `echo`/`printf` message that reaches the
+      terminal and requires a registered tag; the script's stderr relay tags untagged child lines `[session]`.
 
 ### T-05: Proof through the real entry point
 
-- [ ] `ai c ... --dry-run` and a mocked real launch through `ai_cli.main.cli`: every emitted stdout and
-      stderr line matches `^\[[a-z0-9_-]+\] `.
-- [ ] `ai internal allocate-session-name` stdout stays a bare JSON document; `--json` output stays parseable.
+- [x] `ai c 7 --dry-run`, an `ai c -R 2` launch to its ssh handoff (and a dropped link), and a Click usage
+      error, all through `ai_cli.main.cli`: every emitted stdout and stderr line matches `^\[[a-z0-9_-]+\] `,
+      and the supervisor's stubbed `dolt_server: healthy (socket accepted)` arrives as `[dolt_server] healthy ...`.
+- [x] `ai internal allocate-session-name` stdout stays a bare JSON document; `ai iterm2 sessions --json` stays parseable.
 
 ### T-06: Docs
 
-- [ ] README "Launch output" section and `docs/designs/architecture.md` name the interface and the rule.
+- [x] README "Launch output" section and `docs/designs/architecture.md` name the interface and the rule.
 
 ## Decisions
 
