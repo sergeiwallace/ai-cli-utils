@@ -526,6 +526,15 @@ intact — `ai c -R` reattaches, bounded by `[remote] reconnect_attempts` (defau
 anything else, 255 above all, is a transport failure. mosh needs none of this: it survives a
 dropped link and a roaming address by design.
 
+The budget bounds **one outage**, not the session's lifetime (AI-CLI-qre8). A connection
+that stayed up for `[remote] reconnect_stable_seconds` (default 300) was working, so the drop
+that ends it starts a fresh budget and a fresh backoff. Before this, a session that had
+reattached cleanly nine times over several days gave up on its tenth brief blip, while its
+remote tmux session and agent kept running. However the runner ends (`clean_exit`,
+`interrupted`, `gave_up`), it writes the verdict, last ssh exit code, failed-attempt count
+and total drops to `~/.local/state/ai-cli-utils/transport-outcomes/<session>.json`, and that
+record is kept after the launcher exits.
+
 This is deliberately indifferent to *why* the link dropped, because from the client side an
 intermediary's idle timeout, its absolute session cap and a real network failure are not
 distinguishable — reattaching covers all three.
