@@ -941,7 +941,7 @@ def test_given_a_malformed_record_exit_when_invoked_then_it_is_a_usage_error_and
 
     code, _, err = run_cli(["ai", "iterm2", "sessions", *args])
 
-    assert code == 2
+    assert code == 1
     assert message in err
     assert _registry_file(state_home).read_bytes() == before
 

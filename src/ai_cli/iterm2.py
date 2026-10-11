@@ -153,6 +153,18 @@ ssh        = "Default"
 # stagger_seconds = 1.0
 ## true = print the plan and ask before touching iTerm2 (never at startup)
 # confirm = false
+
+# [iterm2.persistence.restore.relaunch]
+## false = `restore --startup` relaunches nothing and prints why
+# on_terminal_reopen = true
+
+# [iterm2.persistence.restore.relaunch.scenarios]
+## Relaunch a session whose previous run ended this way; false = list it as skipped with its cause.
+## A cause the restore could not decide ("unknown") follows terminal_quit_or_crash.
+# host_reboot = true
+# terminal_quit_or_crash = true
+## A session exited by hand is not resurrected by the terminal reopening
+# manual_exit = false
 """
 
 #: Every ``[iterm2.persistence]`` key and its default. A nested dict is a sub-table; the
@@ -185,6 +197,10 @@ _PERSISTENCE_DEFAULTS: dict = {
         "max_sessions": 0,
         "stagger_seconds": 1.0,
         "confirm": False,
+        "relaunch": {
+            "on_terminal_reopen": True,
+            "scenarios": {"host_reboot": True, "terminal_quit_or_crash": True, "manual_exit": False},
+        },
     },
 }
 

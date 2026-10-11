@@ -558,7 +558,7 @@ def _registry_records(machine) -> dict[str, dict]:
 
 
 def _typed_text(script: str) -> str:
-    return script.split('write text "', 1)[1].rsplit('"', 1)[0]
+    return script.split('write text "', 1)[1].split('"\n', 1)[0]
 
 
 @pytest.mark.parametrize(
