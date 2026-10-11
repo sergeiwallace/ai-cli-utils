@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import output as _out
+from .output import Untagged
+
 
 @dataclass
 class NotificationResult:
@@ -314,8 +317,7 @@ class NotificationManager:
             return
         badge = f"✓ {msg}"
         encoded = __import__("base64").b64encode(badge.encode()).decode()
-        sys.stderr.write(f"\033]1337;SetBadgeFormat={encoded}\007")
-        sys.stderr.flush()
+        _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetBadgeFormat={encoded}\007", err=True, nl=False)
 
     def notify(self, msg: str):
         """Update iTerm2 badge to reflect completion state."""

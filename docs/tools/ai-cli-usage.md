@@ -100,6 +100,20 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   no stale sessions, and does not auto-update the CLI.
 
 Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
+The name records which machine launched the session. `ai c <name> -R` attaches to a live
+session of that name on the remote host whichever way it was launched, so a session the
+remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
+`c-r-` session; only a slot with no live session is allocated as `c-r-`.
+
+Before a remote launch, when this machine's `ai` is an editable install, the launcher
+fetches `origin/main` into that checkout (bounded by a 20 s timeout) and fast-forwards a
+checkout that is behind, then restarts itself on the new code. The remote host's copy
+is updated separately, so without this a client-side fix never reached the machine
+running the client. It only fast-forwards a checkout that is clean and on `main`; a
+dirty, diverged or other-branch checkout is left exactly as it was, the `Install:` line
+says how far behind it is, and a warning names the checkout and the one command that
+fixes it. A fetch that fails or times out reads `could not check origin/main` and the
+launch continues.
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 

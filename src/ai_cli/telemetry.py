@@ -9,9 +9,11 @@ import json
 import os
 import socket
 import sqlite3
-import sys
 import time
 from pathlib import Path
+
+from . import output as _out
+from .output import Tag
 
 _DB_PATH = Path.home() / ".ai-cli" / "telemetry.db"
 
@@ -147,7 +149,7 @@ def telemetry_writer() -> int:
     from .sync import _acquire_pid_file, _release_pid_file
 
     if not _acquire_pid_file("telemetry-writer"):
-        print("telemetry writer is already running.", file=sys.stderr)
+        _out.emit(Tag.TELEMETRY, "telemetry writer is already running.", err=True)
         return 2
 
     conn = init_db()
@@ -164,18 +166,18 @@ def telemetry_writer() -> int:
                 ts=data.get("ts"),
             )
         except Exception as e:
-            print(f"[telemetry-writer] write error: {e}", file=sys.stderr)
+            _out.emit(Tag.TELEMETRY_WRITER, f"write error: {e}", err=True)
 
     async def run():
         await client.connect()
         if not client.nc:
-            print("NATS unavailable — cannot start telemetry writer.", file=sys.stderr)
+            _out.emit(Tag.TELEMETRY, "NATS unavailable — cannot start telemetry writer.", err=True)
             return False
-        print("[telemetry-writer] connected, consuming telemetry.action.>")
+        _out.emit(Tag.TELEMETRY_WRITER, "connected, consuming telemetry.action.>")
         await client.subscribe_durable("telemetry.action.>", "telemetry-writer", on_event)
         return True
 
-    print("ai telemetry writer — consuming events (Ctrl+C to stop)")
+    _out.emit(Tag.TELEMETRY, "ai telemetry writer — consuming events (Ctrl+C to stop)")
     try:
         ok = asyncio.run(run())
     except KeyboardInterrupt:

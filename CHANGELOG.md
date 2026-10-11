@@ -141,6 +141,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ai c <name> -R` kept running a stale client and said it was current.** A remote
+  launch updated the remote host's ai-cli-utils but never the local checkout running
+  the launch, and the install check only compared that checkout's files with what was
+  last installed from them, so an unpulled editable checkout printed
+  `Install: editable checkout ...; current` while missing the fix it needed. A remote
+  launch now fetches `origin/main` into an editable client checkout and fast-forwards
+  it when it is clean and on `main`, then restarts on the new code. Otherwise it leaves
+  the checkout alone, says how many commits behind it is, and prints the command that
+  fixes it; a failed or timed-out fetch reads `could not check origin/main` and the
+  launch continues.
+
 - **An accidental Ctrl+Z froze an `ai c` session with no way back** (AI-CLI-y6el).
   Claude Code stops its whole process group on Ctrl+Z and says to run `fg`, but an
   `ai c` pane has no job-control shell to run it, so nothing typed into the pane

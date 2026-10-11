@@ -3371,7 +3371,7 @@ def test_sync_push_when_cc_active_on_server_then_aborts(tmp_path, capsys):
                 with patch("ai_cli.sync.is_cc_active_on_server", return_value=True):
                     result = sync_push([])
     assert result == 1
-    assert "WARNING" in capsys.readouterr().err
+    assert "[sync] Warning: " in capsys.readouterr().err
 
 
 def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
@@ -3408,7 +3408,7 @@ def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
                                     with patch("ai_cli.sync.git_commit_staged", return_value=False):
                                         result = sync_push([])
     assert result == 0
-    assert "WARNING" in capsys.readouterr().err
+    assert "[sync] Warning: " in capsys.readouterr().err
 
 
 def test_sync_push_when_cc_check_exception_then_proceeds_silently(tmp_path):
@@ -3794,7 +3794,7 @@ def test_sync_pull_when_cc_active_locally_then_prints_warning(tmp_path, capsys):
                                         with patch("ai_cli.sync.purge_phantom_history_entries"):
                                             result = sync_pull([])
     assert result == 0
-    assert "WARNING" in capsys.readouterr().err
+    assert "[sync] Warning: " in capsys.readouterr().err
 
 
 def test_sync_pull_when_init_staging_raises_then_returns_1(tmp_path, capsys):

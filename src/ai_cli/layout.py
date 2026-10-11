@@ -10,16 +10,17 @@ CLI surface: `ai layout <name|list|validate|profiles>`
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from . import output as _out
 from .icon_generator import (
     generate_session_icon,
 )
+from .output import Tag
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -223,11 +224,11 @@ def cmd_layout_list() -> int:
     """List available layout files."""
     d = _layouts_dir()
     if not d.exists():
-        print(f"No layouts directory found at {d}")
+        _out.emit(Tag.LAYOUT, f"No layouts directory found at {d}")
         return 0
     files = sorted(d.glob("*.yaml"))
     if not files:
-        print(f"No layout files found in {d}")
+        _out.emit(Tag.LAYOUT, f"No layout files found in {d}")
         return 0
     for f in files:
         name = f.stem
@@ -235,9 +236,9 @@ def cmd_layout_list() -> int:
             layout = load_layout(name)
             tab_names = ", ".join(t.name for t in layout.tabs)
             desc = f" — {layout.description}" if layout.description else ""
-            print(f"  {name}{desc} [{tab_names}]")
+            _out.emit(Tag.LAYOUT, f"  {name}{desc} [{tab_names}]")
         except Exception as e:
-            print(f"  {name} (invalid: {e})")
+            _out.emit(Tag.LAYOUT, f"  {name} (invalid: {e})")
     return 0
 
 
@@ -245,13 +246,13 @@ def cmd_layout_validate(name: str) -> int:
     """Validate a layout YAML file without applying it."""
     try:
         layout = load_layout(name)
-        print(f"✓ '{name}' is valid — {len(layout.tabs)} tab(s)")
+        _out.emit(Tag.LAYOUT, f"✓ '{name}' is valid — {len(layout.tabs)} tab(s)")
         return 0
     except FileNotFoundError as e:
-        print(f"✗ {e}", file=sys.stderr)
+        _out.emit(Tag.LAYOUT, f"✗ {e}", err=True)
         return 1
     except ValueError as e:
-        print(f"✗ {e}", file=sys.stderr)
+        _out.emit(Tag.LAYOUT, f"✗ {e}", err=True)
         return 1
 
 
@@ -260,12 +261,12 @@ def cmd_layout_profiles(name: str) -> int:
     try:
         layout = load_layout(name)
     except (FileNotFoundError, ValueError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _out.error(Tag.LAYOUT, f"{e}")
         return 1
     generated = generate_layout_profiles(layout)
     for p in generated:
-        print(f"  Generated: {p}")
-    print(f"Regenerated {len(generated)} profile(s) for '{name}'")
+        _out.emit(Tag.LAYOUT, f"  Generated: {p}")
+    _out.emit(Tag.LAYOUT, f"Regenerated {len(generated)} profile(s) for '{name}'")
     return 0
 
 
@@ -274,7 +275,7 @@ def cmd_layout_apply(name: str) -> int:
     try:
         layout = load_layout(name)
     except (FileNotFoundError, ValueError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _out.error(Tag.LAYOUT, f"{e}")
         return 1
 
     # Generate profiles first (hot-reloaded by iTerm2 before script runs)
@@ -282,11 +283,7 @@ def cmd_layout_apply(name: str) -> int:
 
     # Write and run the Python API launch script
     script_path = _write_launch_script(layout)
-    result = subprocess.run(
-        [sys.executable, str(script_path)],
-        capture_output=False,
-        check=False,
-    )
+    result = _out.run_relayed(Tag.LAYOUT, [sys.executable, str(script_path)], check=False)
     return result.returncode
 
 
@@ -396,18 +393,17 @@ def _write_launch_script(layout: Layout) -> Path:
 def run_layout_command(args: list[str]) -> int:
     """Dispatch `ai layout` subcommands. args = sys.argv[2:]"""
     if not args:
-        print("Usage: ai layout <name|list|validate <name>|profiles <name>>", file=sys.stderr)
+        _out.emit(Tag.LAYOUT, "Usage: ai layout <name|list|validate <name>|profiles <name>>", err=True)
         return 1
 
     sub = args[0]
 
     if sub in ("-h", "--help"):
-        print("Usage: ai layout <name|list|validate <name>|profiles <name>>", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("  list              List available layouts", file=sys.stderr)
-        print("  validate <name>   Validate layout YAML schema", file=sys.stderr)
-        print("  profiles <name>   Regenerate Dynamic Profiles without relaunching", file=sys.stderr)
-        print("  <name>            Apply a layout", file=sys.stderr)
+        _out.emit(Tag.LAYOUT, "Usage: ai layout <name|list|validate <name>|profiles <name>>", err=True)
+        _out.emit(Tag.LAYOUT, "  list              List available layouts", err=True)
+        _out.emit(Tag.LAYOUT, "  validate <name>   Validate layout YAML schema", err=True)
+        _out.emit(Tag.LAYOUT, "  profiles <name>   Regenerate Dynamic Profiles without relaunching", err=True)
+        _out.emit(Tag.LAYOUT, "  <name>            Apply a layout", err=True)
         return 0
 
     if sub == "list":
@@ -415,13 +411,13 @@ def run_layout_command(args: list[str]) -> int:
 
     if sub == "validate":
         if len(args) < 2:
-            print("Usage: ai layout validate <name>", file=sys.stderr)
+            _out.emit(Tag.LAYOUT, "Usage: ai layout validate <name>", err=True)
             return 1
         return cmd_layout_validate(args[1])
 
     if sub == "profiles":
         if len(args) < 2:
-            print("Usage: ai layout profiles <name>", file=sys.stderr)
+            _out.emit(Tag.LAYOUT, "Usage: ai layout profiles <name>", err=True)
             return 1
         return cmd_layout_profiles(args[1])
 

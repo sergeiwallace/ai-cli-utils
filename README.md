@@ -393,6 +393,26 @@ a launch can be read at a glance and its log replayed later:
   to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 
+### Every output line carries a tag
+
+Not only the launcher: every line any `ai` command prints starts with a log type
+tag, `[<tag>] `, matching `^\[[a-z0-9_-]+\] `. Output from a child process the
+launcher runs is relayed under its own tag rather than passed through, so the Dolt
+supervisor's `dolt_server: healthy (socket accepted)` prints as:
+
+```text
+[dolt_server] healthy (socket accepted)
+```
+
+All of it goes through one module, `ai_cli.output`, whose `emit(tag, message)`
+takes a member of the `Tag` enum and refuses anything else, and which owns the
+colour rules above. Untagged output is a short, named list (`Untagged`), kept so
+programs can parse it: `--json` documents, `ai internal` replies, the Claude Code
+statusline segment, `-V/--version`, Click's `--help` text and terminal escape
+sequences. A test scans the package source and fails on any other way of reaching
+the terminal (`print`, `click.echo`, a `sys.stdout`/`sys.stderr` write, a prompting
+`input()`, or a child process left to inherit the terminal).
+
 ## Configuration
 
 ### Claude Code Session Config

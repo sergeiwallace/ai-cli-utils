@@ -1365,6 +1365,38 @@ def _projects_dir_contains_the_checkout(monkeypatch):
     monkeypatch.setattr(_session_module, "_get_projects_dir", lambda: checkout_parent)
 
 
+def dolt_supervisor_is_the_hosts(script: Path) -> bool:
+    """Whether a resolved Dolt supervisor script lives outside this run's temp tree."""
+    resolved = os.path.normcase(os.path.realpath(script))
+    return not any(resolved == root or resolved.startswith(root + os.sep) for root in _test_temp_roots())
+
+
+@pytest.fixture(autouse=True)
+def _refuse_the_hosts_dolt_supervisor(monkeypatch):
+    """Never let a session-launch test discover the host's own Dolt supervisor.
+
+    ``_projects_dir_contains_the_checkout`` points ``projects_dir`` at the checkout's
+    parent. In a main-tree checkout at ``~/projects/<repo>`` that parent is the real
+    projects directory, so ``_dolt_server_script()`` finds the sibling ai-harness
+    checkout's ``scripts/dolt_server.py`` and every ``cli()`` launch test runs it,
+    through whatever ``subprocess.run`` stub the test installed for SSH. In a worktree
+    or a CI checkout there is no such sibling, so the same tests pass there and fail
+    only on a developer's main tree. A supervisor a test planted under its own temp
+    tree (``[dolt_server] script_path`` or a patched ``projects_dir``) still resolves.
+    """
+    import ai_cli.main as _main_module
+
+    real = _main_module._dolt_server_script
+
+    def hermetic():
+        script = real()
+        if script is not None and dolt_supervisor_is_the_hosts(script):
+            return None
+        return script
+
+    monkeypatch.setattr(_main_module, "_dolt_server_script", hermetic)
+
+
 @pytest.fixture(autouse=True)
 def _reset_registry_cache():
     """Reset the project registry cache before each test."""

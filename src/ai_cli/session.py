@@ -553,18 +553,23 @@ def resolve_session(prefix: str, name: str) -> str:
     res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{name}"], capture_output=True, check=False)
     if res.returncode == 0:
         return f"{prefix}{name}"
-    if name.isdigit():
-        match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
-        if match:
-            engine_short, project_prefix = match.groups()
-            expected_prefix = prefix.casefold()
-            candidates = [
-                session_name
-                for session_name in _matching_tmux_sessions(engine_short, project_prefix, name)
-                if session_name.casefold().startswith(expected_prefix)
-            ]
-            if len(candidates) == 1:
-                return candidates[0]
+    match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
+    if match:
+        # A remote client resumes with the full session name its allocator returned,
+        # which is local-prefixed when this host launched the session itself.
+        engine_short, project_prefix = match.groups()
+        family = (f"{engine_short}-{project_prefix}-".casefold(), f"{engine_short}-r-{project_prefix}-".casefold())
+        if name.casefold().startswith(family) and name in _tmux_session_names():
+            return name
+    if name.isdigit() and match:
+        expected_prefix = prefix.casefold()
+        candidates = [
+            session_name
+            for session_name in _matching_tmux_sessions(engine_short, project_prefix, name)
+            if session_name.casefold().startswith(expected_prefix)
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
     return find_recent_session(f"{prefix}{name}-")
 
 
