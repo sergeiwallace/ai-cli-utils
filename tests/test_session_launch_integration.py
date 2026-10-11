@@ -377,6 +377,47 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     assert after["c-myproject-2"] in before_ids
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_given_locally_launched_session_when_remote_client_relaunches_it_then_attaches_without_converting_it(
+    patched_subprocess, resume
+):
+    """`ai c <n> -R` from another machine reaches this host as `--is-remote` with the
+    full session name the allocator returned. A session this host launched itself
+    (`c-aih-firstmate-1`) must be attached, never duplicated as `c-r-aih-firstmate-1`,
+    and its script must stay the local one it was launched with (AI-CLI-wyku)."""
+    server = patched_subprocess
+    server.new_session(session_name="c-aih-firstmate-1", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    before_ids = {s.id for s in server.sessions}
+    kwargs = _base_launch_kwargs(name="c-aih-firstmate-1")
+    kwargs.update(is_remote=True, resume=resume, project_prefix_override="aih")
+    engine_script = MagicMock(return_value=f"{_LIVE_CHILD_COMMAND}\n")
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main._resolve_remote_project", return_value=("", "")),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
+        patch("ai_cli.config.get_current_project_name", return_value="ai-harness"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", engine_script),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    assert [s.name for s in server.sessions] == ["c-aih-firstmate-1"]
+    assert {s.id for s in server.sessions} == before_ids
+    assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
+    assert server._execvp_calls[-1][1][-1] == "c-aih-firstmate-1"
+    assert server._execvp_calls[-1][1][:2] == ["tmux", "attach-session"]
+    if not resume:
+        assert engine_script.call_args.kwargs["is_remote"] is False
+        assert engine_script.call_args.args[3] == "c-aih-"
+
+
 def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     """Pre-create ``session_name`` with a pane that is already dead.
 

@@ -1423,7 +1423,14 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
 def _request_remote_session_allocation(
     ssh_args: list[str], engine: str, project_prefix: str, name: str, remote_shell: str
 ) -> tuple[str, str]:
-    """Return the canonical session identity allocated by the remote host."""
+    """Return the canonical session identity allocated by the remote host.
+
+    The remote allocator answers with an existing live session for the slot when
+    there is one, and that session may be one the remote host launched itself
+    (``<engine>-<ai_name>``) rather than one another machine launched there
+    (``<engine>-r-<ai_name>``). Both are attachable identities; only a fresh slot
+    is always ``-r-``.
+    """
     remote_command = (
         'export PATH="$HOME/.local/bin:$PATH"; '
         f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
@@ -1443,11 +1450,13 @@ def _request_remote_session_allocation(
         ai_name = allocation["ai_name"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise RuntimeError("remote session-name allocation returned an invalid response") from exc
-    expected_prefix = f"{engine}-r-"
-    if not isinstance(session_id, str) or not isinstance(ai_name, str) or not session_id.startswith(expected_prefix):
+    if not isinstance(session_id, str) or not isinstance(ai_name, str) or not ai_name:
         raise RuntimeError("remote session-name allocation returned an invalid identity")
-    if session_id.removeprefix(expected_prefix) != ai_name:
-        raise RuntimeError("remote session-name allocation returned inconsistent identities")
+    if session_id not in (f"{engine}-r-{ai_name}", f"{engine}-{ai_name}"):
+        raise RuntimeError(
+            f"remote session-name allocation returned inconsistent identities: session {session_id!r} "
+            f"is neither {engine}-r-{ai_name} nor {engine}-{ai_name}"
+        )
     return session_id, ai_name
 
 
@@ -3613,17 +3622,21 @@ def _do_session_launch(
     _iterm2_cfg = _iterm2._load_iterm2_config()
     _iterm2_slot = _iterm2._assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
 
+    # The session name records who launched it: attaching from another machine to a
+    # session this host launched itself (no ``-r-``) must regenerate that session's
+    # own local script, not convert it into a remote one.
+    script_is_remote = is_remote and session_id.casefold().startswith(f"{engine}-r-")
     script = _session_script.get_engine_script(
         engine,
         ai_name,
         session_id,
-        prefix,
+        f"{engine}{'-r' if script_is_remote else ''}-{project_prefix}-",
         project_prefix,
         uuid,
         use_sandbox,
         str(worktree_path) if worktree_path else None,
         notify=notify,
-        is_remote=is_remote,
+        is_remote=script_is_remote,
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,

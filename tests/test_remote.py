@@ -717,3 +717,97 @@ class TestRemoteSessionIterm2Emit:
         )
 
         assert mock_emit.call_args.kwargs["vscode_authority"] == "framework"
+
+
+# --- remote attach to a session the remote host launched itself (AI-CLI-wyku) ---
+#
+# Root cause: the remote allocator answers with the existing live session for a
+# slot, and a session the remote host launched itself is named `c-<ai_name>`, not
+# `c-r-<ai_name>`. The client accepted only `c-r-`, so `ai c firstmate-1 -R` from
+# another machine failed with "invalid identity" instead of attaching.
+
+
+def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None):
+    """Drive `ai c <name> -R` through cli() with SSH stubbed.
+
+    The allocation reply comes from the real remote allocator code
+    (`build_session_name(..., is_remote=True)`) over the given live tmux names,
+    unless ``allocator_reply`` overrides it with a raw JSON body.
+    """
+    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "ssh"}}
+
+    def remote_ssh(command, **_kwargs):
+        if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+            return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+        if "ai update" in command[-1]:
+            return MagicMock(returncode=0, stdout="current", stderr="")
+        if allocator_reply is not None:
+            return MagicMock(returncode=0, stdout=allocator_reply, stderr="")
+        tokens = shlex.split(shlex.split(command[-1])[-1])
+        engine, prefix, name = tokens[tokens.index("allocate-session-name") + 1 :][:3]
+        with patch("ai_cli.session._tmux_session_names", return_value=live_remote_sessions):
+            session_id, ai_name = build_session_name(engine, prefix, name, is_remote=True)
+        return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
+
+    handoff = MagicMock(return_value=0)
+    stderr = io.StringIO()
+    with (
+        patch("sys.argv", argv),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.session.get_project_prefix", return_value="aih"),
+        patch("ai_cli.config.get_project_aliases", return_value={}),
+        patch("ai_cli.config.resolve_project_prefix_by_name", return_value="aih"),
+        patch("ai_cli.main.trigger_background_update"),
+        patch("ai_cli.main._track_launch"),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.main.subprocess.run", side_effect=remote_ssh),
+        patch("ai_cli.transport.run_ssh_with_reconnect", handoff),
+        patch("sys.stderr", stderr),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+    return exc_info.value.code, handoff, stderr.getvalue()
+
+
+def _remote_session_arg(handoff) -> str:
+    return shlex.split(shlex.split(handoff.call_args[0][0][-1])[-1])[-1]
+
+
+@pytest.mark.parametrize("argv_tail", [[], ["-p", "aih"]])
+def test_given_live_local_prefixed_remote_session_when_remote_launched_then_attaches_that_session(argv_tail):
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "firstmate-1", "-R", *argv_tail], live_remote_sessions=["c-aih-firstmate-1"]
+    )
+
+    assert code in (0, None), stderr
+    assert "invalid identity" not in stderr
+    handoff.assert_called_once()
+    assert _remote_session_arg(handoff) == "c-aih-firstmate-1"
+    assert handoff.call_args[0][1] == ["ai", "internal", "cleanup-session-files", "c-aih-firstmate-1"]
+
+
+def test_given_no_live_remote_session_when_remote_launched_then_allocates_remote_prefixed_slot():
+    code, handoff, stderr = _run_remote_named_launch(["ai", "c", "firstmate-1", "-R"], live_remote_sessions=[])
+
+    assert code in (0, None), stderr
+    assert _remote_session_arg(handoff) == "c-r-aih-firstmate-1"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        json.dumps({"session_id": "c-other-1", "ai_name": "aih-firstmate-1"}),
+        json.dumps({"session_id": "g-aih-firstmate-1", "ai_name": "aih-firstmate-1"}),
+        json.dumps({"session_id": "c-", "ai_name": ""}),
+        json.dumps({"session_id": 7, "ai_name": "aih-firstmate-1"}),
+    ],
+)
+def test_given_malformed_allocator_identity_when_remote_launched_then_errors_before_handoff(reply):
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "firstmate-1", "-R"], live_remote_sessions=[], allocator_reply=reply
+    )
+
+    assert code == 1
+    assert "remote session-name allocation returned" in stderr
+    handoff.assert_not_called()

@@ -100,6 +100,10 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   no stale sessions, and does not auto-update the CLI.
 
 Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
+The name records which machine launched the session. `ai c <name> -R` attaches to a live
+session of that name on the remote host whichever way it was launched, so a session the
+remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
+`c-r-` session; only a slot with no live session is allocated as `c-r-`.
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 
