@@ -379,7 +379,7 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
 
 @pytest.mark.parametrize("resume", [False, True])
 def test_given_locally_launched_session_when_remote_client_relaunches_it_then_attaches_without_converting_it(
-    patched_subprocess, resume
+    patched_subprocess, capsys, resume
 ):
     """`ai c <n> -R` from another machine reaches this host as `--is-remote` with the
     full session name the allocator returned. A session this host launched itself
@@ -393,6 +393,7 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
     engine_script = MagicMock(return_value=f"{_LIVE_CHILD_COMMAND}\n")
 
     with (
+        _tmux_versions_agreeing(),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.main._resolve_remote_project", return_value=("", "")),
         patch("ai_cli.session.cleanup_stale_sessions"),
@@ -408,11 +409,16 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
+    _assert_launch_reached_exec(server, capsys)
     assert [s.name for s in server.sessions] == ["c-aih-firstmate-1"]
     assert {s.id for s in server.sessions} == before_ids
     assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
-    assert server._execvp_calls[-1][1][-1] == "c-aih-firstmate-1"
-    assert server._execvp_calls[-1][1][:2] == ["tmux", "attach-session"]
+    attach = (
+        ["tmux", "attach-session", "-t", "c-aih-firstmate-1"]
+        if resume
+        else ["tmux", "attach-session", "-d", "-t", "c-aih-firstmate-1"]
+    )
+    assert server._execvp_calls == [("tmux", attach)]
     if not resume:
         assert engine_script.call_args.kwargs["is_remote"] is False
         assert engine_script.call_args.args[3] == "c-aih-"
