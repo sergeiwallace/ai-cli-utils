@@ -55,6 +55,17 @@ What each key does to a run is described under [Restore keys](#restore-keys).
 | `stagger_seconds` | `1.0` | Pause between launches. |
 | `confirm` | `false` | Print the plan and ask before acting (never at startup). |
 
+### `[iterm2.persistence.restore.relaunch]` and `[iterm2.persistence.restore.relaunch.scenarios]`
+
+These decide whether restore relaunches a session that is gone, by why it ended (see [Exit causes](#exit-causes)). A session that is still alive is re-attached whatever these say.
+
+| Key | Default | Effect |
+|---|---|---|
+| `on_terminal_reopen` | `true` | `false`: a `--startup` run relaunches nothing and prints `relaunch disabled: restore.relaunch.on_terminal_reopen = false`. An on-demand run is unaffected. |
+| `scenarios.host_reboot` | `true` | Relaunch a session that ended because the machine rebooted. |
+| `scenarios.terminal_quit_or_crash` | `true` | Relaunch a session that ended when the terminal or its tmux server went away. A session whose cause is `unknown` follows this key. |
+| `scenarios.manual_exit` | `false` | Relaunch a session you exited yourself. Off by default because a session you closed on purpose should not come back just because iTerm2 reopened. |
+
 `[iterm2] enabled = false`, the switch for titles, colours and profiles, does not turn off the registry; use `[iterm2.persistence] enabled = false` for that.
 
 ## The registry
@@ -63,7 +74,7 @@ Path: `$XDG_STATE_HOME/ai-cli-utils/iterm2-sessions.json`, which is `~/.local/st
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "machine": "<hostname>",
   "sessions": [
     {
@@ -77,7 +88,9 @@ Path: `$XDG_STATE_HOME/ai-cli-utils/iterm2-sessions.json`, which is `~/.local/st
       "launched_at": "2026-01-01T09:00:00Z",
       "refreshed_at": "2026-01-01T10:00:00Z",
       "launcher_pid": 48213,
-      "ended_at": null
+      "ended_at": null,
+      "exit": null,
+      "boot_id": "<boot identity>"
     },
     {
       "id": "<uuid4>",
@@ -90,11 +103,15 @@ Path: `$XDG_STATE_HOME/ai-cli-utils/iterm2-sessions.json`, which is `~/.local/st
       "launched_at": "2026-01-01T09:05:00Z",
       "refreshed_at": "2026-01-01T09:05:00Z",
       "launcher_pid": 48377,
-      "ended_at": null
+      "ended_at": "2026-01-01T11:00:00Z",
+      "exit": {"cause": "manual_exit", "at": "2026-01-01T11:00:00Z", "evidence": {"source": "on_clean_exit"}},
+      "boot_id": "<boot identity>"
     }
   ]
 }
 ```
+
+A registry written as schema 1 (before `exit` and `boot_id` existed) is still read: every record reads `exit` as `null`. Reading never rewrites the file; the next change to it (a launch, `--record-exit`, a restore) saves it as schema 2.
 
 | Field | Meaning |
 |---|---|
@@ -106,9 +123,19 @@ Path: `$XDG_STATE_HOME/ai-cli-utils/iterm2-sessions.json`, which is `~/.local/st
 | `iterm2` | The pane: `window`, `tab` and `pane` (0-based) with the iTerm2 `session_uuid`, and the pane's `tty`. `null` when the launch was not inside iTerm2. At launch the position comes from `ITERM_SESSION_ID`; a refresh takes it from iTerm2's window list, front to back. |
 | `launched_at`, `refreshed_at` | UTC timestamps of the launch and of the last time the position was confirmed. |
 | `launcher_pid` | The launching process. Locally it becomes the tmux client; for a remote session it is the process holding the ssh connection. `null` for a local session recorded by `--adopt`, which has no launcher. |
-| `ended_at` | Set when the remote ssh connection ended with exit status 0, which means the remote session was exited on purpose. |
+| `ended_at` | Set when the remote ssh connection ended with exit status 0, which means the remote session was exited on purpose, and whenever an exit is recorded. |
+| `exit` | `null` while the session is live. Otherwise why it ended: `cause` (one of `manual_exit`, `terminal_quit_or_crash`, `host_reboot`, `unknown`), `at` (UTC) and a small `evidence` object. See [Exit causes](#exit-causes). |
+| `boot_id` | The machine's boot identity at launch: `/proc/sys/kernel/random/boot_id` on Linux, `kern.bootsessionuuid` on macOS (one read-only `sysctl` call), `null` elsewhere or when it cannot be read. |
 
-A record is removed only when its session is proved gone:
+### Exit causes
+
+An exit is recorded three ways:
+
+- A clean remote exit (ssh exit status 0) records `manual_exit`.
+- `ai iterm2 sessions --record-exit` records whatever cause it is given; a session-end hook is the intended caller.
+- Restore's pre-relaunch sweep classifies every record whose session is proved gone (by the rules below) and has no `exit` yet. A record with `ended_at` set is `manual_exit`. A stored `boot_id` that differs from the current one is `host_reboot`, the same one is `terminal_quit_or_crash`, and a missing one on either side is `unknown`. The evidence holds the liveness reason and both boot identities.
+
+A session is proved gone, and its record can be pruned, only when:
 
 - **Local:** `tmux has-session` reports the session does not exist. A detached session is still alive and is kept.
 - **Remote:** the ssh connection ended with exit status 0 (`ended_at` is set), or `--probe-remote` asked the remote tmux and it has no such session. A hang-up, ssh's own failure code 255, or a reconnect loop that gave up all leave the record in place, because the remote session is most likely still running. A session launched over mosh is only removed by `--probe-remote`.
@@ -118,6 +145,7 @@ A record is removed only when its session is proved gone:
 ```text
 ai iterm2 sessions [-p|--prune [-P|--probe-remote]] [-r|--refresh] [-j|--json]
 ai iterm2 sessions -a|--adopt [-d|--dry-run]
+ai iterm2 sessions -x|--record-exit NAME -c|--cause CAUSE [-e|--evidence JSON]
 ```
 
 - With no option, lists the recorded sessions.
@@ -125,6 +153,8 @@ ai iterm2 sessions -a|--adopt [-d|--dry-run]
 - `-P`, `--probe-remote` (with `--prune`) also asks each remote host over ssh whether its tmux session still exists. It is opt-in because each probe dials the host.
 - `-r`, `--refresh` (macOS) recomputes every record's window, tab and pane in one AppleScript pass. A local session's pane is the one its tmux client is attached to; a remote session's is the pane of the still-running process that holds its ssh connection. A record whose pane is not found keeps its last known position. If iTerm2 does not answer within 5 seconds, it prints `refresh skipped (iTerm2 did not answer in 5s)`, leaves the registry unchanged and exits 0. On other platforms the refresh is skipped with a note.
 - `-j`, `--json` prints the registry as JSON, unredacted (it is your own file), after any prune or refresh. Status lines go to stderr so stdout stays valid JSON.
+
+- `-x`, `--record-exit NAME` records why the session `NAME` (a session name or record id) ended, setting its `exit` and, if unset, `ended_at`. `-c`, `--cause` is required and must be one of `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`; `-e`, `--evidence` is an optional JSON object stored with it. It prints `<name>: exit recorded (cause=<cause>)`, fails naming the session when there is no such record, and cannot be combined with the other options.
 
 Prune runs before refresh when both are given.
 
@@ -153,30 +183,34 @@ skipped pid 48410 (argv does not parse as ai c -R (Option '-p' requires an argum
 ai iterm2 restore [-s|--startup] [-d|--dry-run] [-o|--only local|remote] [-a|--arrangement NAME]
 ```
 
-Restore brings the recorded sessions back into iTerm2 after a restart. It types each session's `relaunch_argv` (preceded by `cd <cwd> &&`) into a pane, so a local session re-attaches to its tmux session and a remote one re-dials through the usual `ai c -R` reconnect ladder, which reports a dead remote session on its own. Restore is macOS-only; elsewhere it prints `restore is macOS/iTerm2 only` and exits 0.
+Restore brings the recorded sessions back into iTerm2 after a restart. It types each session's `relaunch_argv` (preceded by `cd <cwd> &&`) into a pane, so a live local session re-attaches to its tmux session, a remote one re-dials through the usual `ai c -R` reconnect ladder (which reports a dead remote session on its own), and a session that is gone is launched again when its exit cause allows it. Restore is macOS-only; elsewhere it prints `restore is macOS/iTerm2 only` and exits 0.
+
+A session that is relaunched because it was gone gets its cause in front of the `ai` command, so that process has it in its environment: `cd <cwd> && AIH_LAUNCH_REASON=<cause> ai c 9`. A local launch passes it on into the tmux pane (an `ai c` launch with no reason passes it empty, so a value left in a tmux server's environment does not reach later sessions). For `ai c -R` the variable reaches only the local `ai c -R` process: nothing forwards it to the remote host, so the remote session does not see it.
 
 - `-s`, `--startup` marks the run as iTerm2's startup hook (see below).
-- `-d`, `--dry-run` prints the plan and changes nothing: the arrangement line, then each session in launch order with the pane it would go to and the exact command, then every skipped or dead record with its reason. It reads iTerm2's pane list and the process table to make the plan, but types nothing, opens nothing and does not prune the registry.
+- `-d`, `--dry-run` prints the plan and changes nothing: the exit causes the sweep would record (`would record exit`), the arrangement line, then each session in launch order with the pane it would go to and the exact command (with its `AIH_LAUNCH_REASON=` prefix), then every skipped record with its reason or cause. It reads iTerm2's pane list and the process table to make the plan, but types nothing, opens nothing and writes nothing to the registry.
 - `-o`, `--only local|remote` restores one kind only.
 - `-a`, `--arrangement NAME` opens this saved arrangement instead of `default_arrangement`.
 
 ### What a run does, in order
 
 1. Reads `[iterm2.persistence]` from `iterm2.toml`. A switched-off run names the key that switched it off and exits 0: `restore disabled by [iterm2.persistence] enabled=false`, `... [iterm2.persistence.restore] enabled=false`, or, on demand, `... on_demand=false`. A `--startup` run with `on_startup = false` exits 0 without output.
-2. Prunes the registry by the liveness rules above (a dry run only reports what it would remove; with `confirm = true` nothing is removed until you answer yes). Remote hosts are not probed, so a remote session is re-dialled unless it ended cleanly.
-3. Selects records: `include_local`/`include_remote`, `--only`, `include`/`exclude`, `remote_hosts`, then `max_sessions` (the most recently refreshed first). Selected sessions launch in their recorded window, tab and pane order, so tabs come back in the order they had.
-4. Opens the arrangement, on demand only, when `mode` includes `"arrangement"` and a name is set (`--arrangement` or `default_arrangement`). With `use_it2 = true` it asks iTerm2's bundled `it2` utility for the saved arrangements and restores the named one; a name that is not saved is reported and the run continues with sessions only. When `it2` is absent, raises a permission prompt that is not answered within 15 seconds, or `use_it2 = false`, it prints `arrangement: open it via Window > Restore Window Arrangement > <name>` and continues. On `--startup` the arrangement is not opened again, because iTerm2's own "open default arrangement at startup" preference already opened it.
-5. Reads every iTerm2 pane once (one AppleScript pass). At startup an empty answer is retried once a second for up to 15 seconds while iTerm2 finishes opening its windows.
-6. Places each session:
+2. Sweeps the registry: every record whose session is proved gone by the liveness rules above and that has no `exit` gets one ([Exit causes](#exit-causes)), printed as `<name>: exit recorded (cause=<cause>; <reason>)`. A record whose session is alive is never classified. Remote hosts are not probed, so a remote session counts as alive and is re-dialled unless it ended cleanly. A dry run only prints what it would record; with `confirm = true` nothing is written until you answer yes.
+3. On `--startup` with `on_terminal_reopen = false`, prints `relaunch disabled: restore.relaunch.on_terminal_reopen = false` and exits 0, after the sweep and before touching iTerm2.
+4. Filters the gone records by cause: one whose `restore.relaunch.scenarios` key is `false` is listed as `skipped (cause=<cause>; restore.relaunch.scenarios.<cause> = false)` and removed from the registry; an `unknown` one says `cause=unknown follows terminal_quit_or_crash`. The others are relaunched alongside the live ones.
+5. Selects records: `include_local`/`include_remote`, `--only`, `include`/`exclude`, `remote_hosts`, then `max_sessions` (the most recently refreshed first). Selected sessions launch in their recorded window, tab and pane order, so tabs come back in the order they had.
+6. Opens the arrangement, on demand only, when `mode` includes `"arrangement"` and a name is set (`--arrangement` or `default_arrangement`). With `use_it2 = true` it asks iTerm2's bundled `it2` utility for the saved arrangements and restores the named one; a name that is not saved is reported and the run continues with sessions only. When `it2` is absent, raises a permission prompt that is not answered within 15 seconds, or `use_it2 = false`, it prints `arrangement: open it via Window > Restore Window Arrangement > <name>` and continues. On `--startup` the arrangement is not opened again, because iTerm2's own "open default arrangement at startup" preference already opened it.
+7. Reads every iTerm2 pane once (one AppleScript pass). At startup an empty answer is retried once a second for up to 15 seconds while iTerm2 finishes opening its windows.
+8. Places each session:
    - A session that already has a client (a local session attached in some terminal, or a remote session whose ssh connection is still running) is skipped as `already open`, because re-attaching it would pull it out of the pane showing it.
    - With `fill_arrangement = true`, a session whose recorded pane still exists and is an idle shell is typed into that pane. The pane is found by its iTerm2 session UUID, or, when that UUID is gone (an arrangement restore assigns new ones), by its recorded window, tab and pane, which is the last refreshed position.
    - Every other session opens a new tab in the frontmost window (a new window when there is none).
    - `stagger_seconds` passes between launches.
-7. Prints one line per record: `<name>: restored (window W tab T pane P)` or `restored (new tab)`, `<name>: skipped (<rule>)`, or `<name>: dead (<reason>)`.
+9. Prints one line per record: `<name>: restored (window W tab T pane P)` or `restored (new tab)` (with `; cause=<cause>` added for a relaunched gone session), or `<name>: skipped (<rule or cause>)`.
 
 A pane counts as an idle shell when the only process in its terminal's foreground process group is a shell (`zsh`, `bash`, `fish` and similar), read from one `ps` pass. iTerm2's own `is at shell prompt` needs shell integration and `is processing` is false for a quiet Claude Code session, so neither is used. A pane whose state cannot be read is treated as busy.
 
-If iTerm2 stops answering an AppleScript call (10 seconds), restore stops, prints `stopped: ...; the sessions below stay in the registry` and one `not restored` line for each session it had not yet launched, and exits 1. Restore never edits a record after its prune, so those sessions are still there for the next run. If only the pane list times out, the run continues with new tabs.
+If iTerm2 stops answering an AppleScript call (10 seconds), restore stops, prints `stopped: ...; the sessions below stay in the registry` and one `not restored` line for each session it had not yet launched, and exits 1. Restore never removes a record it was going to launch, so those sessions are still there for the next run. If only the pane list times out, the run continues with new tabs.
 
 ### Startup vs on demand
 
@@ -199,3 +233,5 @@ Both are the same command. On demand (no flag) it honours `on_demand`, opens the
 | `max_sessions` | `N > 0`: only the N most recently refreshed sessions are restored; the rest are `skipped (max_sessions=N)`. |
 | `stagger_seconds` | Pause between launches. |
 | `confirm` | `true`: on demand, print the plan and ask before touching iTerm2. Never asks at startup. |
+| `relaunch.on_terminal_reopen` | `false`: a `--startup` run relaunches nothing and prints why. |
+| `relaunch.scenarios.<cause>` | `false`: a gone session with that cause is skipped with its cause and removed instead of relaunched. |

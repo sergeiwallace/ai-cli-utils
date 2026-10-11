@@ -35,6 +35,10 @@ STARTUP_WAIT_SECONDS = 15
 PS_TIMEOUT_SECONDS = 5
 MENU_PATH = "Window > Restore Window Arrangement"
 
+#: Set on every relaunch of a session whose exit cause is known, so the launch on the far
+#: end can record why it was relaunched.
+LAUNCH_REASON_VAR = "AIH_LAUNCH_REASON"
+
 _SECTION = "[iterm2.persistence.restore]"
 _SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "xonsh"})
 
@@ -46,7 +50,7 @@ class Iterm2NotAnswering(RuntimeError):
 @dataclass
 class _Entry:
     record: dict
-    verdict: str  # "restore" | "skipped" | "dead"
+    verdict: str  # "restore" | "skipped"
     detail: str = ""
     tty: str | None = None  # the pane to type into; None opens a new tab
 
@@ -88,6 +92,39 @@ def _skip_rule(record: dict, settings: dict, only: str | None) -> str | None:
         if alias not in settings["remote_hosts"]:
             return f"remote_hosts does not list {alias!r}"
     return None
+
+
+def _exit_cause(record: dict) -> str:
+    recorded = record.get("exit")
+    cause = recorded.get("cause") if isinstance(recorded, dict) else None
+    return cause if cause in _session_registry.EXIT_CAUSES else "unknown"
+
+
+def _swept_exit(record: dict, reason: str, boot_id: str | None, now: str) -> dict:
+    """The exit to record for a record proved dead that has none.
+
+    A recorded clean remote exit is a manual one. Otherwise a boot identity that differs
+    from this boot's means the host rebooted, the same one means the terminal (or the
+    session's tmux server) went away, and a missing one leaves the cause unknown.
+    """
+    stored = record.get("boot_id")
+    if record.get("ended_at"):
+        cause = "manual_exit"
+    elif not stored or not boot_id:
+        cause = "unknown"
+    else:
+        cause = "host_reboot" if stored != boot_id else "terminal_quit_or_crash"
+    evidence = {"source": "restore-sweep", "reason": reason, "boot_id": boot_id, "record_boot_id": stored}
+    return {"cause": cause, "at": now, "evidence": evidence}
+
+
+def _relaunch_rule(cause: str, scenarios: dict) -> str | None:
+    """Why a dead record with ``cause`` is not relaunched, or None when it is."""
+    toggle = "terminal_quit_or_crash" if cause == "unknown" else cause
+    if scenarios[toggle]:
+        return None
+    label = f"cause={cause}" if toggle == cause else f"cause={cause} follows {toggle}"
+    return f"{label}; restore.relaunch.scenarios.{toggle} = false"
 
 
 def _position_key(record: dict) -> tuple:
@@ -198,12 +235,15 @@ def _placed(
     return entries, already_open
 
 
-def _shell_command(record: dict) -> str:
-    """The text typed into the pane: ``cd <cwd> && <relaunch_argv>``.
+def _shell_command(record: dict, cause: str | None = None) -> str:
+    """The text typed into the pane: ``cd <cwd> && [AIH_LAUNCH_REASON=<cause>] <relaunch_argv>``.
 
-    The directory matters because a launch without ``-p`` takes its project from it.
+    The directory matters because a launch without ``-p`` takes its project from it. The
+    reason prefixes the ``ai`` command itself, so it is in that process's environment.
     """
     command = shlex.join(str(part) for part in record.get("relaunch_argv") or [])
+    if cause:
+        command = f"{LAUNCH_REASON_VAR}={shlex.quote(cause)} {command}"
     cwd = record.get("cwd")
     return f"cd {shlex.quote(str(cwd))} && {command}" if cwd else command
 
@@ -361,14 +401,49 @@ def restore(
             echo(f"restore disabled by {disabled}")
         return 0
     settings = config["restore"]
+    relaunch = settings["relaunch"]
     previewing = dry_run or (settings["confirm"] and not startup)
 
-    dead = [_Entry(r, "dead", reason) for r, reason in _session_registry.prune(dry_run=previewing)]
-    dead_ids = {e.record.get("id") for e in dead}
-    live = [r for r in _session_registry.load_registry()["sessions"] if r.get("id") not in dead_ids]
-    if not live and not dead:
+    # The sweep: a record proved dead with no exit cause gets one before anything is
+    # filtered. A record whose session is alive is never classified (it is re-attached).
+    dead = _session_registry.prune(dry_run=True)
+    boot_id = _session_registry.current_boot_id()
+    now = _session_registry._now()
+    swept: list[dict] = []
+    for record, reason in dead:
+        if record.get("exit") is None:
+            record["exit"] = _swept_exit(record, reason, boot_id, now)
+            swept.append(record)
+            verb = "would record exit" if previewing else "exit recorded"
+            echo(f"{record.get('name', '?')}: {verb} (cause={record['exit']['cause']}; {reason})")
+
+    def commit_sweep() -> None:
+        for record in swept:
+            exit_ = record["exit"]
+            _session_registry.record_exit(record["id"], cause=exit_["cause"], evidence=exit_["evidence"], at=now)
+
+    if not previewing:
+        commit_sweep()
+    if startup and not relaunch["on_terminal_reopen"]:
+        echo("relaunch disabled: restore.relaunch.on_terminal_reopen = false")
+        return 0
+
+    causes: dict[str, str] = {}
+    filtered: list[_Entry] = []
+    for record, _ in dead:
+        cause = _exit_cause(record)
+        rule = _relaunch_rule(cause, relaunch["scenarios"])
+        if rule is None:
+            causes[record.get("id")] = cause
+        else:
+            filtered.append(_Entry(record, "skipped", rule))
+    dead_ids = {r.get("id") for r, _ in dead}
+    snapshot = _session_registry.load_registry()["sessions"]
+    if not snapshot:
         echo(f"sessions: none recorded in {_session_registry.registry_path()}")
-    selected, skipped = _select(live, settings, only)
+    live = [r for r in snapshot if r.get("id") not in dead_ids]
+    relaunchable = live + [r for r, _ in dead if r.get("id") in causes]
+    selected, skipped = _select(relaunchable, settings, only)
     if settings["mode"] == "arrangement":
         skipped += [_Entry(e.record, "skipped", 'mode="arrangement"') for e in selected]
         selected = []
@@ -380,15 +455,17 @@ def restore(
         if wants_arrangement:
             echo(_arrangement_plan(name, settings, startup))
         for entry in entries:
-            echo(f"{entry.name}: would restore ({entry.detail}): {_shell_command(entry.record)}")
-        for entry in already_open + skipped + dead:
+            command = _shell_command(entry.record, causes.get(entry.record.get("id")))
+            echo(f"{entry.name}: would restore ({entry.detail}): {command}")
+        for entry in already_open + skipped + filtered:
             echo(_line(entry))
         if dry_run:
             return 0
         if not ask(f"Restore {len(entries)} session(s)?"):
             echo("restore cancelled; nothing changed")
             return 0
-        _session_registry.prune()
+        commit_sweep()
+    _session_registry.remove(e.record.get("id") for e in filtered)
 
     if wants_arrangement and not startup:
         echo(_restore_arrangement(name, settings["use_it2"]))
@@ -396,7 +473,8 @@ def restore(
     for index, entry in enumerate(entries):
         if index:
             time.sleep(settings["stagger_seconds"])
-        text = _shell_command(entry.record)
+        cause = causes.get(entry.record.get("id"))
+        text = _shell_command(entry.record, cause)
         try:
             if entry.tty is None or not _write_into_pane(entry.tty, text):
                 if entry.tty is not None:
@@ -407,7 +485,9 @@ def restore(
             for remaining in entries[index:]:
                 echo(f"{remaining.name}: not restored ({exc})")
             return 1
+        if cause:
+            entry.detail += f"; cause={cause}"
         echo(_line(entry))
-    for entry in already_open + skipped + dead:
+    for entry in already_open + skipped + filtered:
         echo(_line(entry))
     return 0
