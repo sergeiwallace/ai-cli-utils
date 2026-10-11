@@ -83,6 +83,8 @@ def run_ssh_with_reconnect(
     backoff_seconds: float = 2.0,
     max_backoff_seconds: float = 30.0,
     on_clean_exit: Callable[[], None] | None = None,
+    stable_seconds: float = 300.0,
+    outcome_path: Path | None = None,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -104,17 +106,35 @@ def run_ssh_with_reconnect(
     ``on_clean_exit`` runs once when ssh exited 0, the one status that means the remote
     session itself ended. Every other way out (130, a dropped link, giving up) leaves the
     remote session presumed alive and does not call it.
+
+    The attempt budget bounds one outage, not the session's lifetime: an ssh run that stayed
+    up for ``stable_seconds`` was a working connection, so the drop that ended it starts a
+    fresh budget and a fresh backoff. Counting every drop since launch is what ended
+    sessions that had reattached cleanly for days on their tenth brief blip (AI-CLI-qre8).
+
+    ``outcome_path``, when given, receives a JSON record of how the runner ended (verdict,
+    exit code, attempt and drop counts). It is written on every way out and never deleted,
+    so the outcome survives the process that reported it.
     """
     attempt = 0
+    drops = 0
     delay = backoff_seconds
     returncode = 0
+    verdict = "error"
     try:
         while True:
+            started = _monotonic()
             returncode = subprocess.call(ssh_args)
             if returncode in _SSH_OPERATOR_EXIT_CODES:
+                verdict = "clean_exit" if returncode == 0 else "interrupted"
                 break
+            drops += 1
+            if _monotonic() - started >= stable_seconds:
+                attempt = 0
+                delay = backoff_seconds
             attempt += 1
             if attempt >= max_attempts:
+                verdict = "gave_up"
                 _out.emit(
                     Tag.TRANSPORT,
                     f"\nConnection lost (ssh exit {returncode}) and {max_attempts} reconnect "
@@ -138,8 +158,29 @@ def run_ssh_with_reconnect(
             on_clean_exit()
     finally:
         restore_terminal()
+        if outcome_path is not None:
+            _write_transport_outcome(
+                outcome_path,
+                verdict=verdict,
+                last_exit_code=returncode,
+                failed_attempts=attempt,
+                drops=drops,
+            )
         subprocess.run(cleanup_cmd, capture_output=True, check=False)
     return returncode
+
+
+def transport_outcome_path(session: str) -> Path:
+    """Where the SSH runner records how *session*'s connection ended."""
+    return get_xdg_state_home() / "transport-outcomes" / f"{session}.json"
+
+
+def _write_transport_outcome(path: Path, **fields) -> None:
+    """Record the runner's terminal outcome. A write failure never masks the session's exit."""
+    record = {"session": path.stem, **fields, "ended_at": datetime.now(UTC).isoformat()}
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
 
 
 def _is_vpn_active() -> bool:

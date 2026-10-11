@@ -407,6 +407,9 @@ stale_after_seconds = 600
 # reconnect_attempts = 10
 ## Seconds before the first reattach; doubles per attempt, capped at 30s.
 # reconnect_backoff = 2
+## A connection that stayed up this many seconds was working, so the drop that ends it starts
+## a fresh attempt budget: the budget bounds one outage, not the life of the session.
+# reconnect_stable_seconds = 300
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.

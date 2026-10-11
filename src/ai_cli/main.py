@@ -3225,6 +3225,8 @@ def _do_session_launch(
                     _cleanup_cmd,
                     max_attempts=remote_cfg.get("reconnect_attempts", 10),
                     backoff_seconds=remote_cfg.get("reconnect_backoff", 2.0),
+                    stable_seconds=remote_cfg.get("reconnect_stable_seconds", 300),
+                    outcome_path=_transport.transport_outcome_path(_r_ai_name),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
                 )
             )

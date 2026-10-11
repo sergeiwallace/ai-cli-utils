@@ -13,6 +13,7 @@ neither the existing ``ConnectTimeout`` options nor the fast-failure branches in
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -388,3 +389,114 @@ class TestADroppedLinkReattaches:
 
         # Two retries, each restoring first, plus the unconditional one in the finally.
         assert restore.call_count == 3
+
+
+class TestALongLivedSessionKeepsItsReconnectBudget:
+    """The budget bounds ONE outage, not the life of the session.
+
+    Measured on acn-mac (AI-CLI-qre8): ``c-r-kg-1`` and ``c-r-aih-2`` on the remote host
+    reattached nine times over three days, each reattach succeeding and then holding for
+    hours, and the tenth drop (a 2.5-minute network blip that every other session on the
+    same host rode out) ended both with "10 reconnect attempts did not restore it -- giving
+    up". The remote tmux sessions and their agents were still running. The counter was never
+    reset after a reattach that worked, so it counted drops since launch rather than failed
+    attempts in a row.
+
+    Every test drives a real ``ai c --remote`` launch through the real reconnect loop; only
+    the ssh child and the clock are fakes.
+    """
+
+    def _launch(self, runs, config_extra=None):
+        """Drive ``ai c 1 --remote`` where each ssh run is ``(exit_code, seconds_connected)``.
+
+        Every ``runs`` list ends in a clean exit, so a broken bound fails the count rather
+        than hanging the test.
+        """
+        clock = {"now": 0.0}
+        calls = []
+
+        def fake_probe(command, **_kwargs):
+            if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+                return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            return MagicMock(returncode=1, stdout="")
+
+        def fake_ssh(argv):
+            exit_code, seconds = runs[min(len(calls), len(runs) - 1)]
+            calls.append(list(argv))
+            clock["now"] += seconds
+            return exit_code
+
+        remote = {"host": "h.example.com", "user": "dev", "transport": "ssh", **(config_extra or {})}
+        with (
+            patch("sys.argv", ["ai", "c", "1", "--remote"]),
+            patch("ai_cli.config.load_config", return_value={"remote": remote}),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
+            patch("ai_cli.transport.subprocess.call", side_effect=fake_ssh),
+            patch("ai_cli.transport._monotonic", side_effect=lambda: clock["now"]),
+            patch("ai_cli.transport.time.sleep"),
+            patch("ai_cli.transport.restore_terminal"),
+            patch("os.execvp", side_effect=AssertionError("this path must not exec")),
+        ):
+            with pytest.raises(SystemExit) as exited:
+                cli()
+        return exited.value.code, calls
+
+    @staticmethod
+    def _outcome():
+        outcomes = list((_transport.get_xdg_state_home() / "transport-outcomes").glob("*.json"))
+        assert len(outcomes) == 1, f"expected one durable outcome record, found {outcomes}"
+        return json.loads(outcomes[0].read_text())
+
+    def test_given_a_session_that_reattached_nine_times_over_days_when_the_tenth_drop_comes_then_it_reattaches(
+        self,
+    ):
+        """The reproduction. Twelve drops, each after hours of a working connection, then a
+        clean detach. Before the fix the tenth drop gave up without trying, exiting 255."""
+        rc, calls = self._launch([(255, 4 * 3600.0)] * 12 + [(0, 60.0)])
+
+        assert rc == 0
+        assert len(calls) == 13, "every drop after a stable connection must get its own reattach"
+
+    def test_given_reattaches_that_keep_failing_after_a_stable_session_when_the_budget_runs_out_then_it_gives_up(
+        self,
+    ):
+        """Negative control: the bound still holds for one outage. After a stable run, every
+        reattach fails in seconds, so the ladder spends its ten attempts and stops."""
+        rc, calls = self._launch([(255, 4 * 3600.0)] + [(255, 2.0)] * 20 + [(0, 60.0)])
+
+        assert rc == 255
+        assert len(calls) == 10
+
+    def test_given_a_configured_stability_window_when_a_run_is_shorter_then_it_does_not_reset_the_budget(self):
+        """Config over code: a reattach whose ProxyCommand waits minutes before failing must
+        not read as a stable connection, so the window is reachable from config."""
+        rc, calls = self._launch([(255, 600.0)] * 20 + [(0, 60.0)], config_extra={"reconnect_stable_seconds": 900})
+
+        assert rc == 255
+        assert len(calls) == 10
+
+    def test_given_the_ladder_gives_up_when_the_launcher_has_exited_then_the_outcome_is_on_disk(self):
+        """The terminal outcome survives the process: read back after ``cli()`` has exited."""
+        self._launch([(255, 4 * 3600.0)] + [(255, 2.0)] * 20 + [(0, 60.0)])
+
+        outcome = self._outcome()
+        assert outcome["verdict"] == "gave_up"
+        assert outcome["last_exit_code"] == 255
+        assert outcome["failed_attempts"] == 10
+        assert outcome["drops"] == 10
+        assert outcome["session"].startswith("c-r-")
+        assert outcome["ended_at"]
+
+    def test_given_a_clean_detach_when_the_launcher_has_exited_then_the_outcome_says_so(self):
+        """A record exists for every way out, so its absence never has to be interpreted."""
+        self._launch([(255, 4 * 3600.0), (0, 60.0)])
+
+        outcome = self._outcome()
+        assert outcome["verdict"] == "clean_exit"
+        assert outcome["last_exit_code"] == 0
+        assert outcome["drops"] == 1
