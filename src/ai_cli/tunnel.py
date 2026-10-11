@@ -17,7 +17,9 @@ from pathlib import Path
 
 import psutil
 
+from . import output as _out
 from .config import _pid_alive, get_remote_machine, get_xdg_data_home, get_xdg_state_home, resolve_base_dir
+from .output import Tag
 from .transport import _is_vpn_active
 
 _PROCESS_STATE_VERSION = 1
@@ -143,15 +145,16 @@ def _cmd_tunnel_start(
         registered = _registered_process(pid_file, local_port)
         if registered is not None:
             if not quiet:
-                print(f"Tunnel already running: localhost:{local_port} (PID {registered[0].pid})")
+                _out.emit(Tag.TUNNEL, f"Tunnel already running: localhost:{local_port} (PID {registered[0].pid})")
             return
         pid_file.unlink(missing_ok=True)
 
     autossh_bin = shutil.which("autossh")
     if not autossh_bin:
-        print(
+        _out.emit(
+            Tag.TUNNEL,
             "autossh not found. Install it first:\n  macOS:  brew install autossh\n  Linux:  apt install autossh",
-            file=sys.stderr,
+            err=True,
         )
         sys.exit(1)
 
@@ -159,7 +162,7 @@ def _cmd_tunnel_start(
     host = remote_cfg.get("host", "")
     user = remote_cfg.get("user", "ubuntu")
     if not host:
-        print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+        _out.error(Tag.TUNNEL, "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
         sys.exit(1)
     # Use vpn_host when VPN is active — Tailscale becomes unreachable under VPN.
     vpn_host = remote_cfg.get("vpn_host", "") or host
@@ -186,10 +189,10 @@ def _cmd_tunnel_start(
     state_dir.mkdir(parents=True, exist_ok=True)
     if not _write_process_identity(pid_file, proc.pid, local_port):
         proc.terminate()
-        print("Error: could not capture tunnel process identity; tunnel was stopped", file=sys.stderr)
+        _out.error(Tag.TUNNEL, "could not capture tunnel process identity; tunnel was stopped")
         sys.exit(1)
     if not quiet:
-        print(f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
+        _out.emit(Tag.TUNNEL, f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
 
 
 def _ensure_nats_tunnel(config: dict) -> None:
@@ -222,26 +225,26 @@ def _cmd_tunnel_stop(local_port: int) -> None:
     pid_file.unlink(missing_ok=True)
     process = _matching_process(identity) if identity is not None else None
     if process is None:
-        print(f"Removed stale tunnel record: port {local_port}; no process was stopped")
+        _out.emit(Tag.TUNNEL, f"Removed stale tunnel record: port {local_port}; no process was stopped")
         return
     process.terminate()
-    print(f"Tunnel stopped: port {local_port}")
+    _out.emit(Tag.TUNNEL, f"Tunnel stopped: port {local_port}")
 
 
 def _cmd_tunnel_status() -> None:
     state_dir = get_xdg_state_home()
     pid_files = sorted(state_dir.glob("tunnel-*.pid"))
     if not pid_files:
-        print("No tunnels registered.")
+        _out.emit(Tag.TUNNEL, "No tunnels registered.")
         return
     for pid_file in pid_files:
         port = pid_file.stem[len("tunnel-") :]
         registered = _registered_process(pid_file, int(port))
         if registered is None:
             pid_file.unlink(missing_ok=True)
-            print(f"port {port}: dead (stale record removed)")
+            _out.emit(Tag.TUNNEL, f"port {port}: dead (stale record removed)")
             continue
-        print(f"port {port}: PID {registered[0].pid} (alive)")
+        _out.emit(Tag.TUNNEL, f"port {port}: PID {registered[0].pid} (alive)")
 
 
 # --- CDP (Chrome DevTools Protocol) browser management ---
@@ -389,7 +392,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     if pid_file.exists():
         registered = _registered_process(pid_file, port)
         if registered is not None:
-            print(f"CDP already running on port {port} (PID {registered[0].pid})")
+            _out.emit(Tag.TUNNEL, f"CDP already running on port {port} (PID {registered[0].pid})")
             return
         pid_file.unlink(missing_ok=True)
 
@@ -400,21 +403,23 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     if _port_in_use(port):
         free_port = _next_free_port(port + 1)
         if free_port is None:
-            print(
+            _out.emit(
+                Tag.TUNNEL,
                 f"Port {port} is in use and no free port was found in "
                 f"{port + 1}-{port + 20}. Stop the holder or pass a different --port.",
-                file=sys.stderr,
+                err=True,
             )
             sys.exit(1)
-        print(f"Port {port} is in use by another process — starting CDP on {free_port} instead.")
+        _out.emit(Tag.TUNNEL, f"Port {port} is in use by another process — starting CDP on {free_port} instead.")
         port = free_port
         pid_file = state_dir / f"cdp-{port}.pid"
 
     chrome = _find_chrome_binary(config)
     if not chrome:
-        print(
+        _out.emit(
+            Tag.TUNNEL,
             "Chrome, Chromium or Microsoft Edge not found. Install one or set [cdp] binary_path in config.",
-            file=sys.stderr,
+            err=True,
         )
         sys.exit(1)
 
@@ -451,7 +456,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         # so the CDP port never opens. Use `open -na` to force a new app instance.
         _app_dir = next((p for p in Path(chrome).parts if p.endswith(".app")), None)
         _app_name = _app_dir[:-4] if _app_dir else "Google Chrome"
-        subprocess.run(["open", "-na", _app_name, "--args", *chrome_args], check=False)
+        _out.run_relayed(Tag.CDP, ["open", "-na", _app_name, "--args", *chrome_args], check=False)
     else:
         popen_env = None
         if sys.platform == "linux":
@@ -466,7 +471,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         pid = proc.pid
         if not _write_process_identity(pid_file, pid, port):
             proc.terminate()
-            print("Error: could not capture CDP process identity; browser was stopped", file=sys.stderr)
+            _out.error(Tag.TUNNEL, "could not capture CDP process identity; browser was stopped")
             sys.exit(1)
 
     url = f"http://localhost:{port}/json/version"
@@ -486,10 +491,10 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
             _write_process_identity(pid_file, pid, port)
 
     if ready:
-        print(f"CDP ready at localhost:{port}")
+        _out.emit(Tag.TUNNEL, f"CDP ready at localhost:{port}")
     else:
         suffix = f" (PID {pid})" if pid is not None else ""
-        print(f"CDP started{suffix} — endpoint not yet responding on port {port}")
+        _out.emit(Tag.TUNNEL, f"CDP started{suffix} — endpoint not yet responding on port {port}")
 
     if tunnel:
         _cmd_tunnel_start(port, port, forward=forward, config=config)
@@ -499,16 +504,16 @@ def _cmd_cdp_stop(port: int, tunnel: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
     if not pid_file.exists():
-        print(f"No CDP process registered on port {port}.")
+        _out.emit(Tag.TUNNEL, f"No CDP process registered on port {port}.")
         return
     identity = _read_process_identity(pid_file, port)
     pid_file.unlink(missing_ok=True)
     process = _matching_process(identity) if identity is not None else None
     if process is None:
-        print(f"Removed stale CDP record: port {port}; no process was stopped")
+        _out.emit(Tag.TUNNEL, f"Removed stale CDP record: port {port}; no process was stopped")
     else:
         process.terminate()
-        print(f"CDP stopped: port {port}")
+        _out.emit(Tag.TUNNEL, f"CDP stopped: port {port}")
     if tunnel:
         _cmd_tunnel_stop(port)
 
@@ -517,13 +522,13 @@ def _cmd_cdp_status() -> None:
     state_dir = get_xdg_state_home()
     pid_files = sorted(state_dir.glob("cdp-*.pid"))
     if not pid_files:
-        print("No CDP processes registered.")
+        _out.emit(Tag.TUNNEL, "No CDP processes registered.")
         return
     for pid_file in pid_files:
         port = pid_file.stem[len("cdp-") :]
         registered = _registered_process(pid_file, int(port))
         if registered is None:
             pid_file.unlink(missing_ok=True)
-            print(f"port {port}: stale record")
+            _out.emit(Tag.TUNNEL, f"port {port}: stale record")
             continue
-        print(f"port {port}: PID {registered[0].pid} (alive)")
+        _out.emit(Tag.TUNNEL, f"port {port}: PID {registered[0].pid} (alive)")

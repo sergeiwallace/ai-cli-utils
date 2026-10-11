@@ -36,7 +36,9 @@ import subprocess
 import sys
 
 from . import native_deps
+from . import output as _out
 from .native_deps import Candidate, InstallResult, attempt_installs
+from .output import Tag
 
 PACKAGE = "zsh"
 
@@ -185,7 +187,7 @@ def ensure_zsh(auto_install: bool = True, quiet: bool = False, allow_root: bool 
         if repair.repaired:
             summary = f"{', '.join(repair.missing)} resolved from {', '.join(repair.added_dirs)} via {repair.variable}"
             if not quiet:
-                print(f"ai-cli-utils: repaired zsh — {summary}.", file=sys.stderr)
+                _out.emit(Tag.ZSH, f"repaired zsh — {summary}.", err=True)
             return InstallResult(True, tool="loader-path", detail=summary)
 
     if not auto_install:
@@ -194,9 +196,9 @@ def ensure_zsh(auto_install: bool = True, quiet: bool = False, allow_root: bool 
     result = install_zsh(allow_root=allow_root)
     if result.installed:
         if not quiet:
-            print(f"ai-cli-utils: provisioned zsh via {result.tool}.", file=sys.stderr)
+            _out.emit(Tag.ZSH, f"provisioned zsh via {result.tool}.", err=True)
         return result
 
     if not quiet:
-        print(remediation(result), file=sys.stderr)
+        _out.emit(Tag.ZSH, remediation(result), err=True)
     return InstallResult(False, tool=result.tool, detail=result.detail, unusable=True)

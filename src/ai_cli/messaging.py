@@ -4,11 +4,13 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import time
 
 import nats
 from nats.errors import NoServersError, TimeoutError
+
+from . import output as _out
+from .output import Tag
 
 # JetStream stream configs: stream_name -> list of subject patterns
 STREAM_CONFIG = {
@@ -88,11 +90,12 @@ class NATSClient:
                         return
                 except OSError:
                     pass
-            print(
+            _out.emit(
+                Tag.MESSAGING,
                 "SSH tunnel to the remote NATS server did not become available. "
                 "On a Fedora host with SELinux, check whether sshd-session was denied "
                 "outbound access to port 4222.",
-                file=sys.stderr,
+                err=True,
             )
         finally:
             await self._reap_tunnel_parent()

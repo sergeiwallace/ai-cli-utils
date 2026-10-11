@@ -36,8 +36,10 @@ from pathlib import Path
 
 import portalocker
 
+from . import output as _out
 from .cc_migrate import _rewrite_line
 from .git_repair import _git_env
+from .output import Tag
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -283,10 +285,10 @@ def load_sync_config() -> SyncConfig:
         if r_host:
             remote_host = f"{r_user}@{r_host}"
         else:
-            print(
-                "Error: [sync] remote_host not set in ~/.config/ai-cli/config.toml.\n"
+            _out.error(
+                Tag.SYNC,
+                "[sync] remote_host not set in ~/.config/ai-cli/config.toml.\n"
                 'Set [sync] remote_host = "user@host" or configure [remote] host + user.',
-                file=sys.stderr,
             )
             sys.exit(1)
     staging_dir = Path(sync_cfg.get("staging_dir", "~/.claude-sync-staging")).expanduser()
@@ -734,7 +736,7 @@ def stage_project_files(
                 jsonl_count += 1
 
             if verbose:
-                print(f"  stage: {bare_name}/{rel}")
+                _out.emit(Tag.SYNC, f"  stage: {bare_name}/{rel}")
 
     return {
         "staged_files": staged_files,
@@ -763,7 +765,7 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
                 _copy_to_staging(src, dst, staging_dir)
             staged_files.append((src, dst))
             if verbose:
-                print(f"  stage task: {namespace.name}/{src.name}")
+                _out.emit(Tag.SYNC, f"  stage task: {namespace.name}/{src.name}")
     return staged_files
 
 
@@ -895,7 +897,7 @@ def translate_history_jsonl(verbose: bool = False) -> int:
         count += content.count(foreign_raw)
     history_path.write_bytes(updated)
     if verbose:
-        print(f"  translate history.jsonl: {count} project paths updated ({foreign_home} → {local_home})")
+        _out.emit(Tag.SYNC, f"  translate history.jsonl: {count} project paths updated ({foreign_home} → {local_home})")
     return count
 
 
@@ -977,7 +979,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
             for entry in new_entries:
                 f.write(entry + "\n")
         if verbose:
-            print(f"  replicate history: {len(new_entries)} worktree entries added")
+            _out.emit(Tag.SYNC, f"  replicate history: {len(new_entries)} worktree entries added")
 
     return len(new_entries)
 
@@ -1042,7 +1044,7 @@ def purge_phantom_history_entries(verbose: bool = False) -> int:
     if removed:
         history_path.write_text("\n".join(kept) + "\n" if kept else "")
         if verbose:
-            print(f"  purge phantom history: {removed} phantom worktree entries removed")
+            _out.emit(Tag.SYNC, f"  purge phantom history: {removed} phantom worktree entries removed")
 
     return removed
 
@@ -1079,7 +1081,7 @@ def retranslate_project_jsonls(verbose: bool = False, local_projects_root: Path 
             jsonl_path.write_bytes(updated)
             count += 1
             if verbose:
-                print(f"  retranslate: {jsonl_path.relative_to(cc_projects_dir)}")
+                _out.emit(Tag.SYNC, f"  retranslate: {jsonl_path.relative_to(cc_projects_dir)}")
     return count
 
 
@@ -1155,10 +1157,10 @@ def apply_pull_files(
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
-                        print(f"  apply (ff): {bare_name}/{rel}")
+                        _out.emit(Tag.SYNC, f"  apply (ff): {bare_name}/{rel}")
                 elif divergence == "fast_forward_local":
                     if verbose:
-                        print(f"  skip (local ahead): {bare_name}/{rel}")
+                        _out.emit(Tag.SYNC, f"  skip (local ahead): {bare_name}/{rel}")
                 elif divergence == "diverged":
                     if prefer_remote:
                         if not dry_run:
@@ -1167,7 +1169,7 @@ def apply_pull_files(
                         applied_count += 1
                         updated_bare_names.add(bare_name)
                         if verbose:
-                            print(f"  apply (prefer-remote): {bare_name}/{rel}")
+                            _out.emit(Tag.SYNC, f"  apply (prefer-remote): {bare_name}/{rel}")
                     else:
                         ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
                         conflict_name = f"conflict-{ts}.jsonl"
@@ -1185,9 +1187,10 @@ def apply_pull_files(
                                 "artifact": str(conflict_path),
                             }
                         )
-                        print(
+                        _out.emit(
+                            Tag.SYNC,
                             f"JSONL CONFLICT: {bare_name}/{rel.name} — remote version saved as {conflict_name}",
-                            file=sys.stderr,
+                            err=True,
                         )
                         # Queue staging update: overwrite staging with local so future
                         # pulls don't re-detect the same divergence and fire again.
@@ -1212,7 +1215,7 @@ def apply_pull_files(
                         applied_count += 1
                         updated_bare_names.add(bare_name)
                         if verbose:
-                            print(f"  auto-merged: {bare_name}/{rel}")
+                            _out.emit(Tag.SYNC, f"  auto-merged: {bare_name}/{rel}")
                     else:
                         conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
                         if not dry_run:
@@ -1228,9 +1231,8 @@ def apply_pull_files(
                                 "artifact": str(conflict_path),
                             }
                         )
-                        print(
-                            f"CONFLICT: {bare_name}/{rel} — resolve manually with: ai sync resolve",
-                            file=sys.stderr,
+                        _out.emit(
+                            Tag.SYNC, f"CONFLICT: {bare_name}/{rel} — resolve manually with: ai sync resolve", err=True
                         )
                         # Queue staging update: overwrite the marker-laden staging file with
                         # the local version so future pulls don't re-detect the same conflict.
@@ -1243,7 +1245,7 @@ def apply_pull_files(
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
-                        print(f"  apply: {bare_name}/{rel}")
+                        _out.emit(Tag.SYNC, f"  apply: {bare_name}/{rel}")
 
     # After applying files to main CC project dirs, replicate JSONL files to
     # any active worktree CC dirs with translated cwd paths. This lets CC sessions
@@ -1284,7 +1286,7 @@ def apply_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
                 shutil.copy2(src, dst)
             applied += 1
             if verbose:
-                print(f"  apply task: {namespace.name}/{src.name}")
+                _out.emit(Tag.SYNC, f"  apply task: {namespace.name}/{src.name}")
     return applied
 
 
@@ -1438,36 +1440,43 @@ def sync_repos(updated_bare_names: set[str], projects_dir: Path, verbose: bool) 
         if _git_is_clean(project_path):
             ok, output = _git_pull_rebase(project_path)
             if ok:
-                print(f"  sync-repos: pulled {project_name}")
+                _out.emit(Tag.SYNC, f"  sync-repos: pulled {project_name}")
             else:
-                print(f"  sync-repos: pull failed for {project_name}: {output}", file=sys.stderr)
+                _out.emit(Tag.SYNC, f"  sync-repos: pull failed for {project_name}: {output}", err=True)
         else:
             ok, output = _git_stash_pull_pop(project_path)
             if ok:
-                print(f"  sync-repos: stash+pulled {project_name} (main tree had local changes)", file=sys.stderr)
+                _out.emit(
+                    Tag.SYNC, f"  sync-repos: stash+pulled {project_name} (main tree had local changes)", err=True
+                )
             else:
-                print(f"  sync-repos: stash+pull failed for {project_name}: {output}", file=sys.stderr)
+                _out.emit(Tag.SYNC, f"  sync-repos: stash+pull failed for {project_name}: {output}", err=True)
         for worktree in _find_project_worktrees(project_path):
             if _git_is_clean(worktree):
                 ok, output = _git_pull_rebase(worktree)
                 if ok:
-                    print(f"  sync-repos: pulled {project_name}/{worktree.name}")
+                    _out.emit(Tag.SYNC, f"  sync-repos: pulled {project_name}/{worktree.name}")
                 else:
-                    print(f"  sync-repos: pull failed for {project_name}/{worktree.name}: {output}", file=sys.stderr)
+                    _out.emit(
+                        Tag.SYNC, f"  sync-repos: pull failed for {project_name}/{worktree.name}: {output}", err=True
+                    )
             else:
                 state = _cc_session_state_for_worktree(project_name, worktree)
                 if state == "active":
-                    print(
+                    _out.emit(
+                        Tag.SYNC,
                         f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, CC actively executing)",
-                        file=sys.stderr,
+                        err=True,
                     )
                 elif state == "idle":
-                    print(
-                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, CC session idle — pull manually when ready)"
+                    _out.emit(
+                        Tag.SYNC,
+                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, CC session idle — pull manually when ready)",
                     )
                 else:
-                    print(
-                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, no active CC session — pull manually when ready)"
+                    _out.emit(
+                        Tag.SYNC,
+                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, no active CC session — pull manually when ready)",
                     )
 
 
@@ -1555,7 +1564,7 @@ def _replicate_to_worktrees(
                 dst.write_bytes(translated)
                 count += 1
                 if verbose:
-                    print(f"  replicate to worktree: {bare_name}/{src.name} → {wt_path.name}")
+                    _out.emit(Tag.SYNC, f"  replicate to worktree: {bare_name}/{src.name} → {wt_path.name}")
 
             # Copy session lock directories only for conversations we replicated
             replicated_uuids = {f.stem for f in wt_cc_dir.glob("*.jsonl")}
@@ -1567,7 +1576,7 @@ def _replicate_to_worktrees(
                     if not wt_d.exists():
                         shutil.copytree(d, wt_d)
                         if verbose:
-                            print(f"  replicate dir: {bare_name}/{d.name} → {wt_path.name}")
+                            _out.emit(Tag.SYNC, f"  replicate dir: {bare_name}/{d.name} → {wt_path.name}")
 
     return count
 
@@ -1640,7 +1649,10 @@ def clean_worktree_cc_dirs(
                         jsonl_path.unlink()
                     removed_jsonl += 1
                     if verbose:
-                        print(f"  rm stale copy: {bare_name}/{jsonl_path.name} (title={title!r}, exists in main)")
+                        _out.emit(
+                            Tag.SYNC,
+                            f"  rm stale copy: {bare_name}/{jsonl_path.name} (title={title!r}, exists in main)",
+                        )
             else:
                 # Unique to this worktree — keep it
                 valid_uuids.add(jsonl_path.stem)
@@ -1656,7 +1668,7 @@ def clean_worktree_cc_dirs(
                 shutil.rmtree(item)
             removed_lock += 1
             if verbose:
-                print(f"  rm orphan lock: {bare_name}/{item.name}/")
+                _out.emit(Tag.SYNC, f"  rm orphan lock: {bare_name}/{item.name}/")
 
     return removed_jsonl, removed_lock
 
@@ -1685,18 +1697,18 @@ def repair_worktree_cc_dir(
     projects_base = _get_projects_dir()
     project_path = projects_base / project_name
     if not project_path.is_dir():
-        print(f"Error: project '{project_name}' not found at {project_path}", file=sys.stderr)
+        _out.error(Tag.SYNC, f"project '{project_name}' not found at {project_path}")
         return 0
 
     wt_path = project_path / ".worktrees" / wt_name
     if not wt_path.is_dir():
-        print(f"Error: worktree '{wt_name}' not found at {wt_path}", file=sys.stderr)
+        _out.error(Tag.SYNC, f"worktree '{wt_name}' not found at {wt_path}")
         return 0
 
     main_cc_name = local_prefix + project_name
     main_cc_dir = cc_projects_dir / main_cc_name
     if not main_cc_dir.is_dir():
-        print(f"Error: no CC dir for '{project_name}' at {main_cc_dir}", file=sys.stderr)
+        _out.error(Tag.SYNC, f"no CC dir for '{project_name}' at {main_cc_dir}")
         return 0
 
     wt_cc_name = local_prefix + project_name + "--worktrees-" + wt_name
@@ -1716,14 +1728,14 @@ def repair_worktree_cc_dir(
             if not dry_run:
                 shutil.rmtree(item)
             if verbose:
-                print(f"  rm orphan lock: {wt_cc_name}/{item.name}/")
+                _out.emit(Tag.SYNC, f"  rm orphan lock: {wt_cc_name}/{item.name}/")
 
     copied = 0
     for src in sorted(main_cc_dir.glob("*.jsonl")):
         dst = wt_cc_dir / src.name
         if dst.exists() and not dst.is_symlink():
             if verbose:
-                print(f"  skip (exists): {src.name}")
+                _out.emit(Tag.SYNC, f"  skip (exists): {src.name}")
             continue
 
         content = src.read_bytes()
@@ -1739,12 +1751,12 @@ def repair_worktree_cc_dir(
             dst.write_bytes(translated)
         copied += 1
         if verbose:
-            print(f"  copy: {src.name} → {wt_cc_name}/")
+            _out.emit(Tag.SYNC, f"  copy: {src.name} → {wt_cc_name}/")
 
     if not dry_run:
-        print(f"repair-worktree: {copied} conversations copied to {wt_cc_name}")
+        _out.emit(Tag.SYNC, f"repair-worktree: {copied} conversations copied to {wt_cc_name}")
     else:
-        print(f"repair-worktree (dry-run): would copy {copied} conversations to {wt_cc_name}")
+        _out.emit(Tag.SYNC, f"repair-worktree (dry-run): would copy {copied} conversations to {wt_cc_name}")
     return copied
 
 
@@ -2052,7 +2064,7 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
                 env=_GIT_ENV,
                 check=False,
             )
-            print(f"Error: git pull --rebase failed: {rebase.stderr}", file=sys.stderr)
+            _out.error(Tag.SYNC, f"git pull --rebase failed: {rebase.stderr}")
             return False
         res2 = subprocess.run(
             ["git", "push", "origin", "HEAD:main"],
@@ -2065,10 +2077,10 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
         )
         if res2.returncode == 0:
             return True
-        print(f"Error pushing to remote after rebase: {res2.stderr}", file=sys.stderr)
+        _out.emit(Tag.SYNC, f"Error pushing to remote after rebase: {res2.stderr}", err=True)
         return False
 
-    print(f"Error pushing to remote: {res.stderr}", file=sys.stderr)
+    _out.emit(Tag.SYNC, f"Error pushing to remote: {res.stderr}", err=True)
     return False
 
 
@@ -2176,7 +2188,7 @@ def _pre_pull_push_memories(cfg: SyncConfig, cc_projects_dir: Path, verbose: boo
         if committed:
             _push_to_remote(cfg.staging_dir, verbose=False)
             if verbose:
-                print(f"  pre-pull: pushed {result['memory_count']} local memory file(s)")
+                _out.emit(Tag.SYNC, f"  pre-pull: pushed {result['memory_count']} local memory file(s)")
     except Exception:
         pass  # Non-fatal — pull proceeds without pre-push protection
 
@@ -2211,16 +2223,16 @@ def _wait_for_dream_completion(verbose: bool) -> None:
         return
 
     if verbose:
-        print("Dream write detected — waiting for completion (up to 30s)...")
+        _out.emit(Tag.SYNC, "Dream write detected — waiting for completion (up to 30s)...")
     deadline = time.monotonic() + _DREAM_GUARD_TIMEOUT_SECONDS
     while state_path.exists() and time.monotonic() < deadline:
         time.sleep(_DREAM_GUARD_POLL_SECONDS)
 
     if verbose:
         if state_path.exists():
-            print("Dream wait timed out after 30s — proceeding anyway.")
+            _out.emit(Tag.SYNC, "Dream wait timed out after 30s — proceeding anyway.")
         else:
-            print("Dream completed — proceeding with sync push.")
+            _out.emit(Tag.SYNC, "Dream completed — proceeding with sync push.")
 
 
 def _wait_for_dream_completion_legacy(verbose: bool) -> None:
@@ -2260,7 +2272,7 @@ def _wait_for_dream_completion_legacy(verbose: bool) -> None:
                 await client.close()
                 return
             if verbose:
-                print("Dream write detected — waiting for completion (up to 30s)...")
+                _out.emit(Tag.SYNC, "Dream write detected — waiting for completion (up to 30s)...")
             completed = asyncio.Event()
 
             async def on_completed(_data) -> None:
@@ -2272,10 +2284,10 @@ def _wait_for_dream_completion_legacy(verbose: bool) -> None:
             try:
                 await asyncio.wait_for(completed.wait(), timeout=_DREAM_GUARD_TIMEOUT_SECONDS)
                 if verbose:
-                    print("Dream completed — proceeding with sync push.")
+                    _out.emit(Tag.SYNC, "Dream completed — proceeding with sync push.")
             except TimeoutError:
                 if verbose:
-                    print("Dream wait timed out after 30s — proceeding anyway.")
+                    _out.emit(Tag.SYNC, "Dream wait timed out after 30s — proceeding anyway.")
             finally:
                 await subscription.unsubscribe()
                 await client.close()
@@ -2298,7 +2310,7 @@ def sync_push(flags: list[str]) -> int:
     try:
         cfg = load_sync_config()
     except Exception as e:
-        print(f"Error loading sync config: {e}", file=sys.stderr)
+        _out.emit(Tag.SYNC, f"Error loading sync config: {e}", err=True)
         return 1
 
     if "--dry-run" in flags or "-n" in flags:
@@ -2308,7 +2320,7 @@ def sync_push(flags: list[str]) -> int:
         with _staging_repo_lock(cfg.staging_dir):
             return _sync_push(flags, cfg)
     except _StagingLockUnavailableError:
-        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        _out.error(Tag.SYNC, "another ai sync operation is using the staging repository; try again shortly.")
         return 1
 
 
@@ -2323,20 +2335,20 @@ def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
         try:
             init_staging_repo(cfg.staging_dir, cfg.remote_url)
         except Exception as e:
-            print(f"Error initializing staging repo: {e}", file=sys.stderr)
+            _out.emit(Tag.SYNC, f"Error initializing staging repo: {e}", err=True)
             return 1
 
     if not force and not dry_run:
         try:
             if is_cc_active_on_server(cfg.remote_host):
-                print(
-                    "WARNING: Claude Code is active on server. Sync aborted.\n"
+                _out.warning(
+                    Tag.SYNC,
+                    "Claude Code is active on server. Sync aborted.\n"
                     "Exit the server CC session first, or use --force to sync anyway.",
-                    file=sys.stderr,
                 )
                 return 1
         except subprocess.TimeoutExpired:
-            print("WARNING: Could not reach server to check CC status. Proceeding.", file=sys.stderr)
+            _out.warning(Tag.SYNC, "Could not reach server to check CC status. Proceeding.")
         except Exception:
             pass  # Network unreachable — proceed silently
 
@@ -2346,7 +2358,7 @@ def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
 
     cc_projects_dir = _cc_projects_dir()
     if not cc_projects_dir.exists():
-        print(f"CC projects dir not found: {cc_projects_dir}", file=sys.stderr)
+        _out.emit(Tag.SYNC, f"CC projects dir not found: {cc_projects_dir}", err=True)
         return 1
 
     result = stage_project_files(
@@ -2369,26 +2381,27 @@ def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
     if dry_run:
         staged = result["staged_files"]
         project_names = result["project_names"]
-        print(
-            f"Would sync {len(staged) + len(task_files) + len(history_files)} files across {len(project_names)} projects:"
+        _out.emit(
+            Tag.SYNC,
+            f"Would sync {len(staged) + len(task_files) + len(history_files)} files across {len(project_names)} projects:",
         )
         for src, _dst in staged:
-            print(f"  {src}")
+            _out.emit(Tag.SYNC, f"  {src}")
         for src, _dst in task_files:
-            print(f"  {src}")
+            _out.emit(Tag.SYNC, f"  {src}")
         for src, _dst in history_files:
-            print(f"  {src}")
+            _out.emit(Tag.SYNC, f"  {src}")
         return 0
 
     if not force:
         newer = _remote_newer_files(cfg.staging_dir)
         if newer:
             files_list = "\n".join(f"  {f}" for f in newer)
-            print(
-                f"Error: remote has newer content for {len(newer)} file(s):\n"
+            _out.error(
+                Tag.SYNC,
+                f"remote has newer content for {len(newer)} file(s):\n"
                 f"{files_list}\n"
                 "Run 'ai sync pull' first, or use --force / -f to overwrite.",
-                file=sys.stderr,
             )
             return 1
 
@@ -2403,7 +2416,7 @@ def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
 
     if not committed:
         if verbose:
-            print("Nothing to commit — staging repo is up to date.")
+            _out.emit(Tag.SYNC, "Nothing to commit — staging repo is up to date.")
         return 0
 
     if not _push_to_remote(cfg.staging_dir, verbose):
@@ -2421,9 +2434,10 @@ def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
         pass
 
     if verbose:
-        print(
+        _out.emit(
+            Tag.SYNC,
             f"Pushed {len(result['staged_files']) + len(task_files) + len(history_files)} files "
-            f"({len(result['project_names'])} projects) to {cfg.remote_host}"
+            f"({len(result['project_names'])} projects) to {cfg.remote_host}",
         )
     return 0
 
@@ -2436,7 +2450,7 @@ def sync_pull(flags: list[str]) -> int:
     try:
         cfg = load_sync_config()
     except Exception as e:
-        print(f"Error loading sync config: {e}", file=sys.stderr)
+        _out.emit(Tag.SYNC, f"Error loading sync config: {e}", err=True)
         return 1
 
     if "--dry-run" in flags or "-n" in flags:
@@ -2446,7 +2460,7 @@ def sync_pull(flags: list[str]) -> int:
         with _staging_repo_lock(cfg.staging_dir):
             return _sync_pull(flags, cfg)
     except _StagingLockUnavailableError:
-        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        _out.error(Tag.SYNC, "another ai sync operation is using the staging repository; try again shortly.")
         return 1
 
 
@@ -2458,7 +2472,7 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
         try:
             local_projects_root = _sync_projects_root()
         except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            _out.error(Tag.SYNC, f"{e}")
             return 1
     else:
         # Same root the branch above resolves, minus its requirement that the directory
@@ -2470,17 +2484,17 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
         local_projects_root = _get_projects_dir().expanduser()
 
     if not force and is_cc_active_locally():
-        print(
-            "WARNING: Claude Code is active locally. Sync will modify files CC may have loaded.\n"
+        _out.warning(
+            Tag.SYNC,
+            "Claude Code is active locally. Sync will modify files CC may have loaded.\n"
             "Proceeding anyway — run `ai sync pull` after your session to be safe, or use --force.",
-            file=sys.stderr,
         )
 
     if not dry_run:
         try:
             init_staging_repo(cfg.staging_dir, cfg.remote_url)
         except Exception as e:
-            print(f"Error initializing staging repo: {e}", file=sys.stderr)
+            _out.emit(Tag.SYNC, f"Error initializing staging repo: {e}", err=True)
             return 1
 
         # Push local memory files first so git can detect conflicts on merge.
@@ -2498,7 +2512,7 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
             check=False,
         )
         if fetch.returncode != 0:
-            print(f"Error fetching from remote: {fetch.stderr}", file=sys.stderr)
+            _out.emit(Tag.SYNC, f"Error fetching from remote: {fetch.stderr}", err=True)
             return 1
 
         # Merge — continue even if there are conflicts (they show as markers in files)
@@ -2513,7 +2527,7 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
     elif not cfg.staging_dir.exists():
         # Dry-run intentionally skips init_staging_repo (no mutation). On a machine
         # that has never synced, there is nothing to preview yet.
-        print("Nothing to preview — no local staging repo yet. Run without --dry-run first.")
+        _out.emit(Tag.SYNC, "Nothing to preview — no local staging repo yet. Run without --dry-run first.")
         return 0
 
     cc_projects_dir = _cc_projects_dir()
@@ -2534,7 +2548,7 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
         )
 
     if verbose and not dry_run:
-        print(f"Applied {result['applied_count']} files to {cc_projects_dir}")
+        _out.emit(Tag.SYNC, f"Applied {result['applied_count']} files to {cc_projects_dir}")
 
     if not dry_run and not memories_only:
         translate_history_jsonl(verbose=verbose)
@@ -2563,16 +2577,15 @@ def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
             if git_add.returncode == 0:
                 marker_paths = _staged_paths_with_conflict_markers(cfg.staging_dir)
                 if marker_paths is None:
-                    print("Error: refusing to commit because the staging index could not be verified.", file=sys.stderr)
+                    _out.error(Tag.SYNC, "refusing to commit because the staging index could not be verified.")
                     subprocess.run(
                         ["git", "reset"], cwd=cfg.staging_dir, capture_output=True, env=_GIT_ENV, check=False
                     )
                     result["conflicts"].append("staging index could not be verified before commit")
                 elif marker_paths:
                     paths = ", ".join(marker_paths)
-                    print(
-                        f"Error: refusing to commit staged files with unresolved git conflict markers: {paths}",
-                        file=sys.stderr,
+                    _out.error(
+                        Tag.SYNC, f"refusing to commit staged files with unresolved git conflict markers: {paths}"
                     )
                     # Clear the complete shared index. A concurrent caller may have
                     # staged paths outside staging_to_commit; leaving those staged
@@ -2622,19 +2635,19 @@ def sync_conflicts(flags: list[str]) -> int:
             conflict_files.extend(legacy)
 
     if conflict_files:
-        print("Unresolved conflict files:")
+        _out.emit(Tag.SYNC, "Unresolved conflict files:")
         for f in conflict_files:
-            print(f"  {f}")
+            _out.emit(Tag.SYNC, f"  {f}")
     else:
-        print("No unresolved conflict files.")
+        _out.emit(Tag.SYNC, "No unresolved conflict files.")
 
     if CONFLICT_LOG.exists():
         lines = CONFLICT_LOG.read_text().splitlines()
         recent = lines[-20:]
         if recent:
-            print("\nRecent conflict log entries:")
+            _out.emit(Tag.SYNC, "\nRecent conflict log entries:")
             for line in recent:
-                print(f"  {line}")
+                _out.emit(Tag.SYNC, f"  {line}")
 
     return 2 if conflict_files else 0
 
@@ -2654,7 +2667,7 @@ def sync_resolve(flags: list[str]) -> int:
     try:
         cfg = load_sync_config()
     except Exception as e:
-        print(f"Error loading sync config: {e}", file=sys.stderr)
+        _out.emit(Tag.SYNC, f"Error loading sync config: {e}", err=True)
         return 1
 
     cc_projects_dir = _cc_projects_dir()
@@ -2687,14 +2700,14 @@ def sync_resolve(flags: list[str]) -> int:
 
             if f.name.startswith("conflict-") and f.suffix == ".jsonl":
                 if verbose:
-                    print(f"  rm (jsonl backup): {f.relative_to(CONFLICT_DIR)}")
+                    _out.emit(Tag.SYNC, f"  rm (jsonl backup): {f.relative_to(CONFLICT_DIR)}")
                 if not dry_run:
                     f.unlink()
                 jsonl_deleted += 1
 
             elif ".conflict.conflict" in f.name:
                 if verbose:
-                    print(f"  rm (cascading artifact): {f.relative_to(CONFLICT_DIR)}")
+                    _out.emit(Tag.SYNC, f"  rm (cascading artifact): {f.relative_to(CONFLICT_DIR)}")
                 if not dry_run:
                     f.unlink()
                 artifacts_deleted += 1
@@ -2710,7 +2723,7 @@ def sync_resolve(flags: list[str]) -> int:
                 local_cc_file = cc_projects_dir / cc_dir_name / rel_in_project
                 outcome = _resolve_memory_conflict_file(f, local_cc_file)
                 if verbose:
-                    print(f"  {outcome}: {rel}")
+                    _out.emit(Tag.SYNC, f"  {outcome}: {rel}")
                 if outcome == "merged":
                     mem_merged += 1
                 elif outcome == "failed":
@@ -2726,14 +2739,14 @@ def sync_resolve(flags: list[str]) -> int:
 
             if f.name.startswith("conflict-") and f.suffix == ".jsonl":
                 if verbose:
-                    print(f"  rm (legacy jsonl backup): {f.name}")
+                    _out.emit(Tag.SYNC, f"  rm (legacy jsonl backup): {f.name}")
                 if not dry_run:
                     f.unlink()
                 jsonl_deleted += 1
 
             elif ".conflict.conflict" in f.name:
                 if verbose:
-                    print(f"  rm (legacy cascading): {f.name}")
+                    _out.emit(Tag.SYNC, f"  rm (legacy cascading): {f.name}")
                 if not dry_run:
                     f.unlink()
                 artifacts_deleted += 1
@@ -2742,7 +2755,7 @@ def sync_resolve(flags: list[str]) -> int:
                 local_cc_file = f.with_suffix("")
                 outcome = _resolve_memory_conflict_file(f, local_cc_file)
                 if verbose:
-                    print(f"  {outcome}: {f.name}")
+                    _out.emit(Tag.SYNC, f"  {outcome}: {f.name}")
                 if outcome == "merged":
                     mem_merged += 1
                 elif outcome == "failed":
@@ -2760,19 +2773,20 @@ def sync_resolve(flags: list[str]) -> int:
     prefix = "[dry-run] " if dry_run else ""
     total = jsonl_deleted + artifacts_deleted + mem_merged + mem_failed
     if total == 0:
-        print(f"{prefix}No conflict files found.")
+        _out.emit(Tag.SYNC, f"{prefix}No conflict files found.")
     else:
         if jsonl_deleted:
-            print(f"{prefix}Removed {jsonl_deleted} stale JSONL conflict backup(s).")
+            _out.emit(Tag.SYNC, f"{prefix}Removed {jsonl_deleted} stale JSONL conflict backup(s).")
         if artifacts_deleted:
-            print(f"{prefix}Removed {artifacts_deleted} cascading conflict artifact(s).")
+            _out.emit(Tag.SYNC, f"{prefix}Removed {artifacts_deleted} cascading conflict artifact(s).")
         if mem_merged:
-            print(f"{prefix}LLM-merged {mem_merged} memory conflict file(s).")
+            _out.emit(Tag.SYNC, f"{prefix}LLM-merged {mem_merged} memory conflict file(s).")
         if mem_failed:
-            print(
+            _out.emit(
+                Tag.SYNC,
                 f"{prefix}Could not auto-merge {mem_failed} memory file(s) — "
                 "no API key or LLM error. Resolve manually: ai sync conflicts",
-                file=sys.stderr,
+                err=True,
             )
 
     return 1 if mem_failed > 0 else 0
@@ -2829,34 +2843,34 @@ def sync_watch(flags: list[str]) -> int:
         return 0
 
     if not _acquire_pid_file("sync-watch"):
-        print("ai sync watch is already running.", file=sys.stderr)
+        _out.emit(Tag.SYNC, "ai sync watch is already running.", err=True)
         return 2
 
     client = NATSClient()
 
     async def on_pull_requested(data: dict):
         machine = data.get("machine", "unknown")
-        print(f"[sync-watch] sync.pull.requested from {machine} — running ai sync pull --force")
+        _out.emit(Tag.SYNC_WATCH, f"sync.pull.requested from {machine} — running ai sync pull --force")
         result = sync_pull(["--force"])
         if result == 0:
-            print("[sync-watch] pull complete")
+            _out.emit(Tag.SYNC_WATCH, "pull complete")
         elif result == 2:
-            print("[sync-watch] pull complete (conflicts preserved — resolve with: ai sync conflicts)")
+            _out.emit(Tag.SYNC_WATCH, "pull complete (conflicts preserved — resolve with: ai sync conflicts)")
         else:
-            print(f"[sync-watch] pull failed (exit {result})", file=sys.stderr)
+            _out.emit(Tag.SYNC_WATCH, f"pull failed (exit {result})", err=True)
 
     async def run():
         if not client.nc:
             await client.connect()
         if not client.nc:
-            print("NATS unavailable — cannot start sync watcher.", file=sys.stderr)
+            _out.emit(Tag.SYNC, "NATS unavailable — cannot start sync watcher.", err=True)
             return False
         if verbose:
-            print("[sync-watch] connected to NATS, watching sync.pull.requested")
+            _out.emit(Tag.SYNC_WATCH, "connected to NATS, watching sync.pull.requested")
         await client.subscribe_durable("sync.pull.requested", "sync-watch", on_pull_requested)
         return True
 
-    print("ai sync watch — listening for sync.pull.requested (Ctrl+C to stop)")
+    _out.emit(Tag.SYNC, "ai sync watch — listening for sync.pull.requested (Ctrl+C to stop)")
     try:
         ok = asyncio.run(run())
     except KeyboardInterrupt:

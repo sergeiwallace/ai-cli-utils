@@ -15,7 +15,9 @@ from pathlib import Path
 
 import portalocker
 
+from . import output as _out
 from .config import get_xdg_config_home, get_xdg_state_home
+from .output import Untagged
 
 # Default iTerm2 config written to ~/.config/ai-cli-utils/iterm2.toml on first use.
 # Also shipped as docs/reference/iterm2-defaults.toml for documentation.
@@ -654,11 +656,10 @@ def _emit_iterm2_profile_setup(
     # Emit profile/color/title sequences
     profile_name = f"ai-cli:{ai_name}"
     color_no_hash = color_hex.lstrip("#")
-    sys.stdout.write(f"\033]1337;SetProfile={profile_name}\007")
-    sys.stdout.write(f"\033]1337;SetColors=tab={color_no_hash}\007")
+    _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetProfile={profile_name}\007", nl=False)
+    _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetColors=tab={color_no_hash}\007", nl=False)
     # OSC 1 sets the iTerm2 "Name" field — mosh does not intercept it
-    sys.stdout.write(f"\033]1;{session_name}\007")
-    sys.stdout.flush()
+    _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1;{session_name}\007", nl=False)
     # AppleScript fallback: set the session Name directly via the iTerm2 API.
     # This is the authoritative fix for local sessions where OSC 1 may be
     # overridden by tmux rendering, process tracking, or nested-tmux passthrough

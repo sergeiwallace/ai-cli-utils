@@ -28,8 +28,11 @@ def _safe_session_name(session_name: str) -> str:
     return normalized[:64] or "launch"
 
 
+_LINE_TAG = re.compile(r"^\[[a-z0-9_-]+\] ")
+
+
 def _log_level(message: str) -> int:
-    stripped = message.lstrip()
+    stripped = _LINE_TAG.sub("", message.lstrip(), count=1)
     if stripped.startswith("Error:") or " failed" in stripped.lower():
         return logging.ERROR
     if stripped.startswith("Warning:") or "warning:" in stripped.lower():
