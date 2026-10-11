@@ -4747,7 +4747,7 @@ def _record_session_exit(name: str | None, cause: str | None, evidence: str | No
     if not marked:
         raise click.ClickException(f"no recorded session named {name} in {_session_registry.registry_path()}")
     for record in marked:
-        click.echo(f"{record.get('name')}: exit recorded (cause={cause})")
+        _out.emit(Tag.SESSIONS, f"{record.get('name')}: exit recorded (cause={cause})")
 
 
 @cmd_iterm2_group.command("sessions", help="List the sessions recorded for iTerm2 restore; prune or refresh them")
