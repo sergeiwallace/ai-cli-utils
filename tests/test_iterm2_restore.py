@@ -550,7 +550,7 @@ def test_given_a_non_macos_platform_when_restoring_then_it_exits_zero_with_the_p
     assert machine.system.calls == []
 
 
-# --- Exit causes, the relaunch filter and the handoff (AIH-zhqnf.4) ----------------
+# --- Exit causes, the relaunch filter and the handoff ------------------------------
 
 
 def _registry_records(machine) -> dict[str, dict]:

@@ -39,7 +39,7 @@ LOGGER = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 _READABLE_SCHEMAS = (1, 2)
 REGISTRY_FILENAME = "iterm2-sessions.json"
-#: Why a session's previous run ended (the AIH-zhqnf exit-cause classes).
+#: Why a session's previous run ended.
 EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "unknown")
 LINUX_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 #: Bound on the one read-only ``sysctl`` call that reads the macOS boot identity.

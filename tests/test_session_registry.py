@@ -798,7 +798,7 @@ def test_given_a_corrupt_registry_when_listed_then_the_error_names_the_file(stat
     assert "iterm2-sessions.json is not valid JSON" in err
 
 
-# --- Exit causes (AIH-zhqnf.4) ---------------------------------------------------
+# --- Exit causes -----------------------------------------------------------------
 
 
 def _schema_1_record(name):
