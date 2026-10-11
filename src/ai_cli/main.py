@@ -2685,7 +2685,8 @@ def _do_session_launch(
     # on it is the exact regression AI-CLI-ai-c-direnv-jsqn fixed. So this
     # auto-installs when it can and otherwise prints remediation and continues.
     if not no_direnv:
-        _direnv_result = _direnv_setup.ensure_direnv(Path.cwd(), config)
+        # A dry run reports what is missing but installs nothing.
+        _direnv_result = _direnv_setup.ensure_direnv(Path.cwd(), config, auto_install=not dry_run)
         # ensure_direnv reports its own installs and remediation through the active
         # reporter; the fast no-op is verbose-only so a routine launch is not told
         # about a check that took milliseconds and changed nothing.
@@ -2776,7 +2777,7 @@ def _do_session_launch(
             tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
         else:
             _tmux_present_before = _tmux_setup.tmux_present()
-            _tmux_install = _tmux_setup.ensure_tmux()
+            _tmux_install = _tmux_setup.ensure_tmux(auto_install=not dry_run)
             # Degrade on `unusable`, never on `not installed`. The difference is
             # positive evidence: a tmux absent from PATH, or one that names a
             # shared library it cannot load, is established to be unusable. A tmux
