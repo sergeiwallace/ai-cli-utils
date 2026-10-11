@@ -6,13 +6,14 @@ here reaches a real iTerm2.
 
 import io
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import run_cli
+from conftest import TEST_BOOT_ID, run_cli
 
 from ai_cli import iterm2_restore
 
@@ -25,10 +26,25 @@ def _pane(window: int, tab: int, pane: int, uuid: str) -> dict:
     return {"window": window, "tab": tab, "pane": pane, "session_uuid": uuid}
 
 
-def _record(name: str, *, kind: str = "local", refreshed: str = "2026-01-01T10:00:00Z", position=None, alias=None):
+def _record(
+    name: str,
+    *,
+    kind: str = "local",
+    refreshed: str = "2026-01-01T10:00:00Z",
+    position=None,
+    alias=None,
+    boot_id=None,
+    exit_cause=None,
+    ended_at=None,
+):
     number = name.rsplit("-", 1)[-1]
     argv = ["ai", "c", "-R", "-m", alias or "devbox", number] if kind == "remote" else ["ai", "c", number]
-    return {
+    extra: dict = {}
+    if boot_id is not None:
+        extra["boot_id"] = boot_id
+    if exit_cause is not None:
+        extra["exit"] = {"cause": exit_cause, "at": "2026-01-01T11:00:00Z", "evidence": {"source": "test"}}
+    return extra | {
         "id": f"id-{name}",
         "kind": kind,
         "name": name,
@@ -39,7 +55,7 @@ def _record(name: str, *, kind: str = "local", refreshed: str = "2026-01-01T10:0
         "launched_at": "2026-01-01T09:00:00Z",
         "refreshed_at": refreshed,
         "launcher_pid": None,
-        "ended_at": None,
+        "ended_at": ended_at,
     }
 
 
@@ -239,11 +255,12 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
 ):
     machine.config('default_arrangement = "layout-a"')
     machine.system.panes = {_IDLE: _pane(0, 1, 0, "U-IDLE")}
-    machine.system.gone = {"c-myproject-9"}
+    machine.system.gone = {"c-myproject-9", "c-myproject-8"}
     machine.sessions(
         _record("c-myproject-2", position=_pane(0, 2, 0, "U-OLD")),
         _record("c-myproject-1", position=_pane(0, 1, 0, "U-OLD-1")),
-        _record("c-myproject-9"),
+        _record("c-myproject-9", boot_id="boot-before"),
+        _record("c-myproject-8", exit_cause="manual_exit"),
     )
     before = machine.registry.read_bytes()
 
@@ -251,10 +268,12 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
 
     assert code == 0
     assert _lines(out) == [
+        "c-myproject-9: would record exit (cause=host_reboot; tmux session no longer exists)",
         "arrangement: would restore 'layout-a' with it2",
         "c-myproject-1: would restore (window 0 tab 1 pane 0): cd /work/myproject && ai c 1",
         "c-myproject-2: would restore (new tab): cd /work/myproject && ai c 2",
-        "c-myproject-9: dead (tmux session no longer exists)",
+        "c-myproject-9: would restore (new tab): cd /work/myproject && AIH_LAUNCH_REASON=host_reboot ai c 9",
+        "c-myproject-8: skipped (cause=manual_exit; restore.relaunch.scenarios.manual_exit = false)",
     ]
     assert "new-tab" not in machine.system.kinds()
     assert "write-pane" not in machine.system.kinds()
@@ -332,10 +351,12 @@ def test_given_confirm_when_the_user_declines_then_neither_iterm2_nor_the_regist
     assert machine.registry.read_bytes() == before
 
 
-def test_given_confirm_when_the_user_accepts_then_dead_records_are_pruned_and_sessions_restored(machine):
+def test_given_confirm_when_the_user_accepts_then_dead_records_not_relaunched_are_pruned_and_sessions_restored(
+    machine,
+):
     machine.config("confirm = true")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9"))
+    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9", exit_cause="manual_exit"))
 
     code, out, _ = _restore(stdin="y\n")
 
@@ -527,3 +548,197 @@ def test_given_a_non_macos_platform_when_restoring_then_it_exits_zero_with_the_p
     assert code == 0
     assert _lines(out) == ["restore is macOS/iTerm2 only"]
     assert machine.system.calls == []
+
+
+# --- Exit causes, the relaunch filter and the handoff (AIH-zhqnf.4) ----------------
+
+
+def _registry_records(machine) -> dict[str, dict]:
+    return {r["name"]: r for r in json.loads(machine.registry.read_text(encoding="utf-8"))["sessions"]}
+
+
+def _typed_text(script: str) -> str:
+    return script.split('write text "', 1)[1].rsplit('"', 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("record_boot_id", "cause"),
+    [
+        pytest.param(TEST_BOOT_ID, "terminal_quit_or_crash", id="same-boot"),
+        pytest.param("boot-before-the-reboot", "host_reboot", id="boot-identity-differs"),
+    ],
+)
+def test_given_a_dead_record_with_no_exit_when_restoring_then_the_sweep_records_its_cause_before_relaunching(
+    machine, record_boot_id, cause
+):
+    machine.config("")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-9", boot_id=record_boot_id))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert f"c-myproject-9: exit recorded (cause={cause}; tmux session no longer exists)" in out
+    assert f"c-myproject-9: restored (new tab; cause={cause})" in out
+    recorded = _registry_records(machine)["c-myproject-9"]["exit"]
+    assert recorded["cause"] == cause
+    assert recorded["evidence"]["reason"] == "tmux session no longer exists"
+    assert recorded["evidence"]["boot_id"] == TEST_BOOT_ID
+    assert recorded["evidence"]["record_boot_id"] == record_boot_id
+    ((where, script),) = machine.system.typed()
+    assert where == "new-tab"
+    assert _typed_text(script) == f"cd /work/myproject && AIH_LAUNCH_REASON={cause} ai c 9"
+
+
+def test_given_a_relaunch_command_when_typed_then_aih_launch_reason_is_in_the_environment_of_the_ai_command(machine):
+    """An assignment before ``cd`` would scope it to ``cd`` alone; it must prefix ``ai`` itself."""
+    machine.config("")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-9", boot_id="boot-before"))
+
+    _restore()
+
+    ((_, script),) = machine.system.typed()
+    commands = [shlex.split(part) for part in _typed_text(script).split("&&")]
+    assert commands[-1][:2] == ["AIH_LAUNCH_REASON=host_reboot", "ai"]
+
+
+def test_given_a_dead_record_with_no_boot_identity_when_swept_then_it_is_unknown_and_follows_the_crash_toggle(
+    machine,
+):
+    machine.config("[iterm2.persistence.restore.relaunch.scenarios]\nterminal_quit_or_crash = false")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-9"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-myproject-9: exit recorded (cause=unknown; tmux session no longer exists)" in out
+    assert (
+        "c-myproject-9: skipped (cause=unknown follows terminal_quit_or_crash; "
+        "restore.relaunch.scenarios.terminal_quit_or_crash = false)"
+    ) in out
+    assert machine.system.typed() == []
+
+
+@pytest.mark.parametrize(
+    ("scenario", "record_kwargs"),
+    [
+        pytest.param("manual_exit", {"exit_cause": "manual_exit"}, id="manual_exit-by-default"),
+        pytest.param("host_reboot", {"boot_id": "boot-before"}, id="host_reboot-switched-off"),
+        pytest.param("terminal_quit_or_crash", {"boot_id": TEST_BOOT_ID}, id="crash-switched-off"),
+    ],
+)
+def test_given_a_cause_whose_toggle_is_false_when_restoring_then_it_is_listed_skipped_with_its_cause_and_not_relaunched(
+    machine, scenario, record_kwargs
+):
+    toggles = "" if scenario == "manual_exit" else f"{scenario} = false"
+    machine.config(f"[iterm2.persistence.restore.relaunch.scenarios]\n{toggles}")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9", **record_kwargs))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert f"c-myproject-9: skipped (cause={scenario}; restore.relaunch.scenarios.{scenario} = false)" in out
+    assert [_typed_text(script) for _, script in machine.system.typed()] == ["cd /work/myproject && ai c 1"]
+    assert list(_registry_records(machine)) == ["c-myproject-1"]
+
+
+def test_given_manual_exit_switched_on_when_restoring_then_a_manually_exited_session_is_relaunched(machine):
+    machine.config("[iterm2.persistence.restore.relaunch.scenarios]\nmanual_exit = true")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-9", exit_cause="manual_exit"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-myproject-9: restored (new tab; cause=manual_exit)" in out
+    ((_, script),) = machine.system.typed()
+    assert _typed_text(script) == "cd /work/myproject && AIH_LAUNCH_REASON=manual_exit ai c 9"
+
+
+def test_given_a_cleanly_ended_remote_record_with_no_exit_when_swept_then_it_reads_as_a_manual_exit(machine):
+    machine.config("")
+    machine.sessions(_record("c-r-myproject-2", kind="remote", ended_at="2026-01-01T11:00:00Z"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-r-myproject-2: exit recorded (cause=manual_exit; remote session exited cleanly)" in out
+    assert "c-r-myproject-2: skipped (cause=manual_exit; restore.relaunch.scenarios.manual_exit = false)" in out
+    assert machine.system.typed() == []
+
+
+def test_given_a_live_record_when_restoring_then_no_exit_is_recorded_and_it_relaunches_without_a_reason(machine):
+    machine.config("")
+    machine.sessions(_record("c-myproject-1", boot_id="boot-before"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "exit recorded" not in out
+    assert "c-myproject-1: restored (new tab)" in out
+    assert _registry_records(machine)["c-myproject-1"].get("exit") is None
+    ((_, script),) = machine.system.typed()
+    assert _typed_text(script) == "cd /work/myproject && ai c 1"
+
+
+def test_given_a_live_session_carrying_a_stale_manual_exit_when_restoring_then_it_is_re_attached_not_filtered(machine):
+    """The launcher relaunches claude after ``/exit`` in the same tmux session; that session still needs its pane."""
+    machine.config("")
+    machine.sessions(_record("c-myproject-1", exit_cause="manual_exit"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-myproject-1: restored (new tab)" in out
+    ((_, script),) = machine.system.typed()
+    assert _typed_text(script) == "cd /work/myproject && ai c 1"
+
+
+def test_given_on_terminal_reopen_false_when_restoring_at_startup_then_nothing_relaunches_and_the_reason_prints(
+    machine,
+):
+    machine.config_text(
+        "[iterm2.persistence.restore]\nenabled = true\non_startup = true\n"
+        "[iterm2.persistence.restore.relaunch]\non_terminal_reopen = false\n"
+    )
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9", boot_id="boot-before"))
+
+    code, out, _ = _restore("--startup")
+
+    assert code == 0
+    assert "relaunch disabled: restore.relaunch.on_terminal_reopen = false" in out
+    assert machine.system.typed() == []
+    assert "list-panes" not in machine.system.kinds()
+    assert _registry_records(machine)["c-myproject-9"]["exit"]["cause"] == "host_reboot"
+
+
+def test_given_on_terminal_reopen_false_when_restoring_on_demand_then_sessions_still_restore(machine):
+    """The key governs the terminal-reopen (``--startup``) run; an on-demand run is the user asking."""
+    machine.config_text(
+        "[iterm2.persistence.restore]\nenabled = true\n"
+        "[iterm2.persistence.restore.relaunch]\non_terminal_reopen = false\n"
+    )
+    machine.sessions(_record("c-myproject-1"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-myproject-1: restored (new tab)" in out
+
+
+def test_given_dry_run_when_the_sweep_would_classify_then_the_registry_is_not_written(machine):
+    machine.config("")
+    machine.system.gone = {"c-myproject-9"}
+    machine.sessions(_record("c-myproject-9", boot_id="boot-before"))
+    before = machine.registry.read_bytes()
+
+    code, out, _ = _restore("--dry-run")
+
+    assert code == 0
+    assert "c-myproject-9: would record exit (cause=host_reboot; tmux session no longer exists)" in out
+    assert machine.registry.read_bytes() == before
+    assert machine.system.typed() == []

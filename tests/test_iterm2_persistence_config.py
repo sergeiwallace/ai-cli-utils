@@ -37,6 +37,10 @@ _DOCUMENTED_DEFAULTS = {
         "max_sessions": 0,
         "stagger_seconds": 1.0,
         "confirm": False,
+        "relaunch": {
+            "on_terminal_reopen": True,
+            "scenarios": {"host_reboot": True, "terminal_quit_or_crash": True, "manual_exit": False},
+        },
     },
 }
 
@@ -100,6 +104,54 @@ def test_given_partial_section_when_loaded_then_set_keys_win_and_the_rest_defaul
     assert restore["default_arrangement"] == "main"
     assert restore["stagger_seconds"] == 2
     assert restore["on_startup"] is False
+
+
+def test_given_restore_table_without_relaunch_table_when_loaded_then_relaunch_takes_the_code_defaults(iterm2_toml):
+    iterm2_toml.write_text("[iterm2.persistence.restore]\nenabled = true\n", encoding="utf-8")
+
+    relaunch = load_persistence_config()["restore"]["relaunch"]
+
+    assert relaunch == {
+        "on_terminal_reopen": True,
+        "scenarios": {"host_reboot": True, "terminal_quit_or_crash": True, "manual_exit": False},
+    }
+
+
+def test_given_one_relaunch_scenario_set_when_loaded_then_it_wins_and_the_others_default(iterm2_toml):
+    iterm2_toml.write_text(
+        "[iterm2.persistence.restore.relaunch]\non_terminal_reopen = false\n"
+        "[iterm2.persistence.restore.relaunch.scenarios]\nmanual_exit = true\n",
+        encoding="utf-8",
+    )
+
+    relaunch = load_persistence_config()["restore"]["relaunch"]
+
+    assert relaunch["on_terminal_reopen"] is False
+    assert relaunch["scenarios"] == {"host_reboot": True, "terminal_quit_or_crash": True, "manual_exit": True}
+
+
+@pytest.mark.parametrize(
+    ("toml_text", "message"),
+    [
+        pytest.param(
+            '[iterm2.persistence.restore.relaunch.scenarios]\nhost_reboot = "yes"\n',
+            "[iterm2.persistence.restore.relaunch.scenarios] host_reboot must be a boolean",
+            id="wrong-type",
+        ),
+        pytest.param(
+            "[iterm2.persistence.restore.relaunch.scenarios]\nfresh_launch = true\n",
+            "[iterm2.persistence.restore.relaunch.scenarios] has no key 'fresh_launch'",
+            id="unknown-scenario",
+        ),
+    ],
+)
+def test_given_a_bad_relaunch_key_when_loaded_then_the_error_names_its_table_and_key(iterm2_toml, toml_text, message):
+    iterm2_toml.write_text(toml_text, encoding="utf-8")
+
+    with pytest.raises(PersistenceConfigError) as exc_info:
+        load_persistence_config()
+
+    assert message in str(exc_info.value)
 
 
 def test_given_file_edited_between_two_calls_when_loaded_again_then_new_value_is_returned(iterm2_toml):

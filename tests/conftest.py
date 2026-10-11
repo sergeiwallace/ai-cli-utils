@@ -1642,3 +1642,17 @@ def _make_tmp_path_deletable(tmp_path: Path):
                 path.chmod(0o700)
         except OSError:
             continue
+
+
+#: The boot identity every test sees unless it injects another one.
+TEST_BOOT_ID = "test-boot-0000"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_boot_id(monkeypatch):
+    """Pin the session registry's boot-identity reader so no test runs the OS tool behind it.
+
+    On macOS the real reader runs ``sysctl``; a test faking ``subprocess.run`` for tmux or
+    osascript would otherwise receive that call too, on the macOS CI leg only.
+    """
+    monkeypatch.setattr("ai_cli.session_registry.current_boot_id", lambda: TEST_BOOT_ID, raising=False)
