@@ -150,8 +150,16 @@ def test_given_an_alias_longer_than_max_length_when_launching_then_it_refuses(re
     assert "invalid" in err and str(real_alias_lookup["harness"]) in err
 
 
-def test_given_an_alias_with_a_digit_when_launching_then_it_refuses(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\ntest-box = "ab1"\n')
+def test_given_an_alias_with_a_digit_after_a_letter_when_launching_then_it_names_the_session(real_alias_lookup):
+    # A letters-only rule refused a real alias like `ec2`, and every `ai c` on that host exited.
+    _write_aliases(real_alias_lookup["harness"], 'max_length = 5\n[aliases]\ntest-box = "ec2"\n')
+    code, out, err = _dry_run()
+    assert code == 0, err
+    assert _planned_session(out) == "myrepo-ec2-1"
+
+
+def test_given_an_alias_starting_with_a_digit_when_launching_then_it_refuses(real_alias_lookup):
+    _write_aliases(real_alias_lookup["harness"], '[aliases]\ntest-box = "2ec"\n')
     code, _out, err = _dry_run()
     assert code == 1
-    assert "lowercase letters only" in err
+    assert "starting with a letter" in err
