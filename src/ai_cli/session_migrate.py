@@ -308,7 +308,7 @@ def migrate_session(
             result.warnings.append(f"branch wt-{new} already exists, so the worktree keeps branch {branch}")
         else:
             new_branch = f"wt-{new}"
-            moves.append(PlannedMove("branch", branch, new_branch))
+            moves.append(PlannedMove("branch", f"wt-{old}", new_branch))
     markers = _session_home_markers(repo_root, old_wt)
     for key, _value in markers:
         renamed = key.replace(f"branch.{branch}.", f"branch.{new_branch}.", 1) if new_branch else key
