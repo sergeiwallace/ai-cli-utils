@@ -435,6 +435,55 @@ print(find_transcript(cc_project_dir(Path('<repo>/.worktrees/myproject-2')), tit
 Then the real end-to-end check, which no automated probe can substitute for:
 run `ai c 2` and confirm the conversation history is present.
 
+## Migrating a session that already has a slot (`ai session-migrate`)
+
+Adoption brings in a session started **outside** `ai c`. A session that already
+lives in a slot and needs a new name (for example `myrepo-3` to
+`myrepo-box-3` when the host alias joined the
+[naming template](../../README.md#session-names)) is moved with
+`ai session-migrate OLD NEW` instead. Only discovery differs: migration reads the
+registered slot `.worktrees/OLD`, where adoption searches for an unregistered
+transcript. The task namespace and resume tree are moved by the same executor
+(`session_adopt.rekey_name_artifacts`) for both.
+
+```bash
+ai session-migrate myrepo-3 myrepo-box-3 -n   # every planned move, nothing written
+ai session-migrate myrepo-3 myrepo-box-3      # prompts, then migrates
+ai session-migrate myrepo-3 myrepo-box-3 -y   # no prompt
+ai c myrepo-box-3                             # resume under the new name
+```
+
+| What | How it follows the new name |
+|---|---|
+| Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
+| Branch `wt-OLD` | renamed to `wt-NEW` when that is its branch and `wt-NEW` is free; any other branch is kept |
+| `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
+| Canonical-session registry entry | path and session name rewritten, first-registration time kept |
+| `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
+| `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried |
+| `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
+| `session-meta-<engine>-OLD.json` | fields rewritten, renamed |
+| `sessions/<engine>-OLD.sh` wrapper | regenerated from the rewritten metadata, so `--name` and the pinned `CLAUDE_CODE_TASK_LIST_ID` are NEW |
+| `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
+| `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
+| iTerm2 restore registry record | name and relaunch command point at NEW |
+
+Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
+is not running), the repo-root memory directory (shared by every session of the
+repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
+`session-leases/` entries (recreated by the next launch), and conversation text
+that mentions the old path.
+
+Refused before anything is written, `-n` included: a slot that is not a
+registered worktree (use `session-adopt`), an existing `.worktrees/NEW` or
+project directory for it, a running Claude Code process named OLD/NEW or working
+inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent:
+exit the session and end the tmux session first). A destination file that exists
+is reported and skipped, never overwritten.
+
+A `.venv` inside the worktree moves with it, but its console scripts name the old
+path; the command warns, and `uv sync --reinstall` in the new worktree fixes it.
+
 ## Idempotence
 
 Re-running an adoption adopts nothing. The second run finds no transcript left in
@@ -452,4 +501,5 @@ Nothing is written, and the exit status is zero.
 `src/ai_cli/session_adopt.py` (library, stdlib-only apart from creating a
 worktree) and the `session-adopt` command in `src/ai_cli/main.py`. Tests:
 `tests/test_session_adopt.py`. The transcript move itself is
-`src/ai_cli/cc_migrate.py`, reused unchanged.
+`src/ai_cli/cc_migrate.py`, reused unchanged. `ai session-migrate` is
+`src/ai_cli/session_migrate.py`, tested in `tests/test_session_migrate.py`.

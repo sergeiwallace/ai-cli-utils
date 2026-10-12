@@ -1,0 +1,263 @@
+"""``ai session-migrate OLD NEW`` moves a registered session to a new name, losing nothing.
+
+Every test drives the real command against a fake slot in a temp HOME that carries
+each artifact the session's name or worktree path keys: the worktree and its branch,
+the session-home markers, the canonical registry entry, the transcript (title, cwd,
+worktree binding, sidecar, memory), the task namespace, the resume tree, the
+launcher's metadata, wrapper script, resume prompt and session map, and the iTerm2
+restore record.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from conftest import run_cli, snapshot_tree
+
+from ai_cli import session_registry
+from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
+from ai_cli.cc_migrate import cc_project_dir, transcript_title
+from ai_cli.config import get_xdg_state_home
+
+OLD, NEW = "myrepo-3", "myrepo-box-3"
+UUID = "3a3a3a3a-0000-4000-8000-000000000003"
+OUTBOX_KEYED = f"{OLD}-1791218749.md"
+CONFIRMED_KEYED = f"{OLD}-{'ab' * 16}.md"
+
+
+def _git(*args: str, cwd: Path) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def _jsonl(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+
+@pytest.fixture
+def slot(tmp_path):
+    """A repo whose slot ``.worktrees/myrepo-3`` carries every artifact a migration moves."""
+    home = Path.home()
+    claude = home / ".claude"
+    state = get_xdg_state_home()
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "T", cwd=repo)
+    (repo / "README.md").write_text("hi\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+    repo = repo.resolve()
+    wt = repo / ".worktrees" / OLD
+    _git("worktree", "add", "-q", str(wt), "-b", f"wt-{OLD}", cwd=repo)
+    (wt / "uncommitted.txt").write_text("work in progress\n")
+    _git("config", f"branch.wt-{OLD}.aih-session-home", str(wt), cwd=repo)
+    _git("config", f"branch.wt/{OLD}/task.aih-session-home", str(wt), cwd=repo)
+    register_canonical_worktree(wt, engine="c", session_name=f"c-{OLD}")
+
+    project = cc_project_dir(wt, claude)
+    _jsonl(
+        project / f"{UUID}.jsonl",
+        [
+            {"type": "user", "cwd": str(wt), "message": {"content": f"look at {wt}/README.md"}},
+            {"type": "custom-title", "customTitle": OLD},
+            {
+                "type": "worktree-state",
+                "worktreeSession": {"originalCwd": str(wt), "worktreePath": str(wt / "x"), "worktreeBranch": "b"},
+            },
+            {"type": "assistant", "cwd": str(wt / "src")},
+        ],
+    )
+    _jsonl(project / UUID / "subagents" / "agent-1.jsonl", [{"cwd": str(wt)}])
+    (project / "memory").mkdir()
+    (project / "memory" / "MEMORY.md").write_text("# slot memory\n")
+
+    tasks = claude / "tasks" / OLD
+    tasks.mkdir(parents=True)
+    for task_id in (1, 2):
+        (tasks / f"{task_id}.json").write_text(json.dumps({"id": str(task_id), "subject": f"task {task_id}"}))
+    (tasks / ".highwatermark").write_text("7")
+
+    resume = claude / "resume"
+    for sub, name in (("outbox", OUTBOX_KEYED), ("confirmed", CONFIRMED_KEYED)):
+        (resume / sub).mkdir(parents=True, exist_ok=True)
+        (resume / sub / name).write_text("hand-off\n")
+
+    meta = {
+        "engine": "c",
+        "ai_name": OLD,
+        "session": f"c-{OLD}",
+        "prefix": "c-myrepo-",
+        "project_prefix": "myrepo",
+        "session_id_uuid": "",
+        "worktree_dir": str(wt),
+        "project_name": "myrepo",
+    }
+    (state / "sessions").mkdir(parents=True, exist_ok=True)
+    (state / f"session-meta-c-{OLD}.json").write_text(json.dumps(meta))
+    (state / "sessions" / f"c-{OLD}.sh").write_text(f"ai_name={OLD}\n")
+    (state / f"cc-resume-prompt-c-{OLD}").write_text("resume me\n")
+    (state / f"ai-watcher-lock-c-{OLD}").write_text("1234")
+    (claude / "cc-sessions.json").write_text(json.dumps({OLD: UUID, "other-1": "x"}))
+    (state / "iterm2-sessions.json").write_text(
+        json.dumps(
+            {
+                "schema": session_registry.SCHEMA_VERSION,
+                "machine": "m",
+                "sessions": [{"id": "r1", "kind": "local", "name": f"c-{OLD}", "relaunch_argv": ["ai", "c", "3"]}],
+            }
+        )
+    )
+    return {"repo": repo, "wt": wt, "claude": claude, "state": state, "project": project}
+
+
+def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
+    with patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])):
+        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), *flags])
+
+
+def _everything(slot) -> dict:
+    """A snapshot of every tree the migration may touch, for a nothing-changed check."""
+    trees = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees["git-config"] = (slot["repo"] / ".git" / "config").read_text()
+    trees["registry"] = get_canonical_worktree_registry_path().read_text()
+    return trees
+
+
+def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_new_name(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+
+    repo, old_wt, claude, state = slot["repo"], slot["wt"], slot["claude"], slot["state"]
+    new_wt = repo / ".worktrees" / NEW
+
+    # worktree, uncommitted work, branch and markers
+    assert not old_wt.exists()
+    assert (new_wt / "uncommitted.txt").read_text() == "work in progress\n"
+    listed = _git("worktree", "list", "--porcelain", cwd=repo)
+    assert f"worktree {new_wt}\n" in listed and f"worktree {old_wt}\n" not in listed
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == f"wt-{NEW}"
+    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
+    assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
+    assert f"branch.wt/{OLD}/task.aih-session-home {new_wt}" in markers
+    assert str(old_wt) + "\n" not in markers
+
+    # canonical registry
+    entries = json.loads(get_canonical_worktree_registry_path().read_text())["worktrees"]
+    assert [(e["path"], e["session_name"]) for e in entries] == [(str(new_wt), f"c-{NEW}")]
+
+    # transcript: project dir, title, cwd, binding; history text untouched
+    new_project = cc_project_dir(new_wt, claude)
+    assert not slot["project"].exists()
+    transcript = new_project / f"{UUID}.jsonl"
+    assert transcript_title(transcript) == NEW
+    records = [json.loads(line) for line in transcript.read_text().splitlines()]
+    assert records[0]["cwd"] == str(new_wt)
+    assert records[0]["message"]["content"] == f"look at {old_wt}/README.md"
+    assert records[2]["worktreeSession"] is None
+    assert records[3]["cwd"] == str(new_wt / "src")
+    assert (new_project / UUID / "subagents" / "agent-1.jsonl").is_file()
+    assert (new_project / "memory" / "MEMORY.md").read_text() == "# slot memory\n"
+    assert f"resolve probe: `ai c` finds {transcript}" in out
+
+    # task namespace, keeping its high-water mark
+    new_ns = claude / "tasks" / NEW
+    assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
+    assert (new_ns / ".highwatermark").read_text() == "7"
+    assert not list((claude / "tasks" / OLD).glob("*.json"))
+
+    # resume tree
+    assert (claude / "resume" / "outbox" / OUTBOX_KEYED.replace(OLD, NEW, 1)).is_file()
+    assert (claude / "resume" / "confirmed" / CONFIRMED_KEYED.replace(OLD, NEW, 1)).is_file()
+    assert not (claude / "resume" / "outbox" / OUTBOX_KEYED).exists()
+
+    # launcher state: metadata, regenerated wrapper (pinned task list), resume prompt, maps
+    meta = json.loads((state / f"session-meta-c-{NEW}.json").read_text())
+    assert (meta["ai_name"], meta["session"], meta["worktree_dir"]) == (NEW, f"c-{NEW}", str(new_wt))
+    script = (state / "sessions" / f"c-{NEW}.sh").read_text()
+    assert f"ai_name={NEW}" in script
+    assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in script
+    assert str(new_wt) in script
+    assert not (state / "sessions" / f"c-{OLD}.sh").exists()
+    assert (state / f"cc-resume-prompt-c-{NEW}").read_text() == "resume me\n"
+    assert json.loads((claude / "cc-sessions.json").read_text()) == {NEW: UUID, "other-1": "x"}
+    record = json.loads((state / "iterm2-sessions.json").read_text())["sessions"][0]
+    assert (record["name"], record["relaunch_argv"]) == (f"c-{NEW}", ["ai", "c", NEW])
+
+    # a lock is never carried to the new name
+    assert (state / f"ai-watcher-lock-c-{OLD}").exists()
+    assert not (state / f"ai-watcher-lock-c-{NEW}").exists()
+
+
+def test_given_a_dry_run_when_migrating_then_every_move_is_printed_and_nothing_changes(slot):
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert _everything(slot) == before
+
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    for expected in (
+        f"worktree: {slot['wt']} -> {new_wt}",
+        f"branch: wt-{OLD} -> wt-{NEW}",
+        f"session-home marker: branch.wt/{OLD}/task.aih-session-home",
+        "canonical registry:",
+        f"project dir: {slot['project']} -> {cc_project_dir(new_wt, slot['claude'])}",
+        f"transcript title: {UUID}.jsonl",
+        "task: ",
+        f"resume: outbox/{OUTBOX_KEYED} -> {OUTBOX_KEYED.replace(OLD, NEW, 1)}",
+        f"session meta: {slot['state'] / f'session-meta-c-{OLD}.json'}",
+        f"wrapper script: {slot['state'] / 'sessions' / f'c-{OLD}.sh'}",
+        f"session state: {slot['state'] / f'cc-resume-prompt-c-{OLD}'}",
+        "session map:",
+        "iTerm2 restore record:",
+        "watcher lock:",
+    ):
+        assert expected in out, f"{expected!r} missing from:\n{out}"
+
+
+def test_given_the_session_is_running_when_migrating_then_it_is_refused_and_nothing_moves(slot):
+    sessions = slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(slot["wt"]), "sessionId": UUID})
+    )
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 1
+    assert "still running" in err
+    assert _everything(slot) == before
+
+
+def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(slot):
+    before = _everything(slot)
+    code, _out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{OLD}"])
+    assert code == 1
+    assert f"tmux session c-{OLD} still hosts {OLD}" in err
+    assert _everything(slot) == before
+
+
+def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
+    (slot["repo"] / ".worktrees" / NEW).mkdir()
+    code, _out, err = _migrate(slot["repo"], "-y")
+    assert code == 1
+    assert "already exists" in err
+    assert slot["wt"].is_dir()
+
+
+def test_given_an_unregistered_slot_when_migrating_then_it_points_at_session_adopt(slot, tmp_path):
+    code, _out, err = run_cli(["ai", "session-migrate", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
+    assert code == 1
+    assert "not a registered worktree" in err and "session-adopt" in err
+
+
+def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_refused(slot):
+    code, _out, err = run_cli(["ai", "session-migrate", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
+    assert code == 1
+    assert "is not a session name" in err

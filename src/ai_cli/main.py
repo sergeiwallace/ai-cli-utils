@@ -5135,6 +5135,71 @@ def cmd_session_adopt(
     sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
 
 
+def _print_migration(result) -> None:
+    """Every planned (or performed) move of a ``session-migrate`` run, then its warnings."""
+    verb = "would migrate" if result.dry_run else "migrated"
+    _out.emit(Tag.ADOPT, f"{result.old} -> {result.new}: {verb}")
+    for move in result.moves:
+        _out.emit(Tag.ADOPT, f"  {move.describe()}")
+    for task in result.task_moves:
+        renumbered = f" (renumbered from {task.renumbered_from})" if task.renumbered_from else ""
+        _out.emit(Tag.ADOPT, f"  task: {task.source} -> {task.dest}{renumbered}")
+    for move in result.resume_moves:
+        _out.emit(Tag.ADOPT, f"  resume: {move.describe()}")
+    if result.resolved is not None:
+        _out.emit(Tag.ADOPT, f"  resolve probe: `ai c` finds {result.resolved}")
+    for warning in result.warnings:
+        _out.emit(Tag.ADOPT, f"  warning: {warning}", err=True)
+
+
+@_cli_group.command(
+    "session-migrate",
+    help="Migrate an `ai` session to a new name: worktree, branch, transcript, tasks, memory and resume state",
+)
+@click.argument("old")
+@click.argument("new")
+@click.option(
+    "-r",
+    "--repo",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Repo root that owns .worktrees/ (default: detected from the current directory)",
+)
+@click.option("-n", "--dry-run", is_flag=True, help="Print every planned move without writing anything")
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
+def cmd_session_migrate(old, new, repo, dry_run, yes):
+    """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
+
+    For a session that already lives in an ``ai c`` slot; one started outside
+    ``ai c`` is brought in with ``ai session-adopt``. The session must not be
+    running: exit it and end its tmux session first. Every refusal is checked
+    before the first write, ``--dry-run`` included.
+    """
+    from .session_adopt import AdoptionError
+    from .session_migrate import migrate_session
+
+    repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+
+    def _run(preview: bool):
+        return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
+
+    try:
+        result = _run(True)
+        if not dry_run:
+            if not yes:
+                _print_migration(result)
+                if not _out.confirm(Tag.ADOPT, f"Migrate {old} to {new}?"):
+                    _out.emit(Tag.ADOPT, "Aborted.", err=True)
+                    sys.exit(1)
+            result = _run(False)
+    except (AdoptionError, RuntimeError) as exc:
+        _out.error(Tag.ADOPT, f"{exc}")
+        sys.exit(1)
+
+    _print_migration(result)
+    sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
+
+
 def _print_audit(report, ready, skipped, out=None) -> None:
     """Print the survey: collisions first, then every session, then the triage."""
     stream = out
