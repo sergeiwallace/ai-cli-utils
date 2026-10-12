@@ -1134,7 +1134,7 @@ def test_given_the_iterm2_pane_rename_times_out_when_launching_then_the_launch_s
     out = _reattach_launch_with_rename(iterm_run, tmp_path)
 
     assert _osascript_calls(calls), f"the rename was never attempted: {calls!r}"
-    assert "Ready: handing off to Claude Code (myproject-1)" in out, out
+    assert "Ready: handing off to Claude Code (myproject-tst-1)" in out, out
     # A silent swallow would also reach the hand-off, so the warning must name
     # the cause for the two outcomes to be distinguishable.
     assert "Warning: iTerm2 pane rename" in out, out
@@ -1164,8 +1164,8 @@ def test_given_the_iterm2_pane_rename_answers_when_launching_then_it_renames_and
     rename = _osascript_calls(calls)
     assert len(rename) == 1, f"expected exactly one osascript rename, got {rename!r}"
     assert "/dev/ttys000" in rename[0][2]
-    assert 'set name of s to "c-myproject-1"' in rename[0][2]
-    assert "Ready: handing off to Claude Code (myproject-1)" in out, out
+    assert 'set name of s to "c-myproject-tst-1"' in rename[0][2]
+    assert "Ready: handing off to Claude Code (myproject-tst-1)" in out, out
     # Only the rename's own warning is in scope: the launch may warn about the host
     # (no direnv on a CI runner), which says nothing about the rename.
     assert "Warning: iTerm2 pane rename" not in out, out
