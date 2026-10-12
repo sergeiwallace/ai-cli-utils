@@ -1079,6 +1079,8 @@ def _reattach_launch_with_rename(iterm_run, tmp_path):
             patch("ai_cli.icon_generator.generate_session_icon", return_value=None),
             patch("ai_cli.icon_generator.generate_dynamic_profile"),
             patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys000"),
+            # The rename is macOS-only; pin the platform so the test runs on every CI OS.
+            patch("ai_cli.iterm2.sys.platform", "darwin"),
             patch("ai_cli.iterm2.subprocess.run", side_effect=iterm_run),
             patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
