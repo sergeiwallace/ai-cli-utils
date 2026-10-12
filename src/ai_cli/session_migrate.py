@@ -14,6 +14,8 @@ tasks, memory and resume hand-off:
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
   memory), with each transcript's recorded cwd repointed, its ``customTitle``
   renamed and its stale worktree binding cleared;
+* the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
+  and the slot's project directories (filename prefix only);
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``session-adopt``
   uses for the same two;
@@ -236,6 +238,29 @@ def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[Plan
     return moves
 
 
+def _plan_held_output(old: str, new: str, dirs: list[tuple[Path, Path | None]]) -> list[PlannedMove]:
+    """Rename ``memory/.held-output-<old>-NN-<slug>.md`` replay files in each project dir.
+
+    Each entry of ``dirs`` is ``(project dir, where it will live after the migration)``,
+    ``None`` for a directory that stays put. Only the filename prefix changes: a
+    replay file is replayed byte for byte, so its body is never touched.
+    """
+    pattern = re.compile(rf"\.held-output-{re.escape(old)}(-\d{{2,}}-.+\.md)")
+    moves: list[PlannedMove] = []
+    for project, after in dirs:
+        memory = project / "memory"
+        if not memory.is_dir():
+            continue
+        for source in sorted(memory.iterdir()):
+            match = pattern.fullmatch(source.name)
+            if not match or not source.is_file():
+                continue
+            name = f".held-output-{new}{match.group(1)}"
+            action = "conflict" if (memory / name).exists() else "move"
+            moves.append(PlannedMove("held output", str(source), str((after or project) / "memory" / name), action))
+    return moves
+
+
 def _plan_iterm2(old: str) -> list[PlannedMove]:
     try:
         doc = _session_registry.load_registry()
@@ -354,6 +379,9 @@ def migrate_session(
     iterm2_moves = _plan_iterm2(old)
     moves += iterm2_moves
 
+    held_moves = _plan_held_output(old, new, [(cc_project_dir(repo_root, home), None), (old_pd, new_pd)])
+    moves += held_moves
+
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
@@ -379,6 +407,12 @@ def migrate_session(
     for key, _value in markers:
         _git(repo_root, "config", _marker_key(key, old_branch, new_branch), str(new_wt))
     move_canonical_worktree(old_wt, new_wt, old, new, dry_run=False)
+
+    # Renamed inside the old project dir, before it moves, so a held-output file of the
+    # slot travels under its new name with the directory.
+    for item in [m for m in held_moves if m.action == "move"]:
+        source = Path(item.source)
+        source.rename(source.with_name(Path(item.dest).name))
 
     if old_pd.is_dir():
         old_pd.rename(new_pd)

@@ -352,3 +352,53 @@ def test_given_git_refuses_the_branch_rename_when_migrated_then_stderr_is_quoted
     assert _ref(repo, f"refs/heads/wt-{OLD}") == tip == _ref(repo, ANCHOR)
     markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
     assert f"branch.wt-{OLD}.aih-session-home {repo / '.worktrees' / NEW}" in markers
+
+
+HELD_BODY = b"# replay\r\nverbatim \xe2\x80\x94 bytes\n\x00tail"
+
+
+@pytest.fixture
+def held_slot(slot):
+    """The slot plus held-output replay files in the main tree's and the slot's memory dirs."""
+    main_memory = cc_project_dir(slot["repo"], slot["claude"]) / "memory"
+    main_memory.mkdir(parents=True)
+    (main_memory / f".held-output-{OLD}-01-review-queue.md").write_bytes(HELD_BODY)
+    (main_memory / ".held-output-myrepo-30-01-other-session.md").write_bytes(b"not ours\n")
+    (slot["project"] / "memory" / f".held-output-{OLD}-02-summary.md").write_bytes(HELD_BODY + b"2")
+    slot["main_memory"] = main_memory
+    return slot
+
+
+def test_given_held_output_files_when_migrated_then_only_their_prefix_changes(held_slot):
+    main_memory = held_slot["main_memory"]
+    new_memory = cc_project_dir(held_slot["repo"] / ".worktrees" / NEW, held_slot["claude"]) / "memory"
+    code, out, err = _migrate(held_slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    old_main = main_memory / f".held-output-{OLD}-01-review-queue.md"
+    new_main = main_memory / f".held-output-{NEW}-01-review-queue.md"
+    assert f"held output: {old_main} -> {new_main}" in out
+    old_slot = held_slot["project"] / "memory" / f".held-output-{OLD}-02-summary.md"
+    assert f"held output: {old_slot} -> {new_memory / f'.held-output-{NEW}-02-summary.md'}" in out
+    assert "other-session" not in out
+
+    code, out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_main.exists()
+    assert new_main.read_bytes() == HELD_BODY
+    assert (new_memory / f".held-output-{NEW}-02-summary.md").read_bytes() == HELD_BODY + b"2"
+    assert not list(new_memory.glob(f".held-output-{OLD}-*"))
+    assert (main_memory / ".held-output-myrepo-30-01-other-session.md").read_bytes() == b"not ours\n"
+
+
+def test_given_the_held_output_target_exists_when_migrated_then_both_files_are_left_alone(held_slot):
+    main_memory = held_slot["main_memory"]
+    old_main = main_memory / f".held-output-{OLD}-01-review-queue.md"
+    new_main = main_memory / f".held-output-{NEW}-01-review-queue.md"
+    new_main.write_bytes(b"belongs to the new name\n")
+    code, out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 0, out + err
+    assert f"held output: {old_main} -> {new_main} SKIPPED (target exists)" in out
+    assert old_main.read_bytes() == HELD_BODY
+    assert new_main.read_bytes() == b"belongs to the new name\n"
+    new_memory = cc_project_dir(held_slot["repo"] / ".worktrees" / NEW, held_slot["claude"]) / "memory"
+    assert (new_memory / f".held-output-{NEW}-02-summary.md").is_file()

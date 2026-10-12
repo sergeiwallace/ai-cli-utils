@@ -460,6 +460,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
+| `memory/.held-output-OLD-NN-<slug>.md` replay files in the main tree's and the slot's project directories | renamed to `.held-output-NEW-NN-<slug>.md`, bodies byte-identical; an existing target is skipped |
 | `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried |
 | `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
 | `session-meta-<engine>-OLD.json` | fields rewritten, renamed |
@@ -469,8 +470,8 @@ ai c myrepo-box-3                             # resume under the new name
 | iTerm2 restore registry record | name and relaunch command point at NEW |
 
 Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
-is not running), the repo-root memory directory (shared by every session of the
-repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
+is not running), the rest of the repo-root memory directory (shared by every session
+of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
 
