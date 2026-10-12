@@ -142,7 +142,9 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert not old_wt.exists()
     assert (new_wt / "uncommitted.txt").read_text() == "work in progress\n"
     listed = _git("worktree", "list", "--porcelain", cwd=repo)
-    assert f"worktree {new_wt}\n" in listed and f"worktree {old_wt}\n" not in listed
+    # git prints worktree paths with forward slashes on every OS, Windows included.
+    assert f"worktree {new_wt.as_posix()}\n" in listed
+    assert f"worktree {old_wt.as_posix()}\n" not in listed
     assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == f"wt-{NEW}"
     markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
     assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
