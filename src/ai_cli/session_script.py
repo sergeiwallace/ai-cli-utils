@@ -1,6 +1,6 @@
 """Engine launch bash template generator.
 
-Depends on: nothing (self-contained).
+Depends on: aws_profile_strip (the agent-environment strip it embeds).
 """
 
 import json
@@ -8,6 +8,8 @@ import re
 import shlex
 import shutil
 from pathlib import Path
+
+from .aws_profile_strip import STRIP_FUNCTION, configured_sso_profile_commands, strip_function_definitions
 
 # Interpreters that can run the generated session template, most preferred first.
 # zsh stays first because that is what every host has used to date; the ordering,
@@ -216,6 +218,7 @@ def get_engine_script(
     # ``or "bash"`` only guards template *generation* on a host with neither shell;
     # the launch path itself refuses to start in that case, with a real message.
     _session_shell = resolve_session_shell() or "bash"
+    _sso_strip_definitions = strip_function_definitions(configured_sso_profile_commands()) if engine == "c" else ""
 
     # Resolve iTerm2 slot values for embedding in bash template
     _cfg = iterm2_cfg or {}
@@ -668,6 +671,7 @@ def get_engine_script(
       stty sane 2>/dev/null || true
       python3 -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
     }}
+    {_sso_strip_definitions}
     run_agent() {{
       agent_attempted=true
       if ! $agent_direnv_initialized; then
@@ -687,6 +691,11 @@ def get_engine_script(
       fi
       if [[ -f "$_child_int_exit_file" ]]; then
         exit 77
+      fi
+      # After direnv, so a project .envrc cannot re-export what this removes. Claude
+      # Code only: see aws_profile_strip.py for why and for when it is a no-op.
+      if [[ "$engine" == "c" ]]; then
+        {STRIP_FUNCTION}
       fi
       # Non-interactive shells redirect a background job's stdin from /dev/null.
       # Bash honors <&0, but zsh performs that redirect after the fd duplication;

@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import aws_profile_stubs
 import libtmux
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
@@ -997,6 +998,38 @@ def test_given_direnv_available_when_once_launched_then_the_engine_runs_under_di
     subprocess.run([interpreter, "-c", command], capture_output=True, text=True, timeout=60, check=False)
     assert direnv_used.exists(), "direnv could load the .envrc but --once did not run the engine under it"
     assert engine_marker.exists(), "the engine was never reached"
+
+
+def test_given_pane_carries_sso_profile_on_instance_role_host_when_once_launched_then_agent_lacks_it(
+    tmp_path, monkeypatch
+):
+    """``--once`` hands the pane a command string, and the pane's environment is the
+    tmux server's, so the strip has to run inside that string, not in the launcher."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.chdir(run_dir)
+    bin_dir = _clean_bin(tmp_path)
+    for tool in ("chmod", "mv"):
+        resolved = shutil.which(tool)
+        if resolved:
+            (bin_dir / tool).symlink_to(resolved)
+    report = tmp_path / "report"
+    aws_profile_stubs.write_stubs(bin_dir, report, aws_profile_stubs.INSTANCE_ROLE_ARN)
+    config_home = tmp_path / "config"
+    aws_profile_stubs.write_config(config_home, [aws_profile_stubs.TOOL])
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    argv = _capture_once_argv(tmp_path)
+    interpreter, command = argv[-3], argv[-1]
+
+    pane_env = {**os.environ, "AWS_PROFILE": aws_profile_stubs.SSO_PROFILE}
+    subprocess.run([interpreter, "-c", command], env=pane_env, capture_output=True, timeout=60, check=False)
+    values = aws_profile_stubs.read_report(report)
+    assert "agent.done" in values, "the engine was never reached"
+    assert values["agent.AWS_PROFILE"] == "unset"
+    assert values["agent.AI_SSO_PROFILE"] == aws_profile_stubs.SSO_PROFILE
+    assert values["tool.AWS_PROFILE"] == aws_profile_stubs.SSO_PROFILE
 
 
 # ---------------------------------------------------------------------------

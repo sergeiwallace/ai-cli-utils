@@ -1271,6 +1271,18 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_aws_profile(monkeypatch):
+    """Keep the host's AWS profile out of launch tests.
+
+    A bare launch wraps the agent in the SSO-profile strip whenever ``AWS_PROFILE`` is
+    set, so a developer shell that exports one would change every launch argv under
+    test. Tests that need a profile set it themselves.
+    """
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AI_SSO_PROFILE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_workspace_trust_registry(monkeypatch, tmp_path_factory):
     """Keep workspace-trust registration out of the real home directory.
 

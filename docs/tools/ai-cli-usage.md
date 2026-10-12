@@ -200,6 +200,21 @@ exits the session is over. Auto-index assignment also switches source — with t
 probes live sessions, in bare mode it scans `.worktrees/` and treats a directory with
 no live engine process as a reusable slot.
 
+**Inherited `AWS_PROFILE` on an EC2 instance-role host:** immediately before starting
+Claude Code, on every launch path (tmux session, `--once` and bare), `ai c` checks
+whether the agent's environment carries `AWS_PROFILE`. If it does, it asks
+`aws sts get-caller-identity` who the ambient identity is with both profile variables
+unset and both AWS config files pointed at a path that does not exist. Only when that
+returns an assumed-role ARN that is not an IAM Identity Center (`AWSReservedSSO_`) role
+and whose role-session-name is an EC2 instance id (`i-` and at least 8 hex digits) does
+it move `AWS_PROFILE` to `AI_SSO_PROFILE` and unset it, so the agent's model calls use
+the instance role instead of a profile whose token needs a browser approval to renew.
+On any other answer, or with no `aws` CLI, `AWS_PROFILE` is left alone. Commands that
+still need the moved profile are listed as `sso_profile_commands = ["mytool"]` in
+`aws.toml`, beside `config.toml`; each one found on PATH gets a shim, first on the agent's PATH under
+`$XDG_STATE_HOME/ai-cli-utils/sso-profile-shims/`, that restores `AWS_PROFILE` from
+`AI_SSO_PROFILE` before running it. Bare launches on Windows are not checked.
+
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 
 - `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.

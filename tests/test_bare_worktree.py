@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import aws_profile_stubs
 import pytest
 from process_ownership import spawn_owned_python
 
@@ -984,6 +985,79 @@ def test_given_use_tmux_false_config_when_launched_then_still_creates_worktree(r
             _do_session_launch(**_launch_kwargs(bare=False))
 
     assert (real_repo / ".worktrees" / "kg-1").is_dir()
+
+
+# --- inherited SSO AWS_PROFILE ---------------------------------------------------
+
+
+def _run_bare_launch_with_profile(real_repo, tmp_path, monkeypatch, arn: str, aws_exit: int = 0) -> dict[str, str]:
+    """Launch bare with AWS_PROFILE already exported, then run the exact argv it execs."""
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    fake_bin = tmp_path / "fakes"
+    report = tmp_path / "report"
+    aws_profile_stubs.write_stubs(fake_bin, report, arn, aws_exit=aws_exit)
+    config_home = tmp_path / "config"
+    aws_profile_stubs.write_config(config_home, [aws_profile_stubs.TOOL])
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("AWS_PROFILE", aws_profile_stubs.SSO_PROFILE)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(fake_bin), os.environ["PATH"])))
+    execs: list[list[str]] = []
+
+    def fake_execvp(file, args):
+        execs.append(list(args))
+        raise SystemExit(0)
+
+    with (
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_launch_kwargs())
+
+    assert len(execs) == 1, "expected exactly one exec"
+    # Through `sh` so the guard resolves `claude` on PATH, which is the stub, instead of
+    # refusing the name outright.
+    subprocess.run(["sh", "-c", 'exec "$@"', "sh", *execs[0]], timeout=60, check=False)
+    values = aws_profile_stubs.read_report(report)
+    assert "agent.done" in values, f"the exec'd argv never reached the agent: {execs[0][:2]!r}"
+    return values
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the strip is a POSIX shell function")
+def test_given_exported_sso_profile_on_instance_role_host_when_bare_launch_execs_then_agent_lacks_it(
+    real_repo, tmp_path, monkeypatch
+):
+    values = _run_bare_launch_with_profile(real_repo, tmp_path, monkeypatch, aws_profile_stubs.INSTANCE_ROLE_ARN)
+
+    assert values["agent.AWS_PROFILE"] == "unset"
+    assert values["agent.AI_SSO_PROFILE"] == aws_profile_stubs.SSO_PROFILE
+    assert values["tool.AWS_PROFILE"] == aws_profile_stubs.SSO_PROFILE
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the strip is a POSIX shell function")
+@pytest.mark.parametrize(
+    ("arn", "aws_exit"),
+    [
+        (aws_profile_stubs.SSO_ROLE_ARN, 0),
+        (aws_profile_stubs.NON_INSTANCE_ARN, 0),
+        (aws_profile_stubs.IAM_USER_ARN, 0),
+        (aws_profile_stubs.INSTANCE_ROLE_ARN, 255),
+    ],
+    ids=["sso-role", "session-name-not-an-instance-id", "iam-user", "probe-fails"],
+)
+def test_given_exported_sso_profile_and_no_proved_instance_role_when_bare_launch_execs_then_profile_kept(
+    real_repo, tmp_path, monkeypatch, arn, aws_exit
+):
+    values = _run_bare_launch_with_profile(real_repo, tmp_path, monkeypatch, arn, aws_exit=aws_exit)
+
+    assert values["agent.AWS_PROFILE"] == aws_profile_stubs.SSO_PROFILE
+    assert values["agent.AI_SSO_PROFILE"] == "unset"
+    assert values["tool.AWS_PROFILE"] == aws_profile_stubs.SSO_PROFILE
 
 
 def test_given_session_adopt_module_missing_when_liveness_checked_then_unproven(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ import click
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import aws_profile_strip as _aws_profile_strip
 from . import chief_of_staff as _chief_of_staff
 from . import compact_transport as _compact_transport
 from . import config as _config
@@ -3578,6 +3579,13 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            # A bare agent's environment is this process's (plus any .envrc), so the
+            # strip is needed only when the profile is already here. POSIX only: it is
+            # a shell function and Windows has no POSIX shell to run it in.
+            if engine == "c" and os.environ.get("AWS_PROFILE") and sys.platform != "win32":
+                shell = _session_script.resolve_session_shell()
+                if shell:
+                    command = _aws_profile_strip.wrap_command(command, shell)
             _exec_with_direnv(target_root, command)
 
     # tmux panes inherit their session environment from the long-lived server,
@@ -3602,6 +3610,9 @@ def _do_session_launch(
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
+            # The pane inherits the tmux server's environment, not this process's, so
+            # whether it carries the profile is only knowable inside the pane.
+            command = _aws_profile_strip.wrap_command(command, _session_shell)
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             os.execvp(
                 "tmux",

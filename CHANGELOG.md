@@ -141,6 +141,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c` no longer hands an inherited `AWS_PROFILE` to Claude Code on an EC2 host whose
+  instance role answers: the profile is moved to `AI_SSO_PROFILE` just before the agent
+  starts, so model calls stop depending on a token that only a browser approval renews.
+  On every other host the variable is untouched. Commands listed as
+  `sso_profile_commands` in `aws.toml`, beside `config.toml`, keep the profile through a
+  shim on the agent's PATH.
+
 - **`ai c <name> -R` kept running a stale client and said it was current.** A remote
   launch updated the remote host's ai-cli-utils but never the local checkout running
   the launch, and the install check only compared that checkout's files with what was
