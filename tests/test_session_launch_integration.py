@@ -1044,6 +1044,15 @@ def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propaga
     )
 
 
+class _DarwinSys:
+    """``sys`` as iterm2 sees it on macOS: ``platform`` is darwin, everything else is real."""
+
+    platform = "darwin"
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
 def _reattach_launch_with_rename(iterm_run, tmp_path):
     """Run a re-attaching launch for real through the iTerm2 pane rename.
 
@@ -1079,8 +1088,9 @@ def _reattach_launch_with_rename(iterm_run, tmp_path):
             patch("ai_cli.icon_generator.generate_session_icon", return_value=None),
             patch("ai_cli.icon_generator.generate_dynamic_profile"),
             patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys000"),
-            # The rename is macOS-only; pin the platform so the test runs on every CI OS.
-            patch("ai_cli.iterm2.sys.platform", "darwin"),
+            # The rename is macOS-only. Report darwin to iterm2 alone: patching
+            # sys.platform itself would also flip every other platform branch in the launch.
+            patch("ai_cli.iterm2.sys", _DarwinSys()),
             patch("ai_cli.iterm2.subprocess.run", side_effect=iterm_run),
             patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
