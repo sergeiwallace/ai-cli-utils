@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -789,6 +790,10 @@ class TestTrailingIndexParsersAnchorOnHyphen:
         assert slot is not None
         assert slot.lstrip("#") == expected_hex
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the generated session-script line requires a POSIX bash/zsh environment",
+    )
     @pytest.mark.parametrize("shell_name", ["bash", "zsh"])
     @pytest.mark.parametrize(("ai_name", "expected"), [("myproject-host2-3", "3"), ("myproject-host2", "1")])
     def test_given_alias_with_digits_when_session_script_parses_index_then_only_hyphen_index_counts(
