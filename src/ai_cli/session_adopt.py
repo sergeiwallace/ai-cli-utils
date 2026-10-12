@@ -885,6 +885,50 @@ def resume_source_keys(transcript: Path, target_key: str) -> list[str]:
     return seen
 
 
+def rekey_name_artifacts(
+    target: str,
+    *,
+    task_namespaces: list[str],
+    resume_keys: list[str],
+    claude_home: Path,
+    dry_run: bool = False,
+) -> tuple[list[TaskMove], list[ResumeMove]]:
+    """Move the name-keyed state of a session to ``target``: its tasks and its resume tree.
+
+    Shared by ``ai session-adopt`` and ``ai session-migrate``, which differ only in
+    where these keys come from. Tasks from each namespace are merged into
+    ``~/.claude/tasks/<target>/`` (renumbered on collision, see
+    :func:`merge_task_namespace`) and every resume artifact filed under one of
+    ``resume_keys`` is re-keyed to ``target`` (see :func:`migrate_resume_artifacts`).
+
+    Every resume key is migrated, not just the most recent. A rename is not the
+    only way artifacts end up under a key the session no longer answers to: a
+    session renamed twice, or a bare one keyed by UUID, keeps its hand-off
+    stranded otherwise. Measured on a real adoption whose title was already
+    correct: 1 artifact under the current key and 46 under three older ones.
+    """
+    tasks_moved: list[TaskMove] = []
+    for namespace in task_namespaces:
+        tasks_moved += merge_task_namespace(claude_home / "tasks" / namespace, claude_home / "tasks" / target, dry_run)
+
+    resume_moves: list[ResumeMove] = []
+    claimed: set[Path] = set()
+    for source_key in resume_keys:
+        for move in migrate_resume_artifacts(source_key, target, claude_home=claude_home, dry_run=dry_run):
+            # A dry run moves nothing, so a second key claiming a destination the
+            # first already planned would not see it there and would report two
+            # moves where a real run performs one move and one conflict. Tracking
+            # the claims keeps the preview honest about what the real run will do,
+            # which is the only reason to offer a preview at all.
+            if dry_run and move.action == "move" and move.dest is not None:
+                if move.dest in claimed:
+                    move = ResumeMove(source=move.source, dest=move.dest, action="conflict")
+                else:
+                    claimed.add(move.dest)
+            resume_moves.append(move)
+    return tasks_moved, resume_moves
+
+
 # --- the post-adopt probe ---------------------------------------------------
 
 
@@ -1091,37 +1135,12 @@ def adopt_session(
         worktree_records_cleared = neutralise_worktree_state(migration.dest_jsonl, dest_root)
 
     dest_project_dir = cc_project_dir(dest_root, home)
-    tasks_moved: list[TaskMove] = []
     namespaces = [task_namespace] if task_namespace else task_namespace_candidates(src_jsonl.stem)
-    for namespace in namespaces:
-        tasks_moved += merge_task_namespace(home / "tasks" / namespace, home / "tasks" / target_title, dry_run)
+    tasks_moved, resume_moves = rekey_name_artifacts(
+        target_title, task_namespaces=namespaces, resume_keys=resume_keys, claude_home=home, dry_run=dry_run
+    )
 
     memory_copied, memory_conflicts = adopt_memory(source_dir, dest_project_dir, dry_run)
-
-    # Keyed by the session *name*, and a rename is NOT the only way artifacts end
-    # up under a key the session no longer answers to. Migrating just
-    # `ai_name -> target_title` covered the retitle path and silently did nothing
-    # for every other case: a session renamed twice, or a bare one keyed by UUID,
-    # kept its hand-off stranded. Measured on a real adoption whose title was
-    # already correct: 1 artifact under the current key and 46 under three older
-    # ones, all of which the retitle-only version would have left behind. So every
-    # historical key is migrated, always, whether or not this adoption renames
-    # anything.
-    resume_moves: list[ResumeMove] = []
-    claimed: set[Path] = set()
-    for source_key in resume_keys:
-        for move in migrate_resume_artifacts(source_key, target_title, claude_home=home, dry_run=dry_run):
-            # A dry run moves nothing, so a second key claiming a destination the
-            # first already planned would not see it there and would report two
-            # moves where a real run performs one move and one conflict. Tracking
-            # the claims keeps the preview honest about what the real run will do,
-            # which is the only reason to offer a preview at all.
-            if dry_run and move.action == "move" and move.dest is not None:
-                if move.dest in claimed:
-                    move = ResumeMove(source=move.source, dest=move.dest, action="conflict")
-                else:
-                    claimed.add(move.dest)
-            resume_moves.append(move)
 
     # ``migrate_session`` warns when the transcript's title differs from the
     # destination worktree's name. In the retitle path that mismatch is the

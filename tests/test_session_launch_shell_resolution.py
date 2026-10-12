@@ -243,7 +243,7 @@ def test_given_no_zsh_on_path_when_session_launched_then_pane_runs_the_script(re
         "session script never executed — the tmux pane died instead of starting, "
         "which is exactly the `[exited]` symptom"
     )
-    assert _session_alive(real_tmux_socket, "c-myproject-1"), "tmux session did not survive its own launch"
+    assert _session_alive(real_tmux_socket, "c-myproject-tst-1"), "tmux session did not survive its own launch"
 
 
 def test_given_zsh_on_path_when_session_launched_then_zsh_is_still_the_interpreter(

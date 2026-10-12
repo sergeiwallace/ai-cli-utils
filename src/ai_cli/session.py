@@ -27,6 +27,7 @@ from .config import (
 )
 from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypassed
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
+from .session_naming import compose_session_name
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -597,31 +598,8 @@ def _new_session_display_name(engine_short: str, project_prefix: str, name: str,
     return f"{engine_short}{remote_seg}-{project_prefix.lower()}-{name.lower()}"
 
 
-def build_session_name(
-    engine_type: str,
-    project_prefix: str,
-    name: str,
-    config: dict | None = None,
-    is_remote: bool = False,
-    use_tmux: bool = True,
-) -> tuple[str, str]:
-    """Build tmux session name and ai_name.
-
-    Session name format: {c|g|p|cx}[-r]-{project}-{index}
-      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2, p-myproject-3, cx-myproject-4
-    ai_name (used for --name, worktrees, session map): {project}-{index}
-      e.g. myproject-1, myproject-2
-
-    ``use_tmux=False`` (bare mode) switches auto-index discovery from live tmux
-    sessions to on-disk worktrees.  The returned session name is still built in
-    the same format so it remains a stable key for the session map and logs even
-    though no tmux session will exist.
-    """
-    engine_short = engine_type
-    naming_prefix = project_prefix.lower()
-    tmux_base = f"{engine_short}{'-r' if is_remote else ''}-{naming_prefix}-"
-    ai_base = f"{naming_prefix}-"
-
+def _slot_name(name: str, project_prefix: str) -> str:
+    """Strip any engine/project prefix from ``name`` and normalise what remains."""
     clean_name = name
     prefixes_to_strip = [
         f"c-r-{project_prefix}-",
@@ -644,24 +622,81 @@ def build_session_name(
             break
     clean_name = re.sub(r"[^a-zA-Z0-9_-]", "-", clean_name)
     clean_name = re.sub(r"-+", "-", clean_name)
-    clean_name = clean_name.strip("-").lower()
+    return clean_name.strip("-").lower()
 
-    if clean_name.isdigit() or clean_name.rsplit("-", 1)[-1].isdigit():
-        existing = (
-            _resolve_explicit_tmux_slot(engine_short, project_prefix, clean_name)
-            if use_tmux
-            else _resolve_explicit_bare_slot(engine_short, project_prefix, clean_name)
-        )
+
+def _is_explicit_slot(clean_name: str) -> bool:
+    return bool(clean_name) and (clean_name.isdigit() or clean_name.rsplit("-", 1)[-1].isdigit())
+
+
+def build_session_name(
+    engine_type: str,
+    project_prefix: str,
+    name: str,
+    config: dict | None = None,
+    is_remote: bool = False,
+    use_tmux: bool = True,
+    legacy_prefix: str | None = None,
+) -> tuple[str, str]:
+    """Build tmux session name and ai_name.
+
+    ``project_prefix`` is the naming prefix, ``{repo-alias}-{host-alias}``
+    (:func:`ai_cli.session_naming.naming_prefix`).
+
+    Session name format: {c|g|p|cx}[-r]-{prefix}-[{slug}-]{index}
+      e.g. c-myproject-box-1, c-r-myproject-box-1, cx-myproject-box-review-2
+    ai_name (used for --name, worktrees, session map): {prefix}-[{slug}-]{index}
+      e.g. myproject-box-1, myproject-box-review-2
+
+    ``legacy_prefix`` is the bare repo alias that names sessions created before
+    the host alias joined the name. It is consulted only for an explicit slot
+    that does not exist under the new prefix, so ``ai c 1`` keeps reaching an
+    existing ``myproject-1`` until ``ai session-rename`` moves it. This is a
+    migration window for live state, not a second naming scheme: nothing is
+    ever *created* under the legacy prefix, and it goes once no legacy-named
+    session remains.
+
+    ``use_tmux=False`` (bare mode) switches auto-index discovery from live tmux
+    sessions to on-disk worktrees.  The returned session name is still built in
+    the same format so it remains a stable key for the session map and logs even
+    though no tmux session will exist.
+    """
+    engine_short = engine_type
+    naming_prefix = project_prefix.lower()
+    tmux_base = f"{engine_short}{'-r' if is_remote else ''}-{naming_prefix}-"
+
+    def _existing(prefix: str, slot: str) -> tuple[str, str] | None:
+        if use_tmux:
+            return _resolve_explicit_tmux_slot(engine_short, prefix, slot)
+        return _resolve_explicit_bare_slot(engine_short, prefix, slot)
+
+    clean_name = _slot_name(name, project_prefix)
+
+    if _is_explicit_slot(clean_name):
+        existing = _existing(project_prefix, clean_name)
         if existing:
             return existing
-        return _new_session_display_name(engine_short, project_prefix, clean_name, is_remote), f"{ai_base}{clean_name}"
+        if legacy_prefix and legacy_prefix.casefold() != project_prefix.casefold():
+            legacy_slot = _slot_name(name, legacy_prefix)
+            legacy = _existing(legacy_prefix, legacy_slot) if _is_explicit_slot(legacy_slot) else None
+            if legacy:
+                return legacy
+        return (
+            _new_session_display_name(engine_short, project_prefix, clean_name, is_remote),
+            compose_session_name(naming_prefix, clean_name),
+        )
     if not clean_name:
         idx = find_next_index(tmux_base, use_tmux=use_tmux)
-        return _new_session_display_name(engine_short, project_prefix, str(idx), is_remote), f"{ai_base}{idx}"
+        return (
+            _new_session_display_name(engine_short, project_prefix, str(idx), is_remote),
+            compose_session_name(naming_prefix, idx),
+        )
     tmux_named = f"{tmux_base}{clean_name}-"
-    ai_named = f"{ai_base}{clean_name}-"
     idx = find_next_index(tmux_named, use_tmux=use_tmux)
-    return _new_session_display_name(engine_short, project_prefix, f"{clean_name}-{idx}", is_remote), f"{ai_named}{idx}"
+    return (
+        _new_session_display_name(engine_short, project_prefix, f"{clean_name}-{idx}", is_remote),
+        compose_session_name(naming_prefix, clean_name, idx),
+    )
 
 
 # --- Git Worktree Logic ---

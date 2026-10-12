@@ -33,6 +33,7 @@ from . import native_deps as _native_deps
 from . import output as _out
 from . import process_manager as _process_manager
 from . import session as _session
+from . import session_naming as _session_naming
 from . import session_registry as _session_registry
 from . import session_script as _session_script
 from . import stale_session_reaper as _stale_session_reaper
@@ -1545,8 +1546,13 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         use_tmux = not _tmux_setup.config_opts_out(config)
+        try:
+            naming_prefix = _session_naming.naming_prefix(project_prefix, _session_naming.resolve_host_alias())
+        except _session_naming.HostAliasError as exc:
+            _out.emit(Tag.INTERNAL, str(exc), err=True)
+            sys.exit(1)
         session_id, ai_name = _session.build_session_name(
-            engine, project_prefix, name, config, is_remote=True, use_tmux=use_tmux
+            engine, naming_prefix, name, config, is_remote=True, use_tmux=use_tmux, legacy_prefix=project_prefix
         )
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
         sys.exit(0)
@@ -2976,7 +2982,6 @@ def _do_session_launch(
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
-    prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
 
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
@@ -3267,15 +3272,26 @@ def _do_session_launch(
     # condition bolted onto each of them: guards added per-call are exactly how
     # one gets missed, and a missed one here means a flag that promises to do
     # nothing quietly doing something.
+    # The host alias is this machine's, so it is resolved only once the launch is
+    # known to run HERE: a remote dispatch above names its session on the remote
+    # host, which resolves its own alias when it runs this same code.
+    try:
+        naming_prefix = _session_naming.naming_prefix(project_prefix, _session_naming.resolve_host_alias())
+    except _session_naming.HostAliasError as exc:
+        reporter.error(str(exc))
+        sys.exit(1)
+    prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
+
     if dry_run:
         try:
             session_id, ai_name = _session.build_session_name(
                 engine,
-                project_prefix,
+                naming_prefix,
                 name,
                 config,
                 is_remote=is_remote,
                 use_tmux=not bare,
+                legacy_prefix=project_prefix,
             )
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error(str(exc))
@@ -3320,6 +3336,9 @@ def _do_session_launch(
     if resume and not bare:
         session = _session.resolve_session(prefix, name)
         if not session:
+            # Migration window: a session named before the host alias joined the name.
+            session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
+        if not session:
             reporter.error(f"no matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
         if not is_remote:
@@ -3336,7 +3355,7 @@ def _do_session_launch(
     current_project_name = _config.get_current_project_name()
     try:
         session_id, ai_name = _session.build_session_name(
-            engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
+            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=project_prefix
         )
     except _session.SessionSlotAmbiguityError as exc:
         reporter.error(str(exc))
@@ -3682,11 +3701,16 @@ def _do_session_launch(
     # session this host launched itself (no ``-r-``) must regenerate that session's
     # own local script, not convert it into a remote one.
     script_is_remote = is_remote and session_id.casefold().startswith(f"{engine}-r-")
+    script_family = f"{engine}{'-r' if script_is_remote else ''}-"
+    # A legacy-named session reattached in the migration window keeps the prefix it was named with.
+    script_prefix = (
+        naming_prefix if session_id.casefold().startswith(f"{script_family}{naming_prefix}-") else project_prefix
+    )
     script = _session_script.get_engine_script(
         engine,
         ai_name,
         session_id,
-        f"{engine}{'-r' if script_is_remote else ''}-{project_prefix}-",
+        f"{script_family}{script_prefix}-",
         project_prefix,
         uuid,
         use_sandbox,
@@ -5113,6 +5137,71 @@ def cmd_session_adopt(
     _print_adoption(result)
     for warning in result.warnings:
         _out.emit(Tag.ADOPT, f"  warning: {warning}", err=True)
+    sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
+
+
+def _print_migration(result) -> None:
+    """Every planned (or performed) move of a ``session-migrate`` run, then its warnings."""
+    verb = "would migrate" if result.dry_run else "migrated"
+    _out.emit(Tag.ADOPT, f"{result.old} -> {result.new}: {verb}")
+    for move in result.moves:
+        _out.emit(Tag.ADOPT, f"  {move.describe()}")
+    for task in result.task_moves:
+        renumbered = f" (renumbered from {task.renumbered_from})" if task.renumbered_from else ""
+        _out.emit(Tag.ADOPT, f"  task: {task.source} -> {task.dest}{renumbered}")
+    for move in result.resume_moves:
+        _out.emit(Tag.ADOPT, f"  resume: {move.describe()}")
+    if result.resolved is not None:
+        _out.emit(Tag.ADOPT, f"  resolve probe: `ai c` finds {result.resolved}")
+    for warning in result.warnings:
+        _out.emit(Tag.ADOPT, f"  warning: {warning}", err=True)
+
+
+@_cli_group.command(
+    "session-migrate",
+    help="Migrate an `ai` session to a new name: worktree, branch, transcript, tasks, memory and resume state",
+)
+@click.argument("old")
+@click.argument("new")
+@click.option(
+    "-r",
+    "--repo",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Repo root that owns .worktrees/ (default: detected from the current directory)",
+)
+@click.option("-n", "--dry-run", is_flag=True, help="Print every planned move without writing anything")
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
+def cmd_session_migrate(old, new, repo, dry_run, yes):
+    """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
+
+    For a session that already lives in an ``ai c`` slot; one started outside
+    ``ai c`` is brought in with ``ai session-adopt``. The session must not be
+    running: exit it and end its tmux session first. Every refusal is checked
+    before the first write, ``--dry-run`` included.
+    """
+    from .session_adopt import AdoptionError
+    from .session_migrate import migrate_session
+
+    repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+
+    def _run(preview: bool):
+        return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
+
+    try:
+        result = _run(True)
+        if not dry_run:
+            if not yes:
+                _print_migration(result)
+                if not _out.confirm(Tag.ADOPT, f"Migrate {old} to {new}?"):
+                    _out.emit(Tag.ADOPT, "Aborted.", err=True)
+                    sys.exit(1)
+            result = _run(False)
+    except (AdoptionError, RuntimeError) as exc:
+        _out.error(Tag.ADOPT, f"{exc}")
+        sys.exit(1)
+
+    _print_migration(result)
     sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
 
 

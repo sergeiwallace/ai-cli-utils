@@ -173,6 +173,41 @@ ai c -q/--quiet        # Suppress launch progress (warnings and errors still pri
 ai c -v/--verbose      # Add skipped steps, resolved paths and timings to the launch progress
 ```
 
+#### Session names
+
+Every session is named `{repo-alias}-{host-alias}-{optional-slug}-{N}`, and that
+one name is its worktree directory (`.worktrees/<name>`), its branch (`wt-<name>`),
+its transcript title and its pinned task list. `N` auto-increments from 1, and an
+omitted slug leaves no double hyphen:
+
+```bash
+ai c            # myrepo-box-1
+ai c review     # myrepo-box-review-1
+ai c 3          # myrepo-box-3 (or the existing session in that slot)
+```
+
+`{repo-alias}` is the repository's registered task prefix (`ai register -x`).
+`{host-alias}` is this machine's short alias (lowercase letters, at most 5),
+resolved at launch from the first file that names this machine's host id
+(`AI_HOST`, then `/etc/ai-harness/machine`, then the hostname):
+
+1. `<projects>/ai-harness/config/machine-host-aliases.toml`, when an ai-harness
+   checkout exists (`$PROJECTS_DIR`, then `[project] projects_dir`, default
+   `~/projects`)
+2. `~/.config/ai-cli-utils/machine-host-aliases.toml`
+
+```toml
+max_length = 5
+
+[aliases]
+my-host = "box"
+```
+
+A machine named in neither file is refused with both paths, rather than given an
+invented alias. Sessions named before the host alias joined the name
+(`myrepo-3`) still resolve by slot until they are moved with
+`ai session-migrate myrepo-3 myrepo-box-3`; nothing new is created in that form.
+
 #### What a new worktree tracks
 
 A new session worktree is based on, and tracks, the branch its repository
