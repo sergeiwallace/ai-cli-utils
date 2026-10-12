@@ -410,7 +410,7 @@ def test_given_live_bare_claude_when_no_matching_tmux_session_then_launch_aborts
     monkeypatch.chdir(real_repo)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     session_id = "abababab-0000-4000-8000-000000000006"
-    transcript = _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    transcript = _write_transcript(_cc_project_dir(real_repo), session_id, "kg-tst-1")
     monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
 
     with (
@@ -434,7 +434,7 @@ def test_given_live_claude_when_matching_tmux_session_then_bare_launch_reattache
     monkeypatch.chdir(real_repo)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     session_id = "bcbcbcbc-0000-4000-8000-000000000006"
-    _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    _write_transcript(_cc_project_dir(real_repo), session_id, "kg-tst-1")
     monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
     execs: list[tuple[str, list[str]]] = []
     real_run = subprocess.run
@@ -463,7 +463,7 @@ def test_given_live_claude_when_matching_tmux_session_then_bare_launch_reattache
         with pytest.raises(SystemExit):
             _do_session_launch(**_launch_kwargs(no_worktree=True))
 
-    assert execs == [("tmux", ["tmux", "attach-session", "-d", "-t", "c-kg-1"])]
+    assert execs == [("tmux", ["tmux", "attach-session", "-d", "-t", "c-kg-tst-1"])]
 
 
 # --- session-registry liveness (AI-CLI-cc-session-live-mvht) --------------------
@@ -822,7 +822,7 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
         with pytest.raises(SystemExit):
             _do_session_launch(**_launch_kwargs())
 
-    worktree = real_repo / ".worktrees" / "kg-1"
+    worktree = real_repo / ".worktrees" / "kg-tst-1"
     assert worktree.is_dir(), "bare launch must create the worktree"
 
     listed = subprocess.run(
@@ -838,13 +838,13 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
     assert worktree in registered_worktrees, "worktree must be registered with git"
 
     branches = subprocess.run(
-        ["git", "branch", "--list", "wt-kg-1"],
+        ["git", "branch", "--list", "wt-kg-tst-1"],
         cwd=real_repo,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert "wt-kg-1" in branches, "worktree branch must be created"
+    assert "wt-kg-tst-1" in branches, "worktree branch must be created"
 
     assert len(execs) == 1, "expected exactly one exec"
     file, args, cwd_at_exec = execs[0]
@@ -852,7 +852,7 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
     # has nothing to load and must not be a precondition for launching.
     assert file == "claude"
     assert cwd_at_exec == str(worktree), "must chdir into the worktree before exec"
-    assert "--name" in args and args[args.index("--name") + 1] == "kg-1"
+    assert "--name" in args and args[args.index("--name") + 1] == "kg-tst-1"
 
 
 def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo, tmp_path, monkeypatch):
@@ -883,12 +883,12 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
         with pytest.raises(SystemExit):
             _do_session_launch(**_launch_kwargs())
 
-    worktree = real_repo / ".worktrees" / "kg-1"
+    worktree = real_repo / ".worktrees" / "kg-tst-1"
     file, args, cwd_at_exec = execs[0]
     assert file == "direnv"
     assert args[:3] == ["direnv", "exec", str(worktree)]
     assert cwd_at_exec == str(worktree)
-    assert "--name" in args and args[args.index("--name") + 1] == "kg-1"
+    assert "--name" in args and args[args.index("--name") + 1] == "kg-tst-1"
 
 
 def test_given_bare_launch_when_no_worktree_flag_then_runs_in_repo_root(real_repo, tmp_path, monkeypatch):
@@ -932,7 +932,7 @@ def test_given_bare_launch_when_executed_then_task_list_id_pinned(real_repo, tmp
         with pytest.raises(SystemExit):
             _do_session_launch(**_launch_kwargs())
 
-    assert os.environ.get("CLAUDE_CODE_TASK_LIST_ID") == "kg-1"
+    assert os.environ.get("CLAUDE_CODE_TASK_LIST_ID") == "kg-tst-1"
 
 
 def test_given_bare_launch_when_tmux_absent_then_no_tmux_invocation(real_repo, tmp_path, monkeypatch):
@@ -983,7 +983,7 @@ def test_given_use_tmux_false_config_when_launched_then_still_creates_worktree(r
         with pytest.raises(SystemExit):
             _do_session_launch(**_launch_kwargs(bare=False))
 
-    assert (real_repo / ".worktrees" / "kg-1").is_dir()
+    assert (real_repo / ".worktrees" / "kg-tst-1").is_dir()
 
 
 def test_given_session_adopt_module_missing_when_liveness_checked_then_unproven(tmp_path, monkeypatch):

@@ -481,7 +481,7 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
             no_direnv=True,
         )
 
-    worktree = committed_envrc_repo / ".worktrees" / "myapp-1"
+    worktree = committed_envrc_repo / ".worktrees" / "myapp-tst-1"
     assert (worktree / ".envrc").is_file(), "fixture must give the worktree its own .envrc"
     assert fake.allowed_paths == [str(worktree)]
 

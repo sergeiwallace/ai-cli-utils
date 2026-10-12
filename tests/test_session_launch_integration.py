@@ -344,7 +344,7 @@ def test_given_new_session_when_launched_then_tmux_session_created(patched_subpr
             _do_session_launch(**_base_launch_kwargs(name="1"))
 
     session_names = [s.name for s in server.sessions]
-    assert "c-myproject-1" in session_names, f"expected c-myproject-1 in {session_names}"
+    assert "c-myproject-tst-1" in session_names, f"expected c-myproject-tst-1 in {session_names}"
 
 
 def test_given_existing_session_when_relaunched_then_attaches_not_creates(patched_subprocess):
@@ -352,9 +352,9 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     not create a new one."""
     server = patched_subprocess
     # Pre-create the target session directly via libtmux
-    server.new_session(session_name="c-myproject-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    server.new_session(session_name="c-myproject-tst-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
     before_ids = {s.id for s in server.sessions}
-    assert any(s.name == "c-myproject-2" for s in server.sessions)
+    assert any(s.name == "c-myproject-tst-2" for s in server.sessions)
 
     with (
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
@@ -372,10 +372,10 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
             _do_session_launch(**_base_launch_kwargs(name="2"))
 
     after = {s.name: s.id for s in server.sessions}
-    # Must still have exactly one c-myproject-2, and its id must be unchanged
-    assert "c-myproject-2" in after
+    # Must still have exactly one c-myproject-tst-2, and its id must be unchanged
+    assert "c-myproject-tst-2" in after
     # The existing session id must survive — i.e. no new-session was issued
-    assert after["c-myproject-2"] in before_ids
+    assert after["c-myproject-tst-2"] in before_ids
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -543,7 +543,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     the frozen final output forever; ``_do_session_launch`` must instead kill
     the dead session and create a genuinely fresh one."""
     server = patched_subprocess
-    _create_dead_session(server, "c-myproject-3")
+    _create_dead_session(server, "c-myproject-tst-3")
 
     with (
         _tmux_versions_agreeing(),
@@ -563,15 +563,15 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
 
     _assert_launch_reached_exec(server, capsys)
     after = {s.name: s.id for s in server.sessions}
-    assert "c-myproject-3" in after
-    pane_dead = server.cmd("list-panes", "-t", "c-myproject-3", "-F", "#{pane_dead}")
+    assert "c-myproject-tst-3" in after
+    pane_dead = server.cmd("list-panes", "-t", "c-myproject-tst-3", "-F", "#{pane_dead}")
     assert pane_dead.stdout == ["0"], (
         # A dead pane here means the recreated session's child did not survive the
         # launch. Show what it was and what the pane holds, because "['1'] != ['0']"
         # alone cannot distinguish a child that exited from one that never started.
         f"the recreated session's pane is dead; child={_LIVE_CHILD_COMMAND!r} "
-        f"panes={server.cmd('list-panes', '-t', 'c-myproject-3', '-F', '#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_start_command}').stdout!r} "
-        f"recreate_stage: {_recreate_stage_diagnostic(server, 'c-myproject-3')}"
+        f"panes={server.cmd('list-panes', '-t', 'c-myproject-tst-3', '-F', '#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_start_command}').stdout!r} "
+        f"recreate_stage: {_recreate_stage_diagnostic(server, 'c-myproject-tst-3')}"
     )
 
 
@@ -581,7 +581,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
 ):
     """A live session that reuses a dead session's name must never be killed."""
     server = patched_subprocess
-    session_name = "c-myproject-4"
+    session_name = "c-myproject-tst-4"
     _create_dead_session(server, session_name)
     replacement_id = None
 
@@ -804,7 +804,7 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
     patched_subprocess,
 ):
     """When ``name`` is empty but ``extra_args=['myname']``, the session name
-    must incorporate ``myname``: ``c-myproject-myname-1``."""
+    must incorporate ``myname``: ``c-myproject-tst-myname-1``."""
     server = patched_subprocess
 
     kwargs = _base_launch_kwargs(name="")
@@ -826,8 +826,8 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-myproject-myname-") for n in session_names), (
-        f"expected a c-myproject-myname-* session in {session_names}"
+    assert any(n.startswith("c-myproject-tst-myname-") for n in session_names), (
+        f"expected a c-myproject-tst-myname-* session in {session_names}"
     )
 
 
@@ -836,7 +836,7 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
 ):
     """A new session uses lowercase names while retaining the registry's raw prefix."""
     server = patched_subprocess
-    worktree = tmp_path / ".worktrees" / "myproject-1"
+    worktree = tmp_path / ".worktrees" / "myproject-tst-1"
 
     with (
         patch("ai_cli.session.cleanup_stale_sessions"),
@@ -864,10 +864,10 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
-    create_worktree.assert_called_once_with("myproject-1", with_status=True)
-    assert emit_profile.call_args.args[:3] == ("myproject-1", "c", "c-myproject-1")
+    create_worktree.assert_called_once_with("myproject-tst-1", with_status=True)
+    assert emit_profile.call_args.args[:3] == ("myproject-tst-1", "c", "c-myproject-tst-1")
     session_names = [s.name for s in server.sessions]
-    assert "c-myproject-1" in session_names
+    assert "c-myproject-tst-1" in session_names
 
 
 def test_given_uppercase_fleet_prefix_when_bare_session_launches_then_real_artifacts_are_lowercase(
@@ -920,12 +920,12 @@ def test_given_uppercase_fleet_prefix_when_bare_session_launches_then_real_artif
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
-    assert (repo / ".worktrees" / "app-1").is_dir()
+    assert (repo / ".worktrees" / "app-tst-1").is_dir()
     registered = json.loads(canonical_registry.read_text(encoding="utf-8"))["worktrees"]
     assert len(registered) == 1
     assert registered[0]["engine"] == "c"
-    assert registered[0]["path"] == str((repo / ".worktrees" / "app-1").resolve())
-    assert registered[0]["session_name"] == "c-app-1"
+    assert registered[0]["path"] == str((repo / ".worktrees" / "app-tst-1").resolve())
+    assert registered[0]["session_name"] == "c-app-tst-1"
     assert registered[0]["first_registered_at"]
     assert registered[0]["last_validated_at"]
     emit_profile.assert_not_called()
