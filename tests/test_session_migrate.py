@@ -282,3 +282,73 @@ def test_given_either_verb_when_help_is_printed_then_it_names_the_other_verb():
     assert code == 0 and "session-adopt" in out
     code, out, _err = run_cli(["ai", "session-adopt", "--help"])
     assert code == 0 and "session-migrate" in out
+
+
+ANCHOR = f"refs/preserved/session-migrate/wt-{OLD}"
+
+
+def _ref(repo: Path, ref: str) -> str | None:
+    res = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo, capture_output=True, text=True, check=False
+    )
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+@pytest.fixture
+def topic_slot(slot):
+    """The slot with a topic branch checked out, so ``wt-<old>`` is parked."""
+    _git("switch", "-q", "-c", "topic", cwd=slot["wt"])
+    _git("commit", "-q", "--allow-empty", "-m", "topic work", cwd=slot["wt"])
+    return slot
+
+
+def test_given_a_parked_canonical_branch_when_migrated_then_it_is_renamed_through_an_anchor(topic_slot):
+    repo = topic_slot["repo"]
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "--dry-run")
+    assert code == 0, out + err
+    assert f"branch: wt-{OLD} -> wt-{NEW}" in out
+    assert f"branch anchor: {ANCHOR} (write: {tip})" in out
+
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    new_wt = repo / ".worktrees" / NEW
+    assert _ref(repo, f"refs/heads/wt-{NEW}") == tip
+    assert _ref(repo, ANCHOR) == tip
+    assert _ref(repo, f"refs/heads/wt-{OLD}") is None
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == "topic"
+    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
+    assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
+    assert f"branch.wt-{OLD}." not in markers
+
+
+def test_given_the_checked_out_canonical_branch_when_migrated_then_it_is_anchored_too(slot):
+    tip = _ref(slot["repo"], f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert _ref(slot["repo"], ANCHOR) == tip == _ref(slot["repo"], f"refs/heads/wt-{NEW}")
+
+
+def test_given_the_new_canonical_branch_exists_when_migrated_then_the_parked_one_keeps_its_name(topic_slot):
+    repo = topic_slot["repo"]
+    _git("branch", f"wt-{NEW}", "main", cwd=repo)
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    assert f"branch wt-{NEW} already exists, so it keeps the name wt-{OLD}" in err
+    assert _ref(repo, f"refs/heads/wt-{OLD}") == tip
+    assert _ref(repo, ANCHOR) is None
+
+
+def test_given_git_refuses_the_branch_rename_when_migrated_then_stderr_is_quoted_and_the_anchor_remains(topic_slot):
+    repo = topic_slot["repo"]
+    # A branch under wt-<new>/ makes `git branch -m ... wt-<new>` fail on a ref D/F conflict.
+    _git("branch", f"wt-{NEW}/child", "main", cwd=repo)
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    assert f"branch rename to wt-{NEW} failed: git branch -m wt-{OLD} wt-{NEW} was refused: " in err
+    assert f"the tip stays anchored at {ANCHOR}" in err
+    assert _ref(repo, f"refs/heads/wt-{OLD}") == tip == _ref(repo, ANCHOR)
+    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
+    assert f"branch.wt-{OLD}.aih-session-home {repo / '.worktrees' / NEW}" in markers

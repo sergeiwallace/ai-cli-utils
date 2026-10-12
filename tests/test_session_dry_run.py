@@ -283,3 +283,49 @@ def test_without_dry_run_the_launch_still_reaches_its_work():
                 config={},
                 dry_run=False,
             )
+
+
+def _launch_plan(repo, ai_name: str) -> str:
+    """The `ai c --dry-run` plan for slot ``ai_name`` in the real git repo ``repo``."""
+    with (
+        patch("ai_cli.session.create_worktree", side_effect=_explode),
+        patch("ai_cli.session.cleanup_stale_sessions", side_effect=_explode),
+        patch("ai_cli.trust.ensure_workspace_trusted", side_effect=_explode),
+        patch("ai_cli.session.detect_repo_root", return_value=str(repo)),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.get_project_prefix", return_value="myrepo"),
+        patch("ai_cli.session.is_current_project_resolved", return_value=True),
+        patch("ai_cli.session.build_session_name", return_value=(f"c-{ai_name}", ai_name)),
+        patch("ai_cli.tmux_setup.tmux_present", return_value=True),
+    ):
+        code, out, err = run_cli(["ai", "c", ai_name.rsplit("-", 1)[1], "--dry-run"])
+    assert code == 0, out + err
+    return out
+
+
+@pytest.fixture
+def repo_with_slot(tmp_path):
+    import subprocess
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+    repo = (tmp_path / "myrepo").resolve()
+    repo.mkdir()
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    git("worktree", "add", "-q", str(repo / ".worktrees" / "myrepo-7"), "-b", "wt-myrepo-7", cwd=repo)
+    git("switch", "-q", "-c", "topic", cwd=repo / ".worktrees" / "myrepo-7")
+    return repo
+
+
+def test_given_a_registered_slot_on_a_topic_branch_when_dry_running_then_the_plan_names_that_branch(repo_with_slot):
+    out = _launch_plan(repo_with_slot, "myrepo-7")
+    assert "branch     topic   (reused worktree keeps its branch)" in out
+
+
+def test_given_no_slot_yet_when_dry_running_then_the_plan_names_the_canonical_branch(repo_with_slot):
+    out = _launch_plan(repo_with_slot, "myrepo-8")
+    assert "branch     wt-myrepo-8\n" in out
+    assert "reused worktree" not in out

@@ -456,7 +456,7 @@ ai c myrepo-box-3                             # resume under the new name
 | What | How it follows the new name |
 |---|---|
 | Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
-| Branch `wt-OLD` | renamed to `wt-NEW` when that is its branch and `wt-NEW` is free; any other branch is kept |
+| Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/session-migrate/wt-OLD`, which stays, so a refused rename never loses it |
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |

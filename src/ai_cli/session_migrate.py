@@ -6,8 +6,10 @@ module moves one that already lives in a slot -- ``<repo>/.worktrees/<old>`` -- 
 old worktree path, so ``ai c <new>`` resumes the same conversation with the same
 tasks, memory and resume hand-off:
 
-* the worktree (``git worktree move``), its ``wt-<old>`` branch, and every
-  ``branch.*.aih-session-home`` marker naming the old path;
+* the worktree (``git worktree move``), its ``wt-<old>`` branch whether checked
+  out or parked behind a topic branch (anchored first, see
+  :mod:`ai_cli.branch_rename`), and every ``branch.*.aih-session-home`` marker
+  naming the old path;
 * the canonical-session registry entry for the old path;
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
   memory), with each transcript's recorded cwd repointed, its ``customTitle``
@@ -43,6 +45,7 @@ from pathlib import Path
 
 from . import config as _config
 from . import session_registry as _session_registry
+from .branch_rename import rename_branch_anchored
 from .canonical_worktrees import (
     CanonicalWorktreeRegistryError,
     get_canonical_worktree_registry_path,
@@ -164,6 +167,12 @@ def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
         if value and Path(value).resolve(strict=False) == old_wt:
             found.append((key, value))
     return found
+
+
+def _marker_key(key: str, old_branch: str, new_branch: str | None) -> str:
+    """``key`` after ``git branch -m old_branch new_branch``, which moves the branch's config section."""
+    prefix = f"branch.{old_branch}."
+    return f"branch.{new_branch}.{key[len(prefix) :]}" if new_branch and key.startswith(prefix) else key
 
 
 def _rewrite_transcript_cwd(path: Path, old_root: str, new_root: str) -> None:
@@ -301,18 +310,24 @@ def migrate_session(
             f"their shebangs -- recreate it (`uv sync --reinstall`) before running them"
         )
 
-    branch = _current_branch(old_wt)
-    new_branch: str | None = None
-    if branch == f"wt-{old}":
-        if _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/wt-{new}").returncode == 0:
-            result.warnings.append(f"branch wt-{new} already exists, so the worktree keeps branch {branch}")
-        else:
-            new_branch = f"wt-{new}"
-            moves.append(PlannedMove("branch", f"wt-{old}", new_branch))
+    # The canonical branch is renamed whether the slot has it checked out or parks it
+    # while a topic branch is checked out: either way it still names the old session.
+    old_branch, new_branch = f"wt-{old}", f"wt-{new}"
+    branch_plan = rename_branch_anchored(repo_root, old_branch, new_branch, dry_run=True)
+    if not branch_plan.tip:
+        new_branch = None
+    elif not branch_plan.ok:
+        keeper = "the worktree keeps branch" if _current_branch(old_wt) == old_branch else "it keeps the name"
+        result.warnings.append(f"{branch_plan.error}, so {keeper} {old_branch}")
+        new_branch = None
+    else:
+        moves.append(PlannedMove("branch", old_branch, new_branch))
+        moves.append(PlannedMove("branch anchor", branch_plan.anchor, branch_plan.tip, "write"))
     markers = _session_home_markers(repo_root, old_wt)
     for key, _value in markers:
-        renamed = key.replace(f"branch.{branch}.", f"branch.{new_branch}.", 1) if new_branch else key
-        moves.append(PlannedMove("session-home marker", key, f"{renamed} = {new_wt}", "rewrite"))
+        moves.append(
+            PlannedMove("session-home marker", key, f"{_marker_key(key, old_branch, new_branch)} = {new_wt}", "rewrite")
+        )
 
     try:
         registry_entries = move_canonical_worktree(old_wt, new_wt, old, new, dry_run=True)
@@ -355,13 +370,14 @@ def migrate_session(
     if moved.returncode != 0:
         raise MigrationError(f"git worktree move failed, nothing was migrated: {(moved.stderr or '').strip()}")
     if new_branch:
-        renamed = _git(repo_root, "branch", "-m", f"wt-{old}", new_branch)
-        if renamed.returncode != 0:
-            result.warnings.append(f"branch rename to {new_branch} failed: {(renamed.stderr or '').strip()}")
+        renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
+        if not renamed.ok:
+            anchored = _git(repo_root, "rev-parse", "--verify", "--quiet", renamed.anchor).returncode == 0
+            kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
+            result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
             new_branch = None
     for key, _value in markers:
-        target_key = key.replace(f"branch.{branch}.", f"branch.{new_branch}.", 1) if new_branch else key
-        _git(repo_root, "config", target_key, str(new_wt))
+        _git(repo_root, "config", _marker_key(key, old_branch, new_branch), str(new_wt))
     move_canonical_worktree(old_wt, new_wt, old, new, dry_run=False)
 
     if old_pd.is_dir():
