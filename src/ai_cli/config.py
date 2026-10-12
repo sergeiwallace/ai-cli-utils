@@ -410,6 +410,14 @@ stale_after_seconds = 600
 ## A connection that stayed up this many seconds was working, so the drop that ends it starts
 ## a fresh attempt budget: the budget bounds one outage, not the life of the session.
 # reconnect_stable_seconds = 300
+## A failed attempt whose ssh/ProxyCommand stderr names an expired or rejected credential
+## does not spend reconnect_attempts: re-authenticate and it reattaches by itself. It keeps
+## retrying (30s backoff, doubling to 15 minutes) for up to this many seconds of continuous
+## credential failure, which should outlast your credential's own lifetime.
+# reconnect_auth_wait_seconds = 14400
+## Case-insensitive regexes that mark stderr as a credential fault. Replaces the built-in
+## list (expired tokens, failed SSO refresh, "Permission denied (") when set.
+# reconnect_auth_patterns = ["token (has |is )?expired", "permission denied \\("]
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.

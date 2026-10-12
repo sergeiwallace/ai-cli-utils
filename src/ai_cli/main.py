@@ -3232,6 +3232,10 @@ def _do_session_launch(
                     backoff_seconds=remote_cfg.get("reconnect_backoff", 2.0),
                     stable_seconds=remote_cfg.get("reconnect_stable_seconds", 300),
                     outcome_path=_transport.transport_outcome_path(_r_ai_name),
+                    auth_wait_seconds=remote_cfg.get("reconnect_auth_wait_seconds", 4 * 3600),
+                    auth_fault_patterns=remote_cfg.get(
+                        "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
+                    ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
                 )
             )

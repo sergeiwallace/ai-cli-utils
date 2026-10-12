@@ -316,7 +316,7 @@ class TestADroppedLinkReattaches:
         calls = []
         cleanup = []
 
-        def fake_call(argv):
+        def fake_call(argv, **_kwargs):
             calls.append(list(argv))
             return exit_codes[len(calls) - 1] if len(calls) <= len(exit_codes) else exit_codes[-1]
 
@@ -420,7 +420,7 @@ class TestALongLivedSessionKeepsItsReconnectBudget:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
             return MagicMock(returncode=1, stdout="")
 
-        def fake_ssh(argv):
+        def fake_ssh(argv, **_kwargs):
             exit_code, seconds = runs[min(len(calls), len(runs) - 1)]
             calls.append(list(argv))
             clock["now"] += seconds
@@ -500,3 +500,169 @@ class TestALongLivedSessionKeepsItsReconnectBudget:
         assert outcome["verdict"] == "clean_exit"
         assert outcome["last_exit_code"] == 0
         assert outcome["drops"] == 1
+
+
+class TestACredentialOutageDoesNotSpendTheReconnectBudget:
+    """An expired credential is not a dropped link, and waiting it out must not cost attempts.
+
+    Measured: a remote host reached through a ``ProxyCommand`` that needs a short-lived SSO
+    token. Once the token expired, every reattach failed in seconds with ssh exit 255, the
+    same status as a dropped link, so ten attempts were spent in under four minutes and the
+    session gave up while the remote tmux session was still running. The token lives an
+    hour and refreshes only when a human logs in again, so no fixed attempt count can
+    outlast it. The only place the two causes differ is the text ssh and its
+    ``ProxyCommand`` write to stderr, so that is what the runner now reads.
+
+    Every test drives a real ``ai c --remote`` launch through the real reconnect loop; the
+    ssh child, its stderr and the clock are the only fakes.
+    """
+
+    AUTH_REASON = "[proxy] SSO token is expired -- Token has expired and refresh failed\n"
+    LINK_REASON = "Connection closed by 192.0.2.10 port 22\n"
+
+    def _launch(self, fault_until, reason, config_extra=None, first_runs=()):
+        """Drive ``ai c 1 --remote`` where every ssh run fails with *reason* until the clock
+        passes *fault_until* seconds, and then exits cleanly.
+
+        ``time.sleep`` advances the same clock, so the simulated outage is measured in the
+        runner's own backoff rather than in a count of calls chosen by the test.
+        ``first_runs`` are ``(exit_code, stderr, seconds_connected)`` runs played first.
+        """
+        clock = {"now": 0.0}
+        calls = []
+
+        def fake_probe(command, **_kwargs):
+            if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+                return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            return MagicMock(returncode=1, stdout="")
+
+        def fake_ssh(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) <= len(first_runs):
+                exit_code, text, seconds = first_runs[len(calls) - 1]
+                clock["now"] += seconds
+                kwargs["stderr"].write(text.encode())
+                return exit_code
+            clock["now"] += 2.0
+            if clock["now"] < fault_until:
+                stderr = kwargs.get("stderr")
+                if stderr is not None:
+                    stderr.write(reason.encode())
+                    stderr.flush()
+                return 255
+            return 0
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        remote = {"host": "h.example.com", "user": "dev", "transport": "ssh", **(config_extra or {})}
+        with (
+            patch("sys.argv", ["ai", "c", "1", "--remote"]),
+            patch("ai_cli.config.load_config", return_value={"remote": remote}),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
+            patch("ai_cli.transport.subprocess.call", side_effect=fake_ssh),
+            patch("ai_cli.transport._monotonic", side_effect=lambda: clock["now"]),
+            patch("ai_cli.transport.time.sleep", side_effect=fake_sleep),
+            patch("ai_cli.transport.restore_terminal"),
+            patch("os.execvp", side_effect=AssertionError("this path must not exec")),
+        ):
+            with pytest.raises(SystemExit) as exited:
+                cli()
+        return exited.value.code, calls, clock["now"]
+
+    @staticmethod
+    def _outcome():
+        outcomes = list((_transport.get_xdg_state_home() / "transport-outcomes").glob("*.json"))
+        assert len(outcomes) == 1, f"expected one durable outcome record, found {outcomes}"
+        return json.loads(outcomes[0].read_text())
+
+    def test_given_an_expired_credential_for_longer_than_the_ladder_when_it_returns_then_the_session_reattaches(
+        self,
+    ):
+        """The reproduction. A 65-minute credential outage, longer than the token's own hour
+        and far longer than the ~4 minutes ten backed-off attempts last, then credentials
+        return. Before the fix the ladder spent all ten attempts and exited 255."""
+        rc, calls, elapsed = self._launch(fault_until=65 * 60, reason=self.AUTH_REASON)
+
+        assert rc == 0, "the session gave up during a credential outage instead of waiting it out"
+        assert elapsed >= 65 * 60
+        outcome = self._outcome()
+        assert outcome["verdict"] == "clean_exit"
+        assert outcome["failed_attempts"] == 0, "auth faults consumed the transport attempt budget"
+        assert outcome["auth_faults"] == len(calls) - 1
+
+    def test_given_credentials_that_never_return_when_the_auth_wait_expires_then_it_gives_up_naming_the_credential(
+        self,
+    ):
+        """The wait is bounded too, and the record left behind joins ssh's exit 255 to the
+        ProxyCommand's reason, so one artifact names the credential."""
+        rc, _, elapsed = self._launch(
+            fault_until=float("inf"), reason=self.AUTH_REASON, config_extra={"reconnect_auth_wait_seconds": 1800}
+        )
+
+        assert rc == 255
+        assert 1800 <= elapsed < 1800 + 15 * 60
+        outcome = self._outcome()
+        assert outcome["verdict"] == "gave_up"
+        assert outcome["cause"] == "auth"
+        assert outcome["last_exit_code"] == 255
+        assert outcome["failed_attempts"] == 0
+        assert "Token has expired" in outcome["last_error"]
+
+    def test_given_a_link_loss_with_no_credential_reason_when_it_persists_then_the_budget_still_bounds_it(self):
+        """Negative control: a fault whose stderr names no credential is a transport fault,
+        so the ten-attempt bound still holds and the record says so."""
+        rc, calls, _ = self._launch(fault_until=float("inf"), reason=self.LINK_REASON)
+
+        assert rc == 255
+        assert len(calls) == 10
+        outcome = self._outcome()
+        assert outcome["cause"] == "transport"
+        assert outcome["failed_attempts"] == 10
+        assert outcome["auth_faults"] == 0
+        assert "Connection closed by 192.0.2.10" in outcome["last_error"]
+
+    def test_given_an_auth_fault_when_the_runner_waits_then_the_operator_sees_the_reason_and_a_re_auth_prompt(
+        self, capsys
+    ):
+        """ssh's stderr is still relayed live, and the wait is announced as a credential
+        problem with the action that ends it rather than as another dropped link."""
+        self._launch(fault_until=120, reason=self.AUTH_REASON)
+
+        err = capsys.readouterr().err
+        assert "Token has expired" in err, "ssh's stderr was swallowed instead of relayed"
+        assert "re-authenticate" in err.lower()
+        assert "attempt 1/10" not in err
+
+    def test_given_a_stable_session_between_two_credential_outages_when_the_second_starts_then_it_gets_a_full_wait(
+        self,
+    ):
+        """The wait bounds one outage, like the attempt budget. A reattach that then held for
+        hours was a working connection, so the next credential outage must not inherit the
+        time already spent waiting on the first one and give up on arrival."""
+        long_run_ends = 3 * 2.0 + (30 + 60 + 120) + 4 * 3600.0
+        rc, _, _ = self._launch(
+            fault_until=long_run_ends + 25 * 60,
+            reason=self.AUTH_REASON,
+            config_extra={"reconnect_auth_wait_seconds": 1800},
+            first_runs=[(255, self.AUTH_REASON, 2.0)] * 3 + [(255, self.AUTH_REASON, 4 * 3600.0)],
+        )
+
+        assert rc == 0, "the second outage gave up on time spent waiting out the first"
+
+    def test_given_custom_auth_patterns_when_the_reason_matches_one_then_it_is_treated_as_an_auth_fault(self):
+        """Config over code: a credential helper with its own wording is reachable from
+        config, not only the built-in list."""
+        rc, _, _ = self._launch(
+            fault_until=30 * 60,
+            reason="vault: lease revoked\n",
+            config_extra={"reconnect_auth_patterns": ["lease revoked"]},
+        )
+
+        assert rc == 0
+        assert self._outcome()["failed_attempts"] == 0
