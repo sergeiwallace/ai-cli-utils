@@ -38,9 +38,10 @@ from . import config as _config
 ALIAS_FILENAME = "machine-host-aliases.toml"
 DEFAULT_MAX_LENGTH = 5
 
-# Letters only. A digit would make the alias read as a session index to every
-# parser that splits a name on its trailing ``-<digits>``.
-_ALIAS_RE = re.compile(r"[a-z]+")
+# Lowercase letters and digits, starting with a letter (``acn``, ``ec2``). Every name
+# parser splits the index off the LAST hyphen, so a digit inside the alias segment is
+# never read as an index; a leading letter keeps an alias from being all digits.
+_ALIAS_RE = re.compile(r"[a-z][a-z0-9]*")
 
 
 class HostAliasError(RuntimeError):
@@ -107,7 +108,7 @@ def _alias_from(path: Path, host: str) -> str | None:
     ):
         raise HostAliasError(
             f"host alias {alias!r} for {host!r} in {path} is invalid: it must be lowercase "
-            f"letters only, at most {max_length} characters"
+            f"letters and digits starting with a letter, at most {max_length} characters"
         )
     return alias
 
@@ -129,5 +130,5 @@ def resolve_host_alias() -> str:
         "  Session names are {repo-alias}-{host-alias}-{optional-slug}-{N}, so a launch needs one.\n"
         f"  Checked, in order:\n{checked}\n"
         f"  Fix: add it under [aliases] in {sources[0]}:\n"
-        f'    {host} = "<alias>"   # lowercase letters, at most {DEFAULT_MAX_LENGTH} characters'
+        f'    {host} = "<alias>"   # lowercase letters and digits, starting with a letter, at most {DEFAULT_MAX_LENGTH} characters'
     )

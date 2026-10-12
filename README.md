@@ -187,7 +187,7 @@ ai c 3          # myrepo-box-3 (or the existing session in that slot)
 ```
 
 `{repo-alias}` is the repository's registered task prefix (`ai register -x`).
-`{host-alias}` is this machine's short alias (lowercase letters, at most 5),
+`{host-alias}` is this machine's short alias (lowercase letters and digits starting with a letter, at most 5),
 resolved at launch from the first file that names this machine's host id
 (`AI_HOST`, then `/etc/ai-harness/machine`, then the hostname):
 
