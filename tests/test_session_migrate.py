@@ -126,8 +126,8 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
     trees = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
-    trees["git-config"] = (slot["repo"] / ".git" / "config").read_text()
-    trees["registry"] = get_canonical_worktree_registry_path().read_text()
+    trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
+    trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")
     return trees
 
 
@@ -140,7 +140,7 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
 
     # worktree, uncommitted work, branch and markers
     assert not old_wt.exists()
-    assert (new_wt / "uncommitted.txt").read_text() == "work in progress\n"
+    assert (new_wt / "uncommitted.txt").read_text(encoding="utf-8") == "work in progress\n"
     listed = _git("worktree", "list", "--porcelain", cwd=repo)
     # git prints worktree paths with forward slashes on every OS, Windows included.
     assert f"worktree {new_wt.as_posix()}\n" in listed
@@ -152,7 +152,7 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert str(old_wt) + "\n" not in markers
 
     # canonical registry
-    entries = json.loads(get_canonical_worktree_registry_path().read_text())["worktrees"]
+    entries = json.loads(get_canonical_worktree_registry_path().read_text(encoding="utf-8"))["worktrees"]
     assert [(e["path"], e["session_name"]) for e in entries] == [(str(new_wt), f"c-{NEW}")]
 
     # transcript: project dir, title, cwd, binding; history text untouched
@@ -160,19 +160,19 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert not slot["project"].exists()
     transcript = new_project / f"{UUID}.jsonl"
     assert transcript_title(transcript) == NEW
-    records = [json.loads(line) for line in transcript.read_text().splitlines()]
+    records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
     assert records[0]["cwd"] == str(new_wt)
     assert records[0]["message"]["content"] == f"look at {old_wt}/README.md"
     assert records[2]["worktreeSession"] is None
     assert records[3]["cwd"] == str(new_wt / "src")
     assert (new_project / UUID / "subagents" / "agent-1.jsonl").is_file()
-    assert (new_project / "memory" / "MEMORY.md").read_text() == "# slot memory\n"
+    assert (new_project / "memory" / "MEMORY.md").read_text(encoding="utf-8") == "# slot memory\n"
     assert f"resolve probe: `ai c` finds {transcript}" in out
 
     # task namespace, keeping its high-water mark
     new_ns = claude / "tasks" / NEW
     assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
-    assert (new_ns / ".highwatermark").read_text() == "7"
+    assert (new_ns / ".highwatermark").read_text(encoding="utf-8") == "7"
     assert not list((claude / "tasks" / OLD).glob("*.json"))
 
     # resume tree
@@ -181,16 +181,16 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert not (claude / "resume" / "outbox" / OUTBOX_KEYED).exists()
 
     # launcher state: metadata, regenerated wrapper (pinned task list), resume prompt, maps
-    meta = json.loads((state / f"session-meta-c-{NEW}.json").read_text())
+    meta = json.loads((state / f"session-meta-c-{NEW}.json").read_text(encoding="utf-8"))
     assert (meta["ai_name"], meta["session"], meta["worktree_dir"]) == (NEW, f"c-{NEW}", str(new_wt))
-    script = (state / "sessions" / f"c-{NEW}.sh").read_text()
+    script = (state / "sessions" / f"c-{NEW}.sh").read_text(encoding="utf-8")
     assert f"ai_name={NEW}" in script
     assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in script
     assert str(new_wt) in script
     assert not (state / "sessions" / f"c-{OLD}.sh").exists()
-    assert (state / f"cc-resume-prompt-c-{NEW}").read_text() == "resume me\n"
-    assert json.loads((claude / "cc-sessions.json").read_text()) == {NEW: UUID, "other-1": "x"}
-    record = json.loads((state / "iterm2-sessions.json").read_text())["sessions"][0]
+    assert (state / f"cc-resume-prompt-c-{NEW}").read_text(encoding="utf-8") == "resume me\n"
+    assert json.loads((claude / "cc-sessions.json").read_text(encoding="utf-8")) == {NEW: UUID, "other-1": "x"}
+    record = json.loads((state / "iterm2-sessions.json").read_text(encoding="utf-8"))["sessions"][0]
     assert (record["name"], record["relaunch_argv"]) == (f"c-{NEW}", ["ai", "c", NEW])
 
     # a lock is never carried to the new name
