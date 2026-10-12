@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Each iTerm2 session-registry record now carries why its session ended (`exit`:
+  `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
+  was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`
+  records one. Before relaunching, `ai iterm2 restore` classifies each record whose
+  session is proved gone, relaunches it only when
+  `[iterm2.persistence.restore.relaunch.scenarios]` allows its cause (a manual exit is
+  not relaunched by default), lists the rest as skipped with their cause, and launches
+  each relaunched session with `AIH_LAUNCH_REASON=<cause>`.
+  `[iterm2.persistence.restore.relaunch] on_terminal_reopen = false` makes
+  `restore --startup` relaunch nothing. A registry written by an earlier version reads
+  as having no exit causes and is upgraded on its next change.
+
+- `ai iterm2 sessions --adopt [--dry-run]` records the sessions that were already
+  running before the iTerm2 session registry existed, so `ai iterm2 restore` can bring
+  them back: each local tmux session named `c-<prefix>-<n>` (re-attached with
+  `ai c -p <project> <slot>`) and each running `ai c -R` launcher (re-run with its own
+  command line). A session that already has a record is left alone, a command line that
+  cannot be read or parsed is skipped with its pid and the reason, and tracking switched
+  off is a refusal naming the key. Run it once after installing. See
+  `docs/iterm2-persistence.md`.
+
+- `ai iterm2 restore [--startup] [--dry-run] [--only local|remote] [--arrangement NAME]`
+  re-attaches the sessions in the iTerm2 session registry after an iTerm2 restart
+  (macOS). It opens the saved arrangement on demand (through iTerm2's `it2` when it
+  answers, else it prints the menu path), then types each session's `ai` command into
+  its recorded pane when that pane is an idle shell, or into a new tab, staggered, and
+  prints one `restored`, `skipped` or `dead` line per session. A session that is
+  already attached is skipped rather than pulled out of the pane showing it. Off
+  unless `[iterm2.persistence.restore] enabled = true`; `--startup` is the form an
+  iTerm2 startup hook runs. See `docs/iterm2-persistence.md`.
+
+- `ai c` now requires a way to submit its auto-compact prompt. Either transport
+  satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
+  bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The
+  transport is fixed by the terminal that owns the engine process and cannot be
+  added later, so a session started without one did not fail at launch — it failed
+  hours later with a full context and no managed way to compact.
+
+  Three outcomes. A transport resolves and the launch proceeds. A transport was
+  achievable here and is not available (`[session] use_pty = false` with no tmux,
+  or a pty that will not allocate) and the launch is **refused**, naming what each
+  side failed on, above every write it would perform, so nothing is left to clean
+  up. Or no transport is implementable on the platform at all — `os.openpty` is
+  POSIX-only, so a Windows host without tmux can satisfy neither side — and the
+  launch **proceeds** with one notice naming the upgrade path. Windows is not
+  refused: a condition no in-process action can satisfy is not a guard, and what is
+  lost there is harness-*driven* compaction, not compaction itself, since the
+  engine's own auto-compact needs no terminal.
+
+  The pty carries the submission only: your terminal stays the terminal, and the
+  pty path provides no detach/reattach and no scrollback.
+
 - `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
   shorthand. It resolves the chief home from `-k/--machine-key` (default
@@ -89,6 +141,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ai c <name> -R` kept running a stale client and said it was current.** A remote
+  launch updated the remote host's ai-cli-utils but never the local checkout running
+  the launch, and the install check only compared that checkout's files with what was
+  last installed from them, so an unpulled editable checkout printed
+  `Install: editable checkout ...; current` while missing the fix it needed. A remote
+  launch now fetches `origin/main` into an editable client checkout and fast-forwards
+  it when it is clean and on `main`, then restarts on the new code. Otherwise it leaves
+  the checkout alone, says how many commits behind it is, and prints the command that
+  fixes it; a failed or timed-out fetch reads `could not check origin/main` and the
+  launch continues.
+
+- **An accidental Ctrl+Z froze an `ai c` session with no way back** (AI-CLI-y6el).
+  Claude Code stops its whole process group on Ctrl+Z and says to run `fg`, but an
+  `ai c` pane has no job-control shell to run it, so nothing typed into the pane
+  could ever resume it, and the only way out was a kill that lost every background
+  agent and shell. Each session now runs a small watchdog that continues a stopped
+  foreground group within about a second, and `ai c <n>`, `ai c -r`, `ai attach` and
+  the `ai ls` picker resume a stopped pane before attaching. A session process stopped
+  in its own terminal is now resumed instead of ended by the AI-CLI-2139
+  reclamation, which still ends a stopped process with no terminal attached. That
+  decision is made on a fresh reading of the process, so a session the watchdog has
+  just resumed is never ended on a stale one.
+
+- `ai c` no longer prunes every stale worktree registration in the repository on
+  launch. It removes only this slot's own stale entry (one git marks `prunable`,
+  whose directory is gone, at the slot's path or holding its `wt-<name>` branch),
+  so another slot's registration, with its index and HEAD, survives. An
+  unreadable worktree listing removes nothing.
+
+- `ai copier-update` no longer destroys the temp worktree a conflicted or
+  rejected run left for manual resolution. The pre-clean at the start of each
+  repo's update now removes a leftover only when it is provably disposable (a
+  clean checkout and branch at the base commit). One holding uncommitted or
+  staged changes, commits not on the base, a `MERGE_HEAD` or other in-progress
+  operation, or any state it cannot read is kept and reported as `LEFTOVER KEPT`
+  with its path and reason (exit 3). Its teardown no longer runs a repo-wide
+  `git worktree prune`.
+
+- **An auto-restarted agent could be handed a pane that turned every key into
+  escape text.** Claude Code arms SGR mouse tracking and modifyOtherKeys, and tmux
+  keeps both as pane state after the process exits. When an agent died without
+  disarming them, its replacement received mouse motion as `[<35;x;yM` text and
+  Ctrl+C as `[27;5;99~`, so the new agent could not be interrupted and the
+  double Ctrl+C exit never fired. The session now disarms those modes, restores a
+  cooked line discipline and drops the input queued while nothing read the pane,
+  before and after every agent run. (`AI-CLI-9la0`)
+- **A long-lived session stopped auto-restarting on its third agent exit ever.**
+  The "3 consecutive agent exits" breaker never reset, so exits days apart added
+  up. A run that lasted at least 60 seconds now starts a new count.
 - **`ai cx` could only ever be session 1.** Three places matched the engine
   segment of a session name with `[cgp]`, which matches the `c` of `cx-…` and
   then fails on the `x`, so the prefix stopped parsing for every Codex launch:
@@ -206,7 +307,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, and `Path("") / "ai-cli-utils"` is the **relative** path
   `ai-cli-utils`, so everything built on it resolved against the cwd. Measured
   side by side with `XDG_STATE_HOME=""`, the old code produced
-  `ai-cli-utils/remote-ps-cache.json` and the new code produces an absolute path
+  `ai-cli-utils/remote-ps-cache.json` <!-- gitignored-path-ok: named as the WRONG location the bug wrote to, not cited as evidence; nothing is meant to resolve there --> and the new code produces an absolute path
   under `$HOME`. One site made this more than misplaced clutter: the CC
   update-staging reaper *deletes* under its resolved path, so a relative base
   aimed a delete at `<cwd>/claude/staging`. All seven base-directory reads now go

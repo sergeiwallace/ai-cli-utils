@@ -1,0 +1,15 @@
+# Canonicalises this repo's author identities to its one owner (AIH-vb67z).
+#
+# The fleet's remote-branch sweep refuses to delete a branch whose recent commits carry an
+# author other than the configured user.email, and it reads authors through this file (%aE).
+# The first two addresses are Sergei's own: his older GitHub noreply form and his work address.
+#
+# t@t.com and test@test.com are a leaked test-fixture git identity that authored real commits
+# on this repo's own main through his tooling (577 + 122 as of 2026-10-10, the last on
+# 2026-09-27); the commit-identity pre-commit hook now blocks new ones. History is deliberately
+# not rewritten: those commits are pushed and are the base of many branches. renovate[bot] is
+# NOT mapped (decision on AIH-vb67z): its branches keep the foreign-author refusal.
+sergeiwallace <6564880+sergeiwallace@users.noreply.github.com> <sergeiwallace@users.noreply.github.com>
+sergeiwallace <6564880+sergeiwallace@users.noreply.github.com> <sergei.wallace@bms.com>
+sergeiwallace <6564880+sergeiwallace@users.noreply.github.com> <t@t.com>
+sergeiwallace <6564880+sergeiwallace@users.noreply.github.com> <test@test.com>

@@ -45,6 +45,8 @@ The tool installs as a single `ai` command. There is no server component — all
 | File | Description |
 |------|-------------|
 | `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
+| `output.py` | The one terminal-output interface: `emit(tag, message)` requires a `Tag` enum member and prefixes every line `[<tag>] `; `warning`/`error`, tagged prompts, `run_relayed` for child-process output, and `raw(Untagged.<reason>, ...)` for the named machine-readable exceptions. Owns TTY / `NO_COLOR` styling |
+| `launch_reporter.py` | The launch phase grammar (`[launch] Phase: outcome`, heartbeats, elapsed, `Ready:` handoff), written through `output` under `Tag.LAUNCH` |
 | `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `myproject.toml`) |
 | `direnv_setup.py` | Portable checks and approval helpers for project `.envrc` files |
 | `git_repair.py` | Detects and repairs missing tracked symlinks, phantom deletions, and bare-worktree configuration |
@@ -54,7 +56,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
 | `process_manager.py` | Circus daemon bootstrap and quota-watch lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
-| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals |
+| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals; its Ctrl+Z watchdog (`SUSPEND_WATCHDOG_SNIPPET`) continues a stopped pane foreground group, since the pane has no job-control shell to run `fg` |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
@@ -74,6 +76,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `session_adopt.py` | Adopts an externally started Claude Code session into a managed session slot |
 | `session_audit.py` | Surveys titled Claude Code sessions and identifies sessions that cannot be resumed by `ai c` |
 | `stale_session_reaper.py` | Fail-closed stale tmux session evaluation and explicit reaping |
+| `suspended_session.py` | Launcher-side resume of a session Ctrl+Z left stopped: continues a pane foreground group before re-attach, and tells a process suspended in its own terminal (resumed) from AI-CLI-2139's abandoned one (reclaimed) |
 | `trust.py` | Claude Code workspace-trust registration and backfill |
 | `workspace.py` | Workspace-wide git pull/rebase operations across repositories and worktrees |
 | `data/statusline-command.sh` | Shell script deployed by `ai update`; called by the iTerm2 statusline |
@@ -212,6 +215,8 @@ Note that `git worktree add -b <branch> <remote-tracking-ref>` attaches an upstr
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 
 **Cursor-based CC token tracking** — `cc_usage.py` tracks last-seen `occurred_at` per session UUID in `cc-usage-cursor.json`. Only entries newer than the cursor are pushed. Idempotent: core-cli ingest deduplicates by `event_id`.
+
+**Every output line is tagged, by construction** — all terminal output goes through `output.py`. A line cannot be emitted without a `Tag` member (refused at runtime with `TypeError`), child processes run on the launch path are captured and relayed under their own tag, and `tests/test_output_enforcement.py` AST-scans the package for any other route to the terminal (`print`, `click.echo`, `sys.stdout`/`sys.stderr` writes, prompting `input()`, inherited child output). Its allowlists are named in the test: `output.py`, the launch-log stderr mirror, and the interactive ssh/mosh/`sudo -v` handoffs. Plan: `docs/plans/tagged-output-enforcement-plan.md`.
 
 **Click command group dispatch** — command routing uses a `@click.group()` tree. `ai internal` is kept as a pre-Click fast path for bash hook performance (avoids Click startup overhead). Migrated from `if sys.argv[1] == ...` argparse hybrid in AI-CLI-39/47.
 

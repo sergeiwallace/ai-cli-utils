@@ -171,7 +171,8 @@ def write_registration(
     # ``isinstance`` guard applies to the value actually used.
     stored_routes = registry.get("chief_routes")
     routes: dict = stored_routes if isinstance(stored_routes, dict) else {}
-    session = f"{machine_name}/{native_agent_name}"
+    # <session>@<host>: the only session identifier ai-harness accepts.
+    session = f"{native_agent_name}@{machine_name}"
     registry.update(
         {
             "schema_version": REGISTRY_SCHEMA_VERSION,

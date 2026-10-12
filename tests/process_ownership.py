@@ -41,6 +41,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Iterator
+from time import monotonic, sleep
 from typing import Any
 
 import psutil
@@ -87,8 +88,21 @@ def spawn_owned_sleeper(seconds: int = OWNED_PROCESS_LIFETIME, *extra_argv: str)
 
     *extra_argv* lands in the child's ``sys.argv``, for tests that classify a
     process by its command line rather than by what it does.
+
+    Returns only once that command line is readable. On Linux ``Popen`` returns
+    when ``execve`` passes its point of no return, before the kernel has set the
+    new image's argument range, so ``/proc/<pid>/cmdline`` can still read empty.
     """
-    return spawn_owned_python(f"import time; time.sleep({seconds})", *extra_argv)
+    proc = spawn_owned_python(f"import time; time.sleep({seconds})", *extra_argv)
+    deadline = monotonic() + _REAP_TIMEOUT
+    while monotonic() < deadline:
+        try:
+            if psutil.Process(proc.pid).cmdline():
+                break
+        except psutil.Error:
+            break
+        sleep(0.01)
+    return proc
 
 
 def _reap_windows(proc: subprocess.Popen) -> None:

@@ -15,7 +15,6 @@ import re
 import secrets
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,12 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from . import output as _out
+from .output import Tag, Untagged
 from .tmux_ownership import capture_tmux_session_identity, kill_owned_tmux_session
 
 # Windows cp1252 cannot encode the emoji used in statusline output (📊, ✅, etc.).
 # Reconfigure stdout to UTF-8 with replacement on errors so emoji never crashes the process.
-if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+_out.utf8_stdout_on_windows()
 
 __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
 
@@ -468,10 +468,7 @@ def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
     if removed:
         # Surfaced, not silent: the */10 cron redirects to ~/.local/log/quota-scrape.log, so
         # a recurring leak shows up there rather than only as a full disk.
-        print(
-            f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}",
-            file=sys.stderr,
-        )
+        _out.emit(Tag.QUOTA, f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}", err=True)
     return removed
 
 
@@ -750,7 +747,7 @@ def quota_watch(poll_interval: int = 300) -> int:
     thresholds = [50, 75, 90]
     alerted_today: dict[int, str] = {}
 
-    print(f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
+    _out.emit(Tag.QUOTA, f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
 
     # Start background NATS listener for on-demand scrape requests + heartbeat.
     stop_event = threading.Event()
@@ -785,9 +782,9 @@ def quota_watch(poll_interval: int = 300) -> int:
                             try:
                                 loop.run_until_complete(client.publish(subject, payload))
                             except Exception as e:
-                                print(f"[quota-watch] failed to publish: {e}", file=sys.stderr)
+                                _out.emit(Tag.QUOTA_WATCH, f"failed to publish: {e}", err=True)
                         alerted_today[threshold] = today
-                        print(f"[quota-watch] threshold {threshold}% crossed (usage: {usage:.1f}%)")
+                        _out.emit(Tag.QUOTA_WATCH, f"threshold {threshold}% crossed (usage: {usage:.1f}%)")
                         _notify_threshold(notifier, threshold, snapshot)
 
             time.sleep(poll_interval)
@@ -891,7 +888,7 @@ def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) ->
     try:
         notifier.send(title, body, priority=priority, tags=tags, source="quota-watch")
     except Exception as exc:
-        print(f"[quota-watch] notification failed: {exc}", file=sys.stderr)
+        _out.emit(Tag.QUOTA_WATCH, f"notification failed: {exc}", err=True)
 
 
 def _print_mismatch_warning() -> None:
@@ -902,11 +899,12 @@ def _print_mismatch_warning() -> None:
         count = _get_quota_meta("scrape_format_mismatch_count")
         at = _get_quota_meta("scrape_format_mismatch_at")
         if count and int(count) > 0:
-            print(
+            _out.emit(
+                Tag.QUOTA,
                 f"\n⚠  Scrape parse failure — CC /usage format may have changed.\n"
                 f"   Raw output saved to: {_SCRAPE_DEBUG_PATH}\n"
                 f"   Last failure: {at or 'unknown'}",
-                file=sys.stderr,
+                err=True,
             )
     except Exception:
         pass
@@ -921,24 +919,24 @@ def quota_status() -> int:
     if snap:
         pct = snap.get("usage_percent", 0)
         ts = snap.get("snapshotted_at", "?")
-        print(f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
+        _out.emit(Tag.QUOTA, f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
     else:
-        print("Quota: no snapshots yet")
+        _out.emit(Tag.QUOTA, "Quota: no snapshots yet")
 
     burn = data.get("burn_rate", {})
     if burn and burn.get("expected_pct_per_day", 0) > 0:
         actual = burn.get("actual_pct_per_day", 0)
         expected = burn.get("expected_pct_per_day", 0)
         mult = burn.get("multiplier", 0)
-        print(f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)")
+        _out.emit(Tag.QUOTA, f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)")
 
     days = data.get("days_remaining")
     if days is not None:
-        print(f"Days to reset: {days:.1f}")
+        _out.emit(Tag.QUOTA, f"Days to reset: {days:.1f}")
 
     alerts = data.get("alerts", [])
     for alert in alerts:
-        print(f"  {alert}")
+        _out.emit(Tag.QUOTA, f"  {alert}")
 
     _print_mismatch_warning()
     return 0
@@ -950,15 +948,16 @@ def quota_history() -> int:
 
     history = get_weekly_history()
     if not history:
-        print("No history yet.")
+        _out.emit(Tag.QUOTA, "No history yet.")
         return 0
 
-    print(f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
-    print("-" * 58)
+    _out.emit(Tag.QUOTA, f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
+    _out.emit(Tag.QUOTA, "-" * 58)
     for week in history:
-        print(
+        _out.emit(
+            Tag.QUOTA,
             f"{week['week_start']:24} {week.get('peak_percent', 0):7.1f}% "
-            f"{week.get('total_consumed', 0):12,} {week.get('snapshot_count', 0):10}"
+            f"{week.get('total_consumed', 0):12,} {week.get('snapshot_count', 0):10}",
         )
     return 0
 
@@ -1143,23 +1142,23 @@ def quota_scrape() -> int:
     try:
         missing = [binary for binary in ("tmux", "claude") if shutil.which(binary) is None]
         if missing:
-            print(f"quota scrape: required binary not found: {', '.join(missing)}", file=sys.stderr)
+            _out.emit(Tag.QUOTA, f"quota scrape: required binary not found: {', '.join(missing)}", err=True)
             return EX_CONFIG
 
-        print("Scraping /usage from Claude Code session (hidden tmux window)...")
+        _out.emit(Tag.QUOTA, "Scraping /usage from Claude Code session (hidden tmux window)...")
         global _last_scrape_had_format_mismatch
         _last_scrape_had_format_mismatch = False
         snapshot = _scrape_usage_hidden_pane()
         if snapshot is None:
-            print("Could not extract usage percentage.", file=sys.stderr)
+            _out.emit(Tag.QUOTA, "Could not extract usage percentage.", err=True)
             return EX_CONFIG if _last_scrape_had_format_mismatch else EX_TEMPFAIL
 
-        print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
+        scraped = f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%"
         if snapshot.weekly_sonnet_pct is not None:
-            print(f", {snapshot.weekly_model_name or 'Sonnet'} {snapshot.weekly_sonnet_pct:.1f}%", end="")
+            scraped += f", {snapshot.weekly_model_name or 'Sonnet'} {snapshot.weekly_sonnet_pct:.1f}%"
         if snapshot.session_pct is not None:
-            print(f", session {snapshot.session_pct:.1f}%", end="")
-        print()
+            scraped += f", session {snapshot.session_pct:.1f}%"
+        _out.emit(Tag.QUOTA, scraped)
 
         record_quota_snapshot(
             usage_percent=snapshot.weekly_all_models_pct,
@@ -1169,7 +1168,7 @@ def quota_scrape() -> int:
             extra_pct=snapshot.extra_pct,
             reset_at=snapshot.reset_at,
         )
-        print("Stored snapshot in local quota DB.")
+        _out.emit(Tag.QUOTA, "Stored snapshot in local quota DB.")
         _publish_quota_snapshot(snapshot)
         _print_mismatch_warning()
         return 0
@@ -1202,11 +1201,11 @@ def quota_sync_from_remote() -> int:
         port = str(remote.get("port", 22))
         identity = remote.get("identity_file", "")
     except Exception as exc:
-        print(f"quota sync: could not load config: {exc}", file=sys.stderr)
+        _out.emit(Tag.QUOTA, f"quota sync: could not load config: {exc}", err=True)
         return EX_CONFIG
 
     if not host or not user:
-        print("quota sync: no remote host configured in [remote]", file=sys.stderr)
+        _out.emit(Tag.QUOTA, "quota sync: no remote host configured in [remote]", err=True)
         return EX_CONFIG
 
     sql = (
@@ -1226,11 +1225,11 @@ def quota_sync_from_remote() -> int:
     try:
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15, check=False)
     except Exception as exc:
-        print(f"quota sync: SSH failed: {exc}", file=sys.stderr)
+        _out.emit(Tag.QUOTA, f"quota sync: SSH failed: {exc}", err=True)
         return EX_TEMPFAIL
 
     if result.returncode != 0:
-        print(f"quota sync: remote command failed: {result.stderr.strip()}", file=sys.stderr)
+        _out.emit(Tag.QUOTA, f"quota sync: remote command failed: {result.stderr.strip()}", err=True)
         return EX_TEMPFAIL
 
     rows = []
@@ -1250,7 +1249,7 @@ def quota_sync_from_remote() -> int:
                 )
 
     if not rows:
-        print("quota sync: no snapshots on remote (or remote DB empty).")
+        _out.emit(Tag.QUOTA, "quota sync: no snapshots on remote (or remote DB empty).")
         return 0
 
     conn = _get_conn()
@@ -1276,9 +1275,9 @@ def quota_sync_from_remote() -> int:
             ],
         )
         conn.commit()
-        print(f"quota sync: pulled {len(new_rows)} new snapshot(s) from remote.")
+        _out.emit(Tag.QUOTA, f"quota sync: pulled {len(new_rows)} new snapshot(s) from remote.")
     else:
-        print("quota sync: already up to date.")
+        _out.emit(Tag.QUOTA, "quota sync: already up to date.")
 
     conn.close()
     return 0
@@ -1419,7 +1418,7 @@ def _check_scrape_mismatch_prefix() -> None:
 
         count = _get_quota_meta("scrape_format_mismatch_count")
         if count and int(count) > 0:
-            sys.stdout.write(_SCRAPER_BROKEN_PREFIX)
+            _out.raw(Untagged.STATUSLINE, _SCRAPER_BROKEN_PREFIX, nl=False)
     except Exception:
         pass
 
@@ -1556,7 +1555,7 @@ def quota_statusline_part() -> int:
     if segment_name:
         rendered = _render_env_statusline_segment(segment_name)
         if rendered:
-            print(rendered)
+            _out.raw(Untagged.STATUSLINE, rendered)
         return 0
 
     _check_scrape_mismatch_prefix()
@@ -1625,7 +1624,7 @@ def quota_statusline_part() -> int:
             _launch_background_scrape()
             DIM = "\033[2m"
             RESET = "\033[0m"
-            print(f"\U0001f4ca {DIM}-{RESET}")  # 📊 -
+            _out.raw(Untagged.STATUSLINE, f"\U0001f4ca {DIM}-{RESET}")  # 📊 -
             return 0
 
         usage_pct = rows[0]["usage_percent"]
@@ -1658,7 +1657,10 @@ def quota_statusline_part() -> int:
         segment = QuotaStatuslineSegment(CLAUDE_WEEKLY_QUOTA)
         elapsed_secs = max(now.timestamp() - (reset_epoch - CLAUDE_WEEKLY_QUOTA.window_seconds), 0.0)
         seedling_suffix = " \U0001f331" if elapsed_secs < 24 * 3600 else ""
-        print(segment.render(usage_pct, reset_epoch, now.timestamp(), arrow_char) + seedling_suffix + stale_suffix)
+        _out.raw(
+            Untagged.STATUSLINE,
+            segment.render(usage_pct, reset_epoch, now.timestamp(), arrow_char) + seedling_suffix + stale_suffix,
+        )
     except Exception:
         pass
     return 0

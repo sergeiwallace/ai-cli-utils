@@ -16,6 +16,9 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
+from . import output as _out
+from .output import Tag
+
 TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 _OS_TYPE_MAP = {
@@ -162,18 +165,19 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
         lines.extend(additions)
 
     _write_secure_config(config_path, "".join(lines))
-    print(
+    _out.emit(
+        Tag.CONFIG,
         f"Machine profile registered: {profile['host_id']} ({profile['os_type']}) from {profile['host_id_source']}",
-        file=sys.stderr,
+        err=True,
     )
     if "host_id" in missing and profile["host_id_source"] == HOST_ID_SOURCE_HOSTNAME:
-        print(
-            f"warning: nothing identified this machine, so its {HOST_ID_SOURCE_HOSTNAME} "
+        _out.warning(
+            Tag.CONFIG,
+            f"nothing identified this machine, so its {HOST_ID_SOURCE_HOSTNAME} "
             f"{profile['host_id']!r} was recorded as the durable host_id. AI_HOST is unset and "
             f"{MACHINE_MARKER_FILE} is absent or empty. On a cloud host a hostname names a lease "
             f"rather than a machine, and this value is not re-detected: set [machine] host_id in "
             f"{config_path} if it is wrong.",
-            file=sys.stderr,
         )
     return True
 
@@ -351,6 +355,15 @@ stale_session_timeout = 15
 ## sessions surviving a dropped SSH connection, and remote access from another
 ## device. If you only run sessions in a local terminal, false is fine.
 # use_tmux = true
+## Allow a harness-owned pty to carry the auto-compact prompt injection on the bare
+## paths? Default true. A session's submission transport is fixed by the terminal
+## that owns it and cannot be added later, so `ai c` requires EITHER tmux or a pty
+## and refuses at launch when it can get neither. Setting this false makes tmux the
+## only accepted transport: every bare launch is then refused rather than started
+## without a way to compact. The pty carries the submission only -- your own
+## terminal stays the terminal, and the pty path gives you no detach/reattach and no
+## scrollback (install tmux for those).
+# use_pty = true
 
 [stale_session_reaper]
 ## The independently started reaper evaluates candidates in observe mode by default.
@@ -394,6 +407,9 @@ stale_after_seconds = 600
 # reconnect_attempts = 10
 ## Seconds before the first reattach; doubles per attempt, capped at 30s.
 # reconnect_backoff = 2
+## A connection that stayed up this many seconds was working, so the drop that ends it starts
+## a fresh attempt budget: the budget bounds one outage, not the life of the session.
+# reconnect_stable_seconds = 300
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.
@@ -494,7 +510,7 @@ def load_config():
         with config_path.open("rb") as f:
             cfg = tomllib.load(f)
     except Exception as e:
-        print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
+        _out.warning(Tag.CONFIG, f"Failed to load config from {config_path}: {e}")
         return {}
 
     if ensure_machine_profile_registered(config_path, cfg):
@@ -518,6 +534,17 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
     machine. New configurations use ``[remote.machines.<alias>]`` and select a
     default with ``[remote] default``.
     """
+    selected = resolve_remote_machine_alias(config, alias)
+    remote = config.get("remote", {})
+    return remote["machines"][selected] if selected else remote
+
+
+def resolve_remote_machine_alias(config: dict, alias: str = "") -> str:
+    """Return the ``[remote.machines]`` alias a launch with *alias* selects.
+
+    Returns "" for a legacy flat ``[remote]`` table, which has no alias. Raises
+    :class:`RemoteMachineError` exactly when :func:`get_remote_machine` would.
+    """
     remote = config.get("remote", {})
     if not isinstance(remote, dict):
         raise RemoteMachineError("[remote] must be a table")
@@ -528,7 +555,7 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
             raise RemoteMachineError(
                 f"Remote machine '{alias}' is not configured. Configured aliases: none (legacy [remote] is the default)"
             )
-        return remote
+        return ""
     if not isinstance(machines, dict):
         raise RemoteMachineError("[remote.machines] must be a table")
 
@@ -542,7 +569,7 @@ def get_remote_machine(config: dict, alias: str = "") -> dict:
             raise RemoteMachineError(f"No default remote machine is configured. Configured aliases: {available}")
     if not isinstance(selected, str) or selected not in machines or not isinstance(machines[selected], dict):
         raise RemoteMachineError(f"Remote machine '{selected}' is not configured. Configured aliases: {available}")
-    return machines[selected]
+    return selected
 
 
 # --- Prefix registry ---
@@ -928,8 +955,8 @@ def _can_prompt() -> bool:
 def _prompt_and_persist_prefix(root: Path) -> str:
     """Last tier — ask for the missing prefix, persist it, and continue."""
     target, writer = _registry_write_target()
-    answer = input(
-        f"No task prefix is registered for {root.name} ({root}).\nTask prefix to register in {target}: "
+    answer = _out.ask(
+        Tag.CONFIG, f"No task prefix is registered for {root.name} ({root}).\nTask prefix to register in {target}:"
     ).strip()
     if not answer:
         raise ProjectPrefixError(
@@ -937,7 +964,7 @@ def _prompt_and_persist_prefix(root: Path) -> str:
         )
     prefix = validate_task_prefix(answer)
     writer(target, root, prefix)
-    print(f'Registered "{root.name}" with prefix "{prefix}" in {target}')
+    _out.emit(Tag.CONFIG, f'Registered "{root.name}" with prefix "{prefix}" in {target}')
     return prefix
 
 
@@ -1142,15 +1169,15 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         name = p.get("name", "")
         prefix = p.get("task_prefix", "")
         if not name or not prefix:
-            print(f"Error: project registry entry missing name or task_prefix: {p}", file=sys.stderr)
+            _out.error(Tag.CONFIG, f"project registry entry missing name or task_prefix: {p}")
             sys.exit(1)
         name_lower = name.lower()
         prefix_lower = prefix.lower()
         if name_lower in names_seen:
-            print(f"Error: duplicate project name in registry: {name}", file=sys.stderr)
+            _out.error(Tag.CONFIG, f"duplicate project name in registry: {name}")
             sys.exit(1)
         if prefix_lower in prefixes_seen:
-            print(f"Error: duplicate task_prefix in registry: {prefix}", file=sys.stderr)
+            _out.error(Tag.CONFIG, f"duplicate task_prefix in registry: {prefix}")
             sys.exit(1)
         names_seen.add(name_lower)
         prefixes_seen.add(prefix_lower)
@@ -1190,7 +1217,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
         return True
 
     if not interactive:
-        print(f"Error: unregistered project directories: {', '.join(d.name for d in unregistered)}", file=sys.stderr)
+        _out.error(Tag.CONFIG, f"unregistered project directories: {', '.join(d.name for d in unregistered)}")
         return False
 
     registry_path = _get_project_registry_path()
@@ -1200,17 +1227,18 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
         name = project_path.name
         suggested_prefix = name.upper().replace("-", "_")[:8]
         try:
-            answer = input(
+            answer = _out.ask(
+                Tag.CONFIG,
                 f'Unregistered project: "{name}" (~/{projects_dir.name}/{name})\n'
                 f"Suggested task_prefix: {suggested_prefix}\n"
-                f"Add to registry? [Y/n, or enter custom prefix]: "
+                f"Add to registry? [Y/n, or enter custom prefix]:",
             ).strip()
         except EOFError:
-            print("\nRegistry incomplete — exiting.", file=sys.stderr)
+            _out.emit(Tag.CONFIG, "\nRegistry incomplete — exiting.", err=True)
             return False
 
         if answer.lower() == "n":
-            print("Registry incomplete — exiting. All projects must be registered.", file=sys.stderr)
+            _out.emit(Tag.CONFIG, "Registry incomplete — exiting. All projects must be registered.", err=True)
             return False
 
         prefix = answer if answer and answer.lower() != "y" else suggested_prefix
@@ -1226,7 +1254,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
                 f'task_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
             )
     for name, _project_path, prefix in entries:
-        print(f'Registered "{name}" with prefix "{prefix}"')
+        _out.emit(Tag.CONFIG, f'Registered "{name}" with prefix "{prefix}"')
 
     # Force reload after registration
     global _registry_cache
@@ -1325,3 +1353,25 @@ def get_project_aliases() -> dict:
         add(p.get("task_prefix", "").lower(), p.get("name", ""))
 
     return aliases
+
+
+def registered_project_names() -> dict[str, str]:
+    """Map every registered task prefix (lowercased) to the project name ``-p`` accepts for it.
+
+    Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
+    and includes the root-keyed ``[project_registry]`` table (keyed by the root's
+    directory name, which is what ``resolve_project_prefix_by_name`` matches there).
+    Tier order matches that resolver: the first registry naming a prefix wins. Raises
+    :class:`ProjectPrefixError` when a registry cannot be read.
+    """
+    names: dict[str, str] = {}
+    fleet_path = get_fleet_registry_path()
+    if fleet_path is not None and fleet_path.is_file():
+        for entry in _projects_table_entries(fleet_path).values():
+            names.setdefault(entry["prefix"].lower(), entry["name"])
+    for p in load_project_registry():
+        if p.get("task_prefix") and p.get("name"):
+            names.setdefault(str(p["task_prefix"]).lower(), str(p["name"]))
+    for root, entry in _registry_entries().items():
+        names.setdefault(entry["prefix"].lower(), Path(root).name)
+    return names

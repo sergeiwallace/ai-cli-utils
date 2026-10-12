@@ -54,6 +54,60 @@ PROMOTE_CHILD_SNIPPET = (
     "os.killpg(pgid, signal.SIGCONT)"
 )
 
+# The child body's Ctrl+Z watchdog, run as `python3 -c SUSPEND_WATCHDOG_SNIPPET <child-body-pid>` (AI-CLI-y6el).
+#
+# Claude Code reads Ctrl+Z in raw mode, restores the terminal, prints "Run `fg` to bring Claude Code
+# back", and sends SIGTSTP to its own process group. Here that group is the pane's terminal foreground
+# group: this child body, its watcher, the agent and every MCP server, all of which stop. Nothing in
+# the pane has job control (the supervisor is a non-interactive `set +m` shell, and `wait` in such a
+# shell does not return for a stopped child), so `fg` is only text echoed into a line buffer no
+# running process reads. Measured: the only way out was to kill the session, losing every background
+# agent and shell it owned.
+#
+# So the stop is undone from outside the stopped group: once a second, if the terminal's foreground
+# group is stopped, continue it. Claude Code repaints on SIGCONT. The watchdog moves itself into its
+# own process group first, or the same SIGTSTP would stop it too, and stays in this session, because
+# tcgetpgrp only answers for the caller's own controlling terminal (so it opens /dev/tty, never the
+# stdin zsh may have redirected). It ends with its owner, checked by pid rather than parentage: where
+# `python3` is a `uv run` shim the parent is uv, not the child body.
+#
+# It must not contain a single quote: the template wraps it in one.
+SUSPEND_WATCHDOG_SNIPPET = """\
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+os.setpgid(0, 0)
+owner = int(sys.argv[1])
+procfs = os.path.exists("/proc/self/stat")
+def state(pid):
+    if procfs:
+        try:
+            with open("/proc/%d/stat" % pid, "rb") as stat:
+                return stat.read().rpartition(b")")[2].split()[0].decode()
+        except (OSError, IndexError):
+            return None
+    return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()[:1]
+try:
+    tty = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+except OSError:
+    sys.exit(0)
+while True:
+    try:
+        os.kill(owner, 0)
+        group = os.tcgetpgrp(tty)
+    except OSError:
+        break
+    if group > 0 and group != os.getpgrp() and state(group) == "T":
+        try:
+            os.killpg(group, signal.SIGCONT)
+        except OSError:
+            pass
+        else:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            sys.stderr.write("[session] resumed process group %d, which Ctrl+Z had stopped (%s)\\n" % (group, stamp))
+            sys.stderr.flush()
+    time.sleep(1)
+"""
+
 
 def resolve_session_shell() -> str | None:
     """Absolute path of the shell that should interpret the session script.
@@ -231,7 +285,14 @@ def get_engine_script(
         exec 3>&2
         exec 2> >(while IFS= read -r _ai_log_line; do
           printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_log_line" >> "$_ai_launch_log"
-          printf '%s\n' "$_ai_log_line" >&3
+          # Relay, never pass through: a child line that carries no tag gets [session].
+          # No `case` here: bash 3.2 (macOS /bin/bash) ends a process substitution at
+          # the first unparenthesized case-pattern `)`, so the whole script fails to parse.
+          if [[ "$_ai_log_line" == "["*"] "* ]]; then
+            printf '%s\n' "$_ai_log_line" >&3
+          elif [[ -n "$_ai_log_line" ]]; then
+            printf '[session] %s\n' "$_ai_log_line" >&3
+          fi
         done)
       fi
       # These descriptors belong only to the supervisor that exported them.
@@ -289,7 +350,7 @@ def get_engine_script(
         _supervisor_signal_model_verified=true
       else
         _supervisor_signal_model_verified=false
-        printf '%s\\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+        printf '%s\\n' "[session] stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
       fi
       if [[ -n "$generation_token" ]]; then
         _supervisor_tmux_session_id=$(tmux display-message -p '#{{session_id}}' 2>/dev/null || true)
@@ -317,7 +378,7 @@ def get_engine_script(
           export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"
         else
           _supervisor_signal_model_reason="generation lease backend unavailable"
-          printf '%s\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+          printf '%s\n' "[session] stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
         fi
       fi
       _heartbeat_pid=""
@@ -460,11 +521,11 @@ def get_engine_script(
         _promotion_status=$?
         if (( _promotion_status != 0 )); then
           if (( _promotion_status == 2 )); then
-            printf '%s\n' "ai-cli: interrupted before the session shell reached the terminal foreground" >&2
+            printf '%s\n' "[session] interrupted before the session shell reached the terminal foreground" >&2
           elif [[ -n "${{_child_pgid:-}}" ]]; then
-            printf '%s\n' "ai-cli: could not promote the session shell's process group $_child_pgid to the terminal foreground" >&2
+            printf '%s\n' "[session] could not promote the session shell's process group $_child_pgid to the terminal foreground" >&2
           else
-            printf '%s\n' "ai-cli: the session shell never reported a process group, so it was never promoted to the terminal foreground" >&2
+            printf '%s\n' "[session] the session shell never reported a process group, so it was never promoted to the terminal foreground" >&2
           fi
           # The child wrapper SIGSTOPs itself waiting for this promotion to
           # succeed. A stopped process only records a SIGTERM as pending; it
@@ -507,10 +568,10 @@ def get_engine_script(
       if $_supervisor_tmux_ownership_established; then
         _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
         if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
-          printf '%s\n' "ai-cli: refusing to kill tmux session: ownership fence mismatch" >&2
+          printf '%s\n' "[session] refusing to kill tmux session: ownership fence mismatch" >&2
         fi
       else
-        printf '%s\n' "ai-cli: skipping tmux session cleanup because supervisor ownership was not established" >&2
+        printf '%s\n' "[session] skipping tmux session cleanup because supervisor ownership was not established" >&2
       fi
       exit 0
     fi
@@ -588,9 +649,25 @@ def get_engine_script(
       fi
       _child_int_deadline=$((_child_int_now + 3))
       printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
-      printf '%s\n' "ai-cli: Ctrl+C again within 3s to exit" >&2
+      printf '%s\n' "[session] Ctrl+C again within 3s to exit" >&2
     }}
     trap '_child_record_int' INT
+    # Input modes an agent arms (SGR mouse tracking, modifyOtherKeys, the kitty
+    # keyboard stack, bracketed paste, focus events) are PANE state in tmux and
+    # outlive the process that armed them. An agent that dies without disarming
+    # them, along with a raw-mode line discipline, hands the pane to its
+    # replacement in that state: mouse motion arrives as `CSI < 35;x;y M` text and
+    # Ctrl+C as `CSI 27;5;99 ~` bytes instead of SIGINT, so neither the new agent
+    # nor this wrapper's double Ctrl+C exit can be reached (AI-CLI-9la0). Reset on
+    # both sides of every agent, then drop the reports already queued.
+    _reset_agent_terminal() {{
+      [[ -t 0 ]] || return 0
+      if [[ -t 1 ]]; then
+        printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1005l\\033[?1006l\\033[?1015l\\033[>4m\\033[<u\\033[?2004l\\033[?1004l\\033[?1049l\\033[?25h'
+      fi
+      stty sane 2>/dev/null || true
+      python3 -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
+    }}
     run_agent() {{
       agent_attempted=true
       if ! $agent_direnv_initialized; then
@@ -604,7 +681,7 @@ def get_engine_script(
           if _direnv_exports="$(direnv export bash)"; then
             eval "$_direnv_exports"
           else
-            echo "Warning: direnv could not load $direnv_root/.envrc — starting without the project environment." >&2
+            echo "[session] Warning: direnv could not load $direnv_root/.envrc — starting without the project environment." >&2
           fi
         fi
       fi
@@ -616,6 +693,7 @@ def get_engine_script(
       # reopening the controlling terminal works for both while preserving the
       # background PID used for signal forwarding. Prefer the resolved device:
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
+      _reset_agent_terminal
       if [[ -t 0 && -r /dev/tty ]]; then
         _agent_tty=$(tty 2>/dev/null)
         if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
@@ -630,6 +708,7 @@ def get_engine_script(
       wait "$active_agent_pid"
       agent_exit_code=$?
       active_agent_pid=""
+      _reset_agent_terminal
       if [[ -f "$_child_int_exit_file" ]]; then
         exit 77
       fi
@@ -831,10 +910,10 @@ def get_engine_script(
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
         sym="▶"
         case "$_st" in
-          done)     sym="✓" ;;
-          error)    sym="✗" ;;
-          resuming) sym="↻" ;;
-          waiting)  sym="⏸" ;;
+          (done)     sym="✓" ;;
+          (error)    sym="✗" ;;
+          (resuming) sym="↻" ;;
+          (waiting)  sym="⏸" ;;
         esac
         sym="$sym "
       fi
@@ -866,7 +945,15 @@ def get_engine_script(
     # (bash treats it as a harmless error). `2>/dev/null` hid the message and did
     # nothing about the signal. watcher_pid is legitimately empty both before a
     # watcher starts and after the branch above stops one and resets it.
-    trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    _suspend_watchdog_pid=""
+    trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
+    # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
+    # reload carries it into a running session at its next agent restart.
+    if [[ -t 0 ]]; then
+      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
+      _suspend_watchdog_pid=$!
+    fi
 
     agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do
@@ -893,7 +980,7 @@ def get_engine_script(
         # Fail CLOSED: an unknown mtime on either side means "do not reload".
         # Reading an unmeasurable probe as "changed" is what looped forever.
         if [[ -n "$_cur_mtime" && -n "$_script_start_mtime" && "$_cur_mtime" != "$_script_start_mtime" ]]; then
-          echo "ai-cli session script updated — reloading..."
+          echo "[session] session script updated — reloading..."
           exit 78
         fi
       fi
@@ -1019,12 +1106,20 @@ with open(path, 'w') as f:
         # supervisor is cycling instead of hosting an interactive session. The
         # supervisor starts each replacement in a fresh shell, so retain the
         # count in its per-session state directory rather than a shell variable.
+        # A run that outlived the healthy window was a working session, not a
+        # failed start, so its exit begins a new sequence; without this the
+        # count spanned the supervisor's whole life and a days-old session
+        # stopped restarting on its third exit ever.
         agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
         [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
+        _healthy_agent_seconds=60
+        if (( $(date +%s) - start_ts >= _healthy_agent_seconds )); then
+          agent_exit_count=0
+        fi
         agent_exit_count=$((agent_exit_count + 1))
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then
-          echo "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+          echo "[session] AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
           break
         fi
       fi
@@ -1054,7 +1149,7 @@ with open(path, 'w') as f:
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+        echo "[session] AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
@@ -1076,7 +1171,7 @@ with open(path, 'w') as f:
         _need_reload=true
       fi
       if $_need_reload; then
-        echo "ai-cli updated — reloading session template..."
+        echo "[session] ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
           exit 78
@@ -1086,7 +1181,7 @@ with open(path, 'w') as f:
         else
           # Do NOT advance _template_version/_template_commit on failure — a transient
           # refresh error must not permanently disable self-update. Retry next restart.
-          echo "Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
+          echo "[session] Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
         fi
       fi
       # The persistent supervisor, not this replaceable child, owns restarts.
@@ -1095,5 +1190,5 @@ with open(path, 'w') as f:
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
+    {('echo "[session] Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
     """

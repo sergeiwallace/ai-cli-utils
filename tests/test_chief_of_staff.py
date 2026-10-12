@@ -96,12 +96,12 @@ class TestRegistration:
         assert on_disk == registration
         assert on_disk["native_agent_name"] == "myproject-cos-1"
         assert on_disk["tmux_target"] == "c-myproject-cos-1"
-        assert on_disk["session"] == "workstation/myproject-cos-1"
+        assert on_disk["session"] == "myproject-cos-1@workstation"
         assert on_disk["registered_at"] == "2026-09-26T12:00:00Z"
         assert on_disk["chief_generation"] == 1
         registry = json.loads(cos.registry_path(seeded_home).read_text())
         assert registry["schema_version"] == 2
-        assert registry["chief_of_staff_session"] == "workstation/myproject-cos-1"
+        assert registry["chief_of_staff_session"] == "myproject-cos-1@workstation"
         assert registry["chief_routes"]["native_agent_name"] == "myproject-cos-1"
         assert registry["chief_routes"]["route_revision"] == 1
         assert registry["chief_instance_key"] == "firstmate-chief/machine-key-1"

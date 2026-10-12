@@ -9,12 +9,14 @@ Linux-only (inotify via watchdog). macOS support is tracked separately.
 
 import asyncio
 import os
-import sys
 import time
 from pathlib import Path
 
 from watchdog.events import FileModifiedEvent, FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+
+from . import output as _out
+from .output import Tag
 
 
 class MemoryFileHandler(FileSystemEventHandler):
@@ -78,7 +80,7 @@ def memory_watch() -> int:
     from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
 
     if not _acquire_pid_file("memory-watch"):
-        print("ai memory watch is already running.", file=sys.stderr)
+        _out.emit(Tag.MEMORY, "ai memory watch is already running.", err=True)
         return 2
 
     dream_state_path = _dream_state_path()
@@ -91,7 +93,7 @@ def memory_watch() -> int:
     loop.run_until_complete(client.connect())
 
     if not client.nc:
-        print("NATS unavailable — cannot start memory watcher.", file=sys.stderr)
+        _out.emit(Tag.MEMORY, "NATS unavailable — cannot start memory watcher.", err=True)
         loop.close()
         _release_pid_file("memory-watch")
         return 1
@@ -99,26 +101,26 @@ def memory_watch() -> int:
     def on_write_start(path):
         dream_state_path.parent.mkdir(parents=True, exist_ok=True)
         dream_state_path.write_text(str(os.getpid()), encoding="utf-8")
-        print(f"[memory-watch] dream started: {path}")
+        _out.emit(Tag.MEMORY_WATCH, f"dream started: {path}")
         try:
             loop.run_until_complete(client.publish("memory.dream.started", {"path": str(path), "ts": time.time()}))
         except Exception as e:
-            print(f"[memory-watch] failed to publish dream.started: {e}", file=sys.stderr)
+            _out.emit(Tag.MEMORY_WATCH, f"failed to publish dream.started: {e}", err=True)
 
     def on_write_settle():
         dream_state_path.unlink(missing_ok=True)
-        print("[memory-watch] dream completed (2s debounce)")
+        _out.emit(Tag.MEMORY_WATCH, "dream completed (2s debounce)")
         try:
             loop.run_until_complete(client.publish("memory.dream.completed", {"ts": time.time()}))
         except Exception as e:
-            print(f"[memory-watch] failed to publish dream.completed: {e}", file=sys.stderr)
+            _out.emit(Tag.MEMORY_WATCH, f"failed to publish dream.completed: {e}", err=True)
 
     handler = MemoryFileHandler(on_write_start, on_write_settle)
     observer = Observer()
 
     dirs = _find_memory_dirs()
     if not dirs:
-        print("[memory-watch] no memory directories found to watch", file=sys.stderr)
+        _out.emit(Tag.MEMORY_WATCH, "no memory directories found to watch", err=True)
         _release_pid_file("memory-watch")
         loop.run_until_complete(client.close())
         loop.close()
@@ -126,10 +128,10 @@ def memory_watch() -> int:
 
     for d in dirs:
         observer.schedule(handler, str(d), recursive=True)
-        print(f"[memory-watch] watching {d}")
+        _out.emit(Tag.MEMORY_WATCH, f"watching {d}")
 
     observer.start()
-    print("ai memory watch — watching for MEMORY.md writes (Ctrl+C to stop)")
+    _out.emit(Tag.MEMORY, "ai memory watch — watching for MEMORY.md writes (Ctrl+C to stop)")
 
     try:
         while True:

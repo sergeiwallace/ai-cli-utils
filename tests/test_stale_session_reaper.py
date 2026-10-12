@@ -246,6 +246,14 @@ def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout
     pytest.fail(f"timed out waiting for {description}")
 
 
+def _process_gone(process: psutil.Process) -> bool:
+    """Exited or a zombie. The exit can land between is_running() and status(), which raises."""
+    try:
+        return not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
 def _start_real_tmux_supervisor(
     socket: str,
     tmp_path: Path,
@@ -544,7 +552,7 @@ fi
         _wait_for_missing_session(real_tmux_socket, session_id)
         _wait_for_condition(
             "the detached heartbeat ticker to exit once its supervisor was killed",
-            lambda: not ticker.is_running() or ticker.status() == psutil.STATUS_ZOMBIE,
+            lambda: _process_gone(ticker),
         )
     finally:
         # This test is the one proving the ticker ends itself, so it cannot assume that:
@@ -2104,6 +2112,12 @@ fi
     process.stdin.write("hello\n")
     process.stdin.flush()
     _wait_for_path(events, process)
+    # The `>>` redirection creates the file before printf writes to it, so existence
+    # alone let the SIGINT land in between and its trap line come first. Wait for
+    # the line itself.
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+    while time.monotonic() < deadline and "READ=hello" not in events.read_text(encoding="utf-8"):
+        time.sleep(0.02)
     os.killpg(process.pid, signal.SIGINT)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

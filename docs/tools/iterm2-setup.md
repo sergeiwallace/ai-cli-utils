@@ -34,10 +34,10 @@ What genuinely needs a human, and why each one cannot be scripted:
 2. **Layouts** — `~/.config/iterm2/layouts/*.yaml` are *your* definitions. Their absence is the
    supported zero-config state: `ai c N` applies `<name>.yaml` if it exists and launches
    normally if it does not. Nothing ships a default, because a pane arrangement is a preference.
-3. **A window arrangement** — `assets/iterm2-arrangements/*.iterm2arrangement` is imported
-   through the iTerm2 GUI (Window → Save/Restore Window Arrangement). Check the file for
-   machine-identifying content before importing or copying one; an arrangement captures whatever
-   was on screen, including hostnames.
+3. **A window arrangement** — saved and restored through the iTerm2 GUI (Window →
+   Save/Restore Window Arrangement). This package ships none: an arrangement is personal, and a
+   saved one captures every session's screen and scrollback, so never commit one to a public
+   repository.
 4. **The ntfy → iTerm2 bridge** — needs a working ntfy/NATS path first; see the section below.
 
 ## Essential Configuration
@@ -150,6 +150,7 @@ When `ai c N` launches a CC session, ai-cli automatically configures iTerm2 via 
 3. **Runtime tinted icon** — at session launch, `icon_generator.py` tints the source logo PNG (`src/ai_cli/data/icons/{type}-logo.png`) using a contrast color derived from the tab hex (180° HSL hue rotation + lightness adaptation). Written to `~/.local/state/ai-cli-utils/iterm2-icons/{ai_name}.png` and referenced in the Dynamic Profile. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
 4. **Tab title** — set to the session name (e.g. `c-session-1`) via `ai internal set-iterm2-name`, which uses AppleScript to target the specific iTerm pane by GUID (`ITERM_SESSION_ID`). GUID-targeted rename is used instead of broadcast OSC 1 (`\033]1;`) to prevent cross-session clobbering when multiple sessions share the same outer pane. The session reads its GUID from `tmux show-environment` (not the static shell env) so that re-attaching to a new pane picks up the correct GUID. The rename only fires when `tmux list-clients` confirms the session is currently attached to a terminal — detached sessions skip the rename to avoid clobbering a different session's pane.
 5. **Cleanup on exit** — the session EXIT trap calls `ai internal cleanup-session-files {ai_name}`, which removes the icon PNG and Dynamic Profile JSON so iTerm2 doesn't accumulate stale profiles.
+6. **Session registry** — every launch is recorded, with the pane it occupies, in `~/.local/state/ai-cli-utils/iterm2-sessions.json`, so the sessions can be found again after an iTerm2 quit. `ai iterm2 sessions` lists, prunes and refreshes it, `ai iterm2 restore` re-attaches the recorded sessions after a restart, and `[iterm2.persistence]` in `iterm2.toml` turns each part on or off. See [iTerm2 session persistence](../iterm2-persistence.md).
 
 ### Color Preferences
 

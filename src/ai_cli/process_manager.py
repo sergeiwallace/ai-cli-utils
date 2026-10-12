@@ -6,10 +6,11 @@ Depends on: config.py.
 import contextlib
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
+from . import output as _out
 from .config import _pid_alive, get_xdg_state_home
+from .output import Tag
 
 _STALE_SESSION_REAPER_WATCHER = "stale-session-reaper"
 
@@ -59,8 +60,12 @@ def _ensure_circusd() -> str:
 
     circusd_bin = _shutil.which("circusd") or str(Path.home() / ".local" / "bin" / "circusd")
     pidfile = str(state_dir / "circusd.pid")
+    # circusd daemonizes and logs to `logoutput`; an inherited terminal would let
+    # its untagged lines through, and a pipe would be held open by the daemon.
     subprocess.Popen(
         [circusd_bin, "--daemon", "--pidfile", pidfile, str(ini_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     # Poll until ready
@@ -141,9 +146,9 @@ def _cmd_quota_watch_status() -> None:
         result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("status")
         statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
         qw_status = statuses.get("quota-watch", "not registered")
-        print(f"quota-watch: {qw_status}")
+        _out.emit(Tag.DAEMON, f"quota-watch: {qw_status}")
     except Exception:
-        print("circusd not running.")
+        _out.emit(Tag.DAEMON, "circusd not running.")
 
 
 def _cmd_stale_session_reaper_start() -> bool:
@@ -183,9 +188,9 @@ def _cmd_stale_session_reaper_start() -> bool:
         if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
             raise RuntimeError("Circus rejected watcher registration")
     except Exception as exc:
-        print(f"stale-session-reaper: failed to start ({exc})", file=sys.stderr)
+        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to start ({exc})", err=True)
         return False
-    print("stale-session-reaper: running")
+    _out.emit(Tag.DAEMON, "stale-session-reaper: running")
     return True
 
 
@@ -200,9 +205,9 @@ def _cmd_stale_session_reaper_stop() -> bool:
         if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
             raise RuntimeError("Circus rejected watcher removal")
     except Exception as exc:
-        print(f"stale-session-reaper: failed to stop ({exc})", file=sys.stderr)
+        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to stop ({exc})", err=True)
         return False
-    print("stale-session-reaper: stopped")
+    _out.emit(Tag.DAEMON, "stale-session-reaper: stopped")
     return True
 
 
@@ -219,8 +224,8 @@ def _cmd_stale_session_reaper_status() -> bool:
         statuses = result["statuses"]
         watcher = statuses.get(_STALE_SESSION_REAPER_WATCHER)
     except Exception as exc:
-        print(f"stale-session-reaper: failed to query status ({exc})", file=sys.stderr)
+        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to query status ({exc})", err=True)
         return False
     active = bool(watcher.get("active")) if isinstance(watcher, dict) else watcher in {"running", "active"}
-    print(f"stale-session-reaper: {'running' if active else 'not running'}")
+    _out.emit(Tag.DAEMON, f"stale-session-reaper: {'running' if active else 'not running'}")
     return True

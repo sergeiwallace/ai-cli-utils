@@ -7,7 +7,8 @@ Two modes:
   ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. The temp worktree is left in place only when there
-  are merge conflicts or the push fails (never clobbering a session's main tree).
+  are merge conflicts or the push fails (never clobbering a session's main tree), and
+  a later run keeps such a leftover rather than removing it.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -25,16 +26,18 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
+from . import output as _out
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
+from .output import Tag
 
 EX_CONFIG = 78
 EX_TEMPFAIL = 75
@@ -548,7 +551,11 @@ def _repo_root(path: Path) -> Path | None:
 
 
 def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
-    """Remove the temp worktree and its branch (best-effort, idempotent)."""
+    """Remove the temp worktree and its branch (best-effort, idempotent).
+
+    Targets only this worktree: a repo-wide ``git worktree prune`` here would drop
+    every other registration whose directory is missing, with its index and HEAD.
+    """
     # Repair backstop (AI-CLI-99) before AND after the worktree teardown — root
     # is the repo's normal main working tree and must never end up bare / with
     # a stale core.worktree, regardless of what a leaked GIT_* env would do.
@@ -559,9 +566,97 @@ def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
         env=_git_env(),
         check=False,
     )
-    subprocess.run(["git", "-C", str(root), "worktree", "prune"], capture_output=True, env=_git_env(), check=False)
     subprocess.run(["git", "-C", str(root), "branch", "-D", branch], capture_output=True, env=_git_env(), check=False)
     repair_bare_worktree_config(root)
+
+
+_GIT_READ_TIMEOUT = 30
+_IN_PROGRESS_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG")
+
+
+def _git_read(args: list[str]) -> str | None:
+    """Run a read-only git command; None when it errors or times out."""
+    try:
+        r = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+            timeout=_GIT_READ_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _leftover_hold_reason(root: Path, wt_dir: Path, branch: str) -> str | None:
+    """Why a prior run's temp worktree/branch must be kept, or None when it is disposable.
+
+    A conflict or pushfail deliberately leaves the worktree for a human, so the
+    pre-clean removes only what it can prove holds nothing: no worktree and no
+    branch, or a clean checkout and branch at the base commit. Any state it cannot
+    read is kept.
+    """
+    listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+    if listing is None:
+        return "could not read the worktree list"
+    target = wt_dir.resolve()
+    registered = any(
+        Path(line[len("worktree ") :].strip()).resolve() == target
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    )
+    exists = os.path.lexists(wt_dir)
+    branch_tip = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
+    if branch_tip is None:
+        return f"could not read branch {branch}"
+    has_branch = bool(branch_tip.strip())
+
+    if not registered and not exists and not has_branch:
+        return None
+    if exists and not registered:
+        return "directory exists but is not a registered worktree, so its state cannot be read"
+    if registered and not exists:
+        return "registered but its directory is missing, so its state cannot be read"
+
+    base_name = (
+        "origin/main" if _git_read(["-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"]) else "HEAD"
+    )
+    base = _git_read(["-C", str(root), "rev-parse", "--verify", base_name])
+    if base is None:
+        return f"could not read base {base_name}"
+    base = base.strip()
+
+    def commits_ahead(rev_args: list[str], tip: str) -> int | None:
+        out = _git_read([*rev_args, "rev-list", "--count", f"{base}..{tip}"])
+        return int(out.strip()) if out is not None and out.strip().isdigit() else None
+
+    if registered:
+        git_dir = _git_read(["-C", str(wt_dir), "rev-parse", "--absolute-git-dir"])
+        if git_dir is None:
+            return "could not read its git directory"
+        in_progress = [m for m in _IN_PROGRESS_MARKERS if os.path.lexists(Path(git_dir.strip()) / m)]
+        if in_progress:
+            return f"operation in progress ({', '.join(in_progress)})"
+        status = _git_read(["-C", str(wt_dir), "status", "--porcelain"])
+        if status is None:
+            return "could not read its status"
+        if status.strip():
+            return "uncommitted or staged changes"
+        ahead = commits_ahead(["-C", str(wt_dir)], "HEAD")
+        if ahead is None:
+            return "could not count its commits"
+        if ahead:
+            return f"{ahead} commit(s) not on {base_name}"
+
+    if has_branch:
+        ahead = commits_ahead(["-C", str(root)], f"refs/heads/{branch}")
+        if ahead is None:
+            return f"could not count commits on {branch}"
+        if ahead:
+            return f"branch {branch} has {ahead} commit(s) not on {base_name}"
+    return None
 
 
 def _snapshot_staged_files(worktree_dir: Path) -> dict[str, bytes | None] | None:
@@ -697,8 +792,10 @@ def _update_one_isolated(
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
     On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is
-    left in place (detail carries the info needed to resolve it manually). When
-    inspect=True, an ok result contains copied content before that cleanup.
+    left in place (detail carries the info needed to resolve it manually). A
+    leftover from a prior run that is not provably disposable returns ``kept`` with
+    its path and reason, and nothing is removed. When inspect=True, an ok result
+    contains copied content before that cleanup.
     """
     root = _repo_root(project_dir)
     if root is None:
@@ -715,14 +812,21 @@ def _update_one_isolated(
     wt_dir = root / ".worktrees" / _WT_NAME
     branch = _WT_BRANCH
 
-    # Clear any leftover temp worktree/branch from a prior interrupted run.
-    _cleanup_worktree(root, wt_dir, branch)
-
     # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
     # not whatever the local main tree happens to be at. Fall back to HEAD offline.
+    # Fetched before the leftover check so a commit a human has since pushed by hand
+    # counts as on the base.
     subprocess.run(
         ["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True, env=_git_env(), check=False
     )
+
+    # Clear a leftover temp worktree/branch from a prior interrupted run, but keep
+    # one a conflicted or rejected run left for a human to resolve.
+    hold = _leftover_hold_reason(root, wt_dir, branch)
+    if hold is not None:
+        return "kept", f"{wt_dir}: {hold}"
+    _cleanup_worktree(root, wt_dir, branch)
+
     probe = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"],
         capture_output=True,
@@ -800,37 +904,31 @@ def run_copier_update(
         projects_dir = _get_projects_dir()
 
     if not projects_dir.exists():
-        print(f"Error: projects directory not found: {projects_dir}", file=sys.stderr)
+        _out.error(Tag.COPIER, f"projects directory not found: {projects_dir}")
         return EX_CONFIG
 
     copier_bin = shutil.which("copier")
     if copier_bin is None:
-        print(
-            "Error: copier not found in PATH. Install with: uv tool install copier",
-            file=sys.stderr,
-        )
+        _out.error(Tag.COPIER, "copier not found in PATH. Install with: uv tool install copier")
         return EX_CONFIG
 
     projects = _find_copier_projects(projects_dir)
     if not projects:
-        print("No project-template-based projects found.")
+        _out.emit(Tag.COPIER, "No project-template-based projects found.")
         return 0
 
     if project_filter:
         projects = [p for p in projects if p.name == project_filter]
         if not projects:
-            print(
-                f"Error: project '{project_filter}' not found or not copier-managed.",
-                file=sys.stderr,
-            )
+            _out.error(Tag.COPIER, f"project '{project_filter}' not found or not copier-managed.")
             return EX_CONFIG
 
     if dry_run:
         mode = "isolated worktree → main" if isolate else "direct (main tree)"
-        print(f"Would update {len(projects)} project(s) [{mode}]:")
+        _out.emit(Tag.COPIER, f"Would update {len(projects)} project(s) [{mode}]:")
         for p in projects:
-            print(f"  {p.name}")
-        print("\n(dry-run: no changes made)")
+            _out.emit(Tag.COPIER, f"  {p.name}")
+        _out.emit(Tag.COPIER, "\n(dry-run: no changes made)")
         return 0
 
     if isolate:
@@ -844,7 +942,7 @@ def _run_isolated(
     projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
-    print(f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
+    _out.emit(Tag.COPIER, f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
     has_partial_mutation = False
@@ -852,39 +950,47 @@ def _run_isolated(
     has_transient_failure = False
     delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
-        print(f"  {project_dir.name}... ", end="", flush=True)
+        _out.emit(Tag.COPIER, f"  {project_dir.name}... ", nl=False)
         if inspect:
             status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
         else:
             status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
         if status == "ok":
-            print("✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
+            _out.cont(Tag.COPIER, "✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
             changed += 1
             if inspect:
                 assert isinstance(detail, DeliveredUpdate)
                 delivered_updates.append(detail)
         elif status == "nochange":
-            print("· no changes")
+            _out.cont(Tag.COPIER, "· no changes")
         elif status == "conflict":
             assert isinstance(detail, list)  # conflict status returns list[str] of paths
-            print(f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:")
+            _out.cont(Tag.COPIER, f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:")
             for rel in detail:
-                print(f"    conflict: {rel}")
+                _out.emit(Tag.COPIER, f"    conflict: {rel}")
             failed += 1
             has_partial_mutation = True
         elif status == "parityfail":
-            print("✗ TEMPLATE PARITY FAILED — inspect the temp worktree before continuing")
-            print(f"    {detail}")
+            _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED — inspect the temp worktree before continuing")
+            _out.emit(Tag.COPIER, f"    {detail}")
             failed += 1
             has_partial_mutation = True
         elif status == "pushfail":
-            print("✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
-            print(f"    {detail}")
+            _out.cont(Tag.COPIER, "✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
+            _out.emit(Tag.COPIER, f"    {detail}")
+            failed += 1
+            has_partial_mutation = True
+        elif status == "kept":
+            _out.cont(
+                Tag.COPIER,
+                "✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:",
+            )
+            _out.emit(Tag.COPIER, f"    {detail}")
             failed += 1
             has_partial_mutation = True
         else:  # failed
-            print("✗ FAILED")
-            print(f"    {detail}")
+            _out.cont(Tag.COPIER, "✗ FAILED")
+            _out.emit(Tag.COPIER, f"    {detail}")
             failed += 1
             if detail == "not a git repository" or (
                 isinstance(detail, str) and detail.startswith("worktree add failed:")
@@ -893,11 +999,10 @@ def _run_isolated(
             else:
                 has_transient_failure = True
 
-    print()
     if failed:
-        print(f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+        _out.emit(Tag.COPIER, f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
-        print(f"All projects up to date ({changed} updated).")
+        _out.emit(Tag.COPIER, f"All projects up to date ({changed} updated).")
     if has_partial_mutation:
         exit_code = EX_PARTIAL_MUTATION
     elif has_config_failure:
@@ -913,23 +1018,23 @@ def _run_isolated(
 
 def _run_direct(projects: list[Path], copier_bin: str) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
-    print(f"Updating {len(projects)} project(s) [direct — main tree]:\n")
+    _out.emit(Tag.COPIER, f"Updating {len(projects)} project(s) [direct — main tree]:\n")
     failed = 0
     has_partial_mutation = False
     has_transient_failure = False
     for project_dir in projects:
-        print(f"  {project_dir.name}... ", end="", flush=True)
+        _out.emit(Tag.COPIER, f"  {project_dir.name}... ", nl=False)
         update_error, _, template_changes = _run_copier_update(project_dir, copier_bin)
         if update_error is not None:
             semantic_failure = _is_semantic_update_failure(update_error)
             if semantic_failure:
-                print("✗ TEMPLATE PARITY FAILED")
+                _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED")
                 has_partial_mutation = True
             else:
-                print("✗ FAILED")
+                _out.cont(Tag.COPIER, "✗ FAILED")
             if update_error:
                 for line in update_error.splitlines():
-                    print(f"    {line}", file=sys.stderr)
+                    _out.emit(Tag.COPIER, f"    {line}", err=True)
             failed += 1
             if not semantic_failure:
                 has_transient_failure = True
@@ -945,9 +1050,9 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
         conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:
             # In --no-isolate mode, unresolved markers mutate the live main tree, not a temp worktree.
-            print(f"✗ CONFLICTS ({len(conflicts)} file(s))")
+            _out.cont(Tag.COPIER, f"✗ CONFLICTS ({len(conflicts)} file(s))")
             for c in conflicts:
-                print(f"    conflict: {c}")
+                _out.emit(Tag.COPIER, f"    conflict: {c}")
             failed += 1
             has_partial_mutation = True
         else:
@@ -962,18 +1067,17 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
                 template_changes.excluded_on_update,
             )
             if parity_error is not None:
-                print("✗ TEMPLATE PARITY FAILED")
-                print(f"    {parity_error}")
+                _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED")
+                _out.emit(Tag.COPIER, f"    {parity_error}")
                 failed += 1
                 has_partial_mutation = True
             else:
-                print("✓")
+                _out.cont(Tag.COPIER, "✓")
 
-    print()
     if failed:
-        print(f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+        _out.emit(Tag.COPIER, f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
-        print("All projects updated successfully.")
+        _out.emit(Tag.COPIER, "All projects updated successfully.")
     if has_partial_mutation:
         return EX_PARTIAL_MUTATION
     if has_transient_failure:

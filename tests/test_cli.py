@@ -1019,11 +1019,15 @@ class TestCliResumePath:
                 with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.resolve_session", return_value="c-session-1"):
-                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                with pytest.raises(SystemExit):
-                                    cli()
+                            # Re-attaching resumes a pane Ctrl+Z left stopped (AI-CLI-y6el);
+                            # that probe drives tmux, which this unit test must not reach.
+                            with patch("ai_cli.main._resume_suspended_panes") as mock_resume:
+                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                    with pytest.raises(SystemExit):
+                                        cli()
                             assert mock_exec.call_args[0][0] == "tmux"
                             assert "attach-session" in mock_exec.call_args[0][1]
+                            mock_resume.assert_called_once_with("c-session-1")
 
     def test_cli_when_resume_and_no_session_then_exits_1(self, capsys):
         with patch("sys.argv", ["ai", "c", "-r", "nonexistent"]):
@@ -3456,3 +3460,15 @@ class TestTmuxEnvForwardingNormalisesXdgStateHome:
         assert self._value_of(flags, "PATH") == "/usr/bin"
         assert self._value_of(flags, "LC_TERMINAL") == "iTerm2"
         assert self._value_of(flags, "TERM_PROGRAM") == "vscode"
+
+    def test_given_a_relaunch_reason_when_flags_are_built_then_the_pane_receives_it(self):
+        """``ai iterm2 restore`` sets it on the relaunch; a running tmux server would not pass it on."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin", "AIH_LAUNCH_REASON": "host_reboot"})
+
+        assert self._value_of(flags, "AIH_LAUNCH_REASON") == "host_reboot"
+
+    def test_given_no_relaunch_reason_when_flags_are_built_then_an_empty_one_clears_a_stale_server_value(self):
+        """The first relaunch after a reboot starts the server, whose global env then holds the reason."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin"})
+
+        assert self._value_of(flags, "AIH_LAUNCH_REASON") == ""

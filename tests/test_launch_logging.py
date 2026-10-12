@@ -111,3 +111,20 @@ def test_given_a_log_that_cannot_be_deleted_when_pruning_then_the_launch_still_p
     for handler in survived.logger.handlers:
         handler.close()
     survived.logger.handlers.clear()
+
+
+def test_given_tagged_error_and_warning_lines_on_stderr_when_mirrored_then_the_log_keeps_their_levels(
+    tmp_path, monkeypatch
+):
+    """A leading `[tag] ` must not hide `Error:`/`Warning:` from the launch log's level."""
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path)
+
+    launch_log = create_launch_log("session-1")
+    launch_log.stderr.write("[update] Error: install failed\n[launch] Warning: degraded\n[launch] Session: ok\n")
+    for handler in launch_log.logger.handlers:
+        handler.flush()
+    content = launch_log.path.read_text(encoding="utf-8")
+
+    assert "ERROR [update] Error: install failed" in content
+    assert "WARNING [launch] Warning: degraded" in content
+    assert "INFO [launch] Session: ok" in content

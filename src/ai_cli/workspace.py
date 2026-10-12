@@ -5,7 +5,9 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import output as _out
 from .git_repair import _git_env
+from .output import Tag
 
 
 def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
@@ -167,7 +169,7 @@ def ws_pull(
     except ValueError:
         display_path = workspace_path
 
-    print(f"Workspace: {display_path} ({len(folders)} repos)\n")
+    _out.emit(Tag.WORKSPACE, f"Workspace: {display_path} ({len(folders)} repos)\n")
 
     total_pulled = 0
     total_stashed = 0
@@ -182,7 +184,7 @@ def ws_pull(
             continue
 
         if not _is_git_repo(folder):
-            print(f"  ⚠  {name}  (not a git repo, skipped)")
+            _out.emit(Tag.WORKSPACE, f"  ⚠  {name}  (not a git repo, skipped)")
             continue
 
         # Main tree
@@ -193,13 +195,13 @@ def ws_pull(
                 _, out = _pull_rebase(folder)
                 _run(["git", "-C", str(folder), "stash", "pop"])
                 if verbose and out:
-                    print(f"     {out}")
+                    _out.emit(Tag.WORKSPACE, f"     {out}")
             total_stashed += 1
         else:
             if not dry_run:
                 _, out = _pull_rebase(folder)
                 if verbose and out:
-                    print(f"     {out}")
+                    _out.emit(Tag.WORKSPACE, f"     {out}")
             total_pulled += 1
 
         # Worktrees
@@ -242,19 +244,21 @@ def ws_pull(
                 line += "   +  " + "  ".join(clean_wts)
             if dry_run:
                 line += "  (would pull)"
-        print(line)
+        _out.emit(Tag.WORKSPACE, line)
 
         for wt_name in dirty_wts:
-            print(f"  ↷  {name}/{wt_name}  (dirty, skipped)")
+            _out.emit(Tag.WORKSPACE, f"  ↷  {name}/{wt_name}  (dirty, skipped)")
 
         for msg in failed:
-            print(f"  ✗  {name}/{msg}")
+            _out.emit(Tag.WORKSPACE, f"  ✗  {name}/{msg}")
 
         for msg in drifted:
-            print(f"  ✗  {msg}  (not tracking origin/main — AI-CLI-128)")
+            _out.emit(Tag.WORKSPACE, f"  ✗  {msg}  (not tracking origin/main — AI-CLI-128)")
             total_drifted += 1
 
-    print(f"\nDone: {total_pulled} pulled, {total_stashed} stashed+pulled, {total_dirty} skipped (dirty)")
+    _out.emit(
+        Tag.WORKSPACE, f"\nDone: {total_pulled} pulled, {total_stashed} stashed+pulled, {total_dirty} skipped (dirty)"
+    )
     if total_drifted:
-        print(f"⚠  {total_drifted} worktree branch(es) not tracking origin/main — see above")
+        _out.emit(Tag.WORKSPACE, f"⚠  {total_drifted} worktree branch(es) not tracking origin/main — see above")
     return 1 if total_failed else 0

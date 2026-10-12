@@ -11,33 +11,32 @@ which of several prefixes a line belongs to::
     [launch] Error: <text>                               never suppressed by --quiet
     [launch] Ready: handing off to <Engine> (<session>)  last line before every exec/attach
 
-Colour is applied per token through ``click.style`` and only reaches a stream that
-is a TTY; ``click.echo`` strips it otherwise, and ``NO_COLOR`` / ``TERM=dumb`` turn
-it off even on a TTY. Nothing here owns terminal state, so nothing needs tearing
-down before the launcher replaces itself with the engine.
+Every line is written by :mod:`ai_cli.output` under ``Tag.LAUNCH``, which owns the
+tag, the per-token colour and the TTY / ``NO_COLOR`` / ``TERM=dumb`` rules. Nothing
+here owns terminal state, so nothing needs tearing down before the launcher
+replaces itself with the engine.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import sys
 import threading
 from contextlib import AbstractContextManager
 from enum import StrEnum
 from time import monotonic
 from typing import TextIO
 
-import click
+from . import output
+from .output import Tag
 
-PREFIX = "[launch]"
+PREFIX = f"[{Tag.LAUNCH.value}]"
 HEARTBEAT_SECONDS = 10.0
 SLOW_OUTCOME_SECONDS = 2.0
 
 _PHASE_STYLE = {"bold": True, "fg": "cyan"}
 _READY_STYLE = {"bold": True, "fg": "green"}
-_WARNING_STYLE = {"bold": True, "fg": "yellow"}
-_ERROR_STYLE = {"bold": True, "fg": "red"}
+_WARNING_STYLE = output.WARNING_STYLE
+_ERROR_STYLE = output.ERROR_STYLE
 _DIM_STYLE = {"dim": True}
 
 
@@ -49,24 +48,6 @@ class InstallOrigin(StrEnum):
     LOCAL_BUILD = "local package build"
     PACKAGE_INDEX = "package index"
     UNKNOWN = "source unknown"
-
-
-def _stream_is_tty(stream: TextIO | None) -> bool:
-    target = stream if stream is not None else sys.stderr
-    try:
-        return bool(target.isatty())
-    except (AttributeError, ValueError):
-        return False
-
-
-def _wants_color(stream: TextIO | None) -> bool:
-    # Click strips ANSI for a non-TTY on its own; the NO_COLOR convention
-    # (no-color.org) and TERM=dumb are the two opt-outs it does not implement.
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM", "").lower() == "dumb":
-        return False
-    return _stream_is_tty(stream)
 
 
 def _elapsed_text(seconds: float) -> str:
@@ -176,11 +157,6 @@ class LaunchReporter:
         """Make this the reporter :func:`active` returns; give back the previous one."""
         return activate(self)
 
-    def _render(self, phase: str, outcome: str, phase_style: dict, outcome_style: dict | None) -> str:
-        label = click.style(f"{phase}:", **phase_style)
-        body = click.style(outcome, **outcome_style) if outcome_style else outcome
-        return f"{click.style(PREFIX, **_DIM_STYLE)} {label} {body}"
-
     def _emit(
         self,
         phase: str,
@@ -195,9 +171,16 @@ class LaunchReporter:
             self.logger.log(level, "%s %s: %s", PREFIX, phase, outcome)
         if self.quiet and not always:
             return
-        rendered = self._render(phase, outcome, phase_style, outcome_style)
         with self._lock:
-            click.echo(rendered, err=True, file=self.stream, color=_wants_color(self.stream))
+            output.emit(
+                Tag.LAUNCH,
+                outcome,
+                err=True,
+                file=self.stream,
+                label=phase,
+                label_style=phase_style,
+                body_style=outcome_style,
+            )
 
     def start(self, *, engine: str, mode: str, continuing: bool = False) -> None:
         verb = "Continuing" if continuing else "Starting"
@@ -212,11 +195,14 @@ class LaunchReporter:
             self.logger.debug("%s %s: %s", PREFIX, name, outcome)
         if self.verbose and not self.quiet:
             with self._lock:
-                click.echo(
-                    self._render(name, outcome, _PHASE_STYLE, _DIM_STYLE),
+                output.emit(
+                    Tag.LAUNCH,
+                    outcome,
                     err=True,
                     file=self.stream,
-                    color=_wants_color(self.stream),
+                    label=name,
+                    label_style=_PHASE_STYLE,
+                    body_style=_DIM_STYLE,
                 )
 
     def warning(self, message: str) -> None:
