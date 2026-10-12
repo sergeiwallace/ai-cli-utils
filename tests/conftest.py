@@ -19,6 +19,7 @@ import pytest
 
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
+import ai_cli.session_naming as _session_naming_module
 import ai_cli.trust as _trust_module
 from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path
 from ai_cli.git_repair import _GIT_TARGETING_VARS
@@ -1254,6 +1255,26 @@ def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registr
             "checkout of this repo running its suite without the redirect.",
             stacklevel=1,
         )
+
+
+#: The host alias every launch in the suite resolves, unless a test patches its own.
+TEST_HOST_ALIAS = "tst"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_host_alias(monkeypatch, tmp_path_factory):
+    """Resolve the host alias from a temp file, never this machine's identity or config.
+
+    Session names carry the host alias, and it is read at call time from an ai-harness
+    checkout under ``projects_dir`` -- which the fixture above points at this checkout's
+    own parent, so on a developer machine the suite would otherwise read that machine's
+    real registry and on CI find none at all. Tests of the resolution itself restore the
+    real ``host_id``/``alias_sources``, captured at import before this fixture runs.
+    """
+    alias_file = tmp_path_factory.mktemp("host_alias") / _session_naming_module.ALIAS_FILENAME
+    alias_file.write_text(f'[aliases]\ntest-host = "{TEST_HOST_ALIAS}"\n', encoding="utf-8")
+    monkeypatch.setattr(_session_naming_module, "host_id", lambda: "test-host")
+    monkeypatch.setattr(_session_naming_module, "alias_sources", lambda: [alias_file])
 
 
 @pytest.fixture(autouse=True)

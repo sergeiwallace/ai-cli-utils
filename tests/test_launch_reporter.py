@@ -527,7 +527,7 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "[launch] Error: no matching session found for 'c-myproject-7'" in captured.err
+    assert "[launch] Error: no matching session found for 'c-myproject-tst-7'" in captured.err
 
 
 def test_given_quiet_session_command_when_it_starts_then_the_active_reporter_carries_the_policy(monkeypatch):
