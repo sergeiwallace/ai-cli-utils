@@ -199,12 +199,12 @@ def test_given_tracking_enabled_when_local_session_launched_then_one_record_exis
 
     exec_argv, registry_at_exec = _launch_local(state_home, argv=["ai", "c", "1", "-W", "-D"])
 
-    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-1"]
+    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-tst-1"]
     assert registry_at_exec is not None, "the record must exist before the launcher execs into tmux"
     assert len(registry_at_exec) == 1
     record = registry_at_exec[0]
     assert record["kind"] == "local"
-    assert record["name"] == "c-myproject-1"
+    assert record["name"] == "c-myproject-tst-1"
     assert record["relaunch_argv"] == ["ai", "c", "1", "-W", "-D"]
     assert record["cwd"] == str(tmp_path)
     assert record["remote"] is None
@@ -315,7 +315,7 @@ def test_given_a_filter_rule_when_session_launched_then_it_is_not_recorded_and_t
     debug = [
         r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG and r.name == "ai_cli.session_registry"
     ]
-    assert any("c-myproject-1" in message and rule in message for message in debug), debug
+    assert any("c-myproject-tst-1" in message and rule in message for message in debug), debug
 
 
 @pytest.mark.parametrize("value", [None, "", "not-an-iterm-id", "w0t3:ABCDEF01-2345"])
@@ -329,7 +329,7 @@ def test_given_iterm_session_id_absent_or_malformed_when_launched_then_record_ha
 
     exec_argv, registry_at_exec = _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-1"]
+    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-tst-1"]
     (record,) = registry_at_exec
     assert record["iterm2"] is None
     assert "session registry" not in capsys.readouterr().err
@@ -343,7 +343,7 @@ def test_given_registry_cannot_be_written_when_launched_then_one_warning_and_the
 
     exec_argv, _ = _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-1"]
+    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-tst-1"]
     assert _registry_file(state_home).is_dir()
     warnings = [line for line in capsys.readouterr().err.splitlines() if "session registry" in line]
     assert len(warnings) == 1, warnings
@@ -356,7 +356,7 @@ def test_given_a_bad_persistence_key_when_launched_then_one_warning_names_it_and
 
     exec_argv, _ = _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-1"]
+    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-tst-1"]
     warnings = [line for line in capsys.readouterr().err.splitlines() if "session registry" in line]
     assert len(warnings) == 1, warnings
     assert "include" in warnings[0] and "a list of strings" in warnings[0]

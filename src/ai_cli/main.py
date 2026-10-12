@@ -3701,11 +3701,16 @@ def _do_session_launch(
     # session this host launched itself (no ``-r-``) must regenerate that session's
     # own local script, not convert it into a remote one.
     script_is_remote = is_remote and session_id.casefold().startswith(f"{engine}-r-")
+    script_family = f"{engine}{'-r' if script_is_remote else ''}-"
+    # A legacy-named session reattached in the migration window keeps the prefix it was named with.
+    script_prefix = (
+        naming_prefix if session_id.casefold().startswith(f"{script_family}{naming_prefix}-") else project_prefix
+    )
     script = _session_script.get_engine_script(
         engine,
         ai_name,
         session_id,
-        f"{engine}{'-r' if script_is_remote else ''}-{naming_prefix}-",
+        f"{script_family}{script_prefix}-",
         project_prefix,
         uuid,
         use_sandbox,
