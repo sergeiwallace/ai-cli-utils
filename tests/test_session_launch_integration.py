@@ -1166,4 +1166,6 @@ def test_given_the_iterm2_pane_rename_answers_when_launching_then_it_renames_and
     assert "/dev/ttys000" in rename[0][2]
     assert 'set name of s to "c-myproject-1"' in rename[0][2]
     assert "Ready: handing off to Claude Code (myproject-1)" in out, out
-    assert "Warning" not in out, out
+    # Only the rename's own warning is in scope: the launch may warn about the host
+    # (no direnv on a CI runner), which says nothing about the rename.
+    assert "Warning: iTerm2 pane rename" not in out, out
