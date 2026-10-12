@@ -1,10 +1,13 @@
+import io
 import json
 import os
+import subprocess
 from unittest.mock import patch
 
 import pytest
 from conftest import make_iterm2_config
 
+from ai_cli import launch_reporter
 from ai_cli.iterm2 import _iterm2_session_type, _rename_tmux_window
 from ai_cli.main import (
     _assign_iterm2_color_slot,
@@ -538,6 +541,61 @@ class TestSetIterm2NameByTty:
         assert "tty of s" in cmd[2]  # matches on tty, not unique id
         assert "session-1" in cmd[2]
         assert result is True
+
+    def test_given_osascript_exceeds_its_deadline_when_renaming_then_warns_and_returns_false(self):
+        """A timed-out rename is survivable, and says why.
+
+        ``check=False`` already makes a non-zero exit survivable, but a timeout
+        arrives as ``TimeoutExpired`` instead of an exit code — so this one
+        cosmetic failure used to propagate out of the launcher and discard a
+        worktree that had already been created and reported ready.
+        """
+        stream = io.StringIO()
+        reporter = launch_reporter.LaunchReporter(stream=stream)
+        previous = reporter.activate()
+        try:
+            with patch("ai_cli.iterm2.sys") as mock_sys:
+                mock_sys.platform = "darwin"
+                with patch(
+                    "ai_cli.iterm2.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd=["osascript", "-e", "..."], timeout=5),
+                ):
+                    result = _set_iterm2_name_by_tty("/dev/ttys007", "c-session-1")
+        finally:
+            launch_reporter.activate(previous)
+
+        assert result is False
+        out = stream.getvalue()
+        # Naming the cause is part of the contract: a silent swallow would also
+        # keep the launch alive and would be indistinguishable from success.
+        assert "Warning" in out
+        assert "iTerm2 pane rename" in out
+        assert "c-session-1" in out
+        assert "osascript did not answer within 5s" in out
+
+    def test_given_osascript_answers_when_renaming_then_the_name_is_set_and_nothing_warns(self):
+        """Negative control for the timeout path: the rename still happens.
+
+        Without this, the test above would pass just as well against a build
+        that had stopped attempting the rename at all.
+        """
+        from unittest.mock import MagicMock
+
+        stream = io.StringIO()
+        reporter = launch_reporter.LaunchReporter(stream=stream)
+        previous = reporter.activate()
+        try:
+            with patch("ai_cli.iterm2.sys") as mock_sys:
+                mock_sys.platform = "darwin"
+                with patch("ai_cli.iterm2.subprocess.run", return_value=MagicMock(stdout="ok")) as mock_run:
+                    result = _set_iterm2_name_by_tty("/dev/ttys007", "c-session-1")
+        finally:
+            launch_reporter.activate(previous)
+
+        assert result is True
+        script = mock_run.call_args[0][0][2]
+        assert 'set name of s to "c-session-1"' in script
+        assert "Warning" not in stream.getvalue()
 
     def test_returns_false_when_no_pane_matches_tty(self):
         from unittest.mock import MagicMock
