@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c -R` reattach output no longer runs lines together or joins the last line to the
+  shell prompt. While ssh held the terminal in raw mode, a relayed line ended in a bare
+  line feed and so did not return to column 0. Text the remote side left after a carriage
+  return stayed on screen next to the next local line. Every line now ends in CR LF on a
+  terminal, and control characters in relayed text are removed. When an ssh attempt
+  returns, the launcher restores the terminal's output settings and starts a fresh row.
+  Lines are also coloured again after the per-launch log starts: its stderr mirror had
+  made the terminal look like a pipe. Every exec now flushes output first.
+
 - `ai register -p DIR` now refuses a directory that is not itself a repository root but
   sits inside one, naming the containing repository. It used to register that ancestor
   and rewrite the `issue-prefix` in its `.beads/config.yaml`, a repository the caller

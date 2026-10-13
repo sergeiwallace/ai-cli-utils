@@ -203,6 +203,7 @@ def _wait(seconds: float) -> None:
 def test_given_a_raw_mode_pty_when_ai_c_r_reattaches_then_every_transport_line_starts_at_column_0(terminal, tmp_path):
     def ssh(_args, stderr=None, **_kwargs):
         terminal.clear_output_flags(termios.OPOST)
+        os.write(terminal.slave, b"remote output, no newline yet")
         stderr.write(b"client_loop: send disconnect: Broken pipe\n")
         _wait(0.35)  # the tee relays every 0.1s: this line goes out while ssh holds the terminal
         return 255

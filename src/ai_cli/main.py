@@ -209,6 +209,16 @@ def _ensure_dolt_server() -> None:
     )
 
 
+def _exec_handoff(file: str, args: list[str]) -> NoReturn:
+    """Replace this process with ``file``; the one exec in the package (AI-CLI-8h3u).
+
+    An exec skips ``atexit``, so an open line would stay open and buffered output
+    would be lost: both are settled here first.
+    """
+    _out.flush_sinks()
+    os.execvp(file, args)
+
+
 def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
     """Replace this process with ``command``, under direnv when that is possible.
 
@@ -236,10 +246,10 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
     if prefix:
         # FileNotFoundError falls through to a direct exec below
         with contextlib.suppress(FileNotFoundError):
-            os.execvp(prefix[0], [*prefix, *command])
+            _exec_handoff(prefix[0], [*prefix, *command])
 
     try:
-        os.execvp(command[0], command)
+        _exec_handoff(command[0], command)
     except FileNotFoundError:
         _out.error(Tag.LAUNCH, f"{command[0]} not found on PATH.")
         sys.exit(1)
@@ -2477,7 +2487,7 @@ def _do_attach(session_name: str) -> NoReturn:
         _out.emit(Tag.ATTACH, f"No tmux session named '{session_name}'", err=True)
         sys.exit(1)
     _resume_suspended_panes(session_name)
-    os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+    _exec_handoff("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
 def _do_ls(show_all: bool) -> None:
@@ -2563,7 +2573,7 @@ def _do_ls(show_all: bool) -> None:
             sys.exit(0)
         selected = result.stdout.strip().split("\t")[0]
         _resume_suspended_panes(selected)
-        os.execvp("tmux", ["tmux", "attach-session", "-t", selected])
+        _exec_handoff("tmux", ["tmux", "attach-session", "-t", selected])
     else:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
@@ -3520,7 +3530,7 @@ def _do_session_launch(
             _track_launch(reporter, kind="local", name=name, session_name=session)
         reporter.handoff(engine=_engine_display_name(engine), session=session)
         _resume_suspended_panes(session)
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session])
+        _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -3797,7 +3807,7 @@ def _do_session_launch(
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            os.execvp(
+            _exec_handoff(
                 "tmux",
                 [
                     "tmux",
@@ -3816,7 +3826,7 @@ def _do_session_launch(
             if uuid:
                 command += ["-r", uuid]
                 reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-                os.execvp(
+                _exec_handoff(
                     "tmux",
                     [
                         "tmux",
@@ -3833,7 +3843,7 @@ def _do_session_launch(
             else:
                 command += ["-i", f"/resume load {ai_name}"]
                 reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-                os.execvp(
+                _exec_handoff(
                     "tmux",
                     [
                         "tmux",
@@ -3852,7 +3862,7 @@ def _do_session_launch(
         else:
             command = ["codex"]
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        os.execvp(
+        _exec_handoff(
             "tmux",
             [
                 "tmux",
@@ -3959,7 +3969,7 @@ def _do_session_launch(
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
-        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
+        _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
@@ -4080,7 +4090,7 @@ def _do_session_launch(
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
+        _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
 
 
 # --- Click command tree ---
@@ -4159,7 +4169,7 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
-                    os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
+                    _exec_handoff(ai_bin, [ai_bin, *sys.argv[1:]])
                 _tunnel._ensure_nats_tunnel(config)
                 if engine == "c" and not remote:
                     _process_manager._start_stale_session_reaper_for_launch()
@@ -4656,7 +4666,7 @@ def cmd_upgrade():
     upgrade_args = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
-    os.execvp(uv_bin, upgrade_args)
+    _exec_handoff(uv_bin, upgrade_args)
 
 
 @_cli_group.command("register", help="Register a repository root and its task prefix")
@@ -6070,7 +6080,7 @@ def cmd_ssh(alias):
     if id_file := remote_cfg.get("identity_file", ""):
         ssh_args += ["-i", str(Path(id_file).expanduser())]
     ssh_args.append(f"{user}@{host}")
-    os.execvp("ssh", ssh_args)
+    _exec_handoff("ssh", ssh_args)
 
 
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")

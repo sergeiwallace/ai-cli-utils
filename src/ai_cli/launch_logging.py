@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TextIO
 
 from . import config
+from .output import inert
 
 _LOG_DIRECTORY = "launch-logs"
 _MAX_LOGS_PER_SESSION = 20
@@ -53,13 +54,18 @@ class _LoggingStderr(TextIO):  # type: ignore[misc]
         self._partial += message
         while "\n" in self._partial:
             line, self._partial = self._partial.split("\n", 1)
-            if line:
-                self._logger.log(_log_level(line), line)
+            self._log(line)
         return written
+
+    def _log(self, line: str) -> None:
+        # A terminal record ends in CR LF and may lead with a row clear; the file keeps the text.
+        line = inert(line)
+        if line.strip():
+            self._logger.log(_log_level(line), line)
 
     def flush(self) -> None:
         if self._partial:
-            self._logger.log(_log_level(self._partial), self._partial)
+            self._log(self._partial)
             self._partial = ""
         self._stream.flush()
 

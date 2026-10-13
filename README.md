@@ -501,6 +501,11 @@ a launch can be read at a glance and its log replayed later:
   per-launch log under the state directory receive the plain text. Set `NO_COLOR`
   to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
+- Every line starts at column 0 of its own row and the process exits on a fresh row,
+  even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a
+  child process has its control characters removed, and when ssh hands the terminal
+  back the launcher restores its output settings and moves to a fresh row without
+  erasing what the remote side printed.
 
 ### Every output line carries a tag
 
