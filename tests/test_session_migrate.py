@@ -22,7 +22,7 @@ from conftest import run_cli, snapshot_tree
 from ai_cli import session_registry
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
-from ai_cli.config import get_xdg_state_home
+from ai_cli.config import get_xdg_config_home, get_xdg_state_home
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
@@ -428,3 +428,27 @@ def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_sta
     assert f"task namespace {old_ns} left in place: it still holds notes.txt" in err
     assert (old_ns / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
     assert (old_ns / ".highwatermark").is_file()
+
+
+def test_given_a_live_session_when_migrating_then_no_new_artifact_class_is_touched(held_slot, tmp_path):
+    _git("switch", "-q", "-c", "topic", cwd=held_slot["wt"])
+    (held_slot["claude"] / "tasks" / OLD / ".lock").write_text("")
+    log = tmp_path / "hook-calls.jsonl"
+    hooks = get_xdg_config_home() / "session-migrate.d"
+    hooks.mkdir(parents=True)
+    script = tmp_path / "record.py"
+    script.write_text(f"open({str(log)!r}, 'a').write('called')\n")
+    (hooks / "record.toml").write_text(f'name = "record"\nargv = [{json.dumps(str(script))}]\n')
+    sessions = held_slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(held_slot["wt"]), "sessionId": UUID})
+    )
+    before = _everything(held_slot)
+    refs = _git("for-each-ref", cwd=held_slot["repo"])
+    code, _out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 1
+    assert "still running" in err
+    assert _everything(held_slot) == before
+    assert _git("for-each-ref", cwd=held_slot["repo"]) == refs
+    assert not log.exists()

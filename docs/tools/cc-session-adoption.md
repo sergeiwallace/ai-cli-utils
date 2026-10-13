@@ -468,6 +468,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
+| State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
 is not running), the rest of the repo-root memory directory (shared by every session

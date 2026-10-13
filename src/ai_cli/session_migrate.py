@@ -22,7 +22,10 @@ tasks, memory and resume hand-off:
   bookkeeping remains;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
-  session maps and the iTerm2 restore registry.
+  session maps and the iTerm2 restore registry;
+* whatever the external hooks in ``session-migrate.d/`` declare
+  (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
+  the first write and run after the core moves.
 
 Every refusal is checked before the first write, in ``--dry-run`` too: the slot
 must be a registered worktree, nothing may already exist at the new slot or its
@@ -47,6 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as _config
+from . import session_migrate_hooks as _hooks
 from . import session_registry as _session_registry
 from .branch_rename import rename_branch_anchored
 from .canonical_worktrees import (
@@ -105,6 +109,8 @@ class PlannedMove:
             return f"{self.kind}: {self.source} -> {self.dest}"
         if self.action == "conflict":
             return f"{self.kind}: {self.source} -> {self.dest} SKIPPED (target exists)"
+        if self.action == "report":
+            return f"{self.kind}: {self.source}"
         return f"{self.kind}: {self.source} ({self.action}{': ' + self.dest if self.dest else ''})"
 
 
@@ -271,6 +277,27 @@ def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
     return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
 
 
+def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] | None) -> list[_hooks.Hook]:
+    """Run every external hook with ``--dry-run``; any refusal refuses the migration.
+
+    The hooks' planned lines are appended to ``report`` when one is given.
+    """
+    try:
+        hooks = _hooks.load_hooks()
+    except _hooks.HookConfigError as exc:
+        raise MigrationError(f"{exc} -- refusing before any write") from exc
+    for hook in hooks:
+        run = _hooks.run_hook(hook, old, new, dry_run=True, cwd=repo_root)
+        if not run.ok:
+            raise MigrationError(
+                f"hook {hook.name} ({hook.path}) refused the migration (exit {run.returncode}): "
+                f"{run.stderr or '(no stderr)'}"
+            )
+        if report is not None:
+            report += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+    return hooks
+
+
 def _plan_iterm2(old: str) -> list[PlannedMove]:
     try:
         doc = _session_registry.load_registry()
@@ -407,6 +434,7 @@ def migrate_session(
             result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
     for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
         result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
     if dry_run:
         return result
 
@@ -459,6 +487,15 @@ def migrate_session(
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
         _apply_iterm2(old, new)
+
+    for hook in hooks:
+        run = _hooks.run_hook(hook, old, new, dry_run=False, cwd=repo_root)
+        moves += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+        if not run.ok:
+            result.warnings.append(
+                f"hook {hook.name} ({hook.path}) FAILED (exit {run.returncode}): {run.stderr or '(no stderr)'} "
+                f"-- the core moves are done; re-run the hook alone to finish"
+            )
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)
