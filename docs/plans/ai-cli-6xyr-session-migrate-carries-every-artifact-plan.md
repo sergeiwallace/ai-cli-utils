@@ -55,6 +55,8 @@ Coverage index (non-authoritative):
   - [T-02: External rekey hooks (the public package reaches private tooling)](#t-02-external-rekey-hooks-the-public-package-reaches-private-tooling)
   - [T-03: Session-named agent worktrees and branches across every repo (gap 5)](#t-03-session-named-agent-worktrees-and-branches-across-every-repo-gap-5)
   - [T-04: held migrate verb in ai-harness (gaps 2 and 3)](#t-04-held-migrate-verb-in-ai-harness-gaps-2-and-3)
+  - [T-05: session-adopt runs the hooks (adopt parity)](#t-05-session-adopt-runs-the-hooks-adopt-parity)
+  - [T-06: hooks for the classes D-5 deferred](#t-06-hooks-for-the-classes-d-5-deferred)
 - [Batch Plan](#batch-plan)
 - [Implementation Audit](#implementation-audit)
 - [Human Gates](#human-gates)
@@ -65,6 +67,7 @@ Coverage index (non-authoritative):
   - [D-3: Scope of gap 5 (agent worktrees and branches)](#d-3)
   - [D-4: How the held store moves (commit in the pad, ship separately)](#d-4)
   - [D-5: Unmeasured session-keyed classes: carry now or defer](#d-5)
+  - [D-6: How a message-board identity follows a rename](#d-6)
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
@@ -258,12 +261,67 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 
 **Dependencies:** T-02 contract (the argv shape), not its code.
 
+### T-05: session-adopt runs the hooks (adopt parity)
+
+**Size:** S
+**Batch:** 3
+
+Answers Open Question 1. An `ai session-adopt` that retitles a session (`-c retitle` with `-T`/`-I`)
+renames it, so it runs the T-02 hooks under the same contract, with `--old` the title the session
+had and `--new` the title it is adopted under. An adoption that keeps its title runs no hook:
+nothing keyed by the name changed, and a rekey of a name onto itself is the identity.
+
+**Deliverables:**
+
+- Files modified: `src/ai_cli/session_migrate_hooks.py` (`plan_hooks`, `run_hooks`, `failure_warning`, shared by both verbs), `src/ai_cli/session_migrate.py` (uses them), `src/ai_cli/session_adopt.py` (plan before the first write, live after the core moves), `src/ai_cli/main.py` (prints the hook lines), `docs/reference/session-migrate-hooks.md`, `README.md`
+- Tests added: `tests/test_session_adopt_hooks.py`
+
+**Acceptance criteria:**
+
+- [x] AC-5.1 When a retitling adoption is dry-run (`-n`), every hook shall be invoked once with `--old <title> --new <new title> --dry-run`, each stdout line listed as `hook <name>: <line>`, and the transcript shall be unchanged.
+- [x] AC-5.2 When a retitling adoption is applied, every hook shall run once without `--dry-run`, after the transcript has moved.
+- [x] AC-5.3 If a hook exits non-zero while planning, then the adoption shall be refused quoting the hook's stderr, with the transcript and the destination project directory unchanged.
+- [x] AC-5.4 If a hook exits non-zero on its live run, then the remaining hooks shall still run, a `FAILED` warning shall name it, and the command shall exit 1.
+- [x] AC-5.5 While an adoption keeps the session's title, no hook shall be invoked.
+
+**Dependencies:** T-02.
+
+### T-06: hooks for the classes D-5 deferred
+
+**Size:** M
+**Batch:** 3 (the private harness repository; lands through its own PR)
+
+Resolves D-5's deferral (D-6 records the one new decision). The private harness installs one T-02
+hook per class next to the held-store hook of T-04, each a separate file so a refusal names its
+class: the message-board identity and its per-session marker files, pending relayed lines and held
+relay notices; the relay keypair; the context supervisor's per-key sensing state and wake markers,
+which the resume-tree rekey of `rekey_name_artifacts` does not reach because they are named by a
+hash of the key or sit in the resume root itself; and every queued or landed goal-ledger row
+targeting the old name (an appended snapshot; history rows are left alone, as D-5 requires).
+
+Measured and deliberately not carried: the goal waker's own per-session state and its nudge markers
+are keyed by the Claude Code session id (the transcript UUID), which a rename does not change, so
+they are left where they are; the file-and-line evidence is recorded in that repository's hook
+module, beside the code that would otherwise have to move them. The status line's context-percent
+cache is keyed by the session id too.
+
+**Acceptance criteria:**
+
+- [x] AC-6.1 When `ai session-migrate OLD NEW` applies with the harness installed, the board identity, the relay key, the per-session marker files and the supervisor state keyed by OLD shall be re-keyed to NEW, each proved by a test that drives the hook's own entry point against a throwaway HOME.
+- [x] AC-6.2 If a class would lose data (unread board mail it cannot prove empty, a relay key or directory binding already held by NEW), then its hook shall refuse while planning, naming the artifact, so the whole migration is refused before any write.
+- [x] AC-6.3 When `--dry-run`, every hook shall print its plan and write nothing (byte and mtime snapshot of every state root unchanged).
+- [x] AC-6.4 When a file carrying OLD exists that no installed hook plans to move and no reasoned exclusion names, the inventory test shall fail (falsified: a seeded `sessions/<old>.newthing.json` turned it red).
+- [x] AC-6.5 The goal waker's state shall be either carried, if keyed by name, or recorded here as transcript-keyed with evidence; it is transcript-keyed (see above), and the name-keyed goal ledger it reads is carried.
+
+**Dependencies:** T-02 contract, T-05 for the adopt route.
+
 ## Batch Plan
 
 | Batch | Tasks | Focus | Exit gate |
 |-------|-------|-------|-----------|
 | 1 | T-01, T-02, T-04 | Core gaps, the hook contract, the ai-harness verb (parallel; T-04 in its own repo) | All batch ACs checked; ai-cli-utils `ruff check`, `ruff format --check`, `pyright src/`, `pytest` green; ai-harness `held_cli` + guard tests green; both PRs merged and content-verified on `origin/main` |
 | 2 | T-03 | Agent worktrees and branches across repos | All T-03 ACs checked; same ai-cli-utils gate green; PR merged and content-verified |
+| 3 | T-05, T-06 | Adopt parity; the classes D-5 deferred (T-06 in the private harness repository) | All T-05/T-06 ACs checked; both gates green; both PRs merged and content-verified |
 
 > **Feedback Round 1:** Does the batching make sense? Should any tasks be reordered, split, or merged?
 > - <enter feedback here>
@@ -305,6 +363,17 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
   `session-migrate.d/held.toml` idempotently (`tests/test_install_session_migrate_held_hook.py`).
   Serial gate on the merge base: `223 passed`, `115 passed, 1 skipped`, ruff clean.
 
+### T-05
+
+- [x] AC-5.1 … AC-5.5: `tests/test_session_adopt_hooks.py`, one test per AC, each through
+  `ai session-adopt`.
+
+### T-06
+
+- [x] AC-6.1 … AC-6.5: in the private harness repository's hook tests, each through the hook's own
+  entry point as a subprocess. Guards falsified: the unread-mail refusal, the held-notice release
+  key, and the inventory sweep.
+
 **Audit completed:** <!-- YYYY-MM-DD -->
 
 ## Human Gates
@@ -323,7 +392,8 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 | D-2 | Renaming a branch a ref-deletion guard refuses | (a) anchor under `refs/preserved/session-migrate/` then `git branch -m`, (b) `git branch -c` + guarded delete, (c) leave unrenamed and report | (a) | (a) | No | Only sanctioned by-hand anchor namespace; also the crash-safe shape | `Resolved` |
 | D-3 | Scope of gap 5 | (a) move worktrees and rename every `wt/<old>/*` branch, skipping live-held, (b) worktrees only, (c) report only | (a) | (a) | No | Ownership is inferred from the names; a half rename is a wrong owner | `Resolved` |
 | D-4 | How the held store moves | (a) commit in the new pad, print the ship command, (b) commit and ship | (a) | (a) | No | `ship` needs a forge CLI absent on a fleet host; a half-ship is worse than a durable pad commit | `Resolved` |
-| D-5 | Unmeasured session-keyed classes | (a) carry Agent Mail, Buzz, issue-tracker assignee, ledgers now, (b) defer to a follow-up through the D-1 hook; ledgers never rewritten | (b) | (b) | No | Identity form is mid-change under another owner; ledgers are history | `Resolved` |
+| D-5 | Unmeasured session-keyed classes | (a) carry Agent Mail, Buzz, issue-tracker assignee, ledgers now, (b) defer to a follow-up through the D-1 hook; ledgers never rewritten | (b) | (b) | No | Identity form is mid-change under another owner; ledgers are history | `Resolved`; deferral closed by T-06 |
+| D-6 | How a message-board identity follows a rename | (a) retire the old identity once its inbox is proved empty and let the board's own registrar register the new one, refusing otherwise, (b) the hook registers the new identity and forwards unread mail, (c) map the new name onto the old identity | (a) | (a) | No | The board moves no mail between identities; (a) loses nothing and keeps one writer of the identity map | `Resolved` |
 
 ### Decision Details
 
@@ -578,6 +648,62 @@ The Con is mitigated by filing the follow-up in ai-harness before this run close
 in the Approval Log) and by the migration's output ending with the hook summary, so an operator sees
 which hooks ran.
 
+**Deferral closed (2026-10-13).** T-06 carries every class above except the issue-tracker assignee
+and the lifecycle ledgers, through hooks installed beside the held-store hook. The tracker assignee
+stays out: it is a record of who was assigned, written by people, not state keyed for lookup.
+Ledgers stay history, as decided. The message-board identity needed one new decision, D-6.
+
+---
+
+<a id="d-6"></a>
+
+#### D-6: How a message-board identity follows a rename — ✅ Resolved: (a) retire once proved empty, refuse otherwise
+
+**Context.** A session's board identity is addressed as `<host>--<name>`, so a renamed session
+needs a new one; the board has no operation that moves messages between identities or renames an
+identity, and its local poller is the single writer of the name-to-identity map.
+
+##### (a) Retire the old identity once its inbox is proved empty; the poller registers the new one
+
+**Pros:**
+
+- Loses nothing: a non-empty or unprovable inbox refuses the migration while nothing has moved.
+- Keeps one writer of the identity map (the retirement goes through the poller's own request file).
+- The new identity is registered by the same path every new session takes.
+
+**Cons:**
+
+- A host whose poller is down cannot migrate a session that has a board identity until it runs.
+
+##### (b) The hook registers the new identity and forwards unread mail
+
+**Pros:**
+
+- Migrates even with unread mail.
+
+**Cons:**
+
+- Forwarded mail loses its sender (the hook holds no sender's credential), and the hook becomes a
+  second writer of the identity map.
+
+##### (c) Map the new name onto the old identity
+
+**Pros:**
+
+- Unread mail stays where it is.
+
+**Cons:**
+
+- Peers address the new name, which resolves to an identity that does not exist: mail never arrives.
+
+##### Recommendation
+
+> **Decision:** ✅ Resolved — (a) retire once proved empty, refuse otherwise
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5[1m]; ai-effort=high; ai-profile=engineer -->
+
+The down-poller Con is accepted and named in the refusal, which says to start the poller and retry;
+the proof it needs is the poller's last pass, no older than five minutes.
+
 ---
 
 > **Feedback Round 1:** Your approval/feedback on each decision:
@@ -592,6 +718,8 @@ which hooks ran.
 
 1. Should `ai session-adopt` run the D-1 hooks too once it shares the planner (the migrate/adopt
    split task)? Nothing here prevents it; the hook runner takes old and new names only.
+   **Answered (T-05):** yes, whenever the adoption changes the session's name, under the same
+   refuse-before-write contract.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
@@ -604,6 +732,7 @@ which hooks ran.
 | 2026-10-12 | D-1 … D-5 resolved | Coordinating AI (claude, us.anthropic.claude-fable-5-1[1m]) | Authority test passed for each: reversible, inside the operator's pre-approved run, no interface outside the two repos |
 | 2026-10-12 | D-5 follow-up filed | Coordinating AI | The deferred classes (Agent Mail state, Buzz identity merge, tracker assignee; ledgers never rewritten) are an ai-harness issue filed the same day and linked from the owning ai-harness task |
 | 2026-10-13 | Batch 1 exit gate met | Coordinating AI | #261 (this repo) and ai-harness #3138 merged, verified by content on `origin/main`, main trees synced, the T-01/T-02 child worktree reaped with proof |
+| 2026-10-13 | D-5 deferral closed; D-6 resolved | Implementing AI (claude, us.anthropic.claude-opus-5-5[1m]) | T-05 and T-06 added; Authority test passed for D-6: reversible, inside the requested scope, no interface outside the two repos |
 
 <!-- /doc:region name="overview" -->
 
