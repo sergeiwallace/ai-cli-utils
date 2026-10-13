@@ -338,23 +338,30 @@ ai attach <name>   # Attach directly to a named tmux session
 
 ### Chief-of-staff (firstmate) session
 
-One coordinating session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository). `-F/--firstmate` is a mode on every engine command, so the chief can be any agent you launch. These examples use project prefix `ai-cli` and host alias `box`:
+One coordinating session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository). `-F/--firstmate` is a mode on every engine command, so the chief can be any agent you launch. A chief always launches into the `ai-harness` repository (prefix `aih`), whatever repository you run the command from. These examples use host alias `fw`:
 
 ```bash
-ai c -F/--firstmate         # Claude chief: session ai-cli-box-firstmate-1, tmux c-ai-cli-box-firstmate-1
-ai c --firstmate review     # Optional suffix: ai-cli-box-firstmate-review-1, tmux c-ai-cli-box-firstmate-review-1
-ai p --firstmate            # Same mode on Pi: tmux p-ai-cli-box-firstmate-1 (likewise `ai g`, `ai cx`)
+ai c firstmate              # Claude chief: session aih-fw-firstmate-1, tmux c-aih-fw-firstmate-1
+ai c firstmate-3            # Chief in slot 3: aih-fw-firstmate-3 (any integer N)
+ai c 3 -F/--firstmate       # The same slot through the flag; `ai c -F` takes the next free slot
+ai c firstmate -p aih       # -p may name ai-harness (by prefix or directory), never another project
+ai c --firstmate review     # Optional suffix: aih-fw-firstmate-review-1
+ai p --firstmate            # Same mode on Pi: tmux p-aih-fw-firstmate-1 (likewise `ai g`, `ai cx`)
 ai cos                      # Shorthand for `ai c --firstmate` (takes the same optional suffix)
 ai c -F -k/--machine-key K  # Machine key naming the chief home (default: $AI_MACHINE_ID)
 ai c -F -H/--fm-home DIR    # Use an explicit chief home instead of $XDG_STATE_HOME/firstmate/chief-of-staff/<key>
 ai c -F --dry-run           # Print the resolved plan; registers and starts nothing
+ai c firstmate-2 -R -m fw   # Run the chief on remote machine `fw`: named, homed and registered there
+ai cos -R -m fw             # Same, through the shorthand
 ```
 
-The name is `{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session, and the worktree lands at `.worktrees/{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`. Launch it from whichever repository root you want the chief's worktree in — nothing ties it to a particular repo.
+The name is `aih-{host-alias}-firstmate-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `ai-harness/.worktrees/aih-{host-alias}-firstmate-[suffix-]{index}`. A positional `firstmate` or `firstmate-N` is the chief launch itself, with everything `--firstmate` does; any other name carrying a `firstmate` segment (`firstmate-x`) is refused without the flag, so an ordinary session can never pass for the chief.
 
 Worktree isolation is **on**, like every other session: a session working in a main tree is the exception, not the chief. Pass `-W/--no-worktree` if you want the chief in the repo root instead.
 
-`-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); a chief launch refuses a missing or unseeded home, refuses `-R/--remote` (a chief runs on the machine it coordinates), and refuses a second chief while the first's tmux session is running (attach to it instead). On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json`, then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
+`-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); a chief launch refuses a missing or unseeded home and refuses a second chief while the first's tmux session is running (attach to it instead). On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json`, then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
+
+A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--firstmate`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, refuses a second live chief there, writes the registration there and names the session under the remote host's alias (`c-r-aih-{remote-alias}-firstmate-{index}`). Nothing is resolved or written on the dispatching machine, so it needs neither a chief home nor the remote's host alias.
 
 ### SSH tunnels
 

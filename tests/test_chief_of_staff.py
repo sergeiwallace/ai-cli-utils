@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import stat
+import types
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,46 @@ from conftest import run_cli
 from ai_cli import chief_of_staff as cos
 
 VALID_POLICY = '{"schema_version":1,"primary":"native","fallbacks":["agent-mail","fm-send"]}\n'
+
+
+@pytest.fixture(autouse=True)
+def harness_project(tmp_path, monkeypatch):
+    """ai-harness as a registered project (prefix ``aih``) checked out in a temp tree.
+
+    Every chief launches into ai-harness whatever the cwd, so the launch resolves that
+    project by name and enters its directory. ``monkeypatch.chdir`` first, so the launch's
+    own chdir is undone at teardown.
+    """
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "projects"
+    (projects / cos.CHIEF_PROJECT).mkdir(parents=True)
+    monkeypatch.setattr("ai_cli.config._find_project_dir", lambda name, _home=None: projects / name)
+    monkeypatch.setattr("ai_cli.config.get_project_aliases", lambda: {"aih": cos.CHIEF_PROJECT})
+
+    def prefix_for(name):
+        from ai_cli.config import ProjectPrefixError
+
+        if name in ("aih", cos.CHIEF_PROJECT):
+            return "aih"
+        raise ProjectPrefixError(f"Unknown project {name!r}")
+
+    monkeypatch.setattr("ai_cli.config.resolve_project_prefix_by_name", prefix_for)
+    return projects / cos.CHIEF_PROJECT
+
+
+@pytest.fixture
+def click_expands_like_windows(monkeypatch):
+    """Make Click take its Windows-only argv expansion branch (``~`` and globs) on every OS.
+
+    Click decides with ``os.name == "nt"`` inside ``click.core``; only that module's view of
+    ``os`` is swapped, so nothing else in the process believes it is on Windows.
+    """
+    import click.core
+
+    real_os = click.core.os
+    windows_view = {k: getattr(real_os, k) for k in dir(real_os) if not k.startswith("__")}
+    windows_view["name"] = "nt"
+    monkeypatch.setattr(click.core, "os", types.SimpleNamespace(**windows_view))
 
 
 @pytest.fixture
@@ -163,7 +204,7 @@ def _launch_patches(stack: ExitStack, live: bool, real_names: bool = False):
         targets.append(
             (
                 "ai_cli.session.build_session_name",
-                {"return_value": ("c-myproject-firstmate-1", "myproject-firstmate-1")},
+                {"return_value": ("c-aih-firstmate-1", "aih-firstmate-1")},
             )
         )
     for target, kwargs in targets:
@@ -227,7 +268,7 @@ class TestCosCommand:
             assert code == 0, err
             plan.assert_called_once()
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        expected_name = "myproject-box-firstmate-" + ("review-" if suffix else "") + "1"
+        expected_name = "aih-box-firstmate-" + ("review-" if suffix else "") + "1"
         assert plan.call_args.kwargs["ai_name"] == expected_name
         assert registration["native_agent_name"] == plan.call_args.kwargs["ai_name"]
         assert registration["tmux_target"] == plan.call_args.kwargs["session_id"]
@@ -252,11 +293,11 @@ class TestCosCommand:
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
         assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-firstmate-1"
-        assert registration["tmux_target"] == "c-myproject-firstmate-1"
+        assert registration["native_agent_name"] == "aih-firstmate-1"
+        assert registration["tmux_target"] == "c-aih-firstmate-1"
         assert registration["machine_key"] == "machine-key-1"
         assert registration["machine_name"] == "workstation"
-        assert "chief-of-staff registered: agent myproject-firstmate-1" in err
+        assert "chief-of-staff registered: agent aih-firstmate-1" in err
 
     def test_given_no_worktree_requested_when_launched_then_isolation_is_off(self, seeded_home):
         with ExitStack() as stack:
@@ -298,8 +339,8 @@ class TestCosCommand:
             json.dumps(
                 {
                     "schema_version": 1,
-                    "native_agent_name": "myproject-firstmate-1",
-                    "tmux_target": "c-myproject-firstmate-1",
+                    "native_agent_name": "aih-firstmate-1",
+                    "tmux_target": "c-aih-firstmate-1",
                 }
             )
         )
@@ -309,15 +350,15 @@ class TestCosCommand:
             launch.assert_not_called()
         assert code == 1
         assert "already running" in err
-        assert "ai attach c-myproject-firstmate-1" in err
+        assert "ai attach c-aih-firstmate-1" in err
 
     def test_given_dead_registration_when_launched_then_re_registers_with_next_generation(self, seeded_home):
         cos.registration_path(seeded_home).write_text(
             json.dumps(
                 {
                     "schema_version": 1,
-                    "native_agent_name": "myproject-firstmate-1",
-                    "tmux_target": "c-myproject-firstmate-1",
+                    "native_agent_name": "aih-firstmate-1",
+                    "tmux_target": "c-aih-firstmate-1",
                 }
             )
         )
@@ -336,17 +377,8 @@ class TestCosCommand:
             assert code == 0, err
             assert launch.call_args.kwargs["name"] == "firstmate-review"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-1"
-        assert registration["tmux_target"] == "c-myproject-tst-firstmate-review-1"
-
-    def test_given_remote_requested_when_launched_then_usage_error(self, seeded_home):
-        with patch("ai_cli.main._do_session_launch") as launch:
-            code, _out, err = run_cli(["ai", "cos", "-R"])
-        # cli() maps click usage errors to exit 1 on purpose (its docstring: the exit
-        # contract matches the argparse dispatcher it replaced).
-        assert code == 1
-        assert "--remote" in err
-        launch.assert_not_called()
+        assert registration["native_agent_name"] == "aih-tst-firstmate-review-1"
+        assert registration["tmux_target"] == "c-aih-tst-firstmate-review-1"
 
     def test_given_explicit_home_option_when_launched_then_that_home_is_used(self, tmp_path, monkeypatch):
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
@@ -386,8 +418,8 @@ class TestFirstmateFlag:
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
         assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-tst-firstmate-1"
-        assert registration["tmux_target"] == "c-myproject-tst-firstmate-1"
+        assert registration["native_agent_name"] == "aih-tst-firstmate-1"
+        assert registration["tmux_target"] == "c-aih-tst-firstmate-1"
 
     def test_given_a_positional_suffix_when_launched_then_it_sits_between_firstmate_and_the_index(self, seeded_home):
         with ExitStack() as stack:
@@ -396,8 +428,8 @@ class TestFirstmateFlag:
             assert code == 0, err
             assert launch.call_args.kwargs["name"] == "firstmate-review"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-1"
-        assert registration["tmux_target"] == "c-myproject-tst-firstmate-review-1"
+        assert registration["native_agent_name"] == "aih-tst-firstmate-review-1"
+        assert registration["tmux_target"] == "c-aih-tst-firstmate-review-1"
 
     def test_given_an_unsafe_suffix_when_launched_then_it_is_sanitized_like_any_session_name(self, seeded_home):
         with ExitStack() as stack:
@@ -405,7 +437,7 @@ class TestFirstmateFlag:
             code, _out, err = run_cli(["ai", "c", "--firstmate", "Review/Queue"])
             assert code == 0, err
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-queue-1"
+        assert registration["native_agent_name"] == "aih-tst-firstmate-review-queue-1"
 
     @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
     def test_given_any_engine_when_firstmate_then_that_engine_launches_as_the_chief(self, engine, seeded_home):
@@ -417,7 +449,7 @@ class TestFirstmateFlag:
         assert kwargs["engine"] == engine
         assert kwargs["name"] == "firstmate"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["tmux_target"] == f"{engine}-myproject-tst-firstmate-1"
+        assert registration["tmux_target"] == f"{engine}-aih-tst-firstmate-1"
 
     def test_given_no_worktree_requested_when_firstmate_then_isolation_is_off(self, seeded_home):
         with ExitStack() as stack:
@@ -425,13 +457,6 @@ class TestFirstmateFlag:
             code, _out, err = run_cli(["ai", "c", "--firstmate", "-W"])
             assert code == 0, err
             assert launch.call_args.kwargs["no_worktree"] is True
-
-    def test_given_firstmate_with_remote_when_launched_then_usage_error(self, seeded_home):
-        with patch("ai_cli.main._do_session_launch") as launch:
-            code, _out, err = run_cli(["ai", "c", "--firstmate", "-R"])
-        assert code == 1
-        assert "--remote" in err
-        launch.assert_not_called()
 
     def test_given_explicit_home_and_key_when_firstmate_then_that_home_is_used(self, tmp_path, monkeypatch):
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
@@ -450,8 +475,8 @@ class TestFirstmateFlag:
             json.dumps(
                 {
                     "schema_version": 1,
-                    "native_agent_name": "myproject-firstmate-1",
-                    "tmux_target": "c-myproject-firstmate-1",
+                    "native_agent_name": "aih-firstmate-1",
+                    "tmux_target": "c-aih-firstmate-1",
                 }
             )
         )
@@ -506,3 +531,352 @@ def test_tmux_env_forwarding_carries_the_chief_home_and_role_only_when_set():
     assert not any(flag.startswith(("FM_HOME=", "AI_SESSION_ROLE=")) for flag in plain)
     xdg = next(flag for flag in plain if flag.startswith("XDG_STATE_HOME="))
     assert Path(xdg.split("=", 1)[1]).is_absolute()
+
+
+REMOTE_CONFIG = {
+    "remote": {
+        "default": "hz",
+        "machines": {
+            "fw": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"},
+            "hz": {"host": "hz.example.com", "user": "root", "port": 22, "identity_file": "", "transport": "ssh"},
+        },
+    }
+}
+
+
+def _explode(*_args, **_kwargs):
+    raise AssertionError("a remote chief dispatch resolved or wrote chief state on the dispatching machine")
+
+
+def _dispatcher_patches(stack: ExitStack) -> None:
+    """The dispatching machine as the Mac sees it: no chief home, no host alias for this repo.
+
+    Every chief-home call and every network call is a tripwire, so the dispatching side is
+    proved to resolve, check and write nothing about the chief: that is all the remote's.
+    """
+    for target in (
+        "ai_cli.chief_of_staff.resolve_chief_home",
+        "ai_cli.chief_of_staff.read_registration",
+        "ai_cli.chief_of_staff.write_registration",
+        "ai_cli.main.subprocess.run",
+        "os.execvp",
+    ):
+        stack.enter_context(patch(target, side_effect=_explode))
+    from ai_cli.session_naming import HostAliasError
+
+    stack.enter_context(
+        patch("ai_cli.session_naming.resolve_host_alias", side_effect=HostAliasError("no host alias here"))
+    )
+    stack.enter_context(patch("ai_cli.session.get_project_prefix", return_value="aih"))
+    stack.enter_context(patch("ai_cli.config.get_current_project_name", return_value="ai-harness"))
+    stack.enter_context(patch("ai_cli.direnv_setup.ensure_direnv"))
+    real_which = shutil.which
+    stack.enter_context(
+        patch(
+            "shutil.which",
+            side_effect=lambda cmd, *a, **k: f"/usr/bin/{cmd}" if cmd in {"pi", "codex"} else real_which(cmd, *a, **k),
+        )
+    )
+
+
+class TestRemoteChief:
+    """A chief runs on whichever machine it is launched on; `-R` puts it on the remote one.
+
+    Cross-machine messaging reaches it wherever it runs, so the dispatching machine only
+    plans the ssh hand-off and forwards ``--firstmate``; the remote ``ai`` owns the chief
+    home, the one-chief check, the registration and the host-aliased session name.
+    """
+
+    @pytest.mark.parametrize("command", [["cos"], ["c", "-F"], ["g", "-F"], ["p", "-F"], ["cx", "--firstmate"]])
+    def test_given_remote_machine_when_chief_dry_run_then_plan_hands_the_chief_to_that_host(
+        self, command, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        engine = "c" if command == ["cos"] else command[0]
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, out, err = run_cli(["ai", *command, "-R", "-m", "fw", "--dry-run"], config=REMOTE_CONFIG)
+        assert code == 0, err
+        assert "target host  dev@fw.example.com:22 (ssh)" in out
+        assert (
+            f"remote cmd   ai {engine} --is-remote --project-prefix aih --project ai-harness --firstmate firstmate"
+            in out
+        )
+        assert "role         chief-of-staff" in out
+        assert not (tmp_path / "state" / "firstmate").exists()
+
+    def test_given_home_options_when_remote_chief_dry_run_then_they_reach_the_remote_ai_unexpanded(
+        self, monkeypatch, tmp_path, click_expands_like_windows
+    ):
+        """The remote machine resolves ``~`` against its own home, so the dispatcher must not.
+
+        Run with Click's Windows argument expansion switched on, on every OS: that expansion
+        is what turned ``~/chief home`` into the dispatching machine's own path before it was
+        forwarded (caught by test-windows on the first push).
+        """
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "dispatcher-home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "dispatcher-home"))
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, out, err = run_cli(
+                ["ai", "cos", "-R", "-m", "fw", "-k", "key-x", "-H", "~/chief home", "review", "--dry-run"],
+                config=REMOTE_CONFIG,
+            )
+        assert code == 0, err
+        assert "--firstmate --machine-key key-x --fm-home '~/chief home' firstmate-review" in out
+        assert "dispatcher-home" not in out
+
+    @pytest.mark.parametrize(
+        ("argv", "expands"),
+        [
+            (["cos", "-R"], False),
+            (["c", "-F", "-H", "~/x"], False),
+            (["-v", "cx"], False),
+            (["cc-migrate", "~/dest"], True),
+            ([], True),
+        ],
+    )
+    def test_given_a_command_when_windows_argv_expansion_decided_then_only_session_launches_opt_out(
+        self, argv, expands
+    ):
+        from ai_cli.main import _windows_expand_args
+
+        assert _windows_expand_args(argv) is expands
+
+    def test_given_tilde_home_when_local_chief_launched_then_it_still_expands_here(
+        self, tmp_path, monkeypatch, click_expands_like_windows
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        home = tmp_path / "dispatcher-home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        chief_home = home / "chief home"
+        (chief_home / "config").mkdir(parents=True)
+        (chief_home / "config" / "message-transports.json").write_text(VALID_POLICY)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "-F", "-k", "key-x", "-H", "~/chief home"])
+            assert code == 0, err
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(chief_home)
+
+    def test_given_unconfigured_remote_machine_when_chief_launched_then_refuses_before_anything(self, monkeypatch):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, _out, err = run_cli(["ai", "cos", "-R", "-m", "nope", "--dry-run"], config=REMOTE_CONFIG)
+        assert code == 1
+        assert "nope" in err
+        assert "fw, hz" in err
+
+    def test_given_real_dispatch_when_remote_chief_launched_then_ssh_carries_firstmate_and_the_allocated_slot(
+        self, monkeypatch, tmp_path
+    ):
+        from conftest import _run_cli_with_args
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        with (
+            patch("ai_cli.main.sys.platform", "linux"),
+            patch("ai_cli.chief_of_staff.write_registration", side_effect=_explode),
+        ):
+            runner = _run_cli_with_args(["ai", "cos", "-R", "-m", "fw"], REMOTE_CONFIG, capture_ssh_runner=True)
+        runner.assert_called_once()
+        ssh_args = runner.call_args[0][0]
+        assert "dev@fw.example.com" in ssh_args
+        assert ssh_args[-1].endswith("--firstmate c-r-aih-firstmate-1'")
+
+    def test_given_allocated_remote_slot_when_remote_side_runs_then_it_registers_that_slot_with_its_alias(
+        self, seeded_home, monkeypatch
+    ):
+        from ai_cli import session_naming
+
+        monkeypatch.delenv(cos.FM_HOME_ENV, raising=False)
+        monkeypatch.setattr(session_naming, "resolve_host_alias", lambda: "fw")
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(
+                ["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate", "c-r-aih-fw-firstmate-1"]
+            )
+            assert code == 0, err
+            assert launch.call_args.kwargs["name"] == "c-r-aih-fw-firstmate-1"
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        assert registration["native_agent_name"] == "aih-fw-firstmate-1"
+        assert registration["tmux_target"] == "c-r-aih-fw-firstmate-1"
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
+        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+
+    def test_given_live_chief_on_remote_when_remote_side_runs_then_refuses(self, seeded_home):
+        cos.registration_path(seeded_home).write_text(
+            json.dumps(
+                {"schema_version": 1, "native_agent_name": "aih-fw-firstmate-1", "tmux_target": "c-aih-fw-firstmate-1"}
+            )
+        )
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            code, _out, err = run_cli(
+                ["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate", "c-r-aih-fw-firstmate-2"]
+            )
+            launch.assert_not_called()
+        assert code == 1
+        assert "already running" in err
+
+    def test_given_no_host_alias_on_remote_when_remote_side_runs_then_refuses_without_registration(self, seeded_home):
+        from ai_cli.session_naming import HostAliasError
+
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            stack.enter_context(
+                patch(
+                    "ai_cli.session_naming.resolve_host_alias", side_effect=HostAliasError("no host alias configured")
+                )
+            )
+            code, _out, err = run_cli(["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate"])
+            launch.assert_not_called()
+        assert code == 1
+        assert "no host alias configured" in err
+        assert not cos.registration_path(seeded_home).exists()
+
+
+class TestChiefSessionName:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("", "firstmate"),
+            ("review", "firstmate-review"),
+            ("2", "firstmate-2"),
+            ("firstmate-review", "firstmate-review"),
+            ("aih-fw-firstmate-1", "aih-fw-firstmate-1"),
+            ("c-r-aih-fw-firstmate-1", "c-r-aih-fw-firstmate-1"),
+        ],
+    )
+    def test_given_a_name_when_chief_named_then_firstmate_is_never_doubled(self, name, expected):
+        assert cos.chief_session_name(name) == expected
+
+
+def _real_plan(stack: ExitStack, monkeypatch):
+    """Run the real launch up to its read-only local plan, recording the plan and the cwd."""
+    from ai_cli import main, session_naming
+
+    monkeypatch.setattr(session_naming, "resolve_host_alias", lambda: "fw")
+    real_launch = main._do_session_launch
+    launch = _launch_patches(stack, live=False, real_names=True)
+    stack.enter_context(patch("ai_cli.session._resolve_is_remote", return_value=False))
+    stack.enter_context(patch("ai_cli.tmux_setup.tmux_present", return_value=True))
+    stack.enter_context(patch("ai_cli.direnv_setup.ensure_direnv"))
+    plan = stack.enter_context(patch("ai_cli.main._print_launch_plan"))
+    plan.side_effect = lambda **_kwargs: plan.__dict__.setdefault("cwd", Path.cwd())
+    launch.side_effect = lambda **kwargs: real_launch(**(kwargs | {"dry_run": True}))
+    return launch, plan
+
+
+class TestChiefLaunchForms:
+    """`ai c firstmate[-N]`, `ai c [N] --firstmate`, with or without -R and -p aih, are all the
+    chief launch, named `aih-<host-alias>-firstmate-<N>` in ai-harness whatever the cwd."""
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["firstmate"], "aih-fw-firstmate-1"),
+            (["firstmate-3"], "aih-fw-firstmate-3"),
+            (["firstmate-3", "-p", "aih"], "aih-fw-firstmate-3"),
+            (["firstmate", "-p", "ai-harness"], "aih-fw-firstmate-1"),
+            (["--firstmate"], "aih-fw-firstmate-1"),
+            (["2", "--firstmate"], "aih-fw-firstmate-2"),
+            (["2", "-F", "-p", "aih"], "aih-fw-firstmate-2"),
+        ],
+    )
+    def test_given_a_chief_form_from_another_repo_when_dry_run_then_ai_harness_chief_slot_is_planned(
+        self, argv, expected, seeded_home, harness_project, monkeypatch, tmp_path
+    ):
+        other_repo = tmp_path / "projects" / "other-repo"
+        other_repo.mkdir(parents=True)
+        monkeypatch.chdir(other_repo)
+        with ExitStack() as stack:
+            _launch, plan = _real_plan(stack, monkeypatch)
+            code, _out, err = run_cli(["ai", "c", *argv])
+            assert code == 0, err
+            plan.assert_called_once()
+        assert plan.call_args.kwargs["ai_name"] == expected
+        assert plan.call_args.kwargs["session_id"] == f"c-{expected}"
+        assert plan.cwd == harness_project
+
+    @pytest.mark.parametrize("name", ["firstmate", "firstmate-3"])
+    def test_given_positional_chief_name_when_launched_then_it_registers_and_exports_like_the_flag(
+        self, name, seeded_home, monkeypatch
+    ):
+        from ai_cli import session_naming
+
+        monkeypatch.setattr(session_naming, "resolve_host_alias", lambda: "fw")
+        monkeypatch.delenv(cos.FM_HOME_ENV, raising=False)
+        monkeypatch.delenv(cos.ROLE_ENV, raising=False)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", name])
+            assert code == 0, err
+            kwargs = launch.call_args.kwargs
+        assert kwargs["project"] == cos.CHIEF_PROJECT
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
+        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        assert registration["native_agent_name"] == (
+            "aih-fw-firstmate-3" if name.endswith("3") else "aih-fw-firstmate-1"
+        )
+
+    @pytest.mark.parametrize(
+        ("argv", "remote_tail"),
+        [
+            (["firstmate-2", "-R"], "--firstmate firstmate-2"),
+            (["firstmate", "-R", "-p", "aih"], "--firstmate firstmate"),
+            (["2", "-R", "--firstmate"], "--firstmate firstmate-2"),
+        ],
+    )
+    def test_given_a_chief_form_with_remote_when_dry_run_then_remote_ai_harness_chief_is_planned(
+        self, argv, remote_tail, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        monkeypatch.chdir(tmp_path)
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            stack.enter_context(patch("ai_cli.config.get_current_project_name", return_value="other-repo"))
+            code, out, err = run_cli(["ai", "c", *argv, "-m", "fw", "--dry-run"], config=REMOTE_CONFIG)
+        assert code == 0, err
+        assert f"ai c --is-remote --project-prefix aih --project ai-harness {remote_tail}\n" in out
+
+    @pytest.mark.parametrize("name", ["firstmate-x", "firstmate-review", "aih-fw-firstmate-x"])
+    def test_given_a_malformed_chief_name_without_the_flag_when_launched_then_refuses(self, name, seeded_home):
+        with patch("ai_cli.main._do_session_launch") as launch:
+            code, _out, err = run_cli(["ai", "c", name])
+        assert code == 1
+        assert "firstmate-N" in err
+        launch.assert_not_called()
+        assert not cos.registration_path(seeded_home).exists()
+
+    @pytest.mark.parametrize("argv", [["firstmate", "-p", "other-repo"], ["--firstmate", "-p", "other-repo"]])
+    def test_given_another_project_when_chief_launched_then_refuses(self, argv, seeded_home):
+        with patch("ai_cli.main._do_session_launch") as launch:
+            code, _out, err = run_cli(["ai", "c", *argv])
+        assert code == 1
+        assert "always launches into ai-harness" in err
+        launch.assert_not_called()
+
+    def test_given_a_live_chief_when_positional_chief_launched_then_refuses(self, seeded_home):
+        cos.registration_path(seeded_home).write_text(
+            json.dumps(
+                {"schema_version": 1, "native_agent_name": "aih-fw-firstmate-1", "tmux_target": "c-aih-fw-firstmate-1"}
+            )
+        )
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "firstmate-2"])
+            launch.assert_not_called()
+        assert code == 1
+        assert "already running" in err
+
+    def test_given_an_ordinary_name_when_launched_then_it_is_not_a_chief(self, seeded_home):
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "review-2"])
+            assert code == 0, err
+            assert launch.seen_env[cos.ROLE_ENV] is None
+        assert not cos.registration_path(seeded_home).exists()
