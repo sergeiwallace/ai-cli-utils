@@ -241,3 +241,54 @@ def test_given_the_session_script_source_when_scanned_then_every_message_it_prin
 def test_given_an_untagged_echo_when_the_session_script_is_scanned_then_it_is_reported():
     script = 'echo "[session] fine"\nprintf \'%s\\n\' "Session ended." >&2\necho "x" > "$file"\n'
     assert _untagged(_script_messages(script)) == ["Session ended."]
+
+
+# The one function allowed to exec (AI-CLI-8h3u): it closes any open line and
+# flushes both streams first, because an exec skips atexit and stdio buffers.
+EXEC_HELPER = ("main.py", "_exec_handoff")
+_OS_EXEC = re.compile(r"^(?:os\.)?exec(?:l|le|lp|lpe|v|ve|vp|vpe)$")
+
+
+def scan_execs(source: str, file: str) -> list[Violation]:
+    """Every ``os.exec*`` call or import in ``source`` outside the flushing helper."""
+    tree = ast.parse(source)
+    owner = _enclosing_functions(tree)
+    found: list[Violation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            found.extend(
+                Violation(file, node.lineno, f"imports os.{alias.name}; exec through main._exec_handoff")
+                for alias in node.names
+                if _OS_EXEC.match(alias.name)
+            )
+        elif isinstance(node, ast.Call):
+            func = _dotted(node.func)
+            if func.startswith("os.") and _OS_EXEC.match(func) and (file, owner.get(id(node), "")) != EXEC_HELPER:
+                found.append(Violation(file, node.lineno, f"{func} outside main._exec_handoff"))
+    return found
+
+
+def test_given_the_package_source_when_scanned_then_every_exec_goes_through_the_flushing_helper():
+    violations = [
+        violation
+        for path in sorted(PACKAGE.rglob("*.py"))
+        for violation in scan_execs(path.read_text(encoding="utf-8"), path.name)
+    ]
+    helper = ast.parse((PACKAGE / EXEC_HELPER[0]).read_text(encoding="utf-8"))
+    body = next(n for n in helper.body if isinstance(n, ast.FunctionDef) and n.name == EXEC_HELPER[1])
+    calls = [_dotted(n.func) for n in ast.walk(body) if isinstance(n, ast.Call)]
+    assert not violations, "exec outside the flushing helper:\n" + "\n".join(map(str, violations))
+    assert calls.index("_out.flush_sinks") < calls.index("os.execvp"), calls
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        'import os\ndef launch():\n    os.execvp("tmux", ["tmux"])',
+        'import os\nos.execv("/bin/sh", ["sh"])',
+        "from os import execvpe",
+    ],
+)
+def test_given_an_exec_outside_the_helper_when_scanned_then_it_is_reported(snippet):
+    """Mutation control: a direct exec anywhere else is caught, so the clean result means something."""
+    assert scan_execs(snippet, "main.py")

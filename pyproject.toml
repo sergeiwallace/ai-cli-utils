@@ -111,6 +111,10 @@ dev = [
     # patch() needs the real module importable. Runtime keeps it optional —
     # sync.py imports it lazily and degrades to a .conflict file without it.
     "google-genai>=1.0",
+    # Test-only VT100 screen model: the line-discipline tests assert on the screen a
+    # terminal renders from CR, LF and erase, not on raw bytes. Adopted elsewhere as a
+    # runtime dependency by prompt-toolkit's ptterm and by termtosvg.
+    "pyte>=0.8.2",
 ]
 
 [tool.pytest.ini_options]
