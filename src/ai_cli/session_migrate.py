@@ -154,7 +154,15 @@ def _session_variants(name: str) -> list[str]:
 
 
 def _refuse_live(
-    old: str, new: str, old_wt: Path, new_wt: Path, home: Path, proc_dir: Path | None, tmux: list[str]
+    old: str,
+    new: str,
+    old_wt: Path,
+    new_wt: Path,
+    home: Path,
+    proc_dir: Path | None,
+    tmux: list[str],
+    *,
+    verb: str = "migrated",
 ) -> None:
     for session in live_sessions(home, proc_dir):
         cwd = Path(session.cwd).resolve(strict=False) if session.cwd else None
@@ -162,7 +170,7 @@ def _refuse_live(
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
-                f"running in the slot being migrated -- its transcript and task files are open. Exit it first."
+                f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
             )
     hosting = sorted(set(tmux) & set(_session_variants(old)))
     if hosting:

@@ -253,3 +253,29 @@ def move_canonical_worktree(old_path: Path, new_path: Path, old_name: str, new_n
             return len(matched)
     except (OSError, portalocker.exceptions.LockException) as exc:
         raise CanonicalWorktreeRegistryError(f"cannot lock canonical worktree registry {registry_path}: {exc}") from exc
+
+
+def unregister_canonical_worktree(path: Path, *, dry_run: bool) -> int:
+    """Drop every entry for ``path``, returning how many matched; an absent registry has none.
+
+    For a session home retired by ``ai session-retire``, after its checkout is removed.
+    """
+    registry_path = get_canonical_worktree_registry_path()
+    if not registry_path.is_file():
+        return 0
+    target = str(path)
+    if dry_run:
+        # Unlocked: opening the lock file is itself a write, and a preview writes nothing.
+        return sum(1 for entry in _load_registry(registry_path)["worktrees"] if entry["path"] == target)
+    lock_path = registry_path.with_suffix(f"{registry_path.suffix}.lock")
+    try:
+        with portalocker.Lock(str(lock_path), mode="a", timeout=10):
+            payload = _load_registry(registry_path)
+            kept = [entry for entry in payload["worktrees"] if entry["path"] != target]
+            removed = len(payload["worktrees"]) - len(kept)
+            if removed:
+                payload["worktrees"] = kept
+                _write_registry(registry_path, payload)
+            return removed
+    except (OSError, portalocker.exceptions.LockException) as exc:
+        raise CanonicalWorktreeRegistryError(f"cannot lock canonical worktree registry {registry_path}: {exc}") from exc

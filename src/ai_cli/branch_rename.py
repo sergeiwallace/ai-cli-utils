@@ -43,8 +43,8 @@ def _resolve(repo: Path, ref: str) -> str | None:
     return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else None
 
 
-def anchor_ref(branch: str) -> str:
-    return f"{ANCHOR_NAMESPACE}/{branch}"
+def anchor_ref(branch: str, namespace: str = ANCHOR_NAMESPACE) -> str:
+    return f"{namespace}/{branch}"
 
 
 def rename_branch_anchored(repo_root: Path, old: str, new: str, *, dry_run: bool = False) -> BranchRename:
