@@ -51,7 +51,7 @@ template_version: "design-1.0.0"
 
 ## Executive Summary
 
-This design restores eventual cleanup of genuinely dead managed tmux sessions without allowing one session launch to terminate another session. A single Circus-managed watcher evaluates sessions asynchronously and authorizes a reap only when every pane leader is confirmed ended and a generation-matched local heartbeat is stale by same-boot monotonic time. Every incomplete, malformed, unavailable, or contradictory observation preserves the session. The watcher is not registered automatically by session-launch commands; an operator starts it independently, and its default mode records candidates without killing them. Launch-time `cleanup_stale_sessions()` remains bookkeeping-only.
+This design restores eventual cleanup of genuinely dead managed tmux sessions without allowing launch code to terminate another session directly. A single Circus-managed watcher evaluates sessions asynchronously and authorizes a reap only when every pane leader is confirmed ended and a generation-matched local heartbeat is stale by same-boot monotonic time. Every incomplete, malformed, unavailable, or contradictory observation preserves the session. A local `ai c` launch asynchronously ensures the independent watcher is registered, and its default mode records candidates without killing them. Launch-time `cleanup_stale_sessions()` remains bookkeeping-only.
 
 ## Problem Statement
 
@@ -78,7 +78,7 @@ A usable record additionally proves one uninterrupted lease epoch for its genera
 
 ### Periodic execution and lifecycle
 
-The package will provide a session-reaper management command group with `start`, `stop`, `status`, and hidden/internal `run` commands, following the existing Circus watcher pattern. `start` idempotently registers one `stale-session-reaper` watcher with the existing local Circus daemon. `run` evaluates once, sleeps 60 seconds, and repeats. A malformed candidate or exception while evaluating a candidate preserves and logs that candidate, skips its remaining work for this interval, and continues with the next candidate (or completes normally if none remain). A kill that completed all its lease-held checks for an earlier candidate is not rolled back or otherwise affected by a later candidate failure.
+The package provides a session-reaper management command group with `start`, `stop`, `status`, and hidden/internal `run` commands, following the existing Circus watcher pattern. Each local `ai c` launch schedules `start` asynchronously; `start` serializes registration across concurrent launches and idempotently leaves an active `stale-session-reaper` watcher alone. Circus keeps the watcher running after the launch exits and respawns it after worker failure. The next `ai c` launch recreates Circus and the watcher after supervisor failure. Native Windows startup is a documented no-op because tmux is unavailable there. `run` evaluates once, sleeps 60 seconds, and repeats. A malformed candidate or exception while evaluating a candidate preserves and logs that candidate, skips its remaining work for this interval, and continues with the next candidate (or completes normally if none remain). A kill that completed all its lease-held checks for an earlier candidate is not rolled back or otherwise affected by a later candidate failure.
 
 At session creation, tmux starts one stable supervisor as the pane leader. It creates the generation token, writes it once to tmux metadata, acquires and verifies the exclusive generation lease through the package's Python `portalocker` backend, and only then starts its heartbeat-publishing loop and writes the first usable record. The shell keeps the locked descriptor open for its own process lifetime; the short Python helper locks that inherited descriptor and exits, so it does not become a lease holder. The heartbeat publisher is a detached, terminal-free companion process which closes any inherited lease descriptor before it starts its approximately 30-second `WORKING` ticks. It continues across agent child generations and is never restarted per attempt. `start_watcher()` is now explicitly limited to replacing its prior watcher, clearing its lock file, and checking Gemini reload/restart marker files once per second. It does not hash configuration, detect idle prompts, read exit-signal markers, or inject input into a pane. `tests/test_runaway_loop_guards.py` covers the real one-second pacing, while `tests/test_main.py` asserts that generated scripts contain none of the retired exit-injection markers or commands. On final supervisor shutdown, the supervisor revokes only its exact-generation record and releases the lease. If the supervisor crashes, the OS releases its lease immediately; a retained record is not evidence of a live session and can authorize reap only after the ordinary stale-heartbeat, process-identity, and lease-held revalidation gates. No second process can survive in a different lease state. If the Python lock backend cannot acquire the descriptor, the supervisor logs `generation lease backend unavailable`, publishes no usable evidence, and preserves the session.
 
@@ -90,7 +90,7 @@ For a terminal-backed child, the Python exec wrapper creates a separate child pr
 
 Before an eligible `reap` candidate receives its final gate pass, the reaper attempts to acquire that same generation-bound lease exclusively and non-blockingly. If the lease is held, cannot be acquired, or cannot be verified, the candidate is preserved for this cycle and is not retried during the same pass. The reaper holds its lease through the final gate pass and the `tmux kill-session` attempt, then releases it whether the kill succeeds or fails.
 
-No session creation, resume, attach, `cleanup_stale_sessions()`, or `ai c`/`ai p`/`ai g`/`ai cx` path may call `start`, `run`, or the evaluator. The operator starts the watcher separately. A launch therefore cannot synchronously evaluate or terminate another session.
+Session creation and resume never call `run`, the evaluator, or a tmux termination path in-process. A local `ai c` launch only schedules the independent `start` lifecycle command and immediately continues; failures produce one warning with the manual command. `ai p`, `ai g`, and `ai cx` do not start the watcher. Native Windows performs no startup because it has no native tmux runtime.
 
 ### Candidate evaluation and reap protocol
 
@@ -204,8 +204,10 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
     - [ ] If status cannot contact Circus or obtain watcher state, then the system shall report failure rather than report the watcher healthy.
     - [ ] When an operator invokes `run` and an interval completes normally, the system shall sleep for the configured 60-second cadence before the next interval.
     - [ ] If one malformed candidate or an evaluator exception occurs during `run`, then the system shall preserve that candidate, log a reason, skip its remaining work for that interval, and continue evaluating other candidates or complete the interval normally.
-    - [ ] When any launch command or `cleanup_stale_sessions()` runs, the system shall neither register the watcher nor execute the evaluator.
-    - [ ] If Circus is unavailable or registration fails, then the start command shall report failure and shall not fall back to synchronous scanning or termination.
+    - [ ] When `ai c` launches or resumes, it shall asynchronously ensure that exactly one watcher is registered and running; concurrent launches shall not restart an active watcher or add a second one.
+    - [ ] When another launch command or `cleanup_stale_sessions()` runs, the system shall not register the watcher or execute the evaluator.
+    - [ ] If Circus is unavailable or registration fails, then the launch shall continue, the start command shall emit one warning naming `ai session-reaper start`, and neither path shall fall back to synchronous scanning or termination.
+    - [ ] On native Windows, where tmux is unavailable, launch-time and explicit startup shall be successful no-ops.
   - **T-2.2 Observe-first rollout**
     - [ ] Where mode is absent or `observe`, the system shall log a fully corroborated candidate and issue no kill command.
     - [ ] Where mode is explicitly `reap`, the system shall terminate only candidates passing initial and revalidation gates.
@@ -229,7 +231,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 1 | Design Overview filled with shipped behavior | - [ ] | |
 | 2 | D-1 ledger is atomic, local, schema-validated, and delivery-independent | - [ ] | |
 | 3 | D-2 requires both gates, revalidates, and targets session ID | - [ ] | |
-| 4 | D-3 has no launch-path registration or execution | - [ ] | |
+| 4 | D-3 has idempotent asynchronous `ai c` registration and no in-process evaluation | - [x] | The launch schedules the Circus lifecycle command; a cross-process lock and watcher status check preserve singleton operation. |
 | 5 | D-4/D-5 default and invalid configuration fail closed | - [ ] | |
 | 6 | D-6 preserves launch-time bookkeeping authority | - [ ] | |
 | 7 | D-7 binds the sole managed marker and every ledger record to one generation token | - [ ] | |
@@ -252,7 +254,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 1 | The exact liveness false-positive trigger is unconfirmed; child-body self-reload is only correlated. | A process reading could be transiently wrong. | Generation-bound ledger evidence, supervisor-held lease, final identity revalidation, immutable ID target, and observe-first rollout. |
 | 2 | Publisher or local storage fails. | Dead slot remains occupied. | Missing or non-durable data preserves; messaging does not substitute for the ledger. |
 | 3 | Prolonged host stall interrupts heartbeats. | Candidate could be observed incorrectly. | Ten-minute margin, all-pane ended gate, review observe logs, and revalidation. |
-| 4 | Circus is unavailable. | No eventual cleanup. | Existing daemon lifecycle, status command, restart supervision; never launch-time fallback. |
+| 4 | Circus is unavailable. | No eventual cleanup. | The launch continues with one actionable warning; the next launch retries, and there is never a synchronous fallback. |
 | 5 | Shell/tmux terminal control differs across supported environments. | A child could lose input or receive a signal twice or not at all. | Require real tmux subprocess coverage for foreground process groups and signal relay under the preferred zsh and Bash fallback; without verified behavior, publish no usable evidence on that platform. |
 
 ## Design Decisions
@@ -263,7 +265,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
 | D-1 | Heartbeat persistence | (a) local ledger, (b) message history, (c) tmux metadata | (a) | (a) | No | Same-host atomically visible evidence is independent of remote delivery. | `Resolved` |
 | D-2 | Reap authorization | (a) two gates + ID revalidation, (b) one snapshot, (c) process retry | (a) | (a) | No | Destructive cross-session action needs corroboration and time-of-use identity. | `Resolved` |
-| D-3 | Watcher lifecycle/cadence | (a) explicit Circus/60s, (b) launch auto-start, (c) external scheduler | (a) | (a) | No | Meets required isolation using existing integration. | `Resolved` |
+| D-3 | Watcher lifecycle/cadence | (a) explicit Circus/60s, (b) asynchronous launch auto-start through Circus, (c) external scheduler | (a) | (b) | Yes | Keeps the independent supervisor boundary while making lifecycle self-healing. | `Resolved` |
 | D-4 | Rollout mode | (a) observe default, (b) reap default, (c) permanently disabled | (a) | (a) | No | Creates operational evidence before kill authority. | `Resolved` |
 | D-5 | Staleness threshold | (a) 10m, (b) 5m, (c) 30m | (a) | (a) | No | Conservative margin while preserving eventual recovery. | `Resolved` |
 | D-6 | Launch boundary | (a) strict separation, (b) shared routine, (c) launch notification | (a) | (a) | No | Prevents return of launch-time authority. | `Resolved` |
@@ -368,9 +370,9 @@ This is a one-way cross-session operation, so the fail-closed requirement and ex
 
 <a id="d-3"></a>
 
-#### D-3: Watcher lifecycle and cadence — ✅ Resolved by Codex: (a) Explicit Circus watcher every 60 seconds
+#### D-3: Watcher lifecycle and cadence — ✅ Revised: (b) Asynchronous launch auto-start every 60 seconds
 
-**Context.** Execution must be independent of every session launch and use the installed Circus integration.
+**Context.** Evaluation must remain in the independent Circus worker, while active Claude sessions must recover missing supervision without operator setup.
 
 ##### (a) Explicit persistent Circus watcher, 60-second cadence
 
@@ -379,7 +381,7 @@ This is a one-way cross-session operation, so the fail-closed requirement and ex
 - Reuses daemon restart supervision and provides clear operator controls.
 
 **Cons:**
-- Requires explicit setup before dead slots are reaped.
+- Does not recover automatically after a reboot or Circus failure.
 - Adds periodic tmux activity.
 
 ##### (b) Register automatically during launch
@@ -387,10 +389,11 @@ This is a one-way cross-session operation, so the fail-closed requirement and ex
 **Pros:**
 - Requires no operator setup.
 - Makes the watcher broadly available.
+- Keeps evaluation and termination in the independent Circus worker.
 
 **Cons:**
 - Couples one launch to another session's reaper lifecycle.
-- Violates the required isolation boundary.
+- Requires serialized, idempotent registration to avoid duplicate workers.
 
 ##### (c) Require an external operating-system scheduler
 
@@ -404,11 +407,11 @@ This is a one-way cross-session operation, so the fail-closed requirement and ex
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved by Codex — (a) Explicit persistent Circus watcher, 60-second cadence
-<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
-<!-- decision-lineage: decision-id=stale-session-reaper/D-3; decision-topic=watcher-lifecycle-cadence; governs=artifact:circus-watcher; normalized-proposition=Run an explicitly started Circus-managed reaper every 60 seconds; applicability=scope:local-host; outcome-id=explicit-circus-60-seconds; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-3; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
+> **Decision:** ✅ Revised — (b) Asynchronous launch auto-start through the persistent Circus watcher, 60-second cadence
+<!-- decision-record: chosen-option=(b); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
+<!-- decision-lineage: decision-id=stale-session-reaper/D-3; decision-topic=watcher-lifecycle-cadence; governs=artifact:circus-watcher; normalized-proposition=Asynchronously ensure one Circus-managed reaper from local Claude launches; applicability=scope:local-host; outcome-id=async-launch-autostart-circus-60-seconds; relation=different-question; related-decision-id=; supersedes=artifact:manual-only-reaper-start; approval-log-decision-id=stale-session-reaper/D-3; approval-actor=the-operator; approval-date=2026-10-12; approval-commit= -->
 
-The out-of-band lifecycle requirement favors an explicit lifecycle separation. Idempotent start/status commands mitigate setup; the poll is limited to one interval per minute. Confidence: high.
+The worker remains out of process and Circus-managed, but manual-only startup proved insufficient after reboot or supervisor death. An `ai c` launch now schedules the idempotent lifecycle command without waiting for it. A cross-process lock plus Circus's fixed watcher name prevents duplicate workers, and observe mode remains the default. Confidence: high.
 
 ---
 

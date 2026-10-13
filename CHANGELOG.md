@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ai c` now starts the independently supervised stale-session reaper when it is
+  missing and retries after Circus or the worker dies. Startup is asynchronous,
+  singleton across concurrent launches, observe-only by default, and a no-op on
+  native Windows where tmux is unavailable. A startup failure warns with the
+  manual recovery command but never blocks the session launch.
+
 ### Added
 
 - Each iTerm2 session-registry record now carries why its session ended (`exit`:

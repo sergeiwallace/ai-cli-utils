@@ -393,7 +393,7 @@ enabled = true
 [session]
 ## Session names: c-{project}-{n} or c-r-{project}-{n} for remote sessions
 ## Limits launch-time auxiliary-state housekeeping only; it never ends a tmux
-## session. Start `ai session-reaper start` for independent stale-session checks.
+## session. `ai c` keeps the independent stale-session reaper running.
 stale_session_timeout = 15
 ## Wrap sessions in tmux? Default true. Set false to make bare mode the default
 ## (equivalent to always passing -b/--bare). tmux is a C binary and cannot be
@@ -413,7 +413,9 @@ stale_session_timeout = 15
 # use_pty = true
 
 [stale_session_reaper]
-## The independently started reaper evaluates candidates in observe mode by default.
+## The independently supervised reaper evaluates candidates in observe mode by
+## default. `ai c` starts its Circus watcher when needed. On native Windows,
+## where tmux is unavailable, startup is a no-op.
 ## Set mode = "reap" only after reviewing observe-mode logs.
 mode = "observe"
 ## A heartbeat must be older than this same-boot monotonic interval before it can

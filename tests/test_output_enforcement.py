@@ -28,6 +28,10 @@ FILE_ALLOWLIST = {
 
 # (file, enclosing top-level function) -> why the child must own the terminal.
 INHERITED_TERMINAL_ALLOWLIST = {
+    (
+        "process_manager.py",
+        "_start_stale_session_reaper_for_launch",
+    ): "the asynchronous child is this CLI's tagged session-reaper lifecycle command",
     ("transport.py", "run_ssh_with_reconnect"): "interactive ssh session: the remote shell owns the terminal",
     ("transport.py", "_run_transport_loop"): "interactive mosh/ssh session: the remote shell owns the terminal",
     ("native_deps.py", "_authenticate_root"): "sudo -v password prompt must reach the terminal, or the install hangs",
