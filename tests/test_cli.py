@@ -3349,6 +3349,7 @@ class TestSelfUpdatePreservesEditableInstall:
 
         assert markers() == [], "a plain install no longer clobbers the editable marker"
 
+    @pytest.mark.unconstrained_memory
     def test_given_editable_venv_when_editable_install_repeats_then_marker_survives(self, tmp_path):
         """Pairs with the test above: ``-e`` is what keeps the marker alive."""
         uv = shutil.which("uv")

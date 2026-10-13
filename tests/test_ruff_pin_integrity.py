@@ -28,6 +28,14 @@ from check_ruff_version_sync import PYPROJECT_PIN_RE, check_installed_version
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: A real ``ruff check`` is a multi-threaded Rust binary that inherits the pytest memory
+#: guard's 2 GiB ``RLIMIT_AS``. On a many-core host its per-thread reservations exceed
+#: that ceiling and its allocator aborts ("memory allocation of N bytes failed", exit -6),
+#: so the gate reads as failing when ruff never ran. The guard bounds a runaway pytest
+#: process, not the subprocesses it shells out to; same reasoning as test_cli.py's real-uv
+#: test and test_cdp.py's real-Chrome test.
+_REAL_RUFF = pytest.mark.unconstrained_memory
+
 PRECOMMIT_TEMPLATE = """\
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -224,6 +232,7 @@ def test_given_the_gate_runs_when_the_binary_is_asked_its_version_then_it_report
     )
 
 
+@_REAL_RUFF
 @pytest.mark.parametrize("scope", ["src", "tests"])
 def test_given_repo_sources_when_pinned_ruff_runs_the_gate_then_it_passes(scope):
     """The documented hard gate must actually pass under the *pinned* binary.
@@ -291,6 +300,7 @@ def test_given_the_format_hook_when_its_args_are_read_then_autofix_is_still_allo
     assert _precommit_hook_args("ruff-format") == []
 
 
+@_REAL_RUFF
 def test_given_a_widened_select_when_the_lint_hook_runs_then_the_file_is_not_rewritten(tmp_path):
     """The end-to-end property, on a file that genuinely carries findings.
 
@@ -317,6 +327,7 @@ def test_given_a_widened_select_when_the_lint_hook_runs_then_the_file_is_not_rew
     assert module.read_text() == before, "ruff check without --fix must not rewrite the file"
 
 
+@_REAL_RUFF
 def test_given_the_same_file_when_ruff_is_asked_to_fix_then_it_does_rewrite(tmp_path):
     """Negative control for the test above.
 
