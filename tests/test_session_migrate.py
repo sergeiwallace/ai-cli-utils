@@ -22,7 +22,7 @@ from conftest import run_cli, snapshot_tree
 from ai_cli import session_registry
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
-from ai_cli.config import get_xdg_state_home
+from ai_cli.config import get_xdg_config_home, get_xdg_state_home
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
@@ -282,3 +282,173 @@ def test_given_either_verb_when_help_is_printed_then_it_names_the_other_verb():
     assert code == 0 and "session-adopt" in out
     code, out, _err = run_cli(["ai", "session-adopt", "--help"])
     assert code == 0 and "session-migrate" in out
+
+
+ANCHOR = f"refs/preserved/session-migrate/wt-{OLD}"
+
+
+def _ref(repo: Path, ref: str) -> str | None:
+    res = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo, capture_output=True, text=True, check=False
+    )
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+@pytest.fixture
+def topic_slot(slot):
+    """The slot with a topic branch checked out, so ``wt-<old>`` is parked."""
+    _git("switch", "-q", "-c", "topic", cwd=slot["wt"])
+    _git("commit", "-q", "--allow-empty", "-m", "topic work", cwd=slot["wt"])
+    return slot
+
+
+def test_given_a_parked_canonical_branch_when_migrated_then_it_is_renamed_through_an_anchor(topic_slot):
+    repo = topic_slot["repo"]
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "--dry-run")
+    assert code == 0, out + err
+    assert f"branch: wt-{OLD} -> wt-{NEW}" in out
+    assert f"branch anchor: {ANCHOR} (write: {tip})" in out
+
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    new_wt = repo / ".worktrees" / NEW
+    assert _ref(repo, f"refs/heads/wt-{NEW}") == tip
+    assert _ref(repo, ANCHOR) == tip
+    assert _ref(repo, f"refs/heads/wt-{OLD}") is None
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == "topic"
+    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
+    assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
+    assert f"branch.wt-{OLD}." not in markers
+
+
+def test_given_the_checked_out_canonical_branch_when_migrated_then_it_is_anchored_too(slot):
+    tip = _ref(slot["repo"], f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert _ref(slot["repo"], ANCHOR) == tip == _ref(slot["repo"], f"refs/heads/wt-{NEW}")
+
+
+def test_given_the_new_canonical_branch_exists_when_migrated_then_the_parked_one_keeps_its_name(topic_slot):
+    repo = topic_slot["repo"]
+    _git("branch", f"wt-{NEW}", "main", cwd=repo)
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    assert f"branch wt-{NEW} already exists, so it keeps the name wt-{OLD}" in err
+    assert _ref(repo, f"refs/heads/wt-{OLD}") == tip
+    assert _ref(repo, ANCHOR) is None
+
+
+def test_given_git_refuses_the_branch_rename_when_migrated_then_stderr_is_quoted_and_the_anchor_remains(topic_slot):
+    repo = topic_slot["repo"]
+    # A branch under wt-<new>/ makes `git branch -m ... wt-<new>` fail on a ref D/F conflict.
+    _git("branch", f"wt-{NEW}/child", "main", cwd=repo)
+    tip = _ref(repo, f"refs/heads/wt-{OLD}")
+    code, out, err = _migrate(repo, "-y")
+    assert code == 0, out + err
+    assert f"branch rename to wt-{NEW} failed: git branch -m wt-{OLD} wt-{NEW} was refused: " in err
+    assert f"the tip stays anchored at {ANCHOR}" in err
+    assert _ref(repo, f"refs/heads/wt-{OLD}") == tip == _ref(repo, ANCHOR)
+    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
+    assert f"branch.wt-{OLD}.aih-session-home {repo / '.worktrees' / NEW}" in markers
+
+
+HELD_BODY = b"# replay\r\nverbatim \xe2\x80\x94 bytes\n\x00tail"
+
+
+@pytest.fixture
+def held_slot(slot):
+    """The slot plus held-output replay files in the main tree's and the slot's memory dirs."""
+    main_memory = cc_project_dir(slot["repo"], slot["claude"]) / "memory"
+    main_memory.mkdir(parents=True)
+    (main_memory / f".held-output-{OLD}-01-review-queue.md").write_bytes(HELD_BODY)
+    (main_memory / ".held-output-myrepo-30-01-other-session.md").write_bytes(b"not ours\n")
+    (slot["project"] / "memory" / f".held-output-{OLD}-02-summary.md").write_bytes(HELD_BODY + b"2")
+    slot["main_memory"] = main_memory
+    return slot
+
+
+def test_given_held_output_files_when_migrated_then_only_their_prefix_changes(held_slot):
+    main_memory = held_slot["main_memory"]
+    new_memory = cc_project_dir(held_slot["repo"] / ".worktrees" / NEW, held_slot["claude"]) / "memory"
+    code, out, err = _migrate(held_slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    old_main = main_memory / f".held-output-{OLD}-01-review-queue.md"
+    new_main = main_memory / f".held-output-{NEW}-01-review-queue.md"
+    assert f"held output: {old_main} -> {new_main}" in out
+    old_slot = held_slot["project"] / "memory" / f".held-output-{OLD}-02-summary.md"
+    assert f"held output: {old_slot} -> {new_memory / f'.held-output-{NEW}-02-summary.md'}" in out
+    assert "other-session" not in out
+
+    code, out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_main.exists()
+    assert new_main.read_bytes() == HELD_BODY
+    assert (new_memory / f".held-output-{NEW}-02-summary.md").read_bytes() == HELD_BODY + b"2"
+    assert not list(new_memory.glob(f".held-output-{OLD}-*"))
+    assert (main_memory / ".held-output-myrepo-30-01-other-session.md").read_bytes() == b"not ours\n"
+
+
+def test_given_the_held_output_target_exists_when_migrated_then_both_files_are_left_alone(held_slot):
+    main_memory = held_slot["main_memory"]
+    old_main = main_memory / f".held-output-{OLD}-01-review-queue.md"
+    new_main = main_memory / f".held-output-{NEW}-01-review-queue.md"
+    new_main.write_bytes(b"belongs to the new name\n")
+    code, out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 0, out + err
+    assert f"held output: {old_main} -> {new_main} SKIPPED (target exists)" in out
+    assert old_main.read_bytes() == HELD_BODY
+    assert new_main.read_bytes() == b"belongs to the new name\n"
+    new_memory = cc_project_dir(held_slot["repo"] / ".worktrees" / NEW, held_slot["claude"]) / "memory"
+    assert (new_memory / f".held-output-{NEW}-02-summary.md").is_file()
+
+
+def test_given_only_bookkeeping_is_left_in_the_old_task_namespace_when_migrated_then_it_is_removed(slot):
+    old_ns, new_ns = slot["claude"] / "tasks" / OLD, slot["claude"] / "tasks" / NEW
+    (old_ns / ".lock").write_text("")
+    new_ns.mkdir()
+    (new_ns / ".highwatermark").write_text("4")
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert f"task namespace: {old_ns} (removed after rekey)" in out
+
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_ns.exists()
+    assert (new_ns / ".highwatermark").read_text(encoding="utf-8") == "7"
+    assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
+
+
+def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_stays_and_is_named(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    (old_ns / "notes.txt").write_text("keep me\n")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert f"task namespace {old_ns} left in place: it still holds notes.txt" in err
+    assert (old_ns / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert (old_ns / ".highwatermark").is_file()
+
+
+def test_given_a_live_session_when_migrating_then_no_new_artifact_class_is_touched(held_slot, tmp_path):
+    _git("switch", "-q", "-c", "topic", cwd=held_slot["wt"])
+    (held_slot["claude"] / "tasks" / OLD / ".lock").write_text("")
+    log = tmp_path / "hook-calls.jsonl"
+    hooks = get_xdg_config_home() / "session-migrate.d"
+    hooks.mkdir(parents=True)
+    script = tmp_path / "record.py"
+    script.write_text(f"open({str(log)!r}, 'a').write('called')\n")
+    (hooks / "record.toml").write_text(f'name = "record"\nargv = [{json.dumps(str(script))}]\n')
+    sessions = held_slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(held_slot["wt"]), "sessionId": UUID})
+    )
+    before = _everything(held_slot)
+    refs = _git("for-each-ref", cwd=held_slot["repo"])
+    code, _out, err = _migrate(held_slot["repo"], "-y")
+    assert code == 1
+    assert "still running" in err
+    assert _everything(held_slot) == before
+    assert _git("for-each-ref", cwd=held_slot["repo"]) == refs
+    assert not log.exists()

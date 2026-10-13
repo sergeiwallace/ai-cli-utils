@@ -6,18 +6,26 @@ module moves one that already lives in a slot -- ``<repo>/.worktrees/<old>`` -- 
 old worktree path, so ``ai c <new>`` resumes the same conversation with the same
 tasks, memory and resume hand-off:
 
-* the worktree (``git worktree move``), its ``wt-<old>`` branch, and every
-  ``branch.*.aih-session-home`` marker naming the old path;
+* the worktree (``git worktree move``), its ``wt-<old>`` branch whether checked
+  out or parked behind a topic branch (anchored first, see
+  :mod:`ai_cli.branch_rename`), and every ``branch.*.aih-session-home`` marker
+  naming the old path;
 * the canonical-session registry entry for the old path;
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
   memory), with each transcript's recorded cwd repointed, its ``customTitle``
   renamed and its stale worktree binding cleared;
+* the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
+  and the slot's project directories (filename prefix only);
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``session-adopt``
-  uses for the same two;
+  uses for the same two; the old namespace directory is removed once only its
+  bookkeeping remains;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
-  session maps and the iTerm2 restore registry.
+  session maps and the iTerm2 restore registry;
+* whatever the external hooks in ``session-migrate.d/`` declare
+  (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
+  the first write and run after the core moves.
 
 Every refusal is checked before the first write, in ``--dry-run`` too: the slot
 must be a registered worktree, nothing may already exist at the new slot or its
@@ -42,7 +50,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as _config
+from . import session_migrate_hooks as _hooks
 from . import session_registry as _session_registry
+from .branch_rename import rename_branch_anchored
 from .canonical_worktrees import (
     CanonicalWorktreeRegistryError,
     get_canonical_worktree_registry_path,
@@ -99,6 +109,8 @@ class PlannedMove:
             return f"{self.kind}: {self.source} -> {self.dest}"
         if self.action == "conflict":
             return f"{self.kind}: {self.source} -> {self.dest} SKIPPED (target exists)"
+        if self.action == "report":
+            return f"{self.kind}: {self.source}"
         return f"{self.kind}: {self.source} ({self.action}{': ' + self.dest if self.dest else ''})"
 
 
@@ -166,6 +178,12 @@ def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
     return found
 
 
+def _marker_key(key: str, old_branch: str, new_branch: str | None) -> str:
+    """``key`` after ``git branch -m old_branch new_branch``, which moves the branch's config section."""
+    prefix = f"branch.{old_branch}."
+    return f"branch.{new_branch}.{key[len(prefix) :]}" if new_branch and key.startswith(prefix) else key
+
+
 def _rewrite_transcript_cwd(path: Path, old_root: str, new_root: str) -> None:
     """Repoint ``path``'s recorded cwd fields from ``old_root`` to ``new_root``, in place.
 
@@ -225,6 +243,59 @@ def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[Plan
             action = "conflict" if new in data else "move"
             moves.append(PlannedMove("session map", f"{path} [{old}]", f"[{new}]", action))
     return moves
+
+
+def _plan_held_output(old: str, new: str, dirs: list[tuple[Path, Path | None]]) -> list[PlannedMove]:
+    """Rename ``memory/.held-output-<old>-NN-<slug>.md`` replay files in each project dir.
+
+    Each entry of ``dirs`` is ``(project dir, where it will live after the migration)``,
+    ``None`` for a directory that stays put. Only the filename prefix changes: a
+    replay file is replayed byte for byte, so its body is never touched.
+    """
+    pattern = re.compile(rf"\.held-output-{re.escape(old)}(-\d{{2,}}-.+\.md)")
+    moves: list[PlannedMove] = []
+    for project, after in dirs:
+        memory = project / "memory"
+        if not memory.is_dir():
+            continue
+        for source in sorted(memory.iterdir()):
+            match = pattern.fullmatch(source.name)
+            if not match or not source.is_file():
+                continue
+            name = f".held-output-{new}{match.group(1)}"
+            action = "conflict" if (memory / name).exists() else "move"
+            moves.append(PlannedMove("held output", str(source), str((after or project) / "memory" / name), action))
+    return moves
+
+
+#: Task-namespace bookkeeping that means nothing once the namespace's tasks have moved.
+_NAMESPACE_BOOKKEEPING = (".highwatermark", ".lock")
+
+
+def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
+    """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
+    return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
+
+
+def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] | None) -> list[_hooks.Hook]:
+    """Run every external hook with ``--dry-run``; any refusal refuses the migration.
+
+    The hooks' planned lines are appended to ``report`` when one is given.
+    """
+    try:
+        hooks = _hooks.load_hooks()
+    except _hooks.HookConfigError as exc:
+        raise MigrationError(f"{exc} -- refusing before any write") from exc
+    for hook in hooks:
+        run = _hooks.run_hook(hook, old, new, dry_run=True, cwd=repo_root)
+        if not run.ok:
+            raise MigrationError(
+                f"hook {hook.name} ({hook.path}) refused the migration (exit {run.returncode}): "
+                f"{run.stderr or '(no stderr)'}"
+            )
+        if report is not None:
+            report += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+    return hooks
 
 
 def _plan_iterm2(old: str) -> list[PlannedMove]:
@@ -301,18 +372,24 @@ def migrate_session(
             f"their shebangs -- recreate it (`uv sync --reinstall`) before running them"
         )
 
-    branch = _current_branch(old_wt)
-    new_branch: str | None = None
-    if branch == f"wt-{old}":
-        if _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/wt-{new}").returncode == 0:
-            result.warnings.append(f"branch wt-{new} already exists, so the worktree keeps branch {branch}")
-        else:
-            new_branch = f"wt-{new}"
-            moves.append(PlannedMove("branch", f"wt-{old}", new_branch))
+    # The canonical branch is renamed whether the slot has it checked out or parks it
+    # while a topic branch is checked out: either way it still names the old session.
+    old_branch, new_branch = f"wt-{old}", f"wt-{new}"
+    branch_plan = rename_branch_anchored(repo_root, old_branch, new_branch, dry_run=True)
+    if not branch_plan.tip:
+        new_branch = None
+    elif not branch_plan.ok:
+        keeper = "the worktree keeps branch" if _current_branch(old_wt) == old_branch else "it keeps the name"
+        result.warnings.append(f"{branch_plan.error}, so {keeper} {old_branch}")
+        new_branch = None
+    else:
+        moves.append(PlannedMove("branch", old_branch, new_branch))
+        moves.append(PlannedMove("branch anchor", branch_plan.anchor, branch_plan.tip, "write"))
     markers = _session_home_markers(repo_root, old_wt)
     for key, _value in markers:
-        renamed = key.replace(f"branch.{branch}.", f"branch.{new_branch}.", 1) if new_branch else key
-        moves.append(PlannedMove("session-home marker", key, f"{renamed} = {new_wt}", "rewrite"))
+        moves.append(
+            PlannedMove("session-home marker", key, f"{_marker_key(key, old_branch, new_branch)} = {new_wt}", "rewrite")
+        )
 
     try:
         registry_entries = move_canonical_worktree(old_wt, new_wt, old, new, dry_run=True)
@@ -339,15 +416,25 @@ def migrate_session(
     iterm2_moves = _plan_iterm2(old)
     moves += iterm2_moves
 
+    held_moves = _plan_held_output(old, new, [(cc_project_dir(repo_root, home), None), (old_pd, new_pd)])
+    moves += held_moves
+
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
     )
+    if old_ns.is_dir():
+        leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
+        if leftover:
+            moves.append(PlannedMove("task namespace", str(old_ns), f"holds {', '.join(leftover)}", "left in place"))
+        else:
+            moves.append(PlannedMove("task namespace", str(old_ns), "", "removed after rekey"))
     for item in moves:
         if item.action == "conflict":
             result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
     for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
         result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
     if dry_run:
         return result
 
@@ -355,14 +442,21 @@ def migrate_session(
     if moved.returncode != 0:
         raise MigrationError(f"git worktree move failed, nothing was migrated: {(moved.stderr or '').strip()}")
     if new_branch:
-        renamed = _git(repo_root, "branch", "-m", f"wt-{old}", new_branch)
-        if renamed.returncode != 0:
-            result.warnings.append(f"branch rename to {new_branch} failed: {(renamed.stderr or '').strip()}")
+        renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
+        if not renamed.ok:
+            anchored = _git(repo_root, "rev-parse", "--verify", "--quiet", renamed.anchor).returncode == 0
+            kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
+            result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
             new_branch = None
     for key, _value in markers:
-        target_key = key.replace(f"branch.{branch}.", f"branch.{new_branch}.", 1) if new_branch else key
-        _git(repo_root, "config", target_key, str(new_wt))
+        _git(repo_root, "config", _marker_key(key, old_branch, new_branch), str(new_wt))
     move_canonical_worktree(old_wt, new_wt, old, new, dry_run=False)
+
+    # Renamed inside the old project dir, before it moves, so a held-output file of the
+    # slot travels under its new name with the directory.
+    for item in [m for m in held_moves if m.action == "move"]:
+        source = Path(item.source)
+        source.rename(source.with_name(Path(item.dest).name))
 
     if old_pd.is_dir():
         old_pd.rename(new_pd)
@@ -380,11 +474,28 @@ def migrate_session(
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
         new_ns.mkdir(mode=0o700, parents=True, exist_ok=True)
         (new_ns / ".highwatermark").write_text(str(top), encoding="utf-8")
+    if old_ns.is_dir():
+        leftover = _namespace_leftovers(old_ns, set())
+        if leftover:
+            result.warnings.append(f"task namespace {old_ns} left in place: it still holds {', '.join(leftover)}")
+        else:
+            for name in _NAMESPACE_BOOKKEEPING:
+                (old_ns / name).unlink(missing_ok=True)
+            old_ns.rmdir()
 
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
         _apply_iterm2(old, new)
+
+    for hook in hooks:
+        run = _hooks.run_hook(hook, old, new, dry_run=False, cwd=repo_root)
+        moves += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+        if not run.ok:
+            result.warnings.append(
+                f"hook {hook.name} ({hook.path}) FAILED (exit {run.returncode}): {run.stderr or '(no stderr)'} "
+                f"-- the core moves are done; re-run the hook alone to finish"
+            )
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)

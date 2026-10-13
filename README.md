@@ -236,6 +236,13 @@ ai session-migrate myrepo-3 myrepo-box-3   # rename a registered slot
 ai session-adopt myrepo-box-4              # register a session started outside ai
 ```
 
+A migration carries everything `ai` keys by the session's name or slot, listed
+first by `ai session-migrate -n` ([the full table](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-session-migrate)).
+State owned by other tools joins the same run through a hook file in
+`session-migrate.d/` under the config directory: each hook is planned with
+`--dry-run` before anything is written, can refuse the migration, and runs after
+the core moves ([hook contract](docs/reference/session-migrate-hooks.md)).
+
 #### What a new worktree tracks
 
 A new session worktree is based on, and tracks, the branch its repository

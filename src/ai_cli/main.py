@@ -2517,13 +2517,22 @@ def _print_launch_plan(
     """
     repo_root = _session.detect_repo_root()
     worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
+    branch = f"wt-{ai_name}" if worktree else "n/a"
+    if worktree and repo_root:
+        # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
+        try:
+            reused = _session._registered_worktree_at(Path(worktree), _session.registered_worktrees(Path(repo_root)))
+        except (OSError, RuntimeError):
+            reused = None
+        if reused is not None:
+            branch = f"{_session._current_branch(reused) or 'detached HEAD'}   (reused worktree keeps its branch)"
     lines = [
         "dry run -- nothing was created, started, or reaped.",
         f"  engine     {_engine_display_name(engine)}",
         f"  mode       {'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}",
         f"  session    {ai_name}   (tmux target: {session_id})",
         f"  worktree   {worktree or 'disabled for this launch'}",
-        f"  branch     {'wt-' + ai_name if worktree else 'n/a'}",
+        f"  branch     {branch}",
         f"  sandbox    {'on' if sandbox else 'off'}",
     ]
     if extra_args:

@@ -456,21 +456,23 @@ ai c myrepo-box-3                             # resume under the new name
 | What | How it follows the new name |
 |---|---|
 | Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
-| Branch `wt-OLD` | renamed to `wt-NEW` when that is its branch and `wt-NEW` is free; any other branch is kept |
+| Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/session-migrate/wt-OLD`, which stays, so a refused rename never loses it |
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
-| `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried |
+| `memory/.held-output-OLD-NN-<slug>.md` replay files in the main tree's and the slot's project directories | renamed to `.held-output-NEW-NN-<slug>.md`, bodies byte-identical; an existing target is skipped |
+| `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried; the old directory is removed when only `.highwatermark`/`.lock` remain, else left with a warning naming what it holds |
 | `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
 | `session-meta-<engine>-OLD.json` | fields rewritten, renamed |
 | `sessions/<engine>-OLD.sh` wrapper | regenerated from the rewritten metadata, so `--name` and the pinned `CLAUDE_CODE_TASK_LIST_ID` are NEW |
 | `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
+| State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
-is not running), the repo-root memory directory (shared by every session of the
-repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
+is not running), the rest of the repo-root memory directory (shared by every session
+of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
 
