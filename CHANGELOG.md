@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c -R` on a machine with no `[remote] host` now says which machine it ran on, that `-R`
+  launches on the configured remote, and both remedies: drop `-R` to launch here, or run the
+  command from the client machine. The bare "host not set" error left an operator who had
+  simply typed the command on the remote itself with no next step.
+
 - `ai session-migrate` now moves a worktree that holds initialised submodules, which
   `git worktree move` refuses. It moves the directory, runs `git worktree repair`, and
   repoints each submodule's `core.worktree`, so `git status` works in the moved
