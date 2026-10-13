@@ -438,8 +438,9 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         "--no-default-browser-check",
         "--disable-default-apps",
         # Chromium and Edge 111+ reject a DevTools WebSocket handshake whose Origin header is
-        # not explicitly allowed, and the rejection presents as a hang rather than an error --
-        # so a client that sends an Origin gets no diagnostic at all. The wildcard is bounded
+        # not explicitly allowed. The server answers HTTP 403, but a client that does not
+        # surface the upgrade status just waits, so the rejection often presents as a hang.
+        # tests/test_cdp.py::TestCdpEdgeRealBoundary proves both on a real Edge. The wildcard is bounded
         # by the port itself: --remote-debugging-port binds loopback only, so reaching this
         # endpoint already requires local access.
         "--remote-allow-origins=*",

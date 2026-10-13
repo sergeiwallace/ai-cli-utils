@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import time
 import urllib.request
@@ -666,6 +667,93 @@ class TestCdpStartRealChromeBoundary:
                     f"returncode={proc.poll()!r} stderr={stderr_log.read_text(errors='replace')!r} "
                     f"stdout={stdout_log.read_text(errors='replace')!r}"
                 )
+        finally:
+            reap(proc)
+
+
+_EDGE_BINARIES = {
+    "darwin": ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+    "win32": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+}
+
+
+def _real_edge() -> str | None:
+    for candidate in _EDGE_BINARIES.get(sys.platform, []):
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable")
+
+
+class TestCdpEdgeRealBoundary:
+    """Real-boundary check for Edge and ``--remote-allow-origins=*``.
+
+    Edge rejects a DevTools WebSocket upgrade whose Origin it does not allow, and a client
+    that does not surface the HTTP status just waits, so a mocked suite cannot tell whether
+    the flag does anything. This launches the real Edge headless (no window, so no focus
+    change) and round-trips one command over the WebSocket from a client that SENDS an
+    Origin. ``/json/version`` alone would not do: it answers even when the upgrade is refused.
+    Both arms run, so the test also proves the flag is still load-bearing on this build.
+    """
+
+    @pytest.mark.unconstrained_memory
+    @pytest.mark.parametrize("allow_origins", [True, False], ids=["with-flag", "without-flag"])
+    def test_given_real_edge_when_a_client_with_an_origin_attaches_then_only_the_flag_lets_it_in(
+        self, tmp_path, allow_origins
+    ):
+        import asyncio
+
+        websockets = pytest.importorskip("websockets")
+        edge = _real_edge()
+        if not edge:
+            pytest.skip("no real Microsoft Edge binary on this machine")
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        args = [
+            edge,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={tmp_path / 'edge-profile'}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--headless=new",
+        ]
+        if allow_origins:
+            args.append("--remote-allow-origins=*")
+        proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            ws_url = None
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline and proc.poll() is None:
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.5) as resp:
+                        ws_url = json.load(resp)["webSocketDebuggerUrl"]
+                    break
+                except OSError:
+                    time.sleep(0.25)
+            assert ws_url, f"real Edge never opened its CDP port; returncode={proc.poll()!r}"
+
+            async def attach() -> dict:
+                async with websockets.connect(ws_url, origin="http://example.com", open_timeout=5) as ws:
+                    await ws.send(json.dumps({"id": 1, "method": "Browser.getVersion"}))
+                    return json.loads(await asyncio.wait_for(ws.recv(), 5))
+
+            async def bounded() -> dict:
+                # In-process bound: a refused upgrade may hang rather than error, and a hang
+                # must fail this test instead of wedging the run.
+                return await asyncio.wait_for(attach(), 15)
+
+            if allow_origins:
+                reply = asyncio.run(bounded())
+                assert reply["id"] == 1
+                assert "Edg/" in reply["result"]["product"]
+            else:
+                with pytest.raises((OSError, TimeoutError, websockets.exceptions.InvalidStatus)):
+                    asyncio.run(bounded())
         finally:
             reap(proc)
 
