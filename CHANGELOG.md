@@ -72,9 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
   into the tmux pane. `--dry-run` registers nothing.
 
-  The session is named `{project-prefix}-firstmate-[suffix-]{index}` (the
+  The session is named `{project-prefix}-{host-alias}-firstmate-[suffix-]{index}` (the
   positional NAME is the optional suffix) off the ordinary index allocator, and
-  it gets a worktree at `.worktrees/{project-prefix}-firstmate-[suffix-]{index}`:
+  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`:
   with every main tree read-only under the worktree model, a chief running in a
   repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
 

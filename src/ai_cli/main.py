@@ -4140,10 +4140,11 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     is_remote = _session._resolve_is_remote(options.get("is_remote", False))
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
     try:
+        naming_prefix = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
         tmux_target, ai_name = _session.build_session_name(
-            engine, prefix, session_name, config, is_remote=is_remote, use_tmux=not bare
+            engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
         )
-    except _session.SessionSlotAmbiguityError as exc:
+    except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
 
