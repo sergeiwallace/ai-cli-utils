@@ -4,6 +4,8 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ai_cli.main import (
     _ensure_tailscale_up,
     _ensure_vpn_watcher,
@@ -401,6 +403,52 @@ class TestRunTransportLoop:
         err = capsys.readouterr().err
         assert "falling back to SSH" in err
 
+    @pytest.mark.parametrize("returncode", [0, 1])
+    def test_given_remote_error_then_warning_when_mosh_exits_fast_then_the_error_is_the_last_line(
+        self, returncode, tmp_path, capsys
+    ):
+        """The remote stderr of a failed `ai cos 1 -r -R` (2026-10-13): a warning follows the error.
+
+        mosh reported that run as exit 0; a non-zero exit used to be read as "host
+        unreachable" and re-run the failing command over SSH.
+        """
+        proc = _make_proc(returncode=returncode, poll_sequence=[None, returncode])
+        nc = _mock_nats_client()
+        stderr = (
+            "[cos] chief-of-staff registered: agent aih-fw-firstmate-1 (FM_HOME=/state/fm)\n"
+            "[launch] Error: no matching session found for 'c-r-aih-fw-firstmate-1'\n"
+            "[daemon] stale-session-reaper: failed to start ([Errno 2] No such file or directory: 'circusd')\n"
+        )
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
+                patch("subprocess.run", side_effect=[MagicMock(returncode=0, stdout=stderr, stderr=""), MagicMock()]),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    diagnostic_ssh_args=["ssh", "user@host"],
+                    remote_diagnostic_file=".local/state/ai-cli-utils/transport-errors/failed.stderr",
+                )
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "falling back to SSH" not in err
+        last = err.strip().splitlines()[-1]
+        assert last.endswith(
+            "Remote launch failed after 1.0s, giving up: "
+            "[launch] Error: no matching session found for 'c-r-aih-fw-firstmate-1'"
+        )
+
     def test_when_mosh_fast_exit_has_remote_error_then_prints_it_without_reexecuting_command(self, tmp_path, capsys):
         """A diagnostic read must only tail the failed attempt's saved stderr."""
         proc = _make_proc(returncode=0, poll_sequence=[None, 0])
@@ -432,7 +480,11 @@ class TestRunTransportLoop:
         calls = asyncio.run(run())
         err = capsys.readouterr().err
         assert "create_worktree: refusing to delete it" in err
-        assert "Transport exited too quickly" in err
+        assert (
+            err.strip()
+            .splitlines()[-1]
+            .endswith("Remote launch failed after 1.0s, giving up: create_worktree: refusing to delete it")
+        )
         diagnostic_command = calls[0].args[0]
         assert diagnostic_command[: len(diagnostic_ssh_args)] == diagnostic_ssh_args
         assert "tail -n 50" in diagnostic_command[-1]
