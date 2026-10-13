@@ -93,13 +93,19 @@ def host_id() -> str:
 
 
 def _projects_roots() -> list[Path]:
-    roots: list[Path] = []
+    """``$PROJECTS_DIR`` then the configured projects dir, once each even through a symlink."""
+    candidates: list[Path] = []
     env_projects = os.environ.get("PROJECTS_DIR", "").strip()
     if env_projects:
-        roots.append(Path(env_projects).expanduser())
-    configured = _config._get_projects_dir()
-    if configured not in roots:
-        roots.append(configured)
+        candidates.append(Path(env_projects).expanduser())
+    candidates.append(_config._get_projects_dir())
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            roots.append(candidate)
     return roots
 
 
