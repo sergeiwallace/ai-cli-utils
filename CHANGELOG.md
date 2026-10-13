@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c -R` over ssh now says what a long-lived launcher is running and how it is doing.
+  Each drop notice gives the connection's uptime. The outcome record in
+  `transport-outcomes/` names the launcher's pid, launch time and loaded commit, and it is
+  rewritten at every drop, so a running launcher's remaining budget is on disk. When an
+  update has been installed since launch, a drop warns once that the launcher's code is
+  older and that reattaching with the same command loads the fix.
 - Each iTerm2 session-registry record now carries why its session ended (`exit`:
   `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
   was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`

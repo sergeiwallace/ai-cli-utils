@@ -538,6 +538,20 @@ total drops, credential-fault count, the resolved `cause` (`transport` or `auth`
 after the launcher exits. One file therefore holds both the launcher's exit 255 and the
 `ProxyCommand`'s reason for it.
 
+The record also names the launcher that wrote it: `pid`, `launched_at`, `code_commit` (the
+`ai update` commit it started on) and `code_version`. It is rewritten at every drop with the
+verdict `reconnecting` (or `awaiting_auth` during a credential outage), so listing
+`transport-outcomes/` shows how close each running launcher is to giving up, not only how
+the finished ones ended. Each drop notice says how long the connection had held (`Connection
+lost (ssh exit 255) after 4h02m connected`), which separates a fresh drop after a working
+connection from one more failure in a flapping outage.
+
+**A running launcher keeps the code it started with.** `ai update` replaces the installed
+code, but a launcher that has been reattaching for days still runs what it imported at
+launch, including an older reconnect ladder. When the installed commit has moved past the
+loaded one, the next drop warns once per update, naming both commits. Reattaching with the
+same command loads the new code and costs nothing, because the remote session keeps running.
+
 **A credential outage is not a dropped link (AI-CLI-yewj).** An expired SSO token behind a
 `ProxyCommand` fails as fast as a dead host and with the same exit 255, so ten quick
 attempts used to run out in minutes while the token stayed expired. ssh's stderr is now

@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -207,6 +208,29 @@ def _wait_for_file(path: Path, timeout: float | None = None) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+def _wait_while_launching(done: Callable[[], bool], launches: Path, max_windows: int = 5) -> bool:
+    """Wait for ``done``, allowing ``_OBSERVE_SECONDS`` after each new agent launch.
+
+    A multi-launch sequence under one fixed window fails on a contended host even
+    though every restart happens, just slowly. Only a stall of a full window with no
+    new launch is a failure; ``max_windows`` caps the total so a loop that never
+    stops relaunching still ends.
+    """
+    started = time.monotonic()
+    last = None
+    deadline = started + _OBSERVE_SECONDS
+    while not done():
+        now = time.monotonic()
+        if now >= deadline or now - started >= _OBSERVE_SECONDS * max_windows:
+            return False
+        seen = launches.read_text().strip() if launches.exists() else None
+        if seen != last:
+            last = seen
+            deadline = now + _OBSERVE_SECONDS
+        time.sleep(0.1)
+    return True
 
 
 def _session_alive(sock: str, session_id: str) -> bool:
@@ -610,9 +634,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
         check=False,
     )
     assert started, f"the slow failing agent never started: {initial_pane.stdout!r} {initial_pane.stderr!r}"
-    deadline = time.monotonic() + _OBSERVE_SECONDS
-    while time.monotonic() < deadline and not circuit_breaker_reported():
-        time.sleep(0.05)
+    _wait_while_launching(circuit_breaker_reported, launches)
     final_pane = subprocess.run(
         ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
         capture_output=True,
@@ -691,9 +713,7 @@ def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_se
     )
     assert created.returncode == 0, created.stderr
 
-    deadline = time.monotonic() + _OBSERVE_SECONDS
-    while time.monotonic() < deadline and not fourth.exists():
-        time.sleep(0.1)
+    _wait_while_launching(fourth.exists, launches)
     pane = subprocess.run(
         ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
         capture_output=True,

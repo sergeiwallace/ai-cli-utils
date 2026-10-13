@@ -1,6 +1,6 @@
 """VPN-aware transport switching for remote sessions.
 
-Depends on: config.py, messaging.py, process_manager.py (lazy).
+Depends on: config.py, session_script.py, messaging.py, process_manager.py (lazy).
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from pathlib import Path
 from . import output as _out
 from .config import get_xdg_state_home
 from .output import Tag, Untagged
+from .session_script import _current_update_commit
 
 # Module-level alias so tests can patch _monotonic without affecting asyncio internals
 _monotonic = time.monotonic
@@ -149,6 +150,26 @@ def _is_auth_fault(stderr_tail: str, patterns: Sequence[str]) -> bool:
     return any(re.search(pattern, stderr_tail, re.IGNORECASE) for pattern in patterns)
 
 
+def _format_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _installed_package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("ai-cli-utils")
+    except Exception:
+        return "unknown"
+
+
 def run_ssh_with_reconnect(
     ssh_args: list[str],
     cleanup_cmd: list[str],
@@ -200,7 +221,37 @@ def run_ssh_with_reconnect(
     spend ``max_attempts``; the runner asks for re-authentication and keeps retrying on its
     own slower backoff for up to ``auth_wait_seconds`` of continuous credential failure,
     which must outlast the credential's own lifetime.
+
+    The outcome record also carries this process's id, launch time and the ``ai update``
+    commit it started on, and it is rewritten at every drop (verdict ``reconnecting`` or
+    ``awaiting_auth``), so a ladder still running has its budget on disk. A running process
+    keeps the code it imported: when the installed commit has moved past the loaded one, the
+    next drop says so once per installed commit, since a fix to this very ladder reaches an
+    existing session only through a fresh launch.
     """
+    loaded_commit = _current_update_commit()
+    identity = {
+        "pid": os.getpid(),
+        "launched_at": datetime.now(UTC).isoformat(),
+        "code_commit": loaded_commit,
+        "code_version": _installed_package_version(),
+    }
+    stale_reported_for = ""
+
+    def record(state: str) -> None:
+        if outcome_path is not None:
+            _write_transport_outcome(
+                outcome_path,
+                verdict=state,
+                last_exit_code=returncode,
+                failed_attempts=attempt,
+                drops=drops,
+                auth_faults=auth_faults,
+                cause=cause,
+                last_error=last_error,
+                **identity,
+            )
+
     attempt = 0
     drops = 0
     auth_faults = 0
@@ -226,6 +277,19 @@ def run_ssh_with_reconnect(
                 cause = None
                 break
             drops += 1
+            connected = _format_uptime(_monotonic() - started)
+            # Restore before printing, so every notice below is readable even when the drop
+            # left the terminal in a remote application's input modes.
+            restore_terminal()
+            installed_commit = _current_update_commit()
+            if loaded_commit and installed_commit not in ("", loaded_commit, stale_reported_for):
+                stale_reported_for = installed_commit
+                _out.warning(
+                    Tag.TRANSPORT,
+                    f"this launcher is running ai-cli-utils {loaded_commit[:12]}, older than the installed "
+                    f"{installed_commit[:12]}; fixes since then are not active in it. Reattach with the same "
+                    "command to load them -- the remote session keeps running.",
+                )
             # A run that stayed up was a working connection: whatever ended it starts a
             # fresh outage, for the transport budget and the credential wait alike.
             if _monotonic() - started >= stable_seconds:
@@ -249,10 +313,11 @@ def run_ssh_with_reconnect(
                         err=True,
                     )
                     break
-                restore_terminal()
+                record("awaiting_auth")
                 _out.emit(
                     Tag.TRANSPORT,
-                    f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}). "
+                    f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
+                    f"after {connected} connected. "
                     f"Re-authenticate (see the message above); retrying in {auth_delay:.0f}s, for up to "
                     f"{auth_wait_seconds / 60:.0f} minutes. This does not use the reconnect budget.",
                     err=True,
@@ -268,19 +333,17 @@ def run_ssh_with_reconnect(
                 verdict = "gave_up"
                 _out.emit(
                     Tag.TRANSPORT,
-                    f"\nConnection lost (ssh exit {returncode}) and {max_attempts} reconnect "
-                    "attempts did not restore it — giving up. The remote session is most "
+                    f"\nConnection lost (ssh exit {returncode}) after {connected} connected, and "
+                    f"{max_attempts} reconnect attempts did not restore it — giving up. The remote session is most "
                     "likely still running; reattach with the same command.",
                     err=True,
                 )
                 break
-            # Restore before printing, so the notice is readable even when the drop left
-            # the terminal in a remote application's input modes.
-            restore_terminal()
+            record("reconnecting")
             _out.emit(
                 Tag.TRANSPORT,
-                f"\nConnection lost (ssh exit {returncode}) — reattaching in {delay:.0f}s "
-                f"(attempt {attempt}/{max_attempts})...",
+                f"\nConnection lost (ssh exit {returncode}) after {connected} connected — reattaching "
+                f"in {delay:.0f}s (attempt {attempt}/{max_attempts})...",
                 err=True,
             )
             time.sleep(delay)
@@ -289,17 +352,7 @@ def run_ssh_with_reconnect(
             on_clean_exit()
     finally:
         restore_terminal()
-        if outcome_path is not None:
-            _write_transport_outcome(
-                outcome_path,
-                verdict=verdict,
-                last_exit_code=returncode,
-                failed_attempts=attempt,
-                drops=drops,
-                auth_faults=auth_faults,
-                cause=cause,
-                last_error=last_error,
-            )
+        record(verdict)
         subprocess.run(cleanup_cmd, capture_output=True, check=False)
     return returncode
 

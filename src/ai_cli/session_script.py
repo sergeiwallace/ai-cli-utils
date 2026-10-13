@@ -1,13 +1,14 @@
 """Engine launch bash template generator.
 
-Depends on: nothing (self-contained).
+Depends on: config.py.
 """
 
 import json
 import re
 import shlex
 import shutil
-from pathlib import Path
+
+from . import config as _config
 
 # Interpreters that can run the generated session template, most preferred first.
 # zsh stays first because that is what every host has used to date; the ordering,
@@ -158,9 +159,11 @@ def _current_update_commit() -> str:
     baked commit against the live stamp — a monotonic signal (git HEAD always
     advances), unlike the package version which ``ai update`` restores to its base
     value after install and can therefore read identical across updates.
+
+    Resolved through ``get_xdg_state_home()``, the directory ``ai update`` writes it to.
     """
     try:
-        stamp = Path.home() / ".local" / "state" / "ai-cli-utils" / "last_update_commit.txt"
+        stamp = _config.get_xdg_state_home() / "last_update_commit.txt"
         with stamp.open() as fh:
             return fh.read().strip()
     except Exception:

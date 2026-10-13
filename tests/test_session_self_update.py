@@ -107,3 +107,17 @@ def test_given_non_ascii_script_when_written_then_utf8_is_used_at_each_file_boun
     assert script_path.read_text(encoding="utf-8") == script
     assert ("r", "utf-8") in open_calls
     assert ("w", "utf-8") in open_calls
+
+
+def test_given_a_stamp_under_the_xdg_state_home_when_a_template_is_generated_then_it_bakes_that_commit():
+    """``ai update`` writes the stamp under ``get_xdg_state_home()`` and the generated bash
+    reads ``${XDG_STATE_HOME:-$HOME/.local/state}``. The Python reader that bakes
+    ``_template_commit`` must read the same file, or with ``XDG_STATE_HOME`` set the baked
+    commit never matches the live one and every wrapper reloads on its first check."""
+    from ai_cli.config import get_xdg_state_home
+
+    stamp = get_xdg_state_home() / "last_update_commit.txt"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("0123456789abcdef\n")
+
+    assert f"_template_commit={shlex.quote('0123456789abcdef')}" in _script("c")
