@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai session-adopt -t/--transcript FILE` adopts a transcript whose source directory no longer
+  exists, the case where `-s/--source` cannot be guessed. It refuses alongside `-s` or `-a`, and
+  refuses a file that is not the one its title resolves to.
+
 - `ai session-retire NAME` retires a dead session's home slot `.worktrees/NAME`. It
   refuses, before writing anything, while the session runs (a Claude Code process, its
   tmux session or a fresh heartbeat), while the checkout holds uncommitted or untracked

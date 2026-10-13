@@ -179,6 +179,7 @@ ai c 2
 |---|---|
 | `NAME` (argument) | The session's title / ai_name, e.g. `myproject-2`. Omit only with `-a/--all`. |
 | `-s/--source DIR` | Project root the session ran in. Default: the repo root. |
+| `-t/--transcript FILE` | Adopt this transcript file, for a session whose source directory no longer exists, so `-s` has nothing to point at. Refused together with `-s` or `-a`, and refused when the file does not carry NAME as its current title. |
 | `-r/--repo DIR` | Repo root owning `.worktrees/`. Default: detected from the cwd. |
 | `-c/--on-collision {gate,retitle}` | Duplicate-title handling. `gate` (default) stops for a human; `retitle` applies a human-supplied title. |
 | `-T/--new-title TITLE` | With `-c retitle`: the confirmed new title. |
