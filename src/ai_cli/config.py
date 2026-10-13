@@ -21,6 +21,15 @@ from .output import Tag
 
 TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
+# The repo alias is the first segment of every session name, so the persistent
+# registry, ``ai register -x`` and the prefix prompt hold it to a session-name shape:
+# lowercase, starting with a letter, single inner hyphens only (``ai-cli``), and at
+# most the registry's ``max_length``. The per-machine tiers keep TASK_PREFIX_RE, so
+# an entry already there keeps resolving.
+REPO_ALIAS_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+DEFAULT_REPO_ALIAS_MAX_LENGTH = 6
+PREFERRED_ALIAS_LENGTH = 3
+
 _OS_TYPE_MAP = {
     "win32": "windows",
     "darwin": "macos",
@@ -198,6 +207,44 @@ def validate_task_prefix(prefix: str) -> str:
             "Task prefix must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}. Register it with: ai register -p . -x PREFIX"
         )
     return cleaned
+
+
+def validate_repo_alias(prefix: str, max_length: int, source: str) -> str:
+    """Return ``prefix`` when it is a usable repo alias under ``max_length``, else refuse.
+
+    ``source`` names where the limit is set, so the refusal says which file to edit.
+    """
+    cleaned = prefix.strip()
+    if REPO_ALIAS_RE.fullmatch(cleaned) and len(cleaned) <= max_length:
+        return cleaned
+    raise ProjectPrefixError(
+        f"Repo alias {cleaned!r} is invalid: it must be lowercase letters and digits starting with a "
+        f"letter, with single hyphens only between them, and at most {max_length} characters "
+        f"(prefer {PREFERRED_ALIAS_LENGTH} or fewer; the limit is max_length in {source})."
+    )
+
+
+def _registry_max_length(data: dict, path: Path) -> int:
+    max_length = data.get("max_length", DEFAULT_REPO_ALIAS_MAX_LENGTH)
+    if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length < 1:
+        raise ProjectPrefixError(f"max_length in the project registry {path} must be a positive integer.")
+    return max_length
+
+
+def repo_alias_limit() -> tuple[int, str]:
+    """The repo-alias cap and where it is set: the persistent registry's, else the default."""
+    path = get_fleet_registry_path()
+    if path is None or not path.is_file():
+        return (
+            DEFAULT_REPO_ALIAS_MAX_LENGTH,
+            f"a <repo>/{FLEET_REGISTRY_MARKER.as_posix()} registry (none found; default)",
+        )
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ProjectPrefixError(f"Could not read the project registry {path}: {exc}") from exc
+    return _registry_max_length(data, path), str(path)
 
 
 def _secure_config_file(config_path: Path) -> None:
@@ -814,6 +861,7 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ProjectPrefixError(f"Could not read the project registry {path}: {exc}") from exc
 
+    max_length = _registry_max_length(data, path)
     entries: dict[str, dict[str, str]] = {}
     prefixes_seen: dict[str, str] = {}
     for project in data.get("projects", []):
@@ -826,7 +874,7 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
         key = name.strip().lower()
         if key in entries:
             raise ProjectPrefixError(f"Duplicate project name {name!r} in the project registry {path}.")
-        prefix = validate_task_prefix(prefix)
+        prefix = validate_repo_alias(prefix, max_length, str(path))
         if prefix.lower() in prefixes_seen:
             raise ProjectPrefixError(
                 f"Duplicate task_prefix {prefix!r} in the project registry {path}: already used by "
@@ -963,14 +1011,19 @@ def _can_prompt() -> bool:
 def _prompt_and_persist_prefix(root: Path) -> str:
     """Last tier — ask for the missing prefix, persist it, and continue."""
     target, writer = _registry_write_target()
+    max_length, limit_source = repo_alias_limit()
     answer = _out.ask(
-        Tag.CONFIG, f"No task prefix is registered for {root.name} ({root}).\nTask prefix to register in {target}:"
+        Tag.CONFIG,
+        f"No task prefix is registered for {root.name} ({root}).\n"
+        f"Task prefix to register in {target} (lowercase letters and digits starting with a letter, single "
+        f"hyphens between them; prefer {PREFERRED_ALIAS_LENGTH} or fewer, at most {max_length}; the limit is "
+        f"max_length in {limit_source}):",
     ).strip()
     if not answer:
         raise ProjectPrefixError(
             f"No task prefix was entered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
         )
-    prefix = validate_task_prefix(answer)
+    prefix = validate_repo_alias(answer, max_length, limit_source)
     writer(target, root, prefix)
     _out.emit(Tag.CONFIG, f'Registered "{root.name}" with prefix "{prefix}" in {target}')
     return prefix

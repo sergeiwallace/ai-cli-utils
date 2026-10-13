@@ -99,7 +99,7 @@ def test_given_a_project_under_home_when_appending_then_it_writes_a_home_relativ
     registry = tmp_path / "registry.toml"
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    _append_projects_entry(registry, root, "MYPROJECT")
+    _append_projects_entry(registry, root, "myproj")
 
     with registry.open("rb") as handle:
         project = tomllib.load(handle)["projects"][0]
@@ -117,9 +117,9 @@ def test_given_a_missing_project_when_appending_then_it_fails_without_writing(tm
 
 def test_given_a_repo_in_the_persistent_registry_when_resolving_then_returns_its_prefix(fleet):
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
 
-    assert resolve_project_prefix(projects_dir / "myproject") == "MYPROJECT"
+    assert resolve_project_prefix(projects_dir / "myproject") == "myproj"
 
 
 def test_given_a_repo_in_the_persistent_registry_when_resolving_from_elsewhere_then_still_resolves(
@@ -127,12 +127,12 @@ def test_given_a_repo_in_the_persistent_registry_when_resolving_from_elsewhere_t
 ):
     """AC-2: the registry is found without its own repository being the cwd."""
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
     unrelated = tmp_path / "somewhere-else"
     unrelated.mkdir()
     monkeypatch.chdir(unrelated)
 
-    assert resolve_project_prefix(projects_dir / "myproject") == "MYPROJECT"
+    assert resolve_project_prefix(projects_dir / "myproject") == "myproj"
 
 
 def test_given_all_three_tiers_disagree_when_resolving_then_the_persistent_registry_wins(fleet, monkeypatch):
@@ -143,7 +143,7 @@ def test_given_all_three_tiers_disagree_when_resolving_then_the_persistent_regis
     """
     projects_dir, registry = fleet
     repo = projects_dir / "myproject"
-    _write_projects_registry(registry, {"myproject": "FROM-PERSISTENT"})
+    _write_projects_registry(registry, {"myproject": "fleet"})
     local = projects_dir / "myconfig" / "local.toml"
     _write_projects_registry(local, {"myproject": "FROM-LOCAL"})
     monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: local)
@@ -152,7 +152,7 @@ def test_given_all_three_tiers_disagree_when_resolving_then_the_persistent_regis
         lambda: {"project_registry": {str(repo): {"prefix": "FROM-XDG", "type": "tool"}}},
     )
 
-    assert resolve_project_prefix(repo) == "FROM-PERSISTENT"
+    assert resolve_project_prefix(repo) == "fleet"
 
 
 def test_given_no_persistent_registry_when_resolving_then_the_main_project_registry_answers(fleet, monkeypatch):
@@ -178,16 +178,16 @@ def test_given_only_the_config_table_when_resolving_then_it_answers(fleet, monke
 def test_given_an_explicitly_configured_registry_path_when_resolving_then_it_is_used(fleet, monkeypatch, tmp_path):
     """``[project] fleet_registry`` overrides discovery, including its location."""
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "FROM-DISCOVERED"})
+    _write_projects_registry(registry, {"myproject": "found"})
     explicit = tmp_path / "elsewhere" / "registry.toml"
-    _write_projects_registry(explicit, {"myproject": "FROM-EXPLICIT"})
+    _write_projects_registry(explicit, {"myproject": "named"})
     monkeypatch.setattr(
         "ai_cli.config.load_config",
         lambda: {"project": {"fleet_registry": str(explicit)}},
     )
 
     assert get_fleet_registry_path() == explicit
-    assert resolve_project_prefix(projects_dir / "myproject") == "FROM-EXPLICIT"
+    assert resolve_project_prefix(projects_dir / "myproject") == "named"
 
 
 # --- AC-6: every repository resolves from scratch, with no [project_registry] ---
@@ -200,7 +200,7 @@ def test_given_a_config_with_no_project_registry_section_when_resolving_then_eve
     section -- so any answer here comes from the persistent registry alone.
     """
     projects_dir, registry = fleet
-    expected = {name: name.upper() for name in _PROJECTS}
+    expected = {name: name[:6] for name in _PROJECTS}
     _write_projects_registry(registry, expected)
 
     resolved = {name: resolve_project_prefix(projects_dir / name) for name in _PROJECTS}
@@ -215,7 +215,7 @@ def test_given_a_repo_absent_from_every_tier_when_resolving_without_a_terminal_t
     that returned a prefix for any name whatsoever.
     """
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
 
     with patch("ai_cli.config._can_prompt", return_value=False):
         with pytest.raises(ProjectPrefixError, match="ai register"):
@@ -228,11 +228,11 @@ def test_given_a_repo_absent_from_every_tier_when_resolving_without_a_terminal_t
 @pytest.mark.parametrize("worktree_parent", [".worktrees", ".claude/worktrees"])
 def test_given_a_path_inside_a_worktree_when_resolving_then_the_owning_repo_prefix_is_returned(fleet, worktree_parent):
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
     worktree = projects_dir / "myproject" / worktree_parent / "session-1"
     worktree.mkdir(parents=True)
 
-    assert resolve_project_prefix(worktree) == "MYPROJECT"
+    assert resolve_project_prefix(worktree) == "myproj"
 
 
 @pytest.mark.parametrize("worktree_parent", [".worktrees", ".claude/worktrees"])
@@ -242,7 +242,7 @@ def test_given_a_worktree_path_when_resolving_then_no_registry_entry_is_written_
     Writing one is what filled the real config with per-agent-worktree junk.
     """
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
     worktree = projects_dir / "myproject" / worktree_parent / "session-1"
     worktree.mkdir(parents=True)
 
@@ -263,11 +263,11 @@ def test_given_a_worktree_of_a_self_describing_repo_when_resolving_then_the_owne
 
     projects_dir, _registry = fleet
     repo = projects_dir / "myproject"
-    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "MYPROJECT"\n', encoding="utf-8")
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproj"\n', encoding="utf-8")
     worktree = repo / ".claude" / "worktrees" / "agent-1"
     worktree.mkdir(parents=True)
 
-    assert resolve_project_prefix(worktree) == "MYPROJECT"
+    assert resolve_project_prefix(worktree) == "myproj"
 
     with (get_xdg_config_home() / "config.toml").open("rb") as handle:
         table = tomllib.load(handle)["project_registry"]
@@ -279,7 +279,7 @@ def test_given_a_worktree_of_a_self_describing_repo_when_resolving_then_the_owne
 
 def test_given_a_registry_entry_whose_repo_directory_is_absent_when_resolving_then_it_is_reported(fleet):
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"deleted-project": "GONE"})
+    _write_projects_registry(registry, {"deleted-project": "gone"})
 
     with pytest.raises(ProjectPrefixError, match="does not exist"):
         resolve_project_prefix(projects_dir / "deleted-project")
@@ -288,12 +288,12 @@ def test_given_a_registry_entry_whose_repo_directory_is_absent_when_resolving_th
 def test_given_a_registry_entry_whose_repo_directory_is_absent_when_resolving_then_no_prefix_is_returned(fleet):
     """The report must replace the answer, not accompany it.
 
-    A resolution that both warns and returns "GONE" would satisfy a message-only
+    A resolution that both warns and returns "gone" would satisfy a message-only
     assertion while still minting session names against a repository that is not
     on disk.
     """
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"deleted-project": "GONE"})
+    _write_projects_registry(registry, {"deleted-project": "gone"})
 
     with pytest.raises(ProjectPrefixError) as exc:
         resolve_project_prefix(projects_dir / "deleted-project")
@@ -310,13 +310,13 @@ def test_given_no_registry_at_any_tier_and_a_terminal_when_resolving_then_it_pro
 
     with (
         patch("ai_cli.config._can_prompt", return_value=True),
-        patch("builtins.input", return_value="MYPROJECT") as prompt,
+        patch("builtins.input", return_value="myproj") as prompt,
     ):
-        assert resolve_project_prefix(repo) == "MYPROJECT"
+        assert resolve_project_prefix(repo) == "myproj"
 
     prompt.assert_called_once()
     # Persisted, so the next resolution needs no prompt at all.
-    assert resolve_project_prefix(repo) == "MYPROJECT"
+    assert resolve_project_prefix(repo) == "myproj"
 
 
 def test_given_a_configured_registry_path_that_does_not_exist_when_prompted_then_the_file_is_created(
@@ -338,12 +338,12 @@ def test_given_a_configured_registry_path_that_does_not_exist_when_prompted_then
 
     with (
         patch("ai_cli.config._can_prompt", return_value=True),
-        patch("builtins.input", return_value="MYPROJECT"),
+        patch("builtins.input", return_value="myproj"),
     ):
-        assert resolve_project_prefix(projects_dir / "myproject") == "MYPROJECT"
+        assert resolve_project_prefix(projects_dir / "myproject") == "myproj"
 
     assert target.is_file()
-    assert 'task_prefix = "MYPROJECT"' in target.read_text(encoding="utf-8")
+    assert 'task_prefix = "myproj"' in target.read_text(encoding="utf-8")
 
 
 def test_given_no_registry_location_is_known_when_prompted_then_the_user_config_is_created_and_used(fleet):
@@ -365,30 +365,30 @@ def test_given_no_registry_location_is_known_when_prompted_then_the_user_config_
 
     with (
         patch("ai_cli.config._can_prompt", return_value=True),
-        patch("builtins.input", return_value="MYPROJECT"),
+        patch("builtins.input", return_value="myproj"),
     ):
-        assert resolve_project_prefix(projects_dir / "myproject") == "MYPROJECT"
+        assert resolve_project_prefix(projects_dir / "myproject") == "myproj"
 
     assert config_file.is_file()
     with config_file.open("rb") as handle:
-        assert tomllib.load(handle)["project_registry"][str(projects_dir / "myproject")]["prefix"] == "MYPROJECT"
+        assert tomllib.load(handle)["project_registry"][str(projects_dir / "myproject")]["prefix"] == "myproj"
 
 
 def test_given_an_existing_persistent_registry_when_prompted_then_the_answer_lands_in_it(fleet):
     """A discoverable registry is the first writable tier, so the answer goes there."""
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myapp": "MYAPP"})
+    _write_projects_registry(registry, {"myapp": "myapp"})
 
     with (
         patch("ai_cli.config._can_prompt", return_value=True),
-        patch("builtins.input", return_value="MYPROJECT"),
+        patch("builtins.input", return_value="myproj"),
     ):
-        assert resolve_project_prefix(projects_dir / "myproject") == "MYPROJECT"
+        assert resolve_project_prefix(projects_dir / "myproject") == "myproj"
 
     text = registry.read_text(encoding="utf-8")
-    assert 'task_prefix = "MYPROJECT"' in text
+    assert 'task_prefix = "myproj"' in text
     # The pre-existing entry must survive: appending is not rewriting.
-    assert 'task_prefix = "MYAPP"' in text
+    assert 'task_prefix = "myapp"' in text
 
 
 def test_given_no_terminal_when_resolving_an_unregistered_repo_then_it_fails_loudly_without_prompting(fleet):
@@ -451,14 +451,14 @@ def test_given_stale_worktree_and_duplicate_keys_in_the_config_table_when_resolv
     repo = projects_dir / "myproject"
     (repo / ".git").mkdir()
     table = {
-        str(repo / ".claude" / "worktrees" / "agent-aaaa"): {"prefix": "MYPROJECT", "type": "tool"},
-        str(repo): {"prefix": "MYPROJECT", "type": "tool"},
-        str(projects_dir / "throwaway-probe"): {"prefix": "MYPROJECT", "type": "tool"},
-        str(repo / ".claude" / "worktrees" / "agent-bbbb"): {"prefix": "MYPROJECT", "type": "tool"},
+        str(repo / ".claude" / "worktrees" / "agent-aaaa"): {"prefix": "myproj", "type": "tool"},
+        str(repo): {"prefix": "myproj", "type": "tool"},
+        str(projects_dir / "throwaway-probe"): {"prefix": "myproj", "type": "tool"},
+        str(repo / ".claude" / "worktrees" / "agent-bbbb"): {"prefix": "myproj", "type": "tool"},
     }
     monkeypatch.setattr("ai_cli.config.load_config", lambda: {"project_registry": table})
 
-    assert resolve_project_prefix(repo) == "MYPROJECT"
+    assert resolve_project_prefix(repo) == "myproj"
 
 
 def test_given_two_config_keys_for_one_root_that_disagree_when_resolving_then_it_is_reported(fleet, monkeypatch):
@@ -487,10 +487,10 @@ def test_given_two_config_keys_for_one_root_that_disagree_when_resolving_then_it
     "content",
     [
         '[[projects]]\nname = "myproject"\n',
-        '[[projects]]\ntask_prefix = "MYPROJECT"\n',
+        '[[projects]]\ntask_prefix = "myproj"\n',
         '[[projects]]\nname = "myproject"\ntask_prefix = ""\n',
-        '[[projects]]\nname = "myproject"\ntask_prefix = "A"\n\n[[projects]]\nname = "myproject"\ntask_prefix = "B"\n',
-        '[[projects]]\nname = "myproject"\ntask_prefix = "A"\n\n[[projects]]\nname = "myapp"\ntask_prefix = "A"\n',
+        '[[projects]]\nname = "myproject"\ntask_prefix = "a"\n\n[[projects]]\nname = "myproject"\ntask_prefix = "b"\n',
+        '[[projects]]\nname = "myproject"\ntask_prefix = "a"\n\n[[projects]]\nname = "myapp"\ntask_prefix = "a"\n',
         "not valid toml {{{",
     ],
 )
@@ -505,8 +505,8 @@ def test_given_a_malformed_persistent_registry_when_resolving_then_it_is_reporte
 def test_given_two_persistent_registries_when_locating_one_then_the_ambiguity_is_reported(fleet):
     """Discovery by shape must not silently pick one of two candidates."""
     projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
-    _write_projects_registry(projects_dir / "myapp" / FLEET_REGISTRY_MARKER, {"myapp": "MYAPP"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
+    _write_projects_registry(projects_dir / "myapp" / FLEET_REGISTRY_MARKER, {"myapp": "myapp"})
 
     with pytest.raises(ProjectPrefixError, match="Multiple persistent project registries"):
         get_fleet_registry_path()
@@ -517,14 +517,14 @@ def test_given_two_persistent_registries_when_locating_one_then_the_ambiguity_is
 
 def test_given_a_repo_in_the_persistent_registry_when_resolving_by_name_then_it_returns_that_prefix(fleet):
     _projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
 
-    assert resolve_project_prefix_by_name("myproject") == "MYPROJECT"
+    assert resolve_project_prefix_by_name("myproject") == "myproj"
 
 
 def test_given_a_name_absent_from_every_tier_when_resolving_by_name_without_a_terminal_then_it_fails(fleet):
     _projects_dir, registry = fleet
-    _write_projects_registry(registry, {"myproject": "MYPROJECT"})
+    _write_projects_registry(registry, {"myproject": "myproj"})
 
     with patch("ai_cli.config._can_prompt", return_value=False):
         with pytest.raises(ProjectPrefixError, match="ai register"):
@@ -539,12 +539,12 @@ def test_given_only_worktree_keys_for_a_name_in_the_config_table_when_resolving_
     repo = projects_dir / "myproject"
     (repo / ".git").mkdir()
     table = {
-        str(repo / ".worktrees" / "session-1"): {"prefix": "MYPROJECT", "type": "tool"},
-        str(repo / ".claude" / "worktrees" / "agent-1"): {"prefix": "MYPROJECT", "type": "tool"},
+        str(repo / ".worktrees" / "session-1"): {"prefix": "myproj", "type": "tool"},
+        str(repo / ".claude" / "worktrees" / "agent-1"): {"prefix": "myproj", "type": "tool"},
     }
     monkeypatch.setattr("ai_cli.config.load_config", lambda: {"project_registry": table})
 
-    assert resolve_project_prefix_by_name("myproject") == "MYPROJECT"
+    assert resolve_project_prefix_by_name("myproject") == "myproj"
 
 
 # --- The registered-prefix path still writes to config.toml, unchanged ---
@@ -557,6 +557,86 @@ def test_given_ai_register_when_run_for_a_repo_then_resolution_returns_that_pref
     repo = projects_dir / "myproject"
     (repo / ".git").mkdir()
 
-    register_project(repo, "MYPROJECT", "tool")
+    register_project(repo, "myproj", "tool")
 
-    assert resolve_project_prefix(repo) == "MYPROJECT"
+    assert resolve_project_prefix(repo) == "myproj"
+
+
+# --- The repo alias is capped and shaped where the persistent registry sets it ---
+
+
+@pytest.mark.parametrize("prefix", ["abcde", "Abc", "-abc", "abc-", "a--b", "1ab", "a_b"])
+def test_given_a_registry_with_a_max_length_when_an_entry_breaks_the_cap_or_charset_then_resolution_refuses(
+    fleet, prefix
+):
+    projects_dir, registry = fleet
+    registry.write_text(f'max_length = 4\n\n[[projects]]\nname = "myproject"\ntask_prefix = "{prefix}"\n')
+
+    with pytest.raises(ProjectPrefixError) as exc:
+        resolve_project_prefix(projects_dir / "myproject")
+
+    assert f"Repo alias {prefix!r} is invalid" in str(exc.value)
+    assert "at most 4 characters" in str(exc.value)
+    assert f"max_length in {registry}" in str(exc.value)
+
+
+def test_given_a_registry_with_no_max_length_when_an_entry_is_seven_characters_then_the_default_six_refuses(fleet):
+    projects_dir, registry = fleet
+    _write_projects_registry(registry, {"myproject": "abcdefg"})
+
+    with pytest.raises(ProjectPrefixError, match="at most 6 characters"):
+        resolve_project_prefix(projects_dir / "myproject")
+
+
+def test_given_a_registry_with_no_max_length_when_an_entry_is_six_characters_with_a_hyphen_then_it_resolves(fleet):
+    """Parity: the longest live prefix is a hyphenated six, and it must keep resolving."""
+    projects_dir, registry = fleet
+    _write_projects_registry(registry, {"myproject": "ai-cli", "myapp": "a1", "mytool": "abc"})
+
+    assert resolve_project_prefix(projects_dir / "myproject") == "ai-cli"
+    assert resolve_project_prefix(projects_dir / "myapp") == "a1"
+    assert resolve_project_prefix(projects_dir / "mytool") == "abc"
+
+
+def test_given_a_prefix_over_the_cap_when_ai_register_runs_then_it_refuses_with_the_same_message(fleet):
+    from conftest import run_cli
+
+    projects_dir, registry = fleet
+    registry.write_text('max_length = 4\n\n[[projects]]\nname = "myapp"\ntask_prefix = "app"\n')
+    repo = projects_dir / "myproject"
+
+    code, _out, err = run_cli(["ai", "register", "-p", str(repo), "-x", "abcde"])
+
+    assert code == 1
+    assert "Repo alias 'abcde' is invalid" in err
+    assert f"max_length in {registry}" in err
+    assert not (projects_dir.parent / "xdg" / "config.toml").exists()
+
+
+def test_given_a_prefix_over_the_cap_when_typed_at_the_prompt_then_it_refuses_and_persists_nothing(fleet):
+    projects_dir, registry = fleet
+    registry.write_text('max_length = 4\n\n[[projects]]\nname = "myapp"\ntask_prefix = "app"\n')
+    before = registry.read_text()
+
+    with (
+        patch("ai_cli.config._can_prompt", return_value=True),
+        patch("builtins.input", return_value="abcde") as prompt,
+        pytest.raises(ProjectPrefixError, match="at most 4 characters"),
+    ):
+        resolve_project_prefix(projects_dir / "myproject")
+
+    assert "prefer 3 or fewer, at most 4" in prompt.call_args.args[0]
+    assert registry.read_text() == before
+
+
+def test_given_an_uppercase_prefix_in_a_per_machine_tier_when_resolving_then_it_still_resolves(fleet, monkeypatch):
+    """Parity: the per-machine tiers keep the looser task-prefix form."""
+    projects_dir, registry = fleet
+    registry.unlink(missing_ok=True)
+    repo = projects_dir / "myproject"
+    (repo / ".git").mkdir()
+    monkeypatch.setattr(
+        "ai_cli.config.load_config", lambda: {"project_registry": {str(repo): {"prefix": "LEGACY_PREFIX"}}}
+    )
+
+    assert resolve_project_prefix(repo) == "LEGACY_PREFIX"

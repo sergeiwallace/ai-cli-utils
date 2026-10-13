@@ -293,8 +293,13 @@ def _base_launch_kwargs(name: str = "1") -> dict:
 
 
 @pytest.fixture
-def fleet_registered_repo(tmp_path, monkeypatch):
-    """Create a clone and resolve its raw uppercase prefix through the fleet registry."""
+def uppercase_prefix_repo(tmp_path, monkeypatch):
+    """Create a clone whose raw uppercase prefix resolves through a per-machine tier.
+
+    The fleet registry refuses an uppercase repo alias, so the uppercase prefix this
+    case needs arrives the way it still can: the repository's own ``[tool.ai-cli]``
+    metadata, which keeps the looser task-prefix form.
+    """
 
     def git(*args, cwd):
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True, text=True)
@@ -313,9 +318,7 @@ def fleet_registered_repo(tmp_path, monkeypatch):
 
     repo = tmp_path / "myproject"
     git("clone", "-q", str(remote), str(repo), cwd=tmp_path)
-    registry = tmp_path / "registry" / "config" / "fleet-projects.toml"
-    registry.parent.mkdir(parents=True)
-    registry.write_text('[[projects]]\nname = "myproject"\ntask_prefix = "APP"\ntype = "tool"\nactive = true\n')
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "APP"\n')
     monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: tmp_path)
     monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: None)
     monkeypatch.setattr("ai_cli.config.load_config", dict)
@@ -870,11 +873,11 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
     assert "c-myproject-tst-1" in session_names
 
 
-def test_given_uppercase_fleet_prefix_when_bare_session_launches_then_real_artifacts_are_lowercase(
-    fleet_registered_repo, monkeypatch, tmp_path
+def test_given_uppercase_repo_prefix_when_bare_session_launches_then_real_artifacts_are_lowercase(
+    uppercase_prefix_repo, monkeypatch, tmp_path
 ):
     """Exercise production registry resolution and worktree creation for an empty slot."""
-    repo = fleet_registered_repo
+    repo = uppercase_prefix_repo
     monkeypatch.chdir(repo)
     canonical_registry = tmp_path / "persistent-state" / "canonical-session-worktrees.json"
     monkeypatch.setenv("AI_CLI_CANONICAL_WORKTREE_REGISTRY", str(canonical_registry))
