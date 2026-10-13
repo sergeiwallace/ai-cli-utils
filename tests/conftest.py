@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -148,13 +149,24 @@ _REAL_ITERM2_PROFILE_DIR = _REAL_HOME / "Library" / "Application Support" / "iTe
 # launches write rather than a redirected one (AI-CLI-u2ox).
 _REAL_CANONICAL_WORKTREE_REGISTRY = get_canonical_worktree_registry_path()
 
-# Short directory name for the relocated Windows temp root -- see
-# _windows_temproot for why the length itself is the point.
-_WIN_TEMPROOT_NAME = "aipt"
+# Short directory name of this suite's own temp root -- see suite_temproot for why the
+# root is relocated at all, and why its length is the point on Windows.
+SUITE_TEMPROOT_NAME = "aipt"
 
 
-def _windows_temproot() -> Path:
-    """Return a deliberately SHORT temp root on the same drive as the default one.
+def suite_temproot(tempdir: str) -> Path:
+    """Return the root this suite's runs keep their pytest temp dirs under.
+
+    Out of the shared ``<tempdir>/pytest-of-<user>`` namespace on every OS. That namespace
+    holds the base dir of every pytest run on the host, of every project, so one deletion
+    there reaches all of them. A full local run here lost its live ``pytest-N`` base dir
+    partway through (every later ``tmp_path`` setup raised ``FileNotFoundError`` from
+    pytest's own ``os.scandir``) while no test of this suite deleted it and CI, alone on its
+    host, stayed green. Inside this root pytest's numbered dirs, ``.lock`` files and
+    retention work unchanged, so concurrent runs of this suite still coordinate exactly as
+    pytest intends.
+
+    On Windows the root also sits on the drive anchor, deliberately SHORT:
 
     Windows still enforces MAX_PATH (260) unless ``LongPathsEnabled`` is set,
     which needs admin and is therefore not available here. Two things make the
@@ -173,7 +185,9 @@ def _windows_temproot() -> Path:
     The drive is taken from the default temp dir rather than hardcoded so this
     does not assume ``C:``.
     """
-    return Path(Path(tempfile.gettempdir()).anchor) / _WIN_TEMPROOT_NAME
+    if sys.platform == "win32":
+        return Path(Path(tempdir).anchor) / SUITE_TEMPROOT_NAME
+    return Path(tempdir) / SUITE_TEMPROOT_NAME
 
 
 def _repair_inherited_acl(target: Path, recurse: bool = False) -> None:
@@ -207,14 +221,16 @@ def _repair_inherited_acl(target: Path, recurse: bool = False) -> None:
 
 
 def pytest_configure(config):
-    """Relocate the Windows temp root before pytest first resolves ``basetemp``.
+    """Relocate the temp root to :func:`suite_temproot` before pytest first resolves ``basetemp``.
 
-    This is the MAX_PATH half of the Windows fix; the DACL half is handled
+    On Windows this is also the MAX_PATH half of the Windows fix; the DACL half is handled
     lazily in :func:`_reject_real_agent_processes`.
 
     ``PYTEST_DEBUG_TEMPROOT`` is pytest's own hook for the root and is read
     lazily when the base temp dir is first needed, so setting it here is early
-    enough. It is only set when the operator has not chosen a root themselves.
+    enough. It is only set when the operator has not chosen a root themselves, and an
+    explicit ``--basetemp`` still wins over it inside pytest. xdist workers and the inner
+    pytest runs some tests start inherit it, so their dirs land in the same root.
 
     Patching pytest to stop requesting ``mode=0o700`` was tried and rejected:
     the mode is hardcoded at five separate call sites in ``_pytest.tmpdir``, and
@@ -222,11 +238,21 @@ def pytest_configure(config):
     accessible (``if (rootdir_stat.st_mode & 0o077) != 0``), so forcing it wide
     fights pytest's own security check.
     """
-    if sys.platform != "win32" or os.environ.get("PYTEST_DEBUG_TEMPROOT"):
+    if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return
-    root = _windows_temproot()
+    root = suite_temproot(tempfile.gettempdir())
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            # Default mode: 0o700 would give this root the protected DACL described in
+            # _repair_inherited_acl, and everything below it would inherit nothing usable.
+            root.mkdir(parents=True, exist_ok=True)
+        else:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # A shared /tmp lets another user create this name first; pytest's own
+            # ownership check covers only the pytest-of-<user> dir inside it.
+            st = root.lstat()
+            if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid():
+                return
     except OSError:
         return  # fall back to the default root; the ACL repair still applies
     os.environ["PYTEST_DEBUG_TEMPROOT"] = str(root)
@@ -562,7 +588,7 @@ def _test_temp_roots() -> tuple[str, ...]:
     """Every root a pytest temp directory can live under, as real paths.
 
     ``PYTEST_DEBUG_TEMPROOT`` is included because :func:`pytest_configure` relocates the
-    Windows root to a short path on the drive anchor, which is NOT under
+    root, and on Windows to a short path on the drive anchor, which is NOT under
     ``tempfile.gettempdir()``.
     """
     roots = [tempfile.gettempdir()]
