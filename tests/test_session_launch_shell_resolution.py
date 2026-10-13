@@ -565,10 +565,13 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     fake_direnv.chmod(0o755)
 
     script = tmp_path / "slow-failure-session.sh"
+    # The pane's session must carry the name the script was rendered for, as a real
+    # launch does: the script reads and writes its restart state on that session.
+    session_name = "p-myproject-breaker"
     rendered = get_engine_script(
         "p",
         "breaker",
-        "p-myproject-breaker",
+        session_name,
         "p-myproject-",
         "myproject",
         worktree_dir=str(tmp_path),
@@ -581,7 +584,6 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     # cannot satisfy the test by stopping the first attempt for a timing reason.
     script.write_text(rendered.replace(fast_crash_guard, "if false; then"))
     script.chmod(0o755)
-    session_name = "slow-agent-failures"
     shell = shutil.which("bash")
     assert shell is not None
     runner = tmp_path / "slow-failure-runner.sh"
@@ -686,11 +688,14 @@ def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_se
     fake_ai.chmod(0o755)
 
     script = tmp_path / "healthy-session.sh"
-    rendered = get_engine_script(
-        "p", "healthy", "p-myproject-healthy", "p-myproject-", "myproject", worktree_dir=str(tmp_path)
-    )
+    # Named as the script was rendered, as a real launch is. Under any other name the
+    # script cannot record on the session that its first launch is done, so every
+    # restart re-ran the first-launch wait for an attached client: a bounded spin of
+    # tmux calls that cost 6-11s per restart on a loaded host, enough to stall the
+    # launch sequence past the observation window.
+    session_name = "p-myproject-healthy"
+    rendered = get_engine_script("p", "healthy", session_name, "p-myproject-", "myproject", worktree_dir=str(tmp_path))
     script.write_text(rendered.replace("_healthy_agent_seconds=60", "_healthy_agent_seconds=4"))
-    session_name = "healthy-agent-exits"
     shell = shutil.which("bash")
     assert shell is not None
     runner = tmp_path / "healthy-runner.sh"
