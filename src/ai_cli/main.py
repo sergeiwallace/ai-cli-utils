@@ -3988,6 +3988,8 @@ def _session_command(engine: str):
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
                     os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
                 _tunnel._ensure_nats_tunnel(config)
+                if engine == "c" and not remote:
+                    _process_manager._start_stale_session_reaper_for_launch()
             _do_session_launch(
                 engine=engine,
                 name=name,

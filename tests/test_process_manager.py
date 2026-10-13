@@ -10,6 +10,8 @@ off); an explicit, user-typed `ai quota watch start` always registers.
 
 from __future__ import annotations
 
+import subprocess
+import threading
 from unittest.mock import MagicMock, patch
 
 from ai_cli import process_manager
@@ -82,7 +84,90 @@ def test_given_reaper_start_when_circus_registration_fails_then_reports_failure_
     with patch("ai_cli.process_manager._ensure_circusd", side_effect=RuntimeError("unavailable")):
         assert not process_manager._cmd_stale_session_reaper_start()
 
-    assert "failed to start" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "failed to start" in error
+    assert "ai session-reaper start" in error
+
+
+def test_given_running_reaper_when_start_requested_then_existing_watcher_is_left_running(tmp_path):
+    client = MagicMock()
+    client.send_message.return_value = {"statuses": {"stale-session-reaper": {"active": 1}}}
+    with (
+        patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+        patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
+        patch("circus.client.CircusClient", return_value=client),
+    ):
+        assert process_manager._cmd_stale_session_reaper_start()
+
+    client.send_message.assert_called_once_with("status")
+
+
+def test_given_two_near_simultaneous_starts_when_reaper_is_missing_then_only_one_watcher_is_added(tmp_path):
+    class ConcurrentCircusClient:
+        state_lock = threading.Lock()
+        active = False
+        add_count = 0
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def send_message(self, command, **_kwargs):
+            with self.state_lock:
+                if command == "status":
+                    return {"statuses": {"stale-session-reaper": {"active": 1}} if type(self).active else {}}
+                if command == "add":
+                    type(self).active = True
+                    type(self).add_count += 1
+                    return {"status": "ok"}
+                if command == "rm":
+                    type(self).active = False
+                    return {"status": "ok"}
+                raise AssertionError(f"unexpected Circus command: {command}")
+
+    results = []
+    with (
+        patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+        patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
+        patch("circus.client.CircusClient", ConcurrentCircusClient),
+        patch("ai_cli.process_manager.shutil.which", return_value="/usr/bin/ai"),
+    ):
+        threads = [
+            threading.Thread(target=lambda: results.append(process_manager._cmd_stale_session_reaper_start()))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert results == [True, True]
+    assert ConcurrentCircusClient.add_count == 1
+
+
+def test_given_claude_launch_when_reaper_start_is_scheduled_then_launch_does_not_wait_for_it():
+    with (
+        patch("ai_cli.process_manager.sys.platform", "linux"),
+        patch("ai_cli.process_manager.shutil.which", return_value="/usr/bin/ai"),
+        patch("ai_cli.process_manager.subprocess.Popen") as popen,
+    ):
+        process_manager._start_stale_session_reaper_for_launch()
+
+    popen.assert_called_once_with(
+        ["/usr/bin/ai", "session-reaper", "start"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def test_given_native_windows_launch_when_reaper_start_is_scheduled_then_it_is_a_noop():
+    with (
+        patch("ai_cli.process_manager.sys.platform", "win32"),
+        patch("ai_cli.process_manager.subprocess.Popen") as popen,
+    ):
+        process_manager._start_stale_session_reaper_for_launch()
+
+    popen.assert_not_called()
 
 
 def test_given_reaper_stop_when_circus_is_unavailable_then_reports_failure_without_starting_it(tmp_path, capsys):

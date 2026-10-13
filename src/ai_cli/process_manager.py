@@ -6,13 +6,18 @@ Depends on: config.py.
 import contextlib
 import shutil
 import subprocess
+import sys
+import threading
 from pathlib import Path
+
+import portalocker
 
 from . import output as _out
 from .config import _pid_alive, get_xdg_state_home
 from .output import Tag
 
 _STALE_SESSION_REAPER_WATCHER = "stale-session-reaper"
+_STALE_SESSION_REAPER_START_LOCK = threading.Lock()
 
 
 def _ensure_circusd() -> str:
@@ -157,41 +162,90 @@ def _cmd_stale_session_reaper_start() -> bool:
     The reaper is never run as a fallback from this lifecycle command.  Failure
     to reach Circus therefore leaves every tmux session untouched.
     """
-    try:
-        endpoint = _ensure_circusd()
-        from circus.client import CircusClient
+    if sys.platform == "win32":
+        _out.emit(Tag.DAEMON, "stale-session-reaper: no-op on native Windows (tmux is unavailable)")
+        return True
 
-        state_dir = get_xdg_state_home()
-        ai_bin = shutil.which("ai") or "ai"
-        client = CircusClient(endpoint=endpoint, timeout=5.0)
-        with contextlib.suppress(Exception):
-            client.send_message("rm", name=_STALE_SESSION_REAPER_WATCHER)
-        result = client.send_message(
-            "add",
-            name=_STALE_SESSION_REAPER_WATCHER,
-            cmd=f"{ai_bin} session-reaper run",
-            options={
-                "copy_env": True,
-                "respawn": True,
-                "singleton": True,
-                "stdout_stream": {
-                    "class": "FileStream",
-                    "filename": str(state_dir / "stale-session-reaper.log"),
-                },
-                "stderr_stream": {
-                    "class": "FileStream",
-                    "filename": str(state_dir / "stale-session-reaper.log"),
-                },
-            },
-            start=True,
-        )
-        if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
-            raise RuntimeError("Circus rejected watcher registration")
+    state_dir = get_xdg_state_home()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # The thread lock covers concurrent callers in one process; the file lock
+        # extends the same singleton decision across near-simultaneous CLI launches.
+        with _STALE_SESSION_REAPER_START_LOCK:
+            with portalocker.Lock(str(state_dir / "stale-session-reaper-start.lock"), mode="a", timeout=10):
+                endpoint = _ensure_circusd()
+                from circus.client import CircusClient
+
+                ai_bin = shutil.which("ai") or "ai"
+                client = CircusClient(endpoint=endpoint, timeout=5.0)
+                status = client.send_message("status")
+                statuses = status.get("statuses", {}) if isinstance(status, dict) else {}
+                watcher = statuses.get(_STALE_SESSION_REAPER_WATCHER)
+                active = (
+                    bool(watcher.get("active"))
+                    if isinstance(watcher, dict)
+                    else watcher
+                    in {
+                        "running",
+                        "active",
+                    }
+                )
+                if not active:
+                    if watcher is not None:
+                        result = client.send_message("start", name=_STALE_SESSION_REAPER_WATCHER)
+                    else:
+                        result = client.send_message(
+                            "add",
+                            name=_STALE_SESSION_REAPER_WATCHER,
+                            cmd=f"{ai_bin} session-reaper run",
+                            options={
+                                "copy_env": True,
+                                "respawn": True,
+                                "singleton": True,
+                                "stdout_stream": {
+                                    "class": "FileStream",
+                                    "filename": str(state_dir / "stale-session-reaper.log"),
+                                },
+                                "stderr_stream": {
+                                    "class": "FileStream",
+                                    "filename": str(state_dir / "stale-session-reaper.log"),
+                                },
+                            },
+                            start=True,
+                        )
+                    if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
+                        raise RuntimeError("Circus rejected watcher start")
     except Exception as exc:
-        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to start ({exc})", err=True)
+        _out.emit(
+            Tag.DAEMON,
+            f"stale-session-reaper: failed to start ({exc}); retry with `ai session-reaper start`",
+            err=True,
+        )
         return False
     _out.emit(Tag.DAEMON, "stale-session-reaper: running")
     return True
+
+
+def _start_stale_session_reaper_for_launch() -> None:
+    """Schedule reaper startup without delaying or failing a Claude launch."""
+    if sys.platform == "win32":
+        return
+    ai_bin = shutil.which("ai") or "ai"
+    try:
+        # Keep stderr attached so the child can emit the single actionable
+        # warning from the lifecycle command if Circus startup fails.
+        subprocess.Popen(
+            [ai_bin, "session-reaper", "start"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        _out.emit(
+            Tag.DAEMON,
+            f"stale-session-reaper: failed to schedule start ({exc}); retry with `ai session-reaper start`",
+            err=True,
+        )
 
 
 def _cmd_stale_session_reaper_stop() -> bool:
