@@ -233,7 +233,7 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 )
                 continue
             moved.add(e.worktree)
-            if (e.dest / ".venv").is_dir():
+            if (e.dest / ".venv").is_dir() and not (e.dest / ".venv").is_symlink():
                 warnings.append(f"{e.dest / '.venv'} names the old path in its scripts -- run `uv sync --reinstall`")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
