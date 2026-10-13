@@ -378,6 +378,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Linux, an `ai c` launch or relaunch no longer prints `[session] session script
+  updated — reloading...` over and over without ever starting the agent. The session
+  script read its own mtime with `stat -f "%m" FILE || stat -c "%Y" FILE`. On GNU
+  coreutils the first form prints a filesystem report, free-block counters included,
+  and exits 1, so the captured value changed between any two reads and every
+  replacement child decided the script had been updated. The GNU form is now tried
+  first, each answer must be an integer, and an unreadable mtime never counts as a
+  change. A real-tmux test now runs the whole generated session under GNU `stat`
+  semantics and checks that it reaches the agent, and that one genuine rewrite
+  reloads exactly once.
+
 - State, cache, config and data directories can no longer resolve relative to the
   current working directory, which is how a captured process listing came to be
   written into a repository checkout instead of your home directory. The cause is
