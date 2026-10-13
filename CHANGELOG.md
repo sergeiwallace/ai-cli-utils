@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai session-retire NAME` retires a dead session's home slot `.worktrees/NAME`. It
+  refuses, before writing anything, while the session runs (a Claude Code process, its
+  tmux session or a fresh heartbeat), while the checkout holds uncommitted or untracked
+  work, or while its checked-out commit is in neither its upstream nor `origin/main`.
+  Otherwise it anchors the branch tips under `refs/preserved/session-retire/`, runs
+  `git worktree remove`, drops the canonical-registry entry and appends a row to
+  `session-retirements.jsonl`. The branches and the Claude Code project directory stay.
+
 - `ai c -R` over ssh now says what a long-lived launcher is running and how it is doing.
   Each drop notice gives the connection's uptime. The outcome record in
   `transport-outcomes/` names the launcher's pid, launch time and loaded commit, and it is
