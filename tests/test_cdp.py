@@ -710,10 +710,6 @@ class TestCdpEdgeRealBoundary:
         edge = _real_edge()
         if not edge:
             pytest.skip("no real Microsoft Edge binary on this machine")
-        if sys.platform == "win32":
-            # Platform-specific: on the hosted Windows runner Edge stays up but never writes
-            # DevToolsActivePort for a fresh profile; the cause is not yet known.
-            pytest.skip("Edge on Windows never reports its DevTools port here (AI-CLI-80rj)")
 
         profile = tmp_path / "edge-profile"
         args = [
@@ -735,7 +731,17 @@ class TestCdpEdgeRealBoundary:
             args.append("--no-sandbox")
         if allow_origins:
             args.append("--remote-allow-origins=*")
-        proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        env = None
+        if sys.platform == "win32":
+            # Platform-specific: the suite points USERPROFILE at an empty temp dir, and
+            # Windows Edge with no USERPROFILE\AppData\Local runs its renderers but never
+            # starts DevTools or writes DevToolsActivePort. Measured on the hosted runner:
+            # an empty home and homes holding only AppData\Roaming, Desktop, Documents or
+            # Downloads all failed; AppData\Local alone opened the port in 0.25s.
+            edge_home = tmp_path / "edge-home"
+            (edge_home / "AppData" / "Local").mkdir(parents=True)
+            env = {**os.environ, "USERPROFILE": str(edge_home)}
+        proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         try:
             ws_url = None
             active = profile / "DevToolsActivePort"
@@ -746,7 +752,10 @@ class TestCdpEdgeRealBoundary:
                     ws_url = f"ws://127.0.0.1:{lines[0].strip()}{lines[1].strip()}"
                     break
                 time.sleep(0.25)
-            assert ws_url, f"real Edge never opened its CDP port; returncode={proc.poll()!r}"
+            assert ws_url, (
+                f"real Edge never opened its CDP port; returncode={proc.poll()!r}, "
+                f"DevToolsActivePort present={active.is_file()}, profile present={profile.is_dir()}"
+            )
 
             async def attach() -> dict:
                 # A generous handshake bound: on a loaded CI runner Edge has written its
