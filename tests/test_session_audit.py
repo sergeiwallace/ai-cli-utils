@@ -519,6 +519,76 @@ def test_adopt_ready_given_root_worktree_physical_and_legacy_sources_when_adopte
     assert all(not isinstance(result, Exception) and result.resolved is not None for result in results.values())
 
 
+def test_adopt_ready_given_the_audit_flags_a_slug_mismatch_when_adopted_then_it_adopts_with_no_source(fleet, audit):
+    """A session the audit reports as adoptable must adopt, mismatch flag and all (AI-CLI-2ul).
+
+    The survey scans outward from ``~/.claude/projects``, so it finds transcripts
+    whose recorded cwd re-slugifies to a *different* directory — the condition it
+    prints as ``slug-mismatch``. Re-deriving the source from that recorded cwd
+    sends the adopter to a directory holding no such transcript, so the audit
+    promised an adoption the adopter then refused with "nothing to adopt". The
+    physical directory the census found the file in is the only authority.
+
+    The agent worktree the session ran in is deliberately never created. A
+    transcript outlives the directory it ran in, so once that directory is gone
+    the source cannot be guessed from the filesystem at all and is obtainable
+    only by inverting a one-way slug — which is why "just pass -s" is not a
+    workaround for this.
+    """
+    stale_agent_dir = fleet["myproject"] / ".claude" / "worktrees" / "old-thing"
+    physical_dir = cc_project_dir(stale_agent_dir, fleet["home"])
+    assert not stale_agent_dir.exists()
+    _write_transcript_in_project_dir(
+        physical_dir,
+        "12121212-2222-4333-8444-555555555555",
+        "myproject-1",
+        fleet["myproject"],
+    )
+    _add_worktree(fleet["myproject"], "myproject-1")
+
+    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-1")
+    (record,) = report.sessions
+    assert record.slug_matches is False, "the fixture must reproduce the audit's own slug-mismatch condition"
+    assert record.project_dir == physical_dir
+    assert cc_project_dir(Path(record.cwd), fleet["home"]) != physical_dir
+
+    ready, skipped = triage(report)
+    assert [r.title for r in ready] == ["myproject-1"], skipped
+
+    outcomes, _ = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
+    ((_, result),) = outcomes
+    assert not isinstance(result, Exception), result
+    assert result.resolved is not None, "`ai c 1` must resolve the adopted transcript"
+
+
+def test_adopt_ready_given_every_cleared_record_when_adopted_then_none_refuses_with_nothing_to_adopt(fleet, audit):
+    """Nothing ``triage`` clears may fail the adopter's "nothing to adopt" gate (AI-CLI-2ul AC-3).
+
+    That refusal means the adopter looked in a directory holding no such
+    transcript, which for a record the census built can only happen if the
+    location the audit measured is not the location it hands over. Asserting it
+    over the whole cleared batch — rather than one case — is what makes the
+    invariant, not one fixture, the thing under test.
+    """
+    physical_dir = cc_project_dir(fleet["myproject"] / ".claude" / "worktrees" / "gone", fleet["home"])
+    _write_transcript_in_project_dir(
+        physical_dir,
+        "13131313-2222-4333-8444-555555555555",
+        "myproject-3",
+        fleet["myproject"],
+    )
+    for name in ("myproject-2", "myproject-3", "myproject-5"):
+        _add_worktree(fleet["myproject"], name)
+
+    report = audit()
+    ready, _ = triage(report)
+    assert {r.title for r in ready} == {"myproject-2", "myproject-3", "myproject-5"}
+
+    outcomes, _ = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
+    refusals = [(record.title, str(result)) for record, result in outcomes if isinstance(result, Exception)]
+    assert not [r for r in refusals if "nothing to adopt" in r[1]], refusals
+
+
 def test_triage_given_an_already_adopted_session_when_triaged_then_skipped_as_done(audit):
     """AC-4: a session already in its slot is not re-adopted."""
     _, skipped = triage(audit())
