@@ -259,6 +259,11 @@ with its record intact.
   answered "unknown", the gates read that as "do nothing", and the only symptom was a session
   name that stayed reserved. When a fix reaches for a platform-specific interface, the question
   to answer in the same pass is what the other platforms will silently do instead.
+- **A port is not proved until a real record from that platform passes through it.** The
+  psutil port read numeric `procStart` forms only, and its stopped-process tests faked psutil's
+  status word, so nothing ever fed it what macOS writes: `ps -o lstart` text in UTC. Every
+  macOS record compared as unrecorded, so a stopped session was reported and never ended. The
+  fix reads that form, and the tests now SIGSTOP a real process group on any POSIX host.
 
 <!-- /doc:region name="lessons_learned" -->
 
@@ -270,6 +275,7 @@ with its record intact.
 |------|--------|-------|
 | 2026-08-14 | `80f02cc` | Frozen regression suite committed RED (7 failed, 3 passed) before any production edit. |
 | 2026-08-14 | `edebffb` | Causal fix: `"abandoned"` verdict for present-but-not-running states, scoped reclamation with `SIGTERM`/`SIGCONT`/bounded wait/`SIGKILL` on the process group, `/proc`-verified, record pruned. Frozen suite 10/10; hard gate 2332 passed. |
+| 2026-10-13 | #281 | macOS: read the lstart-text `procStart` (UTC) so a stopped session's identity can be proved and the escalation runs; a disagreeing lstart keeps the refusal. Real-SIGSTOP tests on any POSIX host, red at the base commit. |
 
 <!-- /doc:region name="fix_log" -->
 

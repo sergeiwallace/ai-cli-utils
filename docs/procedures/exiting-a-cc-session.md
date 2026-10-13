@@ -13,7 +13,7 @@ running, because continuing a transcript that a live process is appending to wou
 merge two conversations. That refusal is correct — but it depends on the process actually being
 gone once you exit, and an exit does not guarantee that.
 
-A session process can survive in state `T` (**stopped**): present in `/proc`, holding its pid
+A session process can survive in state `T` (**stopped**): present to the OS, holding its pid
 and its open files, and never resuming on its own. It is indistinguishable from a session you
 are using if all you check is whether the pid exists. See
 [the bug record](../bugs/ai-cli-2139-session-exit-leaves-stopped-process.md) for the
@@ -42,9 +42,10 @@ pgrep -af 'claude .*--name myproject-3'    # nothing printed = gone
 If you have the pid (the session registry records it in `~/.claude/sessions/<pid>.json`):
 
 ```bash
-ls -d /proc/<pid>            # Linux: "No such file or directory" = gone
-ps -o pid=,stat= -p <pid>    # portable: no output = gone; a leading T = stopped
+ps -o pid=,stat= -p <pid>    # Linux and macOS: no output = gone; a leading T = stopped
 ```
+
+On Windows, `Get-Process -Id <pid>` failing with "Cannot find a process" means gone.
 
 **Never** treat a terminate's return code as the answer. `kill -TERM <pid>` returns 0 for a
 stopped process it does not end: the signal is queued, and a stopped process does not run, so it
@@ -81,8 +82,9 @@ pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
 kill -TERM -"$pgid"          # queued while the process is stopped
 kill -CONT -"$pgid"          # now it can act on the SIGTERM
 sleep 2
-ls -d /proc/"$pid" 2>/dev/null && kill -KILL -"$pgid"
-ls -d /proc/"$pid"           # must print "No such file or directory"
+ps -p "$pid" >/dev/null && kill -KILL -"$pgid"
+sleep 1
+ps -o pid=,stat= -p "$pid"   # must print nothing
 ```
 
 The `SIGCONT` is not an extra precaution; it is the step that makes the `SIGTERM` mean anything.
@@ -122,11 +124,20 @@ name as in use. Bug record: [Ctrl+Z suspends an `ai c` session](../bugs/ai-cli-y
 
 ## Platform note
 
-The stopped-state detection reads `/proc/<pid>/stat`, so the automatic reclamation in step 4
-applies on Linux. macOS and Windows have no `/proc`; there the launcher falls back to pid
-existence alone and cannot tell a stopped process from a running one, so step 2's verification
-and step 4's manual escalation are the whole procedure. Do the check with
-`ps -o pid=,stat= -p <pid>` (macOS) or `Get-Process -Id <pid>` (Windows).
+The automatic reclamation in step 4 works on every platform; only how the launcher reads the
+process differs:
+
+- **Linux** reads `/proc/<pid>/stat` for the state and start time.
+- **macOS** asks psutil, which reports a stopped process as `stopped`. The registry records the
+  start time as `ps -o lstart` text in UTC, which the launcher compares against the process's own
+  start time to prove the pid is still the recorded session before it signals anything.
+- **Windows** has no job-control stop. psutil reports `stopped` only when every thread is
+  suspended, so a process there rarely reads as abandoned and the launcher treats it as running.
+  If a name stays reserved after an exit, verify with `Get-Process -Id <pid>` and end it with
+  `taskkill /PID <pid> /T /F`.
+
+If the launcher cannot prove the stopped process is the recorded one, it says so, frees the
+name, and leaves the process alone. End that process by hand as in step 4.
 
 ## Related
 

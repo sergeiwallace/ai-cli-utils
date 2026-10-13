@@ -41,6 +41,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from process_ownership import reap, spawn_owned_python
 
 from ai_cli import process_probe
 from ai_cli.main import _cc_record_liveness, _cc_session_is_live
@@ -784,3 +785,151 @@ def test_given_a_recycled_pid_without_procfs_when_a_record_is_classified_then_un
     recorded = _filetime(psutil.Process(proc.pid).create_time() - 3600)
 
     assert _cc_record_liveness({"pid": proc.pid, "procStart": recorded}) == "unproven"
+
+
+# --- a REALLY stopped session, on any POSIX host ---------------------------------
+#
+# Everything above fakes the one status word Windows cannot produce. That left macOS,
+# which can stop a process for real, with no test that ever did: the procfs suite
+# skips there, so a stopped session was never driven through the registry path on the
+# platform where `procStart` also arrives in a form the probe did not read. These
+# tests SIGSTOP a real process group and fake nothing about the process.
+
+_LSTART_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_LSTART_MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+#: The bound a whole reclamation must finish within: both halves of the escalation
+#: at their full timeout, plus slack for a loaded host.
+_RECLAIM_BOUND_SECONDS = 2 * process_probe._END_TIMEOUT_SECONDS + 5
+
+
+def _lstart_utc(epoch_seconds: float) -> str:
+    """Render a start time the way Claude Code writes ``procStart`` on macOS.
+
+    Measured: ``ps -o lstart`` text in UTC, truncated to the second, with the day
+    space-padded (``Mon Oct  5 21:28:33 2026``). Built by hand so the test does not
+    depend on the runner's locale.
+    """
+    t = time.gmtime(int(epoch_seconds))
+    clock = f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}"
+    return f"{_LSTART_DAYS[t.tm_wday]} {_LSTART_MONTH_NAMES[t.tm_mon - 1]} {t.tm_mday:>2} {clock} {t.tm_year}"
+
+
+def _status(pid: int) -> str | None:
+    try:
+        return psutil.Process(pid).status()
+    except psutil.Error:
+        return None
+
+
+@pytest.fixture
+def stopped_wrapper():
+    """A real session-shaped process group, SIGSTOPped; reaped whatever the test did.
+
+    The leader leads a group of its own (``spawn_owned``) and wraps a child, the shape
+    of a session wrapper. The whole group is stopped, as job control stops it, and
+    the kernel's own state is waited on before the test starts. Teardown continues
+    the group first: a stopped process cannot act on the SIGTERM ``reap`` sends.
+    """
+    if not hasattr(signal, "SIGSTOP"):
+        pytest.skip("no job-control stop on this platform: a process cannot be stopped for real")
+    proc = spawn_owned_python(_WRAPPER, stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout is not None
+        child = psutil.Process(int(proc.stdout.readline()))
+        proc.stdout.close()
+        os.killpg(proc.pid, signal.SIGSTOP)
+        assert _wait_for(lambda: _status(proc.pid) == psutil.STATUS_STOPPED), "leader never reached stopped"
+        assert _wait_for(lambda: _status(child.pid) == psutil.STATUS_STOPPED), "child never reached stopped"
+        yield proc, child
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGCONT)
+        reap(proc)
+
+
+def test_given_a_really_stopped_session_with_an_lstart_record_when_resumed_then_its_group_is_ended_and_pruned(
+    tmp_path, monkeypatch, stopped_wrapper, no_procfs, capsys
+):
+    """The reported defect end to end, in the record shape macOS really writes.
+
+    Before ``procStart``'s lstart form was read, this record could never prove which
+    process it named, so the launcher reported the stopped process and left it
+    stopped for good: the name was freed but the process, and its wrapped child,
+    never ended. Absence is read from the OS, never from a signal's return code.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc, child = stopped_wrapper
+    session_id = "dddddddd-0000-4000-8000-0000000000d4"
+    record_start = _lstart_utc(psutil.Process(proc.pid).create_time())
+    entry = _write_registry(tmp_path, proc.pid, session_id, proc_start=record_start, name="session-1")
+
+    assert _cc_record_liveness({"pid": proc.pid, "procStart": record_start}) == "abandoned"
+
+    started = time.monotonic()
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (False, None)
+    assert time.monotonic() - started < _RECLAIM_BOUND_SECONDS
+
+    assert _wait_for(lambda: proc.poll() is not None), "the stopped leader was never ended"
+    assert _wait_for(lambda: not child.is_running()), "the wrapped child was orphaned rather than ended"
+    assert not entry.exists(), "the record must be pruned once its process is gone"
+    err = capsys.readouterr().err
+    assert f"pid {proc.pid}" in err
+    assert psutil.STATUS_STOPPED in err
+
+
+def test_given_a_really_stopped_process_whose_lstart_disagrees_when_resumed_then_it_is_left_alone(
+    tmp_path, monkeypatch, stopped_wrapper, no_procfs, capsys
+):
+    """A record that cannot prove the stopped process is its own never authorises a kill."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc, child = stopped_wrapper
+    session_id = "eeeeeeee-0000-4000-8000-0000000000e5"
+    record_start = _lstart_utc(psutil.Process(proc.pid).create_time() - 3600)
+    entry = _write_registry(tmp_path, proc.pid, session_id, proc_start=record_start, name="session-2")
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (False, None)
+
+    assert proc.poll() is None
+    assert child.is_running()
+    assert _status(proc.pid) == psutil.STATUS_STOPPED, "an unidentified process must not even be continued"
+    assert entry.exists()
+    assert "cannot prove" in capsys.readouterr().err
+
+
+def test_given_a_running_session_with_an_lstart_record_when_resumed_then_it_blocks_and_survives(
+    tmp_path, monkeypatch, sleeper, no_procfs
+):
+    """The negative constraint: a session genuinely in use keeps its name and its process."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc, _ = sleeper()
+    session_id = "ffffffff-0000-4000-8000-0000000000f6"
+    record_start = _lstart_utc(psutil.Process(proc.pid).create_time())
+    entry = _write_registry(tmp_path, proc.pid, session_id, proc_start=record_start, name="session-3")
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (True, proc.pid)
+    assert proc.poll() is None
+    assert entry.exists()
+
+
+def test_given_an_lstart_record_when_matched_against_the_live_process_then_identified(sleeper):
+    proc, _ = sleeper()
+    recorded = _lstart_utc(psutil.Process(proc.pid).create_time())
+
+    assert PsutilProbe().start_time_match(proc.pid, recorded) is StartTimeMatch.MATCH
+
+
+def test_given_an_lstart_record_from_an_hour_earlier_when_matched_then_the_refusal_is_kept(sleeper, no_procfs):
+    """Never UNPROVEN: the text names no zone, and UNPROVEN would unblock a live session."""
+    proc, _ = sleeper()
+    recorded = _lstart_utc(psutil.Process(proc.pid).create_time() - 3600)
+
+    assert PsutilProbe().start_time_match(proc.pid, recorded) is StartTimeMatch.UNRECORDED
+    assert _cc_record_liveness({"pid": proc.pid, "procStart": recorded}) == "live"
+
+
+@pytest.mark.parametrize("recorded", ["Mon Foo 12 21:28:33 2026", "Mon Oct 12 21:28 2026", "Mon Oct 32 21:28:33 2026"])
+def test_given_a_malformed_lstart_record_when_matched_then_unrecorded(sleeper, recorded):
+    proc, _ = sleeper()
+
+    assert PsutilProbe().start_time_match(proc.pid, recorded) is StartTimeMatch.UNRECORDED
