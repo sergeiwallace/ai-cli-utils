@@ -251,7 +251,19 @@ class ProcfsProbe(ProcessProbe):
         return line.rpartition(")")[2].split()
 
     def is_present(self, pid: int) -> bool:
-        return (self._root / str(pid)).exists()
+        """Only ENOENT and ESRCH prove ``pid`` gone; any other failure counts as present.
+
+        ``Path.exists()`` answers False for every ``OSError``, so an unreadable procfs
+        (a restrictive mount, a sandbox) read as "gone" and authorised pruning a live
+        session's record.
+        """
+        try:
+            (self._root / str(pid)).stat()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        except OSError:
+            return True
+        return True
 
     def state(self, pid: int) -> str | None:
         fields = self._stat_fields(pid)
