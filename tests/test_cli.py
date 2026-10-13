@@ -1287,7 +1287,13 @@ class TestCliSessionExecvp:
         assert ["tmux", "set-option", "-t", "$42", "mouse", "on"] in run_calls
         assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
-    def test_given_new_pi_session_when_created_then_leaves_native_selection_available(self, tmp_path):
+    def test_given_new_pi_session_when_created_then_leaves_native_selection_available(self, tmp_path, monkeypatch):
+        # The launcher refuses `ai p` when no `pi` binary is on PATH; CI hosts have none,
+        # so resolve it here rather than depend on the machine running the test.
+        resolve = shutil.which
+        monkeypatch.setattr(
+            shutil, "which", lambda cmd, *a, **k: "/usr/bin/pi" if cmd == "pi" else resolve(cmd, *a, **k)
+        )
         run_calls = []
 
         def fake_run(cmd, *args, **kwargs):
