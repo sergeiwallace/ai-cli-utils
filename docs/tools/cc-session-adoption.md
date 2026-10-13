@@ -487,6 +487,45 @@ is reported and skipped, never overwritten.
 A `.venv` inside the worktree moves with it, but its console scripts name the old
 path; the command warns, and `uv sync --reinstall` in the new worktree fixes it.
 
+## Retiring a dead session's slot (`ai session-retire`)
+
+A session home is never reaped automatically: the reaper refuses it by design,
+because only its owner knows the session is finished. `ai session-retire NAME`
+is that owner's route for `.worktrees/NAME`.
+
+```bash
+ai session-retire myrepo-3 -n   # what would be removed and preserved, nothing written
+ai session-retire myrepo-3      # prompts, then retires
+ai session-retire myrepo-3 -y   # no prompt
+```
+
+Refused before anything is written, `-n` included, with every blocking item named:
+
+| Refusal | Why |
+|---|---|
+| `.worktrees/NAME` is not a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
+| a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `session-migrate` |
+| a heartbeat in `session-heartbeats/` for one of those tmux sessions, written in this boot within the reaper's `[stale_session_reaper] stale_after_seconds` | the reaper's own freshness rule; an unreadable record or one that cannot be dated counts as fresh |
+| an uncommitted change, or an untracked file that is not ignored | removing the checkout would lose it (ignored files are removed with it) |
+| a checked-out commit (branch or detached HEAD) in neither the branch's upstream nor `origin/main` | the commit would survive only on a branch nobody pushed |
+| an existing `refs/preserved/session-retire/<branch>` at a different commit | it preserves an earlier tip and is never overwritten |
+
+Otherwise, in order:
+
+1. The tips of the checked-out branch and of `wt-NAME` are written to
+   `refs/preserved/session-retire/<branch>` (`git update-ref <ref> <tip> ""`, so a
+   ref that appeared meanwhile fails the write and nothing is removed).
+2. `git worktree remove` without `--force` removes the checkout.
+3. The canonical-registry entry for the slot is dropped under the registry's lock.
+4. One JSON line is appended to `session-retirements.jsonl` in the XDG state
+   directory: `time`, `name`, `repo`, `worktree`, `head`, `branch`, `anchors`
+   (ref to tip) and `branch_tips` (branch to tip).
+
+Left in place deliberately: the branches themselves (the anchor plus the branch
+is the recovery path: `git worktree add .worktrees/NAME wt-NAME`), and the Claude
+Code project directory with its transcripts and memory, whose path the command
+prints.
+
 ## Idempotence
 
 Re-running an adoption adopts nothing. The second run finds no transcript left in
@@ -506,3 +545,5 @@ worktree) and the `session-adopt` command in `src/ai_cli/main.py`. Tests:
 `tests/test_session_adopt.py`. The transcript move itself is
 `src/ai_cli/cc_migrate.py`, reused unchanged. `ai session-migrate` is
 `src/ai_cli/session_migrate.py`, tested in `tests/test_session_migrate.py`.
+`ai session-retire` is `src/ai_cli/session_retire.py`, tested in
+`tests/test_session_retire.py`.

@@ -42,6 +42,10 @@ fail-closed one a deletion guard consults, and a path that is temporarily
 unreachable must not be reported as unprotected. A live worktree pruned because
 its storage was briefly unavailable is re-added by its next launch.
 
+An entry leaves deliberately only through `ai session-retire NAME`, which drops
+it under the same lock after removing the checkout
+([retiring a slot](cc-session-adoption.md#retiring-a-dead-sessions-slot-ai-session-retire)).
+
 `AI_CLI_CANONICAL_WORKTREE_REGISTRY` is also how a test suite keeps out of this
 file. It is the only lever that works on every platform, because the default
 location is platform-branched and reads `%LOCALAPPDATA%` on Windows.

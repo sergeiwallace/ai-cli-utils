@@ -77,6 +77,7 @@ class Tag(StrEnum):
     REGISTER = "register"
     REMOTE = "remote"
     RESTORE = "restore"
+    RETIRE = "retire"
     SESSION = "session"  # the generated session script (session_script.py) prints this one
     SESSIONS = "sessions"
     SETUP = "setup"

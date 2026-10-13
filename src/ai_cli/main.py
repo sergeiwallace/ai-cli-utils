@@ -5488,6 +5488,73 @@ def cmd_session_migrate(old, new, repo, dry_run, yes):
     sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
 
 
+def _print_retirement(result) -> None:
+    """What a ``session-retire`` run removed (or would), what it preserved and what it left."""
+    verb = "would retire" if result.dry_run else "retired"
+    _out.emit(Tag.RETIRE, f"{result.name}: {verb} {result.worktree}")
+    checked_out = result.branch or "detached HEAD"
+    _out.emit(Tag.RETIRE, f"  checkout: {result.worktree} ({checked_out} at {result.head}) -- git worktree remove")
+    for anchor in result.anchors:
+        state = "already in place" if anchor.exists else "write"
+        _out.emit(Tag.RETIRE, f"  anchor: {anchor.ref} -> {anchor.tip} ({state}); branch {anchor.branch} stays")
+    if result.registry_entries:
+        _out.emit(Tag.RETIRE, f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}")
+    _out.emit(Tag.RETIRE, f"  ledger: append to {result.ledger}")
+    if result.project_dir is not None:
+        _out.emit(Tag.RETIRE, f"  Claude Code project dir left in place: {result.project_dir}")
+    for warning in result.warnings:
+        _out.emit(Tag.RETIRE, f"  warning: {warning}", err=True)
+
+
+@_cli_group.command(
+    "session-retire",
+    help=(
+        "Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the "
+        "checkout and its registry entry.\n\n"
+        "\b\nTo rename a slot instead, use `ai session-migrate`."
+    ),
+)
+@click.argument("name")
+@click.option(
+    "-r",
+    "--repo",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Repo root that owns .worktrees/ (default: detected from the current directory)",
+)
+@click.option("-n", "--dry-run", is_flag=True, help="Print what would be removed and preserved without writing")
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
+def cmd_session_retire(name, repo, dry_run, yes):
+    """Retire the session in slot NAME (``.worktrees/NAME``), losing no commit.
+
+    Refused, before anything is written and with ``--dry-run`` too, while the
+    session is running (a Claude Code process, its tmux session or a fresh
+    heartbeat), while the checkout has uncommitted or untracked work, or while
+    its checked-out commit is in neither its upstream nor ``origin/main``. The
+    branch tips are anchored under ``refs/preserved/session-retire/`` and the
+    branches kept; the Claude Code project directory is left in place.
+    """
+    from .session_adopt import AdoptionError
+    from .session_retire import retire_session
+
+    repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+    try:
+        result = retire_session(repo_root, name, dry_run=True)
+        if not dry_run:
+            if not yes:
+                _print_retirement(result)
+                if not _out.confirm(Tag.RETIRE, f"Retire {name}?"):
+                    _out.emit(Tag.RETIRE, "Aborted.", err=True)
+                    sys.exit(1)
+            result = retire_session(repo_root, name, dry_run=False)
+    except (AdoptionError, RuntimeError) as exc:
+        _out.error(Tag.RETIRE, f"{exc}")
+        sys.exit(1)
+
+    _print_retirement(result)
+    sys.exit(1 if result.warnings else 0)
+
+
 def _print_audit(report, ready, skipped, out=None) -> None:
     """Print the survey: collisions first, then every session, then the triage."""
     stream = out

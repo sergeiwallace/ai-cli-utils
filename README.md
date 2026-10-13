@@ -244,6 +244,22 @@ State owned by other tools joins the same run through a hook file in
 `--dry-run` before anything is written, can refuse the migration, and runs after
 the core moves ([hook contract](docs/reference/session-migrate-hooks.md)).
 
+A session that is finished for good has its home slot retired by its owner with
+`ai session-retire NAME`; no automatic reap removes a session home. The command
+refuses while the session runs (a Claude Code process, its tmux session, or a
+heartbeat fresher than the reaper's `stale_after_seconds`), while the checkout
+has uncommitted or untracked work, or while its checked-out commit is in neither
+its upstream nor `origin/main`. Otherwise it anchors the tips of the checked-out
+branch and `wt-NAME` under `refs/preserved/session-retire/`, runs
+`git worktree remove`, drops the canonical-registry entry and appends a row to
+`session-retirements.jsonl` in the state directory. The branches and the Claude
+Code project directory stay ([details](docs/tools/cc-session-adoption.md#retiring-a-dead-sessions-slot-ai-session-retire)).
+
+```bash
+ai session-retire myrepo-3 -n   # what would be removed and preserved, nothing written
+ai session-retire myrepo-3      # prompts, then retires
+```
+
 #### What a new worktree tracks
 
 A new session worktree is based on, and tracks, the branch its repository
@@ -326,6 +342,7 @@ On pull, transcript `cwd` and `originalCwd` fields are rewritten to the receivin
 ai session-audit                    # Find titled sessions that cannot resume
 ai session-audit -a/--adopt         # Adopt every safe session
 ai session-adopt <name>             # Adopt one session into this repository
+ai session-retire <name>            # Retire a dead session's home slot
 ai cc-migrate <destination>         # Move a transcript between project roots
 ```
 
