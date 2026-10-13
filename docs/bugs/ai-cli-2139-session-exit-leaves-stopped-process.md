@@ -275,7 +275,7 @@ with its record intact.
 |------|--------|-------|
 | 2026-08-14 | `80f02cc` | Frozen regression suite committed RED (7 failed, 3 passed) before any production edit. |
 | 2026-08-14 | `edebffb` | Causal fix: `"abandoned"` verdict for present-but-not-running states, scoped reclamation with `SIGTERM`/`SIGCONT`/bounded wait/`SIGKILL` on the process group, `/proc`-verified, record pruned. Frozen suite 10/10; hard gate 2332 passed. |
-| 2026-10-13 | `4c91186` | macOS: read the lstart-text `procStart` (UTC) so a stopped session's identity can be proved and the escalation runs; a disagreeing lstart keeps the refusal. Real-SIGSTOP tests on any POSIX host, red at the base commit. |
+| 2026-10-13 | #281 | macOS: read the lstart-text `procStart` (UTC) so a stopped session's identity can be proved and the escalation runs; a disagreeing lstart keeps the refusal. Real-SIGSTOP tests on any POSIX host, red at the base commit. |
 
 <!-- /doc:region name="fix_log" -->
 
