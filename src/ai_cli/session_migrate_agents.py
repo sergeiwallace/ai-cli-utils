@@ -80,7 +80,9 @@ class AgentPlan:
 
     def renames(self, repo: Path) -> dict[str, str]:
         """The branch renames planned in ``repo``."""
-        return {e.branch: e.new_branch for e in self.entries if e.repo == repo and e.moves and e.new_branch}
+        return {
+            e.branch: e.new_branch for e in self.entries if e.repo == repo and e.moves and e.branch and e.new_branch
+        }
 
 
 def _worktrees(repo: Path) -> list[tuple[Path, str | None]]:
@@ -148,11 +150,12 @@ def plan_agents(
         for path, branch in worktrees:
             if container not in path.parents:
                 continue
-            entry = AgentEntry(repo, path, new_container / path.relative_to(container), branch, _new_branch(branch))
+            dest = new_container / path.relative_to(container)
+            entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
             if entry.new_branch is None:
                 entry.branch = None
             entry.held_by = _holder(path, live_cwds)
-            entry.conflict = os.path.lexists(entry.dest) or _branch_exists(entry.new_branch)
+            entry.conflict = os.path.lexists(dest) or _branch_exists(entry.new_branch)
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
         for branch in branches:
@@ -224,7 +227,7 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
     warnings: list[str] = []
     moved: set[Path] = set()
     for e in [e for e in plan.entries if e.moves]:
-        if e.worktree:
+        if e.worktree and e.dest:
             e.dest.parent.mkdir(parents=True, exist_ok=True)
             res = _git(e.repo, "worktree", "move", str(e.worktree), str(e.dest))
             if res.returncode != 0:
