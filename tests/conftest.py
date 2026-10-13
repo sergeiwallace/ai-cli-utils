@@ -1366,6 +1366,20 @@ def _strip_inherited_direnv_vars(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_launch_reexec_marker(monkeypatch):
+    """No test sees, or leaves behind, the launcher's restart-after-update marker.
+
+    A launch that auto-updated writes ``AI_CLI_LAUNCH_REEXEC=1`` into ``os.environ``
+    itself before ``execvp``. A test that patches ``execvp`` keeps that write, so the next
+    launch in the same worker announced "Continuing" instead of "Starting". Setting it
+    through ``monkeypatch`` first records it as absent, so teardown removes whatever the
+    code under test wrote.
+    """
+    monkeypatch.setenv("AI_CLI_LAUNCH_REEXEC", "")
+    monkeypatch.delenv("AI_CLI_LAUNCH_REEXEC")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_nats_connections(request, monkeypatch):
     """Never let a test open a real NATS connection (AI-CLI-121 class).
 

@@ -119,7 +119,11 @@ def slot(tmp_path):
 
 
 def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
-    with patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])):
+    # The agent-worktree scan reads every repo under projects_dir; keep it inside the fixture.
+    with (
+        patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])),
+        patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
+    ):
         return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), *flags])
 
 

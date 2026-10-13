@@ -1888,11 +1888,10 @@ fi
     stdout, stderr = _communicate_supervisor(process)
 
     assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
-    cleanup_event = next(
-        event
-        for event in (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
-        if event.startswith("if-shell -F -t $1 ")
-    )
+    events = (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+    cleanup_events = [event for event in events if event.startswith("if-shell -F -t $1 ")]
+    assert cleanup_events, f"no tmux event starts with 'if-shell -F -t $1 ': {events!r}"
+    cleanup_event = cleanup_events[0]
     assert "#{==:#{session_id}|#{@ai_cli_session_generation},$1|" in cleanup_event
     assert cleanup_event.endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
 
@@ -2029,11 +2028,10 @@ def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skip
 
     assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
     assert not direnv_called.exists(), "an already-requested exit must not start direnv"
-    cleanup_event = next(
-        event
-        for event in (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
-        if event.startswith("if-shell -F -t $1 ")
-    )
+    events = (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+    cleanup_events = [event for event in events if event.startswith("if-shell -F -t $1 ")]
+    assert cleanup_events, f"no tmux event starts with 'if-shell -F -t $1 ': {events!r}"
+    cleanup_event = cleanup_events[0]
     assert "#{==:#{session_id}|#{@ai_cli_session_generation},$1|" in cleanup_event
     assert cleanup_event.endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
 

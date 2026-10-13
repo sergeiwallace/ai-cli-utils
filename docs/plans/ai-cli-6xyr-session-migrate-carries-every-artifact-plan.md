@@ -206,12 +206,12 @@ keeps a consistent view. The migration does not refuse for it (it is not the ses
 
 **Acceptance criteria:**
 
-- [ ] AC-3.1 When a second repo under the projects dir holds `.worktrees/<old>-agents/leaf-a` on `wt/<old>/leaf-a` and a parked branch `wt/<old>/leaf-b`, the dry run shall list the worktree move, both branch renames and the marker rewrite, and the real run shall perform them: the worktree is registered at the new path, both branches resolve to their old tips under the new names, each has a `refs/preserved/session-migrate/...` anchor, the markers name the new slot, and the old container directory is gone.
-- [ ] AC-3.2 If a live Claude Code process has its cwd inside one agent worktree, then the system shall leave that worktree and its branch in place, list them as held by that pid, and still migrate every other one.
-- [ ] AC-3.3 If `git worktree move` or a rename is refused for one entry, then the system shall warn with git's stderr, continue with the rest, and exit 1.
-- [ ] AC-3.4 If a destination worktree path or branch already exists, then the entry shall be listed `SKIPPED (target exists)` and left alone.
-- [ ] AC-3.5 While a directory under the projects dir is not a git repository or has no `.worktrees/`, it shall be skipped silently (no error, no plan line).
-- [ ] AC-3.6 (guard parity) The refuse-if-live check runs before any agent worktree is touched: with a live process in the slot, the second repo is unchanged.
+- [x] AC-3.1 When a second repo under the projects dir holds `.worktrees/<old>-agents/leaf-a` on `wt/<old>/leaf-a` and a parked branch `wt/<old>/leaf-b`, the dry run shall list the worktree move, both branch renames and the marker rewrite, and the real run shall perform them: the worktree is registered at the new path, both branches resolve to their old tips under the new names, each has a `refs/preserved/session-migrate/...` anchor, the markers name the new slot, and the old container directory is gone.
+- [x] AC-3.2 If a live Claude Code process has its cwd inside one agent worktree, then the system shall leave that worktree and its branch in place, list them as held by that pid, and still migrate every other one.
+- [x] AC-3.3 If `git worktree move` or a rename is refused for one entry, then the system shall warn with git's stderr, continue with the rest, and exit 1.
+- [x] AC-3.4 If a destination worktree path or branch already exists, then the entry shall be listed `SKIPPED (target exists)` and left alone.
+- [x] AC-3.5 While a directory under the projects dir is not a git repository or has no `.worktrees/`, it shall be skipped silently (no error, no plan line).
+- [x] AC-3.6 (guard parity) The refuse-if-live check runs before any agent worktree is touched: with a live process in the slot, the second repo is unchanged.
 
 **Dependencies:** T-01 (`branch_rename`)
 
@@ -291,7 +291,10 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 
 ### T-03
 
-- [ ] AC-3.1 … AC-3.6
+- [x] AC-3.1 … AC-3.6: `src/ai_cli/session_migrate_agents.py`, driven through `ai session-migrate`
+  by `tests/test_session_migrate_agents.py` (one test per AC; AC-3.1 has a dry-run and a real-run
+  test). Beyond the plan: a marker in the slot's own repo whose key names a renamed agent branch is
+  rewritten under the new key, so the old key is never recreated.
 
 ### T-04
 
