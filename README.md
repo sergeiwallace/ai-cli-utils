@@ -208,6 +208,16 @@ invented alias. Sessions named before the host alias joined the name
 (`myrepo-3`) still resolve by slot until they are moved with
 `ai session-migrate myrepo-3 myrepo-box-3`; nothing new is created in that form.
 
+Choosing between the two verbs: `ai session-migrate OLD NEW` renames a session
+already registered in an `ai` slot (worktree, branch, transcript, tasks, memory
+and resume state follow the new name); `ai session-adopt NAME` registers a
+session that was started outside `ai`, such as a plain `claude` in the repo root.
+
+```bash
+ai session-migrate myrepo-3 myrepo-box-3   # rename a registered slot
+ai session-adopt myrepo-box-4              # register a session started outside ai
+```
+
 #### What a new worktree tracks
 
 A new session worktree is based on, and tracks, the branch its repository
