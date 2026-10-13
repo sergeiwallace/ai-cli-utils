@@ -63,7 +63,7 @@ def _worktree_with_envrc(tmp_path, ai_name):
 
 
 @pytest.fixture
-def tmux_available():
+def tmux_available(monkeypatch):
     """Declare tmux availability for unit tests that exercise its command path.
 
     Availability means **runnable**, not merely on PATH: the launcher decides
@@ -78,6 +78,12 @@ def tmux_available():
     global here would collide with the per-test mocks these same tests install.
     No server version is reported, which is the normal state of a host with no
     session running and is not a client/server disagreement.
+
+    ``ai_cli.main.shutil`` is the global ``shutil`` module, so ``which`` is replaced
+    through ``monkeypatch``: a test that also monkeypatches ``shutil.which`` then
+    unwinds in the same LIFO stack. Under ``patch`` this fixture restored the real
+    ``which`` first and the test's monkeypatch teardown then reinstated this fake,
+    leaking ``/usr/bin/tmux`` into every later test on the worker (AI-CLI-t2tu).
     """
     original_which = shutil.which
 
@@ -89,10 +95,8 @@ def tmux_available():
     def fake_probe(argv, timeout):
         return "tmux 3.7c" if argv[:2] == ["tmux", "-V"] else None
 
-    with (
-        patch("ai_cli.main.shutil.which", side_effect=fake_which),
-        patch("ai_cli.tmux_setup._probe_output", side_effect=fake_probe),
-    ):
+    monkeypatch.setattr(shutil, "which", fake_which)
+    with patch("ai_cli.tmux_setup._probe_output", side_effect=fake_probe):
         yield
 
 
