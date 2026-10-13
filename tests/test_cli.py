@@ -1289,7 +1289,14 @@ class TestCliSessionExecvp:
         assert ["tmux", "set-option", "-t", "$42", "mouse", "on"] in run_calls
         assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
-    def test_given_new_pi_session_when_created_then_leaves_native_selection_available(self, tmp_path):
+    def test_given_new_pi_session_when_created_then_leaves_native_selection_available(self, tmp_path, monkeypatch):
+        # The launcher refuses a pi session when no `pi` is on PATH, which is the case on CI.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake_pi = bin_dir / ("pi.exe" if os.name == "nt" else "pi")
+        fake_pi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_pi.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
         run_calls = []
 
         def fake_run(cmd, *args, **kwargs):
