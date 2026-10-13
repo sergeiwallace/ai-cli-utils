@@ -3,10 +3,12 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import types
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -3219,6 +3221,23 @@ class TestLocalProjectChdir:
         mock_chdir.assert_not_called()
 
 
+def _run_uv_retrying_one_abort(command: list[str], env: dict[str, str]) -> None:
+    """Run one ``uv`` command; on a SIGABRT, record uv's own words and retry once.
+
+    Under a parallel full run, ``uv pip install -e`` died once with SIGABRT and then passed
+    5/5 alone. The cause is not known, so the abort text is kept as a warning rather than
+    lost, and any other failure fails the test with uv's stderr instead of a bare exit code.
+    """
+    for attempt in (1, 2):
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+        if result.returncode == 0:
+            return
+        if result.returncode == -signal.SIGABRT and attempt == 1:
+            warnings.warn(f"uv aborted (SIGABRT), retrying once: {result.stderr[-2000:]}", stacklevel=2)
+            continue
+        pytest.fail(f"{command[:3]} exited {result.returncode}: {result.stderr[-2000:]}")
+
+
 class TestSelfUpdatePreservesEditableInstall:
     """Self-update must not convert an editable tool install into a copied one.
 
@@ -3410,12 +3429,7 @@ class TestSelfUpdatePreservesEditableInstall:
         python = _venv_python(venv)
 
         for _ in range(2):
-            subprocess.run(
-                [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
-                check=True,
-                capture_output=True,
-                env=uv_env,
-            )
+            _run_uv_retrying_one_abort([uv, "pip", "install", "--python", str(python), "-e", str(pkg)], uv_env)
 
         markers = {
             marker.name
