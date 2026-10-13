@@ -706,35 +706,42 @@ class TestCdpEdgeRealBoundary:
         import asyncio
 
         websockets = pytest.importorskip("websockets")
+        refused = pytest.importorskip("websockets.exceptions").InvalidStatus
         edge = _real_edge()
         if not edge:
             pytest.skip("no real Microsoft Edge binary on this machine")
 
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
+        profile = tmp_path / "edge-profile"
         args = [
             edge,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={tmp_path / 'edge-profile'}",
+            # Port 0: Edge picks a free port and writes it to DevToolsActivePort in the
+            # profile, so there is no race for a port chosen here and nothing to guess.
+            "--remote-debugging-port=0",
+            f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-default-apps",
+            "--disable-gpu",
             "--headless=new",
         ]
+        if sys.platform == "linux":
+            # Linux CI runners restrict unprivileged user namespaces, so Edge's sandbox
+            # aborts at startup (SIGABRT, measured on the hosted Ubuntu runner). The
+            # sandbox is not what this test is about.
+            args.append("--no-sandbox")
         if allow_origins:
             args.append("--remote-allow-origins=*")
         proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             ws_url = None
-            deadline = time.monotonic() + 20.0
+            active = profile / "DevToolsActivePort"
+            deadline = time.monotonic() + 60.0
             while time.monotonic() < deadline and proc.poll() is None:
-                try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.5) as resp:
-                        ws_url = json.load(resp)["webSocketDebuggerUrl"]
+                lines = active.read_text(encoding="utf-8").splitlines() if active.is_file() else []
+                if len(lines) >= 2:
+                    ws_url = f"ws://127.0.0.1:{lines[0].strip()}{lines[1].strip()}"
                     break
-                except OSError:
-                    time.sleep(0.25)
+                time.sleep(0.25)
             assert ws_url, f"real Edge never opened its CDP port; returncode={proc.poll()!r}"
 
             async def attach() -> dict:
@@ -752,7 +759,7 @@ class TestCdpEdgeRealBoundary:
                 assert reply["id"] == 1
                 assert "Edg/" in reply["result"]["product"]
             else:
-                with pytest.raises((OSError, TimeoutError, websockets.exceptions.InvalidStatus)):
+                with pytest.raises((OSError, TimeoutError, refused)):
                     asyncio.run(bounded())
         finally:
             reap(proc)
