@@ -2214,15 +2214,25 @@ def test_given_shared_supervisor_process_group_when_direct_group_signal_arrives_
     tmp_path: Path, supported_session_shell: str
 ):
     process, events, heartbeats = _start_generated_supervisor(tmp_path, supported_session_shell, fast_heartbeat=True)
-    os.killpg(process.pid, signal.SIGINT)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if heartbeats.exists() and len(heartbeats.read_text(encoding="utf-8").splitlines()) >= 2:
-            break
-        time.sleep(0.02)
 
-    assert heartbeats.exists()
-    assert len(heartbeats.read_text(encoding="utf-8").splitlines()) >= 2
+    def heartbeat_count() -> int:
+        return len(heartbeats.read_text(encoding="utf-8").splitlines()) if heartbeats.exists() else 0
+
+    # Wait on the ticker's own output, never on a fixed window. The ticker starts through a
+    # python3 setsid wrapper and a fresh shell, and on a contended host its second tick landed
+    # more than 5s after the signal while it was ticking correctly. Waiting for one tick BEFORE
+    # the signal also proves the ticker was running when the signal arrived, so the ticks
+    # counted afterwards are continuation rather than a late start.
+    _wait_for_condition("the detached ticker's first heartbeat", lambda: heartbeat_count() >= 1)
+    before_signal = heartbeat_count()
+    os.killpg(process.pid, signal.SIGINT)
+    # Two more, not one: a tick already in flight when the signal landed can account for one.
+    _wait_for_condition(
+        "the detached ticker to keep ticking after the group signal",
+        lambda: heartbeat_count() >= before_signal + 2,
+    )
+
+    assert process.poll() is None, "the group signal must not end the supervisor"
     _finish_supervisor(process)
 
 
