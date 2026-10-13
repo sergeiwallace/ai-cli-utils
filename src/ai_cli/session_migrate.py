@@ -201,24 +201,6 @@ def _rewrite_transcript_cwd(path: Path, old_root: str, new_root: str) -> None:
         raise
 
 
-def _plan_venv_store(old_wt: Path, old: str, new: str) -> tuple[Path, Path] | None:
-    """``(store dir, renamed store dir)`` when the slot's ``.venv`` links to a dir named for the slot.
-
-    A worktree's venv may live outside it, in a store directory named ``<repo>--<slot>``
-    and reached through a ``.venv`` symlink. Left as it is, the store keeps naming the old
-    session after the move, and anything that reaps store directories by name would take
-    it for an orphan of a session that no longer exists.
-    """
-    link = old_wt / ".venv"
-    if not link.is_symlink():
-        return None
-    target = Path(os.path.realpath(link))
-    suffix = f"--{old}"
-    if not target.is_dir() or not target.name.endswith(suffix):
-        return None
-    return target, target.with_name(target.name[: -len(old)] + new)
-
-
 def _highwatermark(ns: Path) -> int:
     try:
         return int((ns / ".highwatermark").read_text(encoding="utf-8").strip() or 0)
@@ -393,18 +375,7 @@ def migrate_session(
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
     moves = result.moves
     moves.append(PlannedMove("worktree", str(old_wt), str(new_wt)))
-    venv_store = _plan_venv_store(old_wt, old, new)
-    if venv_store is not None:
-        source, dest = venv_store
-        action = "conflict" if os.path.lexists(dest) else "move"
-        moves.append(PlannedMove("venv store", str(source), str(dest), action))
-        if action == "move":
-            result.warnings.append(
-                f"{dest} is renamed for the new name, and its console scripts name {source} in their "
-                f"shebangs -- recreate it (`uv sync --reinstall` in {new_wt}) before running them"
-            )
-        venv_store = venv_store if action == "move" else None
-    elif (old_wt / ".venv").is_dir() and not (old_wt / ".venv").is_symlink():
+    if (old_wt / ".venv").is_dir():
         result.warnings.append(
             f"{new_wt / '.venv'} moves with the worktree, and its console scripts name the old path in "
             f"their shebangs -- recreate it (`uv sync --reinstall`) before running them"
@@ -481,14 +452,6 @@ def migrate_session(
     moved = _git(repo_root, "worktree", "move", str(old_wt), str(new_wt))
     if moved.returncode != 0:
         raise MigrationError(f"git worktree move failed, nothing was migrated: {(moved.stderr or '').strip()}")
-    if venv_store is not None:
-        # The link is replaced atomically, so the moved worktree never has no .venv at all.
-        source, dest = venv_store
-        source.rename(dest)
-        link = new_wt / ".venv"
-        temp = link.with_name(".venv.migrate-tmp")
-        temp.symlink_to(dest, target_is_directory=True)
-        temp.replace(link)
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:

@@ -456,7 +456,6 @@ ai c myrepo-box-3                             # resume under the new name
 | What | How it follows the new name |
 |---|---|
 | Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
-| A `.venv` symlink into a venv store directory named `<prefix>--OLD` | the store directory is renamed to `<prefix>--NEW` and the link repointed (an existing target is skipped); its console scripts still name the old store path, so the command warns to run `uv sync --reinstall` |
 | Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/session-migrate/wt-OLD`, which stays, so a refused rename never loses it |
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
