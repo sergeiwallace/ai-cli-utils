@@ -13,6 +13,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -167,7 +168,11 @@ def test_given_a_stub_on_a_clean_path_when_a_shell_payload_names_it_then_it_is_n
     assert shell_payload_protected_binary("bash", ["bash", "-c", f"{stub} --version"]) is None, (
         "naming the stub by absolute path must be allowed too, or a test is punished for being explicit"
     )
-    with patch("shutil.which", return_value="/usr/local/bin/claude"):
+    # Not /usr/local/bin/claude: a real host may symlink that into a temp directory (one
+    # does, into /tmp/tmp.*/npm-global), which the guard rightly reads as a stub. A path
+    # that does not exist resolves to itself, outside every temp root on every host.
+    operator_binary = str(Path(os.sep, "ai-cli-utils-test-operator-bin", "claude"))
+    with patch("shutil.which", return_value=operator_binary):
         assert shell_payload_protected_binary("bash", argv) == "claude"
 
 
