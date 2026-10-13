@@ -10,8 +10,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 
+import ai_cli.quota as quota_module
 from ai_cli.quota import (
     EX_CONFIG,
     EX_TEMPFAIL,
@@ -544,17 +546,75 @@ class TestScrapeUsageHiddenPane:
             result = _scrape_usage_hidden_pane()
         assert result is None
 
-    def test_given_unprovable_session_identity_when_scrape_runs_then_cleanup_kill_is_unreachable(self):
+    def test_given_identity_capture_failure_after_marking_when_scrape_runs_then_created_session_is_killed(self):
+        new_session = MagicMock(returncode=0, stdout="$99\n")
         ok = MagicMock(returncode=0)
 
+        def fake_run(cmd, **kwargs):
+            if cmd[1] == "new-session":
+                return new_session
+            return ok
+
         with (
-            patch("subprocess.run", return_value=ok),
+            patch("subprocess.run", side_effect=fake_run),
             patch("ai_cli.quota.capture_tmux_session_identity", return_value=None),
         ):
             result = _scrape_usage_hidden_pane()
 
         assert result is None
-        self.kill_owned.assert_not_called()
+        fallback_identity = self.kill_owned.call_args.args[0]
+        assert fallback_identity.session_id == "$99"
+        assert fallback_identity.session_name.startswith(f"ai-quota-scrape-{os.getpid()}-")
+        assert self.kill_owned.call_args.kwargs == {"terminate_pane_processes": True}
+
+    def test_given_stale_and_live_scrape_sessions_when_scrape_starts_then_only_stale_session_is_reaped(self):
+        stale_identity = TmuxSessionIdentity("$7", "ai-quota-scrape-2147483647-deadgen", "dead-generation")
+        sessions = MagicMock(
+            returncode=0,
+            stdout=(
+                "$7\tai-quota-scrape-2147483647-deadgen\n"
+                f"$8\tai-quota-scrape-{os.getpid()}-livegen\n"
+                "$9\tunrelated-session\n"
+            ),
+        )
+        new_session_failure = MagicMock(returncode=1)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1] == "list-sessions":
+                return sessions
+            if cmd[1] == "new-session":
+                return new_session_failure
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch("subprocess.run", side_effect=fake_run),
+            patch("ai_cli.quota.capture_tmux_session_identity", return_value=stale_identity),
+        ):
+            assert _scrape_usage_hidden_pane() is None
+
+        self.kill_owned.assert_called_once_with(stale_identity, terminate_pane_processes=True)
+
+    def test_given_unavailable_or_unprovable_session_metadata_when_reaping_then_sessions_are_left_untouched(self):
+        unavailable = OSError("tmux unavailable")
+        with patch("ai_cli.quota.subprocess.run", side_effect=unavailable):
+            assert quota_module._reap_abandoned_quota_sessions() == 0
+
+        malformed = MagicMock(returncode=0, stdout="$7\tai-quota-scrape-not-a-pid-token\n")
+        with (
+            patch("ai_cli.quota.subprocess.run", return_value=malformed),
+            patch("ai_cli.quota.capture_tmux_session_identity") as capture,
+        ):
+            assert quota_module._reap_abandoned_quota_sessions() == 0
+        capture.assert_not_called()
+
+        permission_denied = MagicMock(returncode=0, stdout="$8\tai-quota-scrape-4242-token\n")
+        with (
+            patch("ai_cli.quota.subprocess.run", return_value=permission_denied),
+            patch("ai_cli.quota.psutil.Process", side_effect=psutil.AccessDenied(4242)),
+            patch("ai_cli.quota.capture_tmux_session_identity") as capture,
+        ):
+            assert quota_module._reap_abandoned_quota_sessions() == 0
+        capture.assert_not_called()
 
     def _make_new_session_result(self) -> MagicMock:
         r = MagicMock()

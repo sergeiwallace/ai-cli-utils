@@ -22,10 +22,12 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from . import config
 from . import output as _out
 from .output import Tag, Untagged
-from .tmux_ownership import capture_tmux_session_identity, kill_owned_tmux_session
+from .tmux_ownership import TmuxSessionIdentity, capture_tmux_session_identity, kill_owned_tmux_session
 
 # Windows cp1252 cannot encode the emoji used in statusline output (📊, ✅, etc.).
 # Reconfigure stdout to UTF-8 with replacement on errors so emoji never crashes the process.
@@ -42,6 +44,8 @@ EX_TEMPFAIL = 75
 # Reset at the start of every hidden-pane attempt so historical metadata cannot
 # turn a later timeout or empty capture into a format-mismatch failure.
 _last_scrape_had_format_mismatch = False
+
+_QUOTA_SCRAPE_SESSION_RE = re.compile(r"^ai-quota-scrape-(?P<pid>[1-9]\d*)-[A-Za-z0-9_-]{1,128}$")
 
 
 @dataclass(frozen=True)
@@ -472,6 +476,55 @@ def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
     return removed
 
 
+def _creator_pid_alive(pid: int) -> bool | None:
+    """Return creator liveness, or ``None`` when it cannot be established."""
+    try:
+        process = psutil.Process(pid)
+        return process.is_running() and process.status() not in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}
+    except psutil.NoSuchProcess:
+        return False
+    except (OSError, psutil.Error):
+        return None
+
+
+def _reap_abandoned_quota_sessions() -> int:
+    """Reap owned quota scrape sessions whose creator process no longer exists."""
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_id}\t#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return 0
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return 0
+
+    reaped = 0
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2 or not re.fullmatch(r"\$\d+", parts[0]):
+            continue
+        session_id, session_name = parts
+        match = _QUOTA_SCRAPE_SESSION_RE.fullmatch(session_name)
+        if match is None or _creator_pid_alive(int(match.group("pid"))) is not False:
+            continue
+        try:
+            identity = capture_tmux_session_identity(session_id)
+        except Exception:
+            continue
+        if identity is None or identity.session_name != session_name:
+            continue
+        try:
+            if kill_owned_tmux_session(identity, terminate_pane_processes=True):
+                reaped += 1
+        except Exception:
+            continue
+    return reaped
+
+
 def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     """Scrape /usage from a hidden tmux session running a bare CC session.
 
@@ -481,6 +534,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     global _last_scrape_had_format_mismatch
 
     _last_scrape_had_format_mismatch = False
+    _reap_abandoned_quota_sessions()
     generation = secrets.token_urlsafe(32)
     window_name = f"ai-quota-scrape-{os.getpid()}-{generation[:8]}"
     identity = None
@@ -507,9 +561,11 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         )
         if marked.returncode != 0:
             return None
-        identity = capture_tmux_session_identity(created_session_id, expected_generation=generation)
-        if identity is None:
+        identity = TmuxSessionIdentity(created_session_id, window_name, generation)
+        captured_identity = capture_tmux_session_identity(created_session_id, expected_generation=generation)
+        if captured_identity is None:
             return None
+        identity = captured_identity
         target = identity.session_id
 
         # Resize to a generous size so the full /usage dialog fits without scrolling.
@@ -655,7 +711,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     finally:
         if identity is not None:
             with contextlib.suppress(Exception):
-                kill_owned_tmux_session(identity)
+                kill_owned_tmux_session(identity, terminate_pane_processes=True)
         # Second line of defence behind DISABLE_AUTOUPDATER=1 above: sweep anything a
         # previous (or otherwise-configured) scrape orphaned, so staging stays bounded.
         reap_cc_update_staging()
