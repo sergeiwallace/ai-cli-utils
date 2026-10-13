@@ -5025,7 +5025,7 @@ def _print_collision(exc, out=None) -> None:
 
 @_cli_group.command(
     "session-adopt",
-    help="Adopt a Claude Code session started outside `ai c` so `ai c <n>` resumes it",
+    help="Register a Claude Code session started outside `ai` so `ai c <n>` resumes it (to rename a registered one, use `session-migrate`)",
 )
 @click.argument("name", required=False, default="")
 @click.option(
@@ -5064,6 +5064,9 @@ def cmd_session_adopt(
     ``ai c <n>``, which scans the *worktree's* project directory by title. This
     command moves everything that is keyed by the project slug into the pinned
     slot and then verifies that ``ai c`` really does resolve the result.
+
+    Use this for a session started outside ``ai``; to rename a session already
+    registered in an ``ai`` slot, use ``ai session-migrate``.
     """
     from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
 
@@ -5148,23 +5151,23 @@ def cmd_session_adopt(
 def _print_migration(result) -> None:
     """Every planned (or performed) move of a ``session-migrate`` run, then its warnings."""
     verb = "would migrate" if result.dry_run else "migrated"
-    _out.emit(Tag.ADOPT, f"{result.old} -> {result.new}: {verb}")
+    _out.emit(Tag.MIGRATE, f"{result.old} -> {result.new}: {verb}")
     for move in result.moves:
-        _out.emit(Tag.ADOPT, f"  {move.describe()}")
+        _out.emit(Tag.MIGRATE, f"  {move.describe()}")
     for task in result.task_moves:
         renumbered = f" (renumbered from {task.renumbered_from})" if task.renumbered_from else ""
-        _out.emit(Tag.ADOPT, f"  task: {task.source} -> {task.dest}{renumbered}")
+        _out.emit(Tag.MIGRATE, f"  task: {task.source} -> {task.dest}{renumbered}")
     for move in result.resume_moves:
-        _out.emit(Tag.ADOPT, f"  resume: {move.describe()}")
+        _out.emit(Tag.MIGRATE, f"  resume: {move.describe()}")
     if result.resolved is not None:
-        _out.emit(Tag.ADOPT, f"  resolve probe: `ai c` finds {result.resolved}")
+        _out.emit(Tag.MIGRATE, f"  resolve probe: `ai c` finds {result.resolved}")
     for warning in result.warnings:
-        _out.emit(Tag.ADOPT, f"  warning: {warning}", err=True)
+        _out.emit(Tag.MIGRATE, f"  warning: {warning}", err=True)
 
 
 @_cli_group.command(
     "session-migrate",
-    help="Migrate an `ai` session to a new name: worktree, branch, transcript, tasks, memory and resume state",
+    help="Rename a session already registered in an `ai` slot (for one started outside `ai`, use `session-adopt`)",
 )
 @click.argument("old")
 @click.argument("new")
@@ -5180,8 +5183,9 @@ def _print_migration(result) -> None:
 def cmd_session_migrate(old, new, repo, dry_run, yes):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
-    For a session that already lives in an ``ai c`` slot; one started outside
-    ``ai c`` is brought in with ``ai session-adopt``. The session must not be
+    Renames a session already registered in an ``ai c`` slot: worktree, branch,
+    transcript, tasks, memory and resume state. One started outside ``ai`` is
+    registered with ``ai session-adopt`` instead. The session must not be
     running: exit it and end its tmux session first. Every refusal is checked
     before the first write, ``--dry-run`` included.
     """
@@ -5198,12 +5202,12 @@ def cmd_session_migrate(old, new, repo, dry_run, yes):
         if not dry_run:
             if not yes:
                 _print_migration(result)
-                if not _out.confirm(Tag.ADOPT, f"Migrate {old} to {new}?"):
-                    _out.emit(Tag.ADOPT, "Aborted.", err=True)
+                if not _out.confirm(Tag.MIGRATE, f"Migrate {old} to {new}?"):
+                    _out.emit(Tag.MIGRATE, "Aborted.", err=True)
                     sys.exit(1)
             result = _run(False)
     except (AdoptionError, RuntimeError) as exc:
-        _out.error(Tag.ADOPT, f"{exc}")
+        _out.error(Tag.MIGRATE, f"{exc}")
         sys.exit(1)
 
     _print_migration(result)
