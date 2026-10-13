@@ -749,14 +749,16 @@ class TestCdpEdgeRealBoundary:
             assert ws_url, f"real Edge never opened its CDP port; returncode={proc.poll()!r}"
 
             async def attach() -> dict:
-                async with websockets.connect(ws_url, origin="http://example.com", open_timeout=5) as ws:
+                # A generous handshake bound: on a loaded CI runner Edge has written its
+                # port file well before its DevTools socket answers an upgrade.
+                async with websockets.connect(ws_url, origin="http://example.com", open_timeout=20) as ws:
                     await ws.send(json.dumps({"id": 1, "method": "Browser.getVersion"}))
                     return json.loads(await asyncio.wait_for(ws.recv(), 5))
 
             async def bounded() -> dict:
                 # In-process bound: a refused upgrade may hang rather than error, and a hang
                 # must fail this test instead of wedging the run.
-                return await asyncio.wait_for(attach(), 15)
+                return await asyncio.wait_for(attach(), 30)
 
             if allow_origins:
                 reply = asyncio.run(bounded())
