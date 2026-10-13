@@ -275,11 +275,19 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 
 ### T-01
 
-- [ ] AC-1.1 … AC-1.9
+- [x] AC-1.1 … AC-1.9: shipped in #261 (squash `6802902`), each with a behaviour test through
+  `ai session-migrate` in `tests/test_session_migrate.py`, `tests/test_branch_rename.py` and
+  `tests/test_session_dry_run.py`. One recorded deviation from the AC-1.1 text: for the slot's own
+  replay files the dry run prints the destination inside the *new* project directory (where the file
+  ends up after the directory moves), not "same dir". Every guard was falsified (anchor write,
+  parked-branch rename, reused-branch print, held-output conflict, namespace leftover check).
 
 ### T-02
 
-- [ ] AC-2.1 … AC-2.6
+- [x] AC-2.1 … AC-2.6: shipped in #261; `tests/test_session_migrate_hooks.py` covers the dry-run
+  plan, the live run after the core moves, the planning refusal, the live `FAILED` path, five
+  malformed-file cases and the empty-directory parity. Guards falsified: planning-hook refusal,
+  argv type validation, hooks-before-live-check ordering.
 
 ### T-03
 
@@ -287,7 +295,12 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 
 ### T-04
 
-- [ ] AC-4.1 … AC-4.7
+- [x] AC-4.1 … AC-4.7: shipped in ai-harness #3138 (squash `2d5f464ff`): `held_cli.py migrate`
+  with its tests in `tests/test_held_cli.py`, the guard-premise test in
+  `tests/test_ref_delete_guard.py` (a packed, unanchored branch's `git branch -m` is refused until
+  `refs/preserved/session-migrate/<branch>` holds its tip) and `install.sh` Step 5q writing
+  `session-migrate.d/held.toml` idempotently (`tests/test_install_session_migrate_held_hook.py`).
+  Serial gate on the merge base: `223 passed`, `115 passed, 1 skipped`, ruff clean.
 
 **Audit completed:** <!-- YYYY-MM-DD -->
 
@@ -586,6 +599,8 @@ which hooks ran.
 | Date | Decision | Actor | Notes |
 |------|----------|-------|-------|
 | 2026-10-12 | D-1 … D-5 resolved | Coordinating AI (claude, us.anthropic.claude-fable-5-1[1m]) | Authority test passed for each: reversible, inside the operator's pre-approved run, no interface outside the two repos |
+| 2026-10-12 | D-5 follow-up filed | Coordinating AI | The deferred classes (Agent Mail state, Buzz identity merge, tracker assignee; ledgers never rewritten) are an ai-harness issue filed the same day and linked from the owning ai-harness task |
+| 2026-10-13 | Batch 1 exit gate met | Coordinating AI | #261 (this repo) and ai-harness #3138 merged, verified by content on `origin/main`, main trees synced, the T-01/T-02 child worktree reaped with proof |
 
 <!-- /doc:region name="overview" -->
 
