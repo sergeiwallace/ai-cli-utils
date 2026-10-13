@@ -666,3 +666,134 @@ class TestACredentialOutageDoesNotSpendTheReconnectBudget:
 
         assert rc == 0
         assert self._outcome()["failed_attempts"] == 0
+
+
+class TestALongLivedLauncherSaysWhatItIsRunning:
+    """A launcher that gave up must leave enough behind to say why, from artifacts alone.
+
+    Measured: a remote session's local launcher gave up on its tenth drop in five days. Its
+    process had started before the fix that resets the budget after a stable connection, so
+    it ran the old ladder all along. Nothing it wrote said which code it was running, how
+    long each connection had held, or how close it was to giving up, and the launchers still
+    running on the same old code could only be found by reading each one's launch log.
+
+    Every test drives a real ``ai c --remote`` launch through the real reconnect loop; the
+    ssh child and the clock are the only fakes.
+    """
+
+    LOADED = "1111111111111111111111111111111111111111"
+    INSTALLED = "2222222222222222222222222222222222222222"
+
+    @staticmethod
+    def _stamp(commit):
+        path = _transport.get_xdg_state_home() / "last_update_commit.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(commit + "\n")
+
+    @staticmethod
+    def _record():
+        outcomes = list((_transport.get_xdg_state_home() / "transport-outcomes").glob("*.json"))
+        assert len(outcomes) == 1, f"expected one outcome record, found {outcomes}"
+        return json.loads(outcomes[0].read_text())
+
+    def _launch(self, runs, on_call=None):
+        """``runs`` are ``(exit_code, seconds_connected)``; ``on_call(n)`` runs before ssh call n."""
+        clock = {"now": 0.0}
+        calls = []
+
+        def fake_probe(command, **_kwargs):
+            if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+                return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            return MagicMock(returncode=1, stdout="")
+
+        def fake_ssh(argv, **_kwargs):
+            calls.append(list(argv))
+            if on_call is not None:
+                on_call(len(calls))
+            exit_code, seconds = runs[min(len(calls), len(runs)) - 1]
+            clock["now"] += seconds
+            return exit_code
+
+        remote = {"host": "h.example.com", "user": "dev", "transport": "ssh"}
+        with (
+            patch("sys.argv", ["ai", "c", "1", "--remote"]),
+            patch("ai_cli.config.load_config", return_value={"remote": remote}),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
+            patch("ai_cli.transport.subprocess.call", side_effect=fake_ssh),
+            patch("ai_cli.transport._monotonic", side_effect=lambda: clock["now"]),
+            patch("ai_cli.transport.time.sleep"),
+            patch("ai_cli.transport.restore_terminal"),
+            patch("os.execvp", side_effect=AssertionError("this path must not exec")),
+        ):
+            with pytest.raises(SystemExit) as exited:
+                cli()
+        return exited.value.code, calls
+
+    def test_given_a_drop_after_hours_connected_when_it_is_reported_then_the_notice_says_how_long_it_held(self, capsys):
+        """Whether attempt N was a fresh drop after a working connection or one more failure
+        in a flapping outage was only inferable from gaps between log timestamps."""
+        self._launch([(255, 4 * 3600.0 + 125), (255, 2.0), (0, 60.0)])
+
+        err = capsys.readouterr().err
+        assert "after 4h02m connected" in err
+        assert "after 2s connected" in err
+
+    def test_given_an_update_installed_after_launch_when_the_link_drops_then_the_notice_says_the_code_is_stale(
+        self, capsys
+    ):
+        """A launcher keeps the code it started with. When the installed code has moved on,
+        each drop says so once and names the remedy, which costs nothing because the remote
+        session survives a reattach."""
+        self._stamp(self.LOADED)
+
+        def install_update(n):
+            if n == 2:
+                self._stamp(self.INSTALLED)
+
+        self._launch([(255, 3600.0)] * 4 + [(0, 60.0)], on_call=install_update)
+
+        err = capsys.readouterr().err
+        assert err.count("older than the installed") == 1, "the stale-code notice must appear once per update"
+        assert self.LOADED[:12] in err and self.INSTALLED[:12] in err
+        assert "reattach with the same command" in err.lower()
+
+    def test_given_no_update_since_launch_when_the_link_drops_then_no_stale_code_notice_appears(self, capsys):
+        """Negative control: an unchanged stamp is current code, and says nothing."""
+        self._stamp(self.LOADED)
+
+        self._launch([(255, 3600.0)] * 3 + [(0, 60.0)])
+
+        assert "older than the installed" not in capsys.readouterr().err
+
+    def test_given_a_launcher_that_has_exited_when_its_outcome_is_read_then_it_names_the_process_and_code(self):
+        """The record ties an ending to the process and the code that produced it."""
+        self._stamp(self.LOADED)
+
+        self._launch([(255, 3600.0), (0, 60.0)])
+
+        record = self._record()
+        assert record["code_commit"] == self.LOADED
+        assert record["pid"] > 0
+        assert record["launched_at"]
+        assert "code_version" in record
+
+    def test_given_a_live_ladder_when_it_has_dropped_then_its_budget_is_on_disk_before_it_ends(self):
+        """A record written only on the way out says nothing about the launchers still
+        running, which is exactly where the next give-up comes from."""
+        seen = {}
+
+        def read_mid_run(n):
+            if n == 4:
+                seen.update(self._record())
+
+        self._launch([(255, 2.0)] * 3 + [(0, 60.0)], on_call=read_mid_run)
+
+        assert seen["verdict"] == "reconnecting"
+        assert seen["failed_attempts"] == 3
+        assert seen["drops"] == 3
+        assert self._record()["verdict"] == "clean_exit"
