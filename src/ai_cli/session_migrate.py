@@ -75,6 +75,7 @@ from .session_adopt import (
     rekey_name_artifacts,
     retitle_transcript,
 )
+from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
 
@@ -449,9 +450,11 @@ def migrate_session(
     if dry_run:
         return result
 
-    moved = _git(repo_root, "worktree", "move", str(old_wt), str(new_wt))
-    if moved.returncode != 0:
-        raise MigrationError(f"git worktree move failed, nothing was migrated: {(moved.stderr or '').strip()}")
+    moved, why = move_worktree(repo_root, old_wt, new_wt)
+    if not moved:
+        if not new_wt.exists():
+            raise MigrationError(f"git worktree move failed, nothing was migrated: {why}")
+        raise MigrationError(f"the worktree moved but is not usable yet, so nothing else was migrated: {why}")
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:

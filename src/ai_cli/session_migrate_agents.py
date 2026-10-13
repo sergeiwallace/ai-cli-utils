@@ -6,7 +6,8 @@ worktrees under ``<repo>/.worktrees/<old>-agents/<leaf>`` and branches named
 after ``ai session-migrate`` renames its slot, so this module moves them too:
 
 * every registered worktree under ``<old>-agents/`` moves to ``<new>-agents/<leaf>``
-  with ``git worktree move``, and the emptied container is removed;
+  with ``git worktree move`` (by hand plus ``git worktree repair`` for one holding
+  submodules, :mod:`ai_cli.worktree_move`), and the emptied container is removed;
 * every local ``wt/<old>/<leaf>`` branch becomes ``wt/<new>/<leaf>`` through
   :func:`ai_cli.branch_rename.rename_branch_anchored`, so its tip is anchored first;
 * every ``branch.*.aih-session-home`` marker naming the old slot or a moved worktree
@@ -30,6 +31,7 @@ from pathlib import Path
 
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
+from .worktree_move import move_worktree
 
 _SESSION_HOME_PATTERN = r"^branch\..+\.aih-session-home$"
 
@@ -229,11 +231,9 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
     for e in [e for e in plan.entries if e.moves]:
         if e.worktree and e.dest:
             e.dest.parent.mkdir(parents=True, exist_ok=True)
-            res = _git(e.repo, "worktree", "move", str(e.worktree), str(e.dest))
-            if res.returncode != 0:
-                warnings.append(
-                    f"agent worktree {e.worktree} FAILED to move: {(res.stderr or '').strip()}; its branch keeps its name"
-                )
+            ok, why = move_worktree(e.repo, e.worktree, e.dest)
+            if not ok:
+                warnings.append(f"agent worktree {e.worktree} FAILED to move: {why}; its branch keeps its name")
                 continue
             moved.add(e.worktree)
             if (e.dest / ".venv").is_dir():

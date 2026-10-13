@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai session-migrate` now moves a worktree that holds initialised submodules, which
+  `git worktree move` refuses. It moves the directory, runs `git worktree repair`, and
+  repoints each submodule's `core.worktree`, so `git status` works in the moved
+  worktree and its submodules. A locked worktree is still never moved.
+
 - `ai c` now starts the independently supervised stale-session reaper when it is
   missing and retries after Circus or the worker dies. Startup is asynchronous,
   singleton across concurrent launches, observe-only by default, and a no-op on
