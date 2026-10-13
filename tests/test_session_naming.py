@@ -7,6 +7,7 @@ it without creating anything, so each test reads the name a real launch would us
 import io
 import json
 import os
+import sys
 import tomllib
 from unittest.mock import patch
 
@@ -236,14 +237,12 @@ def test_given_no_registry_names_the_host_when_launching_then_every_path_is_list
     assert positions == sorted(positions), err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a directory symlink needs a privilege Windows runners lack")
 def test_given_the_projects_dir_reached_through_a_symlink_when_refused_then_each_registry_is_listed_once(
     real_alias_lookup, tmp_path, monkeypatch
 ):
     link = tmp_path / "projects-link"
-    try:
-        link.symlink_to(real_alias_lookup["projects"], target_is_directory=True)
-    except OSError:
-        pytest.skip("this platform cannot create a directory symlink here")
+    link.symlink_to(real_alias_lookup["projects"], target_is_directory=True)
     _write_aliases(real_alias_lookup["harness"], '[aliases]\nother-box = "oth"\n')
     monkeypatch.setenv("PROJECTS_DIR", str(link))
     code, _out, err = _dry_run(env={"PROJECTS_DIR": str(link)})
