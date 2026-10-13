@@ -4271,6 +4271,7 @@ def cmd_upgrade():
 def cmd_register(project, prefix, project_type):
     """Persist one repository-root prefix mapping in config.toml."""
     try:
+        _config.validate_repo_alias(prefix, *_config.repo_alias_limit())
         root = _config.register_project(project, prefix, project_type)
     except _config.ProjectPrefixError as exc:
         raise click.ClickException(str(exc)) from exc

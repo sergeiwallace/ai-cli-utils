@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_cli.config import FLEET_REGISTRY_MARKER, resolve_project_prefix
+from ai_cli.config import resolve_project_prefix
 from ai_cli.session import build_session_name, create_worktree, registered_worktrees
 
 
@@ -276,19 +276,21 @@ def test_given_a_slot_holding_only_an_empty_subdirectory_when_a_session_worktree
 
 
 @pytest.fixture
-def uppercase_fleet_prefix(repo, monkeypatch):
-    """Register an uppercase prefix through the production fleet-registry tier."""
-    registry = repo.parent / "myconfig" / FLEET_REGISTRY_MARKER
-    registry.parent.mkdir(parents=True)
-    registry.write_text('[[projects]]\nname = "myproject"\ntask_prefix = "APP"\ntype = "tool"\nactive = true\n')
+def uppercase_repo_prefix(repo, monkeypatch):
+    """Register an uppercase prefix through the repository's own metadata tier.
+
+    The fleet registry refuses an uppercase repo alias; the per-machine tiers keep
+    the looser task-prefix form, so this is where an uppercase prefix still comes from.
+    """
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "APP"\n')
     monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: repo.parent)
     monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: None)
     monkeypatch.setattr("ai_cli.config.load_config", dict)
     return "APP"
 
 
-def test_given_an_uppercase_fleet_prefix_and_lowercase_registered_worktree_when_created_then_it_is_reused(
-    repo, monkeypatch, uppercase_fleet_prefix, case_insensitive_filesystem
+def test_given_an_uppercase_repo_prefix_and_lowercase_registered_worktree_when_created_then_it_is_reused(
+    repo, monkeypatch, uppercase_repo_prefix, case_insensitive_filesystem
 ):
     """The production prefix-to-name chain reuses a case-alias worktree.
 

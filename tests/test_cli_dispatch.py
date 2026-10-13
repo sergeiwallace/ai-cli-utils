@@ -616,6 +616,6 @@ class TestRegisterCommand:
         repo = tmp_path / "myproject"
         repo.mkdir()
         with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
-            exit_code, stdout, _ = run_cli(["ai", "register", "-p", str(repo), "-x", "PROJECT", "-t", "tool"])
+            exit_code, stdout, _ = run_cli(["ai", "register", "-p", str(repo), "-x", "proj", "-t", "tool"])
         assert exit_code == 0
         assert "Registered" in stdout
