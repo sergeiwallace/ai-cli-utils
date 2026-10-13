@@ -220,6 +220,38 @@ def _repair_inherited_acl(target: Path, recurse: bool = False) -> None:
         subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
 
 
+def temp_root_checkout(path: Path) -> Path | None:
+    """Return the Git checkout ``path`` sits inside, resolved as the code under test resolves it.
+
+    Tests build fixture repositories under ``tmp_path`` and hand them to code that walks up to a
+    repository root. With the temp root itself inside a checkout, that walk leaves the fixture
+    and lands on the real repository: a ``--basetemp`` under a linked worktree made ``ai register``
+    rewrite the real checkout's ``.beads/config.yaml`` and add worktrees to it.
+    """
+    resolved = path.expanduser().resolve()
+    root = _config_module._project_root(resolved)
+    if root != resolved or _config_module._has_valid_git_marker(resolved):
+        return root
+    return None
+
+
+def _refuse_temp_root_inside_a_checkout(config) -> None:
+    """Stop the run before any test when its temp root would let fixtures reach a real repository."""
+    basetemp = config.getoption("basetemp", None)
+    if basetemp:
+        path, source = Path(basetemp), "--basetemp"
+    elif os.environ.get("PYTEST_DEBUG_TEMPROOT"):
+        path, source = Path(os.environ["PYTEST_DEBUG_TEMPROOT"]), "PYTEST_DEBUG_TEMPROOT"
+    else:
+        path, source = Path(tempfile.gettempdir()), "the system temp dir (TMPDIR/TEMP/TMP)"
+    checkout = temp_root_checkout(path)
+    if checkout is not None:
+        raise pytest.UsageError(
+            f"{source} {path} is inside the Git checkout {checkout}. Tests that resolve a repository "
+            f"root from a temp dir would reach that real repository. Point it outside any checkout."
+        )
+
+
 def pytest_configure(config):
     """Relocate the temp root to :func:`suite_temproot` before pytest first resolves ``basetemp``.
 
@@ -238,6 +270,7 @@ def pytest_configure(config):
     accessible (``if (rootdir_stat.st_mode & 0o077) != 0``), so forcing it wide
     fights pytest's own security check.
     """
+    _refuse_temp_root_inside_a_checkout(config)
     if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return
     root = suite_temproot(tempfile.gettempdir())

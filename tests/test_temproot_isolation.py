@@ -157,3 +157,54 @@ def test_given_an_explicit_basetemp_when_the_suite_runs_then_tmp_path_is_under_i
     )
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
     assert explicit.resolve() in Path(report.read_text(encoding="utf-8")).resolve().parents
+
+
+def _fake_checkout_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A checkout with a Beads config and one linked worktree, shaped like a real one."""
+    checkout = tmp_path / "myrepo"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    worktree = checkout / ".worktrees" / "session-1"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {checkout / '.git' / 'worktrees' / 'session-1'}\n", encoding="utf-8")
+    beads_config = checkout / ".beads" / "config.yaml"
+    beads_config.parent.mkdir()
+    beads_config.write_text('issue-prefix: "myrepo"\n', encoding="utf-8")
+    return checkout, worktree, beads_config
+
+
+@pytest.mark.parametrize("via", ["basetemp", "tmpdir"])
+def test_given_a_temp_root_inside_a_worktree_when_the_suite_runs_then_it_refuses_before_touching_the_checkout(
+    sandbox, tmp_path, via
+):
+    checkout, worktree, beads_config = _fake_checkout_with_worktree(tmp_path)
+    scratch = worktree / ".scratch"
+    scratch.mkdir()
+    register_test = (
+        f"{_THIS_FILE.parent / 'test_cli_dispatch.py'}::TestRegisterCommand::"
+        "test_given_repository_and_prefix_when_register_then_persists_registry_entry"
+    )
+    argv = [
+        sys.executable,
+        "-m",
+        "pytest",
+        register_test,
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "no:randomly",
+        "-n",
+        "0",
+    ]
+    env = _inner_env(sandbox, tmp_path / "report")
+    if via == "basetemp":
+        argv.append(f"--basetemp={scratch / 'bt'}")
+    else:
+        env.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
+
+    result = _run(argv, env)
+
+    assert beads_config.read_text(encoding="utf-8") == 'issue-prefix: "myrepo"\n'
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout[-2000:] + result.stderr[-2000:]
+    assert str(checkout.resolve()) in result.stderr
