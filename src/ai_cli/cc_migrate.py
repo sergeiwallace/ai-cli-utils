@@ -199,7 +199,13 @@ def _rewrite_line(raw: str, source_root: str, dest_root: str) -> str:
             changed = True
     if not changed:
         return raw
-    return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    try:
+        line.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate (half an emoji, persisted escaped) has no UTF-8 form; keep it escaped.
+        line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+    return line + "\n"
 
 
 @dataclass
