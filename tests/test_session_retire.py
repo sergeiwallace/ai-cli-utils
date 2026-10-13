@@ -53,6 +53,10 @@ def slot(tmp_path):
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
+    # A commit can leave auto-maintenance running detached, writing under .git while a
+    # nothing-changed snapshot is compared.
+    _git("config", "maintenance.auto", "false", cwd=repo)
+    _git("config", "gc.auto", "0", cwd=repo)
     (repo / ".gitignore").write_text("*.log\n")
     (repo / "README.md").write_text("hi\n")
     _git("add", "-A", cwd=repo)
