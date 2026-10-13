@@ -4564,6 +4564,11 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
             "add -F/--firstmate (or use `ai cos`) to launch one"
         )
+    else:
+        # A chief that launches an ordinary session would otherwise hand it the chief's
+        # role and home through the inherited environment.
+        os.environ.pop(_chief_of_staff.ROLE_ENV, None)
+        os.environ.pop(_chief_of_staff.FM_HOME_ENV, None)
     _session_command(engine)(ctx, **options, remote_args=remote_args)
 
 
