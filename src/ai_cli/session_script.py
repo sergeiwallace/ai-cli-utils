@@ -921,7 +921,9 @@ def get_engine_script(
     }}
 
     # Extract session number from ai_name (e.g., "session-3" → "3") for downstream hooks.
-    _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
+    # Anchored on the hyphen: a host alias may itself end in digits.
+    _session_num=$(printf '%s\\n' "$ai_name" | sed -nE 's/.*-([0-9]+)$/\\1/p')
+    _session_num="${{_session_num:-1}}"
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
     [[ "$engine" == "p" ]] && _session_type="pi"
