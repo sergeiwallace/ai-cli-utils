@@ -4125,6 +4125,18 @@ def _session_options(func):
     return click.option("--project-prefix", default="", hidden=True)(func)
 
 
+def _names_chief_project(project: str) -> bool:
+    """True when ``-p PROJECT`` names ai-harness: its directory, an alias, or its task prefix."""
+    if _config.get_project_aliases().get(project, project) == _chief_of_staff.CHIEF_PROJECT:
+        return True
+    try:
+        return _config.resolve_project_prefix_by_name(project) == _config.resolve_project_prefix_by_name(
+            _chief_of_staff.CHIEF_PROJECT
+        )
+    except _config.ProjectPrefixError:
+        return False
+
+
 def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
     """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
@@ -4153,6 +4165,15 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     Returns the arguments a remote dispatch must forward; empty for a local launch.
     """
     session_name = _chief_of_staff.chief_session_name(str(options.get("name") or ""))
+    # The chief always launches into ai-harness, whatever repository the command ran
+    # from: `-p` may name it (by directory or alias) but never another project.
+    requested = str(options.get("project") or "")
+    if requested and not _names_chief_project(requested):
+        raise click.UsageError(
+            f"a chief-of-staff always launches into {_chief_of_staff.CHIEF_PROJECT}; "
+            f"drop -p/--project {requested} (or name {_chief_of_staff.CHIEF_PROJECT} itself)"
+        )
+    options["project"] = _chief_of_staff.CHIEF_PROJECT
     if options.get("remote"):
         options["name"] = session_name
         return [
@@ -4181,7 +4202,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
 
     config = _config.load_config()
     try:
-        prefix = options.get("project_prefix") or _session.get_project_prefix()
+        prefix = options.get("project_prefix") or _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
     except _config.ProjectPrefixError as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
@@ -4225,6 +4246,16 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     firstmate = options.pop("firstmate", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
+    name = str(options.get("name") or "")
+    if not firstmate and _chief_of_staff.is_chief_positional(name):
+        # `ai c firstmate[-N]` is the chief launch itself, not an ordinary session that
+        # happens to look like one: it must register, export FM_HOME and the role.
+        firstmate = True
+    elif not firstmate and _chief_of_staff.names_a_chief(name):
+        raise click.UsageError(
+            f"{name!r} looks like a chief-of-staff name but is not firstmate or firstmate-N; "
+            f"launch the chief as `ai c firstmate[-N]`, or add a suffix with `ai c --firstmate SUFFIX`"
+        )
     remote_args: list[str] = []
     if firstmate:
         remote_args = _prepare_firstmate_launch(engine, machine_key, fm_home, options)

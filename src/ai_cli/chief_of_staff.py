@@ -50,7 +50,19 @@ class ChiefOfStaffError(Exception):
     """A launch-time refusal; the message names the remedy."""
 
 
+#: The repository every chief launches into, whatever repository the command ran from:
+#: the chief home, its hooks and its worktree convention are ai-harness's.
+CHIEF_PROJECT = "ai-harness"
 _CHIEF_SEGMENT = re.compile(rf"(?:^|-){SESSION_NAME}(?:-|$)")
+#: ``firstmate``, ``firstmate-N``, or a full chief session name ending in one
+#: (``aih-fw-firstmate-1``, ``c-r-aih-fw-firstmate-1``): the positional forms that are a
+#: chief launch on their own, without ``--firstmate``.
+_CHIEF_POSITIONAL = re.compile(rf"(?:^|-){SESSION_NAME}(?:-\d+)?$")
+
+
+def is_chief_positional(name: str) -> bool:
+    """True when a positional session name alone asks for the chief launch."""
+    return bool(name) and bool(_CHIEF_POSITIONAL.search(name.casefold()))
 
 
 def names_a_chief(name: str) -> bool:
