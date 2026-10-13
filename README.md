@@ -313,19 +313,19 @@ ai attach <name>   # Attach directly to a named tmux session
 
 ### Chief-of-staff (firstmate) session
 
-One coordinating session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository). `-F/--firstmate` is a mode on every engine command, so the chief can be any agent you launch:
+One coordinating session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository). `-F/--firstmate` is a mode on every engine command, so the chief can be any agent you launch. These examples use project prefix `ai-cli` and host alias `box`:
 
 ```bash
-ai c -F/--firstmate         # Claude chief: session ai-cli-firstmate-1, tmux c-ai-cli-firstmate-1
-ai c --firstmate review     # Optional suffix: ai-cli-firstmate-review-1, tmux c-ai-cli-firstmate-review-1
-ai p --firstmate            # Same mode on Pi: tmux p-ai-cli-firstmate-1 (likewise `ai g`, `ai cx`)
+ai c -F/--firstmate         # Claude chief: session ai-cli-box-firstmate-1, tmux c-ai-cli-box-firstmate-1
+ai c --firstmate review     # Optional suffix: ai-cli-box-firstmate-review-1, tmux c-ai-cli-box-firstmate-review-1
+ai p --firstmate            # Same mode on Pi: tmux p-ai-cli-box-firstmate-1 (likewise `ai g`, `ai cx`)
 ai cos                      # Shorthand for `ai c --firstmate` (takes the same optional suffix)
 ai c -F -k/--machine-key K  # Machine key naming the chief home (default: $AI_MACHINE_ID)
 ai c -F -H/--fm-home DIR    # Use an explicit chief home instead of $XDG_STATE_HOME/firstmate/chief-of-staff/<key>
 ai c -F --dry-run           # Print the resolved plan; registers and starts nothing
 ```
 
-The name is `{project-prefix}-firstmate-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session, and the worktree lands at `.worktrees/{project-prefix}-firstmate-[suffix-]{index}`. Launch it from whichever repository root you want the chief's worktree in — nothing ties it to a particular repo.
+The name is `{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session, and the worktree lands at `.worktrees/{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`. Launch it from whichever repository root you want the chief's worktree in — nothing ties it to a particular repo.
 
 Worktree isolation is **on**, like every other session: a session working in a main tree is the exception, not the chief. Pass `-W/--no-worktree` if you want the chief in the repo root instead.
 

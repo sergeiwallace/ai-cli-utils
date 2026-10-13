@@ -391,8 +391,9 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
                 else:
                     slot_idx = next((i for i in range(len(palette)) if i not in occupied), _fallback_idx)
             else:
-                m = re.search(r"\d+$", ai_name)
-                num = int(m.group()) if m else 1
+                # Anchored on the hyphen: a host alias may itself end in digits.
+                m = re.search(r"-(\d+)$", ai_name)
+                num = int(m.group(1)) if m else 1
                 slot_idx = (num - 1) % len(palette)
 
             slot_name = palette_names[slot_idx]

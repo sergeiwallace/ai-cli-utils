@@ -14,6 +14,7 @@ stubbed.
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -83,9 +84,14 @@ def _launch(checkout: Path, argv=("ai", "c", "session-1", "-R")):
 
 
 def _install_line(stderr: str) -> str:
+    """The Install outcome line, without the ``(N.Ns)`` the reporter appends to a slow phase.
+
+    The real ``git fetch`` against the fixture origin is what this phase times, so on a
+    loaded machine it crosses the reporter's slow threshold and the suffix appears.
+    """
     lines = [line for line in stderr.splitlines() if line.startswith("[launch] Install:") and ";" in line]
     assert len(lines) == 1, stderr
-    return lines[0]
+    return re.sub(r" \(\d+(?:\.\d+)?s\)$", "", lines[0])
 
 
 def test_given_a_clean_checkout_behind_origin_when_launching_remote_then_it_is_fast_forwarded_and_restarts(

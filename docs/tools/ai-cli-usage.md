@@ -531,13 +531,26 @@ that stayed up for `[remote] reconnect_stable_seconds` (default 300) was working
 that ends it starts a fresh budget and a fresh backoff. Before this, a session that had
 reattached cleanly nine times over several days gave up on its tenth brief blip, while its
 remote tmux session and agent kept running. However the runner ends (`clean_exit`,
-`interrupted`, `gave_up`), it writes the verdict, last ssh exit code, failed-attempt count
-and total drops to `~/.local/state/ai-cli-utils/transport-outcomes/<session>.json`, and that
-record is kept after the launcher exits.
+`interrupted`, `gave_up`), it writes the verdict, last ssh exit code, failed-attempt count,
+total drops, credential-fault count, the resolved `cause` (`transport` or `auth`) and
+`last_error` (the last lines ssh or its `ProxyCommand` printed to stderr) to
+`~/.local/state/ai-cli-utils/transport-outcomes/<session>.json`, and that record is kept
+after the launcher exits. One file therefore holds both the launcher's exit 255 and the
+`ProxyCommand`'s reason for it.
 
-This is deliberately indifferent to *why* the link dropped, because from the client side an
-intermediary's idle timeout, its absolute session cap and a real network failure are not
-distinguishable — reattaching covers all three.
+**A credential outage is not a dropped link (AI-CLI-yewj).** An expired SSO token behind a
+`ProxyCommand` fails as fast as a dead host and with the same exit 255, so ten quick
+attempts used to run out in minutes while the token stayed expired. ssh's stderr is now
+relayed live and also read: an attempt whose stderr matches `[remote]
+reconnect_auth_patterns` (by default expired tokens, a failed SSO refresh and
+`Permission denied (`) does not spend `reconnect_attempts`. Instead it asks you to
+re-authenticate and retries on a 30s backoff doubling to 15 minutes, for up to `[remote]
+reconnect_auth_wait_seconds` (default 14400, four hours) of continuous credential failure,
+then reattaches by itself once a login succeeds.
+
+Among transport faults it stays deliberately indifferent to *why* the link dropped, because
+from the client side an intermediary's idle timeout, its absolute session cap and a real
+network failure are not distinguishable — reattaching covers all three.
 
 The interactive session also sets `ServerAliveInterval` (default 30s) and
 `ServerAliveCountMax` (default 3), configurable as `[remote] server_alive_interval` and

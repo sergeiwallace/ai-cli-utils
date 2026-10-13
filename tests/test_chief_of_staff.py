@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -176,6 +177,64 @@ def _launch_patches(stack: ExitStack, live: bool, real_names: bool = False):
 
 
 class TestCosCommand:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_given_missing_host_alias_when_chief_launched_then_refuses_without_registration(self, seeded_home, dry_run):
+        from ai_cli.session_naming import HostAliasError
+
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            stack.enter_context(
+                patch(
+                    "ai_cli.session_naming.resolve_host_alias", side_effect=HostAliasError("no host alias configured")
+                )
+            )
+            code, _out, err = run_cli(["ai", "cos", *(["--dry-run"] if dry_run else [])])
+            launch.assert_not_called()
+        assert code == 1
+        assert "no host alias configured" in err
+        assert not cos.registration_path(seeded_home).exists()
+        assert not cos.registry_path(seeded_home).exists()
+
+    @pytest.mark.parametrize("command", [["cos"], ["c", "-F"], ["g", "-F"], ["p", "-F"], ["cx", "-F"]])
+    @pytest.mark.parametrize("suffix", [[], ["review"]])
+    def test_given_host_alias_when_chief_registered_then_names_equal_the_launch_plan(
+        self, seeded_home, monkeypatch, command, suffix
+    ):
+        from ai_cli import main, session_naming
+
+        monkeypatch.setattr(session_naming, "resolve_host_alias", lambda: "box")
+        real_launch = main._do_session_launch
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            stack.enter_context(patch("ai_cli.session._resolve_is_remote", return_value=False))
+            stack.enter_context(patch("ai_cli.session.is_current_project_resolved", return_value=True))
+            stack.enter_context(patch("ai_cli.tmux_setup.tmux_present", return_value=True))
+            plan = stack.enter_context(patch("ai_cli.main._print_launch_plan"))
+            # The pi and codex engines refuse to start without their binary on PATH; a CI runner has
+            # neither, and this test is about names, not about those binaries.
+            real_which = shutil.which
+            stack.enter_context(
+                patch(
+                    "shutil.which",
+                    side_effect=lambda cmd, *a, **k: (
+                        f"/usr/bin/{cmd}" if cmd in {"pi", "codex"} else real_which(cmd, *a, **k)
+                    ),
+                )
+            )
+            # Exercise the real launch's name resolution, stopping at its read-only plan.
+            launch.side_effect = lambda **kwargs: real_launch(**(kwargs | {"dry_run": True}))
+            code, _out, err = run_cli(["ai", *command, *suffix])
+            assert code == 0, err
+            plan.assert_called_once()
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        expected_name = "myproject-box-firstmate-" + ("review-" if suffix else "") + "1"
+        assert plan.call_args.kwargs["ai_name"] == expected_name
+        assert registration["native_agent_name"] == plan.call_args.kwargs["ai_name"]
+        assert registration["tmux_target"] == plan.call_args.kwargs["session_id"]
+        assert cos.registration_is_live(
+            registration, has_session=lambda target: target == plan.call_args.kwargs["session_id"]
+        )
+
     def test_given_seeded_home_when_launched_then_registers_exports_env_and_hands_off_with_a_worktree(
         self, seeded_home, monkeypatch
     ):
@@ -277,8 +336,8 @@ class TestCosCommand:
             assert code == 0, err
             assert launch.call_args.kwargs["name"] == "firstmate-review"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-firstmate-review-1"
-        assert registration["tmux_target"] == "c-myproject-firstmate-review-1"
+        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-1"
+        assert registration["tmux_target"] == "c-myproject-tst-firstmate-review-1"
 
     def test_given_remote_requested_when_launched_then_usage_error(self, seeded_home):
         with patch("ai_cli.main._do_session_launch") as launch:
@@ -327,8 +386,8 @@ class TestFirstmateFlag:
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
         assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-firstmate-1"
-        assert registration["tmux_target"] == "c-myproject-firstmate-1"
+        assert registration["native_agent_name"] == "myproject-tst-firstmate-1"
+        assert registration["tmux_target"] == "c-myproject-tst-firstmate-1"
 
     def test_given_a_positional_suffix_when_launched_then_it_sits_between_firstmate_and_the_index(self, seeded_home):
         with ExitStack() as stack:
@@ -337,8 +396,8 @@ class TestFirstmateFlag:
             assert code == 0, err
             assert launch.call_args.kwargs["name"] == "firstmate-review"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-firstmate-review-1"
-        assert registration["tmux_target"] == "c-myproject-firstmate-review-1"
+        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-1"
+        assert registration["tmux_target"] == "c-myproject-tst-firstmate-review-1"
 
     def test_given_an_unsafe_suffix_when_launched_then_it_is_sanitized_like_any_session_name(self, seeded_home):
         with ExitStack() as stack:
@@ -346,7 +405,7 @@ class TestFirstmateFlag:
             code, _out, err = run_cli(["ai", "c", "--firstmate", "Review/Queue"])
             assert code == 0, err
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["native_agent_name"] == "myproject-firstmate-review-queue-1"
+        assert registration["native_agent_name"] == "myproject-tst-firstmate-review-queue-1"
 
     @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
     def test_given_any_engine_when_firstmate_then_that_engine_launches_as_the_chief(self, engine, seeded_home):
@@ -358,7 +417,7 @@ class TestFirstmateFlag:
         assert kwargs["engine"] == engine
         assert kwargs["name"] == "firstmate"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
-        assert registration["tmux_target"] == f"{engine}-myproject-firstmate-1"
+        assert registration["tmux_target"] == f"{engine}-myproject-tst-firstmate-1"
 
     def test_given_no_worktree_requested_when_firstmate_then_isolation_is_off(self, seeded_home):
         with ExitStack() as stack:

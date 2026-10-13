@@ -3232,6 +3232,10 @@ def _do_session_launch(
                     backoff_seconds=remote_cfg.get("reconnect_backoff", 2.0),
                     stable_seconds=remote_cfg.get("reconnect_stable_seconds", 300),
                     outcome_path=_transport.transport_outcome_path(_r_ai_name),
+                    auth_wait_seconds=remote_cfg.get("reconnect_auth_wait_seconds", 4 * 3600),
+                    auth_fault_patterns=remote_cfg.get(
+                        "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
+                    ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
                 )
             )
@@ -4136,10 +4140,11 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     is_remote = _session._resolve_is_remote(options.get("is_remote", False))
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
     try:
+        naming_prefix = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
         tmux_target, ai_name = _session.build_session_name(
-            engine, prefix, session_name, config, is_remote=is_remote, use_tmux=not bare
+            engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
         )
-    except _session.SessionSlotAmbiguityError as exc:
+    except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
 

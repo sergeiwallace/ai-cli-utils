@@ -7,11 +7,15 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,6 +79,75 @@ def restore_terminal(stream=None) -> None:
 #: is a transport failure, and the remote tmux session is still sitting there detached.
 _SSH_OPERATOR_EXIT_CODES = frozenset({0, 130})
 
+#: stderr text that marks a failed attempt as a CREDENTIAL fault rather than a lost link.
+#: ssh exits 255 for both, so its own stderr and its ``ProxyCommand``'s (which inherits it)
+#: are the only place the two differ. Matched case-insensitively.
+DEFAULT_AUTH_FAULT_PATTERNS = (
+    r"token (has |is )?expired",
+    r"expiredtoken",
+    r"refresh failed",
+    r"unauthorizedexception",
+    r"sso session.*expired",
+    r"permission denied \(",
+)
+
+_STDERR_TAIL_LINES = 20
+
+
+class _StderrTee:
+    """Capture an ssh attempt's stderr while still relaying it live to the operator.
+
+    The child writes to a temporary FILE rather than a pipe: a ``ControlPersist`` master
+    or a ``ProxyCommand`` it forks inherits the descriptor and can outlive the attempt, and
+    a pipe reader would then wait for an EOF that never comes. Tailing a file needs no EOF.
+    """
+
+    def __init__(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="ai-ssh-stderr-")
+        self._path = Path(path)
+        self.sink = os.fdopen(fd, "wb", buffering=0)
+        self._reader = self._path.open("rb")
+        self._pending = b""
+        self.lines: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._follow, daemon=True)
+        self._thread.start()
+
+    def _drain(self, final: bool = False) -> None:
+        self._pending += self._reader.read()
+        *complete, self._pending = self._pending.split(b"\n")
+        if final and self._pending:
+            complete.append(self._pending)
+            self._pending = b""
+        text = "\n".join(line.decode(errors="replace").rstrip("\r") for line in complete)
+        if text.strip():
+            _out.relay(Tag.TRANSPORT, text)
+            self.lines.extend(line for line in text.splitlines() if line.strip())
+
+    def _follow(self) -> None:
+        while not self._stop.wait(0.1):
+            with contextlib.suppress(OSError, ValueError):
+                self._drain()
+
+    def close(self) -> str:
+        """Stop following, relay what is left, and return the captured tail."""
+        self._stop.set()
+        self._thread.join()
+        with contextlib.suppress(OSError, ValueError):
+            self._drain(final=True)
+        for handle in (self.sink, self._reader):
+            with contextlib.suppress(OSError):
+                handle.close()
+        # A surviving ControlPersist master may still hold the file open; on Windows that
+        # blocks the unlink, and a leftover temp file is not worth failing over.
+        with contextlib.suppress(OSError):
+            self._path.unlink()
+        return "\n".join(self.lines)
+
+
+def _is_auth_fault(stderr_tail: str, patterns: Sequence[str]) -> bool:
+    return any(re.search(pattern, stderr_tail, re.IGNORECASE) for pattern in patterns)
+
 
 def run_ssh_with_reconnect(
     ssh_args: list[str],
@@ -85,6 +158,10 @@ def run_ssh_with_reconnect(
     on_clean_exit: Callable[[], None] | None = None,
     stable_seconds: float = 300.0,
     outcome_path: Path | None = None,
+    auth_wait_seconds: float = 4 * 3600.0,
+    auth_backoff_seconds: float = 30.0,
+    max_auth_backoff_seconds: float = 900.0,
+    auth_fault_patterns: Sequence[str] = DEFAULT_AUTH_FAULT_PATTERNS,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -94,7 +171,7 @@ def run_ssh_with_reconnect(
     reattaching costs nothing and loses nothing. The mosh path already loops; this path did
     not, which is why a transport blip ended the operator's session outright (AI-CLI-w679).
 
-    This is deliberately indifferent to *why* the link dropped. The measured environment
+    Among transport faults this is deliberately indifferent to *why* the link dropped. The measured environment
     reaches its host through a ``ProxyCommand`` with ``ControlPersist`` in play, and an
     intermediary's idle timeout, its absolute session cap and a genuine network drop are
     not distinguishable from this side -- so reattaching covers all three, where tuning a
@@ -113,25 +190,79 @@ def run_ssh_with_reconnect(
     sessions that had reattached cleanly for days on their tenth brief blip (AI-CLI-qre8).
 
     ``outcome_path``, when given, receives a JSON record of how the runner ended (verdict,
-    exit code, attempt and drop counts). It is written on every way out and never deleted,
-    so the outcome survives the process that reported it.
+    exit code, attempt and drop counts, the resolved cause and the last stderr ssh or its
+    ``ProxyCommand`` printed). It is written on every way out and never deleted, so the
+    outcome survives the process that reported it.
+
+    A failed attempt whose stderr matches ``auth_fault_patterns`` is a CREDENTIAL fault: an
+    expired SSO token fails as fast as a dead host and with the same exit 255, but no
+    number of quick retries fixes it, and only a human re-login does. Those attempts never
+    spend ``max_attempts``; the runner asks for re-authentication and keeps retrying on its
+    own slower backoff for up to ``auth_wait_seconds`` of continuous credential failure,
+    which must outlast the credential's own lifetime.
     """
     attempt = 0
     drops = 0
+    auth_faults = 0
+    auth_since: float | None = None
     delay = backoff_seconds
+    auth_delay = auth_backoff_seconds
     returncode = 0
     verdict = "error"
+    cause: str | None = None
+    last_error = ""
     try:
         while True:
             started = _monotonic()
-            returncode = subprocess.call(ssh_args)
+            tee = _StderrTee()
+            try:
+                returncode = subprocess.call(ssh_args, stderr=tee.sink)
+            finally:
+                stderr_tail = tee.close()
+            if stderr_tail:
+                last_error = stderr_tail
             if returncode in _SSH_OPERATOR_EXIT_CODES:
                 verdict = "clean_exit" if returncode == 0 else "interrupted"
+                cause = None
                 break
             drops += 1
+            # A run that stayed up was a working connection: whatever ended it starts a
+            # fresh outage, for the transport budget and the credential wait alike.
             if _monotonic() - started >= stable_seconds:
                 attempt = 0
                 delay = backoff_seconds
+                auth_since = None
+                auth_delay = auth_backoff_seconds
+            if _is_auth_fault(stderr_tail, auth_fault_patterns):
+                cause = "auth"
+                auth_faults += 1
+                if auth_since is None:
+                    auth_since = _monotonic()
+                waited = _monotonic() - auth_since
+                if waited >= auth_wait_seconds:
+                    verdict = "gave_up"
+                    _out.emit(
+                        Tag.TRANSPORT,
+                        f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
+                        f"for {waited / 60:.0f} minutes — giving up. The remote session is most likely "
+                        "still running; re-authenticate, then reattach with the same command.",
+                        err=True,
+                    )
+                    break
+                restore_terminal()
+                _out.emit(
+                    Tag.TRANSPORT,
+                    f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}). "
+                    f"Re-authenticate (see the message above); retrying in {auth_delay:.0f}s, for up to "
+                    f"{auth_wait_seconds / 60:.0f} minutes. This does not use the reconnect budget.",
+                    err=True,
+                )
+                time.sleep(auth_delay)
+                auth_delay = min(auth_delay * 2, max_auth_backoff_seconds)
+                continue
+            cause = "transport"
+            auth_since = None
+            auth_delay = auth_backoff_seconds
             attempt += 1
             if attempt >= max_attempts:
                 verdict = "gave_up"
@@ -165,6 +296,9 @@ def run_ssh_with_reconnect(
                 last_exit_code=returncode,
                 failed_attempts=attempt,
                 drops=drops,
+                auth_faults=auth_faults,
+                cause=cause,
+                last_error=last_error,
             )
         subprocess.run(cleanup_cmd, capture_output=True, check=False)
     return returncode

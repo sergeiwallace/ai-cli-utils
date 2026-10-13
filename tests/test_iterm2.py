@@ -1,7 +1,10 @@
 import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -767,3 +770,41 @@ class TestRenameAttachmentGuard:
         status_body = script[status_pos : status_pos + 1000]
         assert "_iterm2_rename " in fleet_body
         assert "_iterm2_rename " in status_body
+
+
+class TestTrailingIndexParsersAnchorOnHyphen:
+    """A host alias may carry digits, so the session index is only a hyphen-led trailing number."""
+
+    @pytest.mark.parametrize(
+        ("ai_name", "expected_hex"),
+        [("myproject-host2-3", "2ecc71"), ("myproject-host2", "e74c3c")],
+    )
+    def test_given_alias_with_digits_when_modulo_slot_assigned_then_only_hyphen_index_counts(
+        self, tmp_path, ai_name, expected_hex
+    ):
+        cfg = make_iterm2_config(collision_avoidance=False)
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
+                    slot = _assign_iterm2_color_slot(ai_name, "c")
+        assert slot is not None
+        assert slot.lstrip("#") == expected_hex
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the generated session-script line requires a POSIX bash/zsh environment",
+    )
+    @pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+    @pytest.mark.parametrize(("ai_name", "expected"), [("myproject-host2-3", "3"), ("myproject-host2", "1")])
+    def test_given_alias_with_digits_when_session_script_parses_index_then_only_hyphen_index_counts(
+        self, shell_name, ai_name, expected
+    ):
+        if shutil.which(shell_name) is None:
+            pytest.skip(f"{shell_name} not installed")
+        script = get_engine_script("c", ai_name, f"c-{ai_name}", "c-myproject-", "myproject")
+        parse = [ln.strip() for ln in script.splitlines() if ln.strip().startswith("_session_num=")]
+        assert parse, "generated script no longer parses _session_num from ai_name"
+        snippet = f"ai_name={shlex.quote(ai_name)}\n" + "\n".join(parse) + '\nprintf "%s" "$_session_num"\n'
+        result = subprocess.run([shell_name, "-c", snippet], capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected

@@ -131,12 +131,16 @@ def _start_supervised_session(sock: str, tmp_path: Path, shell: str, session: st
     sessions.mkdir(parents=True)
     script = sessions / f"{session}.sh"
     script.write_text(get_engine_script("c", "ctrlz", session, "c-ctrlz-", "ctrlz", worktree_dir=str(tmp_path)))
+    # A runner launched from inside a direnv-loaded checkout inherits DIRENV_DIFF. The
+    # session's `direnv export` from tmp_path then unloads that checkout, restoring the
+    # PATH saved before it, which drops the stand-ins and finds the real agent binary.
+    inherited = {key: value for key, value in os.environ.items() if not key.startswith("DIRENV_")}
     created = subprocess.run(
         ["tmux", "-S", sock, "new-session", "-d", "-s", session, "-x", "120", "-y", "30", shell, str(script)],
         capture_output=True,
         text=True,
         env={
-            **os.environ,
+            **inherited,
             "PATH": os.pathsep.join((str(fake_bin), os.environ.get("PATH", ""))),
             "XDG_STATE_HOME": str(tmp_path / "state"),
             "ZDOTDIR": str(zdotdir),
