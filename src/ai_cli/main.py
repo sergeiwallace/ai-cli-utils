@@ -5717,6 +5717,21 @@ def cmd_ls(show_all):
 # --- Public entry points ---
 
 
+def _windows_expand_args(argv: "list[str]") -> bool:
+    """Whether Click may expand ``~`` and globs in ``argv`` on Windows (it never does elsewhere).
+
+    Off for the session-launch commands only. Their arguments are a session name, a project,
+    engine passthrough text and the chief's ``-H/--fm-home``; with ``-R`` that home belongs
+    to the REMOTE machine, so it must reach the remote ``ai`` exactly as typed -- a Windows
+    launcher expanding ``~/chief`` to ``C:\\Users\\me/chief`` before forwarding it to a Linux
+    host is a wrong path. A local chief launch still expands it, in ``resolve_chief_home``.
+    Every other command keeps Click's expansion, which its ``click.Path`` arguments rely on.
+    """
+    command = next((arg for arg in argv if not arg.startswith("-")), "")
+    session_commands = {name for name, cmd in _cli_group.commands.items() if cmd.context_settings == SESSION_CONTEXT}
+    return command not in session_commands
+
+
 def cli() -> None:
     """Top-level CLI entry point.
 
@@ -5739,7 +5754,7 @@ def cli() -> None:
             sys.exit(1)
         return
     try:
-        _cli_group(standalone_mode=False)
+        _cli_group(standalone_mode=False, windows_expand_args=_windows_expand_args(sys.argv[1:]))
     except click.exceptions.UsageError as exc:
         _out.click_failure(exc)
         sys.exit(1)

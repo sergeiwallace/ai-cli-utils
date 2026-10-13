@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import stat
+import types
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +50,21 @@ def harness_project(tmp_path, monkeypatch):
 
     monkeypatch.setattr("ai_cli.config.resolve_project_prefix_by_name", prefix_for)
     return projects / cos.CHIEF_PROJECT
+
+
+@pytest.fixture
+def click_expands_like_windows(monkeypatch):
+    """Make Click take its Windows-only argv expansion branch (``~`` and globs) on every OS.
+
+    Click decides with ``os.name == "nt"`` inside ``click.core``; only that module's view of
+    ``os`` is swapped, so nothing else in the process believes it is on Windows.
+    """
+    import click.core
+
+    real_os = click.core.os
+    windows_view = {k: getattr(real_os, k) for k in dir(real_os) if not k.startswith("__")}
+    windows_view["name"] = "nt"
+    monkeypatch.setattr(click.core, "os", types.SimpleNamespace(**windows_view))
 
 
 @pytest.fixture
@@ -590,8 +606,18 @@ class TestRemoteChief:
         assert "role         chief-of-staff" in out
         assert not (tmp_path / "state" / "firstmate").exists()
 
-    def test_given_home_options_when_remote_chief_dry_run_then_they_reach_the_remote_ai(self, monkeypatch):
+    def test_given_home_options_when_remote_chief_dry_run_then_they_reach_the_remote_ai_unexpanded(
+        self, monkeypatch, tmp_path, click_expands_like_windows
+    ):
+        """The remote machine resolves ``~`` against its own home, so the dispatcher must not.
+
+        Run with Click's Windows argument expansion switched on, on every OS: that expansion
+        is what turned ``~/chief home`` into the dispatching machine's own path before it was
+        forwarded (caught by test-windows on the first push).
+        """
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "dispatcher-home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "dispatcher-home"))
         with ExitStack() as stack:
             _dispatcher_patches(stack)
             code, out, err = run_cli(
@@ -600,6 +626,40 @@ class TestRemoteChief:
             )
         assert code == 0, err
         assert "--firstmate --machine-key key-x --fm-home '~/chief home' firstmate-review" in out
+        assert "dispatcher-home" not in out
+
+    @pytest.mark.parametrize(
+        ("argv", "expands"),
+        [
+            (["cos", "-R"], False),
+            (["c", "-F", "-H", "~/x"], False),
+            (["-v", "cx"], False),
+            (["cc-migrate", "~/dest"], True),
+            ([], True),
+        ],
+    )
+    def test_given_a_command_when_windows_argv_expansion_decided_then_only_session_launches_opt_out(
+        self, argv, expands
+    ):
+        from ai_cli.main import _windows_expand_args
+
+        assert _windows_expand_args(argv) is expands
+
+    def test_given_tilde_home_when_local_chief_launched_then_it_still_expands_here(
+        self, tmp_path, monkeypatch, click_expands_like_windows
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        home = tmp_path / "dispatcher-home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        chief_home = home / "chief home"
+        (chief_home / "config").mkdir(parents=True)
+        (chief_home / "config" / "message-transports.json").write_text(VALID_POLICY)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "-F", "-k", "key-x", "-H", "~/chief home"])
+            assert code == 0, err
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(chief_home)
 
     def test_given_unconfigured_remote_machine_when_chief_launched_then_refuses_before_anything(self, monkeypatch):
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
