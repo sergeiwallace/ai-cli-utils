@@ -542,6 +542,23 @@ def _sweep_stale_iterm2_profiles() -> None:
         pass  # non-fatal
 
 
+def session_name_for(prefix: str, name: str) -> str:
+    """The tmux session NAME means under PREFIX (``<engine>[-r]-<naming prefix>-``).
+
+    NAME is a slot (``1``, ``firstmate-1``) or, from a remote client, the full session
+    name its allocator returned (``c-r-aih-fw-firstmate-1``, or ``c-aih-fw-...`` for a
+    session this host launched itself). A full name of the same engine and naming prefix
+    is returned as it is; only a slot gets PREFIX. Idempotent: applying it to its own
+    output changes nothing, which is what keeps ``c-r-aih-fw-`` from being added twice.
+    """
+    match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
+    if match and name:
+        full = re.compile(_ENGINE_SEGMENT + r"(?:-r)?-" + re.escape(match.group(2)) + "-", re.IGNORECASE)
+        if full.match(name):
+            return name
+    return f"{prefix}{name}"
+
+
 def resolve_session(prefix: str, name: str) -> str:
     if not name:
         res = subprocess.run(
@@ -551,18 +568,18 @@ def resolve_session(prefix: str, name: str) -> str:
         if current_session and current_session.casefold().startswith(prefix.casefold()):
             return current_session
         return find_recent_session(prefix)
-    res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{name}"], capture_output=True, check=False)
+    target = session_name_for(prefix, name)
+    if target == name:
+        # A full session name (a remote client resumes with the one its allocator
+        # returned): it exists or it does not. Probing PREFIX+NAME for it, and then
+        # "<that>-*", is how `c-r-aih-fw-c-r-aih-fw-firstmate-1` was ever looked up.
+        return name if name in _tmux_session_names() else ""
+    res = subprocess.run(["tmux", "has-session", "-t", target], capture_output=True, check=False)
     if res.returncode == 0:
-        return f"{prefix}{name}"
+        return target
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
-    if match:
-        # A remote client resumes with the full session name its allocator returned,
-        # which is local-prefixed when this host launched the session itself.
-        engine_short, project_prefix = match.groups()
-        family = (f"{engine_short}-{project_prefix}-".casefold(), f"{engine_short}-r-{project_prefix}-".casefold())
-        if name.casefold().startswith(family) and name in _tmux_session_names():
-            return name
     if name.isdigit() and match:
+        engine_short, project_prefix = match.groups()
         expected_prefix = prefix.casefold()
         candidates = [
             session_name
@@ -595,7 +612,7 @@ def _resolve_is_remote(is_remote_flag: bool) -> bool:
 def _new_session_display_name(engine_short: str, project_prefix: str, name: str, is_remote: bool) -> str:
     """Build a lowercase tmux name for a newly allocated session."""
     remote_seg = "-r" if is_remote else ""
-    return f"{engine_short}{remote_seg}-{project_prefix.lower()}-{name.lower()}"
+    return session_name_for(f"{engine_short}{remote_seg}-{project_prefix.lower()}-", name.lower())
 
 
 def _slot_name(name: str, project_prefix: str) -> str:
