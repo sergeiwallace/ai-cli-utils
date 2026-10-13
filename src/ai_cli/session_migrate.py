@@ -396,6 +396,16 @@ def migrate_session(
     else:
         moves.append(PlannedMove("branch", old_branch, new_branch))
         moves.append(PlannedMove("branch anchor", branch_plan.anchor, branch_plan.tip, "write"))
+    home_ownership = _agents.plan_worktree_ownership(
+        repo_root,
+        old_wt,
+        new_wt,
+        old,
+        new,
+        old_branch,
+        new_branch,
+    )
+    moves += [PlannedMove(*line) for line in _agents.describe_worktree_ownership(home_ownership)]
     slot_renames = {**agent_plan.renames(repo_root), **({old_branch: new_branch} if new_branch else {})}
     markers = _session_home_markers(repo_root, old_wt)
     for key, _value in markers:
@@ -463,6 +473,7 @@ def migrate_session(
             kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
             result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
             new_branch = None
+    result.warnings += _agents.apply_worktree_ownership(home_ownership, new_branch or old_branch)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
     result.warnings += agent_warnings
     slot_renames = {**agent_renames.get(repo_root, {}), **({old_branch: new_branch} if new_branch else {})}
