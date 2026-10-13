@@ -52,6 +52,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar
@@ -374,7 +375,17 @@ class PsutilProbe(ProcessProbe):
             return None
 
     def start_time_match(self, pid: int, recorded: object) -> StartTimeMatch:
-        expected = _recorded_epoch_seconds(recorded)
+        """Match a numeric ``procStart``, or the ``ps -o lstart`` text macOS records carry.
+
+        A disagreeing lstart value answers UNRECORDED rather than UNPROVEN. Its UTC
+        rendering is measured on macOS records, but the text names no zone, so a writer
+        that rendered local time would otherwise turn every running session on that
+        host into "unproven", and the launcher would resume a transcript a live process
+        is still appending to. UNRECORDED keeps the historical refusal: reading this
+        form can only add proven matches, never remove a block.
+        """
+        lstart = _recorded_lstart_epoch_seconds(recorded)
+        expected = lstart if lstart is not None else _recorded_epoch_seconds(recorded)
         if expected is None:
             return StartTimeMatch.UNRECORDED
         try:
@@ -383,6 +394,8 @@ class PsutilProbe(ProcessProbe):
             return StartTimeMatch.UNPROVEN
         if abs(actual - expected) <= _START_TIME_TOLERANCE_SECONDS:
             return StartTimeMatch.MATCH
+        if lstart is not None:
+            return StartTimeMatch.UNRECORDED
         return StartTimeMatch.UNPROVEN
 
     def capture_identity(self, pid: int) -> ProcessIdentity | None:
@@ -500,6 +513,38 @@ def _recorded_epoch_seconds(recorded: object) -> float | None:
     if value >= _EPOCH_SECONDS_FLOOR:
         return value
     return None
+
+
+_LSTART_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _recorded_lstart_epoch_seconds(recorded: object) -> float | None:
+    """Interpret a ``ps -o lstart`` style ``procStart`` (``Mon Oct  5 21:28:33 2026``) as UTC.
+
+    Measured on macOS: Claude Code records ``procStart`` in exactly this text, rendered
+    in UTC (the host ran at UTC-4 and the record read four hours ahead of ``ps``'s
+    local rendering of the same process), truncated to the second. None of the numeric
+    forms :func:`_recorded_epoch_seconds` reads, so before this every macOS record read
+    as UNRECORDED and a stopped session could never be proved to be the recorded one.
+
+    Parsed by hand rather than with ``strptime``, whose ``%a``/``%b`` follow the
+    current locale; the record's names are always English.
+    """
+    if not isinstance(recorded, str):
+        return None
+    parts = recorded.split()
+    if len(parts) != 5 or parts[1] not in _LSTART_MONTHS:
+        return None
+    clock = parts[3].split(":")
+    if len(clock) != 3:
+        return None
+    try:
+        hour, minute, second = (int(unit) for unit in clock)
+        month = _LSTART_MONTHS.index(parts[1]) + 1
+        moment = datetime(int(parts[4]), month, int(parts[2]), hour, minute, second, tzinfo=UTC)
+    except ValueError:
+        return None
+    return moment.timestamp()
 
 
 def probe_for(proc_dir: Path | None = None) -> ProcessProbe:
