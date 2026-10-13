@@ -1351,6 +1351,21 @@ def _strip_git_targeting_env_vars(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _strip_inherited_direnv_vars(monkeypatch):
+    """Never inherit the runner's direnv state into test subprocesses.
+
+    A suite launched from inside a direnv-loaded checkout carries ``DIRENV_DIFF`` and its
+    siblings. A real session script started by a test runs ``direnv export`` from its own
+    temporary worktree, which reads that inherited diff, unloads the developer's checkout and
+    restores the PATH saved before it -- dropping the test's stand-in binaries, so the REAL
+    agent CLI starts instead of the fake one. Stripping them here covers every test that
+    spawns a shell, rather than each one remembering to.
+    """
+    for var in [name for name in os.environ if name.startswith("DIRENV_")]:
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_nats_connections(request, monkeypatch):
     """Never let a test open a real NATS connection (AI-CLI-121 class).
 
