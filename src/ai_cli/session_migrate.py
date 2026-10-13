@@ -290,18 +290,11 @@ def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] |
     The hooks' planned lines are appended to ``report`` when one is given.
     """
     try:
-        hooks = _hooks.load_hooks()
-    except _hooks.HookConfigError as exc:
-        raise MigrationError(f"{exc} -- refusing before any write") from exc
-    for hook in hooks:
-        run = _hooks.run_hook(hook, old, new, dry_run=True, cwd=repo_root)
-        if not run.ok:
-            raise MigrationError(
-                f"hook {hook.name} ({hook.path}) refused the migration (exit {run.returncode}): "
-                f"{run.stderr or '(no stderr)'}"
-            )
-        if report is not None:
-            report += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root)
+    except _hooks.HookRefusal as exc:
+        raise MigrationError(str(exc)) from exc
+    if report is not None:
+        report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
     return hooks
 
 
@@ -513,14 +506,10 @@ def migrate_session(
     if iterm2_moves:
         _apply_iterm2(old, new)
 
-    for hook in hooks:
-        run = _hooks.run_hook(hook, old, new, dry_run=False, cwd=repo_root)
-        moves += [PlannedMove(f"hook {hook.name}", line, "", "report") for line in run.lines]
+    for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
+        moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
         if not run.ok:
-            result.warnings.append(
-                f"hook {hook.name} ({hook.path}) FAILED (exit {run.returncode}): {run.stderr or '(no stderr)'} "
-                f"-- the core moves are done; re-run the hook alone to finish"
-            )
+            result.warnings.append(_hooks.failure_warning(run))
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)

@@ -5383,6 +5383,8 @@ def _print_adoption(result, out=None) -> None:
     )
     for conflict in result.memory_conflicts:
         _out.emit(Tag.ADOPT, f"    kept existing {conflict}", file=stream)
+    for line in result.hook_lines:
+        _out.emit(Tag.ADOPT, f"  {line}", file=stream)
     if result.resolved is not None:
         _out.emit(Tag.ADOPT, f"  resolve probe: `ai c` finds {result.resolved}", file=stream)
 

@@ -242,7 +242,8 @@ first by `ai session-migrate -n` ([the full table](docs/tools/cc-session-adoptio
 State owned by other tools joins the same run through a hook file in
 `session-migrate.d/` under the config directory: each hook is planned with
 `--dry-run` before anything is written, can refuse the migration, and runs after
-the core moves ([hook contract](docs/reference/session-migrate-hooks.md)).
+the core moves ([hook contract](docs/reference/session-migrate-hooks.md)). An
+`ai session-adopt` that retitles the session runs the same hooks the same way.
 
 A session that is finished for good has its home slot retired by its owner with
 `ai session-retire NAME`; no automatic reap removes a session home. The command
