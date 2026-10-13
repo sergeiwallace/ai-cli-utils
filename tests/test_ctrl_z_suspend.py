@@ -29,6 +29,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 from conftest import tmux_runnable
 
@@ -275,6 +276,14 @@ def test_given_session_whose_pane_foreground_is_stopped_when_ai_c_reattaches_the
 
 def _leads_its_terminal_foreground(pid: int) -> bool:
     """True once ``pid`` has exec'd ``sleep`` and its group is its own terminal's foreground."""
+    if not _HAS_PROC:
+        # macOS/BSD: ps reports the same three facts; a process with no terminal shows tty "??".
+        out = subprocess.run(
+            ["ps", "-o", "pgid=,tpgid=,tty=,comm=", "-p", str(pid)], capture_output=True, text=True, check=False
+        ).stdout.split()
+        if len(out) < 4 or not (out[0].isdigit() and out[1].isdigit()):
+            return False
+        return Path(out[3]).name == "sleep" and out[2] != "??" and int(out[0]) == pid == int(out[1])
     try:
         line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -322,11 +331,13 @@ def suspended_in_terminal():
             os.waitpid(pid, 0)
 
 
-def _proc_start(pid: int) -> int:
+def _proc_start(pid: int) -> int | str:
+    """``procStart`` as the registry records it: procfs start ticks, or lstart text in UTC on macOS."""
+    if not _HAS_PROC:
+        return time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(int(psutil.Process(pid).create_time())))
     return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()[19])
 
 
-@pytest.mark.skipif(not _HAS_PROC, reason="the CC session registry records procStart from /proc")
 def test_given_session_record_for_a_process_suspended_in_its_terminal_when_liveness_checked_then_resumed_not_ended(
     tmp_path, monkeypatch, suspended_in_terminal
 ):
@@ -355,7 +366,6 @@ def test_given_session_record_for_a_process_suspended_in_its_terminal_when_liven
     assert (sessions / f"{pid}.json").exists(), "a resumed session's record must not be pruned"
 
 
-@pytest.mark.skipif(not _HAS_PROC, reason="the CC session registry records procStart from /proc")
 def test_given_suspended_session_continued_after_liveness_classified_it_when_checked_then_not_ended(
     tmp_path, monkeypatch, suspended_in_terminal
 ):
@@ -368,8 +378,9 @@ def test_given_suspended_session_continued_after_liveness_classified_it_when_che
     classification returns; nothing about the process or its terminal is faked.
     """
     from ai_cli.main import _cc_session_is_live
-    from ai_cli.process_probe import ProcfsProbe
+    from ai_cli.process_probe import probe_for
 
+    probe_class = type(probe_for())
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     session_id = "dddddddd-0000-4000-8000-0000000000d5"
     pid = suspended_in_terminal()
@@ -378,7 +389,7 @@ def test_given_suspended_session_continued_after_liveness_classified_it_when_che
     record = {"pid": pid, "sessionId": session_id, "procStart": _proc_start(pid), "name": "ctrlz-5"}
     (sessions / f"{pid}.json").write_text(json.dumps(record))
 
-    classify = ProcfsProbe.is_abandoned
+    classify = probe_class.is_abandoned
 
     def classify_then_watchdog_wins(self, target: int) -> bool:
         stopped = classify(self, target)
@@ -387,7 +398,7 @@ def test_given_suspended_session_continued_after_liveness_classified_it_when_che
             assert _wait_for(lambda: _state(pid) in {"S", "R"}, timeout=5), "the watchdog stand-in did not resume it"
         return stopped
 
-    monkeypatch.setattr(ProcfsProbe, "is_abandoned", classify_then_watchdog_wins)
+    monkeypatch.setattr(probe_class, "is_abandoned", classify_then_watchdog_wins)
 
     verdict = _cc_session_is_live(Path(f"/x/{session_id}.jsonl"))
 
