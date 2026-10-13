@@ -478,8 +478,8 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     return False
 
 
-def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> None:
-    """Print and remove stderr saved by the failed mosh command, if available."""
+def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> str:
+    """Print and remove stderr saved by the failed mosh command; return it ("" when none)."""
     diagnostic_command = (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'if test -f "$diagnostic_file"; then '
@@ -494,9 +494,21 @@ def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_f
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
+        return ""
     if diagnostic := result.stdout.strip():
         _out.emit(Tag.TRANSPORT, f"\nRemote command error:\n{diagnostic}", err=True)
+    return diagnostic
+
+
+def _remote_failure_line(diagnostic: str) -> str:
+    """The line of a remote command's stderr that says why it failed.
+
+    The last line naming an error, else the last line: later lines are often warnings
+    (a daemon that did not start) printed after the failure that ended the launch.
+    """
+    lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
+    errors = [line for line in lines if re.search(r"\berror\b", line, re.IGNORECASE)]
+    return (errors or lines or [""])[-1]
 
 
 async def _run_transport_loop(
@@ -611,7 +623,16 @@ async def _run_transport_loop(
             # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
             if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
                 if diagnostic_ssh_args and remote_diagnostic_file:
-                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                    diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                    if failure := _remote_failure_line(diagnostic):
+                        # The remote command ran and failed: the host is reachable, and an
+                        # SSH fallback would only run the same failing command again.
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                            err=True,
+                        )
+                        break
                 if _is_vpn_active():
                     _out.emit(
                         Tag.TRANSPORT, f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...", err=True
@@ -673,9 +694,18 @@ async def _run_transport_loop(
                 break
 
             if elapsed < 3:
+                diagnostic = ""
                 if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
-                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                _out.emit(Tag.TRANSPORT, f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.", err=True)
+                    diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                if failure := _remote_failure_line(diagnostic):
+                    # Last, so the cause is what the user reads, not a generic timing line.
+                    _out.emit(
+                        Tag.TRANSPORT,
+                        f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                        err=True,
+                    )
+                else:
+                    _out.emit(Tag.TRANSPORT, f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.", err=True)
                 break
 
             # A mosh session that ends quickly with a "successful" exit code is

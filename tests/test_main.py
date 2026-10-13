@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1109,6 +1110,27 @@ class TestEnsureCircusd:
         ):
             with pytest.raises(RuntimeError, match="circusd did not start in time"):
                 _ensure_circusd()
+
+    def test_given_circusd_only_in_the_tool_venv_when_started_then_that_binary_is_launched(self, tmp_path):
+        """`uv tool install` puts circusd beside the tool's python, not on PATH (framework-fedora, -R)."""
+        from ai_cli.main import _ensure_circusd
+
+        venv_bin = tmp_path / "tool" / "bin"
+        venv_bin.mkdir(parents=True)
+        circusd = venv_bin / ("circusd.exe" if sys.platform == "win32" else "circusd")
+        circusd.write_text("")
+        client = MagicMock()
+        client.CircusClient.return_value.send_message.side_effect = [Exception("not up"), {"status": "ok"}]
+        with (
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path / "state"),
+            patch("ai_cli.process_manager.sys.executable", str(venv_bin / "python")),
+            patch("ai_cli.process_manager.shutil.which", return_value=None),
+            patch("subprocess.Popen") as popen,
+            patch.dict("sys.modules", {"circus.client": client}),
+            patch("time.sleep"),
+        ):
+            _ensure_circusd()
+        assert popen.call_args[0][0][0] == str(circusd)
 
 
 class TestDoSessionLaunchTmuxGuard:

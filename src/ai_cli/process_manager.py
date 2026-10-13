@@ -25,9 +25,22 @@ def _native_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _circusd_binary() -> str:
+    """circusd from this interpreter's own environment first.
+
+    ``uv tool install`` links only the package's entry point (``ai``) onto PATH; circus is
+    a dependency, so its ``circusd`` script exists only beside the tool's interpreter. A
+    remote login shell (``ai c -R``) has ``~/.local/bin`` on PATH and nothing else, so the
+    PATH lookup and the ``~/.local/bin`` guess both missed it there.
+    """
+    sibling = Path(sys.executable).parent / ("circusd.exe" if sys.platform == "win32" else "circusd")
+    if sibling.is_file():
+        return str(sibling)
+    return shutil.which("circusd") or str(Path.home() / ".local" / "bin" / "circusd")
+
+
 def _ensure_circusd() -> str:
     """Start circusd if not already running. Returns the endpoint URI."""
-    import shutil as _shutil
     import time as _time
 
     state_dir = get_xdg_state_home()
@@ -68,7 +81,7 @@ def _ensure_circusd() -> str:
         f"umask           = 0o022\n"
     )
 
-    circusd_bin = _shutil.which("circusd") or str(Path.home() / ".local" / "bin" / "circusd")
+    circusd_bin = _circusd_binary()
     pidfile = str(state_dir / "circusd.pid")
     # circusd daemonizes and logs to `logoutput`; an inherited terminal would let
     # its untagged lines through, and a pipe would be held open by the daemon.

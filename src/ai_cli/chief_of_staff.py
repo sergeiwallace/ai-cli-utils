@@ -86,6 +86,52 @@ def chief_session_name(name: str) -> str:
     return f"{SESSION_NAME}-{name}"
 
 
+def chief_slot(name: str) -> str:
+    """The ``firstmate[-...]`` slot a chief session, agent or requested name carries.
+
+    Prefix-agnostic (``c-r-aih-fw-firstmate-1``, ``aih-fw-firstmate-1`` and
+    ``firstmate-1`` are all ``firstmate-1``) and sanitized the way a session slot is, so a
+    request and a registration compare equal exactly when they name the same chief.
+    """
+    folded = name.casefold()
+    match = _CHIEF_SEGMENT.search(folded)
+    tail = folded[match.start() :] if match else folded
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]+", "-", tail)).strip("-")
+
+
+def is_numbered_slot(slot: str) -> bool:
+    """``firstmate-1`` names one chief; ``firstmate`` / ``firstmate-review`` ask for *the* chief."""
+    return slot.rsplit("-", 1)[-1].isdigit()
+
+
+def same_chief(requested_slot: str, running_slot: str) -> bool:
+    """Whether a request reaches the running chief rather than asking for a second one.
+
+    A numbered request must name the running chief's slot exactly; an unnumbered one
+    (``ai cos``, ``ai c --firstmate``, ``ai c firstmate``) means whichever chief of that
+    name is running, whatever index it was given.
+    """
+    if is_numbered_slot(requested_slot):
+        return requested_slot == running_slot
+    return re.sub(r"-\d+$", "", running_slot) == requested_slot
+
+
+def tmux_panes_all_dead(target: str) -> bool:
+    """Whether ``target`` is a managed tmux session whose every pane has exited.
+
+    The same test the ordinary launch applies before reattaching: such a session shows
+    frozen output forever, so the chief in it is resumed rather than attached to.
+    """
+    from . import stale_session_reaper
+
+    adapter = stale_session_reaper.SubprocessTmuxAdapter()
+    try:
+        candidate = next((item for item in adapter.sessions() if item.session_name == target), None)
+        return candidate is not None and adapter.capture_fingerprint(candidate) is not None
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict | None = None) -> Path:
     """Return the chief home: an explicit ``fm_home``, else the per-machine state path.
 
