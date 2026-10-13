@@ -636,14 +636,14 @@ class TestRemoteLaunchWithNoRemoteHost:
             patch("ai_cli.config.load_config", return_value={"remote": {}}),
             patch("ai_cli.session.get_project_prefix", return_value="test-project"),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main.socket.gethostname", return_value="host-a.example.com"),
+            patch("ai_cli.main.socket.gethostname", return_value="build-host-a"),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "[remote] host not set" in err
-        assert "host-a.example.com" in err
+        assert "build-host-a" in err
         assert "drop -R" in err
         assert "client machine" in err
 
