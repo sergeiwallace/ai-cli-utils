@@ -63,6 +63,18 @@ class _LoggingStderr(TextIO):  # type: ignore[misc]
             self._partial = ""
         self._stream.flush()
 
+    # typing.TextIO defines these as stubs returning None, so __getattr__ never
+    # sees them: without explicit delegation a terminal reads as "not a TTY".
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    @property
+    def encoding(self) -> str:
+        return self._stream.encoding
+
     def __getattr__(self, name: str):
         return getattr(self._stream, name)
 
