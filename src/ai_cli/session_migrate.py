@@ -23,6 +23,9 @@ tasks, memory and resume hand-off:
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
   session maps and the iTerm2 restore registry;
+* the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` and its
+  ``wt/<old>/*`` branches in every repo under ``projects_dir``
+  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
 * whatever the external hooks in ``session-migrate.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -50,6 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as _config
+from . import session_migrate_agents as _agents
 from . import session_migrate_hooks as _hooks
 from . import session_registry as _session_registry
 from .branch_rename import rename_branch_anchored
@@ -176,12 +180,6 @@ def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
         if value and Path(value).resolve(strict=False) == old_wt:
             found.append((key, value))
     return found
-
-
-def _marker_key(key: str, old_branch: str, new_branch: str | None) -> str:
-    """``key`` after ``git branch -m old_branch new_branch``, which moves the branch's config section."""
-    prefix = f"branch.{old_branch}."
-    return f"branch.{new_branch}.{key[len(prefix) :]}" if new_branch and key.startswith(prefix) else key
 
 
 def _rewrite_transcript_cwd(path: Path, old_root: str, new_root: str) -> None:
@@ -321,6 +319,7 @@ def migrate_session(
     proc_dir: Path | None = None,
     tmux_names: Callable[[], list[str]] | None = None,
     regenerate_script: Callable[[dict], str] | None = None,
+    projects_dir: Path | None = None,
 ) -> MigrationResult:
     """Move the session in slot ``old`` to slot ``new``; see the module docstring.
 
@@ -359,6 +358,16 @@ def migrate_session(
             f"would orphan their registrations. Move each out with `git worktree move` first."
         )
     _refuse_live(old, new, old_wt, new_wt, home, proc_dir, (tmux_names or _tmux_names)())
+    live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
+    agent_plan = _agents.plan_agents(
+        old,
+        new,
+        projects_dir=(projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve(),
+        slot_repo=repo_root,
+        old_wt=old_wt,
+        new_wt=new_wt,
+        live_cwds=live_cwds,
+    )
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     if new_pd.exists():
         raise MigrationError(f"Claude Code project directory {new_pd} already exists -- refusing to merge into it")
@@ -385,11 +394,13 @@ def migrate_session(
     else:
         moves.append(PlannedMove("branch", old_branch, new_branch))
         moves.append(PlannedMove("branch anchor", branch_plan.anchor, branch_plan.tip, "write"))
+    slot_renames = {**agent_plan.renames(repo_root), **({old_branch: new_branch} if new_branch else {})}
     markers = _session_home_markers(repo_root, old_wt)
     for key, _value in markers:
         moves.append(
-            PlannedMove("session-home marker", key, f"{_marker_key(key, old_branch, new_branch)} = {new_wt}", "rewrite")
+            PlannedMove("session-home marker", key, f"{_agents.renamed_key(key, slot_renames)} = {new_wt}", "rewrite")
         )
+    moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
 
     try:
         registry_entries = move_canonical_worktree(old_wt, new_wt, old, new, dry_run=True)
@@ -448,8 +459,11 @@ def migrate_session(
             kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
             result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
             new_branch = None
+    agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
+    result.warnings += agent_warnings
+    slot_renames = {**agent_renames.get(repo_root, {}), **({old_branch: new_branch} if new_branch else {})}
     for key, _value in markers:
-        _git(repo_root, "config", _marker_key(key, old_branch, new_branch), str(new_wt))
+        _git(repo_root, "config", _agents.renamed_key(key, slot_renames), str(new_wt))
     move_canonical_worktree(old_wt, new_wt, old, new, dry_run=False)
 
     # Renamed inside the old project dir, before it moves, so a held-output file of the

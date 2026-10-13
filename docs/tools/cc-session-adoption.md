@@ -468,6 +468,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
+| Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
