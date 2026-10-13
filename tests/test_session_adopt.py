@@ -396,6 +396,37 @@ def test_live_sessions_given_a_record_whose_pid_is_gone_when_scanned_then_not_re
     assert live_sessions(world["home"], world["proc"]) == []
 
 
+@pytest.fixture
+def unreadable_proc(world):
+    """A procfs root this process may not search, as under a restrictive mount or sandbox.
+
+    ``stat`` of ``<root>/<pid>`` then fails with EACCES, not ENOENT, so nothing it
+    returns says the pid is gone.
+    """
+    if sys.platform == "win32" or os.geteuid() == 0:
+        pytest.skip("needs POSIX permission bits that bind this user (root bypasses them)")
+    (world["proc"] / "4242").mkdir()
+    world["proc"].chmod(0o000)
+    try:
+        yield world["proc"]
+    finally:
+        world["proc"].chmod(0o755)
+
+
+def test_live_sessions_given_an_unreadable_proc_when_scanned_then_the_session_counts_as_live(world, unreadable_proc):
+    """An adoption must not move files out from under a session it merely cannot see."""
+    (world["home"] / "sessions" / "4242.json").write_text(json.dumps({"pid": 4242, "name": "session-1", "cwd": "/x"}))
+    found = live_sessions(world["home"], unreadable_proc)
+    assert [(s.pid, s.name) for s in found] == [(4242, "session-1")]
+
+
+def test_record_liveness_given_an_unreadable_proc_when_classified_then_never_gone(world, unreadable_proc):
+    """``gone`` authorises pruning the record, so an unreadable probe must never produce it."""
+    from ai_cli.main import _cc_record_liveness
+
+    assert _cc_record_liveness({"pid": 4242, "procStart": 1}, unreadable_proc) != "gone"
+
+
 def test_live_sessions_given_a_running_pid_when_scanned_then_reported_with_name_and_cwd(world):
     _mark_live(world, 4242, "session-1", world["repo"])
     found = live_sessions(world["home"], world["proc"])
