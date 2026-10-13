@@ -2200,7 +2200,7 @@ fi
     while time.monotonic() < deadline and "READ=hello" not in events.read_text(encoding="utf-8"):
         time.sleep(0.02)
     os.killpg(process.pid, signal.SIGINT)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         if events.exists() and "INT" in events.read_text(encoding="utf-8"):
             break
