@@ -838,9 +838,16 @@ def stopped_wrapper():
         assert proc.stdout is not None
         child = psutil.Process(int(proc.stdout.readline()))
         proc.stdout.close()
-        os.killpg(proc.pid, signal.SIGSTOP)
-        assert _wait_for(lambda: _status(proc.pid) == psutil.STATUS_STOPPED), "leader never reached stopped"
-        assert _wait_for(lambda: _status(child.pid) == psutil.STATUS_STOPPED), "child never reached stopped"
+
+        # Re-sent on every poll: a stop is idempotent, and on the hosted macOS runner one
+        # group-wide SIGSTOP intermittently left the child running past the wait bound.
+        def group_stopped() -> bool:
+            os.killpg(proc.pid, signal.SIGSTOP)
+            return _status(proc.pid) == _status(child.pid) == psutil.STATUS_STOPPED
+
+        assert _wait_for(group_stopped), (
+            f"group never reached stopped: leader {_status(proc.pid)!r}, child {_status(child.pid)!r}"
+        )
         yield proc, child
     finally:
         with contextlib.suppress(OSError):
