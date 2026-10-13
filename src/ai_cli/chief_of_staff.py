@@ -50,6 +50,30 @@ class ChiefOfStaffError(Exception):
     """A launch-time refusal; the message names the remedy."""
 
 
+_CHIEF_SEGMENT = re.compile(rf"(?:^|-){SESSION_NAME}(?:-|$)")
+
+
+def names_a_chief(name: str) -> bool:
+    """True when ``name`` carries the ``firstmate`` segment anywhere."""
+    return bool(name) and bool(_CHIEF_SEGMENT.search(name.casefold()))
+
+
+def chief_session_name(name: str) -> str:
+    """The session name a chief launch asks for: ``firstmate[-<suffix>]``.
+
+    A name that already carries the ``firstmate`` segment is a chief session name
+    (``aih-fw-firstmate-1``, ``c-r-aih-fw-firstmate-1``, ``firstmate-review``) and is
+    returned unchanged, so the slot a remote dispatcher allocated and the session name an
+    iTerm2 relaunch replays both reach the same session instead of nesting a second
+    ``firstmate-`` in front of it.
+    """
+    if not name:
+        return SESSION_NAME
+    if names_a_chief(name):
+        return name
+    return f"{SESSION_NAME}-{name}"
+
+
 def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict | None = None) -> Path:
     """Return the chief home: an explicit ``fm_home``, else the per-machine state path.
 

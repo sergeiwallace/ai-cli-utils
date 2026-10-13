@@ -2553,6 +2553,7 @@ def _print_remote_launch_plan(
     name: str,
     resume: bool,
     bare: bool,
+    remote_args: "list[str] | None" = None,
 ) -> None:
     """Report what a remote launch would do, having probed or mutated nothing.
 
@@ -2567,6 +2568,8 @@ def _print_remote_launch_plan(
     remote_cmd = (
         f"ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}"
     )
+    for remote_arg in remote_args or []:
+        remote_cmd += f" {shlex.quote(remote_arg)}"
     if resume:
         remote_cmd += " --resume"
     remote_cmd += f" {shlex.quote(name)}" if name else " <session name resolved via remote allocation at launch time>"
@@ -2580,6 +2583,12 @@ def _print_remote_launch_plan(
         f"  project      {remote_project}   (prefix {remote_prefix})",
         f"  remote cmd   {remote_cmd}",
     ]
+    if "--firstmate" in (remote_args or []):
+        lines.insert(
+            -1,
+            "  role         chief-of-staff: the remote host resolves its own chief home, refuses a second "
+            "live chief, registers it and names the session under its own host alias",
+        )
     _out.emit(Tag.PLAN, "\n".join(lines))
 
 
@@ -2689,6 +2698,7 @@ def _do_session_launch(
     reporter: LaunchReporter | None = None,
     launch_log_path: str | None = None,
     dry_run: bool = False,
+    remote_args: "list[str] | None" = None,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -3059,6 +3069,7 @@ def _do_session_launch(
                 name=name,
                 resume=resume,
                 bare=bare,
+                remote_args=remote_args or [],
             )
             return
 
@@ -3117,6 +3128,10 @@ def _do_session_launch(
         # that does not source the shell's rc file where the uv env PATH setup
         # typically lives.
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
+        # The chief-of-staff arguments (``--firstmate`` and its home options): the remote
+        # ``ai`` resolves, checks and registers the chief against its own machine.
+        for _remote_arg in remote_args or []:
+            remote_cmd += f" {shlex.quote(_remote_arg)}"
         if resume:
             remote_cmd += " --resume"
         # The local wrapper owns transport state, an iTerm profile, and its
@@ -3957,6 +3972,7 @@ def _session_command(engine: str):
         quiet,
         verbose,
         dry_run=False,
+        remote_args=(),
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -4025,6 +4041,7 @@ def _session_command(engine: str):
                 reporter=reporter,
                 launch_log_path=str(launch_log.path),
                 dry_run=dry_run,
+                remote_args=list(remote_args),
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -4079,7 +4096,7 @@ def _session_options(func):
         "-F",
         "--firstmate",
         is_flag=True,
-        help="Launch as this machine's chief-of-staff / firstmate session (one per machine)",
+        help="Launch as a chief-of-staff / firstmate session (one per machine; with -R, on the remote machine)",
     )(func)
     # The chief options ride on every engine command because --firstmate does: they are
     # refused rather than ignored without it, so a typo cannot silently launch an
@@ -4108,7 +4125,7 @@ def _session_options(func):
     return click.option("--project-prefix", default="", hidden=True)(func)
 
 
-def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> None:
+def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
     """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
     Shared by ``--firstmate`` on every engine command and by ``ai cos`` (the Claude
@@ -4124,11 +4141,25 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     Worktree isolation stays ON (the caller's ``-W`` still wins). The fleet's worktree model
     makes every main tree read-only, so a session running in the repo root is the anomaly --
     and the chief is asked to carry its own worktree naming convention.
+
+    A chief need not run on the machine it coordinates: cross-machine messaging (Agent
+    Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With
+    ``-R/--remote`` this machine only dispatches: everything above belongs to the REMOTE
+    machine (its chief home, its one-chief check, its registration, its host alias in the
+    session name, FM_HOME and the role in its pane), so nothing is resolved or written
+    here and the returned arguments carry the chief launch to the remote ``ai``, which runs
+    this same function as the remote side of the dispatch.
+
+    Returns the arguments a remote dispatch must forward; empty for a local launch.
     """
+    session_name = _chief_of_staff.chief_session_name(str(options.get("name") or ""))
     if options.get("remote"):
-        raise click.UsageError("a chief-of-staff runs on the machine it coordinates; -R/--remote is not supported")
-    suffix = str(options.get("name") or "")
-    session_name = f"{_chief_of_staff.SESSION_NAME}-{suffix}" if suffix else _chief_of_staff.SESSION_NAME
+        options["name"] = session_name
+        return [
+            "--firstmate",
+            *(["--machine-key", machine_key] if machine_key else []),
+            *(["--fm-home", fm_home] if fm_home else []),
+        ]
     try:
         home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
         _chief_of_staff.validate_chief_home(home)
@@ -4182,6 +4213,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     os.environ[_chief_of_staff.FM_HOME_ENV] = str(home)
     os.environ[_chief_of_staff.ROLE_ENV] = _chief_of_staff.ROLE
     options["name"] = session_name
+    return []
 
 
 def _dispatch_session(engine: str, ctx, options: dict) -> None:
@@ -4193,14 +4225,15 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     firstmate = options.pop("firstmate", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
+    remote_args: list[str] = []
     if firstmate:
-        _prepare_firstmate_launch(engine, machine_key, fm_home, options)
+        remote_args = _prepare_firstmate_launch(engine, machine_key, fm_home, options)
     elif machine_key or fm_home:
         raise click.UsageError(
             "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
             "add -F/--firstmate (or use `ai cos`) to launch one"
         )
-    _session_command(engine)(ctx, **options)
+    _session_command(engine)(ctx, **options, remote_args=remote_args)
 
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
@@ -4246,7 +4279,7 @@ def cmd_cx(ctx, **options):
 @_cli_group.command(
     "cos",
     context_settings=SESSION_CONTEXT,
-    help="Launch this machine's chief-of-staff Claude Code session (shorthand for `ai c --firstmate`)",
+    help="Launch a chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --firstmate`)",
 )
 @_session_options
 def cmd_cos(ctx, **options):
@@ -4255,7 +4288,8 @@ def cmd_cos(ctx, **options):
     Everything that makes a session the chief -- resolving and validating the Firstmate
     home, one chief per machine, the registration other sessions read, FM_HOME and
     AI_SESSION_ROLE=chief-of-staff in the pane -- lives in the shared --firstmate path, so
-    this command is only the engine choice.
+    this command is only the engine choice. With ``-R`` all of it happens on the remote
+    machine, which then hosts the chief.
     """
     options["firstmate"] = True
     _dispatch_session("c", ctx, options)

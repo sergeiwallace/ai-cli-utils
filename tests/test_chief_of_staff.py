@@ -339,15 +339,6 @@ class TestCosCommand:
         assert registration["native_agent_name"] == "myproject-tst-firstmate-review-1"
         assert registration["tmux_target"] == "c-myproject-tst-firstmate-review-1"
 
-    def test_given_remote_requested_when_launched_then_usage_error(self, seeded_home):
-        with patch("ai_cli.main._do_session_launch") as launch:
-            code, _out, err = run_cli(["ai", "cos", "-R"])
-        # cli() maps click usage errors to exit 1 on purpose (its docstring: the exit
-        # contract matches the argparse dispatcher it replaced).
-        assert code == 1
-        assert "--remote" in err
-        launch.assert_not_called()
-
     def test_given_explicit_home_option_when_launched_then_that_home_is_used(self, tmp_path, monkeypatch):
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
         home = tmp_path / "custom-home"
@@ -426,13 +417,6 @@ class TestFirstmateFlag:
             assert code == 0, err
             assert launch.call_args.kwargs["no_worktree"] is True
 
-    def test_given_firstmate_with_remote_when_launched_then_usage_error(self, seeded_home):
-        with patch("ai_cli.main._do_session_launch") as launch:
-            code, _out, err = run_cli(["ai", "c", "--firstmate", "-R"])
-        assert code == 1
-        assert "--remote" in err
-        launch.assert_not_called()
-
     def test_given_explicit_home_and_key_when_firstmate_then_that_home_is_used(self, tmp_path, monkeypatch):
         monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
         home = tmp_path / "custom-home"
@@ -506,3 +490,180 @@ def test_tmux_env_forwarding_carries_the_chief_home_and_role_only_when_set():
     assert not any(flag.startswith(("FM_HOME=", "AI_SESSION_ROLE=")) for flag in plain)
     xdg = next(flag for flag in plain if flag.startswith("XDG_STATE_HOME="))
     assert Path(xdg.split("=", 1)[1]).is_absolute()
+
+
+REMOTE_CONFIG = {
+    "remote": {
+        "default": "hz",
+        "machines": {
+            "fw": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"},
+            "hz": {"host": "hz.example.com", "user": "root", "port": 22, "identity_file": "", "transport": "ssh"},
+        },
+    }
+}
+
+
+def _explode(*_args, **_kwargs):
+    raise AssertionError("a remote chief dispatch resolved or wrote chief state on the dispatching machine")
+
+
+def _dispatcher_patches(stack: ExitStack) -> None:
+    """The dispatching machine as the Mac sees it: no chief home, no host alias for this repo.
+
+    Every chief-home call and every network call is a tripwire, so the dispatching side is
+    proved to resolve, check and write nothing about the chief: that is all the remote's.
+    """
+    for target in (
+        "ai_cli.chief_of_staff.resolve_chief_home",
+        "ai_cli.chief_of_staff.read_registration",
+        "ai_cli.chief_of_staff.write_registration",
+        "ai_cli.main.subprocess.run",
+        "os.execvp",
+    ):
+        stack.enter_context(patch(target, side_effect=_explode))
+    from ai_cli.session_naming import HostAliasError
+
+    stack.enter_context(
+        patch("ai_cli.session_naming.resolve_host_alias", side_effect=HostAliasError("no host alias here"))
+    )
+    stack.enter_context(patch("ai_cli.session.get_project_prefix", return_value="aih"))
+    stack.enter_context(patch("ai_cli.config.get_current_project_name", return_value="ai-harness"))
+    stack.enter_context(patch("ai_cli.direnv_setup.ensure_direnv"))
+    real_which = shutil.which
+    stack.enter_context(
+        patch(
+            "shutil.which",
+            side_effect=lambda cmd, *a, **k: f"/usr/bin/{cmd}" if cmd in {"pi", "codex"} else real_which(cmd, *a, **k),
+        )
+    )
+
+
+class TestRemoteChief:
+    """A chief runs on whichever machine it is launched on; `-R` puts it on the remote one.
+
+    Cross-machine messaging reaches it wherever it runs, so the dispatching machine only
+    plans the ssh hand-off and forwards ``--firstmate``; the remote ``ai`` owns the chief
+    home, the one-chief check, the registration and the host-aliased session name.
+    """
+
+    @pytest.mark.parametrize("command", [["cos"], ["c", "-F"], ["g", "-F"], ["p", "-F"], ["cx", "--firstmate"]])
+    def test_given_remote_machine_when_chief_dry_run_then_plan_hands_the_chief_to_that_host(
+        self, command, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        engine = "c" if command == ["cos"] else command[0]
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, out, err = run_cli(["ai", *command, "-R", "-m", "fw", "--dry-run"], config=REMOTE_CONFIG)
+        assert code == 0, err
+        assert "target host  dev@fw.example.com:22 (ssh)" in out
+        assert (
+            f"remote cmd   ai {engine} --is-remote --project-prefix aih --project ai-harness --firstmate firstmate"
+            in out
+        )
+        assert "role         chief-of-staff" in out
+        assert not (tmp_path / "state" / "firstmate").exists()
+
+    def test_given_home_options_when_remote_chief_dry_run_then_they_reach_the_remote_ai(self, monkeypatch):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, out, err = run_cli(
+                ["ai", "cos", "-R", "-m", "fw", "-k", "key-x", "-H", "~/chief home", "review", "--dry-run"],
+                config=REMOTE_CONFIG,
+            )
+        assert code == 0, err
+        assert "--firstmate --machine-key key-x --fm-home '~/chief home' firstmate-review" in out
+
+    def test_given_unconfigured_remote_machine_when_chief_launched_then_refuses_before_anything(self, monkeypatch):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        with ExitStack() as stack:
+            _dispatcher_patches(stack)
+            code, _out, err = run_cli(["ai", "cos", "-R", "-m", "nope", "--dry-run"], config=REMOTE_CONFIG)
+        assert code == 1
+        assert "nope" in err
+        assert "fw, hz" in err
+
+    def test_given_real_dispatch_when_remote_chief_launched_then_ssh_carries_firstmate_and_the_allocated_slot(
+        self, monkeypatch, tmp_path
+    ):
+        from conftest import _run_cli_with_args
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        with (
+            patch("ai_cli.main.sys.platform", "linux"),
+            patch("ai_cli.chief_of_staff.write_registration", side_effect=_explode),
+        ):
+            runner = _run_cli_with_args(["ai", "cos", "-R", "-m", "fw"], REMOTE_CONFIG, capture_ssh_runner=True)
+        runner.assert_called_once()
+        ssh_args = runner.call_args[0][0]
+        assert "dev@fw.example.com" in ssh_args
+        assert ssh_args[-1].endswith("--firstmate c-r-test-project-firstmate-1'")
+
+    def test_given_allocated_remote_slot_when_remote_side_runs_then_it_registers_that_slot_with_its_alias(
+        self, seeded_home, monkeypatch
+    ):
+        from ai_cli import session_naming
+
+        monkeypatch.delenv(cos.FM_HOME_ENV, raising=False)
+        monkeypatch.setattr(session_naming, "resolve_host_alias", lambda: "fw")
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(
+                ["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate", "c-r-aih-fw-firstmate-1"]
+            )
+            assert code == 0, err
+            assert launch.call_args.kwargs["name"] == "c-r-aih-fw-firstmate-1"
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        assert registration["native_agent_name"] == "aih-fw-firstmate-1"
+        assert registration["tmux_target"] == "c-r-aih-fw-firstmate-1"
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
+        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+
+    def test_given_live_chief_on_remote_when_remote_side_runs_then_refuses(self, seeded_home):
+        cos.registration_path(seeded_home).write_text(
+            json.dumps(
+                {"schema_version": 1, "native_agent_name": "aih-fw-firstmate-1", "tmux_target": "c-aih-fw-firstmate-1"}
+            )
+        )
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            code, _out, err = run_cli(
+                ["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate", "c-r-aih-fw-firstmate-2"]
+            )
+            launch.assert_not_called()
+        assert code == 1
+        assert "already running" in err
+
+    def test_given_no_host_alias_on_remote_when_remote_side_runs_then_refuses_without_registration(self, seeded_home):
+        from ai_cli.session_naming import HostAliasError
+
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            stack.enter_context(
+                patch(
+                    "ai_cli.session_naming.resolve_host_alias", side_effect=HostAliasError("no host alias configured")
+                )
+            )
+            code, _out, err = run_cli(["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate"])
+            launch.assert_not_called()
+        assert code == 1
+        assert "no host alias configured" in err
+        assert not cos.registration_path(seeded_home).exists()
+
+
+class TestChiefSessionName:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("", "firstmate"),
+            ("review", "firstmate-review"),
+            ("2", "firstmate-2"),
+            ("firstmate-review", "firstmate-review"),
+            ("aih-fw-firstmate-1", "aih-fw-firstmate-1"),
+            ("c-r-aih-fw-firstmate-1", "c-r-aih-fw-firstmate-1"),
+        ],
+    )
+    def test_given_a_name_when_chief_named_then_firstmate_is_never_doubled(self, name, expected):
+        assert cos.chief_session_name(name) == expected
