@@ -871,12 +871,16 @@ class TestChiefLaunchForms:
         assert code == 1
         assert "already running" in err
 
-    def test_given_an_ordinary_name_when_launched_then_it_is_not_a_chief(self, seeded_home):
+    def test_given_an_ordinary_name_when_launched_then_it_is_not_a_chief(self, seeded_home, monkeypatch):
+        # Launched from inside a chief session, which exports both to its own shell.
+        monkeypatch.setenv(cos.ROLE_ENV, cos.ROLE)
+        monkeypatch.setenv(cos.FM_HOME_ENV, str(seeded_home))
         with ExitStack() as stack:
             launch = _launch_patches(stack, live=False, real_names=True)
             code, _out, err = run_cli(["ai", "c", "review-2"])
             assert code == 0, err
             assert launch.seen_env[cos.ROLE_ENV] is None
+            assert launch.seen_env[cos.FM_HOME_ENV] is None
         assert not cos.registration_path(seeded_home).exists()
 
 

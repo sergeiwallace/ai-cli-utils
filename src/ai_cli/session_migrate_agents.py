@@ -24,8 +24,10 @@ rest still move.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from .git_repair import _git_env
 from .worktree_move import move_worktree
 
 _SESSION_HOME_PATTERN = r"^branch\..+\.aih-session-home$"
+_PROVENANCE_FILE = "aih-provenance.json"
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -61,6 +64,7 @@ class AgentEntry:
     held_by: int | None = None
     conflict: bool = False
     tip: str = ""
+    ownership: WorktreeOwnership | None = None
 
     @property
     def moves(self) -> bool:
@@ -72,6 +76,21 @@ class AgentMarker:
     repo: Path
     key: str
     value: str
+
+
+@dataclass
+class WorktreeOwnership:
+    """Ownership metadata that follows one moved worktree."""
+
+    repo: Path
+    worktree: Path
+    dest: Path
+    old_owner: str
+    new_owner: str
+    branch: str | None
+    new_branch: str | None
+    provenance_state: str
+    stamp_value: str | None
 
 
 @dataclass
@@ -104,6 +123,132 @@ def _holder(path: Path, live_cwds: list[tuple[int, Path]]) -> int | None:
         if cwd == path or path in cwd.parents:
             return pid
     return None
+
+
+def _provenance(worktree: Path) -> tuple[dict | None, str]:
+    """Return a provenance object and ``present``, ``missing``, or ``unreadable``."""
+    located = _git(worktree, "rev-parse", "--git-path", _PROVENANCE_FILE)
+    if located.returncode != 0 or not located.stdout.strip():
+        return None, "unreadable"
+    path = Path(located.stdout.strip())
+    if not path.is_absolute():
+        path = worktree / path
+    try:
+        value = json.loads(path.read_bytes())
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, "unreadable"
+    if not isinstance(value, dict) or not isinstance(value.get("owner_session"), str):
+        return None, "unreadable"
+    return value, "present"
+
+
+def plan_worktree_ownership(
+    repo: Path,
+    worktree: Path,
+    dest: Path,
+    old_owner: str,
+    new_owner: str,
+    branch: str | None,
+    new_branch: str | None,
+) -> WorktreeOwnership:
+    """Inspect the existing ownership records for one planned worktree move."""
+    provenance, state = _provenance(worktree)
+    if provenance is not None and provenance["owner_session"] != old_owner:
+        state = "different-owner"
+    stamp_value = None
+    if branch:
+        stamp = _git(repo, "config", "--get", f"branch.{branch}.aih-agent-worktree")
+        if stamp.returncode == 0:
+            stamp_value = stamp.stdout.rstrip("\n")
+    return WorktreeOwnership(
+        repo,
+        worktree,
+        dest,
+        old_owner,
+        new_owner,
+        branch,
+        new_branch,
+        state,
+        stamp_value,
+    )
+
+
+def describe_worktree_ownership(plan: WorktreeOwnership) -> list[tuple[str, str, str, str]]:
+    """Describe provenance and branch-stamp changes without writing either."""
+    lines: list[tuple[str, str, str, str]] = []
+    if plan.provenance_state == "present":
+        lines.append(
+            (
+                "provenance owner",
+                f"{plan.worktree} [{plan.old_owner}]",
+                f"{plan.dest} [{plan.new_owner}]",
+                "rewrite",
+            )
+        )
+    elif plan.provenance_state in {"missing", "unreadable"}:
+        lines.append(("provenance record", str(plan.worktree), "", f"skipped: {plan.provenance_state}"))
+    else:
+        lines.append(("provenance record", str(plan.worktree), "", "left alone: owner does not match"))
+    if plan.stamp_value is not None and plan.branch:
+        target_branch = plan.new_branch or plan.branch
+        lines.append(
+            (
+                "agent-worktree marker",
+                f"branch.{plan.branch}.aih-agent-worktree = {plan.stamp_value}",
+                f"branch.{target_branch}.aih-agent-worktree = {plan.dest}",
+                "rewrite",
+            )
+        )
+    return lines
+
+
+def _replace_provenance_owner(worktree: Path, old_owner: str, new_owner: str) -> str | None:
+    """Atomically replace only ``owner_session``; return a skip/failure reason."""
+    record, state = _provenance(worktree)
+    if record is None:
+        return f"record is {state}"
+    if record["owner_session"] != old_owner:
+        return "owner no longer matches the old session"
+    record["owner_session"] = new_owner
+    located = _git(worktree, "rev-parse", "--git-path", _PROVENANCE_FILE)
+    if located.returncode != 0 or not located.stdout.strip():
+        return "record path is unreadable"
+    path = Path(located.stdout.strip())
+    if not path.is_absolute():
+        path = worktree / path
+    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        if path.read_bytes() != payload:
+            return "record read-back did not match"
+    except OSError as exc:
+        return str(exc)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return None
+
+
+def apply_worktree_ownership(plan: WorktreeOwnership, branch: str | None) -> list[str]:
+    """Apply a planned ownership rebind after its worktree move succeeds."""
+    warnings: list[str] = []
+    if plan.provenance_state == "present":
+        reason = _replace_provenance_owner(plan.dest, plan.old_owner, plan.new_owner)
+        if reason:
+            warnings.append(f"provenance owner for {plan.dest} was NOT rebound: {reason}")
+    if plan.stamp_value is not None and branch:
+        key = f"branch.{branch}.aih-agent-worktree"
+        written = _git(plan.repo, "config", key, str(plan.dest))
+        if written.returncode != 0:
+            warnings.append(f"agent-worktree marker {key} FAILED to rewrite: {(written.stderr or '').strip()}")
+    return warnings
 
 
 def _repos(projects_dir: Path, slot_repo: Path) -> list[Path]:
@@ -158,6 +303,16 @@ def plan_agents(
                 entry.branch = None
             entry.held_by = _holder(path, live_cwds)
             entry.conflict = os.path.lexists(dest) or _branch_exists(entry.new_branch)
+            if entry.moves:
+                entry.ownership = plan_worktree_ownership(
+                    repo,
+                    path,
+                    dest,
+                    old,
+                    new,
+                    entry.branch,
+                    entry.new_branch,
+                )
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
         for branch in branches:
@@ -201,6 +356,8 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
         if e.worktree:
             dest = "" if e.held_by is not None else str(e.dest)
             lines.append(("agent worktree", str(e.worktree), dest, action))
+            if e.ownership:
+                lines += describe_worktree_ownership(e.ownership)
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -229,6 +386,8 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
     warnings: list[str] = []
     moved: set[Path] = set()
     for e in [e for e in plan.entries if e.moves]:
+        worktree_moved = False
+        current_branch = e.branch
         if e.worktree and e.dest:
             e.dest.parent.mkdir(parents=True, exist_ok=True)
             ok, why = move_worktree(e.repo, e.worktree, e.dest)
@@ -236,14 +395,18 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 warnings.append(f"agent worktree {e.worktree} FAILED to move: {why}; its branch keeps its name")
                 continue
             moved.add(e.worktree)
+            worktree_moved = True
             if (e.dest / ".venv").is_dir():
                 warnings.append(f"{e.dest / '.venv'} names the old path in its scripts -- run `uv sync --reinstall`")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:
                 done.setdefault(e.repo, {})[e.branch] = e.new_branch
+                current_branch = e.new_branch
             else:
                 warnings.append(f"agent branch {e.branch} in {e.repo} FAILED to rename: {renamed.error}")
+        if worktree_moved and e.ownership:
+            warnings += apply_worktree_ownership(e.ownership, current_branch)
     for m in plan.markers:
         key = renamed_key(m.key, done.get(m.repo, {}))
         res = _git(m.repo, "config", key, m.value)

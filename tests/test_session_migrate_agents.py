@@ -94,6 +94,80 @@ def _markers(repo: Path) -> str:
     return _git("config", "--get-regexp", r"aih-session-home$", cwd=repo, check=False)
 
 
+def _provenance(worktree: Path) -> Path:
+    path = Path(_git("rev-parse", "--git-path", "aih-provenance.json", cwd=worktree).strip())
+    return path if path.is_absolute() else worktree / path
+
+
+@pytest.fixture
+def owned_fleet(fleet):
+    records = (
+        (fleet["slot"], fleet["repo"], f"wt-{OLD}"),
+        (fleet["leaf_a"], fleet["other"], f"wt/{OLD}/leaf-a"),
+    )
+    for worktree, repo, branch in records:
+        _provenance(worktree).write_text(
+            json.dumps({"owner_session": OLD, "created_by": "test fixture"}),
+            encoding="utf-8",
+        )
+        _git("config", f"branch.{branch}.aih-agent-worktree", str(worktree), cwd=repo)
+    fleet["ownership_records"] = records
+    return fleet
+
+
+def test_given_owned_worktrees_when_dry_run_then_rebinds_are_listed_and_ownership_is_unchanged(owned_fleet):
+    before = {
+        worktree: (
+            _provenance(worktree).read_bytes(),
+            _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo),
+        )
+        for worktree, repo, branch in owned_fleet["ownership_records"]
+    }
+
+    code, out, err = _migrate(owned_fleet, "-n")
+
+    assert code == 0, out + err
+    assert out.count("provenance owner:") == 2
+    assert f"provenance record: {owned_fleet['leaf_c']} (skipped: missing)" in out
+    assert out.count("agent-worktree marker:") == 2
+    for worktree, repo, branch in owned_fleet["ownership_records"]:
+        assert _provenance(worktree).read_bytes() == before[worktree][0]
+        assert _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo) == before[worktree][1]
+
+
+def test_given_owned_worktrees_when_migrated_then_provenance_and_path_stamps_follow(owned_fleet):
+    code, out, err = _migrate(owned_fleet, "-y")
+    assert code == 0, out + err
+
+    records = (
+        (owned_fleet["repo"] / ".worktrees" / NEW, owned_fleet["repo"], f"wt-{NEW}"),
+        (
+            owned_fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a",
+            owned_fleet["other"],
+            f"wt/{NEW}/leaf-a",
+        ),
+    )
+    for worktree, repo, branch in records:
+        assert json.loads(_provenance(worktree).read_text(encoding="utf-8")) == {
+            "owner_session": NEW,
+            "created_by": "test fixture",
+        }
+        assert _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo).strip() == str(worktree)
+
+
+def test_given_an_unreadable_provenance_record_when_migrated_then_it_is_reported_and_skipped(fleet):
+    provenance = _provenance(fleet["leaf_a"])
+    provenance.write_text("not json\n", encoding="utf-8")
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert f"provenance record: {fleet['leaf_a']} (skipped: unreadable)" in out
+    new_worktree = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    assert new_worktree.is_dir()
+    assert _provenance(new_worktree).read_text(encoding="utf-8") == "not json\n"
+
+
 def test_given_agent_worktrees_and_a_parked_branch_when_dry_run_then_each_is_listed_and_nothing_changes(fleet):
     before = snapshot_tree(fleet["projects"])
     before_refs = _branches(fleet["other"])
