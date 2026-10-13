@@ -456,3 +456,21 @@ def test_given_a_live_session_when_migrating_then_no_new_artifact_class_is_touch
     assert _everything(held_slot) == before
     assert _git("for-each-ref", cwd=held_slot["repo"]) == refs
     assert not log.exists()
+
+
+def test_given_a_transcript_record_with_a_lone_surrogate_when_migrated_then_it_completes_and_keeps_the_text(slot):
+    # Claude Code can persist half an emoji as an escaped lone surrogate (`\ud83d`); a
+    # migration crashed re-serializing such a record, leaving the slot half-moved.
+    transcript = slot["project"] / f"{UUID}.jsonl"
+    with transcript.open("a", encoding="utf-8") as out:
+        out.write('{"type":"user","cwd":"' + str(slot["wt"]) + '","message":{"content":"cut \\ud83d here"}}\n')
+
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    moved = cc_project_dir(new_wt, slot["claude"]) / f"{UUID}.jsonl"
+    last = json.loads(moved.read_text(encoding="utf-8").splitlines()[-1])
+    assert last["cwd"] == str(new_wt)
+    assert last["message"]["content"] == "cut \ud83d here"
+    assert not (slot["claude"] / "tasks" / OLD).exists()
