@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -209,6 +210,17 @@ class TestCosCommand:
             stack.enter_context(patch("ai_cli.session.is_current_project_resolved", return_value=True))
             stack.enter_context(patch("ai_cli.tmux_setup.tmux_present", return_value=True))
             plan = stack.enter_context(patch("ai_cli.main._print_launch_plan"))
+            # The pi and codex engines refuse to start without their binary on PATH; a CI runner has
+            # neither, and this test is about names, not about those binaries.
+            real_which = shutil.which
+            stack.enter_context(
+                patch(
+                    "shutil.which",
+                    side_effect=lambda cmd, *a, **k: (
+                        f"/usr/bin/{cmd}" if cmd in {"pi", "codex"} else real_which(cmd, *a, **k)
+                    ),
+                )
+            )
             # Exercise the real launch's name resolution, stopping at its read-only plan.
             launch.side_effect = lambda **kwargs: real_launch(**(kwargs | {"dry_run": True}))
             code, _out, err = run_cli(["ai", *command, *suffix])
