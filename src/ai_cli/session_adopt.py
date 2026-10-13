@@ -45,6 +45,9 @@ Adoption is the whole job, in one pass:
    :func:`adopt_memory` for the rule and why it is a copy.
 5b. **Resume hand-off** — ``~/.claude/resume/``, keyed by the session *name*. See
    :func:`migrate_resume_artifacts`, which is a deliberately temporary bridge.
+5c. **External rekey hooks** — a retitle renames the session, so the
+   ``session-migrate.d/`` hooks (:mod:`ai_cli.session_migrate_hooks`) plan before
+   the first write and run after the core moves, exactly as for ``session-migrate``.
 6. **Everything else** — inventoried in ``docs/tools/cc-session-adoption.md``.
    UUID-keyed state (``~/.claude/teams/session-<uuid8>/``,
    ``~/.claude/session-env/<uuid>/``, ``~/.claude/file-history/<uuid>/``) is
@@ -69,6 +72,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import session_migrate_hooks as _hooks
 from .cc_migrate import (
     MigrationResult,
     cc_project_dir,
@@ -190,6 +194,9 @@ class AdoptionResult:
     dry_run: bool = False
     already_adopted: bool = False
     warnings: list[str] = field(default_factory=list)
+    #: ``hook <name>: <line>`` for every line the external rekey hooks planned (dry
+    #: run) or reported (real run); empty when the adoption keeps the session's name.
+    hook_lines: list[str] = field(default_factory=list)
 
 
 # --- refusals ---------------------------------------------------------------
@@ -1105,6 +1112,20 @@ def adopt_session(
     # class of silent no-op it exists to fix.
     resume_keys = resume_source_keys(src_jsonl, target_title)
 
+    # A retitle renames the session, so state other tools keep under its name must
+    # follow, exactly as for `ai session-migrate`: every hook plans before the first
+    # write, and a refusal stops the adoption while nothing has moved. Without a
+    # retitle the name is unchanged and there is nothing name-keyed to carry.
+    hooks: list[_hooks.Hook] = []
+    hook_lines: list[str] = []
+    if retitled_from:
+        try:
+            hooks, runs = _hooks.plan_hooks(retitled_from, target_title, cwd=repo_root)
+        except _hooks.HookRefusal as exc:
+            raise AdoptionError(str(exc)) from exc
+        if dry_run:
+            hook_lines = [f"hook {run.hook.name}: {line}" for run in runs for line in run.lines]
+
     dest_root, worktree_created = _ensure_worktree(repo_root, target_title, dry_run)
 
     migration: MigrationResult | None
@@ -1166,6 +1187,11 @@ def adopt_session(
     resolved = None
     if not dry_run:
         assert migration is not None
+        if retitled_from:
+            for run in _hooks.run_hooks(hooks, retitled_from, target_title, cwd=repo_root):
+                hook_lines += [f"hook {run.hook.name}: {line}" for line in run.lines]
+                if not run.ok:
+                    warnings.append(_hooks.failure_warning(run))
         resolved = probe_resolves(dest_root, target_title, home)
         if resolved != migration.dest_jsonl:
             warnings.append(
@@ -1214,6 +1240,7 @@ def adopt_session(
         resolved=resolved,
         dry_run=dry_run,
         warnings=warnings,
+        hook_lines=hook_lines,
     )
 
 

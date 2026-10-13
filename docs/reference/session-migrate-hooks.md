@@ -82,6 +82,23 @@ failure: they are already durable. Hooks must therefore be idempotent, so that
 running the failed hook alone (the same argv, without `--dry-run`) completes the
 migration.
 
+## `ai session-adopt`
+
+An adoption that retitles the session (`-c retitle` with `-T` or `-I`) changes its
+name, so it runs the same hooks under the same contract, with `--old` the title
+the session had and `--new` the title it is adopted under:
+
+- every hook is planned with `--dry-run` after the adoption's own refusals (live
+  session, duplicate title, free space) and before its first write, and a
+  non-zero exit refuses the adoption with nothing moved;
+- `-n` lists each planned line as `hook <name>: <line>` and writes nothing;
+- the real run invokes each hook once without `--dry-run`, after the transcript,
+  tasks, memory and resume hand-off have moved; a non-zero exit is a `FAILED`
+  warning and the command exits 1.
+
+An adoption that keeps the session's title runs no hook: nothing keyed by the
+name has changed. `ai session-audit` adopts through the same code path.
+
 ## Writing a hook
 
 - Accept `--old`, `--new` and an optional `--dry-run`; ignore nothing else
@@ -93,4 +110,5 @@ migration.
 - Never prompt: standard input is not connected to the operator.
 
 Implementation: `src/ai_cli/session_migrate_hooks.py`, called from
-`src/ai_cli/session_migrate.py`; tests in `tests/test_session_migrate_hooks.py`.
+`src/ai_cli/session_migrate.py` and `src/ai_cli/session_adopt.py`; tests in
+`tests/test_session_migrate_hooks.py` and `tests/test_session_adopt_hooks.py`.

@@ -9,8 +9,10 @@ migration by dropping a TOML file into ``<config dir>/session-migrate.d/``::
 ``session-migrate`` runs every hook, sorted by filename, as
 ``argv + ["--old", OLD, "--new", NEW]``: with ``--dry-run`` while it plans (a
 non-zero exit refuses the whole migration before anything is written), then
-without it after every core move (a non-zero exit is reported as ``FAILED``). The
-contract is documented in ``docs/reference/session-migrate-hooks.md``.
+without it after every core move (a non-zero exit is reported as ``FAILED``).
+``session-adopt`` runs the same hooks under the same contract whenever an adoption
+changes the session's name. The contract is documented in
+``docs/reference/session-migrate-hooks.md``.
 """
 
 from __future__ import annotations
@@ -28,6 +30,10 @@ HOOKS_DIRNAME = "session-migrate.d"
 
 class HookConfigError(ValueError):
     """A hook file that does not follow the contract."""
+
+
+class HookRefusal(Exception):
+    """A hook file is malformed, or a hook refused its ``--dry-run`` plan."""
 
 
 @dataclass(frozen=True)
@@ -107,3 +113,38 @@ def run_hook(hook: Hook, old: str, new: str, *, dry_run: bool, cwd: Path | None 
         return HookRun(hook=hook, returncode=127, stderr=f"could not start {hook.argv[0]}: {exc}")
     lines = [line for line in (proc.stdout or "").splitlines() if line.strip()]
     return HookRun(hook=hook, returncode=proc.returncode, lines=lines, stderr=(proc.stderr or "").strip())
+
+
+def plan_hooks(old: str, new: str, *, cwd: Path | None = None) -> tuple[list[Hook], list[HookRun]]:
+    """Load every hook and run each with ``--dry-run``, before anything is written.
+
+    Raises :class:`HookRefusal` for a malformed hook file or the first hook that
+    exits non-zero, quoting its stderr; the caller must then write nothing.
+    """
+    try:
+        hooks = load_hooks()
+    except HookConfigError as exc:
+        raise HookRefusal(f"{exc} -- refusing before any write") from exc
+    runs: list[HookRun] = []
+    for hook in hooks:
+        run = run_hook(hook, old, new, dry_run=True, cwd=cwd)
+        if not run.ok:
+            raise HookRefusal(
+                f"hook {hook.name} ({hook.path}) refused the migration (exit {run.returncode}): "
+                f"{run.stderr or '(no stderr)'}"
+            )
+        runs.append(run)
+    return hooks, runs
+
+
+def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
+    """Run every planned hook live, in order; one failure never stops the rest."""
+    return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks]
+
+
+def failure_warning(run: HookRun) -> str:
+    """The ``FAILED`` line for a hook that exited non-zero on its live run."""
+    return (
+        f"hook {run.hook.name} ({run.hook.path}) FAILED (exit {run.returncode}): {run.stderr or '(no stderr)'} "
+        f"-- the core moves are done; re-run the hook alone to finish"
+    )
