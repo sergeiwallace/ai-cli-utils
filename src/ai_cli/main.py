@@ -5025,7 +5025,10 @@ def _print_collision(exc, out=None) -> None:
 
 @_cli_group.command(
     "session-adopt",
-    help="Register a Claude Code session started outside `ai` so `ai c <n>` resumes it (to rename a registered one, use `session-migrate`)",
+    help=(
+        "Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.\n\n"
+        "\b\nTo rename a session already in an `ai` slot, use `ai session-migrate`."
+    ),
 )
 @click.argument("name", required=False, default="")
 @click.option(
@@ -5167,7 +5170,10 @@ def _print_migration(result) -> None:
 
 @_cli_group.command(
     "session-migrate",
-    help="Rename a session already registered in an `ai` slot (for one started outside `ai`, use `session-adopt`)",
+    help=(
+        "Rename a session already registered in an `ai` slot.\n\n"
+        "\b\nFor a session started outside `ai`, use `ai session-adopt`."
+    ),
 )
 @click.argument("old")
 @click.argument("new")
