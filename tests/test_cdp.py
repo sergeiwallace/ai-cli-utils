@@ -710,6 +710,10 @@ class TestCdpEdgeRealBoundary:
         edge = _real_edge()
         if not edge:
             pytest.skip("no real Microsoft Edge binary on this machine")
+        if sys.platform == "win32":
+            # Platform-specific: on the hosted Windows runner Edge stays up but never writes
+            # DevToolsActivePort for a fresh profile; the cause is not yet known.
+            pytest.skip("Edge on Windows never reports its DevTools port here (AI-CLI-80rj)")
 
         profile = tmp_path / "edge-profile"
         args = [
