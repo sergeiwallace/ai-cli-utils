@@ -627,6 +627,27 @@ class TestSessionLaunchExtraArgsName:
         assert exc.value.code == 1
 
 
+class TestRemoteLaunchWithNoRemoteHost:
+    def test_given_no_remote_host_when_ai_c_dash_r_then_the_error_names_this_host_and_both_remedies(self, capsys):
+        """Running ``ai c 1 -R`` on a machine with no ``[remote] host`` is most often the
+        command typed on the wrong machine, so the error says where it ran and what to do."""
+        with (
+            patch("sys.argv", ["ai", "c", "1", "-R"]),
+            patch("ai_cli.config.load_config", return_value={"remote": {}}),
+            patch("ai_cli.session.get_project_prefix", return_value="test-project"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main.socket.gethostname", return_value="host-a.example.com"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "[remote] host not set" in err
+        assert "host-a.example.com" in err
+        assert "drop -R" in err
+        assert "client machine" in err
+
+
 class TestRegisterCommand:
     def test_given_repository_and_prefix_when_register_then_persists_registry_entry(self, tmp_path):
         repo = tmp_path / "myproject"

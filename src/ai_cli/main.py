@@ -6,6 +6,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -3032,7 +3033,14 @@ def _do_session_launch(
             raise RuntimeError("remote machine was not resolved")
         host = remote_cfg.get("host", "")
         if not host:
-            reporter.error("[remote] host not set in ~/.config/ai-cli-utils/config.toml")
+            # Most often this is the command typed on the wrong machine (on the remote
+            # itself, which has no remote of its own), so say where it ran and both ways out.
+            reporter.error(
+                "[remote] host not set in ~/.config/ai-cli-utils/config.toml.\n"
+                f"  -R launches the session on the configured remote host, and this machine "
+                f"({socket.gethostname()}) has none.\n"
+                "  To launch here, drop -R. To launch on the remote, run the command from the client machine."
+            )
             sys.exit(1)
         user = remote_cfg.get("user", "ubuntu")
         port = str(remote_cfg.get("port", 22))
