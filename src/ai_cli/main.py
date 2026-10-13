@@ -1027,6 +1027,98 @@ def _installed_source_fingerprint(project_path: Path) -> str | None:
     return digest.hexdigest()
 
 
+#: How long to wait before retrying a session-launch auto-update that failed, and
+#: the ceiling that wait doubles up to. The failure record is keyed on the source
+#: fingerprint, so any further source edit retries at once whatever the schedule
+#: says; these bounds only govern how often an UNCHANGED, still-failing source is
+#: retried. The base is short because a launch is interactive and frequent, so a
+#: transient failure (a network blip, a busy lock) costs at most one skipped retry;
+#: the ceiling is finite so a host repaired without touching the source still
+#: retries on its own instead of waiting for a commit.
+_UPDATE_RETRY_BASE_SECONDS = 15 * 60
+_UPDATE_RETRY_MAX_SECONDS = 6 * 60 * 60
+
+
+def _update_failure_record_path() -> Path:
+    """Where the last failed auto-update attempt is remembered."""
+    return _config.get_xdg_state_home() / "last_install_failure.json"
+
+
+def _read_update_failure_record() -> dict | None:
+    """Return the recorded failure, or None when there is no readable one.
+
+    Every unreadable or malformed record reads as "no record", which retries. That
+    direction is deliberate: the bug this whole mechanism exists to avoid is an
+    update that never runs again, so the failure mode of the backoff itself must be
+    an extra attempt, never another latch.
+    """
+    try:
+        record = json.loads(_update_failure_record_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _update_retry_delay(attempts: int) -> float:
+    """Seconds to wait after ``attempts`` consecutive failures of the same source."""
+    if attempts < 1:
+        return 0.0
+    return float(min(_UPDATE_RETRY_BASE_SECONDS * 2 ** (attempts - 1), _UPDATE_RETRY_MAX_SECONDS))
+
+
+def _update_retry_wait_remaining(fingerprint: str) -> float:
+    """Seconds still owed before retrying a failed update of ``fingerprint``.
+
+    0.0 means attempt the update now -- including when the record describes some
+    other source, when it is unusable, and when the clock has moved backwards since
+    it was written (a reboot, an NTP correction), which would otherwise read as a
+    wait of nearly forever.
+    """
+    record = _read_update_failure_record()
+    if record is None or record.get("fingerprint") != fingerprint:
+        return 0.0
+    attempts = record.get("attempts")
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+        return 0.0
+    last_attempt = record.get("last_attempt")
+    if isinstance(last_attempt, bool) or not isinstance(last_attempt, int | float):
+        return 0.0
+    elapsed = time.time() - float(last_attempt)
+    if elapsed < 0:
+        return 0.0
+    return max(_update_retry_delay(attempts) - elapsed, 0.0)
+
+
+def _record_update_failure(fingerprint: str) -> None:
+    """Remember a failed update so the next launch backs off rather than retrying at once.
+
+    Consecutive failures of the same fingerprint accumulate; a failure of a
+    different one starts the count over, because a changed source is a different
+    attempt with a different chance of succeeding.
+    """
+    previous = _read_update_failure_record()
+    attempts = 0
+    if previous is not None and previous.get("fingerprint") == fingerprint:
+        recorded = previous.get("attempts")
+        if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded > 0:
+            attempts = recorded
+    path = _update_failure_record_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"fingerprint": fingerprint, "attempts": attempts + 1, "last_attempt": time.time()}))
+    except OSError:
+        # A state directory that cannot be written is not worth failing a launch
+        # over. The only consequence is that the next launch retries immediately,
+        # which is exactly the behaviour this record exists to soften.
+        pass
+
+
+def _clear_update_failure_record() -> None:
+    """Forget any recorded failure, because an update has just succeeded."""
+    with contextlib.suppress(OSError):
+        _update_failure_record_path().unlink(missing_ok=True)
+
+
 def _auto_update_if_stale(config: dict) -> bool:
     """Reinstall at session launch only when the packaged source has changed, and
     report whether the invoking launcher must restart.
@@ -1050,6 +1142,22 @@ def _auto_update_if_stale(config: dict) -> bool:
         return False
     stamp_file = _config.get_xdg_state_home() / "last_install_fingerprint.txt"
     if stamp_file.exists() and stamp_file.read_text().strip() == fingerprint:
+        return False
+    # The stamp below is written only after the install has succeeded, so a host
+    # whose update keeps failing is never remembered as current -- the latch that
+    # left one build host five days behind. The cost of that correctness is the
+    # opposite failure: an unchanged, still-broken source would be retried on EVERY
+    # launch, paying a full pull-and-install and reprinting the same warning each
+    # time. Neither extreme is the answer, so back off between attempts. What keeps
+    # this from being a second latch is that the record is keyed on the fingerprint
+    # and the wait is capped: a source edit retries immediately, and an untouched
+    # source retries within the ceiling regardless.
+    retry_wait = _update_retry_wait_remaining(fingerprint)
+    if retry_wait > 0:
+        _launch_reporter.active().warning(
+            "skipping auto-update: the last attempt on this source failed, retrying in "
+            f"~{max(int(retry_wait // 60), 1)}m. Run `ai update --force` to retry now."
+        )
         return False
     # Serialize concurrent workers with an exclusive create-only lockfile.
     # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
@@ -1111,6 +1219,7 @@ def _auto_update_if_stale(config: dict) -> bool:
             captured = f"{result.stdout or ''}{result.stderr or ''}".rstrip()
             if captured:
                 _out.relay(Tag.UPDATE, captured, err=True)
+            _record_update_failure(fingerprint)
             return False
         # Do not make a failed installation look current.  The caller must re-exec
         # after a successful installation because this process still has the old
@@ -1121,6 +1230,7 @@ def _auto_update_if_stale(config: dict) -> bool:
         # rather than continuing while its imported files have been replaced.
         installed_fingerprint = _installed_source_fingerprint(project_path) or fingerprint
         stamp_file.write_text(installed_fingerprint)
+        _clear_update_failure_record()
         summary = (result.stdout or "").strip()
         if summary:
             _out.relay(Tag.UPDATE, summary, err=False)
@@ -2273,6 +2383,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             fingerprint_file = _config.get_xdg_state_home() / "last_install_fingerprint.txt"
             fingerprint_file.parent.mkdir(parents=True, exist_ok=True)
             fingerprint_file.write_text(fingerprint)
+        # An update that worked ends the launch-time retry backoff, whoever ran it.
+        # This is the path a hand-run `ai update --force` takes to repair a host the
+        # auto-update had backed off from, so the backoff must lift here too and not
+        # only when the launch itself succeeds.
+        _clear_update_failure_record()
         # Regenerate the stable launch script for every live ai-cli session so the
         # wrapper's mtime hot-reload picks up this new template on its next restart —
         # no full `ai c` relaunch needed. Belt-and-suspenders alongside the commit-stamp
