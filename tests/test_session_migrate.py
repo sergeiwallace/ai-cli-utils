@@ -463,7 +463,10 @@ def test_given_a_transcript_record_with_a_lone_surrogate_when_migrated_then_it_c
     # migration crashed re-serializing such a record, leaving the slot half-moved.
     transcript = slot["project"] / f"{UUID}.jsonl"
     with transcript.open("a", encoding="utf-8") as out:
-        out.write('{"type":"user","cwd":"' + str(slot["wt"]) + '","message":{"content":"cut \\ud83d here"}}\n')
+        # json.dumps escapes the path, whose Windows backslashes are not valid JSON verbatim.
+        out.write(
+            '{"type":"user","cwd":' + json.dumps(str(slot["wt"])) + ',"message":{"content":"cut \\ud83d here"}}\n'
+        )
 
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
