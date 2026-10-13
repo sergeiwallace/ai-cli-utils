@@ -656,3 +656,57 @@ class TestRegisterCommand:
             exit_code, stdout, _ = run_cli(["ai", "register", "-p", str(repo), "-x", "proj", "-t", "tool"])
         assert exit_code == 0
         assert "Registered" in stdout
+
+    @pytest.mark.parametrize(
+        "nested",
+        [
+            # The incident's shape: a scratch dir inside a linked worktree, which the
+            # worktree-segment strip mapped straight to the main checkout.
+            Path(".worktrees") / "session-1" / ".scratch" / "bt" / "myproject",
+            # A plain subdirectory, which the ancestor walk mapped to the checkout.
+            Path("scratch") / "myproject",
+        ],
+        ids=["inside-a-worktree", "inside-the-checkout"],
+    )
+    def test_given_a_directory_nested_in_a_checkout_when_register_then_refuses_and_leaves_its_beads_prefix(
+        self, tmp_path, nested
+    ):
+        checkout = tmp_path / "myrepo"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        worktree = checkout / ".worktrees" / "session-1"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").write_text(f"gitdir: {checkout / '.git' / 'worktrees' / 'session-1'}\n")
+        beads_config = checkout / ".beads" / "config.yaml"
+        beads_config.parent.mkdir()
+        beads_config.write_text('issue-prefix: "myrepo"\n')
+        target = checkout / nested
+        target.mkdir(parents=True)
+        config_dir = tmp_path / "config"
+
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            exit_code, _, stderr = run_cli(["ai", "register", "-p", str(target), "-x", "proj", "-t", "tool"])
+
+        assert beads_config.read_text() == 'issue-prefix: "myrepo"\n'
+        assert exit_code != 0
+        assert "not a repository root" in stderr
+        assert str(checkout.resolve()) in stderr
+        assert not (config_dir / "config.toml").exists() or "proj" not in (config_dir / "config.toml").read_text()
+
+    def test_given_a_linked_worktree_root_when_register_then_registers_its_main_checkout(self, tmp_path):
+        checkout = tmp_path / "myrepo"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        worktree = checkout / ".worktrees" / "session-1"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").write_text(f"gitdir: {checkout / '.git' / 'worktrees' / 'session-1'}\n")
+        beads_config = checkout / ".beads" / "config.yaml"
+        beads_config.parent.mkdir()
+        beads_config.write_text('issue-prefix: "old"\n')
+
+        with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
+            exit_code, stdout, _ = run_cli(["ai", "register", "-p", str(worktree), "-x", "proj", "-t", "tool"])
+
+        assert exit_code == 0
+        assert f"Registered {checkout.resolve()}" in stdout
+        assert beads_config.read_text() == 'issue-prefix: "proj"\n'

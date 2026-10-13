@@ -790,6 +790,15 @@ def register_project(project: str | Path, prefix: str, project_type: str = "tool
     prefix = validate_task_prefix(prefix)
 
     root = _project_root(candidate)
+    resolved = candidate.resolve()
+    # A directory that is not itself a checkout but sits inside one would otherwise
+    # register, and rewrite the Beads prefix of, a repository the caller never named.
+    # A test's temp dir under a worktree did exactly that to the real checkout.
+    if root != resolved and not _has_valid_git_marker(resolved):
+        raise ProjectPrefixError(
+            f"{resolved} is not a repository root; it sits inside {root}. "
+            f"Register that repository with: ai register -p {root} -x PREFIX"
+        )
     config_path = _config_path()
     _secure_config_file(config_path)
     _write_registry_entry(config_path, root, prefix, project_type.strip() or "tool")

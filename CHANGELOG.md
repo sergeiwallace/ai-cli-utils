@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai register -p DIR` now refuses a directory that is not itself a repository root but
+  sits inside one, naming the containing repository. It used to register that ancestor
+  and rewrite the `issue-prefix` in its `.beads/config.yaml`, a repository the caller
+  never named. Registering a linked worktree still registers its main checkout. The test
+  suite also refuses to start when its temp root (`--basetemp`, or the system temp dir)
+  is inside a Git checkout, which is how a test run rewrote a real repository's prefix.
+
 - `ai c -R` on a machine with no `[remote] host` now says which machine it ran on, that `-R`
   launches on the configured remote, and both remedies: drop `-R` to launch here, or run the
   command from the client machine. The bare "host not set" error left an operator who had
