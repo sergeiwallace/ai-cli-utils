@@ -196,3 +196,76 @@ def test_given_the_session_itself_is_live_when_migrated_then_no_agent_worktree_i
     assert "still running" in out + err
     assert snapshot_tree(fleet["other"]) == before
     assert _branches(fleet["other"]) == before_refs
+
+
+def _with_submodule(repo: Path, sub_origin: Path) -> None:
+    """Commit a submodule ``third/sub`` (cloned from ``sub_origin``) into ``repo``'s main."""
+    _git("-c", "protocol.file.allow=always", "submodule", "-q", "add", str(sub_origin), "third/sub", cwd=repo)
+    _git("commit", "-qm", "add submodule", cwd=repo)
+
+
+def _init_submodule(worktree: Path) -> None:
+    _git("-c", "protocol.file.allow=always", "submodule", "-q", "update", "--init", cwd=worktree)
+
+
+@pytest.fixture
+def submodule_fleet(tmp_path):
+    """A repo whose slot and agent worktree both hold an initialised submodule."""
+    projects = tmp_path / "projects"
+    sub_origin = _init(tmp_path / "sub-origin")
+    repo = _init(projects / "myrepo")
+    _with_submodule(repo, sub_origin)
+    slot = repo / ".worktrees" / OLD
+    _git("worktree", "add", "-q", str(slot), "-b", f"wt-{OLD}", cwd=repo)
+    _init_submodule(slot)
+    leaf = repo / ".worktrees" / f"{OLD}-agents" / "leaf-s"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf-s", cwd=repo)
+    _init_submodule(leaf)
+    refused = subprocess.run(
+        ["git", "worktree", "move", str(leaf), str(tmp_path / "probe")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "submodules" in refused.stderr, "the fixture must reproduce git's own refusal"
+    return {"projects": projects, "repo": repo, "slot": slot, "leaf": leaf}
+
+
+def _usable(worktree: Path) -> None:
+    for where in (worktree, worktree / "third" / "sub"):
+        status = subprocess.run(["git", "status", "--short"], cwd=where, capture_output=True, text=True, check=False)
+        assert status.returncode == 0, f"{where}: {status.stderr}"
+    listed = _git("submodule", "status", cwd=worktree)
+    assert listed.startswith(" "), f"submodule not initialised after the move: {listed!r}"
+
+
+def test_given_slot_and_agent_worktrees_with_submodules_when_migrated_then_both_move_and_stay_usable(
+    submodule_fleet,
+):
+    code, out, err = _migrate(submodule_fleet, "-y")
+
+    assert code == 0, out + err
+    repo = submodule_fleet["repo"]
+    new_slot = repo / ".worktrees" / NEW
+    new_leaf = repo / ".worktrees" / f"{NEW}-agents" / "leaf-s"
+    listed = _git("worktree", "list", "--porcelain", cwd=repo)
+    for path in (new_slot, new_leaf):
+        assert f"worktree {path.as_posix()}\n" in listed
+        _usable(path)
+    assert not submodule_fleet["slot"].exists()
+    assert not submodule_fleet["leaf"].exists()
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_leaf).strip() == f"wt/{NEW}/leaf-s"
+
+
+def test_given_a_locked_agent_worktree_with_a_submodule_when_migrated_then_it_is_not_moved_by_hand(
+    submodule_fleet,
+):
+    _git("worktree", "lock", str(submodule_fleet["leaf"]), cwd=submodule_fleet["repo"])
+
+    code, out, err = _migrate(submodule_fleet, "-y")
+
+    assert code == 1, out + err
+    assert "locked" in out + err
+    assert submodule_fleet["leaf"].is_dir()
+    _usable(submodule_fleet["leaf"])
