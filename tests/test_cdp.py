@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import time
 import urllib.request
@@ -666,6 +667,104 @@ class TestCdpStartRealChromeBoundary:
                     f"returncode={proc.poll()!r} stderr={stderr_log.read_text(errors='replace')!r} "
                     f"stdout={stdout_log.read_text(errors='replace')!r}"
                 )
+        finally:
+            reap(proc)
+
+
+_EDGE_BINARIES = {
+    "darwin": ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+    "win32": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+}
+
+
+def _real_edge() -> str | None:
+    for candidate in _EDGE_BINARIES.get(sys.platform, []):
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable")
+
+
+class TestCdpEdgeRealBoundary:
+    """Real-boundary check for Edge and ``--remote-allow-origins=*``.
+
+    Edge rejects a DevTools WebSocket upgrade whose Origin it does not allow, and a client
+    that does not surface the HTTP status just waits, so a mocked suite cannot tell whether
+    the flag does anything. This launches the real Edge headless (no window, so no focus
+    change) and round-trips one command over the WebSocket from a client that SENDS an
+    Origin. ``/json/version`` alone would not do: it answers even when the upgrade is refused.
+    Both arms run, so the test also proves the flag is still load-bearing on this build.
+    """
+
+    @pytest.mark.unconstrained_memory
+    @pytest.mark.parametrize("allow_origins", [True, False], ids=["with-flag", "without-flag"])
+    def test_given_real_edge_when_a_client_with_an_origin_attaches_then_only_the_flag_lets_it_in(
+        self, tmp_path, allow_origins
+    ):
+        import asyncio
+
+        websockets = pytest.importorskip("websockets")
+        refused = pytest.importorskip("websockets.exceptions").InvalidStatus
+        edge = _real_edge()
+        if not edge:
+            pytest.skip("no real Microsoft Edge binary on this machine")
+        if sys.platform == "win32":
+            # Platform-specific: on the hosted Windows runner Edge stays up but never writes
+            # DevToolsActivePort for a fresh profile; the cause is not yet known.
+            pytest.skip("Edge on Windows never reports its DevTools port here (AI-CLI-80rj)")
+
+        profile = tmp_path / "edge-profile"
+        args = [
+            edge,
+            # Port 0: Edge picks a free port and writes it to DevToolsActivePort in the
+            # profile, so there is no race for a port chosen here and nothing to guess.
+            "--remote-debugging-port=0",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--disable-gpu",
+            "--headless=new",
+        ]
+        if sys.platform == "linux":
+            # Linux CI runners restrict unprivileged user namespaces, so Edge's sandbox
+            # aborts at startup (SIGABRT, measured on the hosted Ubuntu runner). The
+            # sandbox is not what this test is about.
+            args.append("--no-sandbox")
+        if allow_origins:
+            args.append("--remote-allow-origins=*")
+        proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            ws_url = None
+            active = profile / "DevToolsActivePort"
+            deadline = time.monotonic() + 60.0
+            while time.monotonic() < deadline and proc.poll() is None:
+                lines = active.read_text(encoding="utf-8").splitlines() if active.is_file() else []
+                if len(lines) >= 2:
+                    ws_url = f"ws://127.0.0.1:{lines[0].strip()}{lines[1].strip()}"
+                    break
+                time.sleep(0.25)
+            assert ws_url, f"real Edge never opened its CDP port; returncode={proc.poll()!r}"
+
+            async def attach() -> dict:
+                async with websockets.connect(ws_url, origin="http://example.com", open_timeout=5) as ws:
+                    await ws.send(json.dumps({"id": 1, "method": "Browser.getVersion"}))
+                    return json.loads(await asyncio.wait_for(ws.recv(), 5))
+
+            async def bounded() -> dict:
+                # In-process bound: a refused upgrade may hang rather than error, and a hang
+                # must fail this test instead of wedging the run.
+                return await asyncio.wait_for(attach(), 15)
+
+            if allow_origins:
+                reply = asyncio.run(bounded())
+                assert reply["id"] == 1
+                assert "Edg/" in reply["result"]["product"]
+            else:
+                with pytest.raises((OSError, TimeoutError, refused)):
+                    asyncio.run(bounded())
         finally:
             reap(proc)
 

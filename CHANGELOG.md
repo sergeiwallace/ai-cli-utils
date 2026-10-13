@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewritten at every drop, so a running launcher's remaining budget is on disk. When an
   update has been installed since launch, a drop warns once that the launcher's code is
   older and that reattaching with the same command loads the fix.
+
+- `ai session-migrate OLD NEW` now also carries the session's delegated work in every
+  repository under `[project] projects_dir`. Agent worktrees under
+  `.worktrees/OLD-agents/` move to `.worktrees/NEW-agents/`, and `wt/OLD/*` branches,
+  checked out or parked, are renamed with each tip anchored under
+  `refs/preserved/session-migrate/` first. Session-home markers naming the old slot
+  follow. A worktree a live Claude Code process is working in is left alone with its
+  branch, an existing destination is skipped, and a git refusal warns and exits 1.
+
 - Each iTerm2 session-registry record now carries why its session ended (`exit`:
   `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
   was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`
