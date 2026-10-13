@@ -3921,9 +3921,10 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error(f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
+        tmux_mouse_mode = "off" if engine == "p" else "on"
         tmux_options = (
             ["tmux", "set-window-option", "-t", identity.session_id, "remain-on-exit", "on"],
-            ["tmux", "set-option", "-t", identity.session_id, "mouse", "on"],
+            ["tmux", "set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode],
             ["tmux", "set-option", "-s", "set-clipboard", "on"],
         )
         for tmux_option in tmux_options:
