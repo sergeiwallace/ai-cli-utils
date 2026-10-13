@@ -461,7 +461,7 @@ ai c myrepo-box-3                             # resume under the new name
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
 | `memory/.held-output-OLD-NN-<slug>.md` replay files in the main tree's and the slot's project directories | renamed to `.held-output-NEW-NN-<slug>.md`, bodies byte-identical; an existing target is skipped |
-| `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried |
+| `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried; the old directory is removed when only `.highwatermark`/`.lock` remain, else left with a warning naming what it holds |
 | `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
 | `session-meta-<engine>-OLD.json` | fields rewritten, renamed |
 | `sessions/<engine>-OLD.sh` wrapper | regenerated from the rewritten metadata, so `--name` and the pinned `CLAUDE_CODE_TASK_LIST_ID` are NEW |

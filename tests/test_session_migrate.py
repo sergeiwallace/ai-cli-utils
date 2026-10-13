@@ -402,3 +402,29 @@ def test_given_the_held_output_target_exists_when_migrated_then_both_files_are_l
     assert new_main.read_bytes() == b"belongs to the new name\n"
     new_memory = cc_project_dir(held_slot["repo"] / ".worktrees" / NEW, held_slot["claude"]) / "memory"
     assert (new_memory / f".held-output-{NEW}-02-summary.md").is_file()
+
+
+def test_given_only_bookkeeping_is_left_in_the_old_task_namespace_when_migrated_then_it_is_removed(slot):
+    old_ns, new_ns = slot["claude"] / "tasks" / OLD, slot["claude"] / "tasks" / NEW
+    (old_ns / ".lock").write_text("")
+    new_ns.mkdir()
+    (new_ns / ".highwatermark").write_text("4")
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert f"task namespace: {old_ns} (removed after rekey)" in out
+
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_ns.exists()
+    assert (new_ns / ".highwatermark").read_text(encoding="utf-8") == "7"
+    assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
+
+
+def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_stays_and_is_named(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    (old_ns / "notes.txt").write_text("keep me\n")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert f"task namespace {old_ns} left in place: it still holds notes.txt" in err
+    assert (old_ns / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert (old_ns / ".highwatermark").is_file()

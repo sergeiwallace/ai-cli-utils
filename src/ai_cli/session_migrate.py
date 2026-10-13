@@ -18,7 +18,8 @@ tasks, memory and resume hand-off:
   and the slot's project directories (filename prefix only);
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``session-adopt``
-  uses for the same two;
+  uses for the same two; the old namespace directory is removed once only its
+  bookkeeping remains;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
   session maps and the iTerm2 restore registry.
@@ -261,6 +262,15 @@ def _plan_held_output(old: str, new: str, dirs: list[tuple[Path, Path | None]]) 
     return moves
 
 
+#: Task-namespace bookkeeping that means nothing once the namespace's tasks have moved.
+_NAMESPACE_BOOKKEEPING = (".highwatermark", ".lock")
+
+
+def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
+    """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
+    return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
+
+
 def _plan_iterm2(old: str) -> list[PlannedMove]:
     try:
         doc = _session_registry.load_registry()
@@ -386,6 +396,12 @@ def migrate_session(
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
     )
+    if old_ns.is_dir():
+        leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
+        if leftover:
+            moves.append(PlannedMove("task namespace", str(old_ns), f"holds {', '.join(leftover)}", "left in place"))
+        else:
+            moves.append(PlannedMove("task namespace", str(old_ns), "", "removed after rekey"))
     for item in moves:
         if item.action == "conflict":
             result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
@@ -430,6 +446,14 @@ def migrate_session(
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
         new_ns.mkdir(mode=0o700, parents=True, exist_ok=True)
         (new_ns / ".highwatermark").write_text(str(top), encoding="utf-8")
+    if old_ns.is_dir():
+        leftover = _namespace_leftovers(old_ns, set())
+        if leftover:
+            result.warnings.append(f"task namespace {old_ns} left in place: it still holds {', '.join(leftover)}")
+        else:
+            for name in _NAMESPACE_BOOKKEEPING:
+                (old_ns / name).unlink(missing_ok=True)
+            old_ns.rmdir()
 
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _apply_session_maps(map_moves, old, new, home, state)
