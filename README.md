@@ -187,14 +187,25 @@ ai c 3          # myrepo-box-3 (or the existing session in that slot)
 ```
 
 `{repo-alias}` is the repository's registered task prefix (`ai register -x`).
-`{host-alias}` is this machine's short alias (lowercase letters and digits starting with a letter, at most 5),
-resolved at launch from the first file that names this machine's host id
-(`AI_HOST`, then `/etc/ai-harness/machine`, then the hostname):
+Where it comes from a persistent `config/fleet-projects.toml` registry, from
+`ai register -x` or from the registration prompt, it must be lowercase letters
+and digits starting with a letter, with single hyphens only between them
+(`ai-cli`), and at most that registry's top-level `max_length` (6 when absent;
+prefer 3 or fewer). Prefixes already in the per-machine `config.toml` tiers keep
+resolving as before.
+
+`{host-alias}` is this machine's short alias (lowercase letters and digits
+starting with a letter, at most the file's `max_length`, 5 by default; prefer 3
+or fewer), resolved at launch from this machine's host id (`AI_HOST`, then
+`/etc/ai-harness/machine`, then the hostname) by the first of these that names it:
 
 1. `<projects>/ai-harness/config/machine-host-aliases.toml`, when an ai-harness
    checkout exists (`$PROJECTS_DIR`, then `[project] projects_dir`, default
-   `~/projects`)
-2. `~/.config/ai-cli-utils/machine-host-aliases.toml`
+   `~/projects`). When it names the host, no other file is read.
+2. `config/machine-host-aliases.toml` in any other repository under the projects
+   directory, in directory-name order. A repository joins by shipping the file.
+   Two of them giving the host different aliases is refused, naming both.
+3. `~/.config/ai-cli-utils/machine-host-aliases.toml`
 
 ```toml
 max_length = 5
@@ -203,7 +214,14 @@ max_length = 5
 my-host = "box"
 ```
 
-A machine named in neither file is refused with both paths, rather than given an
+On a machine none of them names, `ai c` in a terminal asks for the alias, prints
+the limit and the full path of the file that sets it, and appends the answer
+under `[aliases]` in the first of those files that exists (creating the local
+file when none does). The edit is parsed and re-resolved before it replaces the
+file, so a bad answer or a malformed result leaves the file untouched. When the
+file is in a git checkout, commit and push it so every machine sees it.
+`ai c --dry-run` asks and plans but writes nothing. Without a terminal (a hook,
+an agent shell, `ai update`) the launch is refused with every path checked, rather than given an
 invented alias. Sessions named before the host alias joined the name
 (`myrepo-3`) still resolve by slot until they are moved with
 `ai session-migrate myrepo-3 myrepo-box-3`; nothing new is created in that form.

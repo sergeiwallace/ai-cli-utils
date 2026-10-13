@@ -1547,7 +1547,9 @@ def _handle_internal(argv: list[str]) -> None:
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
-            naming_prefix = _session_naming.naming_prefix(project_prefix, _session_naming.resolve_host_alias())
+            naming_prefix = _session_naming.naming_prefix(
+                project_prefix, _session_naming.resolve_or_prompt_host_alias()
+            )
         except _session_naming.HostAliasError as exc:
             _out.emit(Tag.INTERNAL, str(exc), err=True)
             sys.exit(1)
@@ -3278,9 +3280,13 @@ def _do_session_launch(
     # nothing quietly doing something.
     # The host alias is this machine's, so it is resolved only once the launch is
     # known to run HERE: a remote dispatch above names its session on the remote
-    # host, which resolves its own alias when it runs this same code.
+    # host, which resolves its own alias when it runs this same code. On a host no
+    # registry names, a terminal is asked for the alias; a dry run asks and plans with
+    # the answer but writes no registry, which keeps it above every write.
     try:
-        naming_prefix = _session_naming.naming_prefix(project_prefix, _session_naming.resolve_host_alias())
+        naming_prefix = _session_naming.naming_prefix(
+            project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
+        )
     except _session_naming.HostAliasError as exc:
         reporter.error(str(exc))
         sys.exit(1)
