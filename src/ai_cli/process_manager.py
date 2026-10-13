@@ -20,6 +20,11 @@ _STALE_SESSION_REAPER_WATCHER = "stale-session-reaper"
 _STALE_SESSION_REAPER_START_LOCK = threading.Lock()
 
 
+def _native_windows() -> bool:
+    """Native Windows has no tmux, so the stale-session reaper has nothing to watch."""
+    return sys.platform == "win32"
+
+
 def _ensure_circusd() -> str:
     """Start circusd if not already running. Returns the endpoint URI."""
     import shutil as _shutil
@@ -162,7 +167,7 @@ def _cmd_stale_session_reaper_start() -> bool:
     The reaper is never run as a fallback from this lifecycle command.  Failure
     to reach Circus therefore leaves every tmux session untouched.
     """
-    if sys.platform == "win32":
+    if _native_windows():
         _out.emit(Tag.DAEMON, "stale-session-reaper: no-op on native Windows (tmux is unavailable)")
         return True
 
@@ -228,7 +233,7 @@ def _cmd_stale_session_reaper_start() -> bool:
 
 def _start_stale_session_reaper_for_launch() -> None:
     """Schedule reaper startup without delaying or failing a Claude launch."""
-    if sys.platform == "win32":
+    if _native_windows():
         return
     ai_bin = shutil.which("ai") or "ai"
     try:
