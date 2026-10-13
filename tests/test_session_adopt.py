@@ -1373,6 +1373,54 @@ def test_cli_given_no_name_and_no_all_flag_when_invoked_then_refused(cli_world):
     assert "NAME is required" in err
 
 
+@pytest.fixture
+def orphaned_transcript(cli_world):
+    """The session's transcript lives only under a project directory whose source is gone.
+
+    The repo-root copy is removed, and the transcript is written under the project
+    directory of a path that never existed on disk, so ``-s/--source`` has nothing
+    to point at.
+    """
+    (cli_world["src_dir"] / f"{UUID}.jsonl").unlink()
+    gone = cli_world["tmp"] / "projects" / "myproject-deleted-checkout"
+    assert not gone.exists()
+    return _write_transcript(cc_project_dir(gone, cli_world["home"]), UUID, "myproject-2", gone)
+
+
+def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_without_t_then_not_found(
+    cli_world, orphaned_transcript
+):
+    """The control: with neither -s nor -t the adoption cannot find the transcript."""
+    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    assert code == 1
+    assert f"{UUID}.jsonl" not in out
+
+
+def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_with_t_then_it_resolves(
+    cli_world, orphaned_transcript
+):
+    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-t", str(orphaned_transcript), "-y"])
+    assert code == 0, err
+    assert "resolve probe" in out and f"{UUID}.jsonl" in out
+    adopted = cc_project_dir(cli_world["repo"] / ".worktrees" / "myproject-2", cli_world["home"]) / f"{UUID}.jsonl"
+    assert adopted.is_file()
+
+
+def test_cli_given_both_t_and_s_when_invoked_then_refused_before_anything_is_written(cli_world, orphaned_transcript):
+    code, out, err = run_cli(
+        ["ai", "session-adopt", "myproject-2", "--transcript", str(orphaned_transcript), "-s", str(cli_world["repo"])]
+    )
+    assert code == 1
+    assert "-t/--transcript" in err and "-s/--source" in err
+    assert orphaned_transcript.is_file()
+
+
+def test_cli_given_t_naming_a_transcript_with_another_title_when_invoked_then_refused(cli_world, orphaned_transcript):
+    code, out, err = run_cli(["ai", "session-adopt", "myproject-7", "-t", str(orphaned_transcript), "-y"])
+    assert code == 1
+    assert "myproject-7" in err and str(orphaned_transcript) in err
+
+
 def test_cli_given_a_live_session_when_invoked_then_exits_nonzero(cli_world):
     _mark_live(cli_world, 4242, "myproject-2", cli_world["repo"])
     code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])

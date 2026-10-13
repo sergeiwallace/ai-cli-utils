@@ -5438,11 +5438,18 @@ def _print_collision(exc, out=None) -> None:
 @click.option("-T", "--new-title", default="", help="With -c retitle: the confirmed new title")
 @click.option("-I", "--new-index", type=int, default=None, help="With -c retitle: the confirmed new index")
 @click.option("-N", "--task-namespace", default="", help="Source CC task namespace (default: derived from the UUID)")
+@click.option(
+    "-t",
+    "--transcript",
+    type=click.Path(dir_okay=False, exists=True, path_type=Path),
+    default=None,
+    help="Adopt this transcript file, for a session whose source directory no longer exists",
+)
 @click.option("-a", "--all", "adopt_every", is_flag=True, help="Bulk mode: adopt every titled session in the source")
 @click.option("-n", "--dry-run", is_flag=True, help="Show what would happen without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
 def cmd_session_adopt(
-    name, source, repo, on_collision, new_title, new_index, task_namespace, adopt_every, dry_run, yes
+    name, source, repo, on_collision, new_title, new_index, task_namespace, transcript, adopt_every, dry_run, yes
 ):
     """Adopt a session's transcript, tasks, memory and worktree in one pass.
 
@@ -5454,9 +5461,20 @@ def cmd_session_adopt(
     Use this for a session started outside ``ai``; to rename a session already
     registered in an ``ai`` slot, use ``ai session-migrate``.
     """
+    from .cc_migrate import find_transcript
     from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+
+    # -t names the transcript's project directory outright, and -s names the root that
+    # directory is derived from: two answers to one question, so both at once is refused
+    # rather than one silently winning.
+    if transcript is not None and source is not None:
+        _out.error(Tag.ADOPT, "-t/--transcript and -s/--source both name the session's source; pass one")
+        sys.exit(1)
+    if transcript is not None and adopt_every:
+        _out.error(Tag.ADOPT, "-t/--transcript adopts one session; it cannot be combined with -a/--all")
+        sys.exit(1)
 
     if adopt_every:
         outcomes = adopt_all(repo_root, source_root=source, dry_run=dry_run)
@@ -5497,11 +5515,26 @@ def cmd_session_adopt(
         )
         sys.exit(1)
 
+    if transcript is not None:
+        transcript = transcript.resolve()
+        # Adoption finds a transcript by title, so make sure that lookup picks this file:
+        # a title the file does not carry, or a sibling that wins the lookup, would
+        # adopt something other than what was named.
+        found = find_transcript(transcript.parent, title=name)
+        if found is None or found.resolve() != transcript:
+            _out.error(
+                Tag.ADOPT,
+                f"{transcript} is not the session titled {name!r} in its directory"
+                + (f" (that title resolves to {found})" if found is not None else ""),
+            )
+            sys.exit(1)
+
     def _run(preview: bool):
         return adopt_session(
             repo_root,
             name,
             source_root=source,
+            source_project_dir=transcript.parent if transcript is not None else None,
             task_namespace=task_namespace or None,
             new_title=new_title or None,
             on_collision=on_collision,
