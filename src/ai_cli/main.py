@@ -2355,7 +2355,7 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     sys.exit(0)
 
 
-def _do_attach(session_name: str) -> None:
+def _do_attach(session_name: str) -> NoReturn:
     check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
     if check.returncode != 0:
         _out.emit(Tag.ATTACH, f"No tmux session named '{session_name}'", err=True)
@@ -2586,8 +2586,9 @@ def _print_remote_launch_plan(
     if "--firstmate" in (remote_args or []):
         lines.insert(
             -1,
-            "  role         chief-of-staff: the remote host resolves its own chief home, refuses a second "
-            "live chief, registers it and names the session under its own host alias",
+            "  role         chief-of-staff: the remote host decides from its own chief home and tmux -- "
+            "attach to its running chief, resume a registered chief that has stopped, or register a new one "
+            "under its own host alias; a different running chief is refused",
         )
     _out.emit(Tag.PLAN, "\n".join(lines))
 
@@ -2756,7 +2757,13 @@ def _do_session_launch(
     # auto-installs when it can and otherwise prints remediation and continues.
     if not no_direnv:
         # A dry run reports what is missing but installs nothing.
-        _direnv_result = _direnv_setup.ensure_direnv(Path.cwd(), config, auto_install=not dry_run)
+        # -p names the repo the session runs in, so its .envrc decides, not the cwd's.
+        _direnv_root = Path.cwd()
+        if project and not remote:
+            _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project, project))
+            if _named_dir.is_dir():
+                _direnv_root = _named_dir
+        _direnv_result = _direnv_setup.ensure_direnv(_direnv_root, config, auto_install=not dry_run)
         # ensure_direnv reports its own installs and remediation through the active
         # reporter; the fast no-op is verbose-only so a routine launch is not told
         # about a check that took milliseconds and changed nothing.
@@ -3141,7 +3148,15 @@ def _do_session_launch(
         # sessions were separately numbered. An explicit numeric slot is already
         # its own canonical identity and needs no allocation preflight.
         remote_session_id = ""
-        if not name or not name.isdigit():
+        # An unnumbered chief request (`ai cos -R`, `ai c firstmate -R`) means whichever
+        # chief the remote host has, which only that host's registration can say: a slot
+        # allocated here would be the next free index, a second chief the remote refuses.
+        chief_unnumbered = "--firstmate" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
+            _chief_of_staff.chief_slot(name)
+        )
+        if chief_unnumbered:
+            reporter.phase("Session").outcome(f"{name} (the remote host selects its chief)")
+        elif not name or not name.isdigit():
             with reporter.phase("Session", "allocating remote session") as _session_phase:
                 try:
                     remote_session_id, _ = _request_remote_session_allocation(
@@ -3373,7 +3388,10 @@ def _do_session_launch(
             # Migration window: a session named before the host alias joined the name.
             session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
         if not session:
-            reporter.error(f"no matching session found for '{prefix}{name or '*'}'")
+            reporter.error(
+                f"no running session to resume: '{_session.session_name_for(prefix, name) if name else prefix + '*'}' "
+                "is not a tmux session on this host; drop -r/--resume to start it"
+            )
             sys.exit(1)
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session)
@@ -4138,6 +4156,63 @@ def _names_chief_project(project: str) -> bool:
         return False
 
 
+def _chief_project_alias() -> str:
+    """The shortest name ``-p`` accepts for ai-harness: an alias, else its task prefix."""
+    aliases = sorted(
+        (alias for alias, target in _config.get_project_aliases().items() if target == _chief_of_staff.CHIEF_PROJECT),
+        key=len,
+    )
+    if aliases:
+        return aliases[0]
+    try:
+        return _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
+    except _config.ProjectPrefixError:
+        return _chief_of_staff.CHIEF_PROJECT
+
+
+def _chief_has_saved_session(engine: str, ai_name: str) -> bool:
+    """Whether a chief that is not running left a session its relaunch would resume.
+
+    Claude Code resumes by the transcript titled with the session name in the chief's
+    worktree; the other engines resume from the worktree itself.
+    """
+    worktree = _config._find_project_dir(_chief_of_staff.CHIEF_PROJECT) / _session.WORKTREE_DIR / ai_name
+    if engine == "c":
+        return bool(_find_cc_session_candidates_by_title(worktree, ai_name))
+    return worktree.is_dir()
+
+
+def _running_chief(registration: dict | None, naming_prefix: str) -> "tuple[str, str, bool] | None":
+    """``(agent, tmux target, registered)`` for the chief running on this machine, or None.
+
+    The registration is the record, but a chief can be running under a registration that
+    names another (a later launch that overwrote it and then died), so with no live
+    registration the tmux sessions named ``<engine>[-r]-<naming prefix>-firstmate...`` are
+    the evidence. Two such sessions with no registration to choose between them is a
+    refusal, not a guess.
+    """
+    if registration is not None and _chief_of_staff.registration_is_live(registration):
+        target = str(registration.get("tmux_target") or "")
+        return str(registration.get("native_agent_name") or _chief_of_staff.chief_slot(target)), target, True
+    pattern = re.compile(
+        rf"^[a-z]+(?:-r)?-({re.escape(naming_prefix.casefold())}-{_chief_of_staff.SESSION_NAME}(?:-[a-z0-9_-]+)?)$"
+    )
+    try:
+        names = _session._tmux_session_names()
+    except OSError:
+        names = []
+    found = [(match.group(1), name) for name in names if (match := pattern.match(name.casefold()))]
+    if len(found) > 1:
+        _out.error(
+            Tag.COS,
+            "several chief-of-staff tmux sessions are running and none is registered "
+            f"({', '.join(name for _agent, name in found)}); there is one chief per machine. "
+            "Attach to the one to keep with `ai attach <session>` and end the others.",
+        )
+        sys.exit(1)
+    return (*found[0], False) if found else None
+
+
 def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
     """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
@@ -4145,7 +4220,14 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     shorthand), so there is one place that resolves the home, enforces one chief per
     machine, records the registration other sessions read, and exports FM_HOME and the
     role. Refuses rather than guesses: no home, a home without its transport policy, or a
-    chief already running all exit 1 before anything is created.
+    request for a different chief while one is running all exit 1 before anything is
+    created.
+
+    The same command attaches, resumes or creates: a running chief the
+    request names (or any running chief, for an unnumbered request) is attached to with
+    nothing created; a registered chief that is no longer running is relaunched under its
+    own session name, which resumes its worktree and its conversation; otherwise a new
+    chief is created and registered.
 
     The positional NAME becomes the optional suffix in ``firstmate[-<suffix>]``; the index
     and the sanitization come from the ordinary session-naming path, so the chief's tmux
@@ -4170,9 +4252,10 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     # from: `-p` may name it (by directory or alias) but never another project.
     requested = str(options.get("project") or "")
     if requested and not _names_chief_project(requested):
+        alias = _chief_project_alias()
         raise click.UsageError(
-            f"a chief-of-staff always launches into {_chief_of_staff.CHIEF_PROJECT}; "
-            f"drop -p/--project {requested} (or name {_chief_of_staff.CHIEF_PROJECT} itself)"
+            f"-p/--project {requested} names another project, and a chief-of-staff always launches into "
+            f"{_chief_of_staff.CHIEF_PROJECT}: pass `-p {alias}` (or drop -p)"
         )
     options["project"] = _chief_of_staff.CHIEF_PROJECT
     if options.get("remote"):
@@ -4189,18 +4272,6 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     except _chief_of_staff.ChiefOfStaffError as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
-    # ``existing is not None`` is implied by a live registration but has to be stated:
-    # the message below reads fields off it, and nothing else proves it is a dict.
-    if not options.get("resume") and existing is not None and _chief_of_staff.registration_is_live(existing):
-        _out.error(
-            Tag.COS,
-            "a chief-of-staff is already running on this machine "
-            f"(agent {existing.get('native_agent_name')!r}, tmux session {existing.get('tmux_target')!r}). "
-            f"Attach with `ai attach {existing.get('tmux_target')}` or resume with `ai cos -r`; "
-            "there is one chief per machine.",
-        )
-        sys.exit(1)
-
     config = _config.load_config()
     try:
         prefix = options.get("project_prefix") or _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
@@ -4209,16 +4280,14 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         sys.exit(1)
     is_remote = _session._resolve_is_remote(options.get("is_remote", False))
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
+    dry_run = bool(options.get("dry_run"))
     try:
         naming_prefix = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
-        tmux_target, ai_name = _session.build_session_name(
-            engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
-        )
-    except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
+    except _session_naming.HostAliasError as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
 
-    if not options.get("dry_run"):
+    def register(ai_name: str, tmux_target: str) -> None:
         # The key that named the home, or the home's own directory name when -H named it.
         machine_key_used = machine_key or (
             home.name if not fm_home else os.environ.get(_chief_of_staff.MACHINE_KEY_ENV, home.name)
@@ -4226,12 +4295,105 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         _chief_of_staff.write_registration(
             home,
             native_agent_name=ai_name,
-            tmux_target="" if bare else tmux_target,
+            tmux_target=tmux_target,
             machine_key=machine_key_used,
             machine_name=_config.detect_machine_profile()["host_id"],
             launch_cwd=str(Path.cwd()),
         )
         _out.emit(Tag.COS, f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
+
+    requested_slot = _chief_of_staff.chief_slot(session_name)
+    running = _running_chief(existing, naming_prefix)
+    resuming = False
+    if running is not None:
+        agent, target, registered = running
+        running_slot = _chief_of_staff.chief_slot(agent)
+        if not _chief_of_staff.same_chief(requested_slot, running_slot):
+            _out.error(
+                Tag.COS,
+                f"a chief-of-staff is already running on this machine (agent {agent!r}, tmux session {target!r}) "
+                f"and {requested_slot} is not it; there is one chief per machine. Attach to it with "
+                f"`ai c {running_slot}` (from another machine: `ai c {running_slot} -R -p {_chief_project_alias()}`) "
+                f"or `ai attach {target}`.",
+            )
+            sys.exit(1)
+        if not _chief_of_staff.tmux_panes_all_dead(target):
+            if dry_run:
+                _out.emit(
+                    Tag.PLAN,
+                    "\n".join(
+                        [
+                            "dry run -- nothing was created, started, or reaped.",
+                            f"  role       chief-of-staff {agent} is running here (one chief per machine)",
+                            f"  action     attach to tmux session {target}"
+                            + ("" if registered else " and register it (its registration names another chief)"),
+                            "  created    nothing: no session, worktree or registration",
+                        ]
+                    ),
+                )
+                sys.exit(0)
+            if not registered:
+                register(agent, target)
+            _out.emit(Tag.COS, f"attaching to the running chief-of-staff {agent} (tmux session {target})", err=True)
+            _do_attach(target)
+        _out.emit(
+            Tag.COS,
+            f"chief-of-staff {agent} is in tmux session {target} but its process has exited; "
+            f"resuming it as {running_slot} (its worktree and conversation)",
+            err=True,
+        )
+        session_name = running_slot
+        resuming = True
+        # -r would reattach to the frozen pane; the relaunch reaps it and resumes instead.
+        options["resume"] = False
+    elif existing is not None and existing.get("native_agent_name"):
+        registered_slot = _chief_of_staff.chief_slot(str(existing.get("native_agent_name")))
+        if _chief_of_staff.same_chief(requested_slot, registered_slot):
+            _out.emit(
+                Tag.COS,
+                f"chief-of-staff {existing.get('native_agent_name')} is registered but not running; "
+                f"resuming it as {registered_slot} (its worktree and conversation)",
+                err=True,
+            )
+            session_name = registered_slot
+            resuming = True
+            if not bare:
+                # In tmux mode -r means "attach to the running session", and there is none:
+                # the relaunch under the same name is what resumes the conversation.
+                options["resume"] = False
+
+    try:
+        tmux_target, ai_name = _session.build_session_name(
+            engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
+        )
+    except _session.SessionSlotAmbiguityError as exc:
+        _out.error(Tag.COS, f"{exc}")
+        sys.exit(1)
+
+    if options.get("resume") and not resuming and not bare:
+        # Nothing running and nothing registered under this name: -r can still resume a
+        # conversation the chief saved before its registration was lost. Checked before
+        # anything is written: a -r that found nothing used to register the chief it was
+        # about to fail to attach to, then failed on a session name prefixed twice.
+        if _chief_has_saved_session(engine, ai_name):
+            _out.emit(
+                Tag.COS,
+                f"chief-of-staff {ai_name} is not running; resuming its saved session as {requested_slot}",
+                err=True,
+            )
+            options["resume"] = False
+        else:
+            slot = _chief_of_staff.chief_slot(ai_name)
+            _out.error(
+                Tag.COS,
+                f"no resumable chief session for {ai_name} on {_config.detect_machine_profile()['host_id']}: "
+                "nothing running, and no saved session to resume; start one with "
+                f"`ai c {slot}` (from another machine: `ai c {slot} -R -p {_chief_project_alias()}`).",
+            )
+            sys.exit(1)
+
+    if not dry_run:
+        register(ai_name, "" if bare else tmux_target)
     os.environ[_chief_of_staff.FM_HOME_ENV] = str(home)
     os.environ[_chief_of_staff.ROLE_ENV] = _chief_of_staff.ROLE
     options["name"] = session_name
@@ -4244,10 +4406,24 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     The chief options are not part of ``_session_command``'s signature, so they are
     consumed here; without ``-F`` they are a usage error rather than a silent no-op.
     """
+    project = str(options.get("project") or "")
+    if project.startswith("-"):
+        # Click hands `-p -aih` the dash-led token as the value, so the typo would otherwise
+        # surface as "unknown project -aih" (or, for a chief, as a refusal of the project).
+        raise click.UsageError(
+            f"-p/--project got {project!r}, which starts with '-'; no project alias does. "
+            f"Did you mean `-p {project.lstrip('-')}`?"
+        )
     firstmate = options.pop("firstmate", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
     name = str(options.get("name") or "")
+    if name.casefold() == _chief_of_staff.SESSION_NAME and ctx.args and ctx.args[0].isdigit():
+        # `ai c firstmate 1` is `ai c firstmate-1`: the number is the chief's index, not an
+        # argument for the engine, which is where an extra positional otherwise goes.
+        name = f"{_chief_of_staff.SESSION_NAME}-{ctx.args[0]}"
+        options["name"] = name
+        ctx.args = ctx.args[1:]
     if not firstmate and _chief_of_staff.is_chief_positional(name):
         # `ai c firstmate[-N]` is the chief launch itself, not an ordinary session that
         # happens to look like one: it must register, export FM_HOME and the role.
@@ -4311,7 +4487,10 @@ def cmd_cx(ctx, **options):
 @_cli_group.command(
     "cos",
     context_settings=SESSION_CONTEXT,
-    help="Launch a chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --firstmate`)",
+    help=(
+        "Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a "
+        "remote machine (`ai c --firstmate`; also `ai firstmate`, `ai fm`)"
+    ),
 )
 @_session_options
 def cmd_cos(ctx, **options):
@@ -4325,6 +4504,11 @@ def cmd_cos(ctx, **options):
     """
     options["firstmate"] = True
     _dispatch_session("c", ctx, options)
+
+
+# `ai firstmate 1 -r -R` and `ai fm 1 -r -R` are `ai cos 1 -r -R`: the same command object.
+_cli_group.add_command(cmd_cos, name="firstmate")
+_cli_group.add_command(cmd_cos, name="fm")
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
