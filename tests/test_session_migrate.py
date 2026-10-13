@@ -263,3 +263,22 @@ def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_r
     code, _out, err = run_cli(["ai", "session-migrate", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
     assert code == 1
     assert "is not a session name" in err
+
+
+def test_given_a_dry_run_or_a_refusal_when_migrating_then_every_line_carries_the_migrate_tag(slot):
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    lines = [line for line in (out + err).splitlines() if line.strip()]
+    assert lines
+    assert all("[migrate]" in line for line in lines), out + err
+
+    code, out, err = run_cli(["ai", "session-migrate", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
+    assert code == 1
+    assert "[migrate]" in err and "[adopt]" not in out + err
+
+
+def test_given_either_verb_when_help_is_printed_then_it_names_the_other_verb():
+    code, out, _err = run_cli(["ai", "session-migrate", "--help"])
+    assert code == 0 and "session-adopt" in out
+    code, out, _err = run_cli(["ai", "session-adopt", "--help"])
+    assert code == 0 and "session-migrate" in out
