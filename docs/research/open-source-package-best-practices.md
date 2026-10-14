@@ -104,7 +104,12 @@ so the badge commit does not start another CI run. GitHub honours these on `push
 pull request that requires them [VERIFIABLE FACT:
 https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs].
 Push the badge commit straight to the default branch, or to a dedicated branch the README does not
-reference by relative path, and never through a protected pull request.
+reference by relative path, and never through a protected pull request. GitHub reads the marker
+from the head commit's message wherever it appears, so a commit whose message merely quotes the
+string in prose is skipped too, and its pull request then waits on required checks that never run.
+Keep the literal out of ordinary commit messages; a `workflow_dispatch` run on the branch is the
+recovery when it happens. [VERIFIABLE FACT: observed 2026-10-14 on a documentation commit; the
+docs page above describes the marker semantics]
 
 **Ecosystem badges that only cover public projects.** The OpenSSF Scorecard badge,
 `https://api.scorecard.dev/projects/github.com/{owner}/{repo}/badge`, is served from an API the

@@ -284,7 +284,9 @@ Reference the SVG by relative path in the README. The commit that writes it must
 (or `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), which GitHub honours on `push` and
 `pull_request` events. A skipped workflow's checks "remain in a Pending state" and block a pull
 request that requires them. Push the badge commit directly to a branch no protected pull request
-gates [VERIFIABLE FACT:
+gates. The marker is read from the head commit's message wherever it appears, so a commit that only
+quotes the string in prose is skipped as well; keep the literal out of ordinary commit messages, and
+recover with a `workflow_dispatch` run on the branch when it happens [VERIFIABLE FACT:
 https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs].
 Section 1.2a of the companion package-best-practices research tabulates which badge mechanisms
 render for a private repository.
