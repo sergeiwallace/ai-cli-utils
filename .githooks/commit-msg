@@ -14,28 +14,24 @@ fi
 
 FIRST_LINE=$(head -1 "$1")
 
+# Measured against HEAD on every commit, an amend included: no hook stage can tell
+# `git commit --amend -m ...` from a new commit (prepare-commit-msg reports both as
+# "message", and the author date can match HEAD's on a new commit made in the same
+# second), and guessing would let a new commit through on HEAD's entry.
 changelog_staged() {
     # A here-string, not a pipe: under pipefail an early `grep -q` exit can SIGPIPE git.
-    grep -qx "CHANGELOG.md" <<<"$(git diff --cached --name-only "$@")"
-}
-
-# `git commit --amend` keeps HEAD's author date, and the commit it writes replaces
-# HEAD, so its changes are measured from HEAD's parent (or the empty tree for a
-# root commit) rather than from HEAD.
-amend_base() {
-    local head_date
-    head_date=$(git log -1 --format=%ad --date=raw 2>/dev/null) || return 1
-    [ -n "$head_date" ] && [ "${GIT_AUTHOR_DATE:-}" = "@$head_date" ] || return 1
-    git rev-parse -q --verify "HEAD^" 2>/dev/null || git hash-object -t tree /dev/null
+    grep -qx "CHANGELOG.md" <<<"$(git diff --cached --name-only)"
 }
 
 # Match feat: or feat(scope): on the first line only (conventional commit prefix)
 if echo "$FIRST_LINE" | grep -qE "^feat(\([^)]+\))?:"; then
-    if ! changelog_staged && ! { base=$(amend_base) && changelog_staged "$base"; }; then
+    if ! changelog_staged; then
         echo ""
         echo "[commit-msg] ERROR: feat: commits require a CHANGELOG.md [Unreleased] entry."
         echo "[commit-msg] Add the entry, stage CHANGELOG.md, then retry."
         echo "[commit-msg] To bypass: SKIP_CHANGELOG=1 git commit ..."
+        echo "[commit-msg] Rewording a feat: commit that already has its entry is an amend"
+        echo "[commit-msg] with no CHANGELOG.md change; use SKIP_CHANGELOG=1 git commit --amend ..."
         echo ""
         exit 1
     fi
