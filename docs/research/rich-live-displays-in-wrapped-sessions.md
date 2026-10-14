@@ -36,11 +36,13 @@ Coverage index (non-authoritative; the quoted ask governs):
 | "how we can enable live displays for our tmux process-wrapped cc sessions" | [4. Safe pattern per display kind and path](#4-safe-pattern-per-display-kind-and-path) |
 | D-1 lifts the ban | [5. The rule that replaces the ban](#5-the-rule-that-replaces-the-ban) |
 
-One conflict between the records is stated here so nobody has to rediscover it. The design on `main`
-(base `371e86d`) still carries the ban as enforcement rule 3 and as a T-2 acceptance criterion. Open
-PR #301 (AI-CLI-8h3u, head `7477867`) already records D-1 as decided and names this research as the
-source of the live-display rules for T-2 and T-6. The later record governs, so this doc assumes the
-ban is lifted and supplies the rule that replaces it.
+One gap between the records is stated here so nobody has to rediscover it. The brief for this task
+was written when the design on `main` still left D-1 pending. Measured at `12f5c6b` (after
+PR #300), the design records D-1 as option (c), says live displays are wanted, and names this research
+as the source of the live-display rules for T-2 and T-6. Its enforcement rule 3 and the matching
+T-2 acceptance criterion still describe the ban, written as applying "under D-1 (a)". They no longer
+apply, and nothing replaces them yet. [Section 5](#5-the-rule-that-replaces-the-ban) supplies the
+replacement.
 
 **Status:** complete
 
@@ -114,8 +116,9 @@ regardless of age.
 ## Temporal Scope
 
 Rich 15.0.0 (the version the design measured) is the subject, read at its installed source. The
-codebase is `main` at `371e86d`, plus the open line-discipline PR #301 where it changes the exec
-boundary. Spikes ran on 2026-10-13 on an Apple Silicon Mac (macOS, Darwin 27.0.0), Python 3.14,
+code measured is `main` at `371e86d`. `main` has since moved to `12f5c6b`, which changes only the
+design doc, so every code citation still holds. The open line-discipline PR #301 (head `c172de9`) is
+cited where it changes the exec boundary. Spikes ran on 2026-10-13 on an Apple Silicon Mac (macOS, Darwin 27.0.0), Python 3.14,
 inside a private tmux 3.7c server so that pane state can be read back with tmux format variables.
 No Linux or Windows run was made; [Gaps](#gaps-blindspots-and-emergent-findings) says what that
 leaves open.
@@ -466,9 +469,9 @@ Per the brief, these are notes and are not fixed here.
   the attribute reset (`\033[0m`) that `transport._TERMINAL_RESTORE` sends. It also sends
   `\033[>4m` where the transport sends `\033[>4;0m`. Low severity, and not caused by Rich, which
   touches neither mode.
-- B-4. The design on `main` still bans live displays (enforcement rule 3 and a T-2 acceptance
-  criterion), while PR #301 records D-1 as decided with live displays wanted. When T-2 lands, rule 3
-  needs replacing with the enforcement in [section 5](#enforcement).
+- B-4. A rule gap in the design. Enforcement rule 3 and the T-2 acceptance criterion that bans live
+  displays are written for D-1 (a), which was not chosen. Under the chosen (c) the package has no
+  live-display rule at all until T-2 adopts the enforcement in [section 5](#enforcement).
 
 ## Gaps, blindspots and emergent findings
 
@@ -689,6 +692,6 @@ rules: no personal names, private hosts, session names, or tracker ids other tha
 ## Run History
 
 - 2026-10-13: first run, `claude-opus-5-5`, effort high. 23 spikes on macOS with Rich 15.0.0 and
-  tmux 3.7c against `371e86d`, plus a read of open PR #301 at `7477867`.
+  tmux 3.7c against `371e86d`, plus a read of open PR #301 (re-checked at head `c172de9`).
 
 <!-- /doc:region name="run_history" -->
