@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -26,14 +27,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from test_line_discipline import DOLT_LINE, Terminal, _launch, _launch_patches, _rows, posix_pty
+from test_line_discipline import (
+    DOLT_LINE,
+    Terminal,
+    _launch,
+    _launch_patches,
+    _preflight_answering,
+    _rows,
+    posix_pty,
+)
 
 from ai_cli import output as _out
 from ai_cli.main import _auto_update_if_stale as _REAL_AUTO_UPDATE
 from ai_cli.main import cli
 from ai_cli.output import Level, Record, Tag
+from ai_cli.transport import _TERMINAL_RESTORE
 
 REPO = Path(__file__).resolve().parents[1]
+# The launch patches `subprocess.run` itself (module-wide), so a stub that must start a
+# real child keeps its own reference.
+_REAL_RUN = subprocess.run
 
 
 @pytest.fixture(autouse=True)
@@ -82,16 +95,22 @@ def _stale_launcher_commits():
 
 @posix_pty
 def test_given_a_tty_reattach_when_run_through_cli_then_transport_and_dolt_server_lines_are_styled_per_element(
-    terminal, tmp_path
+    tmp_path,
 ):
-    with patch("ai_cli.transport._current_update_commit", side_effect=_stale_launcher_commits()):
-        code = _launch(tmp_path, attempts=2, ssh=lambda *_a, **_k: 255, stdout=terminal.stream, stderr=terminal.stream)
+    # Wide enough that no record wraps, so each screen row is one whole record.
+    terminal = Terminal(columns=400)
+    try:
+        _assert_styled_reattach(tmp_path, terminal)
+    finally:
+        terminal.close()
 
+
+def _assert_styled_reattach(tmp_path: Path, terminal: Terminal) -> None:
+    _reattach_with_stale_launcher(tmp_path, terminal)
     screen = terminal.screen()
     rows = _rows(screen)
     received = bytes(terminal.received)
     produced = [(index, row) for index, row in enumerate(rows) if row.startswith(("[transport] ", "[dolt_server] "))]
-    assert code == 255
     assert any(row.startswith("[dolt_server] healthy") for _, row in produced), rows
     assert any(row.startswith("[transport] Warning: ") for _, row in produced), rows
     for index, row in produced:
@@ -101,8 +120,15 @@ def test_given_a_tty_reattach_when_run_through_cli_then_transport_and_dolt_serve
         if record.level is Level.WARNING:
             assert _styled(_cells(screen, index, "Warning:"), fg="brown", bold=True), row
         assert _styled(_cells(screen, index, record.text[:20]), fg="default", bold=False), row
-        # The bytes on the wire are exactly the renderer's output for that record.
-        assert _out.render_record(record, color=True, stream=terminal.stream).encode() + b"\r\n" in received, row
+        # The bytes on the wire are exactly the renderer's output for that record. The pty's
+        # ONLCR turns the record's own CR LF into CR CR LF on the master side.
+        assert _out.render_record(record, color=True, stream=terminal.stream).encode() + b"\r\r\n" in received, row
+
+
+def _reattach_with_stale_launcher(tmp_path: Path, terminal: Terminal) -> None:
+    with patch("ai_cli.transport._current_update_commit", side_effect=_stale_launcher_commits()):
+        code = _launch(tmp_path, attempts=2, ssh=lambda *_a, **_k: 255, stdout=terminal.stream, stderr=terminal.stream)
+    assert code == 255
 
 
 @posix_pty
@@ -130,16 +156,15 @@ def test_given_no_color_or_dumb_term_when_ai_c_runs_on_a_pty_then_no_sgr_is_writ
 ):
     monkeypatch.setenv(variable, value)
 
-    with patch("ai_cli.transport._current_update_commit", side_effect=_stale_launcher_commits()):
-        code = _launch(tmp_path, attempts=2, ssh=lambda *_a, **_k: 255, stdout=terminal.stream, stderr=terminal.stream)
+    _reattach_with_stale_launcher(tmp_path, terminal)
 
     rows = _rows(terminal.screen())
-    received = bytes(terminal.received)
-    assert code == 255
+    # The transport's terminal restore ends in an attribute reset: terminal control, not a styled line.
+    received = bytes(terminal.received).replace(_TERMINAL_RESTORE.encode(), b"")
     assert any(row.startswith("[transport] Warning: ") for row in rows), rows
     assert any(row.startswith("[dolt_server] healthy") for row in rows), rows
-    # An SGR sequence is CSI ... m; the transport's own terminal-restore sequences are not SGR.
-    assert not [chunk for chunk in received.split(b"\x1b[")[1:] if chunk[:1].isdigit() and b"m" in chunk[:12]], received
+    # An SGR sequence is CSI <digits and semicolons> m.
+    assert not re.findall(rb"\x1b\[[0-9;]*m", received), received
 
 
 @posix_pty
@@ -159,11 +184,11 @@ def test_given_a_narrow_pty_when_a_long_record_is_emitted_then_one_line_is_writt
     finally:
         narrow.close()
 
-    text = long_line.removeprefix("dolt_server: ").strip()
     received = bytes(narrow.received).decode()
     start = received.index("[dolt_server]")
-    record = received[start : received.index("\r\n", start)]
-    assert _out.inert(record) == f"[dolt_server] {text}", repr(record)
+    # Everything up to the record's terminator; the pty's ONLCR doubles the CR before LF.
+    record = received[start : received.index("\n", start)].rstrip("\r")
+    assert _out.inert(record) == f"[dolt_server] {long_line.removeprefix('dolt_server: ')}", repr(record)
 
 
 # --- structured relay between ai processes --------------------------------------
@@ -176,7 +201,7 @@ _CHILD_UPDATE = textwrap.dedent(
     from ai_cli.output import Tag
     output.emit(Tag.UPDATE, "pulled 3 commits", op="install")
     output.emit(Tag.GIT, "Already up to date.")
-    output.warning(Tag.UPDATE, "the uv cache was cold")
+    output.warning(Tag.UPDATE, "the uv cache was cold\\nrun ai update -f to retry")
     """
 )
 
@@ -184,13 +209,14 @@ _CHILD_UPDATE = textwrap.dedent(
 def _child_update(script: str):
     """Answer `ai update` by running ``script`` as a real child Python, as the parent's env says."""
     children: list[subprocess.CompletedProcess[str]] = []
+    preflight = _preflight_answering(f"{DOLT_LINE}\n")
 
     def run(command, **kwargs):
         if isinstance(command, list) and command[1:3] == ["update", "--force"]:
             env = kwargs.get("env") or {}
             assert env.get(_out.RECORD_RELAY_ENV) == "1", "the parent must ask its ai child for records"
             child_env = {key: value for key, value in env.items() if key != "PYTHONPATH"}
-            completed = subprocess.run(
+            completed = _REAL_RUN(
                 [sys.executable, "-c", script, str(REPO / "src")],
                 capture_output=True,
                 text=True,
@@ -200,7 +226,7 @@ def _child_update(script: str):
             )
             children.append(completed)
             return completed
-        return subprocess.CompletedProcess(command, 0, stdout="current", stderr="")
+        return preflight(command, **kwargs)
 
     return run, children
 
@@ -235,7 +261,7 @@ def test_given_a_child_ai_update_when_relayed_through_cli_then_each_line_is_tagg
     child_lines = [json.loads(line) for line in (children[0].stdout + children[0].stderr).splitlines()]
     assert "[update] install: pulled 3 commits\n" in captured.out
     assert "[git] Already up to date.\n" in captured.out
-    assert "[update] Warning: the uv cache was cold\n" in captured.err
+    assert "[update] Warning: the uv cache was cold\n[update] run ai update -f to retry\n" in captured.err
     assert "[update] [" not in captured.out + captured.err
     assert "{" not in captured.out + captured.err
     relayed = {record.text: record for record in records if record.text in {line["text"] for line in child_lines}}
@@ -249,7 +275,7 @@ def test_given_a_malformed_child_record_when_relayed_then_it_becomes_a_descripti
     malformed = [
         '{"ai_cli_record": 1, "tag": "no-such-tag", "level": "info", "op": null, "text": "x"}',
         '{"ai_cli_record": 1, "tag": "update", "level": "loud", "op": null, "text": "y"}',
-        '{"truncated": ',
+        '{"truncated": [1, 2',
     ]
     script = f"import sys\nprint({chr(10).join(malformed)!r})\n"
     run, _children = _child_update(script)
@@ -392,6 +418,16 @@ def test_given_version_and_statusline_paths_when_run_through_cli_then_rich_is_no
         AI_CLI_QUOTA_FIVE_HOUR_RESET=str(int(datetime.now(UTC).timestamp()) + 3600),
     )
 
+    # A first `ai internal` call in a fresh home registers the machine profile and says so in
+    # a record; the reply paths are measured in the steady state after it.
+    subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE, str(REPO / "src"), "internal", "get-version"],
+        capture_output=True,
+        env=env,
+        cwd=tmp_path,
+        check=False,
+        timeout=120,
+    )
     probe = subprocess.run(
         [sys.executable, "-c", _IMPORT_PROBE, str(REPO / "src"), *argv],
         capture_output=True,

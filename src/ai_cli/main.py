@@ -1204,7 +1204,9 @@ def _auto_update_if_stale(config: dict) -> bool:
         cmd = [ai_bin, "update", "--force"] + ([] if verbose else ["--quiet"])
         # Captured even when verbose: the child's lines are replayed through the
         # tagged relay below rather than inherited raw.
-        result = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            cmd, cwd=project_path, capture_output=True, text=True, check=False, env=_out.record_relay_env()
+        )
         if result.returncode != 0:
             # A failed update is not automatically a harmless no-op. `uv tool
             # install --force` tears the environment down before rebuilding it, so
@@ -1597,6 +1599,30 @@ def _request_remote_session_allocation(
 
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
+_EMIT_LEVELS = {"info": _out.Level.INFO, "warning": _out.Level.WARNING, "error": _out.Level.ERROR}
+_EMIT_TARGETS = {"terminal", "plain"}
+
+
+def _internal_emit(args: list[str]) -> int:
+    """``ai internal emit <tag> <level> <terminal|plain> <text...>``: reply with one rendered record.
+
+    The generated session script prints the reply itself, so it can fall back to
+    the same grammar in plain text whenever this exits non-zero or replies empty.
+    ``terminal`` styles the reply unless ``NO_COLOR`` or ``TERM=dumb`` says not to.
+    """
+    if len(args) < 4 or args[1] not in _EMIT_LEVELS or args[2] not in _EMIT_TARGETS:
+        _out.emit(Tag.INTERNAL, "Usage: ai internal emit <tag> <info|warning|error> <terminal|plain> <text>", err=True)
+        return 1
+    try:
+        tag = Tag(args[0])
+    except ValueError:
+        _out.emit(Tag.INTERNAL, f"ai internal emit: unknown tag {args[0]!r}", err=True)
+        return 1
+    color = args[2] == "terminal" and _out.color_allowed()
+    record = _out.make_record(tag, " ".join(args[3:]), level=_EMIT_LEVELS[args[1]])
+    _out.raw(Untagged.INTERNAL_REPLY, _out.render_record(record, color=color))
+    return 0
+
 
 def _handle_internal(argv: list[str]) -> None:
     """Handle `ai internal <action> [args...]` — invoked from bash hooks.
@@ -1608,6 +1634,9 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
+    if action == "emit":
+        # Before the config load: the session script runs this once per message.
+        sys.exit(_internal_emit(argv[1:]))
     config = _config.load_config()
 
     if action == "get-latest-gemini-id":

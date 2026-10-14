@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 
 from ai_cli import direnv_setup as direnv_setup_module
@@ -138,9 +137,10 @@ def test_given_a_tty_stream_when_reported_then_tokens_are_styled(monkeypatch):
     reporter.handoff(engine="Claude Code", session="c-myproject-1")
 
     out = stream.getvalue()
-    assert click.style("[launch]", dim=True) in out
-    assert click.style("Install:", bold=True, fg="cyan") in out
-    assert click.style("Ready:", bold=True, fg="green") in out
+    # Rich renders each element: the tag bold blue, a phase label bold cyan, Ready bold green.
+    assert "\x1b[1;34m[launch]\x1b[0m" in out
+    assert "\x1b[1;36mInstall:\x1b[0m" in out
+    assert "\x1b[1;32mReady:\x1b[0m" in out
 
 
 def test_given_a_non_tty_stream_when_reported_then_no_escape_sequence_reaches_it(monkeypatch):

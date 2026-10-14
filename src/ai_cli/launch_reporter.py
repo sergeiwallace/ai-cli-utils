@@ -11,10 +11,11 @@ which of several prefixes a line belongs to::
     [launch] Error: <text>                               never suppressed by --quiet
     [launch] Ready: handing off to <Engine> (<session>)  last line before every exec/attach
 
-Every line is written by :mod:`ai_cli.output` under ``Tag.LAUNCH``, which owns the
-tag, the per-token colour and the TTY / ``NO_COLOR`` / ``TERM=dumb`` rules. Nothing
-here owns terminal state, so nothing needs tearing down before the launcher
-replaces itself with the engine.
+Every line is a record written by :mod:`ai_cli.output` under ``Tag.LAUNCH``, whose
+renderer owns every element's style and the TTY / ``NO_COLOR`` / ``TERM=dumb``
+rules; this module names only which style a phase label and an outcome take.
+Nothing here owns terminal state, so nothing needs tearing down before the
+launcher replaces itself with the engine.
 """
 
 from __future__ import annotations
@@ -33,11 +34,10 @@ PREFIX = f"[{Tag.LAUNCH.value}]"
 HEARTBEAT_SECONDS = 10.0
 SLOW_OUTCOME_SECONDS = 2.0
 
-_PHASE_STYLE = {"bold": True, "fg": "cyan"}
-_READY_STYLE = {"bold": True, "fg": "green"}
-_WARNING_STYLE = output.WARNING_STYLE
+_PHASE_STYLE = output.LABEL_STYLE
+_READY_STYLE = "bold green"
 _ERROR_STYLE = output.ERROR_STYLE
-_DIM_STYLE = {"dim": True}
+_DIM_STYLE = "dim"
 
 
 class InstallOrigin(StrEnum):
@@ -163,9 +163,10 @@ class LaunchReporter:
         outcome: str,
         *,
         level: int = logging.INFO,
-        phase_style: dict = _PHASE_STYLE,
-        outcome_style: dict | None = None,
+        phase_style: str = _PHASE_STYLE,
+        outcome_style: str = "",
         always: bool = False,
+        record_level: output.Level = output.Level.INFO,
     ) -> None:
         if self.logger is not None:
             self.logger.log(level, "%s %s: %s", PREFIX, phase, outcome)
@@ -177,7 +178,8 @@ class LaunchReporter:
                 outcome,
                 err=True,
                 file=self.stream,
-                label=phase,
+                level=record_level,
+                label=None if record_level in output.LEVEL_LABELS else phase,
                 label_style=phase_style,
                 body_style=outcome_style,
             )
@@ -200,16 +202,17 @@ class LaunchReporter:
                     outcome,
                     err=True,
                     file=self.stream,
+                    level=output.Level.DETAIL,
                     label=name,
                     label_style=_PHASE_STYLE,
                     body_style=_DIM_STYLE,
                 )
 
     def warning(self, message: str) -> None:
-        self._emit("Warning", message, level=logging.WARNING, phase_style=_WARNING_STYLE, always=True)
+        self._emit("Warning", message, level=logging.WARNING, record_level=output.Level.WARNING, always=True)
 
     def error(self, message: str) -> None:
-        self._emit("Error", message, level=logging.ERROR, phase_style=_ERROR_STYLE, always=True)
+        self._emit("Error", message, level=logging.ERROR, record_level=output.Level.ERROR, always=True)
 
     def handoff(self, *, engine: str, session: str) -> None:
         self._emit("Ready", f"handing off to {engine} ({session})", phase_style=_READY_STYLE)

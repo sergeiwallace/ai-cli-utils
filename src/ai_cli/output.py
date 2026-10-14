@@ -16,9 +16,14 @@ must be an :class:`Untagged` member -- the closed, named allowlist of untagged
 output. ``tests/test_output_enforcement.py`` fails the build on any terminal
 write anywhere else.
 
-Colour is applied per token and reaches a TTY only; ``NO_COLOR`` and
-``TERM=dumb`` turn it off there too. Nothing here owns terminal state, so a
-launcher can exec into another program right after any call.
+One renderer (AI-CLI-yxt0): structlog builds one :class:`Record` per line and
+:func:`render_record` turns it into the line, styling each element with Rich.
+Rich renders and this module writes, so Rich never owns the stream, the cursor
+or any terminal state, and a launcher can exec into another program right after
+any call. Colour reaches a TTY only; ``NO_COLOR`` and ``TERM=dumb`` turn it off
+there too. structlog and Rich are imported on the first record, so ``raw()``
+paths (``--version``, the statusline, ``ai internal`` replies) never pay for
+them.
 
 Line discipline (AI-CLI-8h3u): every record is one locked write whose text is
 made inert (no control bytes), ending in CR LF on a POSIX terminal so it lands
@@ -33,24 +38,42 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import json
 import logging
 import os
 import re
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 import click
 
-TAG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
-TAGGED_LINE = re.compile(r"^\[[a-z0-9_-]+\] ")
+if TYPE_CHECKING:
+    from rich.console import Console
+    from rich.text import Text
 
-TAG_STYLE: dict[str, Any] = {"dim": True}
-WARNING_STYLE: dict[str, Any] = {"bold": True, "fg": "yellow"}
-ERROR_STYLE: dict[str, Any] = {"bold": True, "fg": "red"}
+TAG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+OPERATION_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+
+# Rich style strings for each element. T-3 (AI-CLI-mu4d) moves them into config.
+TAG_STYLE = "bold blue"
+OPERATION_STYLE = "bold cyan"
+LABEL_STYLE = "bold cyan"
+WARNING_STYLE = "bold yellow"
+ERROR_STYLE = "bold red"
+
+# A child `ai` process run by run_relayed() (or `ai update`'s self-update) writes
+# one JSON record per line when this is set, and the parent re-emits each record
+# with the child's own tag, operation, level and time. Read once and removed, so
+# it reaches only the child it was set for.
+RECORD_RELAY_ENV = "AI_CLI_RECORD_RELAY"
+_RECORD_MARK = "ai_cli_record"
+_relay_records = os.environ.pop(RECORD_RELAY_ENV, "") == "1"
 
 
 class Tag(StrEnum):
@@ -116,9 +139,43 @@ class Untagged(StrEnum):
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
 
 
+class Level(StrEnum):
+    """How much a record matters. ``warning`` and ``error`` render a label."""
+
+    DETAIL = "detail"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+LEVEL_LABELS = {Level.WARNING: ("Warning:", WARNING_STYLE), Level.ERROR: ("Error:", ERROR_STYLE)}
+
+
 for _tag in Tag:
     if not TAG_PATTERN.match(_tag.value):
         raise ValueError(f"log type tag {_tag.value!r} does not match {TAG_PATTERN.pattern}")
+
+
+@dataclass(frozen=True)
+class Record:
+    """One logical line, built once by the structlog pipeline and rendered per sink.
+
+    ``label`` (with ``label_style``) is the launch reporter's phase name, which
+    becomes the operation element in T-5 (AI-CLI-rbuf). ``continued`` marks the
+    second and later lines of a multi-line message, which repeat the tag but not
+    the label or level.
+    """
+
+    at: datetime
+    tag: Tag
+    text: str
+    level: Level = Level.INFO
+    op: str | None = None
+    label: str | None = None
+    label_style: str = ""
+    text_style: str = ""
+    continued: bool = False
+
 
 _lock = threading.RLock()
 _open_lines: dict[int, Tag] = {}
@@ -145,15 +202,14 @@ def _is_tty(stream: TextIO) -> bool:
         return False
 
 
+def color_allowed() -> bool:
+    """False when the user opted out of colour: ``NO_COLOR`` set non-empty (no-color.org), or ``TERM=dumb``."""
+    return not os.environ.get("NO_COLOR") and os.environ.get("TERM", "").lower() != "dumb"
+
+
 def wants_color(stream: TextIO | None = None) -> bool:
     """True when styling should reach ``stream`` (stderr when omitted)."""
-    # Click strips ANSI for a non-TTY on its own; the NO_COLOR convention
-    # (no-color.org) and TERM=dumb are the two opt-outs it does not implement.
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM", "").lower() == "dumb":
-        return False
-    return _is_tty(stream if stream is not None else sys.stderr)
+    return color_allowed() and _is_tty(stream if stream is not None else sys.stderr)
 
 
 def inert(text: str) -> str:
@@ -177,13 +233,11 @@ def _eol(stream: TextIO) -> str:
     return "\r\n" if os.name != "nt" and _is_tty(stream) else "\n"
 
 
-def _write(stream: TextIO, lines: list[str], *, nl: bool = True, color: bool | None = None) -> None:
+def _write(stream: TextIO, lines: list[str], *, nl: bool = True) -> None:
     """Write rendered ``lines`` as one record: a single write, caller holds ``_lock``."""
-    if color is None:
-        color = wants_color(stream)
     eol = _eol(stream)
     lead = _CLEAR_ROW if _foreign_depth and eol == "\r\n" else ""
-    text = eol.join(lead + (line if color else click.unstyle(line)) for line in lines)
+    text = eol.join(lead + line for line in lines)
     # Every terminal line passes here, so CodeQL's name heuristic traces spend.py's
     # `deep_research_oauth` run counters ("password") and its configured
     # `gcp_project_id` ("private") to this write and reports a clear-text leak. Neither
@@ -295,22 +349,162 @@ def _require_tag(tag: object) -> Tag:
     return tag
 
 
-def render(
-    tag: Tag,
-    text: str,
-    *,
-    label: str | None = None,
-    label_style: dict[str, Any] | None = None,
-    body_style: dict[str, Any] | None = None,
-) -> str:
-    """One tagged line, styled, its text made :func:`inert`; the style is stripped for a non-TTY."""
-    prefix = click.style(f"[{_require_tag(tag).value}]", **TAG_STYLE)
-    text = inert(text)
-    body = click.style(text, **body_style) if body_style and text else text
-    if label is None:
-        return f"{prefix} {body}"
-    styled_label = click.style(f"{label}:", **label_style) if label_style else f"{label}:"
-    return f"{prefix} {styled_label} {body}".rstrip(" ")
+# --- the record pipeline: structlog builds each record ----------------------------
+
+
+def _check_signature(_logger: object, _method: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    # The guarantee is static at the call signature (a Tag member, an operation string);
+    # this processor only checks it, so a record cannot be built around a bad value.
+    _require_tag(event.get("tag"))
+    op = event.get("op")
+    if op is not None and not (isinstance(op, str) and OPERATION_PATTERN.match(op)):
+        raise ValueError(f"operation {op!r} does not match {OPERATION_PATTERN.pattern}")
+    event["level"] = Level(event.get("level", Level.INFO))
+    return event
+
+
+def _timestamp(_logger: object, _method: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    at = event.setdefault("at", datetime.now(UTC))
+    if not isinstance(at, datetime) or at.tzinfo is None:
+        raise ValueError(f"a record time must be an aware datetime, got {at!r}")
+    return event
+
+
+def _to_record(_logger: object, _method: str, event: MutableMapping[str, Any]) -> tuple[tuple[Record], dict[str, Any]]:
+    text = inert(str(event.pop("event")))
+    return (Record(text=text, **event),), {}
+
+
+class _RecordSink:
+    """structlog's wrapped logger: it hands the finished record back to the caller."""
+
+    def msg(self, record: Record) -> Record:
+        return record
+
+
+_pipeline: Any = None
+
+
+def _build(text: str, **fields: Any) -> Record:
+    global _pipeline
+    if _pipeline is None:
+        # Imported on the first record, never at module load: the statusline,
+        # `--version` and `ai internal` replies stay free of the import cost.
+        import structlog
+
+        _pipeline = structlog.wrap_logger(
+            _RecordSink(),
+            wrapper_class=structlog.BoundLogger,
+            processors=[_check_signature, _timestamp, _to_record],
+            cache_logger_on_first_use=True,
+        )
+    return _pipeline.msg(text, **fields)
+
+
+def make_record(tag: Tag, text: str, **fields: Any) -> Record:
+    """One record for ``text`` under ``tag``, built and checked by the pipeline."""
+    return _build(text, tag=tag, **fields)
+
+
+# --- the renderer: Rich styles each element ---------------------------------------
+
+
+def _elements(record: Record) -> list[tuple[str, str]]:
+    parts = [(f"[{record.tag.value}]", TAG_STYLE)]
+    if record.op is not None:
+        parts.append((f"{record.op}:", OPERATION_STYLE))
+    if not record.continued:
+        if record.label is not None:
+            parts.append((f"{record.label}:", record.label_style or LABEL_STYLE))
+        if record.level in LEVEL_LABELS:
+            parts.append(LEVEL_LABELS[record.level])
+    if record.text:
+        parts.append((record.text, record.text_style))
+    return parts
+
+
+_consoles: dict[int, Console] = {}
+
+
+def _console(stream: TextIO) -> Console:
+    from rich.console import Console
+
+    console = _consoles.get(id(stream))
+    if console is None or console.file is not stream:
+        if len(_consoles) > 16:
+            _consoles.clear()
+        # markup off: `[transport]` would otherwise be read as a markup tag and vanish.
+        # soft_wrap on: a long record stays one line instead of being hard-wrapped.
+        # force_terminal: the colour decision is ours (wants_color); Rich picks the depth.
+        console = Console(file=stream, force_terminal=True, markup=False, highlight=False, emoji=False, soft_wrap=True)
+        _consoles[id(stream)] = console
+    return console
+
+
+def _styled_text(record: Record) -> Text:
+    from rich.text import Text
+
+    line = Text()
+    for index, (value, style) in enumerate(_elements(record)):
+        if index:
+            line.append(" ")
+        line.append(value, style=style)
+    return line
+
+
+def _legacy_windows_console(stream: TextIO, console: Console) -> bool:
+    # A Windows console without virtual-terminal support prints escapes literally. Rich
+    # detects one from the process's own console, so the answer applies only to a record
+    # bound for that console, not to a pipe or a captured stream.
+    if sys.platform != "win32":
+        return False
+    try:
+        return stream.fileno() in (1, 2) and console.legacy_windows
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def render_record(record: Record, *, color: bool, stream: TextIO | None = None) -> str:
+    """``record`` as one line with no terminator; styled when ``color``, plain otherwise."""
+    if not color:
+        return " ".join(value for value, _style in _elements(record))
+    target = stream if stream is not None else sys.stderr
+    console = _console(target)
+    if _legacy_windows_console(target, console):
+        return " ".join(value for value, _style in _elements(record))
+    with _lock, console.capture() as capture:
+        console.print(_styled_text(record), end="")
+    return capture.get()
+
+
+def _relay_json(record: Record) -> str:
+    payload = {
+        _RECORD_MARK: 1,
+        "at": record.at.isoformat(),
+        "tag": record.tag.value,
+        "level": record.level.value,
+        "op": record.op,
+        "label": record.label,
+        "text": record.text,
+        "continued": record.continued,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _write_records(stream: TextIO, records: list[Record], *, nl: bool = True) -> None:
+    with _lock:
+        _close_open_lines()
+        if _relay_records:
+            _write(stream, [_relay_json(record) for record in records], nl=nl)
+            return
+        color = wants_color(stream)
+        _write(stream, [render_record(record, color=color, stream=stream) for record in records], nl=nl)
+
+
+def render(tag: Tag, text: str, *, stream: TextIO | None = None) -> str:
+    """One tagged line for a prompt, styled when ``stream`` (stderr when omitted) wants colour."""
+    target = stream if stream is not None else sys.stderr
+    return render_record(_build(text, tag=tag), color=wants_color(target), stream=target)
 
 
 def emit(
@@ -320,14 +514,17 @@ def emit(
     err: bool = False,
     file: TextIO | None = None,
     nl: bool = True,
+    op: str | None = None,
+    level: Level = Level.INFO,
     label: str | None = None,
-    label_style: dict[str, Any] | None = None,
-    body_style: dict[str, Any] | None = None,
+    label_style: str = "",
+    body_style: str = "",
 ) -> None:
     """Write ``message`` with ``[tag]`` on every line; blank lines are dropped.
 
     ``err`` sends it to stderr, ``file`` to an explicit stream, and ``nl=False``
-    leaves the cursor after the last line (an inline prompt).
+    leaves the cursor after the last line (an inline prompt). ``label`` and the
+    two styles are the launch reporter's phase grammar.
     """
     _require_tag(tag)
     lines = [line for line in (inert(part) for part in str(message).split("\n")) if line.strip()]
@@ -336,20 +533,25 @@ def emit(
     if not lines:
         lines = [""]
     stream = _stream(err, file)
-    color = wants_color(stream)
-    rendered = [
-        render(
-            tag,
+    if _relay_records:
+        nl = True  # a record on the wire is a whole line; a later cont() starts a fresh one
+    at = datetime.now(UTC)
+    records = [
+        _build(
             line,
-            label=label if index == 0 else None,
+            tag=tag,
+            at=at,
+            op=op,
+            level=level,
+            label=label,
             label_style=label_style,
-            body_style=body_style,
+            text_style=body_style,
+            continued=index > 0,
         )
         for index, line in enumerate(lines)
     ]
     with _lock:
-        _close_open_lines()
-        _write(stream, rendered, nl=nl, color=color)
+        _write_records(stream, records, nl=nl)
         if not nl:
             _open_lines[id(stream)] = tag
             _open_streams[id(stream)] = stream
@@ -377,17 +579,17 @@ def cont(tag: Tag, message: object, *, err: bool = False, file: TextIO | None = 
 
 def warning(tag: Tag, message: object, *, file: TextIO | None = None) -> None:
     """``[tag] Warning: message`` on stderr."""
-    emit(tag, message, err=True, file=file, label="Warning", label_style=WARNING_STYLE)
+    emit(tag, message, err=True, file=file, level=Level.WARNING)
 
 
 def error(tag: Tag, message: object, *, file: TextIO | None = None) -> None:
     """``[tag] Error: message`` on stderr."""
-    emit(tag, message, err=True, file=file, label="Error", label_style=ERROR_STYLE)
+    emit(tag, message, err=True, file=file, level=Level.ERROR)
 
 
 def confirm(tag: Tag, question: str, *, default: bool = False) -> bool:
     """A yes/no prompt whose prompt line carries ``[tag]``."""
-    return click.confirm(render(tag, question.strip()), default=default)
+    return click.confirm(render(tag, question.strip(), stream=sys.stdout), default=default)
 
 
 def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
@@ -398,10 +600,8 @@ def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
     pollute a stdout a caller captures.
     """
     stream = _stream(err, None)
-    lines = [render(tag, line.strip()) for line in prompt.split("\n") if line.strip()]
+    lines = [render(tag, line.strip(), stream=stream) for line in prompt.split("\n") if line.strip()]
     text = _eol(stream).join(lines) + " "
-    if not wants_color(stream):
-        text = click.unstyle(text)
     with _lock:
         _close_open_lines()
         if not err:
@@ -438,12 +638,53 @@ def raw(reason: Untagged, text: str, *, err: bool = False, file: TextIO | None =
         stream.flush()
 
 
-def relay(tag: Tag, text: object, *, err: bool = True) -> None:
-    """Emit a child process's output, one tagged line per line.
+def _parse_record(line: str) -> Record | None:
+    """The record a child ``ai`` wrote as one JSON line, or None for anything else."""
+    if not line.startswith("{"):
+        return None
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get(_RECORD_MARK) != 1:
+        return None
+    try:
+        label = data.get("label")
+        return _build(
+            data["text"],
+            tag=Tag(data["tag"]),
+            at=datetime.fromisoformat(data["at"]),
+            level=Level(data["level"]),
+            op=data.get("op"),
+            label=label if isinstance(label, str) else None,
+            continued=data.get("continued") is True,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
-    A line the child already tagged (another ``ai`` command) is kept as it is
-    rather than tagged twice. A leading ``<tag>: `` the child prints is dropped,
-    so ``dolt_server: healthy`` becomes ``[dolt_server] healthy``.
+
+_TAGGED_LINE = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] (?:(?P<level>Warning|Error): )?(?P<text>.*)$")
+
+
+def _parse_tagged_line(line: str) -> Record | None:
+    """A line a child already rendered as ``[tag] ...`` (an ``ai`` not asked for records), kept once."""
+    match = _TAGGED_LINE.match(line)
+    if match is None or match["tag"] not in Tag._value2member_map_:
+        return None
+    level = {"Warning": Level.WARNING, "Error": Level.ERROR}.get(match["level"] or "", Level.INFO)
+    return _build(match["text"], tag=Tag(match["tag"]), level=level)
+
+
+def relay(tag: Tag, text: object, *, err: bool = True, op: str | None = None) -> None:
+    """Emit a child process's output, one record per line.
+
+    A line a child ``ai`` wrote as a record (see :data:`RECORD_RELAY_ENV`) is
+    re-emitted once with the child's own tag, operation, level and time. A line
+    already rendered as ``[<tag>] ...`` keeps its tag (and level label) rather
+    than being tagged twice. Any other line becomes the description of a
+    ``tag``/``op`` record; a leading
+    ``<tag>: `` the child prints is dropped, so ``dolt_server: healthy`` becomes
+    ``[dolt_server] healthy``.
     """
     if not isinstance(text, str):
         return
@@ -452,24 +693,32 @@ def relay(tag: Tag, text: object, *, err: bool = True) -> None:
     # Split on LF only: a CR inside a line is the child redrawing it, which
     # inert() reduces to what a terminal would have shown.
     for line in text.split("\n"):
-        if not inert(line).strip():
+        shown = inert(line)
+        if not shown.strip():
             continue
-        if TAGGED_LINE.match(inert(line)):
-            with _lock:
-                _close_open_lines()
-                _write(stream, [inert(line)])
-            continue
-        emit(tag, line[len(own) :] if line.startswith(own) else line, err=err)
+        record = _parse_record(line.strip()) or _parse_tagged_line(shown)
+        if record is None:
+            record = _build(shown[len(own) :] if shown.startswith(own) else shown, tag=tag, op=op)
+        _write_records(stream, [record])
 
 
-def run_relayed(tag: Tag, argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+def record_relay_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``env`` (the current environment when omitted) with a child ``ai`` asked to write records."""
+    return {**(os.environ if env is None else env), RECORD_RELAY_ENV: "1"}
+
+
+def run_relayed(
+    tag: Tag, argv: Sequence[str], *, op: str | None = None, **kwargs: Any
+) -> subprocess.CompletedProcess[str]:
     """Run ``argv`` with its output captured, then relay every line under ``tag``.
 
     stderr is merged into stdout so the child's own ordering survives, and the
-    result goes to stderr with the rest of the diagnostics.
+    result goes to stderr with the rest of the diagnostics. A child ``ai``
+    process answers in records, so its lines keep their own tags.
     """
     _require_tag(tag)
     check = kwargs.pop("check", False)
+    env = record_relay_env(kwargs.pop("env", None))
     completed = subprocess.run(
         list(argv),
         check=check,
@@ -477,9 +726,10 @@ def run_relayed(tag: Tag, argv: Sequence[str], **kwargs: Any) -> subprocess.Comp
         stderr=subprocess.STDOUT,
         text=True,
         errors="replace",
+        env=env,
         **kwargs,
     )
-    relay(tag, completed.stdout)
+    relay(tag, completed.stdout, op=op)
     return completed
 
 

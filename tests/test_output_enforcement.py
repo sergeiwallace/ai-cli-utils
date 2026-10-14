@@ -54,7 +54,6 @@ LIVE_DISPLAY_MODULES = {"rich.live", "rich.progress", "rich.status"}
 # A None name covers the whole file.
 ESCAPE_LITERAL_ALLOWLIST = {
     ("transport.py", "_TERMINAL_RESTORE"): "terminal-control resets after a remote program, not a styled line",
-    ("session_script.py", "_AGENT_TERMINAL_RESET"): "the pane's input-mode reset between agents, not a styled line",
     ("quota.py", None): "statusline segments Claude Code renders verbatim; the statusline path must not import Rich",
 }
 _ESCAPE_LITERAL = re.compile(r"\x1b\[|\\(?:033|x1b|e|u001b)\[")
