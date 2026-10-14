@@ -98,16 +98,34 @@ class Progress:
 
 
 @dataclass(frozen=True)
+class Sink:
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class TelemetrySink(Sink):
+    min_level: str
+
+
+@dataclass(frozen=True)
+class Sinks:
+    terminal: Sink
+    file: Sink
+    telemetry: TelemetrySink
+
+
+@dataclass(frozen=True)
 class OutputSettings:
     order: Sequence[str]
     separator: str
     elements: Elements
     progress: Progress
+    sinks: Sinks
 
 
 def _settings(table: dict[str, Any]) -> OutputSettings:
     """Settings from a complete table: the shipped one, or a user's after validation."""
-    elements = table["elements"]
+    elements, sinks = table["elements"], table["sinks"]
     return OutputSettings(
         order=tuple(table["order"]),
         separator=table["separator"],
@@ -119,6 +137,11 @@ def _settings(table: dict[str, Any]) -> OutputSettings:
             description=DescriptionElement(**elements["description"]),
         ),
         progress=Progress(reload=ReloadProgress(**table["progress"]["reload"])),
+        sinks=Sinks(
+            terminal=Sink(**sinks["terminal"]),
+            file=Sink(**sinks["file"]),
+            telemetry=TelemetrySink(**sinks["telemetry"]),
+        ),
     )
 
 
@@ -160,6 +183,13 @@ def config_path() -> str:
 class _Loaded:
     settings: OutputSettings
     errors: tuple[str, ...]
+    # `[telemetry] enabled`, read from the same parse: the telemetry sink's off switch.
+    telemetry_enabled: bool = True
+
+
+def _telemetry_enabled(data: dict[str, Any]) -> bool:
+    telemetry = data.get("telemetry")
+    return not (isinstance(telemetry, dict) and telemetry.get("enabled") is False)
 
 
 def _load(path: str) -> _Loaded:
@@ -174,15 +204,16 @@ def _load(path: str) -> _Loaded:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         return _Loaded(defaults(), (f"{path}: not valid TOML: {exc}",))
+    telemetry_enabled = _telemetry_enabled(data)
     if "output" not in data:
-        return _Loaded(defaults(), ())
+        return _Loaded(defaults(), (), telemetry_enabled)
     # Only a user table pays for pydantic: the validator is imported here, never at module load.
     from .output_validation import validate
 
     table, errors = validate(data["output"])
     if table is None:
-        return _Loaded(defaults(), tuple(f"{path}: {key}: {reason}" for key, reason in errors))
-    return _Loaded(_settings(table), ())
+        return _Loaded(defaults(), tuple(f"{path}: {key}: {reason}" for key, reason in errors), telemetry_enabled)
+    return _Loaded(_settings(table), (), telemetry_enabled)
 
 
 def _identity(path: str) -> tuple[object, ...] | None:
@@ -206,12 +237,23 @@ def current() -> tuple[OutputSettings, tuple[str, ...]]:
     The caller serialises calls (``ai_cli.output`` holds its lock). An error set is
     returned once per process, so a table that stays broken is reported once.
     """
-    global _loaded_key, _loaded, _reported
+    global _reported
+    loaded = _refresh()
+    if loaded.errors == _reported:
+        return loaded.settings, ()
+    _reported = loaded.errors
+    return loaded.settings, loaded.errors
+
+
+def telemetry_enabled() -> bool:
+    """``[telemetry] enabled`` in the same file, at the same one-``stat`` cost; true unless set false."""
+    return _refresh().telemetry_enabled
+
+
+def _refresh() -> _Loaded:
+    global _loaded_key, _loaded
     path = config_path()
     key = (path, _identity(path))
     if _loaded is None or key != _loaded_key:
         _loaded_key, _loaded = key, _load(path)
-    if _loaded.errors == _reported:
-        return _loaded.settings, ()
-    _reported = _loaded.errors
-    return _loaded.settings, _loaded.errors
+    return _loaded

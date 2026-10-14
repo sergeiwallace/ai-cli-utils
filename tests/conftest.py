@@ -1478,6 +1478,22 @@ def _no_real_nats_connections(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _telemetry_ends_with_the_test():
+    """Drop log records buffered for telemetry, and any attached launch log, when a test ends (AI-CLI-2gq3).
+
+    The output module buffers every warning and error for telemetry and stores the
+    batch at the next ``flush_sinks()``, which ``atexit`` also runs. Left in place, a
+    test's records would be stored by a later test's flush, or by this process's
+    exit after HOME is restored, which writes the operator's real telemetry store.
+    """
+    yield
+    from ai_cli import output
+
+    output._telemetry_buffer.clear()
+    output.attach_file_sink(None)
+
+
+@pytest.fixture(autouse=True)
 def _undated_output_lines(request):
     """Render lines without the datetime element unless a test is about it (AI-CLI-fx4b).
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ai_cli import output as _out
 from ai_cli.launch_logging import _MAX_LOGS_PER_SESSION, create_launch_log
 from ai_cli.launch_reporter import LaunchReporter
 
@@ -13,18 +15,23 @@ def test_given_launch_reporter_when_a_launch_log_is_created_then_it_persists_tim
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path)
 
     launch_log = create_launch_log("session-1")
-    reporter = LaunchReporter(logger=launch_log.logger, stream=launch_log.live_stderr)
+    _out.attach_file_sink(launch_log.write_line)
+    reporter = LaunchReporter(stream=launch_log.live_stderr)
     reporter.start(engine="Claude Code", mode="local, tmux")
     reporter.detail("request", "configuration loaded")
 
-    for handler in launch_log.logger.handlers:
-        handler.flush()
-    content = launch_log.path.read_text(encoding="utf-8")
+    launch_log.close()
+    assert launch_log.path is not None
+    lines = launch_log.path.read_text(encoding="utf-8").splitlines()
 
     assert launch_log.path.parent == tmp_path / "launch-logs"
     assert launch_log.path.name.startswith("session-1-")
-    assert "INFO [launch] start: Starting Claude Code session (local, tmux)" in content
-    assert "DEBUG [launch] request: configuration loaded" in content
+    # The file always leads with the time, even while the terminal's datetime is off.
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} launch log started for session session-1", lines[0]
+    )
+    assert lines[1].endswith(" [launch] start: Starting Claude Code session (local, tmux)")
+    assert lines[2].endswith(" [launch] request: configuration loaded")
 
 
 def test_given_more_than_retention_limit_when_launch_logs_are_created_then_only_recent_logs_remain(
@@ -34,9 +41,7 @@ def test_given_more_than_retention_limit_when_launch_logs_are_created_then_only_
 
     for _ in range(_MAX_LOGS_PER_SESSION + 2):
         launch_log = create_launch_log("session-1")
-        for handler in launch_log.logger.handlers:
-            handler.close()
-        launch_log.logger.handlers.clear()
+        launch_log.close()
 
     assert len(list((tmp_path / "launch-logs").glob("session-1-*.log"))) == _MAX_LOGS_PER_SESSION
 
@@ -67,9 +72,7 @@ def test_given_a_coarse_clock_when_logs_are_created_then_each_gets_its_own_path(
     for _ in range(4):
         launch_log = create_launch_log("session-1")
         paths.append(launch_log.path)
-        for handler in launch_log.logger.handlers:
-            handler.close()
-        launch_log.logger.handlers.clear()
+        launch_log.close()
 
     assert len(set(paths)) == 4, f"the clock alone decided these paths: {paths}"
     assert len(list((tmp_path / "launch-logs").glob("session-1-*.log"))) == 4
@@ -89,9 +92,7 @@ def test_given_a_log_that_cannot_be_deleted_when_pruning_then_the_launch_still_p
 
     for _ in range(_MAX_LOGS_PER_SESSION + 1):
         launch_log = create_launch_log("session-1")
-        for handler in launch_log.logger.handlers:
-            handler.close()
-        launch_log.logger.handlers.clear()
+        launch_log.close()
 
     log_dir = tmp_path / "launch-logs"
     locked = sorted(log_dir.glob("session-1-*.log"), key=lambda item: item.stat().st_mtime)[0]
@@ -106,29 +107,6 @@ def test_given_a_log_that_cannot_be_deleted_when_pruning_then_the_launch_still_p
 
     survived = create_launch_log("session-1")
 
-    assert survived.path.exists()
+    assert survived.path is not None and survived.path.exists()
     assert locked.exists(), "a log still in use must be kept rather than reported as pruned"
-    for handler in survived.logger.handlers:
-        handler.close()
-    survived.logger.handlers.clear()
-
-
-def test_given_tagged_error_and_warning_lines_on_stderr_when_mirrored_then_the_log_keeps_their_levels(
-    tmp_path, monkeypatch
-):
-    """A leading `[tag] ` or `[tag] op: ` must not hide `Error:`/`Warning:` from the launch log's level."""
-    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path)
-
-    launch_log = create_launch_log("session-1")
-    launch_log.stderr.write(
-        "[update] Error: install failed\n[launch] tmux: Error: refused\n[launch] tmux: Warning: degraded\n"
-        "[launch] session: ok\n"
-    )
-    for handler in launch_log.logger.handlers:
-        handler.flush()
-    content = launch_log.path.read_text(encoding="utf-8")
-
-    assert "ERROR [update] Error: install failed" in content
-    assert "ERROR [launch] tmux: Error: refused" in content
-    assert "WARNING [launch] tmux: Warning: degraded" in content
-    assert "INFO [launch] session: ok" in content
+    survived.close()

@@ -268,7 +268,8 @@ Measured at base `06635ff`:
 
 **Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) and T-3
 (AI-CLI-mu4d) implemented. Phase 3: T-4 (AI-CLI-fx4b) and T-5 (AI-CLI-rbuf) implemented. Phase 4:
-T-6 (AI-CLI-zss5) implemented; live reload check pending. Phase 5 not started.
+T-6 (AI-CLI-zss5) implemented; live reload check pending. Phase 5: T-7 (AI-CLI-2gq3) implemented;
+live launch check pending.
 
 Phase 1, as built under today's Click renderer:
 
@@ -391,8 +392,9 @@ Phase 2, T-3, as built:
   (c) refuse `true` until T-4/T-5, the driver chose (c) (Claude Opus 5.5, 2026-10-14):
   (a) leaves keys that silently do nothing, and (b) pulls T-4/T-5 rendering into T-3.
   <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]`
-  tables are not in the schema yet, so a user table that sets them is refused as
-  unknown keys. T-7 adds them with their behaviour; T-6 added `[output.progress.reload]`.
+  and `[output.progress.reload]` tables were not in T-3's schema, so a user table that set
+  them was refused as unknown keys. T-6 added `[output.progress.reload]` and T-7 added
+  `[output.sinks.*]`, each with its behaviour.
 - **Two kinds of check.** Checks on one key run as pydantic validators, so they are
   all reported together. That covers types, unknown keys, style strings
   (`output.check_style`, Rich's `Style.parse`), regexes, the zone name, strftime
@@ -579,6 +581,71 @@ Phase 4, T-6, as built:
   started again, the session gets the row. No compatibility path was added (pre-v1 rule).
 - **Cost.** Each reload costs one `ai internal progress`, the same Python start as one
   `ai internal emit`, and nothing on a launch without reloads.
+
+Phase 5, T-7, as built:
+
+- **One dispatch.** `output._write_records` sends each batch of records to the terminal,
+  to the attached file sink and to the telemetry buffer, under the output lock, reading
+  the settings once for the batch. `emit(..., terminal=False)` keeps a record off the
+  terminal only. `LaunchReporter` uses it for a `-q` launch's info lines and for detail
+  lines without `-v`, so the file still gets them. The reporter no longer takes a
+  `logger`. A child `ai` that answers its parent in records writes to no sink itself;
+  the parent's sinks get the relayed records.
+- **File sink.** `output.attach_file_sink(callable)` takes one plain line per record. The
+  launch attaches `LaunchLog.write_line` for exactly the launch and detaches it in the
+  launch's `finally`. A record renders with the configured elements and no colour; the
+  datetime is switched on, and put first when `order` leaves it out. The file has no
+  separate level column: like the terminal, a warning or error carries its label and
+  an info line carries none.
+- **Non-record text.** The stderr mirror (`_LoggingStderr`) is an
+  `output.MirroredStream`. `_write` writes a record to its `unmirrored` stream, so the
+  mirror sees only text that is not a record, which it logs as `<datetime> <text>`
+  (`output.file_text_line`). `_log_level`, the stdlib `logging` handler and its
+  `asctime LEVEL` format are gone.
+- **A log that cannot be written.** `create_launch_log` returns `LaunchLog(path=None)`
+  when the directory or the file cannot be created, and the session script then gets no
+  log path. A write that fails closes the file and drops the line.
+- **Telemetry sink.** A record at or above `min_level` is buffered as one
+  `telemetry.log.<tag>` event while `[output.sinks.telemetry] enabled` and
+  `[telemetry] enabled` both allow it. The second is read from the same cached parse of
+  `config.toml` (`output_settings.telemetry_enabled()`), so it costs no extra `stat`.
+  The event's data is `at` (ISO 8601 in the configured datetime zone, so its offset
+  matches the terminal's zone), `tag`, `op` (the operation the line shows, the default
+  for an op-less record), `level` and `text`. The row's `ts` is the record's instant.
+  `flush_sinks()` hands the batch to `telemetry.store_log_records`: one transaction,
+  `BEGIN IMMEDIATE` first with a 30 ms busy timeout, so taking the write lock is its only
+  wait, and any exception drops the batch silently. It runs at
+  `LaunchReporter.handoff()` (a remote session holds the terminal for hours without
+  exec'ing), in the exec helper, before the pty handoff, and at exit.
+- **No `fields` yet.** No producer passes structured extras, so `Record` has no `fields`
+  mapping and an event carries the five elements only. It arrives with its first
+  producer.
+- **Not covered: the session script's lines.** `ai internal emit` and
+  `ai internal progress` reply through `raw()`, so their records reach no sink in that
+  process. The script still appends its plain line to the launch log itself, with its
+  own UTC stamp, and nothing it prints reaches telemetry. The
+  [Session-script producers](#session-script-producers) section says `_ai_emit` lines
+  reach all three sinks; that is not built yet.
+- **Found while building.** `telemetry._DB_PATH` was computed at import, so a process
+  whose HOME changed after import wrote the store under the old home. The test suite
+  is such a process, and with this sink its warnings would have reached the operator's
+  real store. The path is now resolved at call time, `tests/conftest.py` drops buffered
+  records and any attached launch log when a test ends, and `telemetry.py` imports
+  `asyncio` only on its bus paths.
+- **Cost.** Measured 2026-10-14 on the same host under load (8–11 on 10 cores), against
+  `origin/main` at `1a29912` unpacked into its own directory, runs interleaved, HOME and
+  XDG directories isolated. `ai c 7 --dry-run`, which ends on six error records and so
+  stores six events at exit, took a median of 0.68 s on the base, 0.66 s with the sink
+  and 0.71 s with `[telemetry] enabled = false` (10 runs each). `ai internal emit
+  session warning reload plain hello` took a median of 0.56 s on the base and 0.59 s
+  on this branch (20 runs each), with the same modules imported: no measurable change.
+  In process, a flush that stores six events took a median of 3–6 ms. With the store
+  locked by another writer it took 61 ms (max 64 ms over 10) with a 50 ms timeout, and
+  159 ms on a macOS CI runner. With `BEGIN IMMEDIATE` and 30 ms it takes 37 ms (max 39 ms
+  over 15) here. On this host
+  `sqlite3.connect` itself stalled for about 165 ms in 2 of 60 samples in one run and
+  in none of 60 in the next. That stall is in the file open, which no SQLite timeout
+  bounds, so a writable store can rarely exceed the 100 ms budget.
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
@@ -1406,28 +1473,41 @@ makes it visible and does not fix it.
     `README.md`
   - Tests added: `tests/test_output_sinks.py`
 - **Tasks and acceptance criteria:**
-  - **T-7 (AI-CLI-2gq3): terminal, file and telemetry agree**
-    - [ ] When `ai c` launches and emits a record, the terminal line, the per-launch log file line and
+  - **T-7 (AI-CLI-2gq3): terminal, file and telemetry agree** (implemented; all tests in
+    `tests/test_output_sinks.py`; live launch check pending)
+    - [x] When `ai c` launches and emits a record, the terminal line, the per-launch log file line and
       the telemetry event shall carry the same datetime, tag, operation, level and description.
       Proved by `test_given_one_warning_event_when_ai_c_launches_then_terminal_file_and_telemetry_agree`
-      (through `cli()`, frozen clock, XDG and home redirected, all three parsed to fields).
-    - [ ] When a record is at or above `min_level`, the system shall store one telemetry event for it
+      (through `cli()`, frozen clock, XDG and home redirected, all three parsed to fields). The test
+      also requires exactly one file line for the record, so a record cannot reach the file twice.
+    - [x] When a record is at or above `min_level`, the system shall store one telemetry event for it
       before handoff or exit. Below `min_level`, it shall store none. Proved by
-      `test_given_records_of_each_level_when_the_launch_hands_off_then_only_warning_and_above_reach_telemetry`.
-    - [ ] If the telemetry store is unwritable, or `[telemetry] enabled = false`, then the launch shall
+      `test_given_records_of_each_level_when_the_launch_hands_off_then_only_warning_and_above_reach_telemetry`,
+      which reads the store at the handoff's own flush.
+    - [x] If the telemetry store is unwritable, or `[telemetry] enabled = false`, then the launch shall
       proceed, the telemetry sink shall add no more than 100 ms before handoff, and no traceback
       shall reach the terminal. Proved by
-      `test_given_an_unwritable_telemetry_store_when_ai_c_hands_off_then_the_launch_proceeds_promptly`.
-    - [ ] If the log file cannot be written, then terminal output shall be unaffected. Proved by
+      `test_given_an_unwritable_telemetry_store_when_ai_c_hands_off_then_the_launch_proceeds_promptly`,
+      with three cases: the store's directory is a file, another writer holds the database locked,
+      and `[telemetry] enabled = false`. It times every `flush_sinks()` of the launch.
+    - [x] If the log file cannot be written, then terminal output shall be unaffected. Proved by
       `test_given_an_unwritable_launch_log_when_ai_c_runs_then_terminal_output_is_unchanged`.
-    - [ ] When an info record's description contains the word "failed", the log file shall store it at
+    - [x] When an info record's description contains the word "failed", the log file shall store it at
       info level (the text heuristic is gone: **intentional change**). Proved by
       `test_given_an_info_line_mentioning_failed_when_logged_then_its_level_is_info`.
-    - [ ] While the terminal is not verbose, `detail` records shall still reach the log file (parity).
+    - [x] While the terminal is not verbose, `detail` records shall still reach the log file (parity).
       Proved by `test_given_a_non_verbose_launch_when_details_are_recorded_then_the_file_has_them`.
-    - [ ] When non-record text reaches stderr during a launch (a traceback, foreign tool output), it
+    - [x] When non-record text reaches stderr during a launch (a traceback, foreign tool output), it
       shall still be mirrored into the log file (parity). Proved by
       `test_given_foreign_stderr_text_when_a_launch_runs_then_the_log_file_mirrors_it`.
+    - [x] Where `[output.sinks.terminal]`, `[output.sinks.file]` or `[output.sinks.telemetry]` turns a
+      sink off or sets `min_level`, only that sink shall change, and the file shall lead with the
+      datetime even when the element is off for the terminal. An invalid sink setting shall be refused
+      under the T-3 rule. Proved by
+      `test_given_sink_settings_when_ai_c_hands_off_then_each_sink_follows_them`,
+      `test_given_min_level_info_when_ai_c_hands_off_then_info_records_reach_telemetry`,
+      `test_given_the_datetime_element_disabled_when_ai_c_launches_then_the_file_still_leads_with_the_time`
+      and `test_given_an_invalid_sink_setting_when_ai_c_dry_runs_then_defaults_render_and_the_key_is_named`.
 - **Exit gate:** T-7 ACs green, gate and CI green, and a live launch whose log file and telemetry rows
   match its terminal lines.
 
@@ -1468,7 +1548,7 @@ makes it visible and does not fix it.
 | 6 | Phase 3 | Datetime element and D-3 presentation | - [x] | T-4: bare, first, `dim`; on by default; `format_datetime` shared by renderer and validator; session-script fallback stamped |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [x] | T-5: every module migrated in one change, so no allowlist was needed; the parity rows are checked by `tests/test_launch_reporter.py` |
 | 8 | Phase 4 | Reload progress (D-4); live reload shows one updating row | - [ ] | T-6 built as D-4 (a): `ai internal progress`, `output.render_progress`, the supervisor's count, the open-row marker; all T-6 ACs green. Live reload on a real host not yet run |
-| 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [ ] | |
+| 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [x] | T-7: one `_write_records` feeds the terminal, the attached launch-log file and the telemetry buffer; `flush_sinks()` stores the batch locally, no bus publish (D-6 (a)); `_log_level` deleted. Live launch check not yet run |
 
 **Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked -->
 

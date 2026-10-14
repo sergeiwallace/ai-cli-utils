@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import io
-import logging
 import os
 import sys
 import time
@@ -12,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ai_cli import direnv_setup as direnv_setup_module
-from ai_cli import launch_reporter
+from ai_cli import launch_reporter, output
 from ai_cli import main as main_module
 from ai_cli import session as session_module
 from ai_cli import tmux_setup as tmux_setup_module
@@ -188,23 +187,17 @@ def test_given_a_colour_opt_out_when_the_stream_is_a_tty_then_no_escape_sequence
     assert stream.getvalue() == "[launch] install: current" + ("\n" if os.name == "nt" else "\r\n")
 
 
-def test_given_a_tty_stream_when_reported_then_the_logger_receives_plain_text(monkeypatch):
+def test_given_a_tty_stream_when_reported_then_the_log_file_receives_plain_text(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
-    records: list[logging.LogRecord] = []
+    logged: list[str] = []
+    output.attach_file_sink(logged.append)
 
-    class _Collect(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
+    LaunchReporter(stream=_TtyStream()).phase("install").outcome("current")
 
-    logger = logging.getLogger("ai_cli.test.launch_reporter.plain")
-    logger.propagate = False
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(_Collect())
-
-    LaunchReporter(stream=_TtyStream(), logger=logger).phase("install").outcome("current")
-
-    assert [record.getMessage() for record in records] == ["[launch] install: current"]
+    [line] = logged
+    assert line.endswith(" [launch] install: current")
+    assert "\x1b" not in line
 
 
 # --- quiet policy ---------------------------------------------------------------
@@ -223,25 +216,19 @@ def test_given_quiet_launch_when_a_warning_or_error_is_reported_then_it_is_still
     ]
 
 
-def test_given_warning_and_error_when_logged_then_they_carry_their_levels():
-    records: list[logging.LogRecord] = []
+def test_given_a_quiet_launch_when_a_warning_or_error_is_logged_then_the_file_carries_its_level():
+    logged: list[str] = []
+    output.attach_file_sink(logged.append)
+    reporter = LaunchReporter(quiet=True, stream=io.StringIO())
 
-    class _Collect(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
-
-    logger = logging.getLogger("ai_cli.test.launch_reporter.levels")
-    logger.propagate = False
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(_Collect())
-    reporter = LaunchReporter(quiet=True, logger=logger, stream=io.StringIO())
-
+    reporter.phase("install").outcome("current")
     reporter.warning("update", "w")
     reporter.error("update", "e")
 
-    assert [(record.levelno, record.getMessage()) for record in records] == [
-        (logging.WARNING, "[launch] update: Warning: w"),
-        (logging.ERROR, "[launch] update: Error: e"),
+    assert [line.split(" ", 3)[3] for line in logged] == [
+        "[launch] install: current",
+        "[launch] update: Warning: w",
+        "[launch] update: Error: e",
     ]
 
 

@@ -514,6 +514,14 @@ Each phase is the line's operation (see
 - Colour is used only when stderr is a terminal. Redirected output, CI logs and the
   per-launch log under the state directory receive the plain text. Set `NO_COLOR`
   to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
+- Each launch writes a log under the state directory (`launch-logs/`) with every line
+  the launch printed, plus the `-v` detail lines and the `-q`-suppressed ones, each
+  starting with its time. Anything else written to stderr during the launch, such as a
+  traceback, is kept there too. Warnings and errors are also stored in the local
+  telemetry database before the launch hands off. The terminal line, the log line and
+  the telemetry event come from one record, so they carry the same time, tag,
+  operation, level and text (see [Output configuration](#output-configuration)). A log
+  directory that cannot be written is skipped; the launch carries on.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a
@@ -693,6 +701,16 @@ pattern = '^[^\x00-\x1f\x7f]*$'
 [output.progress.reload]
 warn_after = 3
 error_after = 6
+
+[output.sinks.terminal]
+enabled = true
+
+[output.sinks.file]
+enabled = true
+
+[output.sinks.telemetry]
+enabled = true
+min_level = "warning"
 ```
 
 - `order` lists the elements left to right, and `separator` goes between two that
@@ -737,6 +755,13 @@ error_after = 6
   reloads the row is a warning; at `error_after` an error line naming the count and
   how to stop the session is also printed and stays in scrollback. Both are whole
   numbers of at least 1, and `error_after` may not be less than `warn_after`.
+- `sinks` decides where each line goes. `terminal` is the styled line on the screen.
+  `file` is the per-launch log, which gets the same elements as plain text and always
+  starts with the datetime, even when the element is off for the terminal. `telemetry`
+  stores each line at or above `min_level` (`detail`, `info`, `warning` or `error`) in
+  the local telemetry database, in one batch just before the launch hands off or the
+  command exits. `[telemetry] enabled = false` also turns it off. Each sink has
+  `enabled`.
 
 The table is read again whenever `config.toml` changes, so an edit applies to the next
 line, even inside a running `ai c` session. If any part of `[output]` is invalid, none
