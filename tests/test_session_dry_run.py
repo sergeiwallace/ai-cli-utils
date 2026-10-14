@@ -18,7 +18,7 @@ guard it from both sides: the option must exist, and it must not mutate.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import run_cli
+from conftest import remote_allocation_reply, run_cli
 
 from ai_cli.main import _do_session_launch, _session_options
 
@@ -214,7 +214,9 @@ def test_without_dry_run_the_remote_launch_still_reaches_the_network():
         patch("ai_cli.main.sys.platform", "linux"),
         patch(
             "ai_cli.main.subprocess.run",
-            return_value=MagicMock(returncode=0, stdout="bash\n", stderr=""),
+            side_effect=lambda command, *_a, **_k: (
+                remote_allocation_reply(command) or MagicMock(returncode=0, stdout="bash\n", stderr="")
+            ),
         ) as mock_run,
         # The pure-SSH handoff is `transport.run_ssh_with_reconnect`, not an exec:
         # that path runs in-process now so a dropped link can be reattached

@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attach is now capped at about a second of real time; it used to count polls, and on a
   loaded host each poll took long enough to stretch that wait to 7 seconds.
 
+- `ai c N -R` now titles the iTerm2 pane after the session the remote host actually
+  opens. For a numeric slot the launcher skipped the remote allocator and composed the
+  name itself as `<engine>-r-<repo>-<N>`, without the remote host's alias, so a migrated
+  session showed its old name in the pane, and its transport state and cleanup were
+  keyed to a session that did not exist. Inside a session, a pane rename that iTerm2's
+  scripting API cannot make (always the case on the remote end of `-R`) now falls back
+  to the OSC 1 title sequence, so the session's own name reaches the pane over ssh.
+
 - A remote session that stops relaunching its agent, for example after `/login` forces
   an exit and the next launch fails before you have logged in again, now tells you how
   to get the agent back. The shell it leaves in the tmux pane lists `exit 78` to

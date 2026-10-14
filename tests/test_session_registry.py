@@ -11,7 +11,7 @@ import textwrap
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import TEST_BOOT_ID, run_cli
+from conftest import TEST_BOOT_ID, remote_allocation_reply, run_cli
 
 from ai_cli import session_registry
 from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
@@ -153,6 +153,8 @@ def _remote_preflight(command, **_kwargs):
         return subprocess.CompletedProcess(command, 0, stdout='{"status": "healthy"}', stderr="")
     if isinstance(command, (list, tuple)) and command and command[-1] == _REMOTE_SHELL_PROBE_CMD:
         return subprocess.CompletedProcess(command, 0, stdout="zsh\n", stderr="")
+    if (allocation := remote_allocation_reply(command)) is not None:
+        return allocation
     return subprocess.CompletedProcess(command, 0, stdout="current", stderr="")
 
 

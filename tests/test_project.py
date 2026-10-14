@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import remote_allocation_reply
 
 from ai_cli.main import (
     _find_aicli_project_path,
@@ -541,7 +542,14 @@ class TestProjectPathSeparatorValidation:
         async def fake_transport_loop(*args, **kwargs):
             pass
 
-        with patch("sys.argv", ["ai", "c", "1", "-R", "--project", "myproject"]):
+        def remote_ssh(command, *_args, **_kwargs):
+            allocation = remote_allocation_reply(command)
+            return allocation if allocation is not None else MagicMock(returncode=1, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "c", "1", "-R", "--project", "myproject"]),
+            patch("ai_cli.main.subprocess.run", side_effect=remote_ssh),
+        ):
             with patch("ai_cli.config.load_config", return_value={"remote": {"host": "h", "user": "u"}}):
                 with patch("ai_cli.config.get_project_aliases", return_value={}):
                     with patch("ai_cli.config.get_current_project_name", return_value=""):

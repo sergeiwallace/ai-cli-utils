@@ -17,7 +17,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from conftest import tmux_runnable  # noqa: F401  (imported for parity with sibling modules)
+from conftest import remote_allocation_reply, tmux_runnable  # noqa: F401  (tmux_runnable: parity with sibling modules)
 
 from ai_cli import transport as _transport
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _run_transport_loop, cli
@@ -77,6 +77,8 @@ def _capture_ssh_argv(config):
     def fake_probe(command, **_kwargs):
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+        if (allocation := remote_allocation_reply(command)) is not None:
+            return allocation
         return MagicMock(returncode=1, stdout="")
 
     async def fake_transport_loop(ssh_args, mosh_args, *_args, **_kwargs):
@@ -259,6 +261,8 @@ class TestTheTerminalIsHandedBack:
         def fake_probe(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            if (allocation := remote_allocation_reply(command)) is not None:
+                return allocation
             return MagicMock(returncode=1, stdout="")
 
         def fake_runner(ssh_args, cleanup_cmd, **kwargs):
@@ -487,6 +491,8 @@ class TestALongLivedSessionKeepsItsReconnectBudget:
         def fake_probe(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            if (allocation := remote_allocation_reply(command)) is not None:
+                return allocation
             return MagicMock(returncode=1, stdout="")
 
         def fake_ssh(argv, **_kwargs):
@@ -603,6 +609,8 @@ class TestACredentialOutageDoesNotSpendTheReconnectBudget:
         def fake_probe(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            if (allocation := remote_allocation_reply(command)) is not None:
+                return allocation
             return MagicMock(returncode=1, stdout="")
 
         def fake_ssh(argv, **kwargs):
@@ -773,6 +781,8 @@ class TestALongLivedLauncherSaysWhatItIsRunning:
         def fake_probe(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            if (allocation := remote_allocation_reply(command)) is not None:
+                return allocation
             return MagicMock(returncode=1, stdout="")
 
         def fake_ssh(argv, **_kwargs):
