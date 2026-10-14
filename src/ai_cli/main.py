@@ -4316,11 +4316,12 @@ def _session_command(engine: str):
         # Startup hooks happen only when launching a new session.
         launch_log = create_launch_log(name or engine)
         launch_log.install_stderr()
-        reporter = LaunchReporter(quiet=quiet, verbose=verbose, logger=launch_log.logger, stream=launch_log.live_stderr)
+        reporter = LaunchReporter(quiet=quiet, verbose=verbose, stream=launch_log.live_stderr)
         # Active for exactly the launch: a successful launch execs and never returns,
         # and a refused one unwinds through the finally, so a reporter bound to this
         # process's stderr and log never outlives the launch that created it.
         previous_reporter = reporter.activate()
+        previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
             mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
             reporter.start(
@@ -4377,12 +4378,13 @@ def _session_command(engine: str):
                 remote_machine=remote_machine,
                 no_direnv=no_direnv,
                 reporter=reporter,
-                launch_log_path=str(launch_log.path),
+                launch_log_path=str(launch_log.path) if launch_log.path is not None else None,
                 dry_run=dry_run,
                 remote_args=list(remote_args),
             )
         finally:
             _launch_reporter.activate(previous_reporter)
+            _out.attach_file_sink(previous_file_sink)
 
     _impl.__name__ = f"cmd_session_{engine}"
     return _impl

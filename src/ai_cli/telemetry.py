@@ -1,10 +1,11 @@
 """Telemetry — event recording and SQLite persistence.
 
 Events flow: caller -> record_event() -> NATS JetStream -> background writer -> SQLite.
+Log records (AI-CLI-2gq3) skip the bus: :func:`store_log_records` writes the batch
+:mod:`ai_cli.output` buffered straight to the local store, before a handoff or exit.
 Opt-out via [telemetry] enabled = false in config.toml (default: enabled).
 """
 
-import asyncio
 import json
 import os
 import socket
@@ -15,7 +16,12 @@ from pathlib import Path
 from . import output as _out
 from .output import Tag
 
-_DB_PATH = Path.home() / ".ai-cli" / "telemetry.db"
+# Set only to point the store elsewhere; otherwise resolved under the home directory
+# at call time, so a process whose HOME changes after import writes where HOME is.
+_DB_PATH: Path | None = None
+# A log-record batch waits at most this long for a store another writer holds, so
+# telemetry can never hold up a launch's handoff (the T-7 budget is 100 ms).
+_LOG_BATCH_TIMEOUT_S = 0.05
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -57,11 +63,15 @@ def _is_enabled() -> bool:
         return True
 
 
-def init_db(db_path: Path | None = None) -> sqlite3.Connection:
+def _db_path() -> Path:
+    return _DB_PATH or Path.home() / ".ai-cli" / "telemetry.db"
+
+
+def init_db(db_path: Path | None = None, *, timeout: float = 5.0) -> sqlite3.Connection:
     """Initialize the telemetry SQLite database."""
-    path = db_path or _DB_PATH
+    path = db_path or _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     return conn
@@ -87,6 +97,25 @@ def write_event(
         ),
     )
     conn.commit()
+
+
+def store_log_records(events: list[tuple[float, str, dict]]) -> None:
+    """Write ``(unix time, subject, data)`` log records in one transaction; any failure raises.
+
+    Not published to the bus (D-6): this runs right before an exec, where a
+    network round trip has no place.
+    """
+    machine = _get_machine_id()
+    session = os.environ.get("AI_TMUX_SESSION")
+    conn = init_db(timeout=_LOG_BATCH_TIMEOUT_S)
+    try:
+        conn.executemany(
+            "INSERT INTO events (ts, subject, machine, session, data) VALUES (?, ?, ?, ?, ?)",
+            [(ts, subject, machine, session, json.dumps(data)) for ts, subject, data in events],
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def record_event(subject: str, data: dict) -> bool:
@@ -123,6 +152,8 @@ def record_event(subject: str, data: dict) -> bool:
 
     # Publish to NATS (non-blocking, non-fatal)
     try:
+        import asyncio
+
         from .messaging import NATSClient
 
         async def _publish_and_close(subject: str, payload: dict) -> None:
@@ -145,6 +176,8 @@ def telemetry_writer() -> int:
     Intended to run as a long-lived daemon.
     Exit codes: 0 = clean stop, 1 = error
     """
+    import asyncio
+
     from .messaging import NATSClient
     from .sync import _acquire_pid_file, _release_pid_file
 

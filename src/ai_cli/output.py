@@ -32,6 +32,13 @@ Which elements a line has, their order, delimiters and styles come from the
 ``[output]`` table of ``config.toml`` (AI-CLI-mu4d, :mod:`ai_cli.output_settings`),
 checked before every record, so an edit applies to the next line.
 
+Three sinks (AI-CLI-2gq3) take every record: the terminal gets the styled line,
+the per-launch log file attached with :func:`attach_file_sink` gets the same
+elements in plain text, always led by the datetime, and telemetry stores each
+record at or above ``[output.sinks.telemetry] min_level``. Telemetry is buffered
+in memory and stored in one batch by :func:`flush_sinks`, before an exec or a
+handoff and at exit, so no record pays for a database write.
+
 Line discipline (AI-CLI-8h3u): every record is one locked write whose text is
 made inert (no control bytes), ending in CR LF on a POSIX terminal so it lands
 at column 0 even while a foreign program has output post-processing off. While
@@ -53,8 +60,8 @@ import re
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, tzinfo
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TextIO
@@ -151,6 +158,8 @@ class Level(StrEnum):
     ERROR = "error"
 
 
+_LEVEL_RANK = {level: rank for rank, level in enumerate(Level)}
+
 for _tag in Tag:
     if not TAG_PATTERN.match(_tag.value):
         raise ValueError(f"log type tag {_tag.value!r} does not match {TAG_PATTERN.pattern}")
@@ -176,10 +185,23 @@ class Record:
     continued: bool = False
 
 
+class MirroredStream(TextIO):  # type: ignore[misc]
+    """A stream that also copies what is written to it elsewhere (the launch log mirrors stderr).
+
+    A record is written past it, to :attr:`unmirrored`, because it reaches that
+    copy through its own sink; only text that is not a record is mirrored.
+    """
+
+    unmirrored: TextIO
+
+
 _lock = threading.RLock()
 _open_lines: dict[int, Tag] = {}
 _open_streams: dict[int, TextIO] = {}
 _foreign_depth = 0
+_file_sink: Callable[[str], None] | None = None
+# (unix time, subject, data) per record due for telemetry, stored by flush_sinks().
+_telemetry_buffer: list[tuple[float, str, dict[str, Any]]] = []
 
 _CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
@@ -232,8 +254,13 @@ def _eol(stream: TextIO) -> str:
     return "\r\n" if os.name != "nt" and _is_tty(stream) else "\n"
 
 
+def _unmirrored(stream: TextIO) -> TextIO:
+    return stream.unmirrored if isinstance(stream, MirroredStream) else stream
+
+
 def _write(stream: TextIO, lines: list[str], *, nl: bool = True) -> None:
     """Write rendered ``lines`` as one record: a single write, caller holds ``_lock``."""
+    stream = _unmirrored(stream)
     eol = _eol(stream)
     lead = _CLEAR_ROW if _foreign_depth and eol == "\r\n" else ""
     text = eol.join(lead + line for line in lines)
@@ -253,18 +280,51 @@ def _close_open_lines() -> None:
         _open_lines.pop(stream_id)
         stream = _open_streams.pop(stream_id, None)
         if stream is not None:
+            stream = _unmirrored(stream)
             with contextlib.suppress(ValueError, OSError):
                 stream.write(_eol(stream))
                 stream.flush()
 
 
 def flush_sinks() -> None:
-    """Close any open line and flush both streams: run before an exec or a handoff."""
+    """Close any open line, flush both streams and store buffered telemetry: run before an exec or a handoff."""
     with _lock:
         _close_open_lines()
         for stream in (sys.stdout, sys.stderr):
             with contextlib.suppress(AttributeError, ValueError, OSError):
                 stream.flush()
+        events = list(_telemetry_buffer)
+        _telemetry_buffer.clear()
+    if events:
+        _store_telemetry(events)
+
+
+def _store_telemetry(events: list[tuple[float, str, dict[str, Any]]]) -> None:
+    # Telemetry is never the reason a launch fails: a store that cannot take the
+    # batch (unwritable, locked past its short timeout) loses it, and says nothing.
+    with contextlib.suppress(Exception):
+        from . import telemetry
+
+        telemetry.store_log_records(events)
+
+
+def attach_file_sink(sink: Callable[[str], None] | None) -> Callable[[str], None] | None:
+    """Send every record to ``sink`` as one plain log-file line (None detaches); return the previous sink.
+
+    The launch attaches its per-launch log for exactly the launch. ``sink`` must
+    not raise: a log file that cannot be written must leave the terminal alone.
+    """
+    global _file_sink
+    with _lock:
+        previous, _file_sink = _file_sink, sink
+    return previous
+
+
+def file_text_line(text: str) -> str:
+    """``text`` that is not a record (a traceback, a foreign tool's line) as a log-file line, led by the time."""
+    settings = _settings()
+    when = settings.elements.datetime
+    return settings.separator.join([when.wrap(format_datetime(datetime.now(UTC), when.format, when.timezone)), text])
 
 
 atexit.register(flush_sinks)
@@ -440,7 +500,7 @@ def _element(name: str, record: Record, settings: OutputSettings) -> list[tuple[
         return [(tag.wrap(record.tag.value), tag.styles.get(record.tag.value, tag.style))]
     if name == "operation" and elements.operation.enabled:
         operation = elements.operation
-        op = record.op if record.op is not None else (operation.default if operation.required else None)
+        op = _shown_op(record, settings)
         return [] if op is None else [(operation.wrap(op), operation.styles.get(op, operation.style))]
     if name == "level" and elements.level.enabled:
         level = elements.level
@@ -451,6 +511,11 @@ def _element(name: str, record: Record, settings: OutputSettings) -> list[tuple[
         description = elements.description
         return [(description.wrap(record.text), record.text_style or description.style)]
     return []
+
+
+def _shown_op(record: Record, settings: OutputSettings) -> str | None:
+    operation = settings.elements.operation
+    return record.op if record.op is not None else (operation.default if operation.required else None)
 
 
 def _elements(record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
@@ -476,12 +541,7 @@ def settings() -> OutputSettings:
 def _report_config_errors(errors: Sequence[str], settings: OutputSettings) -> None:
     # Rendered with the shipped defaults: the table being refused cannot style its own errors.
     records = [_build(message, tag=Tag.CONFIG, op="load", level=Level.ERROR) for message in errors]
-    _close_open_lines()
-    if _relay_records:
-        _write(sys.stderr, [_relay_json(record) for record in records])
-        return
-    color = wants_color(sys.stderr)
-    _write(sys.stderr, [render_record(record, color=color, stream=sys.stderr, settings=settings) for record in records])
+    _write_records(sys.stderr, records, settings=settings)
 
 
 _consoles: dict[int, Console] = {}
@@ -537,10 +597,14 @@ def resolve_zone(name: str) -> tzinfo | None:
     return ZoneInfo(name)
 
 
+def _in_zone(at: datetime, timezone: str) -> datetime:
+    zone = resolve_zone(timezone)
+    return at.astimezone(zone) if zone is not None else at.astimezone()
+
+
 def format_datetime(at: datetime, fmt: str, timezone: str) -> str:
     """``at`` in ``timezone``, formatted by the strftime ``fmt``; an unknown zone raises ``KeyError``."""
-    zone = resolve_zone(timezone)
-    return (at.astimezone(zone) if zone is not None else at.astimezone()).strftime(fmt)
+    return _in_zone(at, timezone).strftime(fmt)
 
 
 def _legacy_windows_console(stream: TextIO, console: Console) -> bool:
@@ -599,14 +663,74 @@ def _relay_json(record: Record) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _write_records(stream: TextIO, records: list[Record], *, nl: bool = True) -> None:
+def _file_settings(settings: OutputSettings) -> OutputSettings:
+    # The log file always leads with the time: a line without one says nothing about when.
+    when = settings.elements.datetime
+    if when.enabled and "datetime" in settings.order:
+        return settings
+    order = settings.order if "datetime" in settings.order else ("datetime", *settings.order)
+    elements = replace(settings.elements, datetime=replace(when, enabled=True))
+    return replace(settings, order=tuple(order), elements=elements)
+
+
+def _telemetry_event(record: Record, settings: OutputSettings) -> tuple[float, str, dict[str, Any]]:
+    data = {
+        "at": _in_zone(record.at, settings.elements.datetime.timezone).isoformat(),
+        "tag": record.tag.value,
+        "op": _shown_op(record, settings),
+        "level": record.level.value,
+        "text": record.text,
+    }
+    return record.at.timestamp(), f"telemetry.log.{record.tag.value}", data
+
+
+def _write_records(
+    stream: TextIO,
+    records: list[Record],
+    *,
+    nl: bool = True,
+    terminal: bool = True,
+    settings: OutputSettings | None = None,
+) -> bool:
+    """Send ``records`` to every sink; True when they reached the terminal.
+
+    ``terminal=False`` keeps them off the terminal only (a ``-q`` launch's info
+    line, a detail line without ``-v``): the file and telemetry still get them.
+    """
     with _lock:
-        _close_open_lines()
         if _relay_records:
-            _write(stream, [_relay_json(record) for record in records], nl=nl)
-            return
-        color = wants_color(stream)
-        _write(stream, [render_record(record, color=color, stream=stream) for record in records], nl=nl)
+            # A child `ai` answers its parent in records, and the parent owns every sink.
+            if terminal:
+                _close_open_lines()
+                _write(stream, [_relay_json(record) for record in records], nl=nl)
+            return terminal
+        settings = settings if settings is not None else _settings()
+        shown = terminal and settings.sinks.terminal.enabled
+        if shown:
+            _close_open_lines()
+            color = wants_color(stream)
+            _write(
+                stream,
+                [render_record(record, color=color, stream=stream, settings=settings) for record in records],
+                nl=nl,
+            )
+        if _file_sink is not None and settings.sinks.file.enabled:
+            file_settings = _file_settings(settings)
+            for record in records:
+                _file_sink(render_record(record, color=False, settings=file_settings))
+        telemetry = settings.sinks.telemetry
+        if telemetry.enabled:
+            floor = _LEVEL_RANK[Level(telemetry.min_level)]
+            due = [record for record in records if _LEVEL_RANK[record.level] >= floor]
+            if due and _telemetry_switch():
+                _telemetry_buffer.extend(_telemetry_event(record, settings) for record in due)
+        return shown
+
+
+def _telemetry_switch() -> bool:
+    from . import output_settings
+
+    return output_settings.telemetry_enabled()
 
 
 def render(tag: Tag, op: str, text: str, *, stream: TextIO | None = None) -> str:
@@ -625,16 +749,20 @@ def emit(
     nl: bool = True,
     level: Level = Level.INFO,
     body_style: str = "",
+    terminal: bool = True,
 ) -> None:
     """Write ``message`` as ``[tag] op:`` on every line; blank lines are dropped.
 
     ``op`` names the operation the line belongs to, from the configured vocabulary.
     ``err`` sends it to stderr, ``file`` to an explicit stream, and ``nl=False``
     leaves the cursor after the last line (an inline prompt). ``body_style`` is the
-    launch reporter's outcome style.
+    launch reporter's outcome style. ``terminal=False`` records the line in the log
+    file and telemetry without printing it.
     """
     _require_tag(tag)
-    _emit(tag, require_op(op), message, err=err, file=file, nl=nl, level=level, body_style=body_style)
+    _emit(
+        tag, require_op(op), message, err=err, file=file, nl=nl, level=level, body_style=body_style, terminal=terminal
+    )
 
 
 def _emit(
@@ -647,6 +775,7 @@ def _emit(
     nl: bool = True,
     level: Level = Level.INFO,
     body_style: str = "",
+    terminal: bool = True,
 ) -> None:
     lines = [line for line in (inert(part) for part in str(message).split("\n")) if line.strip()]
     if not lines:
@@ -668,8 +797,8 @@ def _emit(
         for index, line in enumerate(lines)
     ]
     with _lock:
-        _write_records(stream, records, nl=nl)
-        if not nl:
+        shown = _write_records(stream, records, nl=nl, terminal=terminal)
+        if shown and not nl:
             _open_lines[id(stream)] = tag
             _open_streams[id(stream)] = stream
 

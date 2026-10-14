@@ -138,11 +138,26 @@ class Progress(_Table):
     reload: ReloadProgress
 
 
+class Sink(_Table):
+    enabled: bool
+
+
+class TelemetrySink(Sink):
+    min_level: LevelName
+
+
+class Sinks(_Table):
+    terminal: Sink
+    file: Sink
+    telemetry: TelemetrySink
+
+
 class OutputSettings(_Table):
     order: list[ElementName]
     separator: str
     elements: Elements
     progress: Progress
+    sinks: Sinks
 
 
 def _unknown(names: Iterable[str], known: Iterable[str]) -> list[str]:

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The per-launch log and telemetry now come from the same record as the terminal line,
+  so all three carry the same time, tag, operation, level and text. The log file gets
+  the line's elements as plain text and always starts with the time, even when the
+  element is off for the terminal. It also gets `-v` detail lines and lines `-q`
+  suppresses. A line's level in the log is the record's own: an info line that mentions
+  "failed" is no longer logged as an error. Warnings and errors (`min_level`) are stored
+  in the local telemetry database as `telemetry.log.<tag>` events, in one batch just
+  before the launch hands off or the command exits, and never published to the message
+  bus. The new `[output.sinks.terminal]`, `[output.sinks.file]` and
+  `[output.sinks.telemetry]` tables turn each sink on or off, and
+  `[telemetry] enabled = false` also stops the telemetry sink. A launch-log directory
+  that cannot be written, or a telemetry store that is locked or unwritable, no longer
+  stops or delays the launch.
 - Every line an `ai` command prints now starts with the time it was produced, as
   `2026-07-01 14:30:00 EDT`: 24-hour, in US Eastern time by default, dim on a terminal.
   The `[output.elements.datetime]` table sets its `format`, `timezone` (`UTC`, `local`

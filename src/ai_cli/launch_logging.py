@@ -1,19 +1,27 @@
-"""Persistent, bounded log files for session-launch diagnostics."""
+"""Persistent, bounded log files for session-launch diagnostics.
+
+Every record a launch produces reaches its log through the output module's file
+sink (AI-CLI-2gq3), rendered from the record itself, so a line's level is the
+record's own. The stderr mirror here only adds what is not a record: a traceback,
+or a line some library printed. A log that cannot be created or written is
+skipped: it never changes what the terminal shows.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import itertools
-import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
 from . import config
+from . import output as _out
 from .output import inert
 
 _LOG_DIRECTORY = "launch-logs"
@@ -29,26 +37,17 @@ def _safe_session_name(session_name: str) -> str:
     return normalized[:64] or "launch"
 
 
-# The tag and, when present, the operation element (AI-CLI-rbuf) that lead a rendered line.
-_LINE_TAG = re.compile(r"^\[[a-z0-9_-]+\] (?:[a-z][a-z0-9-]*: )?")
+class _LoggingStderr(_out.MirroredStream):
+    """Mirror the text written to launch stderr that is not a record into the launch log."""
 
-
-def _log_level(message: str) -> int:
-    stripped = _LINE_TAG.sub("", message.lstrip(), count=1)
-    if stripped.startswith("Error:") or " failed" in stripped.lower():
-        return logging.ERROR
-    if stripped.startswith("Warning:") or "warning:" in stripped.lower():
-        return logging.WARNING
-    return logging.INFO
-
-
-class _LoggingStderr(TextIO):  # type: ignore[misc]
-    """Mirror launch stderr into the standard logging pipeline line by line."""
-
-    def __init__(self, stream: TextIO, logger: logging.Logger):
+    def __init__(self, stream: TextIO, log: LaunchLog):
         self._stream = stream
-        self._logger = logger
+        self._log_file = log
         self._partial = ""
+
+    @property
+    def unmirrored(self) -> TextIO:
+        return self._stream
 
     def write(self, message: str) -> int:
         written = self._stream.write(message)
@@ -59,10 +58,9 @@ class _LoggingStderr(TextIO):  # type: ignore[misc]
         return written
 
     def _log(self, line: str) -> None:
-        # A terminal record ends in CR LF and may lead with a row clear; the file keeps the text.
         line = inert(line)
         if line.strip():
-            self._logger.log(_log_level(line), line)
+            self._log_file.write_line(_out.file_text_line(line))
 
     def flush(self) -> None:
         if self._partial:
@@ -88,15 +86,42 @@ class _LoggingStderr(TextIO):  # type: ignore[misc]
 
 @dataclass
 class LaunchLog:
-    """A launch log and its stderr mirror, kept alive until process handoff."""
+    """A launch log and its stderr mirror, kept alive until process handoff.
 
-    path: Path
-    logger: logging.Logger
-    stderr: TextIO
+    ``path`` is None when the log could not be created; every write is then a no-op.
+    """
+
+    path: Path | None
+    stderr: TextIO = field(init=False)
+    _file: TextIO | None = field(default=None, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        self.stderr = _LoggingStderr(sys.stderr, self)
+
+    def write_line(self, line: str) -> None:
+        """Append one line; a log that stops accepting writes is closed and the line dropped."""
+        with self._lock:
+            if self._file is None:
+                return
+            try:
+                self._file.write(f"{line}\n")
+                self._file.flush()
+            except (OSError, ValueError):
+                with contextlib.suppress(OSError, ValueError):
+                    self._file.close()
+                self._file = None
 
     def install_stderr(self) -> None:
         """Capture subsequent launch diagnostics while preserving live stderr."""
         sys.stderr = self.stderr  # type: ignore[assignment]
+
+    def close(self) -> None:
+        with self._lock:
+            if self._file is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    self._file.close()
+                self._file = None
 
     @property
     def live_stderr(self) -> TextIO:
@@ -105,10 +130,17 @@ class LaunchLog:
 
 
 def create_launch_log(session_name: str) -> LaunchLog:
-    """Create a timestamped launch log and retain only recent logs per session."""
+    """Create a timestamped launch log and retain only recent logs per session.
+
+    If the log directory or file cannot be created, the launch gets a log that
+    records nothing rather than an error: diagnostics are never why a launch fails.
+    """
     safe_name = _safe_session_name(session_name)
     log_dir = config.get_xdg_state_home() / _LOG_DIRECTORY
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return LaunchLog(path=None)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     path = log_dir / f"{safe_name}-{timestamp}-{os.getpid()}.log"
     while path.exists():
@@ -133,11 +165,10 @@ def create_launch_log(session_name: str) -> LaunchLog:
         with contextlib.suppress(OSError):
             stale.unlink(missing_ok=True)
 
-    logger = logging.getLogger(f"ai_cli.launch.{timestamp}.{id(path)}")
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False
-    handler = logging.FileHandler(path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.info("launch log started for session %s", safe_name)
-    return LaunchLog(path=path, logger=logger, stderr=_LoggingStderr(sys.stderr, logger))
+    try:
+        log_file = path.open("a", encoding="utf-8")
+    except OSError:
+        return LaunchLog(path=None)
+    launch_log = LaunchLog(path=path, _file=log_file)
+    launch_log.write_line(_out.file_text_line(f"launch log started for session {safe_name}"))
+    return launch_log

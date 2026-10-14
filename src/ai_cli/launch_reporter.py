@@ -15,7 +15,9 @@ which of several prefixes a line belongs to. A phase is an operation from the
 
 Every line is a record written by :mod:`ai_cli.output` under ``Tag.LAUNCH``, whose
 renderer owns every element's style and the TTY / ``NO_COLOR`` / ``TERM=dumb``
-rules; this module names only which style an outcome takes.
+rules; this module names only which style an outcome takes. ``-q`` and the
+verbose-only detail lines decide what reaches the terminal; every record still
+reaches the launch log and telemetry through the output module's sinks.
 Nothing here owns terminal state, so nothing needs tearing down before the
 launcher replaces itself with the engine.
 """
@@ -32,7 +34,6 @@ from typing import TextIO
 from . import output
 from .output import Tag
 
-PREFIX = f"[{Tag.LAUNCH.value}]"
 HEARTBEAT_SECONDS = 10.0
 SLOW_OUTCOME_SECONDS = 2.0
 
@@ -139,13 +140,11 @@ class LaunchReporter:
         *,
         quiet: bool = False,
         verbose: bool = False,
-        logger: logging.Logger | None = None,
         stream: TextIO | None = None,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
     ):
         self.quiet = quiet
         self.verbose = verbose
-        self.logger = logger
         self.stream = stream
         self.heartbeat_seconds = heartbeat_seconds
         self._lock = threading.Lock()
@@ -167,14 +166,16 @@ class LaunchReporter:
         record_level = {logging.WARNING: output.Level.WARNING, logging.ERROR: output.Level.ERROR}.get(
             level, output.Level.INFO
         )
-        if self.logger is not None:
-            label = f"{record_level.value.capitalize()}: " if record_level is not output.Level.INFO else ""
-            self.logger.log(level, "%s %s: %s%s", PREFIX, op, label, outcome)
-        if self.quiet and not always:
-            return
         with self._lock:
             output.emit(
-                Tag.LAUNCH, op, outcome, err=True, file=self.stream, level=record_level, body_style=outcome_style
+                Tag.LAUNCH,
+                op,
+                outcome,
+                err=True,
+                file=self.stream,
+                level=record_level,
+                body_style=outcome_style,
+                terminal=always or not self.quiet,
             )
 
     def start(self, *, engine: str, mode: str, continuing: bool = False) -> None:
@@ -186,20 +187,17 @@ class LaunchReporter:
         return _Phase(self, op, start)
 
     def detail(self, op: str, outcome: str) -> None:
-        output.require_op(op)
-        if self.logger is not None:
-            self.logger.debug("%s %s: %s", PREFIX, op, outcome)
-        if self.verbose and not self.quiet:
-            with self._lock:
-                output.emit(
-                    Tag.LAUNCH,
-                    op,
-                    outcome,
-                    err=True,
-                    file=self.stream,
-                    level=output.Level.DETAIL,
-                    body_style=_DIM_STYLE,
-                )
+        with self._lock:
+            output.emit(
+                Tag.LAUNCH,
+                op,
+                outcome,
+                err=True,
+                file=self.stream,
+                level=output.Level.DETAIL,
+                body_style=_DIM_STYLE,
+                terminal=self.verbose and not self.quiet,
+            )
 
     def warning(self, op: str, message: str) -> None:
         self._emit(op, message, level=logging.WARNING, always=True)
@@ -209,6 +207,9 @@ class LaunchReporter:
 
     def handoff(self, *, engine: str, session: str) -> None:
         self._emit("handoff", f"ready, handing off to {engine} ({session})")
+        # The engine may hold the terminal for hours (a remote session never execs):
+        # the launch's telemetry is stored now, not when this process finally exits.
+        output.flush_sinks()
 
 
 _active: LaunchReporter | None = None
