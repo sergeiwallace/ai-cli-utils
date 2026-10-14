@@ -19,10 +19,19 @@ write anywhere else.
 Colour is applied per token and reaches a TTY only; ``NO_COLOR`` and
 ``TERM=dumb`` turn it off there too. Nothing here owns terminal state, so a
 launcher can exec into another program right after any call.
+
+Line discipline (AI-CLI-8h3u): every record is one locked write whose text is
+made inert (no control bytes), ending in CR LF on a POSIX terminal so it lands
+at column 0 even while a foreign program has output post-processing off. While
+:func:`foreign_terminal` is active a record also starts by clearing its row,
+and :func:`reclaim_terminal` restores ``OPOST``/``ONLCR`` and starts a fresh
+row when the terminal comes back. A line left open is closed before any other
+record, before an exec (:func:`flush_sinks`) and at exit.
 """
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import logging
 import os
@@ -30,7 +39,7 @@ import re
 import subprocess
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from enum import StrEnum
 from typing import Any, TextIO
 
@@ -114,6 +123,13 @@ for _tag in Tag:
 _lock = threading.RLock()
 _open_lines: dict[int, Tag] = {}
 _open_streams: dict[int, TextIO] = {}
+_foreign_depth = 0
+
+_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+_ESC = re.compile(r"\x1b[@-_]?")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CLEAR_ROW = "\r\x1b[K"
 
 
 def _stream(err: bool, file: TextIO | None) -> TextIO:
@@ -140,6 +156,43 @@ def wants_color(stream: TextIO | None = None) -> bool:
     return _is_tty(stream if stream is not None else sys.stderr)
 
 
+def inert(text: str) -> str:
+    """``text`` with no byte that could move the cursor or change terminal state.
+
+    Escape sequences are dropped whole, a ``\\r``-redrawn line keeps only its
+    final segment (what a terminal would have shown), tabs become spaces, and
+    every other C0/C1 control character is removed.
+    """
+    text = _ESC.sub("", _OSC.sub("", _CSI.sub("", text)))
+    if "\r" in text:
+        segments = [segment for segment in text.split("\r") if segment]
+        text = segments[-1] if segments else ""
+    return _CONTROL.sub("", text.expandtabs())
+
+
+def _eol(stream: TextIO) -> str:
+    # CR LF lands at column 0 whether or not the terminal's OPOST/ONLCR is on,
+    # which ssh's raw mode turns off. POSIX-only: a Windows console has no
+    # OPOST, and its text-mode stream already writes LF as CR LF.
+    return "\r\n" if os.name != "nt" and _is_tty(stream) else "\n"
+
+
+def _write(stream: TextIO, lines: list[str], *, nl: bool = True, color: bool | None = None) -> None:
+    """Write rendered ``lines`` as one record: a single write, caller holds ``_lock``."""
+    if color is None:
+        color = wants_color(stream)
+    eol = _eol(stream)
+    lead = _CLEAR_ROW if _foreign_depth and eol == "\r\n" else ""
+    text = eol.join(lead + (line if color else click.unstyle(line)) for line in lines)
+    # Every terminal line passes here, so CodeQL's name heuristic traces spend.py's
+    # `deep_research_oauth` run counters ("password") and its configured
+    # `gcp_project_id` ("private") to this write and reports a clear-text leak. Neither
+    # is a credential: a count of runs, and a project identifier the user configured
+    # so `ai spend` can name it.
+    stream.write(text + eol if nl else text)
+    stream.flush()
+
+
 def _close_open_lines() -> None:
     # A line left open by ``nl=False`` is ended before any other line starts, on
     # every stream, so the next line can never land after it untagged.
@@ -148,7 +201,86 @@ def _close_open_lines() -> None:
         stream = _open_streams.pop(stream_id, None)
         if stream is not None:
             with contextlib.suppress(ValueError, OSError):
-                click.echo("", file=stream)
+                stream.write(_eol(stream))
+                stream.flush()
+
+
+def flush_sinks() -> None:
+    """Close any open line and flush both streams: run before an exec or a handoff."""
+    with _lock:
+        _close_open_lines()
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(AttributeError, ValueError, OSError):
+                stream.flush()
+
+
+atexit.register(flush_sinks)
+
+
+@contextlib.contextmanager
+def foreign_terminal() -> Iterator[None]:
+    """Mark a span where another program (ssh, mosh) owns the terminal.
+
+    A record written inside it first returns to column 0 and clears the row, so
+    it never continues the foreign program's partial line.
+    """
+    global _foreign_depth
+    with _lock:
+        _foreign_depth += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _foreign_depth -= 1
+
+
+def _restore_output_flags(stream: TextIO) -> None:
+    try:
+        import termios
+    except ImportError:  # Windows: no termios, and no OPOST to lose
+        return
+    try:
+        fd = stream.fileno()
+        attrs = termios.tcgetattr(fd)
+        wanted = attrs[1] | termios.OPOST | termios.ONLCR
+        if wanted == attrs[1] or not _owns_foreground(fd):
+            return
+        attrs[1] = wanted
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except (termios.error, OSError, ValueError, AttributeError):
+        pass
+
+
+def _owns_foreground(fd: int) -> bool:
+    # tcsetattr from a background process group of the controlling terminal
+    # raises SIGTTOU; a terminal that is not ours to control (ENOTTY) cannot.
+    try:
+        return os.tcgetpgrp(fd) == os.getpgrp()
+    except OSError:
+        return True
+
+
+def _line_start_fence(stream: TextIO) -> str:
+    # zsh's PROMPT_SP: a full row of spaces wraps to a fresh row only when the
+    # cursor is past column 0, so a foreign partial line is kept, a stale tail a
+    # bare CR left behind is overwritten, and no blank line is added.
+    try:
+        columns = os.get_terminal_size(stream.fileno()).columns
+    except (AttributeError, ValueError, OSError):
+        columns = 0
+    return " " * columns + "\r" if columns > 0 else "\r\n"
+
+
+def reclaim_terminal(stream: TextIO | None = None) -> None:
+    """The terminal is back from a foreign program: restore output flags and start a fresh row."""
+    target = stream or (sys.stderr if _is_tty(sys.stderr) else sys.stdout)
+    if target is None or os.name == "nt" or not _is_tty(target):
+        return
+    with _lock:
+        _restore_output_flags(target)
+        with contextlib.suppress(ValueError, OSError):
+            target.write(_line_start_fence(target))
+            target.flush()
 
 
 def utf8_stdout_on_windows() -> None:
@@ -171,8 +303,9 @@ def render(
     label_style: dict[str, Any] | None = None,
     body_style: dict[str, Any] | None = None,
 ) -> str:
-    """One tagged line, styled; ``click.echo`` strips the style for a non-TTY."""
+    """One tagged line, styled, its text made :func:`inert`; the style is stripped for a non-TTY."""
     prefix = click.style(f"[{_require_tag(tag).value}]", **TAG_STYLE)
+    text = inert(text)
     body = click.style(text, **body_style) if body_style and text else text
     if label is None:
         return f"{prefix} {body}"
@@ -197,7 +330,7 @@ def emit(
     leaves the cursor after the last line (an inline prompt).
     """
     _require_tag(tag)
-    lines = [line for line in str(message).split("\n") if line.strip()]
+    lines = [line for line in (inert(part) for part in str(message).split("\n")) if line.strip()]
     if not lines and label is None:
         return
     if not lines:
@@ -216,11 +349,10 @@ def emit(
     ]
     with _lock:
         _close_open_lines()
-        click.echo("\n".join(rendered), file=stream, nl=nl, color=color)
+        _write(stream, rendered, nl=nl, color=color)
         if not nl:
             _open_lines[id(stream)] = tag
             _open_streams[id(stream)] = stream
-            stream.flush()
 
 
 def cont(tag: Tag, message: object, *, err: bool = False, file: TextIO | None = None) -> None:
@@ -238,7 +370,7 @@ def cont(tag: Tag, message: object, *, err: bool = False, file: TextIO | None = 
             emit(tag, message, err=err, file=file)
             return
         _open_streams.pop(id(stream), None)
-        click.echo(first, file=stream, color=wants_color(stream))
+        _write(stream, [inert(first)])
     if rest:
         emit(tag, rest, err=err, file=file)
 
@@ -267,7 +399,7 @@ def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
     """
     stream = _stream(err, None)
     lines = [render(tag, line.strip()) for line in prompt.split("\n") if line.strip()]
-    text = "\n".join(lines) + " "
+    text = _eol(stream).join(lines) + " "
     if not wants_color(stream):
         text = click.unstyle(text)
     with _lock:
@@ -317,13 +449,15 @@ def relay(tag: Tag, text: object, *, err: bool = True) -> None:
         return
     own = f"{_require_tag(tag).value}: "
     stream = _stream(err, None)
-    for line in text.splitlines():
-        if not line.strip():
+    # Split on LF only: a CR inside a line is the child redrawing it, which
+    # inert() reduces to what a terminal would have shown.
+    for line in text.split("\n"):
+        if not inert(line).strip():
             continue
-        if TAGGED_LINE.match(click.unstyle(line)):
+        if TAGGED_LINE.match(inert(line)):
             with _lock:
                 _close_open_lines()
-                click.echo(line, file=stream, color=wants_color(stream))
+                _write(stream, [inert(line)])
             continue
         emit(tag, line[len(own) :] if line.startswith(own) else line, err=err)
 

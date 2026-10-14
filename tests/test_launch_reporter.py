@@ -184,7 +184,8 @@ def test_given_a_colour_opt_out_when_the_stream_is_a_tty_then_no_escape_sequence
     LaunchReporter(stream=stream).phase("Install").outcome("current")
 
     assert "\x1b" not in stream.getvalue()
-    assert stream.getvalue() == "[launch] Install: current\n"
+    # A terminal record ends in CR LF on POSIX (AI-CLI-8h3u); a Windows console keeps LF.
+    assert stream.getvalue() == "[launch] Install: current" + ("\n" if os.name == "nt" else "\r\n")
 
 
 def test_given_a_tty_stream_when_reported_then_the_logger_receives_plain_text(monkeypatch):

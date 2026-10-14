@@ -266,7 +266,56 @@ Measured at base `06635ff`:
 
 ## Design Overview
 
-**Status:** stub; to be filled during/after implementation.
+**Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented; Phases 2 to 5 not started.
+
+Phase 1, as built under today's Click renderer:
+
+- **One write per record (L1).** `output._write` renders a record and its terminator as one
+  string and writes it once, under the module lock that `emit`, `cont`, `relay` and the
+  stderr tee already share.
+- **CR LF on a POSIX terminal (L2).** `output._eol` returns `\r\n` for a TTY when
+  `os.name != "nt"`, and `\n` otherwise. A Windows console has no `OPOST`, and its
+  text-mode stream already turns LF into CR LF.
+- **Inert text (L3).** `output.inert` removes CSI and OSC sequences and other escapes, keeps
+  only the last segment of a `\r`-redrawn line, expands tabs and removes the remaining C0
+  and C1 characters. `render` applies it, so prompts and relayed lines get it too. `relay`
+  splits child output on LF only. `str.splitlines` also split on CR, which turned a
+  child's progress redraw into separate lines.
+- **Open lines (L4).** The existing `nl=False`/`cont` line is closed with the stream's
+  terminator before any other record. `flush_sinks()` also closes it, and runs at `atexit`
+  and before every exec. No `progress()` producer exists yet: it arrives with its first
+  caller, the T-6 reload line.
+- **Foreign span (L5).** `run_ssh_with_reconnect` runs each attempt and the tee's final
+  drain inside `output.foreign_terminal()`. A terminal record written in that span starts
+  with CR and erase-line.
+- **Terminal returned (L6).** `transport.restore_terminal()` calls
+  `output.reclaim_terminal()` after its DEC-mode resets, once autowrap is back on.
+  `reclaim_terminal()` sets `OPOST|ONLCR` again, only when they are off and only from the
+  terminal's foreground process group, so it cannot raise SIGTTOU. A termios failure is
+  ignored. It then writes the PROMPT_SP fence: a full row of spaces and CR, or CR LF when
+  the width is unknown.
+- **Exit (L7).** The transport `finally` path fences after the last attempt. The `atexit`
+  flush closes any open line.
+- **Exec helper.** Every `os.execvp` in the package goes through `main._exec_handoff`,
+  which calls `flush_sinks()` first. `tests/test_output_enforcement.py` fails any other
+  exec.
+- **Found while reproducing.** `launch_logging._LoggingStderr` subclasses `typing.TextIO`,
+  whose `isatty()`, `fileno()` and `encoding` are stubs returning `None`. After a launch
+  installed the mirror, stderr therefore read as not a TTY, so lines lost their colour and
+  L2/L6 could not see the terminal. The mirror now delegates the three, and it logs inert
+  text, so CR LF and the fence never reach the log file.
+- **Test model.** `pyte` 0.8.2 (dev dependency only) renders the screen. Adoption evidence:
+  prompt-toolkit's `ptterm` and `termtosvg` both declare it as a runtime dependency in
+  their `setup.py`. pyte does not parse a `<`-prefixed CSI, so the tests drop the kitty
+  keyboard pop before rendering.
+
+Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
+off, a record ending in a bare LF moves down a row without returning to column 0. Before
+the fix every record ended that way, from the tee's relay mid-attempt and from every
+notice after an attempt that left the flags off. Separately, nothing put the cursor on a
+fresh row when the terminal came back. A remote partial line or a remote bare CR
+therefore stayed on the cursor's row, so the next local line, or the shell prompt after
+exit, joined it or left the old line's tail on screen.
 
 ## Log-Line Model
 
@@ -746,44 +795,45 @@ makes it visible and does not fix it.
   - Tests added: `tests/test_line_discipline.py` (pty, entry point), additions to
     `tests/test_output_enforcement.py`
 - **Tasks and acceptance criteria:**
-  - **T-1 (AI-CLI-8h3u): every record on its own line, and a clean prompt**
-    - [ ] When a transport attempt is holding the terminal with output post-processing off and the
+  - **T-1 (AI-CLI-8h3u): every record on its own line, and a clean prompt** (implemented; live
+    reattach check pending)
+    - [x] When a transport attempt is holding the terminal with output post-processing off and the
       stderr tee relays a line, the system shall put that line at column 0 of its own screen row.
       Proved by `test_given_a_raw_mode_pty_when_ai_c_r_reattaches_then_every_transport_line_starts_at_column_0`
       (pty; `ai c 2 -R` through `cli()`; the ssh stub clears `OPOST` on the slave, writes stderr
       mid-attempt and exits 255 twice).
-    - [ ] When a foreign program has left a partial line and the system writes a record, the record
+    - [x] When a foreign program has left a partial line and the system writes a record, the record
       shall start on a fresh row, and the partial text shall remain visible on the row above. Proved
       by `test_given_a_foreign_partial_line_when_a_record_follows_then_both_are_on_separate_rows`.
-    - [ ] If a foreign program has written a bare CR over a longer line, then the next record's row
+    - [x] If a foreign program has written a bare CR over a longer line, then the next record's row
       shall show none of the older line's tail. This is the `\r`-without-newline reproduction from the
       ask, committed failing first. Proved by
       `test_given_a_bare_carriage_return_over_a_long_line_when_dolt_server_reports_then_no_stale_tail_remains`.
-    - [ ] When an attempt returns the terminal, the system shall restore `OPOST` and `ONLCR` before the
+    - [x] When an attempt returns the terminal, the system shall restore `OPOST` and `ONLCR` before the
       next record. If the terminal attributes cannot be read or set, then the system shall still write
       the record terminated by CR LF and shall not raise. Proved by
       `test_given_a_returned_attempt_when_the_next_record_is_written_then_output_flags_are_restored`
       and `test_given_termios_failing_when_a_record_is_written_then_it_is_still_written_and_nothing_raises`.
-    - [ ] When an `ai c -R` reattach loop gives up and the process exits, the system shall leave the
+    - [x] When an `ai c -R` reattach loop gives up and the process exits, the system shall leave the
       cursor at column 0 of an empty row, so a following shell prompt starts its own row. Proved by
       `test_given_a_reattach_loop_that_gives_up_when_the_process_exits_then_the_prompt_starts_its_own_row`
       (a real `ai` subprocess on a pty).
-    - [ ] If a record's text contains CR, ESC, backspace or another control character, then every sink
+    - [x] If a record's text contains CR, ESC, backspace or another control character, then every sink
       shall receive it inert and on one line. Proved by
       `test_given_child_output_with_control_bytes_when_relayed_then_it_renders_on_one_row_without_escapes`.
-    - [ ] While the heartbeat timer, the stderr tee and the main thread emit concurrently, each record
+    - [x] While the heartbeat timer, the stderr tee and the main thread emit concurrently, each record
       shall reach the stream as one contiguous line. Proved by
       `test_given_concurrent_producers_when_records_are_written_then_no_line_interleaves` (pipe sink,
       parse every line).
-    - [ ] When records go to a non-terminal sink, the system shall end them with LF only and write no
+    - [x] When records go to a non-terminal sink, the system shall end them with LF only and write no
       CR or escape bytes. Proved by
       `test_given_redirected_stderr_when_ai_c_runs_then_no_carriage_return_or_escape_is_written`
       (the w679 negative control, extended).
-    - [ ] When the launcher execs the engine, the system shall first close any open progress line and
+    - [x] When the launcher execs the engine, the system shall first close any open progress line and
       flush every sink. An exec call outside the flushing helper shall fail the enforcement test.
       Proved by `test_given_the_package_source_when_scanned_then_every_exec_goes_through_the_flushing_helper`
       plus a mutation control.
-    - [ ] Parity: AI-CLI-fmzk AC-3 ordering and every existing `tests/test_tagged_launch_output.py`
+    - [x] Parity: AI-CLI-fmzk AC-3 ordering and every existing `tests/test_tagged_launch_output.py`
       case pass unchanged in meaning.
 - **Exit gate:** all T-1 ACs green, the full `pytest` and `ruff` gate green, CI green including
   `test-windows`, and a live `ai c -R` reattach on a real host whose dropped link leaves every line on
@@ -1472,7 +1522,9 @@ follow-up. Confidence: medium-high.
 1. Which writer emitted the bare carriage return that left `sion mode)` on screen in the captured
    transcripts? The raw-mode relay explains the run-together `[transport]` lines, and rules L5–L6
    cover a foreign CR whatever its source, but T-1's reproduction should name the actual writer. The
-   transcripts are not in this repository.
+   transcripts are not in this repository. T-1 reproduced the defect with a remote-side bare CR
+   followed by a shorter line, which matches the transcript's last row. It did not identify which
+   remote program wrote the CR, so this question stays open.
 2. What are real reload-loop iteration times on an affected host? They decide whether `warn_after =
    3` and `error_after = 6` escalate early enough without flagging a legitimate single update.
 3. Does anything subscribe to telemetry on the message bus and expect launch log records there? The

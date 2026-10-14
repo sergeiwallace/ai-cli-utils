@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import subprocess
 import sys
 
@@ -85,7 +86,8 @@ def test_given_a_colour_opt_out_on_a_tty_when_emitting_then_no_escape_is_written
         monkeypatch.setenv(key, value)
     stream = _TtyStream()
     output.error(Tag.LAUNCH, "boom", file=stream)
-    assert stream.getvalue() == "[launch] Error: boom\n"
+    # A terminal record ends in CR LF on POSIX (AI-CLI-8h3u); a Windows console keeps LF.
+    assert stream.getvalue() == "[launch] Error: boom" + ("\n" if os.name == "nt" else "\r\n")
 
 
 def test_given_a_non_tty_when_emitting_then_no_escape_is_written():

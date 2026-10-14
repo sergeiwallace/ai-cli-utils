@@ -68,6 +68,8 @@ def restore_terminal(stream=None) -> None:
         if not _out.stream_is_tty(file=stream):
             return
         _out.raw(Untagged.TERMINAL_CONTROL, _TERMINAL_RESTORE, file=stream, nl=False)
+        # After autowrap is back on: restore OPOST/ONLCR and fence a fresh row (AI-CLI-8h3u).
+        _out.reclaim_terminal(stream)
     except (OSError, ValueError):
         # A stream already closed or detached by the time we unwind is not worth raising
         # over: the session has ended and there is no longer anything to protect.
@@ -266,10 +268,13 @@ def run_ssh_with_reconnect(
         while True:
             started = _monotonic()
             tee = _StderrTee()
-            try:
-                returncode = subprocess.call(ssh_args, stderr=tee.sink)
-            finally:
-                stderr_tail = tee.close()
+            # ssh holds the terminal in raw mode for the attempt, so the tee's relayed
+            # lines must clear their row and end in CR LF themselves (AI-CLI-8h3u).
+            with _out.foreign_terminal():
+                try:
+                    returncode = subprocess.call(ssh_args, stderr=tee.sink)
+                finally:
+                    stderr_tail = tee.close()
             if stderr_tail:
                 last_error = stderr_tail
             if returncode in _SSH_OPERATOR_EXIT_CODES:
