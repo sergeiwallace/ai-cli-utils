@@ -138,6 +138,7 @@ NEVER generate binary images.
 
 - [Pending / Ready](#pending--ready)
 - [Completed](#completed)
+  - [R-51: Rich live displays in tmux-wrapped and remote launcher sessions (AI-CLI-g013)](#r-51-rich-live-displays-in-tmux-wrapped-and-remote-launcher-sessions-ai-cli-g013)
   - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672) <!-- public-hygiene: allow: anchor mirrors a heading whose dev-tracking id is handled by AI-CLI-wpdd -->
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
   - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
@@ -164,6 +165,7 @@ NEVER generate binary images.
 | R-1 | opus | Open-source Python CLI package best practices | SW-672 | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
 | R-2 | opus | GitHub repo automation & ecosystem tooling | AI-CLI-3 | `opus researcher` | [`github-repo-automation.md`](../github-repo-automation.md) |
 | R-50 | deep-think | Terminal tab/pane title, color, and icon customization for AI fleet management | AI-CLI | `deep-think` | [`iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md) |
+| R-51 | opus | Rich live displays in tmux-wrapped and remote launcher sessions | AI-CLI-g013 | `claude-opus-5-5` | [`rich-live-displays-in-wrapped-sessions.md`](../rich-live-displays-in-wrapped-sessions.md) |
 
 ---
 
@@ -172,6 +174,22 @@ NEVER generate binary images.
 ---
 
 ## Completed
+
+### R-51: Rich Live Displays in tmux-Wrapped and Remote Launcher Sessions (AI-CLI-g013)
+
+**Status:** ✅ Complete, 2026-10-13
+
+**Model:** `claude-opus-5-5`
+
+**Task:** AI-CLI-g013 (safe Rich live displays for the `ai` launcher)
+
+**Results:** [`docs/research/rich-live-displays-in-wrapped-sessions.md`](../rich-live-displays-in-wrapped-sessions.md)
+
+The full prompt is in the results doc's `## Appendix: Research Prompt`. Findings set the live-display
+rules for the launcher output standard: one owner for every live region, torn down before every exec,
+ssh attempt and terminal-inheriting child, and on SIGTERM and SIGHUP.
+
+---
 
 ### R-1: Open-Source Python CLI Package Best Practices — SW-672
 
