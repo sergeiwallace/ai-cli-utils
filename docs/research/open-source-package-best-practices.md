@@ -72,6 +72,50 @@ Place badges on a single line or two lines at most, immediately below the title.
 
 **Skip until relevant:** Coverage badge (add when coverage is high enough to be proud of), docs badge (add when you have a docs site).
 
+### 1.2a Badges that stay truthful, and badges for private or internal repositories
+
+Added 2026-10-14 (refine pass). The list above assumes a public repository and a published
+package. Two further rules apply everywhere, and a private or internal repository changes which
+mechanisms work at all.
+
+**A badge asserts that a process exists.** Add a badge only when the thing it reports is produced
+by an automated process the badge reads from. A "semver" badge on a repository with no release
+tags claims a practice the repository does not follow. So does a "Dependabot enabled" badge that
+is a static image, or a coverage badge nobody updates. A static badge is fine for a fact that does not
+change (the Python version floor, the formatter, the license). [INDUSTRY HEURISTIC]
+
+**Which badges render depends on who can read the repository.**
+
+| Mechanism | How it reads data | Public repo | Private or internal repo |
+|---|---|---|---|
+| GitHub's own workflow badge, `https://github.com/OWNER/REPO/actions/workflows/FILE/badge.svg` | Served by GitHub; `?branch=` and `?event=` filters | Yes | Renders for a signed-in reader with access; "not accessible externally", so it cannot be embedded elsewhere [VERIFIABLE FACT: https://docs.github.com/en/actions/how-tos/monitor-workflows/add-a-status-badge] |
+| shields.io dynamic badges (`github/actions/workflow/status`, `github/v/release`, `pypi/v`) | shields.io calls the public API | Yes | No: shields.io cannot read a repository the public API does not expose [INFERENCE from the badge's parameters, which carry no credential: https://shields.io/badges/git-hub-actions-workflow-status] |
+| shields.io static badges, `https://img.shields.io/badge/<label>-<message>-<color>` | Text is in the URL; `_` or `%20` is a space, `--` is a dash, `logo=` adds a simple-icons logo | Yes | Yes [VERIFIABLE FACT: https://shields.io/badges/static-badge] |
+| An image hosted on a private network or behind credentials | GitHub proxies README images through Camo; "if an image is being served from a private network" it "can't be viewed by GitHub" | n/a | No [VERIFIABLE FACT: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-anonymized-urls] |
+| An SVG committed to the repository and referenced by relative path | Served by GitHub as repository content | Yes | Yes |
+
+**Coverage and test-count badges without a hosted service.** `genbadge` writes a tests badge from
+`junit.xml` and a coverage badge from `coverage.xml`; by default it renders "through shields.io",
+and `--local` uses "the included SVG file template" with no network call [VERIFIABLE FACT:
+https://smarie.github.io/python-genbadge/]. A CI job can regenerate the SVG and commit it. The
+commit message must carry `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]` or `[actions skip]`
+so the badge commit does not start another CI run. GitHub honours these on `push` and
+`pull_request` events only. A skipped workflow's checks "remain in a Pending state", which blocks a
+pull request that requires them [VERIFIABLE FACT:
+https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs].
+Push the badge commit straight to the default branch, or to a dedicated branch the README does not
+reference by relative path, and never through a protected pull request.
+
+**Ecosystem badges that only cover public projects.** The OpenSSF Scorecard badge,
+`https://api.scorecard.dev/projects/github.com/{owner}/{repo}/badge`, is served from an API the
+project describes as covering "OSS projects"; it is a public-repository badge [VERIFIABLE FACT:
+https://github.com/ossf/scorecard/blob/main/README.md]. The same holds for Codecov's free tier,
+PyPI version and download badges, and `pypi/l` license badges: each needs a public artifact.
+
+**Order and count.** One line, at most two, in the order a new reader needs: does it build, what
+does it run on, how is it licensed, how is it formatted. A README with zero badges is better than a README with a broken one. A badge that renders an
+error image tells the reader the maintainer does not look at the README. [INDUSTRY HEURISTIC]
+
 ### 1.3 CLI Usage Documentation in the README
 
 [SYNTHESIZED INFERENCE based on patterns from httpie, typer, pgcli, and other successful CLI projects]
@@ -497,6 +541,20 @@ These projects demonstrate professional open-source practices that a solo mainta
 - [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/using-a-publisher/)
 - [Simon Willison — PyPI releases from GitHub Actions](https://til.simonwillison.net/pypi/pypi-releases-from-github)
 - [Shields.io](https://shields.io/)
+- [Shields.io static badge](https://shields.io/badges/static-badge) (refine 2026-10-14)
+- [GitHub Docs: Adding a workflow status badge](https://docs.github.com/en/actions/how-tos/monitor-workflows/add-a-status-badge) (refine 2026-10-14)
+- [GitHub Docs: About anonymized URLs (Camo)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-anonymized-urls) (refine 2026-10-14)
+- [GitHub Docs: Skipping workflow runs](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs) (refine 2026-10-14)
+- [genbadge](https://smarie.github.io/python-genbadge/) (refine 2026-10-14)
+- [OpenSSF Scorecard README](https://github.com/ossf/scorecard/blob/main/README.md) (refine 2026-10-14)
 - [Keep a Changelog](https://keepachangelog.com/)
 - [PEP 561 — py.typed](https://peps.python.org/pep-0561/)
 - GitHub repositories: httpie/cli, fastapi/typer, dbcli/pgcli, dbcli/litecli, nicolargo/glances, gleitz/howdoi, astral-sh/ruff
+
+## Run History
+
+- 2026-10-14 (refine, Claude Fable 5.1): added section 1.2a on badges that stay truthful and on
+  which badge mechanisms render for private or internal repositories (GitHub-native workflow badges,
+  shields.io static badges, committed SVGs via `genbadge --local` with `[skip ci]`), with six new
+  sources. The original sections are unchanged. Generalized from work on a private repository; no
+  repository-specific detail is recorded here.

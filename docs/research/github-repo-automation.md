@@ -191,6 +191,25 @@ For a solo-maintained project that wants quality gates without blocking its own 
 | **Allow deletions** | No | Protect main from accidental deletion. |
 | **Include administrators** | Yes (when going public) | Ensures you follow the same rules as contributors. Can bypass for emergencies. |
 
+**What "Require branches to be up to date" costs, and what replaces it (added 2026-10-14).** A
+required status check is a result attached to one commit SHA. When the target branch moves, a
+rebased or merged-forward head is a new SHA with no result on it, so the check runs again. GitHub
+describes the strict setting as "the branch must be up to date with the base branch before
+merging". It notes that "more builds may be required" after other collaborators update the target
+branch [VERIFIABLE FACT:
+https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches].
+With several active committers the re-run is paid on every landing that loses a race. The
+mechanism GitHub built for that case is the merge queue. It "creates temporary branches with a
+special prefix to validate pull request changes". Each queued pull request is grouped with the
+latest base branch and the pull requests ahead of it. The required checks run once per group via
+the `merge_group` event, and the merge happens without the author updating the branch. A failing
+entry is removed and the groups behind it are rebuilt. The queue is documented only for pull requests; it does not
+apply to direct pushes [VERIFIABLE FACT:
+https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue].
+For a solo maintainer the table above stands: turn strict mode off and skip the queue. For a team
+that pushes often, a queue is the only setting that removes the re-run; a faster check only makes
+it cheaper.
+
 ### 3.2 Merge Settings (Repository Settings)
 
 | Setting | Recommendation |
@@ -255,6 +274,21 @@ Upload from a single matrix entry (3.12) to avoid duplicate reports. The `CODECO
 
 **Coverage badge threshold:** Do not add a coverage badge to the README until coverage is above 80%. A low coverage badge signals "we started measuring but do not care enough to improve." [INDUSTRY HEURISTIC]
 
+**Coverage badges without a hosted service (added 2026-10-14).** Codecov needs a public
+repository or a paid plan, and shields.io's dynamic badges read public APIs only. For a private or
+internal repository, generate the badge in CI and commit it. `genbadge coverage --local` writes an
+SVG from `coverage.xml` using "the included SVG file template" with no network call
+[VERIFIABLE FACT: https://smarie.github.io/python-genbadge/]. `genbadge tests --local` does the
+same from `junit.xml`.
+Reference the SVG by relative path in the README. The commit that writes it must carry `[skip ci]`
+(or `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), which GitHub honours on `push` and
+`pull_request` events. A skipped workflow's checks "remain in a Pending state" and block a pull
+request that requires them. Push the badge commit directly to a branch no protected pull request
+gates [VERIFIABLE FACT:
+https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs].
+Section 1.2a of the companion package-best-practices research tabulates which badge mechanisms
+render for a private repository.
+
 ### 4.3 Caching with uv
 
 The `astral-sh/setup-uv` action provides built-in caching. Ensure you are using v5+ (the current project uses v4):
@@ -312,6 +346,44 @@ typeCheckingMode = "basic"
 [SYNTHESIZED INFERENCE: pyright in basic mode is the best risk/reward for an existing Python 3.11+ CLI project. It catches real bugs (wrong argument types, missing attributes) without the false-positive noise of strict mode.]
 
 ---
+
+### 4.6 Keeping the required check fast (added 2026-10-14)
+
+A required check that takes ten minutes changes how a team lands code; one that takes three is an
+annoyance. The levers below are in the order to pull them. They were generalized from a suite that grew from
+about two thousand to about thirteen thousand tests while its check grew from two to thirteen
+minutes.
+
+1. **Attribute the time before changing anything.** Read the per-step timings of a few real runs
+   (`gh run view <id> --json jobs` gives `startedAt` and `completedAt` per step). In a
+   lint-plus-test job the test step is usually over 90 percent; dependency sync from a lockfile and
+   checkout are seconds. Caching only helps when a measured step is slow. [INDUSTRY HEURISTIC]
+2. **Confirm the runner the job ran on, not the one the workflow asked for.** Self-hosted runner
+   integrations accept label overrides for image and instance size, and an unrecognised override is
+   dropped without an error. AWS documents this for CodeBuild-hosted GitHub Actions runners: "any
+   builds not recognized by CodeBuild will be ignored but will not fail your webhook request"
+   [VERIFIABLE FACT:
+   https://docs.aws.amazon.com/codebuild/latest/userguide/sample-github-action-runners-update-labels.html].
+   The job then runs on the project default, which can be a different architecture and core count
+   than the label names. Read the build record on the runner side, not the workflow file.
+3. **Add cores, then parallelise.** `pytest -n auto` (pytest-xdist) can at most divide the test
+   step by the vCPU count; on a two-core runner that is a halving. Pin xdist as a dev dependency so
+   `uv run --with` does not fetch it on every run. Order-dependent tests surface as new failures;
+   `--dist loadfile` keeps a file's tests on one worker. [INDUSTRY HEURISTIC]
+4. **Profile the slowest tests.** `pytest --durations=30` once. `time.sleep` in a unit test and
+   `subprocess` calls are the usual suspects; patched clocks and in-process invocations remove
+   them. This is the only lever that also shortens the developer's local run.
+5. **Shard across jobs only after the above.** `pytest-split` "splits the test suite to equally
+   sized sub suites based on test execution time" from a committed durations file, one job per
+   group via `--splits N --group K` [VERIFIABLE FACT: https://pypi.org/project/pytest-split/]. It
+   multiplies runner jobs per landing and needs the durations file refreshed as the suite changes.
+6. **Do not make change-scoped selection the gate.** `pytest-testmon` "automatically selects and
+   re-executes only tests affected by recent changes" and its README presents it as a local tool
+   [VERIFIABLE FACT: https://github.com/tarpas/pytest-testmon/blob/main/README.md]. A gate that
+   skips tests has a verdict that depends on its dependency map knowing every fixture, config file
+   and template a test reads. Use it in the developer loop.
+7. **More runners shorten the queue, not the run.** Measure the queue (run created to job
+   started) before buying capacity; if it is under a minute, capacity is not the problem.
 
 ## 5. Dependabot vs Renovate
 
@@ -740,6 +812,13 @@ contact_links:
 - [All Contributors](https://allcontributors.org/)
 - [actions/labeler](https://github.com/actions/labeler)
 - [pascalgn/automerge-action](https://github.com/pascalgn/automerge-action)
+- [GitHub Docs: About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) (refine 2026-10-14)
+- [GitHub Docs: Managing a merge queue](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) (refine 2026-10-14)
+- [GitHub Docs: Skipping workflow runs](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs) (refine 2026-10-14)
+- [genbadge](https://smarie.github.io/python-genbadge/) (refine 2026-10-14)
+- [AWS CodeBuild: Label overrides for the CodeBuild-hosted GitHub Actions runner](https://docs.aws.amazon.com/codebuild/latest/userguide/sample-github-action-runners-update-labels.html) (refine 2026-10-14)
+- [pytest-split](https://pypi.org/project/pytest-split/) (refine 2026-10-14)
+- [pytest-testmon README](https://github.com/tarpas/pytest-testmon/blob/main/README.md) (refine 2026-10-14)
 - [astral-sh/setup-uv](https://github.com/astral-sh/setup-uv)
 - [hynek/setup-cached-uv](https://github.com/hynek/setup-cached-uv)
 - [uv GitHub Actions Integration Guide](https://docs.astral.sh/uv/guides/integration/github/)
@@ -791,3 +870,12 @@ For each recommendation, classify as:
 - **Do before going public** -- necessary for public perception
 - **Do when community grows** -- premature for a solo maintainer
 - **Skip** -- not worth it for this project type
+
+## Run History
+
+- 2026-10-14 (refine, Claude Fable 5.1): added to 3.1 what the strict up-to-date setting costs and
+  when a merge queue replaces it; added to 4.2 how to produce a coverage badge without a hosted
+  service; added 4.6 on keeping a required check fast (attribute the time, confirm the runner that
+  actually ran, cores then xdist, profile, shard last, never gate on change-scoped selection); seven
+  new sources. Original sections unchanged. Generalized from work on a private repository; no
+  repository-specific detail is recorded here.
