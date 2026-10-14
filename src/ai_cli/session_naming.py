@@ -317,6 +317,7 @@ def prompt_for_host_alias(*, dry_run: bool = False) -> str:
     max_length = _max_length(_read_registry(target), target)
     _out.emit(
         Tag.CONFIG,
+        "config",
         f"no host alias is configured for this machine (host id {host!r}).\n"
         "Session names are {repo-alias}-{host-alias}-{optional-slug}-{N}, so a launch needs one.\n"
         f"Checked: {', '.join(str(source) for source in sources)}",
@@ -324,6 +325,7 @@ def prompt_for_host_alias(*, dry_run: bool = False) -> str:
     )
     answer = _out.ask(
         Tag.CONFIG,
+        "config",
         f"Host alias for {host} (lowercase letters and digits, starting with a letter; prefer "
         f"{PREFERRED_LENGTH} or fewer, at most {max_length}; the limit is max_length in {target}):",
         err=True,
@@ -335,13 +337,18 @@ def prompt_for_host_alias(*, dry_run: bool = False) -> str:
             f'{host} = "<alias>" under [aliases] in {target}.'
         )
     if dry_run:
-        _out.emit(Tag.CONFIG, f'dry run: would write {host} = "{answer}" to {target}; nothing was written.', err=True)
+        _out.emit(
+            Tag.CONFIG,
+            "config",
+            f'dry run: would write {host} = "{answer}" to {target}; nothing was written.',
+            err=True,
+        )
         return answer
     write_host_alias(target, host, answer)
     message = f'Wrote {host} = "{answer}" to {target}.'
     if _in_git_checkout(target) is not None:
         message += " It is git-tracked: commit and push it so every machine sees it."
-    _out.emit(Tag.CONFIG, message, err=True)
+    _out.emit(Tag.CONFIG, "config", message, err=True)
     return answer
 
 

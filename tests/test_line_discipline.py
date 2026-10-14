@@ -236,7 +236,7 @@ def test_given_a_foreign_partial_line_when_a_record_follows_then_both_are_on_sep
 
     rows = _rows(terminal.screen())
     first = rows.index("remote:~$ partial")
-    assert rows[first + 1].startswith("[transport] Connection lost (ssh exit 255)"), rows
+    assert rows[first + 1].startswith("[transport] reconnect: Connection lost (ssh exit 255)"), rows
 
 
 @posix_pty
@@ -418,14 +418,14 @@ def test_given_child_output_with_control_bytes_when_relayed_then_it_renders_on_o
     _launch(tmp_path, attempts=2, ssh=lambda *_a, **_k: 0, stdout=sys.stdout, stderr=sys.stderr, dolt_stdout=child)
     redirected = capsys.readouterr().err
 
-    assert "[dolt_server] starting 100% red done" in rows, rows
+    assert "[dolt_server] ensure: starting 100% red done" in rows, rows
     for control in (b"\x1b[31m", b"\x08", b"\x07", b"10%"):
         assert control not in received, control
-    assert "[dolt_server] starting 100% red done\n" in redirected
+    assert "[dolt_server] ensure: starting 100% red done\n" in redirected
     assert not re.search(r"[\x00-\x09\x0b-\x1f\x7f]", redirected), repr(redirected)
 
 
-TAGGED_RECORD = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] (?:Warning: )?(?P<body>.*)$")
+TAGGED_RECORD = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] [a-z][a-z0-9-]*: (?:Warning: )?(?P<body>.*)$")
 
 
 def test_given_concurrent_producers_when_records_are_written_then_no_line_interleaves(tmp_path):
@@ -442,13 +442,13 @@ def test_given_concurrent_producers_when_records_are_written_then_no_line_interl
     def ssh(_args, stderr=None, **_kwargs):
         def beat():
             for _ in range(200):
-                _out.emit(Tag.LAUNCH, heartbeat, err=True)
+                _out.emit(Tag.LAUNCH, "connect", heartbeat, err=True)
 
         ticker = threading.Thread(target=beat)
         ticker.start()
         for _ in range(200):
             stderr.write(relayed.encode() + b"\n")
-            _out.warning(Tag.TRANSPORT, main_line)
+            _out.warning(Tag.TRANSPORT, "reconnect", main_line)
         ticker.join()
         _wait(0.3)  # let the tee relay the rest while ssh still "runs"
         return 0
@@ -483,7 +483,7 @@ def test_given_redirected_stderr_when_ai_c_runs_then_no_carriage_return_or_escap
     captured = capsys.readouterr()
     emitted = captured.out + captured.err
     assert code == 255
-    assert "[transport] progress 2\n" in captured.err
-    assert "[transport] Warning: bold\n" in captured.err
+    assert "[transport] connect: progress 2\n" in captured.err
+    assert "[transport] connect: Warning: bold\n" in captured.err
     assert "\r" not in emitted
     assert "\x1b" not in emitted

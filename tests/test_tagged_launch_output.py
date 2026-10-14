@@ -101,9 +101,9 @@ def test_given_a_remote_launch_with_a_dolt_supervisor_when_run_through_cli_then_
 
     captured = capsys.readouterr()
     emitted = captured.out + captured.err
-    assert "[dolt_server] healthy (socket accepted)" in captured.err
-    assert DOLT_LINE not in emitted.replace("[dolt_server] healthy", "")
-    assert "[launch] Ready: handing off to Claude Code" in captured.err
+    assert "[dolt_server] ensure: healthy (socket accepted)" in captured.err
+    assert DOLT_LINE not in emitted.replace("[dolt_server] ensure: healthy", "")
+    assert "[launch] handoff: ready, handing off to Claude Code" in captured.err
     assert not _untagged(emitted), _untagged(emitted)
 
 
@@ -138,8 +138,8 @@ def test_given_a_local_dry_run_when_run_through_cli_then_every_plan_and_launch_l
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     emitted = captured.out + captured.err
-    assert "[plan] dry run -- nothing was created" in captured.out
-    assert "[launch] Starting Claude Code session" in captured.err
+    assert "[plan] plan: dry run -- nothing was created" in captured.out
+    assert "[launch] start: Starting Claude Code session" in captured.err
     assert not _untagged(emitted), _untagged(emitted)
 
 
@@ -150,7 +150,7 @@ def test_given_an_unknown_option_when_run_through_cli_then_the_usage_error_is_ta
 
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
-    assert "[cli] Error: " in err
+    assert "[cli] usage: Error: " in err
     assert not _untagged(err), _untagged(err)
 
 

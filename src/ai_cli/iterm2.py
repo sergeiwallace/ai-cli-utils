@@ -499,8 +499,9 @@ end tell"""
             else f"osascript could not be run ({exc})"
         )
         launch_reporter.active().warning(
+            "terminal",
             f"iTerm2 pane rename to {name!r} failed: {reason}. "
-            "Continuing the launch — the tab may keep its previous name."
+            "Continuing the launch — the tab may keep its previous name.",
         )
         return False
     return "ok" in (result.stdout or "")

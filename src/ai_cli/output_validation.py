@@ -76,8 +76,7 @@ def _datetime_format(value: str, info: ValidationInfo) -> str:
 
 
 def _not_supported_yet(value: bool, info: ValidationInfo) -> bool:
-    # Refused until the element's own task lands: the datetime element (AI-CLI-fx4b) and the
-    # operation enforcement (AI-CLI-rbuf). Each removes its refusal when it ships.
+    # Refused until the element's own task lands: the datetime element (AI-CLI-fx4b).
     if _checking(info) and value:
         raise ValueError("true is not supported yet; this release renders it as false")
     return value
@@ -126,7 +125,7 @@ class TagElement(Element):
 
 
 class OperationElement(Element):
-    required: Annotated[bool, AfterValidator(_not_supported_yet)]
+    required: bool
     default: str
     pattern: Regex
     vocabulary: list[str]

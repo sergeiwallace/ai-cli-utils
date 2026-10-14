@@ -1,19 +1,21 @@
 """Small, persistent stderr progress reports for interactive session launches.
 
 One grammar for every launcher-owned line, so the operator never has to work out
-which of several prefixes a line belongs to::
+which of several prefixes a line belongs to. A phase is an operation from the
+``[output]`` vocabulary, rendered as the line's operation element::
 
-    [launch] <Phase>: <outcome>
-    [launch] <Phase>: <verb-ing ...>                     start, before work that may block
-    [launch] <Phase>: still <verb-ing ...> (10s elapsed) heartbeat while a started phase runs
-    [launch] <Phase>: <outcome> (12.4s)                  outcome; elapsed shown when slow
-    [launch] Warning: <text>                             never suppressed by --quiet
-    [launch] Error: <text>                               never suppressed by --quiet
-    [launch] Ready: handing off to <Engine> (<session>)  last line before every exec/attach
+    [launch] start: Starting <Engine> session (<mode>)
+    [launch] <phase>: <outcome>
+    [launch] <phase>: <verb-ing ...>                     start, before work that may block
+    [launch] <phase>: still <verb-ing ...> (10s elapsed) heartbeat while a started phase runs
+    [launch] <phase>: <outcome> (12.4s)                  outcome; elapsed shown when slow
+    [launch] <phase>: Warning: <text>                    never suppressed by --quiet
+    [launch] <phase>: Error: <text>                      never suppressed by --quiet
+    [launch] handoff: ready, handing off to <Engine> (<session>)  last line before every exec/attach
 
 Every line is a record written by :mod:`ai_cli.output` under ``Tag.LAUNCH``, whose
 renderer owns every element's style and the TTY / ``NO_COLOR`` / ``TERM=dumb``
-rules; this module names only which style a phase label and an outcome take.
+rules; this module names only which style an outcome takes.
 Nothing here owns terminal state, so nothing needs tearing down before the
 launcher replaces itself with the engine.
 """
@@ -34,10 +36,6 @@ PREFIX = f"[{Tag.LAUNCH.value}]"
 HEARTBEAT_SECONDS = 10.0
 SLOW_OUTCOME_SECONDS = 2.0
 
-# Empty: a phase label takes the configured operation style ([output.elements.operation]).
-_PHASE_STYLE = ""
-_READY_STYLE = "bold green"
-_ERROR_STYLE = "bold red"
 _DIM_STYLE = "dim"
 
 
@@ -56,16 +54,16 @@ def _elapsed_text(seconds: float) -> str:
 
 
 class _Phase(AbstractContextManager["_Phase"]):
-    def __init__(self, reporter: LaunchReporter, name: str, start: str | None):
+    def __init__(self, reporter: LaunchReporter, op: str, start: str | None):
         self.reporter = reporter
-        self.name = name
+        self.op = output.require_op(op)
         self.started_at = monotonic()
         self.has_outcome = False
         self._start = start
         self._finished = threading.Event()
         self._heartbeat: threading.Timer | None = None
         if start is not None:
-            reporter._emit(name, start)
+            reporter._emit(op, start)
             self._arm_heartbeat()
 
     @property
@@ -83,7 +81,7 @@ class _Phase(AbstractContextManager["_Phase"]):
             return
         elapsed = self.elapsed
         self.reporter._emit(
-            self.name,
+            self.op,
             f"still {self._start} ({elapsed:.0f}s elapsed)",
             outcome_style=_DIM_STYLE,
         )
@@ -106,16 +104,15 @@ class _Phase(AbstractContextManager["_Phase"]):
     def outcome(self, message: str) -> None:
         self._finish()
         self.has_outcome = True
-        self.reporter._emit(self.name, self._with_elapsed(message))
+        self.reporter._emit(self.op, self._with_elapsed(message))
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self._finish()
         if isinstance(exc, KeyboardInterrupt):
             self.reporter._emit(
-                self.name,
+                self.op,
                 f"interrupted after {_elapsed_text(self.elapsed)}",
                 level=logging.WARNING,
-                outcome_style=_ERROR_STYLE,
                 always=True,
             )
         elif isinstance(exc, SystemExit):
@@ -123,10 +120,9 @@ class _Phase(AbstractContextManager["_Phase"]):
             pass
         elif exc is not None:
             self.reporter._emit(
-                self.name,
+                self.op,
                 f"failed after {_elapsed_text(self.elapsed)}: {exc}",
                 level=logging.ERROR,
-                outcome_style=_ERROR_STYLE,
                 always=True,
             )
         elif self._start is not None and not self.has_outcome:
@@ -160,63 +156,59 @@ class LaunchReporter:
 
     def _emit(
         self,
-        phase: str,
+        op: str,
         outcome: str,
         *,
         level: int = logging.INFO,
-        phase_style: str = _PHASE_STYLE,
         outcome_style: str = "",
         always: bool = False,
-        record_level: output.Level = output.Level.INFO,
     ) -> None:
+        output.require_op(op)
+        record_level = {logging.WARNING: output.Level.WARNING, logging.ERROR: output.Level.ERROR}.get(
+            level, output.Level.INFO
+        )
         if self.logger is not None:
-            self.logger.log(level, "%s %s: %s", PREFIX, phase, outcome)
+            label = f"{record_level.value.capitalize()}: " if record_level is not output.Level.INFO else ""
+            self.logger.log(level, "%s %s: %s%s", PREFIX, op, label, outcome)
         if self.quiet and not always:
             return
         with self._lock:
             output.emit(
-                Tag.LAUNCH,
-                outcome,
-                err=True,
-                file=self.stream,
-                level=record_level,
-                label=None if record_level in (output.Level.WARNING, output.Level.ERROR) else phase,
-                label_style=phase_style,
-                body_style=outcome_style,
+                Tag.LAUNCH, op, outcome, err=True, file=self.stream, level=record_level, body_style=outcome_style
             )
 
     def start(self, *, engine: str, mode: str, continuing: bool = False) -> None:
         verb = "Continuing" if continuing else "Starting"
-        self._emit(f"{verb} {engine} session", mode)
+        self._emit("start", f"{verb} {engine} session ({mode})")
 
-    def phase(self, name: str, start: str | None = None) -> _Phase:
-        """A phase; with ``start`` it announces itself and heartbeats until its outcome."""
-        return _Phase(self, name, start)
+    def phase(self, op: str, start: str | None = None) -> _Phase:
+        """A phase named by operation ``op``; with ``start`` it announces itself and heartbeats until its outcome."""
+        return _Phase(self, op, start)
 
-    def detail(self, name: str, outcome: str) -> None:
+    def detail(self, op: str, outcome: str) -> None:
+        output.require_op(op)
         if self.logger is not None:
-            self.logger.debug("%s %s: %s", PREFIX, name, outcome)
+            self.logger.debug("%s %s: %s", PREFIX, op, outcome)
         if self.verbose and not self.quiet:
             with self._lock:
                 output.emit(
                     Tag.LAUNCH,
+                    op,
                     outcome,
                     err=True,
                     file=self.stream,
                     level=output.Level.DETAIL,
-                    label=name,
-                    label_style=_PHASE_STYLE,
                     body_style=_DIM_STYLE,
                 )
 
-    def warning(self, message: str) -> None:
-        self._emit("Warning", message, level=logging.WARNING, record_level=output.Level.WARNING, always=True)
+    def warning(self, op: str, message: str) -> None:
+        self._emit(op, message, level=logging.WARNING, always=True)
 
-    def error(self, message: str) -> None:
-        self._emit("Error", message, level=logging.ERROR, record_level=output.Level.ERROR, always=True)
+    def error(self, op: str, message: str) -> None:
+        self._emit(op, message, level=logging.ERROR, always=True)
 
     def handoff(self, *, engine: str, session: str) -> None:
-        self._emit("Ready", f"handing off to {engine} ({session})", phase_style=_READY_STYLE)
+        self._emit("handoff", f"ready, handing off to {engine} ({session})")
 
 
 _active: LaunchReporter | None = None

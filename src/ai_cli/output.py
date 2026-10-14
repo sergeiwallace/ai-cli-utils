@@ -3,14 +3,17 @@
 Every line this package prints goes through :func:`emit` (or its ``warning`` /
 ``error`` shorthands) and is rendered as::
 
-    [<tag>] <text>
-    [<tag>] Warning: <text>
-    [<tag>] Error: <text>
+    [<tag>] <operation>: <text>
+    [<tag>] <operation>: Warning: <text>
+    [<tag>] <operation>: Error: <text>
 
 ``tag`` must be a :class:`Tag` member: a plain string is refused with
 ``TypeError``, so an untagged line cannot be produced by passing the wrong
-thing. Output that a program parses (JSON, ``ai internal`` replies, the
-statusline segment, ``--version``) or that is not a line at all (terminal
+thing. ``op`` is the second positional argument of every producer and must be
+in the operation vocabulary (AI-CLI-rbuf), which lives in the ``[output]``
+config, not in code: an unknown one is refused with ``ValueError``. Output that
+a program parses (JSON, ``ai internal`` replies, the statusline segment,
+``--version``) or that is not a line at all (terminal
 control sequences, Click's help text) goes through :func:`raw`, whose reason
 must be an :class:`Untagged` member -- the closed, named allowlist of untagged
 output. ``tests/test_output_enforcement.py`` fails the build on any terminal
@@ -156,11 +159,11 @@ for _tag in Tag:
 class Record:
     """One logical line, built once by the structlog pipeline and rendered per sink.
 
-    ``label`` (with ``label_style``) is the launch reporter's phase name, which
-    becomes the operation element in T-5 (AI-CLI-rbuf); until then it renders in
-    that element's place and style. ``continued`` marks the
-    second and later lines of a multi-line message, which repeat the tag but not
-    the label or level.
+    ``op`` is None only from the stdlib-logging adapter, whose records name no
+    operation; it renders as the configured default while the operation is
+    required. ``continued`` marks the
+    second and later lines of a multi-line message, which repeat the tag and
+    operation but not the level.
     """
 
     at: datetime
@@ -168,8 +171,6 @@ class Record:
     text: str
     level: Level = Level.INFO
     op: str | None = None
-    label: str | None = None
-    label_style: str = ""
     text_style: str = ""
     continued: bool = False
 
@@ -346,6 +347,28 @@ def _require_tag(tag: object) -> Tag:
     return tag
 
 
+def vocabulary() -> frozenset[str]:
+    """Every operation a record may name: the shipped list plus any a user's ``[output]`` adds."""
+    from . import output_settings
+
+    return output_settings.shipped_vocabulary().union(_settings().elements.operation.vocabulary)
+
+
+def _known_op(op: object) -> bool:
+    from . import output_settings
+
+    # The shipped list answers for every operation the package emits without a stat;
+    # only an operation a user added needs the current config.
+    return isinstance(op, str) and (op in output_settings.shipped_vocabulary() or op in vocabulary())
+
+
+def require_op(op: object) -> str:
+    """``op`` when the operation vocabulary names it; ``ValueError`` otherwise."""
+    if isinstance(op, str) and _known_op(op):
+        return op
+    raise ValueError(f"operation {op!r} is not in the operation vocabulary ([output.elements.operation])")
+
+
 # --- the record pipeline: structlog builds each record ----------------------------
 
 
@@ -413,12 +436,8 @@ def _element(name: str, record: Record, settings: OutputSettings) -> list[tuple[
         return [(tag.wrap(record.tag.value), tag.styles.get(record.tag.value, tag.style))]
     if name == "operation" and elements.operation.enabled:
         operation = elements.operation
-        parts = []
-        if record.op is not None:
-            parts.append((operation.wrap(record.op), operation.styles.get(record.op, operation.style)))
-        if record.label is not None and not record.continued:
-            parts.append((operation.wrap(record.label), record.label_style or operation.style))
-        return parts
+        op = record.op if record.op is not None else (operation.default if operation.required else None)
+        return [] if op is None else [(operation.wrap(op), operation.styles.get(op, operation.style))]
     if name == "level" and elements.level.enabled:
         level = elements.level
         if record.continued or record.level.value not in level.show:
@@ -536,7 +555,6 @@ def _relay_json(record: Record) -> str:
         "tag": record.tag.value,
         "level": record.level.value,
         "op": record.op,
-        "label": record.label,
         "text": record.text,
         "continued": record.continued,
     }
@@ -553,37 +571,48 @@ def _write_records(stream: TextIO, records: list[Record], *, nl: bool = True) ->
         _write(stream, [render_record(record, color=color, stream=stream) for record in records], nl=nl)
 
 
-def render(tag: Tag, text: str, *, stream: TextIO | None = None) -> str:
+def render(tag: Tag, op: str, text: str, *, stream: TextIO | None = None) -> str:
     """One tagged line for a prompt, styled when ``stream`` (stderr when omitted) wants colour."""
     target = stream if stream is not None else sys.stderr
-    return render_record(_build(text, tag=tag), color=wants_color(target), stream=target)
+    return render_record(_build(text, tag=tag, op=require_op(op)), color=wants_color(target), stream=target)
 
 
 def emit(
     tag: Tag,
+    op: str,
     message: object = "",
     *,
     err: bool = False,
     file: TextIO | None = None,
     nl: bool = True,
-    op: str | None = None,
     level: Level = Level.INFO,
-    label: str | None = None,
-    label_style: str = "",
     body_style: str = "",
 ) -> None:
-    """Write ``message`` with ``[tag]`` on every line; blank lines are dropped.
+    """Write ``message`` as ``[tag] op:`` on every line; blank lines are dropped.
 
+    ``op`` names the operation the line belongs to, from the configured vocabulary.
     ``err`` sends it to stderr, ``file`` to an explicit stream, and ``nl=False``
-    leaves the cursor after the last line (an inline prompt). ``label`` and the
-    two styles are the launch reporter's phase grammar.
+    leaves the cursor after the last line (an inline prompt). ``body_style`` is the
+    launch reporter's outcome style.
     """
     _require_tag(tag)
+    _emit(tag, require_op(op), message, err=err, file=file, nl=nl, level=level, body_style=body_style)
+
+
+def _emit(
+    tag: Tag,
+    op: str | None,
+    message: object,
+    *,
+    err: bool = False,
+    file: TextIO | None = None,
+    nl: bool = True,
+    level: Level = Level.INFO,
+    body_style: str = "",
+) -> None:
     lines = [line for line in (inert(part) for part in str(message).split("\n")) if line.strip()]
-    if not lines and label is None:
-        return
     if not lines:
-        lines = [""]
+        return
     stream = _stream(err, file)
     if _relay_records:
         nl = True  # a record on the wire is a whole line; a later cont() starts a fresh one
@@ -595,8 +624,6 @@ def emit(
             at=at,
             op=op,
             level=level,
-            label=label,
-            label_style=label_style,
             text_style=body_style,
             continued=index > 0,
         )
@@ -609,42 +636,43 @@ def emit(
             _open_streams[id(stream)] = stream
 
 
-def cont(tag: Tag, message: object, *, err: bool = False, file: TextIO | None = None) -> None:
-    """Finish the line an ``emit(tag, ..., nl=False)`` left open on the same stream.
+def cont(tag: Tag, op: str, message: object, *, err: bool = False, file: TextIO | None = None) -> None:
+    """Finish the line an ``emit(tag, op, ..., nl=False)`` left open on the same stream.
 
     If that line was already closed (another line was emitted in between), the
-    text starts a fresh ``[tag]`` line instead, so a continuation can never
+    text starts a fresh ``[tag] op:`` line instead, so a continuation can never
     produce an untagged line.
     """
     _require_tag(tag)
+    require_op(op)
     stream = _stream(err, file)
     first, _, rest = str(message).partition("\n")
     with _lock:
         if _open_lines.pop(id(stream), None) is None:
-            emit(tag, message, err=err, file=file)
+            emit(tag, op, message, err=err, file=file)
             return
         _open_streams.pop(id(stream), None)
         _write(stream, [inert(first)])
     if rest:
-        emit(tag, rest, err=err, file=file)
+        emit(tag, op, rest, err=err, file=file)
 
 
-def warning(tag: Tag, message: object, *, file: TextIO | None = None) -> None:
-    """``[tag] Warning: message`` on stderr."""
-    emit(tag, message, err=True, file=file, level=Level.WARNING)
+def warning(tag: Tag, op: str, message: object, *, file: TextIO | None = None) -> None:
+    """``[tag] op: Warning: message`` on stderr."""
+    emit(tag, op, message, err=True, file=file, level=Level.WARNING)
 
 
-def error(tag: Tag, message: object, *, file: TextIO | None = None) -> None:
-    """``[tag] Error: message`` on stderr."""
-    emit(tag, message, err=True, file=file, level=Level.ERROR)
+def error(tag: Tag, op: str, message: object, *, file: TextIO | None = None) -> None:
+    """``[tag] op: Error: message`` on stderr."""
+    emit(tag, op, message, err=True, file=file, level=Level.ERROR)
 
 
-def confirm(tag: Tag, question: str, *, default: bool = False) -> bool:
-    """A yes/no prompt whose prompt line carries ``[tag]``."""
-    return click.confirm(render(tag, question.strip(), stream=sys.stdout), default=default)
+def confirm(tag: Tag, op: str, question: str, *, default: bool = False) -> bool:
+    """A yes/no prompt whose prompt line carries ``[tag] op:``."""
+    return click.confirm(render(tag, op, question.strip(), stream=sys.stdout), default=default)
 
 
-def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
+def ask(tag: Tag, op: str, prompt: str, *, err: bool = False) -> str:
     """Read one line from stdin after a ``[tag]`` prompt (every prompt line tagged).
 
     On stdout the prompt goes through ``input()``; with ``err`` it is written to
@@ -652,7 +680,7 @@ def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
     pollute a stdout a caller captures.
     """
     stream = _stream(err, None)
-    lines = [render(tag, line.strip(), stream=stream) for line in prompt.split("\n") if line.strip()]
+    lines = [render(tag, op, line.strip(), stream=stream) for line in prompt.split("\n") if line.strip()]
     text = _eol(stream).join(lines) + " "
     with _lock:
         _close_open_lines()
@@ -666,10 +694,10 @@ def ask(tag: Tag, prompt: str, *, err: bool = False) -> str:
 def click_failure(exc: click.ClickException) -> None:
     """Render a Click usage or command error as ``[cli]`` lines on stderr."""
     if isinstance(exc, click.UsageError) and exc.ctx is not None:
-        emit(Tag.CLI, exc.ctx.get_usage(), err=True)
+        emit(Tag.CLI, "usage", exc.ctx.get_usage(), err=True)
         if exc.ctx.command.get_help_option(exc.ctx) is not None:
-            emit(Tag.CLI, f"Try '{exc.ctx.command_path} {exc.ctx.help_option_names[0]}' for help.", err=True)
-    error(Tag.CLI, exc.format_message())
+            emit(Tag.CLI, "usage", f"Try '{exc.ctx.command_path} {exc.ctx.help_option_names[0]}' for help.", err=True)
+    error(Tag.CLI, "usage", exc.format_message())
 
 
 def stream_is_tty(*, err: bool = False, file: TextIO | None = None) -> bool:
@@ -701,43 +729,54 @@ def _parse_record(line: str) -> Record | None:
     if not isinstance(data, dict) or data.get(_RECORD_MARK) != 1:
         return None
     try:
-        label = data.get("label")
         return _build(
             data["text"],
             tag=Tag(data["tag"]),
             at=datetime.fromisoformat(data["at"]),
             level=Level(data["level"]),
             op=data.get("op"),
-            label=label if isinstance(label, str) else None,
             continued=data.get("continued") is True,
         )
     except (KeyError, TypeError, ValueError):
         return None
 
 
-_TAGGED_LINE = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] (?:(?P<level>Warning|Error): )?(?P<text>.*)$")
+_TAGGED_LINE = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] (?P<rest>.*)$")
+_LEADING_OP = re.compile(r"^(?P<op>[a-z][a-z0-9-]*): ")
+_LEADING_LEVEL = re.compile(r"^(?P<level>Warning|Error): ")
 
 
-def _parse_tagged_line(line: str) -> Record | None:
-    """A line a child already rendered as ``[tag] ...`` (an ``ai`` not asked for records), kept once."""
+def _parse_tagged_line(line: str, op: str) -> Record | None:
+    """A line a child already rendered as ``[tag] op: ...`` (an ``ai`` not asked for records), kept once.
+
+    A line without an operation (an ``ai`` that predates them) takes ``op``. A word
+    before a colon is the line's operation only when the vocabulary names it.
+    """
     match = _TAGGED_LINE.match(line)
     if match is None or match["tag"] not in Tag._value2member_map_:
         return None
-    level = {"Warning": Level.WARNING, "Error": Level.ERROR}.get(match["level"] or "", Level.INFO)
-    return _build(match["text"], tag=Tag(match["tag"]), level=level)
+    rest = match["rest"]
+    own_op = _LEADING_OP.match(rest)
+    if own_op is not None and _known_op(own_op["op"]):
+        op, rest = own_op["op"], rest[own_op.end() :]
+    level = Level.INFO
+    leading = _LEADING_LEVEL.match(rest)
+    if leading is not None:
+        level, rest = Level(leading["level"].lower()), rest[leading.end() :]
+    return _build(rest, tag=Tag(match["tag"]), op=op, level=level)
 
 
-def relay(tag: Tag, text: object, *, err: bool = True, op: str | None = None) -> None:
+def relay(tag: Tag, op: str, text: object, *, err: bool = True) -> None:
     """Emit a child process's output, one record per line.
 
     A line a child ``ai`` wrote as a record (see :data:`RECORD_RELAY_ENV`) is
     re-emitted once with the child's own tag, operation, level and time. A line
-    already rendered as ``[<tag>] ...`` keeps its tag (and level label) rather
-    than being tagged twice. Any other line becomes the description of a
-    ``tag``/``op`` record; a leading
-    ``<tag>: `` the child prints is dropped, so ``dolt_server: healthy`` becomes
-    ``[dolt_server] healthy``.
+    already rendered as ``[<tag>] ...`` keeps its tag (and operation and level
+    label) rather than being tagged twice. Any other line becomes the description
+    of a ``tag``/``op`` record; a leading ``<tag>: `` the child prints is dropped,
+    so ``dolt_server: healthy`` becomes ``[dolt_server] ensure: healthy``.
     """
+    require_op(op)
     if not isinstance(text, str):
         return
     own = f"{_require_tag(tag).value}: "
@@ -748,7 +787,7 @@ def relay(tag: Tag, text: object, *, err: bool = True, op: str | None = None) ->
         shown = inert(line)
         if not shown.strip():
             continue
-        record = _parse_record(line.strip()) or _parse_tagged_line(shown)
+        record = _parse_record(line.strip()) or _parse_tagged_line(shown, op)
         if record is None:
             record = _build(shown[len(own) :] if shown.startswith(own) else shown, tag=tag, op=op)
         _write_records(stream, [record])
@@ -759,16 +798,15 @@ def record_relay_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return {**(os.environ if env is None else env), RECORD_RELAY_ENV: "1"}
 
 
-def run_relayed(
-    tag: Tag, argv: Sequence[str], *, op: str | None = None, **kwargs: Any
-) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` with its output captured, then relay every line under ``tag``.
+def run_relayed(tag: Tag, op: str, argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` with its output captured, then relay every line under ``tag`` and ``op``.
 
     stderr is merged into stdout so the child's own ordering survives, and the
     result goes to stderr with the rest of the diagnostics. A child ``ai``
     process answers in records, so its lines keep their own tags.
     """
     _require_tag(tag)
+    require_op(op)
     check = kwargs.pop("check", False)
     env = record_relay_env(kwargs.pop("env", None))
     completed = subprocess.run(
@@ -781,12 +819,16 @@ def run_relayed(
         env=env,
         **kwargs,
     )
-    relay(tag, completed.stdout, op=op)
+    relay(tag, op, completed.stdout)
     return completed
 
 
 class TaggedLogHandler(logging.Handler):
-    """Render ``ai_cli`` log records as ``[log]`` lines on stderr."""
+    """Render ``ai_cli`` log records as ``[log]`` lines on stderr.
+
+    A stdlib logging record names no operation, so this adapter passes none: the
+    line takes the configured default operation, or none when it is optional.
+    """
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -795,11 +837,12 @@ class TaggedLogHandler(logging.Handler):
             self.handleError(record)
             return
         if record.levelno >= logging.ERROR:
-            error(Tag.LOG, message)
+            level = Level.ERROR
         elif record.levelno >= logging.WARNING:
-            warning(Tag.LOG, message)
+            level = Level.WARNING
         else:
-            emit(Tag.LOG, message, err=True)
+            level = Level.INFO
+        _emit(Tag.LOG, None, message, err=True, level=level)
 
 
 def _install_log_handler() -> None:

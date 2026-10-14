@@ -1324,7 +1324,7 @@ class TestCreateWorktreeEdgeCases:
         assert wt_dir.is_dir()
         assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-session-3", "refs/remotes/origin/main"]]
         assert (
-            f"[launch] Worktree: recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
+            f"[launch] worktree: recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
             in capsys.readouterr().err
         )
 

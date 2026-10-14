@@ -393,5 +393,5 @@ def ensure_direnv(
         launch_reporter.active().phase("direnv").outcome(f"installed via {result.tool}")
         return result
 
-    launch_reporter.active().warning(remediation(envrc, result))
+    launch_reporter.active().warning("direnv", remediation(envrc, result))
     return InstallResult(False, tool=result.tool, detail=result.detail)

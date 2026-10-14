@@ -258,7 +258,7 @@ class TestQuietOutput:
 
         out = capsys.readouterr().out.strip().splitlines()
         assert len(out) == 1, f"expected exactly one line, got {out}"
-        assert out[0].startswith("[update] ai-cli-utils 0.1.0.post")
+        assert out[0].startswith("[update] update: ai-cli-utils 0.1.0.post")
         assert "installed (cache-bypassing reinstall)" in out[0]
 
     def test_given_a_quiet_launch_when_it_reinstalls_then_git_and_uv_output_is_captured(self, project, state):
@@ -317,8 +317,8 @@ class TestEscapeHatches:
         assert launch.updates and "--quiet" not in launch.updates[0]
         emitted = capsys.readouterr()
         lines = (emitted.out + emitted.err).splitlines()
-        assert "[update] Resolved 1 package" in lines
-        assert "[update] Installed 1 package" in lines
+        assert "[update] update: Resolved 1 package" in lines
+        assert "[update] update: Installed 1 package" in lines
         assert all(re.match(r"^\[[a-z0-9_-]+\] ", line) for line in lines), lines
 
     def test_given_verbose_and_quiet_together_when_update_runs_then_verbose_wins(self, project, capsys):

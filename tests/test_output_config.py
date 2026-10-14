@@ -33,9 +33,8 @@ from ai_cli.output import Level, Record, Tag
 REPO = Path(__file__).resolve().parents[1]
 # Present so the launch's own config load does not append a [machine] table mid-test.
 MACHINE = '[machine]\nhost_id = "test-host"\nos_type = "linux"\n\n'
-# The start line is a launch phase: its label renders as the operation element.
-STARTING = "Starting Claude Code session"
-START = f"{STARTING}: local, tmux"
+# The start line's operation is `start` (AI-CLI-rbuf); every line carries one.
+START = "Starting Claude Code session (local, tmux)"
 MODE = "launching inside tmux (tmux is the default session mode)"
 PLAN = "dry run -- nothing was created, started, or reaped."
 CONFIG_ERROR = re.compile(r"^\[config\] load: Error: (?P<path>.+?): (?P<rest>.*)$", re.MULTILINE)
@@ -97,49 +96,57 @@ def _internal_emit(capsys, monkeypatch, *args: str) -> tuple[str, str]:
 @pytest.mark.parametrize(
     ("config", "start", "mode", "plan"),
     [
-        pytest.param("", f"[launch] {START}", f"[launch] Mode: {MODE}", f"[plan] {PLAN}", id="no-config"),
-        pytest.param("[output]\n", f"[launch] {START}", f"[launch] Mode: {MODE}", f"[plan] {PLAN}", id="empty-table"),
+        pytest.param("", f"[launch] start: {START}", f"[launch] mode: {MODE}", f"[plan] plan: {PLAN}", id="no-config"),
+        pytest.param(
+            "[output]\n", f"[launch] start: {START}", f"[launch] mode: {MODE}", f"[plan] plan: {PLAN}", id="empty-table"
+        ),
         pytest.param(
             '[output.elements.tag]\nprefix = "<"\nsuffix = ">"\n',
-            f"<launch> {START}",
-            f"<launch> Mode: {MODE}",
-            f"<plan> {PLAN}",
+            f"<launch> start: {START}",
+            f"<launch> mode: {MODE}",
+            f"<plan> plan: {PLAN}",
             id="tag-delimiters",
         ),
-        pytest.param("[output.elements.tag]\nenabled = false\n", START, f"Mode: {MODE}", PLAN, id="tag-disabled"),
+        pytest.param(
+            "[output.elements.tag]\nenabled = false\n",
+            f"start: {START}",
+            f"mode: {MODE}",
+            f"plan: {PLAN}",
+            id="tag-disabled",
+        ),
         pytest.param(
             "[output.elements.operation]\nenabled = false\n",
-            "[launch] local, tmux",
+            f"[launch] {START}",
             f"[launch] {MODE}",
             f"[plan] {PLAN}",
             id="operation-disabled",
         ),
         pytest.param(
             '[output.elements.operation]\nsuffix = " >"\n',
-            f"[launch] {STARTING} > local, tmux",
-            f"[launch] Mode > {MODE}",
-            f"[plan] {PLAN}",
+            f"[launch] start > {START}",
+            f"[launch] mode > {MODE}",
+            f"[plan] plan > {PLAN}",
             id="operation-suffix",
         ),
         pytest.param(
             '[output]\norder = ["description", "operation", "tag"]\n',
-            f"local, tmux {STARTING}: [launch]",
-            f"{MODE} Mode: [launch]",
-            f"{PLAN} [plan]",
+            f"{START} start: [launch]",
+            f"{MODE} mode: [launch]",
+            f"{PLAN} plan: [plan]",
             id="order",
         ),
         pytest.param(
             '[output]\nseparator = " | "\n',
-            f"[launch] | {STARTING}: | local, tmux",
-            f"[launch] | Mode: | {MODE}",
-            f"[plan] | {PLAN}",
+            f"[launch] | start: | {START}",
+            f"[launch] | mode: | {MODE}",
+            f"[plan] | plan: | {PLAN}",
             id="separator",
         ),
         pytest.param(
             '[output.elements.description]\nprefix = "\'"\nsuffix = "\'"\n',
-            f"[launch] {STARTING}: 'local, tmux'",
-            f"[launch] Mode: '{MODE}'",
-            f"[plan] '{PLAN}'",
+            f"[launch] start: '{START}'",
+            f"[launch] mode: '{MODE}'",
+            f"[plan] plan: '{PLAN}'",
             id="description-delimiters",
         ),
     ],
@@ -161,22 +168,28 @@ def test_given_output_config_when_ai_c_dry_runs_then_lines_follow_the_configured
 @pytest.mark.parametrize(
     ("config", "args", "expected"),
     [
-        pytest.param("", ["warning", "plain", "lost"], "[session] Warning: lost", id="no-config"),
+        pytest.param("", ["warning", "reload", "plain", "lost"], "[session] reload: Warning: lost", id="no-config"),
         pytest.param(
-            "[output.elements.level]\nshow = []\n", ["warning", "plain", "lost"], "[session] lost", id="level-hidden"
+            "[output.elements.level]\nshow = []\n",
+            ["warning", "reload", "plain", "lost"],
+            "[session] reload: lost",
+            id="level-hidden",
         ),
         pytest.param(
             '[output.elements.level]\nshow = ["info", "warning"]\nprefix = "("\nsuffix = ")"\n',
-            ["info", "plain", "ok"],
-            "[session] (Info) ok",
+            ["info", "reload", "plain", "ok"],
+            "[session] reload: (Info) ok",
             id="level-shown-with-delimiters",
         ),
         pytest.param(
-            "[output.elements.level]\nenabled = false\n", ["error", "plain", "boom"], "[session] boom", id="level-off"
+            "[output.elements.level]\nenabled = false\n",
+            ["error", "reload", "plain", "boom"],
+            "[session] reload: boom",
+            id="level-off",
         ),
         pytest.param(
             '[output]\norder = ["level", "tag", "description"]\n',
-            ["error", "plain", "boom"],
+            ["error", "reload", "plain", "boom"],
             "Error: [session] boom",
             id="level-first",
         ),
@@ -221,8 +234,8 @@ def test_given_configured_colours_when_ai_c_r_reattaches_on_a_pty_then_each_elem
         terminal.close()
 
     rows = _rows(screen)
-    warning_row = next(index for index, row in enumerate(rows) if row.startswith("[transport] Warning: "))
-    dolt_row = next(index for index, row in enumerate(rows) if row.startswith("[dolt_server] healthy"))
+    warning_row = next(index for index, row in enumerate(rows) if row.startswith("[transport] reconnect: Warning: "))
+    dolt_row = next(index for index, row in enumerate(rows) if row.startswith("[dolt_server] ensure: healthy"))
     assert all(cell.fg == "magenta" and cell.bold for cell in _cells(screen, warning_row, "[transport]"))
     assert all(cell.fg == "red" and cell.underscore for cell in _cells(screen, warning_row, "Warning:"))
     # A tag with no override keeps the element's own style.
@@ -237,7 +250,7 @@ def test_given_configured_colours_when_ai_c_r_writes_to_a_pipe_then_no_escape_is
 
     assert code == 255
     written = sink.getvalue()
-    assert any(line.startswith("[transport] Connection lost") for line in written.splitlines()), written
+    assert any(line.startswith("[transport] reconnect: Connection lost") for line in written.splitlines()), written
     assert "\x1b" not in written
 
 
@@ -246,9 +259,9 @@ def test_given_a_configured_style_when_ai_internal_emit_targets_a_terminal_then_
 ):
     _write_config('[output.elements.tag]\nstyle = "italic green"\n')
 
-    out, _ = _internal_emit(capsys, monkeypatch, "session", "info", "terminal", "styled")
+    out, _ = _internal_emit(capsys, monkeypatch, "session", "info", "reload", "terminal", "styled")
 
-    assert out == "\x1b[3;32m[session]\x1b[0m styled\n"
+    assert out == "\x1b[3;32m[session]\x1b[0m \x1b[1;36mreload:\x1b[0m styled\n"
 
 
 # --- call-time reading ------------------------------------------------------------
@@ -269,8 +282,8 @@ def test_given_a_config_edit_between_reconnect_attempts_when_ai_c_r_runs_then_th
 
     assert code == 255
     lines = sink.getvalue().splitlines()
-    assert any(line.startswith("[dolt_server] healthy") for line in lines), lines
-    assert any(line.startswith("<transport> Connection lost") for line in lines), lines
+    assert any(line.startswith("[dolt_server] ensure: healthy") for line in lines), lines
+    assert any(line.startswith("<transport> reconnect: Connection lost") for line in lines), lines
     assert not any(line.startswith("[transport] ") for line in lines), lines
 
 
@@ -278,12 +291,12 @@ def test_given_a_config_edit_between_two_ai_internal_emits_when_run_in_one_proce
     capsys, monkeypatch
 ):
     _write_config("")
-    first, _ = _internal_emit(capsys, monkeypatch, "session", "info", "plain", "one")
+    first, _ = _internal_emit(capsys, monkeypatch, "session", "info", "reload", "plain", "one")
     _write_config('[output.elements.tag]\nprefix = "<"\nsuffix = ">"\n')
 
-    second, _ = _internal_emit(capsys, monkeypatch, "session", "info", "plain", "two")
+    second, _ = _internal_emit(capsys, monkeypatch, "session", "info", "reload", "plain", "two")
 
-    assert (first, second) == ("[session] one\n", "<session> two\n")
+    assert (first, second) == ("[session] reload: one\n", "<session> reload: two\n")
 
 
 def test_given_an_output_config_when_the_session_script_emits_then_the_rendered_line_follows_it(tmp_path):
@@ -308,24 +321,24 @@ def test_given_an_output_config_when_the_session_script_emits_then_the_rendered_
     _, stderr = _finish_supervisor(process)
 
     reason = "supervisor is not in the terminal foreground process group"
-    assert f"<session> stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
+    assert f"<session> session: stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
 
 
 def test_given_an_unchanged_config_when_1000_records_render_then_it_is_parsed_once(capsys):
     _write_config('[output.elements.tag]\nprefix = "<"\nsuffix = ">"\n')
-    _out.emit(Tag.SESSION, "warm", err=True)
+    _out.emit(Tag.SESSION, "reload", "warm", err=True)
 
     with patch.object(tomllib, "loads", wraps=tomllib.loads) as loads:
         for index in range(1000):
-            _out.emit(Tag.SESSION, f"record {index}", err=True)
+            _out.emit(Tag.SESSION, "reload", f"record {index}", err=True)
         assert loads.call_count == 0
         _write_config('[output.elements.tag]\nprefix = "{{"\nsuffix = "}"\n')
-        _out.emit(Tag.SESSION, "after the edit", err=True)
+        _out.emit(Tag.SESSION, "reload", "after the edit", err=True)
         assert loads.call_count == 1
 
     lines = capsys.readouterr().err.splitlines()
-    assert lines[1000] == "<session> record 999"
-    assert lines[-1] == "{{session} after the edit"
+    assert lines[1000] == "<session> reload: record 999"
+    assert lines[-1] == "{{session} reload: after the edit"
 
 
 # --- refusal: an invalid table is set aside whole, naming path and key ------------
@@ -392,11 +405,6 @@ _INVALID = [
         id="datetime-not-supported-yet",
     ),
     pytest.param(
-        "[output.elements.operation]\nrequired = true\n",
-        ["output.elements.operation.required"],
-        id="operation-required-not-supported-yet",
-    ),
-    pytest.param(
         "[output]\nseparator = 3\n[output.elements.tag]\nstyle = 'bold blu'\n",
         ["output.separator", "output.elements.tag.style"],
         id="two-errors",
@@ -414,8 +422,8 @@ def test_given_invalid_output_config_when_ai_c_dry_runs_then_defaults_render_and
     code, out, err = _dry_run(capsys)
 
     assert code == 0
-    assert f"[launch] {START}" in err.splitlines(), err
-    assert f"[plan] {PLAN}" in out.splitlines(), out
+    assert f"[launch] start: {START}" in err.splitlines(), err
+    assert f"[plan] plan: {PLAN}" in out.splitlines(), out
     errors = CONFIG_ERROR.findall(err)
     assert [error_path for error_path, _ in errors] == [str(path)] * len(keys), err
     assert sorted(rest.split(": ", 1)[0] for _, rest in errors) == sorted(keys), err
@@ -437,8 +445,8 @@ def test_given_unparseable_config_when_ai_c_runs_then_defaults_render_with_one_e
     code, out, err = _dry_run(capsys)
 
     assert code == 0
-    assert f"[launch] {START}" in err.splitlines(), err
-    assert f"[plan] {PLAN}" in out.splitlines(), out
+    assert f"[launch] start: {START}" in err.splitlines(), err
+    assert f"[plan] plan: {PLAN}" in out.splitlines(), out
     assert [error_path for error_path, _ in CONFIG_ERROR.findall(err)] == [str(path)], err
     assert "Traceback" not in out + err
 
@@ -448,13 +456,13 @@ def test_given_a_persisting_invalid_config_when_many_records_render_then_the_err
 
     code, out, err = _dry_run(capsys)
     for index in range(5):
-        _out.emit(Tag.SESSION, f"later {index}", err=True)
+        _out.emit(Tag.SESSION, "reload", f"later {index}", err=True)
 
     later = capsys.readouterr().err
     assert code == 0
     assert len((out + err).splitlines()) > 5
     assert len(CONFIG_ERROR.findall(err + later)) == 1, err + later
-    assert "[session] later 4" in later.splitlines()
+    assert "[session] reload: later 4" in later.splitlines()
 
 
 # --- the no-config default is T-2's output, byte for byte -------------------------
@@ -462,14 +470,14 @@ def test_given_a_persisting_invalid_config_when_many_records_render_then_the_err
 _AT = datetime(2026, 7, 1, 18, 30, tzinfo=UTC)
 _T2_GOLDEN = [
     (
-        Record(at=_AT, tag=Tag.TRANSPORT, text="connection lost", level=Level.WARNING),
-        "\x1b[1;34m[transport]\x1b[0m \x1b[1;33mWarning:\x1b[0m connection lost",
-        "[transport] Warning: connection lost",
+        Record(at=_AT, tag=Tag.TRANSPORT, text="connection lost", level=Level.WARNING, op="reconnect"),
+        "\x1b[1;34m[transport]\x1b[0m \x1b[1;36mreconnect:\x1b[0m \x1b[1;33mWarning:\x1b[0m connection lost",
+        "[transport] reconnect: Warning: connection lost",
     ),
     (
-        Record(at=_AT, tag=Tag.DOLT_SERVER, text="healthy (socket accepted)"),
-        "\x1b[1;34m[dolt_server]\x1b[0m healthy (socket accepted)",
-        "[dolt_server] healthy (socket accepted)",
+        Record(at=_AT, tag=Tag.DOLT_SERVER, text="healthy (socket accepted)", op="ensure"),
+        "\x1b[1;34m[dolt_server]\x1b[0m \x1b[1;36mensure:\x1b[0m healthy (socket accepted)",
+        "[dolt_server] ensure: healthy (socket accepted)",
     ),
     (
         Record(at=_AT, tag=Tag.SESSION, text="boom", level=Level.ERROR, op="reload"),
@@ -477,42 +485,44 @@ _T2_GOLDEN = [
         "[session] reload: Error: boom",
     ),
     (
-        Record(at=_AT, tag=Tag.LAUNCH, text="created /x (12.4s)", label="Worktree"),
-        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mWorktree:\x1b[0m created /x (12.4s)",
-        "[launch] Worktree: created /x (12.4s)",
+        Record(at=_AT, tag=Tag.LAUNCH, text="created /x (12.4s)", op="worktree"),
+        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mworktree:\x1b[0m created /x (12.4s)",
+        "[launch] worktree: created /x (12.4s)",
     ),
     (
-        Record(at=_AT, tag=Tag.LAUNCH, text="handing off", label="Ready", label_style="bold green"),
-        "\x1b[1;34m[launch]\x1b[0m \x1b[1;32mReady:\x1b[0m handing off",
-        "[launch] Ready: handing off",
+        Record(at=_AT, tag=Tag.LAUNCH, text="ready, handing off", op="handoff"),
+        "\x1b[1;34m[launch]\x1b[0m \x1b[1;32mhandoff:\x1b[0m ready, handing off",
+        "[launch] handoff: ready, handing off",
     ),
     (
-        Record(at=_AT, tag=Tag.LAUNCH, text="failed", label="Sync", text_style="bold red"),
-        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mSync:\x1b[0m \x1b[1;31mfailed\x1b[0m",
-        "[launch] Sync: failed",
+        Record(at=_AT, tag=Tag.LAUNCH, text="failed", op="worktree", text_style="bold red"),
+        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mworktree:\x1b[0m \x1b[1;31mfailed\x1b[0m",
+        "[launch] worktree: failed",
     ),
     (
-        Record(at=_AT, tag=Tag.LAUNCH, text="more", label="Sync", level=Level.WARNING, continued=True, op="plan"),
+        Record(at=_AT, tag=Tag.LAUNCH, text="more", level=Level.WARNING, continued=True, op="plan"),
         "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mplan:\x1b[0m more",
         "[launch] plan: more",
     ),
     (
-        Record(at=_AT, tag=Tag.LAUNCH, text="", label="Phase"),
-        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mPhase:\x1b[0m",
-        "[launch] Phase:",
+        Record(at=_AT, tag=Tag.LAUNCH, text="", op="probe"),
+        "\x1b[1;34m[launch]\x1b[0m \x1b[1;36mprobe:\x1b[0m",
+        "[launch] probe:",
     ),
     (
+        # An adapter record names no operation: the required element renders the default.
         Record(at=_AT, tag=Tag.LOG, text="detail line", level=Level.DETAIL),
-        "\x1b[1;34m[log]\x1b[0m detail line",
-        "[log] detail line",
+        "\x1b[1;34m[log]\x1b[0m \x1b[1;36mgeneral:\x1b[0m detail line",
+        "[log] general: detail line",
     ),
 ]
 
 
 @pytest.mark.parametrize(("record", "styled", "plain"), _T2_GOLDEN, ids=lambda value: None)
 def test_given_no_output_config_when_a_record_renders_then_it_matches_the_t2_bytes(record, styled, plain):
-    # Captured from the T-2 renderer before the config existed. Every terminal line is
-    # this renderer's output (the T-2 enforcement tests compare the wire to it).
+    # Captured from the T-2 renderer before the config existed, with the operation element
+    # T-5 made required. Every terminal line is this renderer's output (the T-2 enforcement
+    # tests compare the wire to it).
     assert not _config_file().exists()
 
     assert _out.render_record(record, color=True, stream=io.StringIO()) == styled
@@ -522,9 +532,12 @@ def test_given_no_output_config_when_a_record_renders_then_it_matches_the_t2_byt
 def test_given_no_output_config_when_ai_internal_emit_targets_a_terminal_then_it_matches_the_t2_bytes(
     capsys, monkeypatch
 ):
-    out, err = _internal_emit(capsys, monkeypatch, "session", "warning", "terminal", "lost")
+    out, err = _internal_emit(capsys, monkeypatch, "session", "warning", "reload", "terminal", "lost")
 
-    assert (out, err) == ("\x1b[1;34m[session]\x1b[0m \x1b[1;33mWarning:\x1b[0m lost\n", "")
+    assert (out, err) == (
+        "\x1b[1;34m[session]\x1b[0m \x1b[1;36mreload:\x1b[0m \x1b[1;33mWarning:\x1b[0m lost\n",
+        "",
+    )
 
 
 # --- documentation ----------------------------------------------------------------
@@ -600,7 +613,19 @@ def test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_i
         path.write_text(MACHINE + config, encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, "-c", _IMPORT_PROBE, str(REPO / "src"), "internal", "emit", "session", "info", "plain", "hi"],
+        [
+            sys.executable,
+            "-c",
+            _IMPORT_PROBE,
+            str(REPO / "src"),
+            "internal",
+            "emit",
+            "session",
+            "info",
+            "reload",
+            "plain",
+            "hi",
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -608,5 +633,5 @@ def test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_i
         check=False,
     )
 
-    assert result.stdout == "[session] hi\n", result.stderr
+    assert result.stdout == "[session] reload: hi\n", result.stderr
     assert f"LOADED {loaded}\n" in result.stderr, result.stderr

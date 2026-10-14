@@ -206,7 +206,7 @@ def test_given_reaper_stop_when_circus_removes_watcher_then_reports_success(tmp_
         assert process_manager._cmd_stale_session_reaper_stop()
 
     client.send_message.assert_called_once_with("rm", name="stale-session-reaper")
-    assert capsys.readouterr().out.strip() == "[daemon] stale-session-reaper: stopped"
+    assert capsys.readouterr().out.strip() == "[daemon] stop: stale-session-reaper: stopped"
 
 
 def test_given_reaper_stop_when_circus_rejects_removal_then_reports_failure(tmp_path, capsys):
@@ -230,7 +230,7 @@ def test_given_reaper_status_when_watcher_is_running_then_reports_running(tmp_pa
     ):
         assert process_manager._cmd_stale_session_reaper_status()
 
-    assert capsys.readouterr().out.strip() == "[daemon] stale-session-reaper: running"
+    assert capsys.readouterr().out.strip() == "[daemon] status: stale-session-reaper: running"
 
 
 def test_given_reaper_status_when_watcher_is_not_registered_then_reports_not_running(tmp_path, capsys):
@@ -242,7 +242,7 @@ def test_given_reaper_status_when_watcher_is_not_registered_then_reports_not_run
     ):
         assert process_manager._cmd_stale_session_reaper_status()
 
-    assert capsys.readouterr().out.strip() == "[daemon] stale-session-reaper: not running"
+    assert capsys.readouterr().out.strip() == "[daemon] status: stale-session-reaper: not running"
 
 
 def test_given_reaper_status_when_circus_is_unavailable_then_reports_failure_not_healthy(tmp_path, capsys):

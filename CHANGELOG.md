@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. SIGTERM and SIGHUP are forwarded to it, and the terminal is restored on
   every exit. There is no scrollback, detach or reattach on this path; tmux remains the
   default transport and is unchanged. Windows keeps its current bare launch.
+- Every line an `ai` command prints now names the operation it belongs to, as
+  `[<tag>] <operation>: <text>`, in bold cyan: `[transport] reconnect: Connection lost ...`,
+  `[dolt_server] ensure: healthy ...`. Launch phases are operations too, so
+  `[launch] Worktree: ...` becomes `[launch] worktree: ...`, the start line becomes
+  `[launch] start: Starting Claude Code session (local, tmux)`, and the last line is
+  `[launch] handoff: ready, handing off to ...` in bold green. A failed or interrupted
+  phase reports at error or warning level under its own operation. The allowed
+  operations, whether a line must carry one, the default for a line that has none (a
+  logging record, `[log] general: ...`), the colour and the pattern all live in the
+  `[output.elements.operation]` config table; a user table may add operations but not
+  remove the shipped ones. `ai internal emit` takes the operation after the level:
+  `ai internal emit <tag> <level> <operation> <terminal|plain> <text>`.
 
 ### Changed
 

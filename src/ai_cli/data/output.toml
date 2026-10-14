@@ -27,16 +27,22 @@ pattern = '^[a-z0-9_-]+$'
 
 [output.elements.operation]
 enabled = true
-required = false
+required = true
 default = "general"
 prefix = ""
 suffix = ":"
 style = "bold cyan"
 pattern = '^[a-z][a-z0-9-]*$'
+# Every operation the package emits. A user's table may add operations but not remove
+# these. The launch phases come first, then the operations of the other commands.
 vocabulary = [
     "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
+    "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
+    "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
+    "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
+    "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
 ]
 
 [output.elements.operation.styles]

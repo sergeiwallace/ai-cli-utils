@@ -149,7 +149,7 @@ def telemetry_writer() -> int:
     from .sync import _acquire_pid_file, _release_pid_file
 
     if not _acquire_pid_file("telemetry-writer"):
-        _out.emit(Tag.TELEMETRY, "telemetry writer is already running.", err=True)
+        _out.emit(Tag.TELEMETRY, "watch", "telemetry writer is already running.", err=True)
         return 2
 
     conn = init_db()
@@ -166,18 +166,18 @@ def telemetry_writer() -> int:
                 ts=data.get("ts"),
             )
         except Exception as e:
-            _out.emit(Tag.TELEMETRY_WRITER, f"write error: {e}", err=True)
+            _out.emit(Tag.TELEMETRY_WRITER, "watch", f"write error: {e}", err=True)
 
     async def run():
         await client.connect()
         if not client.nc:
-            _out.emit(Tag.TELEMETRY, "NATS unavailable — cannot start telemetry writer.", err=True)
+            _out.emit(Tag.TELEMETRY, "watch", "NATS unavailable — cannot start telemetry writer.", err=True)
             return False
-        _out.emit(Tag.TELEMETRY_WRITER, "connected, consuming telemetry.action.>")
+        _out.emit(Tag.TELEMETRY_WRITER, "watch", "connected, consuming telemetry.action.>")
         await client.subscribe_durable("telemetry.action.>", "telemetry-writer", on_event)
         return True
 
-    _out.emit(Tag.TELEMETRY, "ai telemetry writer — consuming events (Ctrl+C to stop)")
+    _out.emit(Tag.TELEMETRY, "watch", "ai telemetry writer — consuming events (Ctrl+C to stop)")
     try:
         ok = asyncio.run(run())
     except KeyboardInterrupt:

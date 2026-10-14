@@ -79,11 +79,12 @@ def _styled(cells, *, fg: str, bold: bool) -> bool:
 
 def _record_from_row(row: str) -> Record:
     tag, _, rest = row.partition(" ")
+    op, _, rest = rest.partition(": ")
     level = Level.INFO
     for name, candidate in (("Warning: ", Level.WARNING), ("Error: ", Level.ERROR)):
         if rest.startswith(name):
             level, rest = candidate, rest[len(name) :]
-    return Record(at=datetime.now(UTC), tag=Tag(tag.strip("[]")), text=rest, level=level)
+    return Record(at=datetime.now(UTC), tag=Tag(tag.strip("[]")), text=rest, level=level, op=op)
 
 
 def _stale_launcher_commits():
@@ -111,12 +112,13 @@ def _assert_styled_reattach(tmp_path: Path, terminal: Terminal) -> None:
     rows = _rows(screen)
     received = bytes(terminal.received)
     produced = [(index, row) for index, row in enumerate(rows) if row.startswith(("[transport] ", "[dolt_server] "))]
-    assert any(row.startswith("[dolt_server] healthy") for _, row in produced), rows
-    assert any(row.startswith("[transport] Warning: ") for _, row in produced), rows
+    assert any(row.startswith("[dolt_server] ensure: healthy") for _, row in produced), rows
+    assert any(row.startswith("[transport] reconnect: Warning: ") for _, row in produced), rows
     for index, row in produced:
         tag = row.split(" ", 1)[0]
         assert _styled(_cells(screen, index, tag), fg="blue", bold=True), (row, _cells(screen, index, tag)[0])
         record = _record_from_row(row)
+        assert _styled(_cells(screen, index, f"{record.op}:"), fg="cyan", bold=True), row
         if record.level is Level.WARNING:
             assert _styled(_cells(screen, index, "Warning:"), fg="brown", bold=True), row
         assert _styled(_cells(screen, index, record.text[:20]), fg="default", bold=False), row
@@ -142,7 +144,7 @@ def test_given_pre_styled_text_when_emitted_then_only_element_styles_reach_the_t
     screen = terminal.screen()
     rows = _rows(screen)
     received = bytes(terminal.received)
-    index = rows.index("[dolt_server] ALERT healthy amber")
+    index = rows.index("[dolt_server] ensure: ALERT healthy amber")
     assert b"\x1b[1;31m" not in received
     assert b"38;5;208" not in received
     assert _styled(_cells(screen, index, "[dolt_server]"), fg="blue", bold=True)
@@ -161,8 +163,8 @@ def test_given_no_color_or_dumb_term_when_ai_c_runs_on_a_pty_then_no_sgr_is_writ
     rows = _rows(terminal.screen())
     # The transport's terminal restore ends in an attribute reset: terminal control, not a styled line.
     received = bytes(terminal.received).replace(_TERMINAL_RESTORE.encode(), b"")
-    assert any(row.startswith("[transport] Warning: ") for row in rows), rows
-    assert any(row.startswith("[dolt_server] healthy") for row in rows), rows
+    assert any(row.startswith("[transport] reconnect: Warning: ") for row in rows), rows
+    assert any(row.startswith("[dolt_server] ensure: healthy") for row in rows), rows
     # An SGR sequence is CSI <digits and semicolons> m.
     assert not re.findall(rb"\x1b\[[0-9;]*m", received), received
 
@@ -188,7 +190,7 @@ def test_given_a_narrow_pty_when_a_long_record_is_emitted_then_one_line_is_writt
     start = received.index("[dolt_server]")
     # Everything up to the record's terminator; the pty's ONLCR doubles the CR before LF.
     record = received[start : received.index("\n", start)].rstrip("\r")
-    assert _out.inert(record) == f"[dolt_server] {long_line.removeprefix('dolt_server: ')}", repr(record)
+    assert _out.inert(record) == f"[dolt_server] ensure: {long_line.removeprefix('dolt_server: ')}", repr(record)
 
 
 # --- structured relay between ai processes --------------------------------------
@@ -199,9 +201,9 @@ _CHILD_UPDATE = textwrap.dedent(
     sys.path.insert(0, sys.argv[1])
     from ai_cli import output
     from ai_cli.output import Tag
-    output.emit(Tag.UPDATE, "pulled 3 commits", op="install")
-    output.emit(Tag.GIT, "Already up to date.")
-    output.warning(Tag.UPDATE, "the uv cache was cold\\nrun ai update -f to retry")
+    output.emit(Tag.UPDATE, "install", "pulled 3 commits")
+    output.emit(Tag.GIT, "update", "Already up to date.")
+    output.warning(Tag.UPDATE, "update", "the uv cache was cold\\nrun ai update -f to retry")
     """
 )
 
@@ -260,8 +262,10 @@ def test_given_a_child_ai_update_when_relayed_through_cli_then_each_line_is_tagg
     assert len(children) == 1
     child_lines = [json.loads(line) for line in (children[0].stdout + children[0].stderr).splitlines()]
     assert "[update] install: pulled 3 commits\n" in captured.out
-    assert "[git] Already up to date.\n" in captured.out
-    assert "[update] Warning: the uv cache was cold\n[update] run ai update -f to retry\n" in captured.err
+    assert "[git] update: Already up to date.\n" in captured.out
+    assert (
+        "[update] update: Warning: the uv cache was cold\n[update] update: run ai update -f to retry\n" in captured.err
+    )
     assert "[update] [" not in captured.out + captured.err
     assert "{" not in captured.out + captured.err
     relayed = {record.text: record for record in records if record.text in {line["text"] for line in child_lines}}
@@ -284,7 +288,7 @@ def test_given_a_malformed_child_record_when_relayed_then_it_becomes_a_descripti
 
     out = capsys.readouterr().out
     for line in malformed:
-        assert f"[update] {line}\n" in out, out
+        assert f"[update] update: {line}\n" in out, out
 
 
 # --- session script ---------------------------------------------------------------
@@ -309,8 +313,11 @@ def test_given_no_ai_entry_point_when_the_session_script_emits_then_a_plain_tagg
     _, stderr = _finish_supervisor(process)
 
     reason = "supervisor is not in the terminal foreground process group"
-    assert f"[session] stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
-    assert f"internal emit session info plain stale-session reaper evidence disabled: {reason}" in calls.read_text()
+    assert f"[session] session: stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
+    assert (
+        f"internal emit session info session plain stale-session reaper evidence disabled: {reason}"
+        in calls.read_text()
+    )
 
 
 def test_given_a_working_ai_entry_point_when_the_session_script_emits_then_the_renderer_prints_the_line(tmp_path):
@@ -333,14 +340,14 @@ def test_given_a_working_ai_entry_point_when_the_session_script_emits_then_the_r
     _, stderr = _finish_supervisor(process)
 
     reason = "supervisor is not in the terminal foreground process group"
-    assert f"rendered:[session] stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
+    assert f"rendered:[session] session: stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
 
 
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["session", "warning", "plain", "two", "words"], "[session] Warning: two words\n"),
-        (["session", "info", "terminal", "styled"], "[session] styled\n"),
+        (["session", "warning", "reload", "plain", "two", "words"], "[session] reload: Warning: two words\n"),
+        (["session", "info", "reload", "terminal", "styled"], "[session] reload: styled\n"),
     ],
 )
 def test_given_ai_internal_emit_when_run_through_cli_then_it_replies_with_one_rendered_record(
@@ -357,19 +364,27 @@ def test_given_ai_internal_emit_when_run_through_cli_then_it_replies_with_one_re
 
 
 def test_given_a_terminal_target_when_ai_internal_emit_runs_then_its_reply_is_styled(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["ai", "internal", "emit", "session", "error", "terminal", "boom"])
+    monkeypatch.setattr(sys, "argv", ["ai", "internal", "emit", "session", "error", "reload", "terminal", "boom"])
 
     with pytest.raises(SystemExit):
         cli()
 
     out = capsys.readouterr().out
     assert out.startswith("\x1b[")
-    assert _out.inert(out) == "[session] Error: boom"
+    assert _out.inert(out) == "[session] reload: Error: boom"
 
 
 @pytest.mark.parametrize(
     "args",
-    [["session"], ["no-such-tag", "info", "plain", "x"], ["session", "loud", "plain", "x"], ["session", "info", "x"]],
+    [
+        ["session"],
+        ["no-such-tag", "info", "reload", "plain", "x"],
+        ["session", "loud", "reload", "plain", "x"],
+        ["session", "info", "no-such-op", "plain", "x"],
+        ["session", "info", "reload", "x"],
+        # The shape before operations: a session script generated by an older `ai` falls back.
+        ["session", "info", "plain", "x"],
+    ],
 )
 def test_given_a_malformed_ai_internal_emit_when_run_then_it_fails_so_the_script_falls_back(args, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["ai", "internal", "emit", *args])
