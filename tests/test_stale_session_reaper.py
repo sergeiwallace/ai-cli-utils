@@ -975,6 +975,177 @@ def test_given_respawn_before_atomic_fence_when_fence_runs_then_live_session_sur
 
 
 @pytest.mark.real_tmux
+def test_given_pane_respawned_and_dead_again_before_fence_when_fence_runs_then_session_survives(
+    real_tmux_socket: str,
+):
+    """A second death of the same pane is a different pane life, and the fence must see it.
+
+    tmux 3.8 no longer formats a dead pane's pid, so on that version the pid cannot tell
+    the two deaths apart; the death time can. The pause makes the second death land in
+    a later second than the first, which is the resolution tmux reports it in.
+    """
+    _create_dead_managed_session(real_tmux_socket, "fence-second-death")
+    adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
+    candidate = adapter.sessions()[0]
+    fingerprint = adapter.capture_fingerprint(candidate)
+    assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
+    time.sleep(1.1)
+    respawned = _tmux_run(real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "true")
+    assert respawned.returncode == 0, respawned.stderr
+    _wait_for_dead_pane(real_tmux_socket, candidate.session_id)
+
+    assert not adapter.fence_and_kill(candidate.session_id, fingerprint)
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode == 0
+
+
+def _expand_tmux_format(template: str, scope: dict[str, object]) -> str:
+    """Expand the subset of tmux's format language the adapter uses: plain variables and
+    the ``#{W:...}`` window and ``#{P:...}`` pane loops."""
+    out: list[str] = []
+    index = 0
+    while index < len(template):
+        if not template.startswith("#{", index):
+            out.append(template[index])
+            index += 1
+            continue
+        depth, end = 1, index + 2
+        while depth:
+            if template.startswith("#{", end):
+                depth, end = depth + 1, end + 2
+                continue
+            depth -= template[end] == "}"
+            end += 1
+        body = template[index + 2 : end - 1]
+        if body[:2] in {"W:", "P:"}:
+            children = scope["windows" if body[0] == "W" else "panes"]
+            assert isinstance(children, list)
+            out.extend(_expand_tmux_format(body[2:], {**scope, **child}) for child in children)
+        else:
+            out.append(str(scope.get(body, "")))
+        index = end
+    return "".join(out)
+
+
+class _Tmux38Server:
+    """A tmux 3.8 server at the subprocess boundary.
+
+    tmux 3.8's ``format_cb_pane_pid`` prints the pid only while the pane's pty is open
+    (``wp->fd != -1``); 3.7 printed it for any pane. So a dead pane, and a pane whose pty
+    closed before tmux reaped its child, both list an empty ``#{pane_pid}``.
+    ``#{pane_dead_time}`` is set only once tmux has reaped the child and kept the pane.
+    """
+
+    def __init__(self) -> None:
+        self.sessions: list[dict[str, object]] = []
+
+    def add_session(self, number: int, *, pid: int, pty_open: bool, reaped: bool, died_at: int = 1_700_000_000):
+        pane = {
+            "pane_id": f"%{number}",
+            "pane_pid": str(pid) if pty_open else "",
+            "pane_dead": "1" if reaped and not pty_open else "0",
+            "pane_dead_time": str(died_at) if reaped and not pty_open else "",
+        }
+        window = {"window_id": f"@{number}", "panes": [pane]}
+        self.sessions.append(
+            {
+                "session_id": f"${number}",
+                "session_name": f"test-session-{number}",
+                "@ai_cli_session_generation": f"generation-{number}",
+                "session_attached": "0",
+                "windows": [window],
+            }
+        )
+
+    def session_ids(self) -> list[str]:
+        return [str(session["session_id"]) for session in self.sessions]
+
+    def _session(self, session_id: str) -> dict[str, object]:
+        return next(session for session in self.sessions if session["session_id"] == session_id)
+
+    def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = argv[1]
+        if command == "list-panes":
+            template = argv[-1]
+            lines = [
+                _expand_tmux_format(template, {**session, **window, **pane})
+                for session in self.sessions
+                for window in session["windows"]  # type: ignore[union-attr]
+                for pane in window["panes"]
+            ]
+            return subprocess.CompletedProcess(argv, 0, stdout="".join(f"{line}\n" for line in lines), stderr="")
+        if command == "display-message":
+            expanded = _expand_tmux_format(argv[-1], self._session(argv[-2]))
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{expanded}\n", stderr="")
+        if command == "if-shell":
+            session_id, predicate = argv[4], argv[5]
+            template, expected = predicate.removeprefix("#{==:").removesuffix("}").rsplit(",", 1)
+            if _expand_tmux_format(template, self._session(session_id)) == expected:
+                self.sessions.remove(self._session(session_id))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="__ai_cli_fence_mismatch__\n", stderr="")
+        raise AssertionError(f"unexpected tmux call {argv!r}")
+
+
+def _stale_heartbeats(state_home: Path, server: _Tmux38Server) -> None:
+    for session in server.sessions:
+        assert write_heartbeat(
+            state_home,
+            str(session["session_name"]),
+            str(session["@ai_cli_session_generation"]),
+            boot_generation="boot-1",
+            monotonic_clock=lambda: 1.0,
+            wall_clock=lambda: 1.0,
+        )
+
+
+def _tmux38_reaper(state_home: Path, probe: ProcessProbe) -> StaleSessionReaper:
+    return StaleSessionReaper(
+        {"stale_session_reaper": {"mode": "reap", "stale_after_seconds": 60}},
+        state_home=state_home,
+        tmux=SubprocessTmuxAdapter(),
+        process_probe=probe,
+        boot_generation=lambda: "boot-1",
+        monotonic_clock=lambda: 1000.0,
+    )
+
+
+def test_given_tmux_38_dead_pane_without_a_pid_when_reaper_evaluates_then_it_reaps_it_and_decides_the_rest(
+    reaper_state: Path,
+):
+    server = _Tmux38Server()
+    server.add_session(1, pid=9001, pty_open=False, reaped=True)
+    server.add_session(2, pid=9002, pty_open=True, reaped=False)
+    _stale_heartbeats(reaper_state, server)
+    probe = _Probe({9002: (True, "S", ProcessIdentity("procfs", 2))})
+
+    with patch("ai_cli.stale_session_reaper.subprocess.run", side_effect=server.run):
+        killed = _tmux38_reaper(reaper_state, probe).evaluate_once()
+
+    assert killed == ["$1"]
+    assert server.session_ids() == ["$2"]
+
+
+def test_given_tmux_38_pane_without_a_pid_that_is_not_dead_when_reaper_evaluates_then_it_survives_and_others_are_reaped(
+    reaper_state: Path,
+):
+    """A pane whose pty closed before tmux reaped its child has no pid and is not dead.
+
+    Its process may still be running, so nothing about it can authorise a kill; the
+    session is preserved, and a dead session beside it is still reaped.
+    """
+    server = _Tmux38Server()
+    server.add_session(1, pid=9001, pty_open=False, reaped=False)
+    server.add_session(2, pid=9002, pty_open=False, reaped=True)
+    _stale_heartbeats(reaper_state, server)
+
+    with patch("ai_cli.stale_session_reaper.subprocess.run", side_effect=server.run):
+        killed = _tmux38_reaper(reaper_state, _Probe({})).evaluate_once()
+
+    assert killed == ["$2"]
+    assert server.session_ids() == ["$1"]
+
+
+@pytest.mark.real_tmux
 def test_given_hostile_generation_token_when_fence_fingerprint_is_captured_then_session_is_preserved(
     real_tmux_socket: str,
 ):
@@ -994,7 +1165,7 @@ def test_given_hostile_generation_token_when_fence_fingerprint_is_captured_then_
 
 
 def test_given_valid_fingerprint_when_atomic_fence_runs_then_it_uses_one_argv_if_shell_command():
-    fingerprint = "$1|generation-token|0|@1[%1=9001=1;]"
+    fingerprint = "$1|generation-token|0|@1[%1=9001=1=1700000000;]"
     adapter = SubprocessTmuxAdapter()
     expected = [
         "tmux",

@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On tmux 3.8 the stale-session reaper, and a relaunch over a session whose pane has
+  died, no longer fail for every session when one pane is dead. tmux 3.8 stopped printing
+  a dead pane's pid, and the reaper read that empty pid as a malformed listing, so it
+  decided nothing and a relaunch reattached to the frozen dead pane. A dead pane is now
+  identified by the time tmux recorded its death. A pane that has neither a pid nor a
+  death time is never killed, and the other sessions are still decided.
 - A session started with no terminal attached (a detached `ai c`) no longer stalls for
   several seconds on a busy machine before starting the agent. Its wait for a terminal to
   attach is now capped at about a second of real time; it used to count polls, and on a
