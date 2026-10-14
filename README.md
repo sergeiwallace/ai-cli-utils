@@ -521,7 +521,10 @@ Each phase is the line's operation (see
   telemetry database before the launch hands off. The terminal line, the log line and
   the telemetry event come from one record, so they carry the same time, tag,
   operation, level and text (see [Output configuration](#output-configuration)). A log
-  directory that cannot be written is skipped; the launch carries on.
+  directory that cannot be written is skipped; the launch carries on. Once the session
+  is running, its warnings and errors, such as a failed direnv load or a reload row
+  that has escalated, join the same launch's log and telemetry; its info lines stay on
+  the terminal.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a

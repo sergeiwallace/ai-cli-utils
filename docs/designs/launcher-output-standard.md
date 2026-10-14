@@ -88,6 +88,7 @@ Coverage index (non-authoritative; the issue records govern):
 | AI-CLI-rbuf | A mandatory, configurable `<operation>:` element | [Producer interface](#producer-interface), [Initial operation vocabulary](#initial-operation-vocabulary), T-5 |
 | AI-CLI-mu4d | One config file for every element, validated at load, read at call time | [Configuration schema](#configuration-schema), [D-2](#d-2), [D-5](#d-5), T-3 |
 | AI-CLI-2gq3 | Log file and telemetry share the record and the config | [Sinks](#sinks-terminal-log-file-telemetry), [D-6](#d-6), T-7 |
+| AI-CLI-cuwe | Session-script warnings and errors reach the launch log and telemetry | [Sinks](#sinks-terminal-log-file-telemetry), [Session-script producers](#session-script-producers), T-7 as built |
 | AI-CLI-zss5 | Replace the endlessly repeated reload line with a progress display that makes a stall more visible | [Reload progress line](#reload-progress-line), [D-4](#d-4), T-6 |
 
 How two ambiguous phrases are read (both recoverable from the records, neither adds a requirement):
@@ -620,12 +621,36 @@ Phase 5, T-7, as built:
 - **No `fields` yet.** No producer passes structured extras, so `Record` has no `fields`
   mapping and an event carries the five elements only. It arrives with its first
   producer.
-- **Not covered: the session script's lines.** `ai internal emit` and
-  `ai internal progress` reply through `raw()`, so their records reach no sink in that
-  process. The script still appends its plain line to the launch log itself, with its
-  own UTC stamp, and nothing it prints reaches telemetry. The
-  [Session-script producers](#session-script-producers) section says `_ai_emit` lines
-  reach all three sinks; that is not built yet.
+- **The session script's lines (AI-CLI-cuwe).** `ai internal emit` and
+  `ai internal progress` still reply through `raw()`, so the script prints the line,
+  and each then hands its warning and error records to `output.store()`, which is
+  `_write_records(..., terminal=False)`: the same file and telemetry path as a launch's
+  records, under the same `[output.sinks.*]` settings, then `flush_sinks()` before the
+  process exits. Info lines reach neither sink. `ai internal progress` stores only an
+  escalated row, and the persistent stall error with it.
+  - *Which log.* The script outlives the launch that wrote it, and its records belong
+    to that launch's log: the path baked into the script as `_ai_launch_log`, which
+    `refresh-template` carries over from the metadata, and where the supervisor's
+    stderr relay already writes. A child body and its supervisor share it.
+  - *How the command finds it.* Each call passes the path in `AI_CLI_LAUNCH_LOG`, set
+    on that command only, and `launch_logging.open_launch_log()` reopens the existing
+    file for appending. It never creates one, so a log that was pruned or never created
+    records nothing. The telemetry store needs no lookup: `telemetry.py` resolves it
+    under the home directory at call time. Nothing is read or imported for an info
+    line, and a warning adds the telemetry module's import and one batch write.
+  - *The plain lines.* The script no longer appends its own UTC-stamped copy of every
+    message to the log. When the renderer cannot run (the command fails or replies
+    empty), it appends the plain fallback line of a warning or an error, so that
+    message is never lost; an info fallback stays on the terminal. Before this change
+    the supervisor appended every message, info included, and a child body appended
+    none.
+  - *Cost.* Measured 2026-10-14 under load (7.5 to 10 on 10 cores), against `origin/main`
+    at `006d271` unpacked into its own directory, runs interleaved, HOME and XDG
+    directories isolated, wall time from `/usr/bin/time -p`. `ai internal emit session
+    <level> reload plain hello` with `AI_CLI_LAUNCH_LOG` set: an info line took a median of
+    0.54 s on the base and 0.52 s on this branch (20 runs each). A warning, which now
+    appends to the log and stores one telemetry event, took 0.52 s and 0.555 s in one pass
+    and 0.505 s and 0.50 s in a second (20 runs each): no change outside the noise.
 - **Found while building.** `telemetry._DB_PATH` was computed at import, so a process
   whose HOME changed after import wrote the store under the old home. The test suite
   is such a process, and with this sink its warnings would have reached the operator's
@@ -937,7 +962,9 @@ The generated script has about 15 `echo`/`printf` message sites today (all `[ses
 becomes a call to a single shell function, `_ai_emit <level> <op> <text>`. The function first closes
 an open progress line, then runs `ai internal emit`, so the line gets the call-time config, colour,
 datetime and all three sinks. If that command fails, the function prints the same grammar as plain
-text: a `date`-formatted timestamp in the default format, `[session] <op>: <text>`. As built in T-2
+text: a `date`-formatted timestamp in the default format, `[session] <op>: <text>`. As built in
+AI-CLI-cuwe, only warning and error lines reach the file and telemetry sinks, and an info line
+stays on the terminal (see the T-7 as-built notes). As built in T-2
 (see the [Design Overview](#design-overview)), the call is
 `ai internal emit session <level> <op> <terminal|plain> <text>` and the script prints its reply. T-5
 added the op argument and T-4 the timestamp; the progress-line close arrives in T-6. The script reaches the `ai` CLI the same way it already does for
@@ -1471,7 +1498,8 @@ makes it visible and does not fix it.
 - **Deliverables:**
   - Files modified: `src/ai_cli/output.py`, `src/ai_cli/launch_logging.py`, `src/ai_cli/telemetry.py`,
     `README.md`
-  - Tests added: `tests/test_output_sinks.py`
+  - Tests added: `tests/test_output_sinks.py`; for the session script's lines (AI-CLI-cuwe),
+    `tests/test_session_script_sinks.py`
 - **Tasks and acceptance criteria:**
   - **T-7 (AI-CLI-2gq3): terminal, file and telemetry agree** (implemented; all tests in
     `tests/test_output_sinks.py`; live launch check pending)
