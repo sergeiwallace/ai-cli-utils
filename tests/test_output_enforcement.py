@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -374,16 +375,17 @@ def _untagged(messages: list[str]) -> list[str]:
 
 
 _AI_EMIT_BODY = re.compile(r"\n(\s*)_ai_emit\(\) \{\{\n.*?\n\1\}\}\n", re.DOTALL)
-_AI_EMIT_CALL = re.compile(r"(?<![\w-])_ai_emit (\w+) ")
+_AI_EMIT_CALL = re.compile(r"(?<![\w-])_ai_emit (\w+) (\S+) ")
 
 
 def test_given_the_session_script_source_when_scanned_then_every_message_uses_ai_emit():
     source = (PACKAGE / "session_script.py").read_text(encoding="utf-8")
     assert _AI_EMIT_BODY.search(source), "the _ai_emit shell function is missing"
     outside = _AI_EMIT_BODY.sub("\n", source)
-    levels = _AI_EMIT_CALL.findall(outside)
-    assert len(levels) >= 10, "the scan matched too few messages to prove anything"
-    assert set(levels) <= {"info", "warning", "error"}, levels
+    calls = _AI_EMIT_CALL.findall(outside)
+    assert len(calls) >= 10, "the scan matched too few messages to prove anything"
+    assert {level for level, _op in calls} <= {"info", "warning", "error"}, calls
+    assert {op for _level, op in calls} <= SHIPPED_VOCABULARY, calls
     assert [m for m in _script_messages(outside) if m] == []
 
 
@@ -447,3 +449,137 @@ def test_given_the_package_source_when_scanned_then_every_exec_goes_through_the_
 def test_given_an_exec_outside_the_helper_when_scanned_then_it_is_reported(snippet):
     """Mutation control: a direct exec anywhere else is caught, so the clean result means something."""
     assert scan_execs(snippet, "main.py")
+
+
+# Every line names its operation (AI-CLI-rbuf): each producer passes one, as a literal
+# from the shipped vocabulary, so a line without an operation cannot be added.
+SHIPPED_VOCABULARY = frozenset(
+    tomllib.loads((PACKAGE / "data" / "output.toml").read_text(encoding="utf-8"))["output"]["elements"]["operation"][
+        "vocabulary"
+    ]
+)
+# output.<call>(tag, op, ...): the operation is the second positional argument.
+OP_CALLS = {"emit", "warning", "error", "cont", "relay", "run_relayed", "confirm", "ask", "render"}
+# launch_reporter.<call>(op, ...): a phase, a detail, a warning or an error names its operation first.
+REPORTER_CALLS = {"phase", "detail", "warning", "error"}
+_REPORTER = re.compile(r"^(?:reporter|self\.reporter|_?launch_reporter\.active\(\))$")
+
+# (file, qualified function, the op expression) -> why that call may pass a non-literal operation.
+OP_ADAPTER_ALLOWLIST = {
+    ("launch_reporter.py", "LaunchReporter._emit", "op"): "forwards the phase operation its caller names",
+    ("launch_reporter.py", "LaunchReporter.detail", "op"): "forwards the detail operation its caller names",
+    ("main.py", "_do_session_launch", "_tmux_phase"): (
+        "the tmux report's phases; tmux_setup.report_lines names each as a literal, checked below"
+    ),
+}
+
+
+def _qualified_owners(tree: ast.Module) -> dict[int, str]:
+    """Each node's innermost enclosing function, qualified by its class (``LaunchReporter._emit``)."""
+    owner: dict[int, str] = {}
+
+    def visit(node: ast.AST, scope: list[str], function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = ".".join([*scope, child.name])
+                visit(child, [*scope, child.name], name)
+            elif isinstance(child, ast.ClassDef):
+                visit(child, [*scope, child.name], function)
+            else:
+                owner[id(child)] = function
+                visit(child, scope, function)
+
+    visit(tree, [], "")
+    return owner
+
+
+def scan_operations(source: str, file: str) -> list[Violation]:
+    """Every output call in ``source`` that passes no operation, or one outside the shipped vocabulary."""
+    tree = ast.parse(source)
+    owner = _qualified_owners(tree)
+    found: list[Violation] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        receiver = ast.unparse(node.func.value)
+        if receiver in {"_out", "output"} and node.func.attr in OP_CALLS:
+            op = node.args[1] if len(node.args) > 1 else None
+        elif _REPORTER.match(receiver) and node.func.attr in REPORTER_CALLS:
+            op = node.args[0] if node.args else None
+        else:
+            continue
+        what = f"{receiver}.{node.func.attr}"
+        if op is None:
+            found.append(Violation(file, node.lineno, f"{what} passes no operation"))
+        elif isinstance(op, ast.Constant) and isinstance(op.value, str):
+            if op.value not in SHIPPED_VOCABULARY:
+                found.append(
+                    Violation(file, node.lineno, f"{what} names {op.value!r}, not in the operation vocabulary")
+                )
+        elif (file, owner.get(id(node), ""), ast.unparse(op)) not in OP_ADAPTER_ALLOWLIST:
+            found.append(Violation(file, node.lineno, f"{what} passes a non-literal operation {ast.unparse(op)}"))
+    return found
+
+
+def _tmux_report_phases() -> list[str]:
+    tree = ast.parse((PACKAGE / "tmux_setup.py").read_text(encoding="utf-8"))
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "report_lines")
+    return [
+        call.args[0].elts[0].value
+        for call in ast.walk(function)
+        if isinstance(call, ast.Call)
+        and _dotted(call.func) == "lines.append"
+        and isinstance(call.args[0], ast.Tuple)
+        and isinstance(call.args[0].elts[0], ast.Constant)
+    ]
+
+
+def test_given_the_package_source_when_scanned_then_every_output_call_passes_a_vocabulary_operation():
+    violations = [
+        violation
+        for path in sorted(PACKAGE.rglob("*.py"))
+        if path.name != "output.py"
+        for violation in scan_operations(path.read_text(encoding="utf-8"), path.name)
+    ]
+    assert not violations, "output calls without a vocabulary operation:\n" + "\n".join(map(str, violations))
+    phases = _tmux_report_phases()
+    assert len(phases) >= 5, phases
+    assert set(phases) - {"Warning"} <= SHIPPED_VOCABULARY, phases
+    for file, function, _op in OP_ADAPTER_ALLOWLIST:
+        tree = ast.parse((PACKAGE / file).read_text(encoding="utf-8"))
+        assert function in set(_qualified_owners(tree).values()), (file, function)
+
+
+@pytest.mark.parametrize(
+    ("snippet", "expected"),
+    [
+        # The shape every call had before operations: the message lands where the operation goes.
+        ('_out.emit(Tag.TRANSPORT, "Connection lost", err=True)', "'Connection lost', not in the operation"),
+        ('_out.emit(Tag.TRANSPORT, "lost", err=True)', "'lost', not in the operation vocabulary"),
+        ('_out.warning(Tag.DOLT_SERVER, "healthy")', "'healthy', not in the operation vocabulary"),
+        ("_out.error(Tag.SYNC)", "passes no operation"),
+        ('_out.run_relayed(Tag.UPDATE, ["ai", "update"])', "non-literal operation"),
+        ('reporter.phase("Worktree", "creating")', "'Worktree', not in the operation vocabulary"),
+        ('launch_reporter.active().warning(f"tmux {x}")', "non-literal operation"),
+        ("_launch_reporter.active().error()", "passes no operation"),
+        ('def f(op):\n    _out.emit(Tag.SYNC, op, "x")', "non-literal operation op"),
+    ],
+)
+def test_given_an_output_call_without_a_vocabulary_operation_when_scanned_then_it_is_reported(snippet, expected):
+    """Mutation control: a producer that omits its operation, or names one outside the vocabulary, is caught."""
+    violations = scan_operations(snippet, "transport.py")
+    assert any(expected in v.what for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        '_out.emit(Tag.TRANSPORT, "reconnect", "Connection lost", err=True)',
+        '_out.relay(Tag.DOLT_SERVER, "ensure", text)',
+        'reporter.phase("worktree", "creating").outcome("ready")',
+        'launch_reporter.active().warning("tmux", remediation(result))',
+        'logger.warning("not an output call")',
+    ],
+)
+def test_given_an_output_call_with_a_vocabulary_operation_when_scanned_then_it_passes(snippet):
+    assert scan_operations(snippet, "transport.py") == []
