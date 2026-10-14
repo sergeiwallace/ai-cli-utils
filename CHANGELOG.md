@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A remote session that stops relaunching its agent, for example after `/login` forces
+  an exit and the next launch fails before you have logged in again, now tells you how
+  to get the agent back. The shell it leaves in the tmux pane lists `exit 78` to
+  relaunch the agent in place, resuming the conversation, and plain `exit` to close the
+  session. It used to name only the way to close it, so the only route back to the agent
+  was to tear the session down and start again from your local machine.
+
 - Sending SIGTERM or SIGHUP to `ai c -R` (closing its terminal window, `kill`) now
   forwards the signal to ssh or mosh, waits for it to restore the terminal, then runs
   the session's cleanup and records a `terminated` outcome. The launcher used to die

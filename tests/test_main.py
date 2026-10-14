@@ -321,7 +321,8 @@ class TestGetEngineScript:
         assert "cd -- /tmp/project-worktree" in script
         assert script.index('direnv_root="$PWD"') > script.index("cd -- /tmp/project-worktree")
         assert script.count("run_agent gemini") == 4
-        assert '"$SHELL"; exit 79' in script
+        assert '"$SHELL"' in script
+        assert "exit 79" in script
 
     def test_given_pi_engine_when_generating_script_then_launches_named_pi_session(self):
         script = get_engine_script(

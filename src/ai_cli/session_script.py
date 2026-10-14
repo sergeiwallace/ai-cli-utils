@@ -150,6 +150,34 @@ def resolve_session_shell() -> str | None:
     return None
 
 
+def _stop_epilogue(is_remote: bool) -> str:
+    """What the child body does once the launch loop has stopped relaunching the agent.
+
+    A local session exits; its terminal belongs to whatever ran ``ai c``. A remote one
+    hands the pane to a shell, where the human can, for instance, log in again, and
+    that shell's banner is the only instruction they get. It used to name only how to
+    close the session, so after a forced ``/login`` exit there was no way back to the
+    agent: ``exit`` returns 79, which tears the session down, and ``ai c`` run inside
+    the pane would attach the session to itself (AI-CLI-tozg).
+
+    The restart route reuses the supervisor's existing contract: it relaunches any
+    child body that does not return 77 or 79, so the shell handing back 78 is an
+    in-place restart. The consecutive-exit count is cleared first, or the relaunched
+    agent would inherit a tripped breaker.
+    """
+    if not is_remote:
+        return "exit 77"
+    return (
+        "printf '%s\\n' "
+        '"[session] Session ended: the agent will not be relaunched on its own." '
+        '"[session]   exit 78   relaunch the agent in this pane" '
+        '"[session]   exit      close this session"; '
+        '"$SHELL"; _recovery_status=$?; '
+        'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
+        "exit 79"
+    )
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -1201,5 +1229,5 @@ with open(path, 'w') as f:
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "[session] Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
+    {_stop_epilogue(is_remote)}
     """

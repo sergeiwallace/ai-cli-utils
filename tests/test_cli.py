@@ -2125,7 +2125,8 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_remote_then_execs_shell(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=True)
-        assert '"$SHELL"; exit 79' in script
+        assert '"$SHELL"' in script
+        assert "exit 79" in script
 
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=False)
