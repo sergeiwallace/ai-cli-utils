@@ -89,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now tried once with no wait, a store that is held drops that telemetry batch at once
   (the launch log keeps every record), and only a batch that holds the lock looks the
   machine id up (AI-CLI-n0d7).
+- `ai session-retire` now retires a slot whose branch was squash-merged. It used to
+  refuse because the branch's commits were not ancestors of `origin/main`, which a
+  squash merge never makes them. It now checks content: every line the branch added
+  since its merge-base must be on the target, have been there in a commit since then,
+  or have replaced a line the target also rewrote. A branch with any other added line
+  still refuses, and the refusal names the file and the line. The tip is anchored as
+  before. The refusal no longer names `refs/remotes/origin/main` twice when the
+  branch tracks it.
 - On tmux 3.8 the stale-session reaper, and a relaunch over a session whose pane has
   died, no longer fail for every session when one pane is dead. tmux 3.8 stopped printing
   a dead pane's pid, and the reaper read that empty pid as a malformed listing, so it
