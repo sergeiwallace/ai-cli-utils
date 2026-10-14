@@ -1651,7 +1651,8 @@ def _internal_emit(args: list[str]) -> int:
     The generated session script prints the reply itself, so it can fall back to
     the same grammar in plain text whenever this exits non-zero or replies empty.
     ``terminal`` styles the reply unless ``NO_COLOR`` or ``TERM=dumb`` says not to.
-    ``op`` must be in the configured operation vocabulary.
+    ``op`` must be in the configured operation vocabulary. A warning or an error is
+    also stored in the launch log and in telemetry; an info line is not.
     """
     usage = "Usage: ai internal emit <tag> <info|warning|error> <operation> <terminal|plain> <text>"
     if len(args) < 5 or args[1] not in _EMIT_LEVELS or args[3] not in _EMIT_TARGETS:
@@ -1668,7 +1669,31 @@ def _internal_emit(args: list[str]) -> int:
     color = args[3] == "terminal" and _out.color_allowed()
     record = _out.make_record(tag, " ".join(args[4:]), op=args[2], level=_EMIT_LEVELS[args[1]])
     _out.raw(Untagged.INTERNAL_REPLY, _out.render_record(record, color=color))
+    _store_session_records([record])
     return 0
+
+
+def _store_session_records(records: list[_out.Record]) -> None:
+    """Store a session-script reply's warnings and errors in its launch log and in telemetry (AI-CLI-cuwe).
+
+    Info lines stay on the terminal. The script names its launch's log in
+    ``AI_CLI_LAUNCH_LOG``; without one the records still reach telemetry.
+    """
+    due = [record for record in records if record.level is not _out.Level.INFO]
+    if not due:
+        return
+    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+    path = os.environ.get(LAUNCH_LOG_ENV, "")
+    log = open_launch_log(path) if path else None
+    previous = _out.attach_file_sink(log.write_line if log is not None else None)
+    try:
+        _out.store(due)
+        _out.flush_sinks()
+    finally:
+        _out.attach_file_sink(previous)
+        if log is not None:
+            log.close()
 
 
 _RELOAD_REASONS = {
@@ -1686,7 +1711,8 @@ def _internal_progress(args: list[str]) -> int:
     ``error_after``, where the reply also leads with one persistent error line
     naming the stall and how to stop it, so a loop gets louder instead of looking
     healthy. ``terminal`` replies with an in-place row (no terminator) the next
-    row replaces; ``plain`` with ordinary lines.
+    row replaces; ``plain`` with ordinary lines. Only an escalated row, and the
+    persistent error, is stored in the launch log and in telemetry.
     """
     usage = "Usage: ai internal progress <tag> <operation> <terminal|plain> <attempt> <started> <reason>"
     if (
@@ -1719,6 +1745,7 @@ def _internal_progress(args: list[str]) -> int:
     color = terminal and _out.color_allowed()
     row = _out.make_record(tag, f"{_RELOAD_REASONS[args[5]]} (attempt {attempt}, {elapsed})", op=op, level=level)
     reply = _out.render_progress(row, color=color, in_place=terminal)
+    records = [row]
     if attempt == thresholds.error_after:
         stall = _out.make_record(
             tag,
@@ -1729,7 +1756,9 @@ def _internal_progress(args: list[str]) -> int:
         )
         persistent = _out.render_progress(stall, color=color, in_place=terminal)
         reply = persistent + ("\r\n" if terminal else "\n") + reply
+        records.insert(0, stall)
     _out.raw(Untagged.INTERNAL_REPLY, reply)
+    _store_session_records(records)
     return 0
 
 

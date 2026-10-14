@@ -25,6 +25,9 @@ from . import output as _out
 from .output import inert
 
 _LOG_DIRECTORY = "launch-logs"
+# The generated session script passes its launch's log path to `ai internal emit` and
+# `ai internal progress` in this variable, so their warnings and errors are stored there.
+LAUNCH_LOG_ENV = "AI_CLI_LAUNCH_LOG"
 _MAX_LOGS_PER_SESSION = 20
 
 # Breaks a launch-log path tie when the clock cannot. See create_launch_log.
@@ -172,3 +175,19 @@ def create_launch_log(session_name: str) -> LaunchLog:
     launch_log = LaunchLog(path=path, _file=log_file)
     launch_log.write_line(_out.file_text_line(f"launch log started for session {safe_name}"))
     return launch_log
+
+
+def open_launch_log(path: str) -> LaunchLog:
+    """Reopen the existing launch log at ``path`` for appending; never create one.
+
+    The session script outlives its launch, so its records join that launch's log.
+    A log that is gone (pruned, or never created) or cannot be opened records nothing.
+    """
+    log_path = Path(path)
+    if not log_path.is_file():
+        return LaunchLog(path=None)
+    try:
+        log_file = log_path.open("a", encoding="utf-8")
+    except OSError:
+        return LaunchLog(path=None)
+    return LaunchLog(path=log_path, _file=log_file)

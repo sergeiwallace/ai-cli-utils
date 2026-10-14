@@ -23,7 +23,7 @@ import sqlite3
 from pathlib import Path
 
 from test_output_sinks import _event_fields, _fields
-from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
+from test_reload_progress import _SGR, Session, session_factory  # noqa: F401  (the fixture)
 
 DIRENV_TEXT = "direnv could not load"
 CLEANUP_TEXT = "skipping tmux session cleanup because supervisor ownership was not established"
@@ -58,6 +58,12 @@ def _telemetry(session: Session) -> list[tuple[str, dict]]:
     return [(subject, json.loads(data)) for subject, data in rows]
 
 
+def _terminal_lines(session: Session) -> list[str]:
+    # Read from the bytes, not the modelled screen: a line naming the test's worktree path wraps.
+    text = _SGR.sub("", bytes(session.received).decode("utf-8", errors="replace"))
+    return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
+
+
 def _containing(lines: list[str], text: str) -> list[str]:
     return [line for line in lines if text in line]
 
@@ -69,7 +75,7 @@ def test_given_a_session_script_warning_when_emitted_then_terminal_log_and_telem
     session = session_factory(reload_on=(), launch_log=launch_log, direnv_fails=True)
     session.wait_for_agents(1)
 
-    [terminal] = _containing(session.rows(), DIRENV_TEXT)
+    [terminal] = _containing(_terminal_lines(session), DIRENV_TEXT)
     [logged] = _containing(_log(launch_log), DIRENV_TEXT)
     [(subject, data)] = [row for row in _telemetry(session) if DIRENV_TEXT in row[1]["text"]]
     expected = _fields(terminal)
@@ -83,10 +89,12 @@ def test_given_a_session_script_info_line_when_emitted_then_only_the_terminal_sh
     session_factory,  # noqa: F811
     launch_log,
 ):
-    session = session_factory(reload_on=(), launch_log=launch_log, direnv_fails=True, exit_on_cron=1)
+    session = session_factory(
+        reload_on=(), agent_runs=(2.0, 600.0), launch_log=launch_log, direnv_fails=True, exit_on_cron=2
+    )
     session.wait_for_exit()
 
-    assert _containing(session.rows(), CLEANUP_TEXT), session.rows()
+    assert _containing(_terminal_lines(session), CLEANUP_TEXT), session.rows()
     lines = _log(launch_log)
     events = _telemetry(session)
     # The same session's warning was stored in both, so the sinks were reachable.
