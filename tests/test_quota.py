@@ -2960,9 +2960,35 @@ class TestStatuslineScript:
         '"workspace":{"project_dir":"/tmp"}}'
     )
 
-    def _run(self, stdin=None, extra_env=None):
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path):
+        # The script shells out to `ai quota statusline-part` / `ai quota record` and
+        # writes $HOME/.claude/state and $TMPDIR caches. Without a sandbox every run
+        # starts the developer's installed `ai` (Python startup, twice) and writes their
+        # real home and /tmp, which is both a host-state leak and what pushed these runs
+        # past their deadline under load (AI-CLI-2z9x).
+        self._home = tmp_path / "home"
+        self._home.mkdir()
+        self._tmpdir = tmp_path / "tmp"
+        self._tmpdir.mkdir()
+        self._bin = tmp_path / "bin"
+        self._bin.mkdir()
+        self._ai_calls = tmp_path / "ai-calls"
+        self._fake_ai(
+            f'echo "$*" >> "{self._ai_calls}"\nif [[ "$*" == *"statusline-part"* ]]; then echo "42% on-track"; fi'
+        )
+
+    def _fake_ai(self, body):
+        fake = self._bin / "ai"
+        fake.write_text(f"#!/usr/bin/env bash\n{body}\n")
+        fake.chmod(0o755)
+
+    def _run(self, stdin=None):
         env = {
             **os.environ,
+            "HOME": str(self._home),
+            "TMPDIR": str(self._tmpdir),
+            "PATH": f"{self._bin}{os.pathsep}{os.environ['PATH']}",
             "TMUX": "",
             "COLUMNS": "200",
             "GIT_BRANCH_CACHE": "main",
@@ -2971,17 +2997,31 @@ class TestStatuslineScript:
             # the api/cache-hit branch and skips the quota code these tests exercise.
             "CC_BILLING_MODE": "subscription",
         }
-        if extra_env:
-            env.update(extra_env)
         return subprocess.run(
             ["bash", str(self._SCRIPT)],
             input=stdin or self._SAMPLE_INPUT,
             capture_output=True,
             text=True,
             env=env,
-            timeout=15,
+            # A hang guard, not a speed check. The script execs ~40 external commands
+            # (jq, date, stat, cut, the stub `ai`); on a loaded host with an endpoint
+            # scanner each exec costs 0.2-0.8 s, and a sandboxed run measured 4.1 s at a
+            # load of 9.8 on 10 cores. 15 s left under 4x headroom for a parallel run.
+            timeout=60,
             check=False,
         )
+
+    def _quota_cache(self):
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        return self._tmpdir / f".ai-sl-quota-{uid}"
+
+    def test_given_the_suite_runs_the_script_when_it_fetches_quota_then_only_the_sandboxed_ai_and_home_are_touched(
+        self,
+    ):
+        result = self._run()
+        assert result.returncode == 0, f"stderr: {result.stderr!r}"
+        assert "statusline-part" in self._ai_calls.read_text()
+        assert self._quota_cache().read_text().endswith("42% on-track")
 
     def test_given_valid_input_when_run_then_exits_zero(self):
         result = self._run()
@@ -3012,89 +3052,44 @@ class TestStatuslineScript:
 
     def test_given_quota_part_with_embedded_newline_when_assembled_then_single_line(self):
         """Embedded newline in quota_part output is stripped — single-line invariant holds."""
-        fake_ai = self._SCRIPT.parent.parent.parent.parent / "tests" / "_fake_ai_newline.sh"
-        fake_ai.write_text(
-            '#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then printf "line1\\nline2\\n"; fi\n'
-        )
-        fake_ai.chmod(0o755)
-        fake_bin = fake_ai.parent / "_fake_bin_newline"
-        fake_bin.mkdir(exist_ok=True)
-        (fake_bin / "ai").symlink_to(fake_ai)
-        try:
-            result = self._run(extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"})
-            assert result.returncode == 0
-            non_empty = [line for line in result.stdout.split("\n") if line]
-            assert len(non_empty) == 1, f"Embedded newline in quota_part must be stripped; got: {result.stdout!r}"
-        finally:
-            fake_ai.unlink(missing_ok=True)
-            (fake_bin / "ai").unlink(missing_ok=True)
-            fake_bin.rmdir()
+        self._fake_ai('if [[ "$*" == *"statusline-part"* ]]; then printf "line1\\nline2\\n"; fi')
+        result = self._run()
+        assert result.returncode == 0
+        non_empty = [line for line in result.stdout.split("\n") if line]
+        assert len(non_empty) == 1, f"Embedded newline in quota_part must be stripped; got: {result.stdout!r}"
 
     def test_given_fresh_quota_cache_when_run_then_ai_statusline_part_not_called(self):
         """When the quota cache file is fresh (<30s), ai quota statusline-part is not called.
 
         Cache format: line 1 = Unix timestamp, line 2 = quota output (no stat() dependency).
         """
-        import tempfile
-        import time
+        self._quota_cache().write_text(f"{int(time.time())}\n42% on-track")
+        sentinel = self._tmpdir / "ai_statusline_called"
+        self._fake_ai(f'if [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; fi')
 
-        uid = os.getuid() if hasattr(os, "getuid") else 0
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
-            # Write cache in the format the script expects: timestamp on line 1, content on line 2.
-            cache_file.write_text(f"{int(time.time())}\n42% on-track")
-
-            sentinel = Path(tmpdir) / "ai_statusline_called"
-            fake_ai = Path(tmpdir) / "ai"
-            fake_ai.write_text(
-                f'#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; fi\n'
-            )
-            fake_ai.chmod(0o755)
-
-            result = self._run(
-                extra_env={
-                    "PATH": f"{tmpdir}:{os.environ['PATH']}",
-                    "TMPDIR": tmpdir,
-                }
-            )
-            assert result.returncode == 0
-            assert not sentinel.exists(), "ai quota statusline-part should NOT be called when cache is fresh"
+        result = self._run()
+        assert result.returncode == 0
+        assert not sentinel.exists(), "ai quota statusline-part should NOT be called when cache is fresh"
 
     def test_given_stale_quota_cache_when_run_then_ai_statusline_part_called(self):
         """When the quota cache timestamp is >30s old, ai quota statusline-part is called as a background refresh.
 
         Stale-while-revalidate: the stale value is returned immediately, and one background refresh
-        fires asynchronously. The sentinel is created by the background job, so we wait briefly.
+        fires asynchronously, so the test waits for its sentinel rather than for a fixed interval.
         """
-        import tempfile
-        import time
+        # Timestamp 35s in the past — stale zone (30s–300s).
+        self._quota_cache().write_text(f"{int(time.time()) - 35}\nstale-value")
+        sentinel = self._tmpdir / "ai_statusline_called"
+        self._fake_ai(f'if [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; echo ""; fi')
 
-        uid = os.getuid() if hasattr(os, "getuid") else 0
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
-            # Write cache with a timestamp 35s in the past — stale zone (30s–300s).
-            old_ts = int(time.time()) - 35
-            cache_file.write_text(f"{old_ts}\nstale-value")
-
-            sentinel = Path(tmpdir) / "ai_statusline_called"
-            fake_ai = Path(tmpdir) / "ai"
-            fake_ai.write_text(
-                f'#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; echo ""; fi\n'
-            )
-            fake_ai.chmod(0o755)
-
-            result = self._run(
-                extra_env={
-                    "PATH": f"{tmpdir}:{os.environ['PATH']}",
-                    "TMPDIR": tmpdir,
-                }
-            )
-            assert result.returncode == 0
-            # Background refresh fires asynchronously — wait for it to complete.
-            time.sleep(1.5)
-            assert sentinel.exists(), (
-                "ai quota statusline-part should be called as a background refresh when cache is stale (>30s)"
-            )
+        result = self._run()
+        assert result.returncode == 0
+        deadline = time.monotonic() + 15
+        while not sentinel.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert sentinel.exists(), (
+            "ai quota statusline-part should be called as a background refresh when cache is stale (>30s)"
+        )
 
 
 class TestQuotaStatuslinePartAdaptiveLabels:
