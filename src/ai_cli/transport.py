@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+
+import psutil
 
 from . import output as _out
 from .config import get_xdg_state_home
@@ -154,6 +157,60 @@ class _StderrTee:
         return "\n".join(self.lines)
 
 
+class _Terminated(SystemExit):
+    """A SIGTERM or SIGHUP the runner unwound for; the process exits ``128 + signum``."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(128 + signum)
+        self.signum = signum
+
+
+#: The signals that end a remote session's launcher. Windows has no SIGHUP.
+_TERMINATION_SIGNALS = tuple(getattr(signal, name) for name in ("SIGTERM", "SIGHUP") if hasattr(signal, name))
+
+
+@contextlib.contextmanager
+def _terminate_after_child():
+    """Turn SIGTERM and SIGHUP into an unwind that lets the attached child exit first.
+
+    With no handler, either signal ended Python inside the ssh call, so the runner's
+    ``finally`` never restored the terminal, ran the cleanup or recorded an outcome
+    (AI-CLI-a1vv). Raising from the handler is worse: ``subprocess.call`` SIGKILLs its
+    child on any exception, and a killed ssh never takes the terminal out of raw mode.
+    So while a child runs, the handler only forwards the signal to it and returns; the
+    wait then finishes on the child's own exit, and the yielded check raises
+    :class:`_Terminated` from the loop. With no child running it raises at once.
+
+    Yields that check. Signal handlers can only be set from the main thread; elsewhere
+    the check never fires and the default actions stand.
+    """
+    pending: list[int] = []
+
+    def check() -> None:
+        if pending:
+            raise _Terminated(pending[0])
+
+    if threading.current_thread() is not threading.main_thread():
+        yield check
+        return
+
+    def forward(signum: int, _frame: object) -> None:
+        pending.append(signum)
+        children = psutil.Process().children()
+        for child in children:
+            with contextlib.suppress(psutil.Error):
+                child.send_signal(signum)
+        if not children:
+            raise _Terminated(signum)
+
+    previous = {signum: signal.signal(signum, forward) for signum in _TERMINATION_SIGNALS}
+    try:
+        yield check
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def _is_auth_fault(stderr_tail: str, patterns: Sequence[str]) -> bool:
     return any(re.search(pattern, stderr_tail, re.IGNORECASE) for pattern in patterns)
 
@@ -270,112 +327,118 @@ def run_ssh_with_reconnect(
     verdict = "error"
     cause: str | None = None
     last_error = ""
-    try:
-        while True:
-            started = _monotonic()
-            tee = _StderrTee()
-            # ssh holds the terminal in raw mode for the attempt, so the tee's relayed
-            # lines must clear their row and end in CR LF themselves (AI-CLI-8h3u).
-            with _out.foreign_terminal():
-                try:
-                    returncode = subprocess.call(ssh_args, stderr=tee.sink)
-                finally:
-                    stderr_tail = tee.close()
-            if stderr_tail:
-                last_error = stderr_tail
-            if returncode in _SSH_OPERATOR_EXIT_CODES:
-                verdict = "clean_exit" if returncode == 0 else "interrupted"
-                cause = None
-                break
-            if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
-                verdict = "refused"
-                cause = "remote_launch"
-                restore_terminal()
-                _out.emit(
-                    Tag.TRANSPORT,
-                    "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
-                    "since every retry would be refused the same way. Fix that, then re-run the same command.",
-                    err=True,
-                )
-                break
-            drops += 1
-            connected = _format_uptime(_monotonic() - started)
-            # Restore before printing, so every notice below is readable even when the drop
-            # left the terminal in a remote application's input modes.
-            restore_terminal()
-            installed_commit = _current_update_commit()
-            if loaded_commit and installed_commit not in ("", loaded_commit, stale_reported_for):
-                stale_reported_for = installed_commit
-                _out.warning(
-                    Tag.TRANSPORT,
-                    f"this launcher is running ai-cli-utils {loaded_commit[:12]}, older than the installed "
-                    f"{installed_commit[:12]}; fixes since then are not active in it. Reattach with the same "
-                    "command to load them -- the remote session keeps running.",
-                )
-            # A run that stayed up was a working connection: whatever ended it starts a
-            # fresh outage, for the transport budget and the credential wait alike.
-            if _monotonic() - started >= stable_seconds:
-                attempt = 0
-                delay = backoff_seconds
-                auth_since = None
-                auth_delay = auth_backoff_seconds
-            if _is_auth_fault(stderr_tail, auth_fault_patterns):
-                cause = "auth"
-                auth_faults += 1
-                if auth_since is None:
-                    auth_since = _monotonic()
-                waited = _monotonic() - auth_since
-                if waited >= auth_wait_seconds:
-                    verdict = "gave_up"
+    with _terminate_after_child() as raise_if_terminated:
+        try:
+            while True:
+                started = _monotonic()
+                tee = _StderrTee()
+                # ssh holds the terminal in raw mode for the attempt, so the tee's relayed
+                # lines must clear their row and end in CR LF themselves (AI-CLI-8h3u).
+                with _out.foreign_terminal():
+                    try:
+                        returncode = subprocess.call(ssh_args, stderr=tee.sink)
+                    finally:
+                        stderr_tail = tee.close()
+                # A signal forwarded to ssh ends the attempt; unwind rather than reconnect.
+                raise_if_terminated()
+                if stderr_tail:
+                    last_error = stderr_tail
+                if returncode in _SSH_OPERATOR_EXIT_CODES:
+                    verdict = "clean_exit" if returncode == 0 else "interrupted"
+                    cause = None
+                    break
+                if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                    verdict = "refused"
+                    cause = "remote_launch"
+                    restore_terminal()
                     _out.emit(
                         Tag.TRANSPORT,
-                        f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
-                        f"for {waited / 60:.0f} minutes — giving up. The remote session is most likely "
-                        "still running; re-authenticate, then reattach with the same command.",
+                        "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
+                        "since every retry would be refused the same way. Fix that, then re-run the same command.",
                         err=True,
                     )
                     break
-                record("awaiting_auth")
+                drops += 1
+                connected = _format_uptime(_monotonic() - started)
+                # Restore before printing, so every notice below is readable even when the drop
+                # left the terminal in a remote application's input modes.
+                restore_terminal()
+                installed_commit = _current_update_commit()
+                if loaded_commit and installed_commit not in ("", loaded_commit, stale_reported_for):
+                    stale_reported_for = installed_commit
+                    _out.warning(
+                        Tag.TRANSPORT,
+                        f"this launcher is running ai-cli-utils {loaded_commit[:12]}, older than the installed "
+                        f"{installed_commit[:12]}; fixes since then are not active in it. Reattach with the same "
+                        "command to load them -- the remote session keeps running.",
+                    )
+                # A run that stayed up was a working connection: whatever ended it starts a
+                # fresh outage, for the transport budget and the credential wait alike.
+                if _monotonic() - started >= stable_seconds:
+                    attempt = 0
+                    delay = backoff_seconds
+                    auth_since = None
+                    auth_delay = auth_backoff_seconds
+                if _is_auth_fault(stderr_tail, auth_fault_patterns):
+                    cause = "auth"
+                    auth_faults += 1
+                    if auth_since is None:
+                        auth_since = _monotonic()
+                    waited = _monotonic() - auth_since
+                    if waited >= auth_wait_seconds:
+                        verdict = "gave_up"
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
+                            f"for {waited / 60:.0f} minutes — giving up. The remote session is most likely "
+                            "still running; re-authenticate, then reattach with the same command.",
+                            err=True,
+                        )
+                        break
+                    record("awaiting_auth")
+                    _out.emit(
+                        Tag.TRANSPORT,
+                        f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
+                        f"after {connected} connected. "
+                        f"Re-authenticate (see the message above); retrying in {auth_delay:.0f}s, for up to "
+                        f"{auth_wait_seconds / 60:.0f} minutes. This does not use the reconnect budget.",
+                        err=True,
+                    )
+                    time.sleep(auth_delay)
+                    auth_delay = min(auth_delay * 2, max_auth_backoff_seconds)
+                    continue
+                cause = "transport"
+                auth_since = None
+                auth_delay = auth_backoff_seconds
+                attempt += 1
+                if attempt >= max_attempts:
+                    verdict = "gave_up"
+                    _out.emit(
+                        Tag.TRANSPORT,
+                        f"\nConnection lost (ssh exit {returncode}) after {connected} connected, and "
+                        f"{max_attempts} reconnect attempts did not restore it — giving up. The remote session is most "
+                        "likely still running; reattach with the same command.",
+                        err=True,
+                    )
+                    break
+                record("reconnecting")
                 _out.emit(
                     Tag.TRANSPORT,
-                    f"\nConnection refused on expired or rejected credentials (ssh exit {returncode}) "
-                    f"after {connected} connected. "
-                    f"Re-authenticate (see the message above); retrying in {auth_delay:.0f}s, for up to "
-                    f"{auth_wait_seconds / 60:.0f} minutes. This does not use the reconnect budget.",
+                    f"\nConnection lost (ssh exit {returncode}) after {connected} connected — reattaching "
+                    f"in {delay:.0f}s (attempt {attempt}/{max_attempts})...",
                     err=True,
                 )
-                time.sleep(auth_delay)
-                auth_delay = min(auth_delay * 2, max_auth_backoff_seconds)
-                continue
-            cause = "transport"
-            auth_since = None
-            auth_delay = auth_backoff_seconds
-            attempt += 1
-            if attempt >= max_attempts:
-                verdict = "gave_up"
-                _out.emit(
-                    Tag.TRANSPORT,
-                    f"\nConnection lost (ssh exit {returncode}) after {connected} connected, and "
-                    f"{max_attempts} reconnect attempts did not restore it — giving up. The remote session is most "
-                    "likely still running; reattach with the same command.",
-                    err=True,
-                )
-                break
-            record("reconnecting")
-            _out.emit(
-                Tag.TRANSPORT,
-                f"\nConnection lost (ssh exit {returncode}) after {connected} connected — reattaching "
-                f"in {delay:.0f}s (attempt {attempt}/{max_attempts})...",
-                err=True,
-            )
-            time.sleep(delay)
-            delay = min(delay * 2, max_backoff_seconds)
-        if returncode == 0 and on_clean_exit is not None:
-            on_clean_exit()
-    finally:
-        restore_terminal()
-        record(verdict)
-        subprocess.run(cleanup_cmd, capture_output=True, check=False)
+                time.sleep(delay)
+                delay = min(delay * 2, max_backoff_seconds)
+            if returncode == 0 and on_clean_exit is not None:
+                on_clean_exit()
+        except _Terminated:
+            verdict = "terminated"
+            raise
+        finally:
+            restore_terminal()
+            record(verdict)
+            subprocess.run(cleanup_cmd, capture_output=True, check=False)
     return returncode
 
 
@@ -634,202 +697,210 @@ async def _run_transport_loop(
     # and mosh always fails again immediately, which retried unboundedly here
     # before this cap (AI-CLI-gg9s).
     tailscale_retries = 0
-    try:
-        while True:
-            vpn_active = _is_vpn_active()
-            vpn_changed.clear()
+    with _terminate_after_child() as raise_if_terminated:
+        try:
+            while True:
+                vpn_active = _is_vpn_active()
+                vpn_changed.clear()
 
-            args = ssh_args if (vpn_active or force_ssh) else mosh_args
-            transport_type = "ssh" if (vpn_active or force_ssh) else "mosh"
-            force_ssh = False
-            _out.emit(
-                Tag.TRANSPORT,
-                f"\n{'VPN active' if vpn_active else 'No VPN'} — connecting via {transport_type}...",
-                err=True,
-            )
+                args = ssh_args if (vpn_active or force_ssh) else mosh_args
+                transport_type = "ssh" if (vpn_active or force_ssh) else "mosh"
+                force_ssh = False
+                _out.emit(
+                    Tag.TRANSPORT,
+                    f"\n{'VPN active' if vpn_active else 'No VPN'} — connecting via {transport_type}...",
+                    err=True,
+                )
 
-            proc = subprocess.Popen(args)
-            _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
+                proc = subprocess.Popen(args)
+                _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
 
-            start_time = _monotonic()
-            _vpn_poll_ticks = 0
-            from .config import get_remote_machine
+                start_time = _monotonic()
+                _vpn_poll_ticks = 0
+                from .config import get_remote_machine
 
-            _vpn_poll_interval = get_remote_machine(config).get("vpn_poll_interval", 3)
-            _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
-            # Poll process while watching for NATS VPN signal.
-            # Also poll VPN state directly every vpn_poll_interval seconds as a
-            # fallback — mosh never exits when UDP is blocked by VPN, so NATS alone
-            # is insufficient; the direct poll catches the case where the NATS
-            # connection drops when VPN changes routing.
-            while proc.poll() is None:
+                _vpn_poll_interval = get_remote_machine(config).get("vpn_poll_interval", 3)
+                _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
+                # Poll process while watching for NATS VPN signal.
+                # Also poll VPN state directly every vpn_poll_interval seconds as a
+                # fallback — mosh never exits when UDP is blocked by VPN, so NATS alone
+                # is insufficient; the direct poll catches the case where the NATS
+                # connection drops when VPN changes routing.
+                while proc.poll() is None:
+                    if vpn_changed.is_set():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()  # Not covered: requires proc to ignore SIGTERM
+                            proc.wait()
+                        break
+                    _vpn_poll_ticks += 1
+                    if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0 and _is_vpn_active():
+                        _out.emit(Tag.TRANSPORT, "\nVPN detected — switching from mosh to SSH...", err=True)
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        vpn_changed.set()
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    proc.wait()
+
+                elapsed = _monotonic() - start_time
+                # A signal forwarded to the client ends it; unwind instead of switching transport.
+                raise_if_terminated()
+                transport_file.unlink(missing_ok=True)
+
                 if vpn_changed.is_set():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()  # Not covered: requires proc to ignore SIGTERM
-                        proc.wait()
+                    _out.emit(Tag.TRANSPORT, "\nVPN state changed — switching transport...", err=True)
+                    continue
+
+                # Mosh failed before establishing a session — check for VPN or unreachable host.
+                # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
+                # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
+                if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
+                    if diagnostic_ssh_args and remote_diagnostic_file:
+                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                        if failure := _remote_failure_line(diagnostic):
+                            # The remote command ran and failed: the host is reachable, and an
+                            # SSH fallback would only run the same failing command again.
+                            _out.emit(
+                                Tag.TRANSPORT,
+                                f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                                err=True,
+                            )
+                            break
+                    if _is_vpn_active():
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...",
+                            err=True,
+                        )
+                        continue
+                    # Mosh failed fast without VPN — try to bring Tailscale up first.
+                    # Only fall back to SSH if Tailscale can't be recovered, and only
+                    # retry once: a second fast failure right after "Tailscale up"
+                    # means the SSH/TCP control path is fine but mosh's UDP data
+                    # channel specifically is blocked, not that Tailscale was down.
+                    if tailscale_host and tailscale_retries < 1 and await _ensure_tailscale_up(tailscale_host):
+                        tailscale_retries += 1
+                        _out.emit(Tag.TRANSPORT, "\nTailscale up — retrying mosh...", err=True)
+                        continue  # retry mosh with Tailscale now reachable
+                    if tailscale_retries >= 1:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            f"\nmosh failed again quickly ({elapsed:.1f}s) even though the host is "
+                            "reachable — this usually means mosh's UDP data channel (default ports "
+                            "60000-61000) is blocked (e.g. by the remote host's firewall), not that "
+                            "Tailscale is down. Falling back to SSH; to restore mosh, allow that UDP "
+                            "range to the remote host (firewalld: `firewall-cmd --add-port="
+                            "60000-61000/udp` or trust the tailscale0 interface).",
+                            err=True,
+                        )
+                    else:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
+                            err=True,
+                        )
+                    force_ssh = True
+                    continue
+
+                # SSH retry with backoff when VPN is active
+                if transport_type == "ssh" and elapsed < 3 and _is_vpn_active():
+                    for delay in (1, 2, 4):
+                        _out.emit(Tag.TRANSPORT, f"\nSSH failed — retrying in {delay}s...", err=True)
+                        time.sleep(delay)
+                        proc2 = subprocess.Popen(args)
+                        _write_transport_state(transport_file, session_name, os.getpid(), proc2.pid, transport_type)
+                        while proc2.poll() is None:
+                            if vpn_changed.is_set():
+                                proc2.terminate()
+                                proc2.wait()
+                                break
+                            await asyncio.sleep(0.5)
+                        else:
+                            proc2.wait()
+                        transport_file.unlink(missing_ok=True)
+                        raise_if_terminated()
+                        if proc2.returncode == 0:
+                            return  # SSH succeeded
+                        if vpn_changed.is_set():
+                            _out.emit(Tag.TRANSPORT, "\nVPN state changed — switching transport...", err=True)
+                            break  # Back to outer loop
+                    if vpn_changed.is_set():
+                        continue
+                    _out.emit(Tag.TRANSPORT, "\nSSH failed after retries — giving up.", err=True)
                     break
-                _vpn_poll_ticks += 1
-                if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0 and _is_vpn_active():
-                    _out.emit(Tag.TRANSPORT, "\nVPN detected — switching from mosh to SSH...", err=True)
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
-                    vpn_changed.set()
-                    break
-                await asyncio.sleep(0.5)
-            else:
-                proc.wait()
 
-            elapsed = _monotonic() - start_time
-            transport_file.unlink(missing_ok=True)
-
-            if vpn_changed.is_set():
-                _out.emit(Tag.TRANSPORT, "\nVPN state changed — switching transport...", err=True)
-                continue
-
-            # Mosh failed before establishing a session — check for VPN or unreachable host.
-            # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
-            # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
-            if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
-                if diagnostic_ssh_args and remote_diagnostic_file:
-                    diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                if elapsed < 3:
+                    diagnostic = ""
+                    if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     if failure := _remote_failure_line(diagnostic):
-                        # The remote command ran and failed: the host is reachable, and an
-                        # SSH fallback would only run the same failing command again.
+                        # Last, so the cause is what the user reads, not a generic timing line.
                         _out.emit(
                             Tag.TRANSPORT,
                             f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
                             err=True,
                         )
-                        break
-                if _is_vpn_active():
-                    _out.emit(
-                        Tag.TRANSPORT, f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...", err=True
-                    )
-                    continue
-                # Mosh failed fast without VPN — try to bring Tailscale up first.
-                # Only fall back to SSH if Tailscale can't be recovered, and only
-                # retry once: a second fast failure right after "Tailscale up"
-                # means the SSH/TCP control path is fine but mosh's UDP data
-                # channel specifically is blocked, not that Tailscale was down.
-                if tailscale_host and tailscale_retries < 1 and await _ensure_tailscale_up(tailscale_host):
-                    tailscale_retries += 1
-                    _out.emit(Tag.TRANSPORT, "\nTailscale up — retrying mosh...", err=True)
-                    continue  # retry mosh with Tailscale now reachable
-                if tailscale_retries >= 1:
-                    _out.emit(
-                        Tag.TRANSPORT,
-                        f"\nmosh failed again quickly ({elapsed:.1f}s) even though the host is "
-                        "reachable — this usually means mosh's UDP data channel (default ports "
-                        "60000-61000) is blocked (e.g. by the remote host's firewall), not that "
-                        "Tailscale is down. Falling back to SSH; to restore mosh, allow that UDP "
-                        "range to the remote host (firewalld: `firewall-cmd --add-port="
-                        "60000-61000/udp` or trust the tailscale0 interface).",
-                        err=True,
-                    )
-                else:
-                    _out.emit(
-                        Tag.TRANSPORT,
-                        f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
-                        err=True,
-                    )
-                force_ssh = True
-                continue
-
-            # SSH retry with backoff when VPN is active
-            if transport_type == "ssh" and elapsed < 3 and _is_vpn_active():
-                for delay in (1, 2, 4):
-                    _out.emit(Tag.TRANSPORT, f"\nSSH failed — retrying in {delay}s...", err=True)
-                    time.sleep(delay)
-                    proc2 = subprocess.Popen(args)
-                    _write_transport_state(transport_file, session_name, os.getpid(), proc2.pid, transport_type)
-                    while proc2.poll() is None:
-                        if vpn_changed.is_set():
-                            proc2.terminate()
-                            proc2.wait()
-                            break
-                        await asyncio.sleep(0.5)
                     else:
-                        proc2.wait()
-                    transport_file.unlink(missing_ok=True)
-                    if proc2.returncode == 0:
-                        return  # SSH succeeded
-                    if vpn_changed.is_set():
-                        _out.emit(Tag.TRANSPORT, "\nVPN state changed — switching transport...", err=True)
-                        break  # Back to outer loop
-                if vpn_changed.is_set():
-                    continue
-                _out.emit(Tag.TRANSPORT, "\nSSH failed after retries — giving up.", err=True)
-                break
+                        _out.emit(
+                            Tag.TRANSPORT, f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.", err=True
+                        )
+                    break
 
-            if elapsed < 3:
-                diagnostic = ""
-                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
-                    diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                if failure := _remote_failure_line(diagnostic):
-                    # Last, so the cause is what the user reads, not a generic timing line.
+                # A mosh session that ends quickly with a "successful" exit code is
+                # ambiguous: mosh propagates whatever the remote command exited with,
+                # so a fast, clean exit can be a real user detach OR the remote-side
+                # command (tmux/session setup) silently no-op'ing on a transient
+                # condition (e.g. a stale session-name collision) and exiting 0 without
+                # ever actually starting a session. The mosh-fail branch above only
+                # catches a non-zero return code, so this case previously fell straight
+                # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
+                if transport_type == "mosh" and elapsed < 15:
+                    if diagnostic_ssh_args and remote_diagnostic_file:
+                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     _out.emit(
                         Tag.TRANSPORT,
-                        f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                        f"\nmosh session ended after {elapsed:.1f}s (exit code "
+                        f"{proc.returncode}) — if you didn't intentionally detach this "
+                        "quickly, the remote session likely failed to start (e.g. a "
+                        "transient session-name collision); try the command again.",
                         err=True,
                     )
-                else:
-                    _out.emit(Tag.TRANSPORT, f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.", err=True)
-                break
 
-            # A mosh session that ends quickly with a "successful" exit code is
-            # ambiguous: mosh propagates whatever the remote command exited with,
-            # so a fast, clean exit can be a real user detach OR the remote-side
-            # command (tmux/session setup) silently no-op'ing on a transient
-            # condition (e.g. a stale session-name collision) and exiting 0 without
-            # ever actually starting a session. The mosh-fail branch above only
-            # catches a non-zero return code, so this case previously fell straight
-            # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
-            if transport_type == "mosh" and elapsed < 15:
-                if diagnostic_ssh_args and remote_diagnostic_file:
-                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                _out.emit(
-                    Tag.TRANSPORT,
-                    f"\nmosh session ended after {elapsed:.1f}s (exit code "
-                    f"{proc.returncode}) — if you didn't intentionally detach this "
-                    "quickly, the remote session likely failed to start (e.g. a "
-                    "transient session-name collision); try the command again.",
-                    err=True,
-                )
+                # A non-zero mosh exit outside the fast-failure windows is neither
+                # a normal detach nor explained by one of the named diagnostics
+                # above. Preserve its exact values so a transient recurrence is
+                # actionable.
+                elif transport_type == "mosh" and proc.returncode not in (0, None):
+                    if diagnostic_ssh_args and remote_diagnostic_file:
+                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                    _out.emit(
+                        Tag.TRANSPORT,
+                        "\nmosh exited without a recognized diagnostic branch "
+                        f"(returncode={proc.returncode}, elapsed={elapsed:.1f}s) — this is an "
+                        "unexplained transient failure; please retry and report if it recurs "
+                        "with these exact numbers.",
+                        err=True,
+                    )
 
-            # A non-zero mosh exit outside the fast-failure windows is neither
-            # a normal detach nor explained by one of the named diagnostics
-            # above. Preserve its exact values so a transient recurrence is
-            # actionable.
-            elif transport_type == "mosh" and proc.returncode not in (0, None):
-                if diagnostic_ssh_args and remote_diagnostic_file:
-                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                _out.emit(
-                    Tag.TRANSPORT,
-                    "\nmosh exited without a recognized diagnostic branch "
-                    f"(returncode={proc.returncode}, elapsed={elapsed:.1f}s) — this is an "
-                    "unexplained transient failure; please retry and report if it recurs "
-                    "with these exact numbers.",
-                    err=True,
-                )
-
-            break  # Normal exit (user detached or session ended)
-    finally:
-        transport_file.unlink(missing_ok=True)
-        # Before anything else in this block, and unconditionally rather than only on a
-        # clean exit: every way out of the loop above -- normal detach, a killed child, a
-        # give-up branch, an exception -- leaves the terminal in whatever modes the remote
-        # set, and the paths that skipped a graceful shutdown are precisely the ones where
-        # the remote never sent its own disable sequences. Restoring first also means the
-        # messages below are printed to a sane terminal.
-        restore_terminal()
-        # Not covered: requires NATS close to raise after connect succeeds
-        with contextlib.suppress(Exception):
-            await nc.close()
-        subprocess.run(cleanup_cmd, capture_output=True, check=False)
+                break  # Normal exit (user detached or session ended)
+        finally:
+            transport_file.unlink(missing_ok=True)
+            # Before anything else in this block, and unconditionally rather than only on a
+            # clean exit: every way out of the loop above -- normal detach, a killed child, a
+            # give-up branch, an exception -- leaves the terminal in whatever modes the remote
+            # set, and the paths that skipped a graceful shutdown are precisely the ones where
+            # the remote never sent its own disable sequences. Restoring first also means the
+            # messages below are printed to a sane terminal.
+            restore_terminal()
+            # Not covered: requires NATS close to raise after connect succeeds
+            with contextlib.suppress(Exception):
+                await nc.close()
+            subprocess.run(cleanup_cmd, capture_output=True, check=False)
