@@ -40,6 +40,10 @@ INHERITED_TERMINAL_ALLOWLIST = {
     ("transport.py", "run_ssh_with_reconnect"): "interactive ssh session: the remote shell owns the terminal",
     ("transport.py", "_run_transport_loop"): "interactive mosh/ssh session: the remote shell owns the terminal",
     ("native_deps.py", "_authenticate_root"): "sudo -v password prompt must reach the terminal, or the install hangs",
+    ("pty_host.py", "host"): (
+        "the bare-path agent's own interactive session: it writes to a launcher-owned pty, which "
+        "is relayed to the terminal byte for byte; that output is the agent's, not a launcher line"
+    ),
 }
 
 # Rich may be imported only by the renderer and by the live-display owner.

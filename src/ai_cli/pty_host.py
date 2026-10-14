@@ -209,7 +209,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
                 if saved is not None:
                     with contextlib.suppress(termios.error, OSError):
                         termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
-                restore_terminal(sys.stdout)
+                restore_terminal()
         finally:
             # Closing the master also hangs up the agent's terminal, so an agent left
             # behind by an unexpected error gets SIGHUP rather than running on unseen.
