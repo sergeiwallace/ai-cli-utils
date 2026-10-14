@@ -478,27 +478,31 @@ Every line the launcher prints on its own behalf follows one grammar on stderr, 
 a launch can be read at a glance and its log replayed later:
 
 ```text
-[launch] Starting Claude Code session: local, tmux
-[launch] Install: editable checkout 0.8.0; current
+[launch] start: Starting Claude Code session (local, tmux)
+[launch] install: editable checkout 0.8.0; current
 [launch] tmux: 3.7c at /opt/homebrew/bin/tmux
-[launch] Mode: launching inside tmux (tmux is the default session mode)
-[launch] Session: resolved myproject-3
-[launch] Worktree: creating isolated worktree
-[launch] Worktree: still creating isolated worktree (10s elapsed)
-[launch] Worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
-[launch] Ready: handing off to Claude Code (myproject-3)
+[launch] mode: launching inside tmux (tmux is the default session mode)
+[launch] session: resolved myproject-3
+[launch] worktree: creating isolated worktree
+[launch] worktree: still creating isolated worktree (10s elapsed)
+[launch] worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
+[launch] handoff: ready, handing off to Claude Code (myproject-3)
 ```
+
+Each phase is the line's operation (see
+[Every output line carries a tag](#every-output-line-carries-a-tag)).
 
 - A phase that may block prints a line before it starts and one with its outcome;
   while it runs, a heartbeat with the elapsed time repeats every 10 seconds so a
   slow worktree sync or remote probe never looks hung. Outcomes that took two
   seconds or more carry their duration.
-- `Warning:` and `Error:` lines are never suppressed; `Ready:` is always the last
-  line before the launcher hands the terminal to the engine.
+- `Warning:` and `Error:` lines are never suppressed; `handoff:` is always the last
+  line before the launcher hands the terminal to the engine. A phase that fails or is
+  interrupted reports it at error or warning level under its own operation.
 - `-q/--quiet` keeps only warnings and errors; `-v/--verbose` adds skipped steps,
   resolved paths and every duration.
-- Every element of a line is styled: the tag bold blue, a phase label bold cyan,
-  `Ready:` bold green, `Warning:` bold yellow and `Error:` bold red. Text a command
+- Every element of a line is styled: the tag bold blue, the operation bold cyan,
+  `handoff:` bold green, `Warning:` bold yellow and `Error:` bold red. Text a command
   passes in carries no styling of its own; escape sequences in it are removed. The
   elements, their order, delimiters and colours are configurable (see
   [Output configuration](#output-configuration)).
@@ -515,17 +519,20 @@ a launch can be read at a glance and its log replayed later:
 ### Every output line carries a tag
 
 Not only the launcher: every line any `ai` command prints starts with a log type
-tag, `[<tag>] `, matching `^\[[a-z0-9_-]+\] `. Output from a child process the
-launcher runs is relayed under its own tag rather than passed through, so the Dolt
-supervisor's `dolt_server: healthy (socket accepted)` prints as:
+tag and the operation it belongs to, `[<tag>] <operation>: `. Output from a child
+process the launcher runs is relayed under its own tag and the caller's operation
+rather than passed through, so the Dolt supervisor's
+`dolt_server: healthy (socket accepted)` prints as:
 
 ```text
-[dolt_server] healthy (socket accepted)
+[dolt_server] ensure: healthy (socket accepted)
 ```
 
-All of it goes through one module, `ai_cli.output`, whose `emit(tag, message)`
-takes a member of the `Tag` enum and refuses anything else, and which owns the
-colour rules above. [structlog](https://www.structlog.org/) builds one record per
+All of it goes through one module, `ai_cli.output`, whose `emit(tag, op, message)`
+takes a member of the `Tag` enum and an operation from the configured vocabulary
+(see [Output configuration](#output-configuration)), refuses anything else, and owns
+the colour rules above. A stdlib logging record names no operation, so it takes the
+configured `default` (`[log] general: ...`). [structlog](https://www.structlog.org/) builds one record per
 line and [Rich](https://rich.readthedocs.io/) renders its elements, so a line from
 the session script, a relayed child process or a nested `ai` command (which hands its
 records to the parent as JSON) is styled the same way as any other. Untagged output is a short, named list (`Untagged`), kept so
@@ -534,7 +541,9 @@ statusline segment, `-V/--version`, Click's `--help` text and terminal escape
 sequences. A test scans the package source and fails on any other way of reaching
 the terminal (`print`, `click.echo`, a `sys.stdout`/`sys.stderr` write, a prompting
 `input()`, or a child process left to inherit the terminal), and on any styling done
-outside the renderer (`click.style`, a Rich import, an ANSI escape literal).
+outside the renderer (`click.style`, a Rich import, an ANSI escape literal). The
+same test fails any output call that passes no operation, or one outside the shipped
+vocabulary.
 
 ## Configuration
 
@@ -639,7 +648,7 @@ pattern = '^[a-z0-9_-]+$'
 
 [output.elements.operation]
 enabled = true
-required = false
+required = true
 default = "general"
 prefix = ""
 suffix = ":"
@@ -649,6 +658,10 @@ vocabulary = [
     "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
+    "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
+    "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
+    "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
+    "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
 ]
 
 [output.elements.operation.styles]
@@ -695,11 +708,13 @@ pattern = '^[^\x00-\x1f\x7f]*$'
   the element yet: `enabled = true` is refused as not supported yet.
 - `tag` is the log type tag, `[launch]` by default. With `enabled = false` lines
   carry no tag.
-- `operation` is the step a line belongs to, such as `reconnect:`; a launch phase name
-  such as `Worktree:` renders in its place. `vocabulary` lists the allowed operation
-  names: you can add names but not remove a shipped one. `default` must be in the
-  vocabulary. A line without an operation renders without the element. `required` set to `true`,
-  which would give it `default` instead, is refused as not supported yet.
+- `operation` is the step a line belongs to, such as `reconnect:`, `ensure:` or a
+  launch phase such as `worktree:`. Every line the package prints names one.
+  `vocabulary` lists the allowed operation names: you can add names (for your own
+  `ai internal emit` calls) but not remove a shipped one, and a name outside the list is
+  refused. `required` decides what a line without an operation shows. With `true` a line that carries no operation (a stdlib logging
+  record) renders `default`, which must be in the vocabulary; with `false` such a line
+  renders without the element.
 - `level` is the `Warning:`/`Error:` label. `show` lists the levels that get a label,
   from `detail`, `info`, `warning` and `error`.
 - `description` is the text itself. It cannot be disabled.

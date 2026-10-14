@@ -92,6 +92,7 @@ class NATSClient:
                     pass
             _out.emit(
                 Tag.MESSAGING,
+                "connect",
                 "SSH tunnel to the remote NATS server did not become available. "
                 "On a Fedora host with SELinux, check whether sshd-session was denied "
                 "outbound access to port 4222.",

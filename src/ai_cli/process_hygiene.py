@@ -562,7 +562,7 @@ def collect_remote_processes(
 
 
 def _ps_line(line: str) -> None:
-    _out.emit(Tag.PS, line)
+    _out.emit(Tag.PS, "list", line)
 
 
 def _parse_remote_ps(stdout: str) -> list[ProcessInfo]:
@@ -849,7 +849,7 @@ def cmd_ps(
 
         if not force:
             try:
-                answer = _out.ask(Tag.PS, f"Kill {len(to_kill)} orphan(s)? [y/N]").strip().lower()
+                answer = _out.ask(Tag.PS, "cleanup", f"Kill {len(to_kill)} orphan(s)? [y/N]").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
             if answer != "y":

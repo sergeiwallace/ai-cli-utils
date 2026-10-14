@@ -472,7 +472,12 @@ def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
     if removed:
         # Surfaced, not silent: the */10 cron redirects to ~/.local/log/quota-scrape.log, so
         # a recurring leak shows up there rather than only as a full disk.
-        _out.emit(Tag.QUOTA, f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}", err=True)
+        _out.emit(
+            Tag.QUOTA,
+            "cleanup",
+            f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}",
+            err=True,
+        )
     return removed
 
 
@@ -803,7 +808,7 @@ def quota_watch(poll_interval: int = 300) -> int:
     thresholds = [50, 75, 90]
     alerted_today: dict[int, str] = {}
 
-    _out.emit(Tag.QUOTA, f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
+    _out.emit(Tag.QUOTA, "watch", f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
 
     # Start background NATS listener for on-demand scrape requests + heartbeat.
     stop_event = threading.Event()
@@ -838,9 +843,9 @@ def quota_watch(poll_interval: int = 300) -> int:
                             try:
                                 loop.run_until_complete(client.publish(subject, payload))
                             except Exception as e:
-                                _out.emit(Tag.QUOTA_WATCH, f"failed to publish: {e}", err=True)
+                                _out.emit(Tag.QUOTA_WATCH, "watch", f"failed to publish: {e}", err=True)
                         alerted_today[threshold] = today
-                        _out.emit(Tag.QUOTA_WATCH, f"threshold {threshold}% crossed (usage: {usage:.1f}%)")
+                        _out.emit(Tag.QUOTA_WATCH, "watch", f"threshold {threshold}% crossed (usage: {usage:.1f}%)")
                         _notify_threshold(notifier, threshold, snapshot)
 
             time.sleep(poll_interval)
@@ -944,7 +949,7 @@ def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) ->
     try:
         notifier.send(title, body, priority=priority, tags=tags, source="quota-watch")
     except Exception as exc:
-        _out.emit(Tag.QUOTA_WATCH, f"notification failed: {exc}", err=True)
+        _out.emit(Tag.QUOTA_WATCH, "notify", f"notification failed: {exc}", err=True)
 
 
 def _print_mismatch_warning() -> None:
@@ -957,6 +962,7 @@ def _print_mismatch_warning() -> None:
         if count and int(count) > 0:
             _out.emit(
                 Tag.QUOTA,
+                "scrape",
                 f"\n⚠  Scrape parse failure — CC /usage format may have changed.\n"
                 f"   Raw output saved to: {_SCRAPE_DEBUG_PATH}\n"
                 f"   Last failure: {at or 'unknown'}",
@@ -975,24 +981,26 @@ def quota_status() -> int:
     if snap:
         pct = snap.get("usage_percent", 0)
         ts = snap.get("snapshotted_at", "?")
-        _out.emit(Tag.QUOTA, f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
+        _out.emit(Tag.QUOTA, "status", f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
     else:
-        _out.emit(Tag.QUOTA, "Quota: no snapshots yet")
+        _out.emit(Tag.QUOTA, "status", "Quota: no snapshots yet")
 
     burn = data.get("burn_rate", {})
     if burn and burn.get("expected_pct_per_day", 0) > 0:
         actual = burn.get("actual_pct_per_day", 0)
         expected = burn.get("expected_pct_per_day", 0)
         mult = burn.get("multiplier", 0)
-        _out.emit(Tag.QUOTA, f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)")
+        _out.emit(
+            Tag.QUOTA, "status", f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)"
+        )
 
     days = data.get("days_remaining")
     if days is not None:
-        _out.emit(Tag.QUOTA, f"Days to reset: {days:.1f}")
+        _out.emit(Tag.QUOTA, "status", f"Days to reset: {days:.1f}")
 
     alerts = data.get("alerts", [])
     for alert in alerts:
-        _out.emit(Tag.QUOTA, f"  {alert}")
+        _out.emit(Tag.QUOTA, "status", f"  {alert}")
 
     _print_mismatch_warning()
     return 0
@@ -1004,14 +1012,15 @@ def quota_history() -> int:
 
     history = get_weekly_history()
     if not history:
-        _out.emit(Tag.QUOTA, "No history yet.")
+        _out.emit(Tag.QUOTA, "history", "No history yet.")
         return 0
 
-    _out.emit(Tag.QUOTA, f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
-    _out.emit(Tag.QUOTA, "-" * 58)
+    _out.emit(Tag.QUOTA, "history", f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
+    _out.emit(Tag.QUOTA, "history", "-" * 58)
     for week in history:
         _out.emit(
             Tag.QUOTA,
+            "history",
             f"{week['week_start']:24} {week.get('peak_percent', 0):7.1f}% "
             f"{week.get('total_consumed', 0):12,} {week.get('snapshot_count', 0):10}",
         )
@@ -1198,15 +1207,15 @@ def quota_scrape() -> int:
     try:
         missing = [binary for binary in ("tmux", "claude") if shutil.which(binary) is None]
         if missing:
-            _out.emit(Tag.QUOTA, f"quota scrape: required binary not found: {', '.join(missing)}", err=True)
+            _out.emit(Tag.QUOTA, "scrape", f"quota scrape: required binary not found: {', '.join(missing)}", err=True)
             return EX_CONFIG
 
-        _out.emit(Tag.QUOTA, "Scraping /usage from Claude Code session (hidden tmux window)...")
+        _out.emit(Tag.QUOTA, "scrape", "Scraping /usage from Claude Code session (hidden tmux window)...")
         global _last_scrape_had_format_mismatch
         _last_scrape_had_format_mismatch = False
         snapshot = _scrape_usage_hidden_pane()
         if snapshot is None:
-            _out.emit(Tag.QUOTA, "Could not extract usage percentage.", err=True)
+            _out.emit(Tag.QUOTA, "scrape", "Could not extract usage percentage.", err=True)
             return EX_CONFIG if _last_scrape_had_format_mismatch else EX_TEMPFAIL
 
         scraped = f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%"
@@ -1214,7 +1223,7 @@ def quota_scrape() -> int:
             scraped += f", {snapshot.weekly_model_name or 'Sonnet'} {snapshot.weekly_sonnet_pct:.1f}%"
         if snapshot.session_pct is not None:
             scraped += f", session {snapshot.session_pct:.1f}%"
-        _out.emit(Tag.QUOTA, scraped)
+        _out.emit(Tag.QUOTA, "scrape", scraped)
 
         record_quota_snapshot(
             usage_percent=snapshot.weekly_all_models_pct,
@@ -1224,7 +1233,7 @@ def quota_scrape() -> int:
             extra_pct=snapshot.extra_pct,
             reset_at=snapshot.reset_at,
         )
-        _out.emit(Tag.QUOTA, "Stored snapshot in local quota DB.")
+        _out.emit(Tag.QUOTA, "scrape", "Stored snapshot in local quota DB.")
         _publish_quota_snapshot(snapshot)
         _print_mismatch_warning()
         return 0
@@ -1257,11 +1266,11 @@ def quota_sync_from_remote() -> int:
         port = str(remote.get("port", 22))
         identity = remote.get("identity_file", "")
     except Exception as exc:
-        _out.emit(Tag.QUOTA, f"quota sync: could not load config: {exc}", err=True)
+        _out.emit(Tag.QUOTA, "sync", f"quota sync: could not load config: {exc}", err=True)
         return EX_CONFIG
 
     if not host or not user:
-        _out.emit(Tag.QUOTA, "quota sync: no remote host configured in [remote]", err=True)
+        _out.emit(Tag.QUOTA, "sync", "quota sync: no remote host configured in [remote]", err=True)
         return EX_CONFIG
 
     sql = (
@@ -1281,11 +1290,11 @@ def quota_sync_from_remote() -> int:
     try:
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15, check=False)
     except Exception as exc:
-        _out.emit(Tag.QUOTA, f"quota sync: SSH failed: {exc}", err=True)
+        _out.emit(Tag.QUOTA, "sync", f"quota sync: SSH failed: {exc}", err=True)
         return EX_TEMPFAIL
 
     if result.returncode != 0:
-        _out.emit(Tag.QUOTA, f"quota sync: remote command failed: {result.stderr.strip()}", err=True)
+        _out.emit(Tag.QUOTA, "sync", f"quota sync: remote command failed: {result.stderr.strip()}", err=True)
         return EX_TEMPFAIL
 
     rows = []
@@ -1305,7 +1314,7 @@ def quota_sync_from_remote() -> int:
                 )
 
     if not rows:
-        _out.emit(Tag.QUOTA, "quota sync: no snapshots on remote (or remote DB empty).")
+        _out.emit(Tag.QUOTA, "sync", "quota sync: no snapshots on remote (or remote DB empty).")
         return 0
 
     conn = _get_conn()
@@ -1331,9 +1340,9 @@ def quota_sync_from_remote() -> int:
             ],
         )
         conn.commit()
-        _out.emit(Tag.QUOTA, f"quota sync: pulled {len(new_rows)} new snapshot(s) from remote.")
+        _out.emit(Tag.QUOTA, "sync", f"quota sync: pulled {len(new_rows)} new snapshot(s) from remote.")
     else:
-        _out.emit(Tag.QUOTA, "quota sync: already up to date.")
+        _out.emit(Tag.QUOTA, "sync", "quota sync: already up to date.")
 
     conn.close()
     return 0

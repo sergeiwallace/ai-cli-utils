@@ -24,15 +24,15 @@ def test_given_a_launch_phase_when_reported_then_it_uses_prefixed_stderr_grammar
     reporter = LaunchReporter()
 
     reporter.start(engine="Claude Code", mode="local, tmux")
-    with reporter.phase("Install", "checking installed version") as phase:
+    with reporter.phase("install", "checking installed version") as phase:
         phase.outcome("editable checkout 0.8.0; current")
     reporter.handoff(engine="Claude Code", session="c-myproject-1")
 
     assert capsys.readouterr().err.splitlines() == [
-        "[launch] Starting Claude Code session: local, tmux",
-        "[launch] Install: checking installed version",
-        "[launch] Install: editable checkout 0.8.0; current",
-        "[launch] Ready: handing off to Claude Code (c-myproject-1)",
+        "[launch] start: Starting Claude Code session (local, tmux)",
+        "[launch] install: checking installed version",
+        "[launch] install: editable checkout 0.8.0; current",
+        "[launch] handoff: ready, handing off to Claude Code (c-myproject-1)",
     ]
 
 
@@ -97,9 +97,9 @@ def test_given_local_launch_when_worktree_and_handoff_run_then_they_are_reported
             )
 
     err = capsys.readouterr().err
-    assert "[launch] Session: resolved myproject-1" in err
-    assert f"[launch] Worktree: reusing {worktree}" in err
-    assert "[launch] Ready: handing off to Claude Code (myproject-1)" in err
+    assert "[launch] session: resolved myproject-1" in err
+    assert f"[launch] worktree: reusing {worktree}" in err
+    assert "[launch] handoff: ready, handing off to Claude Code (myproject-1)" in err
 
 
 def test_given_reexec_marker_when_session_command_starts_then_it_reports_continuing(capsys, monkeypatch):
@@ -115,7 +115,7 @@ def test_given_reexec_marker_when_session_command_starts_then_it_reports_continu
             cli()
 
     assert exc_info.value.code == 0
-    assert "[launch] Continuing Claude Code session: local, tmux" in capsys.readouterr().err
+    assert "[launch] start: Continuing Claude Code session (local, tmux)" in capsys.readouterr().err
     assert "AI_CLI_LAUNCH_REEXEC" not in os.environ
 
 
@@ -133,14 +133,14 @@ def test_given_a_tty_stream_when_reported_then_tokens_are_styled(monkeypatch):
     stream = _TtyStream()
 
     reporter = LaunchReporter(stream=stream)
-    reporter.phase("Install").outcome("current")
+    reporter.phase("install").outcome("current")
     reporter.handoff(engine="Claude Code", session="c-myproject-1")
 
     out = stream.getvalue()
-    # Rich renders each element: the tag bold blue, a phase label bold cyan, Ready bold green.
+    # Rich renders each element: the tag bold blue, an operation bold cyan, handoff bold green.
     assert "\x1b[1;34m[launch]\x1b[0m" in out
-    assert "\x1b[1;36mInstall:\x1b[0m" in out
-    assert "\x1b[1;32mReady:\x1b[0m" in out
+    assert "\x1b[1;36minstall:\x1b[0m" in out
+    assert "\x1b[1;32mhandoff:\x1b[0m" in out
 
 
 def test_given_a_non_tty_stream_when_reported_then_no_escape_sequence_reaches_it(monkeypatch):
@@ -150,21 +150,21 @@ def test_given_a_non_tty_stream_when_reported_then_no_escape_sequence_reaches_it
 
     reporter = LaunchReporter(stream=stream)
     reporter.start(engine="Claude Code", mode="local, tmux")
-    with reporter.phase("Worktree", "creating isolated worktree") as phase:
+    with reporter.phase("worktree", "creating isolated worktree") as phase:
         phase.outcome("created /home/user/src/myproject/.worktrees/c-myproject-1")
-    reporter.warning("something to know")
-    reporter.error("something went wrong")
+    reporter.warning("worktree", "something to know")
+    reporter.error("worktree", "something went wrong")
     reporter.handoff(engine="Claude Code", session="c-myproject-1")
 
     out = stream.getvalue()
     assert "\x1b" not in out
     assert out.splitlines() == [
-        "[launch] Starting Claude Code session: local, tmux",
-        "[launch] Worktree: creating isolated worktree",
-        "[launch] Worktree: created /home/user/src/myproject/.worktrees/c-myproject-1",
-        "[launch] Warning: something to know",
-        "[launch] Error: something went wrong",
-        "[launch] Ready: handing off to Claude Code (c-myproject-1)",
+        "[launch] start: Starting Claude Code session (local, tmux)",
+        "[launch] worktree: creating isolated worktree",
+        "[launch] worktree: created /home/user/src/myproject/.worktrees/c-myproject-1",
+        "[launch] worktree: Warning: something to know",
+        "[launch] worktree: Error: something went wrong",
+        "[launch] handoff: ready, handing off to Claude Code (c-myproject-1)",
     ]
 
 
@@ -181,11 +181,11 @@ def test_given_a_colour_opt_out_when_the_stream_is_a_tty_then_no_escape_sequence
     monkeypatch.setenv(variable, value)
     stream = _TtyStream()
 
-    LaunchReporter(stream=stream).phase("Install").outcome("current")
+    LaunchReporter(stream=stream).phase("install").outcome("current")
 
     assert "\x1b" not in stream.getvalue()
     # A terminal record ends in CR LF on POSIX (AI-CLI-8h3u); a Windows console keeps LF.
-    assert stream.getvalue() == "[launch] Install: current" + ("\n" if os.name == "nt" else "\r\n")
+    assert stream.getvalue() == "[launch] install: current" + ("\n" if os.name == "nt" else "\r\n")
 
 
 def test_given_a_tty_stream_when_reported_then_the_logger_receives_plain_text(monkeypatch):
@@ -202,9 +202,9 @@ def test_given_a_tty_stream_when_reported_then_the_logger_receives_plain_text(mo
     logger.setLevel(logging.DEBUG)
     logger.addHandler(_Collect())
 
-    LaunchReporter(stream=_TtyStream(), logger=logger).phase("Install").outcome("current")
+    LaunchReporter(stream=_TtyStream(), logger=logger).phase("install").outcome("current")
 
-    assert [record.getMessage() for record in records] == ["[launch] Install: current"]
+    assert [record.getMessage() for record in records] == ["[launch] install: current"]
 
 
 # --- quiet policy ---------------------------------------------------------------
@@ -213,13 +213,13 @@ def test_given_a_tty_stream_when_reported_then_the_logger_receives_plain_text(mo
 def test_given_quiet_launch_when_a_warning_or_error_is_reported_then_it_is_still_emitted(capsys):
     reporter = LaunchReporter(quiet=True)
 
-    reporter.phase("Install").outcome("current")
-    reporter.warning("auto-update failed; the existing installation is intact")
-    reporter.error("tmux client is 3.5a but the running server is 3.4")
+    reporter.phase("install").outcome("current")
+    reporter.warning("update", "auto-update failed; the existing installation is intact")
+    reporter.error("tmux", "tmux client is 3.5a but the running server is 3.4")
 
     assert capsys.readouterr().err.splitlines() == [
-        "[launch] Warning: auto-update failed; the existing installation is intact",
-        "[launch] Error: tmux client is 3.5a but the running server is 3.4",
+        "[launch] update: Warning: auto-update failed; the existing installation is intact",
+        "[launch] tmux: Error: tmux client is 3.5a but the running server is 3.4",
     ]
 
 
@@ -236,12 +236,12 @@ def test_given_warning_and_error_when_logged_then_they_carry_their_levels():
     logger.addHandler(_Collect())
     reporter = LaunchReporter(quiet=True, logger=logger, stream=io.StringIO())
 
-    reporter.warning("w")
-    reporter.error("e")
+    reporter.warning("update", "w")
+    reporter.error("update", "e")
 
     assert [(record.levelno, record.getMessage()) for record in records] == [
-        (logging.WARNING, "[launch] Warning: w"),
-        (logging.ERROR, "[launch] Error: e"),
+        (logging.WARNING, "[launch] update: Warning: w"),
+        (logging.ERROR, "[launch] update: Error: e"),
     ]
 
 
@@ -266,17 +266,17 @@ def clock(monkeypatch) -> _Clock:
 def test_given_a_slow_started_phase_when_its_outcome_is_recorded_then_elapsed_is_shown(clock, capsys):
     reporter = LaunchReporter(heartbeat_seconds=3600)
 
-    with reporter.phase("Worktree", "synchronizing") as phase:
+    with reporter.phase("worktree", "synchronizing") as phase:
         clock.now += 12.4
         phase.outcome("ready")
 
-    assert capsys.readouterr().err.splitlines()[-1] == "[launch] Worktree: ready (12.4s)"
+    assert capsys.readouterr().err.splitlines()[-1] == "[launch] worktree: ready (12.4s)"
 
 
 def test_given_a_fast_started_phase_when_its_outcome_is_recorded_then_elapsed_is_omitted_unless_verbose(clock, capsys):
-    for verbose, expected in ((False, "[launch] Remote: host ready"), (True, "[launch] Remote: host ready (0.3s)")):
+    for verbose, expected in ((False, "[launch] remote: host ready"), (True, "[launch] remote: host ready (0.3s)")):
         reporter = LaunchReporter(verbose=verbose, heartbeat_seconds=3600)
-        with reporter.phase("Remote", "probing configured host") as phase:
+        with reporter.phase("remote", "probing configured host") as phase:
             clock.now += 0.3
             phase.outcome("host ready")
         assert capsys.readouterr().err.splitlines()[-1] == expected
@@ -284,22 +284,22 @@ def test_given_a_fast_started_phase_when_its_outcome_is_recorded_then_elapsed_is
 
 def test_given_a_phase_without_a_start_line_when_its_outcome_is_slow_then_no_elapsed_is_appended(clock, capsys):
     reporter = LaunchReporter(verbose=True, heartbeat_seconds=3600)
-    phase = reporter.phase("Session")
+    phase = reporter.phase("session")
     clock.now += 5
     phase.outcome("resolved c-myproject-1")
 
-    assert capsys.readouterr().err == "[launch] Session: resolved c-myproject-1\n"
+    assert capsys.readouterr().err == "[launch] session: resolved c-myproject-1\n"
 
 
 def test_given_a_started_phase_when_no_outcome_is_recorded_then_done_is_reported(capsys):
     reporter = LaunchReporter(heartbeat_seconds=3600)
 
-    with reporter.phase("Update", "syncing remote"):
+    with reporter.phase("update", "syncing remote"):
         pass
 
     assert capsys.readouterr().err.splitlines() == [
-        "[launch] Update: syncing remote",
-        "[launch] Update: done",
+        "[launch] update: syncing remote",
+        "[launch] update: done",
     ]
 
 
@@ -308,14 +308,14 @@ def test_given_a_started_phase_when_it_outlives_the_heartbeat_threshold_then_hea
 ):
     reporter = LaunchReporter(heartbeat_seconds=0.05)
 
-    with reporter.phase("Worktree", "creating isolated worktree") as phase:
+    with reporter.phase("worktree", "creating isolated worktree") as phase:
         time.sleep(0.3)
         phase.outcome("created")
     err = capsys.readouterr().err
     beats = [line for line in err.splitlines() if "still creating isolated worktree (" in line]
     assert beats, err
     assert all(line.endswith("s elapsed)") for line in beats)
-    assert err.splitlines()[-1].startswith("[launch] Worktree: created")
+    assert err.splitlines()[-1].startswith("[launch] worktree: created")
 
     time.sleep(0.2)
     assert capsys.readouterr().err == "", "a heartbeat fired after the phase had ended"
@@ -324,11 +324,11 @@ def test_given_a_started_phase_when_it_outlives_the_heartbeat_threshold_then_hea
 def test_given_a_phase_without_a_start_line_when_it_takes_long_then_no_heartbeat_is_emitted(capsys):
     reporter = LaunchReporter(heartbeat_seconds=0.05)
 
-    phase = reporter.phase("Session")
+    phase = reporter.phase("session")
     time.sleep(0.2)
     phase.outcome("resolved c-myproject-1")
 
-    assert capsys.readouterr().err == "[launch] Session: resolved c-myproject-1\n"
+    assert capsys.readouterr().err == "[launch] session: resolved c-myproject-1\n"
 
 
 # --- failure paths --------------------------------------------------------------
@@ -340,7 +340,7 @@ def test_given_an_exception_inside_a_started_phase_when_it_escapes_then_the_phas
     reporter = LaunchReporter(quiet=True, heartbeat_seconds=3600)
 
     def _create_worktree() -> None:
-        with reporter.phase("Worktree", "creating isolated worktree"):
+        with reporter.phase("worktree", "creating isolated worktree"):
             clock.now += 3.2
             raise RuntimeError("boom")
 
@@ -348,37 +348,37 @@ def test_given_an_exception_inside_a_started_phase_when_it_escapes_then_the_phas
         _create_worktree()
 
     # Quiet suppresses progress, never failures.
-    assert capsys.readouterr().err == "[launch] Worktree: failed after 3.2s: boom\n"
+    assert capsys.readouterr().err == "[launch] worktree: Error: failed after 3.2s: boom\n"
 
 
 def test_given_an_interrupt_inside_a_started_phase_when_it_escapes_then_the_cancelled_phase_is_named(clock, capsys):
     reporter = LaunchReporter(heartbeat_seconds=3600)
 
     def _probe() -> None:
-        with reporter.phase("Remote", "probing configured host"):
+        with reporter.phase("remote", "probing configured host"):
             clock.now += 4
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
         _probe()
 
-    assert capsys.readouterr().err.splitlines()[-1] == "[launch] Remote: interrupted after 4.0s"
+    assert capsys.readouterr().err.splitlines()[-1] == "[launch] remote: Warning: interrupted after 4.0s"
 
 
 def test_given_a_system_exit_inside_a_started_phase_when_it_escapes_then_nothing_extra_is_reported(capsys):
     reporter = LaunchReporter(heartbeat_seconds=3600)
 
     def _allocate() -> None:
-        with reporter.phase("Session", "allocating remote session"):
-            reporter.error("no free slot")
+        with reporter.phase("session", "allocating remote session"):
+            reporter.error("session", "no free slot")
             sys.exit(1)
 
     with pytest.raises(SystemExit):
         _allocate()
 
     assert capsys.readouterr().err.splitlines() == [
-        "[launch] Session: allocating remote session",
-        "[launch] Error: no free slot",
+        "[launch] session: allocating remote session",
+        "[launch] session: Error: no free slot",
     ]
 
 
@@ -388,9 +388,9 @@ def test_given_a_system_exit_inside_a_started_phase_when_it_escapes_then_nothing
 def test_given_no_activated_reporter_when_active_is_asked_then_a_default_reporter_still_prints(monkeypatch, capsys):
     monkeypatch.setattr(launch_reporter, "_active", None)
 
-    launch_reporter.active().phase("Worktree").outcome("relocated")
+    launch_reporter.active().phase("worktree").outcome("relocated")
 
-    assert capsys.readouterr().err == "[launch] Worktree: relocated\n"
+    assert capsys.readouterr().err == "[launch] worktree: relocated\n"
 
 
 def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applies_and_can_be_restored(
@@ -401,7 +401,7 @@ def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applie
     quiet = LaunchReporter(quiet=True)
 
     previous = quiet.activate()
-    launch_reporter.active().phase("Worktree").outcome("relocated")
+    launch_reporter.active().phase("worktree").outcome("relocated")
     assert previous is default
     assert launch_reporter.active() is quiet
     assert capsys.readouterr().err == ""
@@ -489,9 +489,9 @@ def test_given_no_reporter_when_launching_then_the_active_reporter_is_used(tmp_p
             )
 
     err = capsys.readouterr().err
-    assert "[launch] Worktree: creating isolated worktree" in err
-    assert f"[launch] Worktree: created {worktree} (disable with -W/--no-worktree" in err
-    assert "[launch] Ready: handing off to Claude Code (myproject-1)" in err
+    assert "[launch] worktree: creating isolated worktree" in err
+    assert f"[launch] worktree: created {worktree} (disable with -W/--no-worktree" in err
+    assert "[launch] handoff: ready, handing off to Claude Code (myproject-1)" in err
 
 
 def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal_is_an_error_line(capsys):
@@ -528,7 +528,10 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "[launch] Error: no running session to resume: 'c-myproject-tst-7' is not a tmux session" in captured.err
+    assert (
+        "[launch] resume: Error: no running session to resume: 'c-myproject-tst-7' is not a tmux session"
+        in captured.err
+    )
 
 
 def test_given_quiet_session_command_when_it_starts_then_the_active_reporter_carries_the_policy(monkeypatch):
@@ -574,7 +577,7 @@ def test_given_a_handoff_when_reported_then_the_line_is_flushed_before_returning
 
     LaunchReporter(stream=stream).handoff(engine="Claude Code", session="c-myproject-1")
 
-    assert stream.flushed_after[-1] == "[launch] Ready: handing off to Claude Code (c-myproject-1)\n"
+    assert stream.flushed_after[-1] == "[launch] handoff: ready, handing off to Claude Code (c-myproject-1)\n"
 
 
 def test_given_the_launch_path_when_scanned_then_every_started_phase_is_a_with_block_holding_no_exec():

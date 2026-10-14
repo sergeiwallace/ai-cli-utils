@@ -118,6 +118,12 @@ def shipped_table() -> dict[str, Any]:
 
 
 @cache
+def shipped_vocabulary() -> frozenset[str]:
+    """The shipped operations: every one the package emits, which no user table can remove."""
+    return frozenset(shipped_table()["elements"]["operation"]["vocabulary"])
+
+
+@cache
 def defaults() -> OutputSettings:
     """The shipped settings, which render whenever there is no valid user table."""
     return _settings(shipped_table())

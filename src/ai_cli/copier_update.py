@@ -904,31 +904,31 @@ def run_copier_update(
         projects_dir = _get_projects_dir()
 
     if not projects_dir.exists():
-        _out.error(Tag.COPIER, f"projects directory not found: {projects_dir}")
+        _out.error(Tag.COPIER, "update", f"projects directory not found: {projects_dir}")
         return EX_CONFIG
 
     copier_bin = shutil.which("copier")
     if copier_bin is None:
-        _out.error(Tag.COPIER, "copier not found in PATH. Install with: uv tool install copier")
+        _out.error(Tag.COPIER, "update", "copier not found in PATH. Install with: uv tool install copier")
         return EX_CONFIG
 
     projects = _find_copier_projects(projects_dir)
     if not projects:
-        _out.emit(Tag.COPIER, "No project-template-based projects found.")
+        _out.emit(Tag.COPIER, "update", "No project-template-based projects found.")
         return 0
 
     if project_filter:
         projects = [p for p in projects if p.name == project_filter]
         if not projects:
-            _out.error(Tag.COPIER, f"project '{project_filter}' not found or not copier-managed.")
+            _out.error(Tag.COPIER, "update", f"project '{project_filter}' not found or not copier-managed.")
             return EX_CONFIG
 
     if dry_run:
         mode = "isolated worktree → main" if isolate else "direct (main tree)"
-        _out.emit(Tag.COPIER, f"Would update {len(projects)} project(s) [{mode}]:")
+        _out.emit(Tag.COPIER, "update", f"Would update {len(projects)} project(s) [{mode}]:")
         for p in projects:
-            _out.emit(Tag.COPIER, f"  {p.name}")
-        _out.emit(Tag.COPIER, "\n(dry-run: no changes made)")
+            _out.emit(Tag.COPIER, "update", f"  {p.name}")
+        _out.emit(Tag.COPIER, "update", "\n(dry-run: no changes made)")
         return 0
 
     if isolate:
@@ -942,7 +942,7 @@ def _run_isolated(
     projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
-    _out.emit(Tag.COPIER, f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
+    _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
     has_partial_mutation = False
@@ -950,47 +950,50 @@ def _run_isolated(
     has_transient_failure = False
     delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
-        _out.emit(Tag.COPIER, f"  {project_dir.name}... ", nl=False)
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
         if inspect:
             status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
         else:
             status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
         if status == "ok":
-            _out.cont(Tag.COPIER, "✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
+            _out.cont(Tag.COPIER, "update", "✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
             changed += 1
             if inspect:
                 assert isinstance(detail, DeliveredUpdate)
                 delivered_updates.append(detail)
         elif status == "nochange":
-            _out.cont(Tag.COPIER, "· no changes")
+            _out.cont(Tag.COPIER, "update", "· no changes")
         elif status == "conflict":
             assert isinstance(detail, list)  # conflict status returns list[str] of paths
-            _out.cont(Tag.COPIER, f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:")
+            _out.cont(
+                Tag.COPIER, "update", f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:"
+            )
             for rel in detail:
-                _out.emit(Tag.COPIER, f"    conflict: {rel}")
+                _out.emit(Tag.COPIER, "update", f"    conflict: {rel}")
             failed += 1
             has_partial_mutation = True
         elif status == "parityfail":
-            _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED — inspect the temp worktree before continuing")
-            _out.emit(Tag.COPIER, f"    {detail}")
+            _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED — inspect the temp worktree before continuing")
+            _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         elif status == "pushfail":
-            _out.cont(Tag.COPIER, "✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
-            _out.emit(Tag.COPIER, f"    {detail}")
+            _out.cont(Tag.COPIER, "update", "✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
+            _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         elif status == "kept":
             _out.cont(
                 Tag.COPIER,
+                "update",
                 "✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:",
             )
-            _out.emit(Tag.COPIER, f"    {detail}")
+            _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         else:  # failed
-            _out.cont(Tag.COPIER, "✗ FAILED")
-            _out.emit(Tag.COPIER, f"    {detail}")
+            _out.cont(Tag.COPIER, "update", "✗ FAILED")
+            _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             if detail == "not a git repository" or (
                 isinstance(detail, str) and detail.startswith("worktree add failed:")
@@ -1000,9 +1003,9 @@ def _run_isolated(
                 has_transient_failure = True
 
     if failed:
-        _out.emit(Tag.COPIER, f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+        _out.emit(Tag.COPIER, "update", f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
-        _out.emit(Tag.COPIER, f"All projects up to date ({changed} updated).")
+        _out.emit(Tag.COPIER, "update", f"All projects up to date ({changed} updated).")
     if has_partial_mutation:
         exit_code = EX_PARTIAL_MUTATION
     elif has_config_failure:
@@ -1018,23 +1021,23 @@ def _run_isolated(
 
 def _run_direct(projects: list[Path], copier_bin: str) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
-    _out.emit(Tag.COPIER, f"Updating {len(projects)} project(s) [direct — main tree]:\n")
+    _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [direct — main tree]:\n")
     failed = 0
     has_partial_mutation = False
     has_transient_failure = False
     for project_dir in projects:
-        _out.emit(Tag.COPIER, f"  {project_dir.name}... ", nl=False)
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
         update_error, _, template_changes = _run_copier_update(project_dir, copier_bin)
         if update_error is not None:
             semantic_failure = _is_semantic_update_failure(update_error)
             if semantic_failure:
-                _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED")
+                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
                 has_partial_mutation = True
             else:
-                _out.cont(Tag.COPIER, "✗ FAILED")
+                _out.cont(Tag.COPIER, "update", "✗ FAILED")
             if update_error:
                 for line in update_error.splitlines():
-                    _out.emit(Tag.COPIER, f"    {line}", err=True)
+                    _out.emit(Tag.COPIER, "update", f"    {line}", err=True)
             failed += 1
             if not semantic_failure:
                 has_transient_failure = True
@@ -1050,9 +1053,9 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
         conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:
             # In --no-isolate mode, unresolved markers mutate the live main tree, not a temp worktree.
-            _out.cont(Tag.COPIER, f"✗ CONFLICTS ({len(conflicts)} file(s))")
+            _out.cont(Tag.COPIER, "update", f"✗ CONFLICTS ({len(conflicts)} file(s))")
             for c in conflicts:
-                _out.emit(Tag.COPIER, f"    conflict: {c}")
+                _out.emit(Tag.COPIER, "update", f"    conflict: {c}")
             failed += 1
             has_partial_mutation = True
         else:
@@ -1067,17 +1070,17 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
                 template_changes.excluded_on_update,
             )
             if parity_error is not None:
-                _out.cont(Tag.COPIER, "✗ TEMPLATE PARITY FAILED")
-                _out.emit(Tag.COPIER, f"    {parity_error}")
+                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
+                _out.emit(Tag.COPIER, "update", f"    {parity_error}")
                 failed += 1
                 has_partial_mutation = True
             else:
-                _out.cont(Tag.COPIER, "✓")
+                _out.cont(Tag.COPIER, "update", "✓")
 
     if failed:
-        _out.emit(Tag.COPIER, f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+        _out.emit(Tag.COPIER, "update", f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
-        _out.emit(Tag.COPIER, "All projects updated successfully.")
+        _out.emit(Tag.COPIER, "update", "All projects updated successfully.")
     if has_partial_mutation:
         return EX_PARTIAL_MUTATION
     if has_transient_failure:

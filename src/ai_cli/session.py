@@ -1148,7 +1148,7 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
             f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
             f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
         )
-    launch_reporter.active().phase("Worktree").outcome(
+    launch_reporter.active().phase("worktree").outcome(
         f"relocated session worktree: moved {holder} -> {wt_dir} "
         "(checkout, uncommitted changes and unpushed commits preserved)"
     )
@@ -1173,10 +1173,11 @@ def _initialize_worktree(
                 _set_upstream_or_raise(repo_root, branch, upstream)
         elif upstream is None:
             launch_reporter.active().warning(
+                "worktree",
                 f"worktree branch {branch!r} was created with NO upstream — no integration "
                 f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
                 f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
-                f"the branch this repository is on and run `git fetch origin`."
+                f"the branch this repository is on and run `git fetch origin`.",
             )
             _unset_upstream(repo_root, branch)
         else:
@@ -1313,7 +1314,7 @@ def create_worktree(
                         f"create_worktree: could not recover orphaned directory {wt_dir} by moving it to "
                         f"{recovered_path}: {exc}"
                     ) from exc
-                launch_reporter.active().phase("Worktree").outcome(
+                launch_reporter.active().phase("worktree").outcome(
                     f"recovered orphaned directory: moved {wt_dir} -> {recovered_path} (not deleted; review manually)"
                 )
 

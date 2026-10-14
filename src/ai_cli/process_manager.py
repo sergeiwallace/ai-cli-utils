@@ -169,9 +169,9 @@ def _cmd_quota_watch_status() -> None:
         result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("status")
         statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
         qw_status = statuses.get("quota-watch", "not registered")
-        _out.emit(Tag.DAEMON, f"quota-watch: {qw_status}")
+        _out.emit(Tag.DAEMON, "status", f"quota-watch: {qw_status}")
     except Exception:
-        _out.emit(Tag.DAEMON, "circusd not running.")
+        _out.emit(Tag.DAEMON, "status", "circusd not running.")
 
 
 def _cmd_stale_session_reaper_start() -> bool:
@@ -181,7 +181,7 @@ def _cmd_stale_session_reaper_start() -> bool:
     to reach Circus therefore leaves every tmux session untouched.
     """
     if _native_windows():
-        _out.emit(Tag.DAEMON, "stale-session-reaper: no-op on native Windows (tmux is unavailable)")
+        _out.emit(Tag.DAEMON, "start", "stale-session-reaper: no-op on native Windows (tmux is unavailable)")
         return True
 
     state_dir = get_xdg_state_home()
@@ -236,11 +236,12 @@ def _cmd_stale_session_reaper_start() -> bool:
     except Exception as exc:
         _out.emit(
             Tag.DAEMON,
+            "start",
             f"stale-session-reaper: failed to start ({exc}); retry with `ai session-reaper start`",
             err=True,
         )
         return False
-    _out.emit(Tag.DAEMON, "stale-session-reaper: running")
+    _out.emit(Tag.DAEMON, "start", "stale-session-reaper: running")
     return True
 
 
@@ -261,6 +262,7 @@ def _start_stale_session_reaper_for_launch() -> None:
     except Exception as exc:
         _out.emit(
             Tag.DAEMON,
+            "start",
             f"stale-session-reaper: failed to schedule start ({exc}); retry with `ai session-reaper start`",
             err=True,
         )
@@ -277,9 +279,9 @@ def _cmd_stale_session_reaper_stop() -> bool:
         if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
             raise RuntimeError("Circus rejected watcher removal")
     except Exception as exc:
-        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to stop ({exc})", err=True)
+        _out.emit(Tag.DAEMON, "stop", f"stale-session-reaper: failed to stop ({exc})", err=True)
         return False
-    _out.emit(Tag.DAEMON, "stale-session-reaper: stopped")
+    _out.emit(Tag.DAEMON, "stop", "stale-session-reaper: stopped")
     return True
 
 
@@ -296,8 +298,8 @@ def _cmd_stale_session_reaper_status() -> bool:
         statuses = result["statuses"]
         watcher = statuses.get(_STALE_SESSION_REAPER_WATCHER)
     except Exception as exc:
-        _out.emit(Tag.DAEMON, f"stale-session-reaper: failed to query status ({exc})", err=True)
+        _out.emit(Tag.DAEMON, "status", f"stale-session-reaper: failed to query status ({exc})", err=True)
         return False
     active = bool(watcher.get("active")) if isinstance(watcher, dict) else watcher in {"running", "active"}
-    _out.emit(Tag.DAEMON, f"stale-session-reaper: {'running' if active else 'not running'}")
+    _out.emit(Tag.DAEMON, "status", f"stale-session-reaper: {'running' if active else 'not running'}")
     return True

@@ -55,4 +55,4 @@ def test_given_missing_direnv_and_tmux_when_dry_running_through_cli_then_no_inst
             cli()
 
     assert exc_info.value.code == 0
-    assert "[plan] dry run -- nothing was created" in capsys.readouterr().out
+    assert "[plan] plan: dry run -- nothing was created" in capsys.readouterr().out

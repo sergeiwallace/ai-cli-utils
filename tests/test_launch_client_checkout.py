@@ -89,7 +89,11 @@ def _install_line(stderr: str) -> str:
     The real ``git fetch`` against the fixture origin is what this phase times, so on a
     loaded machine it crosses the reporter's slow threshold and the suffix appears.
     """
-    lines = [line for line in stderr.splitlines() if line.startswith("[launch] Install:") and ";" in line]
+    lines = [
+        line
+        for line in stderr.splitlines()
+        if line.startswith("[launch] install:") and ";" in line and not line.startswith("[launch] install: Warning:")
+    ]
     assert len(lines) == 1, stderr
     return re.sub(r" \(\d+(?:\.\d+)?s\)$", "", lines[0])
 
@@ -123,7 +127,7 @@ def test_given_a_dirty_checkout_behind_origin_when_launching_remote_then_it_is_r
     assert (checkout / "pyproject.toml").read_text() == "local edit\n"
     assert "1 commit(s) behind origin/main, not updated" in _install_line(stderr)
     assert "current" not in _install_line(stderr)
-    assert f"[launch] Warning: this machine's ai-cli-utils checkout {checkout} is 1 commit(s) behind" in stderr
+    assert f"[launch] install: Warning: this machine's ai-cli-utils checkout {checkout} is 1 commit(s) behind" in stderr
     assert "uncommitted changes" in stderr
     assert f"git -C {checkout} merge --ff-only origin/main" in stderr
     execvp.assert_not_called()

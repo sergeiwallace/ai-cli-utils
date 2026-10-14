@@ -224,7 +224,7 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
 
         failure = InstallResult(False, detail=repair.detail, unusable=True)
         if not quiet:
-            launch_reporter.active().warning(remediation(failure))
+            launch_reporter.active().warning("tmux", remediation(failure))
         return failure
 
     result = install_tmux() if auto_install else InstallResult(False, detail="auto-install not attempted")
@@ -234,7 +234,7 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
         return result
 
     if not quiet:
-        launch_reporter.active().warning(remediation(result))
+        launch_reporter.active().warning("tmux", remediation(result))
     # Absent from PATH and not installed: positively established, unlike the
     # ambiguous case above.
     return InstallResult(False, tool=result.tool, detail=result.detail, unusable=True)
@@ -473,14 +473,14 @@ def report_lines(
         lines.append(("tmux", f"auto-installed via {auto_installed}"))
 
     if not report.present:
-        lines.append(("Mode", f"launching bare, tmux not found on PATH ({reason})"))
+        lines.append(("mode", f"launching bare, tmux not found on PATH ({reason})"))
         return lines
 
     if not report.versions_probed:
         # Presence only. Saying "version unavailable" here would report a broken
         # binary when nothing was ever asked.
         lines.append(("tmux", f"found at {report.path} (version not queried)"))
-        lines.append(("Mode", f"launching bare, not under tmux ({reason})"))
+        lines.append(("mode", f"launching bare, not under tmux ({reason})"))
         return lines
 
     detail = report.client_version or "version unavailable (binary does not run)"
@@ -511,9 +511,9 @@ def report_lines(
         )
 
     if bare:
-        lines.append(("Mode", f"launching bare, not under tmux ({reason})"))
+        lines.append(("mode", f"launching bare, not under tmux ({reason})"))
     else:
-        lines.append(("Mode", f"launching inside tmux ({reason})"))
+        lines.append(("mode", f"launching inside tmux ({reason})"))
     return lines
 
 

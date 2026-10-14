@@ -108,7 +108,7 @@ def _authenticate_root(timeout: int = 120) -> bool:
     is seen and answered; every later call can then use ``sudo -n`` and keep its
     output captured.
     """
-    _out.emit(Tag.DOCTOR, "this install needs administrator rights.", err=True)
+    _out.emit(Tag.DOCTOR, "install", "this install needs administrator rights.", err=True)
     try:
         proc = subprocess.run(["sudo", "-v"], timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -240,7 +240,7 @@ def attempt_installs(
             if not authenticated:
                 # Show the exact command before asking for a password. Nobody
                 # should be typing one for an action they have not seen.
-                _out.emit(Tag.DOCTOR, f"about to run: sudo {' '.join(argv)}", err=True)
+                _out.emit(Tag.DOCTOR, "install", f"about to run: sudo {' '.join(argv)}", err=True)
                 authenticated = _authenticate_root()
             if not authenticated:
                 skipped.append(f"{probe} (root authentication declined or failed)")

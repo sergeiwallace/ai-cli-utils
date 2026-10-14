@@ -29,7 +29,8 @@ def _safe_session_name(session_name: str) -> str:
     return normalized[:64] or "launch"
 
 
-_LINE_TAG = re.compile(r"^\[[a-z0-9_-]+\] ")
+# The tag and, when present, the operation element (AI-CLI-rbuf) that lead a rendered line.
+_LINE_TAG = re.compile(r"^\[[a-z0-9_-]+\] (?:[a-z][a-z0-9-]*: )?")
 
 
 def _log_level(message: str) -> int:

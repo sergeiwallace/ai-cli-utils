@@ -181,7 +181,7 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
             env=_git_env(),
             check=False,
         )
-        _out.warning(Tag.GIT, f"repaired core.bare=true corruption on {repo_root} (reset to false)")
+        _out.warning(Tag.GIT, "repair", f"repaired core.bare=true corruption on {repo_root} (reset to false)")
         repaired = True
 
     worktree_cfg = subprocess.run(
@@ -198,7 +198,9 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
             env=_git_env(),
             check=False,
         )
-        _out.warning(Tag.GIT, f"repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)")
+        _out.warning(
+            Tag.GIT, "repair", f"repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)"
+        )
         repaired = True
 
     return repaired
@@ -404,6 +406,7 @@ def _repair_beads_issues_autostash_strand(repo_root: Path, new_unmerged: set[str
     if dropped_stashes:
         _out.emit(
             Tag.GIT,
+            "repair",
             "Auto-resolved a beads-only autostash strand: regenerated "
             f"{_BEADS_ISSUES_MIRROR} from the live bd store, dropped stash "
             f"{', '.join(dropped_stashes)}.",
@@ -412,6 +415,7 @@ def _repair_beads_issues_autostash_strand(repo_root: Path, new_unmerged: set[str
     elif new_stashes:
         _out.emit(
             Tag.GIT,
+            "repair",
             "Auto-resolved a beads-only autostash strand: regenerated "
             f"{_BEADS_ISSUES_MIRROR} from the live bd store; left newly created "
             "stash entries in place because their contents were not safely verified.",
@@ -420,6 +424,7 @@ def _repair_beads_issues_autostash_strand(repo_root: Path, new_unmerged: set[str
     else:
         _out.emit(
             Tag.GIT,
+            "repair",
             f"Auto-resolved a beads-only autostash strand: regenerated {_BEADS_ISSUES_MIRROR} from the live bd store.",
             err=True,
         )

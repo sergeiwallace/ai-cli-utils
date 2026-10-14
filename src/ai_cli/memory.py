@@ -80,7 +80,7 @@ def memory_watch() -> int:
     from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
 
     if not _acquire_pid_file("memory-watch"):
-        _out.emit(Tag.MEMORY, "ai memory watch is already running.", err=True)
+        _out.emit(Tag.MEMORY, "watch", "ai memory watch is already running.", err=True)
         return 2
 
     dream_state_path = _dream_state_path()
@@ -93,7 +93,7 @@ def memory_watch() -> int:
     loop.run_until_complete(client.connect())
 
     if not client.nc:
-        _out.emit(Tag.MEMORY, "NATS unavailable — cannot start memory watcher.", err=True)
+        _out.emit(Tag.MEMORY, "watch", "NATS unavailable — cannot start memory watcher.", err=True)
         loop.close()
         _release_pid_file("memory-watch")
         return 1
@@ -101,26 +101,26 @@ def memory_watch() -> int:
     def on_write_start(path):
         dream_state_path.parent.mkdir(parents=True, exist_ok=True)
         dream_state_path.write_text(str(os.getpid()), encoding="utf-8")
-        _out.emit(Tag.MEMORY_WATCH, f"dream started: {path}")
+        _out.emit(Tag.MEMORY_WATCH, "watch", f"dream started: {path}")
         try:
             loop.run_until_complete(client.publish("memory.dream.started", {"path": str(path), "ts": time.time()}))
         except Exception as e:
-            _out.emit(Tag.MEMORY_WATCH, f"failed to publish dream.started: {e}", err=True)
+            _out.emit(Tag.MEMORY_WATCH, "watch", f"failed to publish dream.started: {e}", err=True)
 
     def on_write_settle():
         dream_state_path.unlink(missing_ok=True)
-        _out.emit(Tag.MEMORY_WATCH, "dream completed (2s debounce)")
+        _out.emit(Tag.MEMORY_WATCH, "watch", "dream completed (2s debounce)")
         try:
             loop.run_until_complete(client.publish("memory.dream.completed", {"ts": time.time()}))
         except Exception as e:
-            _out.emit(Tag.MEMORY_WATCH, f"failed to publish dream.completed: {e}", err=True)
+            _out.emit(Tag.MEMORY_WATCH, "watch", f"failed to publish dream.completed: {e}", err=True)
 
     handler = MemoryFileHandler(on_write_start, on_write_settle)
     observer = Observer()
 
     dirs = _find_memory_dirs()
     if not dirs:
-        _out.emit(Tag.MEMORY_WATCH, "no memory directories found to watch", err=True)
+        _out.emit(Tag.MEMORY_WATCH, "watch", "no memory directories found to watch", err=True)
         _release_pid_file("memory-watch")
         loop.run_until_complete(client.close())
         loop.close()
@@ -128,10 +128,10 @@ def memory_watch() -> int:
 
     for d in dirs:
         observer.schedule(handler, str(d), recursive=True)
-        _out.emit(Tag.MEMORY_WATCH, f"watching {d}")
+        _out.emit(Tag.MEMORY_WATCH, "watch", f"watching {d}")
 
     observer.start()
-    _out.emit(Tag.MEMORY, "ai memory watch — watching for MEMORY.md writes (Ctrl+C to stop)")
+    _out.emit(Tag.MEMORY, "watch", "ai memory watch — watching for MEMORY.md writes (Ctrl+C to stop)")
 
     try:
         while True:

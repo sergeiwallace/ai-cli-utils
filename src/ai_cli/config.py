@@ -189,12 +189,14 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     _write_secure_config(config_path, "".join(lines))
     _out.emit(
         Tag.CONFIG,
+        "register",
         f"Machine profile registered: {profile['host_id']} ({profile['os_type']}) from {profile['host_id_source']}",
         err=True,
     )
     if "host_id" in missing and profile["host_id_source"] == HOST_ID_SOURCE_HOSTNAME:
         _out.warning(
             Tag.CONFIG,
+            "register",
             f"nothing identified this machine, so its {HOST_ID_SOURCE_HOSTNAME} "
             f"{profile['host_id']!r} was recorded as the durable host_id. AI_HOST is unset and "
             f"{MACHINE_MARKER_FILE} is absent or empty. On a cloud host a hostname names a lease "
@@ -595,7 +597,7 @@ def load_config():
         with config_path.open("rb") as f:
             cfg = tomllib.load(f)
     except Exception as e:
-        _out.warning(Tag.CONFIG, f"Failed to load config from {config_path}: {e}")
+        _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
         return {}
 
     if ensure_machine_profile_registered(config_path, cfg):
@@ -1053,6 +1055,7 @@ def _prompt_and_persist_prefix(root: Path) -> str:
     max_length, limit_source = repo_alias_limit()
     answer = _out.ask(
         Tag.CONFIG,
+        "register",
         f"No task prefix is registered for {root.name} ({root}).\n"
         f"Task prefix to register in {target} (lowercase letters and digits starting with a letter, single "
         f"hyphens between them; prefer {PREFERRED_ALIAS_LENGTH} or fewer, at most {max_length}; the limit is "
@@ -1064,7 +1067,7 @@ def _prompt_and_persist_prefix(root: Path) -> str:
         )
     prefix = validate_repo_alias(answer, max_length, limit_source)
     writer(target, root, prefix)
-    _out.emit(Tag.CONFIG, f'Registered "{root.name}" with prefix "{prefix}" in {target}')
+    _out.emit(Tag.CONFIG, "register", f'Registered "{root.name}" with prefix "{prefix}" in {target}')
     return prefix
 
 
@@ -1269,15 +1272,15 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         name = p.get("name", "")
         prefix = p.get("task_prefix", "")
         if not name or not prefix:
-            _out.error(Tag.CONFIG, f"project registry entry missing name or task_prefix: {p}")
+            _out.error(Tag.CONFIG, "load", f"project registry entry missing name or task_prefix: {p}")
             sys.exit(1)
         name_lower = name.lower()
         prefix_lower = prefix.lower()
         if name_lower in names_seen:
-            _out.error(Tag.CONFIG, f"duplicate project name in registry: {name}")
+            _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
         if prefix_lower in prefixes_seen:
-            _out.error(Tag.CONFIG, f"duplicate task_prefix in registry: {prefix}")
+            _out.error(Tag.CONFIG, "load", f"duplicate task_prefix in registry: {prefix}")
             sys.exit(1)
         names_seen.add(name_lower)
         prefixes_seen.add(prefix_lower)
@@ -1317,7 +1320,9 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
         return True
 
     if not interactive:
-        _out.error(Tag.CONFIG, f"unregistered project directories: {', '.join(d.name for d in unregistered)}")
+        _out.error(
+            Tag.CONFIG, "register", f"unregistered project directories: {', '.join(d.name for d in unregistered)}"
+        )
         return False
 
     registry_path = _get_project_registry_path()
@@ -1329,16 +1334,19 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
         try:
             answer = _out.ask(
                 Tag.CONFIG,
+                "register",
                 f'Unregistered project: "{name}" (~/{projects_dir.name}/{name})\n'
                 f"Suggested task_prefix: {suggested_prefix}\n"
                 f"Add to registry? [Y/n, or enter custom prefix]:",
             ).strip()
         except EOFError:
-            _out.emit(Tag.CONFIG, "\nRegistry incomplete — exiting.", err=True)
+            _out.emit(Tag.CONFIG, "register", "\nRegistry incomplete — exiting.", err=True)
             return False
 
         if answer.lower() == "n":
-            _out.emit(Tag.CONFIG, "Registry incomplete — exiting. All projects must be registered.", err=True)
+            _out.emit(
+                Tag.CONFIG, "register", "Registry incomplete — exiting. All projects must be registered.", err=True
+            )
             return False
 
         prefix = answer if answer and answer.lower() != "y" else suggested_prefix
@@ -1354,7 +1362,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
                 f'task_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
             )
     for name, _project_path, prefix in entries:
-        _out.emit(Tag.CONFIG, f'Registered "{name}" with prefix "{prefix}"')
+        _out.emit(Tag.CONFIG, "register", f'Registered "{name}" with prefix "{prefix}"')
 
     # Force reload after registration
     global _registry_cache

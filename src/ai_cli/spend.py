@@ -260,29 +260,30 @@ def cmd_spend_gemini(
     monthly = get_monthly_stats(year_month, log_dir=log_dir)
 
     # --- Today ---
-    _out.emit(Tag.SPEND, f"Gemini usage — today ({today})")
+    _out.emit(Tag.SPEND, "report", f"Gemini usage — today ({today})")
 
     paid_dr = dr_today.get("paid_count", 0)
 
     if paid_dr:
         _out.emit(
             Tag.SPEND,
+            "report",
             f"  Deep Research:  {paid_dr} paid run{'s' if paid_dr != 1 else ''} (check `ai spend gemini` for charges)",
         )
     else:
-        _out.emit(Tag.SPEND, "  Deep Research:  0 paid runs today")
+        _out.emit(Tag.SPEND, "report", "  Deep Research:  0 paid runs today")
 
     _sep = " \u00b7 "  # middle dot separator
     _times = "\u00d7"  # multiplication sign
     other_models = {m: c for m, c in daily.by_model.items() if m != "deep-research"}
     if other_models:
         model_parts = [f"{m} {_times}{c}" for m, c in sorted(other_models.items(), key=lambda x: -x[1])]
-        _out.emit(Tag.SPEND, f"  Other models:   {_sep.join(model_parts)}")
+        _out.emit(Tag.SPEND, "report", f"  Other models:   {_sep.join(model_parts)}")
     elif not paid_dr and not daily.successful_runs:
-        _out.emit(Tag.SPEND, "  No runs logged today.")
+        _out.emit(Tag.SPEND, "report", "  No runs logged today.")
 
     # --- This month ---
-    _out.emit(Tag.SPEND, f"This month ({year_month})")
+    _out.emit(Tag.SPEND, "report", f"This month ({year_month})")
 
     m_oauth_dr = monthly.deep_research_oauth
     m_paid_dr = monthly.deep_research_paid
@@ -291,12 +292,12 @@ def cmd_spend_gemini(
     if m_paid_dr:
         plural = "s" if m_paid_dr != 1 else ""
         dr_monthly += f"  {_bullet}  {m_paid_dr} paid run{plural}"
-    _out.emit(Tag.SPEND, f"  Deep Research:  {dr_monthly}")
+    _out.emit(Tag.SPEND, "report", f"  Deep Research:  {dr_monthly}")
 
     m_other = {m: c for m, c in monthly.by_model.items() if m != "deep-research"}
     if m_other:
         m_parts = [f"{m} {_times}{c}" for m, c in sorted(m_other.items(), key=lambda x: -x[1])]
-        _out.emit(Tag.SPEND, f"  Other models:   {_sep.join(m_parts)}")
+        _out.emit(Tag.SPEND, "report", f"  Other models:   {_sep.join(m_parts)}")
 
     # --- BigQuery paid spend ---
     billing_cfg = config.get("gemini_billing", {})
@@ -304,32 +305,35 @@ def cmd_spend_gemini(
     export_table = billing_cfg.get("billing_export_table", "")
 
     if not export_table:
-        _out.emit(Tag.SPEND, "  Paid API spend: not available — BigQuery billing export not configured.")
+        _out.emit(Tag.SPEND, "report", "  Paid API spend: not available — BigQuery billing export not configured.")
         if gcp_project:
-            _out.emit(Tag.SPEND, f"    GCP project: {gcp_project}")
-        _out.emit(Tag.SPEND, "    To enable: Cloud Console → Billing → Billing export → Detailed usage cost")
-        _out.emit(Tag.SPEND, "    One-time setup (~5 min); data appears within 24-48h.")
+            _out.emit(Tag.SPEND, "report", f"    GCP project: {gcp_project}")
+        _out.emit(Tag.SPEND, "report", "    To enable: Cloud Console → Billing → Billing export → Detailed usage cost")
+        _out.emit(Tag.SPEND, "report", "    One-time setup (~5 min); data appears within 24-48h.")
     else:
         bq = query_bigquery_spend(gcp_project, export_table, year_month)
         if not bq["available"]:
             err = bq.get("error") or "unknown error"
             if "not installed" in err:
-                _out.emit(Tag.SPEND, f"  Paid API spend: not available — {err}")
+                _out.emit(Tag.SPEND, "report", f"  Paid API spend: not available — {err}")
             else:
-                _out.emit(Tag.SPEND, f"  Paid API spend: query failed — {err}")
+                _out.emit(Tag.SPEND, "report", f"  Paid API spend: query failed — {err}")
         else:
             total = bq["total_cost_usd"]
             as_of = bq.get("data_as_of") or "unknown"
-            _out.emit(Tag.SPEND, f"  Paid API spend: ${total:.2f}  (source: GCP billing export, as of {as_of})")
+            _out.emit(
+                Tag.SPEND, "report", f"  Paid API spend: ${total:.2f}  (source: GCP billing export, as of {as_of})"
+            )
             if total == 0.0:
-                _out.emit(Tag.SPEND, "    \u2192 Ultra credit appears to be applied \u2713")
+                _out.emit(Tag.SPEND, "report", "    \u2192 Ultra credit appears to be applied \u2713")
             else:
                 _out.emit(
                     Tag.SPEND,
+                    "report",
                     "    \u2192 Charges are being applied \u2014 Ultra credit may not cover AI Studio API keys",
                 )
             if bq.get("by_sku"):
                 for sku, cost in sorted(bq["by_sku"].items(), key=lambda x: -x[1]):
-                    _out.emit(Tag.SPEND, f"    {sku}: ${cost:.4f}")
+                    _out.emit(Tag.SPEND, "report", f"    {sku}: ${cost:.4f}")
 
     return 0

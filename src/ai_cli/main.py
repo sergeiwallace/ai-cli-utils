@@ -204,6 +204,7 @@ def _ensure_dolt_server() -> None:
         return
     _out.run_relayed(
         Tag.DOLT_SERVER,
+        "ensure",
         [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
         check=False,
     )
@@ -235,7 +236,7 @@ def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
         except FileNotFoundError:
             raise
         except OSError as exc:
-            _out.error(Tag.LAUNCH, f"could not start the session on a launcher-owned pty: {exc}")
+            _out.error(Tag.LAUNCH, "handoff", f"could not start the session on a launcher-owned pty: {exc}")
             sys.exit(1)
 
     return handoff
@@ -279,7 +280,7 @@ def _exec_with_direnv(
     try:
         handoff(command[0], command)
     except FileNotFoundError:
-        _out.error(Tag.LAUNCH, f"{command[0]} not found on PATH.")
+        _out.error(Tag.LAUNCH, "handoff", f"{command[0]} not found on PATH.")
         sys.exit(1)
 
 
@@ -298,6 +299,7 @@ def _direnv_prefix(project_root: Path) -> list[str]:
     if envrc is not None and _direnv_installed():
         _out.warning(
             Tag.LAUNCH,
+            "direnv",
             f"direnv could not load {envrc} — starting without the project environment.\n"
             f"  Approve it with:  direnv allow {envrc.parent}",
         )
@@ -354,6 +356,7 @@ def _session_shell_or_exit() -> str:
     if shell is None:
         _out.error(
             Tag.LAUNCH,
+            "session",
             "no usable shell for the tmux session — neither "
             f"{' nor '.join(_session_script.SESSION_SHELL_PREFERENCE)} was found on PATH.\n"
             "  Install one of them and retry (e.g. `sudo dnf install zsh` / `sudo apt install zsh`).",
@@ -561,6 +564,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     if not identified:
         _out.emit(
             Tag.LAUNCH,
+            "resume",
             f"Claude Code session {label} recorded pid {pid}, which is present but not running "
             f"(state {state}). The record cannot prove that process is this session, so it is left "
             f"alone -- the name is not treated as in use.",
@@ -571,6 +575,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
         _prune_dead_cc_session_record(entry)
         _out.emit(
             Tag.LAUNCH,
+            "resume",
             f"Claude Code session {label} did not exit: pid {pid} was present in state {state}, "
             f"not gone. Ended it and everything it wrapped, pruned the stale record, and resuming "
             f"this session.",
@@ -579,6 +584,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
         return True
     _out.emit(
         Tag.LAUNCH,
+        "resume",
         f"Claude Code session {label} did not exit: pid {pid} is present in state {state} and "
         f"could not be ended. Resuming the session anyway; end that process by hand with "
         f"{probe.manual_end_hint(pid)}.",
@@ -625,6 +631,7 @@ def _settle_stopped_cc_session(entry: Path, record: dict) -> bool:
     label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
     _out.emit(
         Tag.LAUNCH,
+        "resume",
         f"Claude Code session {label} was suspended (Ctrl+Z) in its own terminal, not abandoned: "
         f"resumed process group {group}. It is in use, so it was not ended.",
         err=True,
@@ -648,7 +655,9 @@ def _resume_suspended_panes(session: str) -> None:
         return
     pane_pids = [int(token) for token in listed.stdout.split() if token.isdigit()]
     for group in _suspended_session.resume_suspended_panes(pane_pids):
-        _out.emit(Tag.LAUNCH, f"'{session}' was suspended (Ctrl+Z); resumed its process group {group}.", err=True)
+        _out.emit(
+            Tag.LAUNCH, "resume", f"'{session}' was suspended (Ctrl+Z); resumed its process group {group}.", err=True
+        )
 
 
 def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple[bool, int | str | None]:
@@ -757,15 +766,16 @@ def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     current_title = _cc_transcript_current_title(candidate) or "(untitled)"
     _out.emit(
         Tag.LAUNCH,
+        "resume",
         f"Note: this worktree has one Claude Code transcript ({candidate.stem}), "
         f"but its current title is '{current_title}', not '{title}'.",
         err=True,
     )
     if not sys.stdin.isatty():
-        _out.emit(Tag.LAUNCH, "Non-interactive session — starting fresh instead of resuming it.", err=True)
+        _out.emit(Tag.LAUNCH, "resume", "Non-interactive session — starting fresh instead of resuming it.", err=True)
         return False
     try:
-        answer = _out.ask(Tag.LAUNCH, "Resume into it anyway? [y/N]", err=True)
+        answer = _out.ask(Tag.LAUNCH, "resume", "Resume into it anyway? [y/N]", err=True)
     except (EOFError, KeyboardInterrupt):
         answer = ""
     return answer.strip().lower() in ("y", "yes")
@@ -816,7 +826,7 @@ def _bare_engine_command(
         # Resume this session's own prior conversation by its exact transcript UUID.
         candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
         if len(candidates) > 1:
-            _out.emit(Tag.LAUNCH, _cc_multi_candidate_warning(ai_name, candidates), err=True)
+            _out.emit(Tag.LAUNCH, "resume", _cc_multi_candidate_warning(ai_name, candidates), err=True)
         matched = candidates[0] if candidates else None
         if matched is None:
             lone = _find_lone_mismatched_cc_session(target_root, ai_name)
@@ -991,6 +1001,7 @@ def _await_peer_update(
         return True
     _out.warning(
         Tag.UPDATE,
+        "update",
         "another `ai` process is still updating ai-cli-utils; continuing with the\n"
         "  currently-loaded version. If this command fails with an unexpected ImportError,\n"
         "  re-run it once the other update finishes.",
@@ -1194,8 +1205,9 @@ def _auto_update_if_stale(config: dict) -> bool:
     retry_wait = _update_retry_wait_remaining(fingerprint)
     if retry_wait > 0:
         _launch_reporter.active().warning(
+            "update",
             "skipping auto-update: the last attempt on this source failed, retrying in "
-            f"~{max(int(retry_wait // 60), 1)}m. Run `ai update --force` to retry now."
+            f"~{max(int(retry_wait // 60), 1)}m. Run `ai update --force` to retry now.",
         )
         return False
     # Serialize concurrent workers with an exclusive create-only lockfile.
@@ -1245,21 +1257,22 @@ def _auto_update_if_stale(config: dict) -> bool:
             self_venv = _running_uv_tool_venv()
             if self_venv is not None and not _tool_env_can_import(self_venv):
                 _launch_reporter.active().error(
+                    "update",
                     "auto-update failed AND left the installation broken — "
                     f"{self_venv} can no longer import ai_cli.\n"
                     f"  Repair it with:\n"
-                    f"    uv tool install -e {project_path} --force --reinstall"
+                    f"    uv tool install -e {project_path} --force --reinstall",
                 )
             else:
                 _launch_reporter.active().warning(
-                    "auto-update failed; the existing installation is intact and still in use."
+                    "update", "auto-update failed; the existing installation is intact and still in use."
                 )
             # Quieting the success path must never quiet a failure: with the
             # transcript captured rather than streamed, it is the only diagnostic
             # there is, so it is replayed in full here.
             captured = f"{result.stdout or ''}{result.stderr or ''}".rstrip()
             if captured:
-                _out.relay(Tag.UPDATE, captured, err=True)
+                _out.relay(Tag.UPDATE, "update", captured, err=True)
             _record_update_failure(fingerprint)
             return False
         # Do not make a failed installation look current.  The caller must re-exec
@@ -1274,10 +1287,10 @@ def _auto_update_if_stale(config: dict) -> bool:
         _clear_update_failure_record()
         summary = (result.stdout or "").strip()
         if summary:
-            _out.relay(Tag.UPDATE, summary, err=False)
+            _out.relay(Tag.UPDATE, "update", summary, err=False)
         warnings = (result.stderr or "").strip()
         if warnings:
-            _out.relay(Tag.UPDATE, warnings, err=True)
+            _out.relay(Tag.UPDATE, "update", warnings, err=True)
         return True
     finally:
         lock_path.unlink(missing_ok=True)
@@ -1302,7 +1315,7 @@ def trigger_background_update():
         # the user actually asked for (the AIH bug: bare "uv" + Popen without a shell
         # -> Windows CreateProcess raises FileNotFoundError -> `ai c 1` traceback).
         # Silent-skip would hide a permanently broken auto-updater, so warn on stderr.
-        _launch_reporter.active().warning("'uv' not found on PATH — skipping background update check.")
+        _launch_reporter.active().warning("update", "'uv' not found on PATH — skipping background update check.")
         return
     # Pass the resolved absolute path, not the bare name — see above.
     upgrade_cmd = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
@@ -1317,7 +1330,7 @@ def trigger_background_update():
         )
     except OSError as exc:
         # Same reasoning: report, never propagate, so the foreground command survives.
-        _launch_reporter.active().warning(f"background update check failed to launch: {exc}")
+        _launch_reporter.active().warning("update", f"background update check failed to launch: {exc}")
 
 
 def _pkg_version_string() -> str:
@@ -1439,6 +1452,7 @@ def _refresh_within_burst_budget() -> bool:
         _REFRESH_BURST_REPORTED_AT = now
         _out.error(
             Tag.UPDATE,
+            "refresh",
             f"live session-template refresh attempted {attempts} times in "
             f"{int(_REFRESH_BURST_WINDOW_SECS)}s (limit {_REFRESH_BURST_LIMIT}) — refusing to run. "
             "Something is driving `ai update` in a loop; find and stop the caller (AI-CLI-129).",
@@ -1471,7 +1485,7 @@ def _sync_stable_session_script(tmux_session: str) -> "bool | None":
         meta = json.loads(meta_path.read_text())
         script = _engine_script_from_meta(meta)
     except Exception as exc:
-        _out.emit(Tag.UPDATE, f"  (warning: could not regenerate {tmux_session}: {exc})", err=True)
+        _out.emit(Tag.UPDATE, "refresh", f"  (warning: could not regenerate {tmux_session}: {exc})", err=True)
         return None
     return _write_launch_script_if_changed(state_dir / "sessions" / f"{tmux_session}.sh", script)
 
@@ -1501,7 +1515,7 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
             sname
         ):
             if not quiet:
-                _out.emit(Tag.UPDATE, f"  refreshed session template: {sname}")
+                _out.emit(Tag.UPDATE, "refresh", f"  refreshed session template: {sname}")
             refreshed += 1
     return refreshed
 
@@ -1632,22 +1646,27 @@ _EMIT_TARGETS = {"terminal", "plain"}
 
 
 def _internal_emit(args: list[str]) -> int:
-    """``ai internal emit <tag> <level> <terminal|plain> <text...>``: reply with one rendered record.
+    """``ai internal emit <tag> <level> <op> <terminal|plain> <text...>``: reply with one rendered record.
 
     The generated session script prints the reply itself, so it can fall back to
     the same grammar in plain text whenever this exits non-zero or replies empty.
     ``terminal`` styles the reply unless ``NO_COLOR`` or ``TERM=dumb`` says not to.
+    ``op`` must be in the configured operation vocabulary.
     """
-    if len(args) < 4 or args[1] not in _EMIT_LEVELS or args[2] not in _EMIT_TARGETS:
-        _out.emit(Tag.INTERNAL, "Usage: ai internal emit <tag> <info|warning|error> <terminal|plain> <text>", err=True)
+    usage = "Usage: ai internal emit <tag> <info|warning|error> <operation> <terminal|plain> <text>"
+    if len(args) < 5 or args[1] not in _EMIT_LEVELS or args[3] not in _EMIT_TARGETS:
+        _out.emit(Tag.INTERNAL, "usage", usage, err=True)
         return 1
     try:
         tag = Tag(args[0])
     except ValueError:
-        _out.emit(Tag.INTERNAL, f"ai internal emit: unknown tag {args[0]!r}", err=True)
+        _out.emit(Tag.INTERNAL, "usage", f"ai internal emit: unknown tag {args[0]!r}", err=True)
         return 1
-    color = args[2] == "terminal" and _out.color_allowed()
-    record = _out.make_record(tag, " ".join(args[3:]), level=_EMIT_LEVELS[args[1]])
+    if args[2] not in _out.vocabulary():
+        _out.emit(Tag.INTERNAL, "usage", f"ai internal emit: {args[2]!r} is not in the operation vocabulary", err=True)
+        return 1
+    color = args[3] == "terminal" and _out.color_allowed()
+    record = _out.make_record(tag, " ".join(args[4:]), op=args[2], level=_EMIT_LEVELS[args[1]])
     _out.raw(Untagged.INTERNAL_REPLY, _out.render_record(record, color=color))
     return 0
 
@@ -1659,7 +1678,7 @@ def _handle_internal(argv: list[str]) -> None:
     Always calls ``sys.exit`` — never returns.
     """
     if not argv:
-        _out.emit(Tag.INTERNAL, "Usage: ai internal <action> [args...]", err=True)
+        _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
     if action == "emit":
@@ -1675,11 +1694,11 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "resolve-continue-target":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
             sys.exit(1)
         candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
         if len(candidates) > 1:
-            _out.emit(Tag.INTERNAL, _cc_multi_candidate_warning(argv[2], candidates), err=True)
+            _out.emit(Tag.INTERNAL, "resume", _cc_multi_candidate_warning(argv[2], candidates), err=True)
         matched = candidates[0] if candidates else None
         if matched is None:
             lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
@@ -1689,13 +1708,15 @@ def _handle_internal(argv: list[str]) -> None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
-                _out.emit(Tag.INTERNAL, _cc_live_session_warning(argv[2], pid), err=True)
+                _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(argv[2], pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)
     elif action == "update-session-map":
         if len(argv) < 4:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal update-session-map <engine> <ai_name> <uuid>", err=True)
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal update-session-map <engine> <ai_name> <uuid>", err=True
+            )
             sys.exit(1)
         engine, ai_name, uuid = argv[1], argv[2], argv[3]
         d = _config.get_session_map(engine)
@@ -1704,13 +1725,13 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal release-color-slot <ai_name>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal release-color-slot <ai_name>", err=True)
             sys.exit(1)
         _iterm2._release_iterm2_color_slot(argv[1])
         sys.exit(0)
     elif action == "cleanup-session-files":
         if len(argv) < 2:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal cleanup-session-files <ai_name>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal cleanup-session-files <ai_name>", err=True)
             sys.exit(1)
         from . import icon_generator as _ig_cs
 
@@ -1719,7 +1740,10 @@ def _handle_internal(argv: list[str]) -> None:
     elif action == "allocate-session-name":
         if len(argv) < 4:
             _out.emit(
-                Tag.INTERNAL, "Usage: ai internal allocate-session-name <engine> <project_prefix> <name>", err=True
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal allocate-session-name <engine> <project_prefix> <name>",
+                err=True,
             )
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
@@ -1729,7 +1753,7 @@ def _handle_internal(argv: list[str]) -> None:
                 project_prefix, _session_naming.resolve_or_prompt_host_alias()
             )
         except _session_naming.HostAliasError as exc:
-            _out.emit(Tag.INTERNAL, str(exc), err=True)
+            _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
         session_id, ai_name = _session.build_session_name(
             engine, naming_prefix, name, config, is_remote=True, use_tmux=use_tmux, legacy_prefix=project_prefix
@@ -1741,18 +1765,18 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "refresh-template":
         if len(argv) < 2:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal refresh-template <tmux_session>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal refresh-template <tmux_session>", err=True)
             sys.exit(1)
         tmux_session = argv[1]
         meta_path = _config.get_xdg_state_home() / f"session-meta-{tmux_session}.json"
         if not meta_path.exists():
-            _out.emit(Tag.INTERNAL, f"No session metadata for {tmux_session}", err=True)
+            _out.emit(Tag.INTERNAL, "refresh", f"No session metadata for {tmux_session}", err=True)
             sys.exit(1)
         try:
             meta = json.loads(meta_path.read_text())
             script = _engine_script_from_meta(meta)
         except Exception as exc:
-            _out.emit(Tag.INTERNAL, f"Failed to read session metadata: {exc}", err=True)
+            _out.emit(Tag.INTERNAL, "refresh", f"Failed to read session metadata: {exc}", err=True)
             sys.exit(1)
         import tempfile
 
@@ -1765,12 +1789,12 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "write-stable-script":
         if len(argv) < 2:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal write-stable-script <tmux_session>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal write-stable-script <tmux_session>", err=True)
             sys.exit(1)
         sys.exit(0 if _write_stable_session_script(argv[1]) else 1)
     elif action == "notify":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal notify <session_id> <message>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal notify <session_id> <message>", err=True)
             sys.exit(1)
         from .notifications import NotificationManager
 
@@ -1778,7 +1802,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "publish-event":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal publish-event <session_id> <event_type>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal publish-event <session_id> <event_type>", err=True)
             sys.exit(1)
         import asyncio
 
@@ -1792,7 +1816,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "acquire-generation-lease":
         if len(argv) != 2:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal acquire-generation-lease <file_descriptor>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal acquire-generation-lease <file_descriptor>", err=True)
             sys.exit(1)
         try:
             import portalocker
@@ -1806,13 +1830,14 @@ def _handle_internal(argv: list[str]) -> None:
             with os.fdopen(os.dup(descriptor), "a+") as lease_file:
                 portalocker.lock(lease_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
         except Exception as exc:
-            _out.emit(Tag.INTERNAL, f"generation lease unavailable: {exc}", err=True)
+            _out.emit(Tag.INTERNAL, "lease", f"generation lease unavailable: {exc}", err=True)
             sys.exit(1)
         sys.exit(0)
     elif action == "publish-heartbeat":
         if len(argv) < 3:
             _out.emit(
                 Tag.INTERNAL,
+                "usage",
                 "Usage: ai internal publish-heartbeat <session_id> <data_json> [generation_token]",
                 err=True,
             )
@@ -1824,7 +1849,7 @@ def _handle_internal(argv: list[str]) -> None:
         try:
             data = json.loads(argv[2])
         except json.JSONDecodeError as e:
-            _out.emit(Tag.INTERNAL, f"Invalid JSON: {e}", err=True)
+            _out.emit(Tag.INTERNAL, "heartbeat", f"Invalid JSON: {e}", err=True)
             sys.exit(1)
         # The wrapper supplies its generation token only after it has acquired its
         # lifetime lease.  Local persistence is deliberately independent from the
@@ -1859,14 +1884,16 @@ def _handle_internal(argv: list[str]) -> None:
                     or int(supervisor_pid) <= 0
                     or not live_supervisor
                 ):
-                    _out.emit(Tag.INTERNAL, "heartbeat ledger not written: generation_mismatch", err=True)
+                    _out.emit(Tag.INTERNAL, "heartbeat", "heartbeat ledger not written: generation_mismatch", err=True)
                 else:
                     from .stale_session_reaper import write_heartbeat
 
                     if not write_heartbeat(_config.get_xdg_state_home(), argv[1], generation_token):
-                        _out.emit(Tag.INTERNAL, "heartbeat ledger not written: heartbeat_invalid", err=True)
+                        _out.emit(
+                            Tag.INTERNAL, "heartbeat", "heartbeat ledger not written: heartbeat_invalid", err=True
+                        )
             except Exception:
-                _out.emit(Tag.INTERNAL, "heartbeat ledger not written: heartbeat_invalid", err=True)
+                _out.emit(Tag.INTERNAL, "heartbeat", "heartbeat ledger not written: heartbeat_invalid", err=True)
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
         # NATS unavailable — non-fatal
@@ -1875,7 +1902,9 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "revoke-heartbeat":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal revoke-heartbeat <session_id> <generation_token>", err=True)
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal revoke-heartbeat <session_id> <generation_token>", err=True
+            )
             sys.exit(1)
         from .stale_session_reaper import remove_heartbeat
 
@@ -1885,7 +1914,12 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "publish-session-event":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal publish-session-event <session_id> <started|stopped>", err=True)
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal publish-session-event <session_id> <started|stopped>",
+                err=True,
+            )
             sys.exit(1)
         import asyncio
 
@@ -1902,7 +1936,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "publish":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal publish <subject> <json_payload>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal publish <subject> <json_payload>", err=True)
             sys.exit(1)
         import asyncio
 
@@ -1924,7 +1958,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "set-iterm2-name":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "Usage: ai internal set-iterm2-name <tmux_session|tty> <name>", err=True)
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal set-iterm2-name <tmux_session|tty> <name>", err=True)
             sys.exit(1)
         # Resolve the physical pane by tty: accept a tty directly, or a tmux
         # session name whose live client tty we look up. tty matching renames
@@ -1937,7 +1971,10 @@ def _handle_internal(argv: list[str]) -> None:
     elif action == "open-vscode-remote":
         if len(argv) not in (3, 4):
             _out.emit(
-                Tag.INTERNAL, "Usage: ai internal open-vscode-remote <authority> <absolute_path> [line]", err=True
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal open-vscode-remote <authority> <absolute_path> [line]",
+                err=True,
             )
             sys.exit(1)
         from .vscode import open_vscode_remote
@@ -1945,11 +1982,11 @@ def _handle_internal(argv: list[str]) -> None:
         try:
             status = open_vscode_remote(argv[1], argv[2], argv[3] if len(argv) == 4 else "")
         except (OSError, ValueError) as exc:
-            _out.emit(Tag.INTERNAL, f"VS Code remote open failed: {exc}", err=True)
+            _out.emit(Tag.INTERNAL, "open", f"VS Code remote open failed: {exc}", err=True)
             sys.exit(1)
         sys.exit(status)
     else:
-        _out.emit(Tag.INTERNAL, f"Usage: ai internal <action> [args...] (unknown action: {action})", err=True)
+        _out.emit(Tag.INTERNAL, "usage", f"Usage: ai internal <action> [args...] (unknown action: {action})", err=True)
         sys.exit(1)
 
 
@@ -2272,20 +2309,22 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     """
     project_path = _find_aicli_project_path(config)
     if project_path is None:
-        _out.error(Tag.UPDATE, "could not locate ai-cli-utils source. Set [deploy] project_path in config.")
+        _out.error(Tag.UPDATE, "update", "could not locate ai-cli-utils source. Set [deploy] project_path in config.")
         sys.exit(1)
     pyproject = project_path / "pyproject.toml"
     if not pyproject.exists():
-        _out.error(Tag.UPDATE, f"pyproject.toml not found at {project_path}. Set [deploy] project_path in config.")
+        _out.error(
+            Tag.UPDATE, "update", f"pyproject.toml not found at {project_path}. Set [deploy] project_path in config."
+        )
         sys.exit(1)
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
     restored = subprocess.run(
         ["git", "checkout", "--", "pyproject.toml"], cwd=project_path, capture_output=True, text=True, check=False
     )
     if not quiet:
-        _out.relay(Tag.GIT, f"{restored.stdout or ''}{restored.stderr or ''}", err=True)
+        _out.relay(Tag.GIT, "update", f"{restored.stdout or ''}{restored.stderr or ''}", err=True)
     if not quiet:
-        _out.emit(Tag.UPDATE, "Pulling latest from origin...")
+        _out.emit(Tag.UPDATE, "update", "Pulling latest from origin...")
     # Shape B: `git pull --rebase --autostash` exits 0 even when its
     # automatic stash pop conflicted, so the exit code alone cannot be trusted
     # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
@@ -2307,6 +2346,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         detail = stranded or f"pre-existing conflict in {', '.join(sorted(_conflicted))}"
         _out.error(
             Tag.UPDATE,
+            "update",
             f"{project_path} has a conflicted index ({detail}); "
             f"git pull exited {pull.returncode}.\n"
             f"  Refusing to install from a half-applied checkout — it would ship broken or stale code.\n"
@@ -2321,6 +2361,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         # is still valid; say so rather than pretending the pull worked.
         _out.warning(
             Tag.UPDATE,
+            "update",
             f"git pull failed (exit {pull.returncode}); installing the current checkout.\n  {pull.stderr.strip()}",
         )
     # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
@@ -2335,9 +2376,9 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             except OSError:
                 pass
     if conflict_files:
-        _out.error(Tag.UPDATE, "unresolved git conflict markers found — resolve before installing:")
+        _out.error(Tag.UPDATE, "update", "unresolved git conflict markers found — resolve before installing:")
         for f in conflict_files:
-            _out.emit(Tag.UPDATE, f"  {f}", err=True)
+            _out.emit(Tag.UPDATE, "update", f"  {f}", err=True)
         sys.exit(1)
     # Read version after pull so the bump applies to the current remote state.
     #
@@ -2351,13 +2392,13 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     original = pyproject.read_bytes()
     m = re.search(rb'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
     if not m:
-        _out.error(Tag.UPDATE, "could not find version in pyproject.toml")
+        _out.error(Tag.UPDATE, "update", "could not find version in pyproject.toml")
         sys.exit(1)
     old_version = m.group(2).decode("utf-8", "replace")
     base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
     if not quiet:
-        _out.emit(Tag.UPDATE, f"Updating {old_version} → {new_version}")
+        _out.emit(Tag.UPDATE, "update", f"Updating {old_version} → {new_version}")
     uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
     exit_code = 0
     captured = ""
@@ -2380,7 +2421,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             editable_install = _install_is_editable(self_venv)
             if editable_install:
                 if not quiet:
-                    _out.emit(Tag.UPDATE, "Preserving editable install.")
+                    _out.emit(Tag.UPDATE, "update", "Preserving editable install.")
                 uv_cmd.append("-e")
             uv_cmd.append(str(project_path))
             if force_reinstall:
@@ -2400,7 +2441,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         pyproject.write_bytes(original)
     if (exit_code != 0 or not quiet) and captured.strip():
         # Quiet mode hides uv's progress, never its diagnosis.
-        _out.relay(Tag.UPDATE, captured, err=True)
+        _out.relay(Tag.UPDATE, "update", captured, err=True)
     if exit_code == 0:
         # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
         extra_venvs = config.get("update", {}).get("extra_venvs", [])
@@ -2420,10 +2461,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                     check=False,
                 )
                 if not quiet:
-                    _out.relay(Tag.UPDATE, f"{pip_result.stdout or ''}{pip_result.stderr or ''}", err=True)
+                    _out.relay(Tag.UPDATE, "update", f"{pip_result.stdout or ''}{pip_result.stderr or ''}", err=True)
                 elif pip_result.returncode != 0:
                     _out.warning(
                         Tag.UPDATE,
+                        "update",
                         f"installing into {venv_path} failed (exit {pip_result.returncode}):\n"
                         f"{(pip_result.stdout or '') + (pip_result.stderr or '')}".rstrip(),
                     )
@@ -2463,7 +2505,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         # self-update baked into newly generated templates.
         _n = _refresh_live_session_scripts(quiet=quiet)
         if _n and not quiet:
-            _out.emit(Tag.UPDATE, f"Refreshed {_n} live session template(s) — they reload on next restart.")
+            _out.emit(Tag.UPDATE, "update", f"Refreshed {_n} live session template(s) — they reload on next restart.")
         # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
         # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
         # should not be managed by ai sync or tracked in any project git repo.
@@ -2472,7 +2514,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             # The whole quiet path's output: one line, naming what is now installed
             # and why it was rebuilt.
             reason = "cache-bypassing reinstall" if force_reinstall else "fresh build"
-            _out.emit(Tag.UPDATE, f"ai-cli-utils {new_version} installed ({reason})")
+            _out.emit(Tag.UPDATE, "update", f"ai-cli-utils {new_version} installed ({reason})")
     sys.exit(exit_code)
 
 
@@ -2482,7 +2524,7 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     host = remote_cfg.get("host", "")
     user = remote_cfg.get("user", "ubuntu")
     if not host:
-        _out.error(Tag.REMOTE, "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
+        _out.error(Tag.REMOTE, "reconnect", "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
         sys.exit(1)
 
     probe = subprocess.run(
@@ -2492,19 +2534,19 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         check=False,
     )
     if probe.returncode != 0:
-        _out.error(Tag.REMOTE, "could not list remote tmux sessions")
+        _out.error(Tag.REMOTE, "reconnect", "could not list remote tmux sessions")
         sys.exit(1)
 
     remote_sessions = [s.strip() for s in probe.stdout.splitlines() if s.strip().startswith("c-r-")]
     if not remote_sessions:
-        _out.emit(Tag.REMOTE, "No remote CC sessions found on server.")
+        _out.emit(Tag.REMOTE, "reconnect", "No remote CC sessions found on server.")
         sys.exit(0)
 
     if requested:
         remote_sessions = [s for s in remote_sessions if any(s.endswith(f"-{n}") for n in requested)]
 
     if not remote_sessions:
-        _out.emit(Tag.REMOTE, f"No matching remote sessions for: {requested}")
+        _out.emit(Tag.REMOTE, "reconnect", f"No matching remote sessions for: {requested}")
         sys.exit(0)
 
     aliases = _config.get_project_aliases()
@@ -2519,7 +2561,9 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         except Exception:
             pass
 
-    _out.emit(Tag.REMOTE, f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n")
+    _out.emit(
+        Tag.REMOTE, "reconnect", f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n"
+    )
     for session_name in sorted(remote_sessions):
         parts = session_name.split("-")
         if len(parts) >= 4:
@@ -2533,16 +2577,16 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         if _transport:
             _transport_tag = f"  [{_transport} connected]"
         if project_name == proj_prefix:
-            _out.emit(Tag.REMOTE, f"  ai c {num} -R{_transport_tag}")
+            _out.emit(Tag.REMOTE, "reconnect", f"  ai c {num} -R{_transport_tag}")
         else:
-            _out.emit(Tag.REMOTE, f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
+            _out.emit(Tag.REMOTE, "reconnect", f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
     sys.exit(0)
 
 
 def _do_attach(session_name: str) -> NoReturn:
     check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
     if check.returncode != 0:
-        _out.emit(Tag.ATTACH, f"No tmux session named '{session_name}'", err=True)
+        _out.emit(Tag.ATTACH, "attach", f"No tmux session named '{session_name}'", err=True)
         sys.exit(1)
     _resume_suspended_panes(session_name)
     _exec_handoff("tmux", ["tmux", "attach-session", "-t", session_name])
@@ -2556,7 +2600,7 @@ def _do_ls(show_all: bool) -> None:
         check=False,
     )
     if res.returncode != 0:
-        _out.emit(Tag.SESSIONS, "No tmux sessions found (is tmux running?)", err=True)
+        _out.emit(Tag.SESSIONS, "list", "No tmux sessions found (is tmux running?)", err=True)
         sys.exit(0)
 
     now = int(time.time())
@@ -2578,7 +2622,7 @@ def _do_ls(show_all: bool) -> None:
         msg = (
             "No tmux sessions found." if show_all else "No ai-cli sessions found. Use --all to show all tmux sessions."
         )
-        _out.emit(Tag.SESSIONS, msg)
+        _out.emit(Tag.SESSIONS, "list", msg)
         sys.exit(0)
 
     sessions.sort(key=lambda x: x[1], reverse=True)
@@ -2636,16 +2680,16 @@ def _do_ls(show_all: bool) -> None:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
             project = _project_from_session(name)
-            _out.emit(Tag.SESSIONS, f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
-        _out.emit(Tag.SESSIONS, "\nTo attach: ai attach <name>")
-        _out.emit(Tag.SESSIONS, "Install fzf for an interactive picker.", err=True)
+            _out.emit(Tag.SESSIONS, "list", f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
+        _out.emit(Tag.SESSIONS, "list", "\nTo attach: ai attach <name>")
+        _out.emit(Tag.SESSIONS, "list", "Install fzf for an interactive picker.", err=True)
         sys.exit(0)
 
 
 def _do_color(color_arg: str) -> None:
     _ai_name_env = os.environ.get("AI_TMUX_SESSION", "")
     if not _ai_name_env:
-        _out.emit(Tag.COLOR, "not inside an ai session (AI_TMUX_SESSION not set)", err=True)
+        _out.emit(Tag.COLOR, "set", "not inside an ai session (AI_TMUX_SESSION not set)", err=True)
         sys.exit(1)
     # Resolve color arg: named palette entry or raw hex
     _iterm2_cfg_c = _iterm2._load_iterm2_config()
@@ -2655,7 +2699,7 @@ def _do_color(color_arg: str) -> None:
     elif color_arg in _palette_c:
         _new_hex = f"#{_palette_c[color_arg]}"
     else:
-        _out.emit(Tag.COLOR, f"unknown color '{color_arg}'. Use a palette name or #RRGGBB.", err=True)
+        _out.emit(Tag.COLOR, "set", f"unknown color '{color_arg}'. Use a palette name or #RRGGBB.", err=True)
         sys.exit(1)
     # Determine engine from session name convention
     _engine_c = "g" if _ai_name_env.startswith("g-") else "c"
@@ -2668,13 +2712,13 @@ def _do_color(color_arg: str) -> None:
         _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
         _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
     except Exception as e:
-        _out.emit(Tag.COLOR, f"icon generation failed: {e}", err=True)
+        _out.emit(Tag.COLOR, "set", f"icon generation failed: {e}", err=True)
     _color_no_hash_c = _new_hex.lstrip("#")
     _profile_name_c = f"ai-cli:{_ai_name_env}"
     _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetProfile={_profile_name_c}\007", nl=False)
     _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetColors=tab={_color_no_hash_c}\007", nl=False)
     sys.stdout.flush()
-    _out.emit(Tag.COLOR, f"Color updated to {_new_hex}")
+    _out.emit(Tag.COLOR, "set", f"Color updated to {_new_hex}")
     sys.exit(0)
 
 
@@ -2721,7 +2765,7 @@ def _print_launch_plan(
     ]
     if extra_args:
         lines.append(f"  engine args {' '.join(extra_args)}")
-    _out.emit(Tag.PLAN, "\n".join(lines))
+    _out.emit(Tag.PLAN, "plan", "\n".join(lines))
 
 
 def _print_remote_launch_plan(
@@ -2774,7 +2818,7 @@ def _print_remote_launch_plan(
             "attach to its running chief, resume a registered chief that has stopped, or register a new one "
             "under its own host alias; a different running chief is refused",
         )
-    _out.emit(Tag.PLAN, "\n".join(lines))
+    _out.emit(Tag.PLAN, "plan", "\n".join(lines))
 
 
 def _resolve_remote_project(project: str, config: dict) -> tuple[str, str]:
@@ -2808,12 +2852,13 @@ def _exit_missing_project_dir(project_name: str, project_dir: Path, source: str,
     """
     host = _config.detect_machine_profile()["host_id"]
     _launch_reporter.active().error(
+        "remote",
         f"the project directory for this session does not exist on {host}.\n"
         f"  project: {project_name} (from {source})\n"
         f"  expected at: {project_dir}\n"
         f"  Fix: check out the repository at that path on {host}, or relaunch naming a project "
         "that exists there:\n"
-        f"    {relaunch}"
+        f"    {relaunch}",
     )
     sys.exit(1)
 
@@ -2849,10 +2894,10 @@ def _track_launch(
             kind=kind, name=session_name, relaunch_argv=_relaunch_argv(name, session_name), remote=remote
         )
     except Exception as exc:
-        reporter.warning(f"iTerm2 session registry not updated ({exc}); launching anyway")
+        reporter.warning("terminal", f"iTerm2 session registry not updated ({exc}); launching anyway")
         return None
     if outcome.warning:
-        reporter.warning(f"iTerm2 session registry: {outcome.warning}")
+        reporter.warning("terminal", f"iTerm2 session registry: {outcome.warning}")
     return outcome.record_id
 
 
@@ -2860,7 +2905,7 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
     try:
         _session_registry.mark_ended(record_id)
     except Exception as exc:
-        reporter.warning(f"iTerm2 session registry not updated after a clean exit ({exc})")
+        reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
 def _do_session_launch(
@@ -2965,7 +3010,7 @@ def _do_session_launch(
             remote_cfg = _config.get_remote_machine(config, remote_machine)
             remote_alias = _config.resolve_remote_machine_alias(config, remote_machine)
         except _config.RemoteMachineError as exc:
-            reporter.error(str(exc))
+            reporter.error("request", str(exc))
             sys.exit(1)
 
     # Discovery is useful when creating an unqualified session, but a named
@@ -2983,20 +3028,20 @@ def _do_session_launch(
         try:
             project_prefix = _config.validate_task_prefix(project_prefix_override)
         except _config.ProjectPrefixError as exc:
-            reporter.error(str(exc))
+            reporter.error("request", str(exc))
             sys.exit(1)
     elif project:
         # An explicit project always derives its prefix from that project's
         # registered root, whether the session is local or remote.
         if "/" in project or "\\" in project:
-            reporter.error("--project name must not contain path separators")
+            reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
         _lp_aliases = _config.get_project_aliases()
         _lp_name = _lp_aliases.get(project, project)
         try:
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
-            reporter.error(str(exc))
+            reporter.error("request", str(exc))
             sys.exit(1)
     else:
         # No explicit project and no prefix override: the prefix would be derived
@@ -3006,16 +3051,17 @@ def _do_session_launch(
         # "myproject"/cwd-derived fallback). Escape hatch: pass -p <project>.
         if not is_remote and not _session.is_current_project_resolved():
             reporter.error(
+                "request",
                 "no task prefix is registered for this repository.\n"
                 f"  cwd: {Path.cwd()}\n"
                 "  Fix: register the repository once, then retry:\n"
-                f"    ai register -p {Path.cwd()} -x PREFIX"
+                f"    ai register -p {Path.cwd()} -x PREFIX",
             )
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
         except _config.ProjectPrefixError as exc:
-            reporter.error(str(exc))
+            reporter.error("request", str(exc))
             sys.exit(1)
     # Now that the inputs are known good, resolve whether tmux can actually host
     # this session. The question is whether tmux RUNS, not whether it is on PATH:
@@ -3114,7 +3160,7 @@ def _do_session_launch(
             auto_installed=tmux_auto_installed,
         ):
             if _tmux_phase == "Warning":
-                reporter.warning(_tmux_outcome)
+                reporter.warning("tmux", _tmux_outcome)
             else:
                 reporter.phase(_tmux_phase).outcome(_tmux_outcome)
 
@@ -3139,6 +3185,7 @@ def _do_session_launch(
         # incident.
         if _tmux_report.versions_disagree:
             reporter.error(
+                "tmux",
                 "tmux client is "
                 f"{_tmux_report.client_version} but the running server is "
                 f"{_tmux_report.server_version}.\n"
@@ -3150,7 +3197,7 @@ def _do_session_launch(
                 "exits, so either:\n"
                 "    - exit every session on the running server, then relaunch "
                 "(it restarts at the client's version), or\n"
-                "    - launch with -b/--bare, which uses no tmux at all."
+                "    - launch with -b/--bare, which uses no tmux at all.",
             )
             sys.exit(1)
 
@@ -3186,12 +3233,12 @@ def _do_session_launch(
             config=config,
         )
         if compact_transport.must_refuse:
-            reporter.error(_compact_transport.refusal_message(compact_transport))
+            reporter.error("compact", _compact_transport.refusal_message(compact_transport))
             sys.exit(1)
         if compact_transport.platform_limited:
-            reporter.warning(_compact_transport.advisory_message(compact_transport))
+            reporter.warning("compact", _compact_transport.advisory_message(compact_transport))
         else:
-            reporter.detail("Compact transport", compact_transport.detail)
+            reporter.detail("compact", compact_transport.detail)
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
@@ -3202,10 +3249,10 @@ def _do_session_launch(
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
-        reporter.error("pi executable not found on PATH. Install pi, then retry.")
+        reporter.error("request", "pi executable not found on PATH. Install pi, then retry.")
         sys.exit(1)
     if engine == "cx" and not shutil.which("codex"):
-        reporter.error("codex executable not found on PATH. Install Codex, then retry.")
+        reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
 
     if not name and extra_args:
@@ -3220,10 +3267,11 @@ def _do_session_launch(
             # Most often this is the command typed on the wrong machine (on the remote
             # itself, which has no remote of its own), so say where it ran and both ways out.
             reporter.error(
+                "remote",
                 "[remote] host not set in ~/.config/ai-cli-utils/config.toml.\n"
                 f"  -R launches the session on the configured remote host, and this machine "
                 f"({socket.gethostname()}) has none.\n"
-                "  To launch here, drop -R. To launch on the remote, run the command from the client machine."
+                "  To launch here, drop -R. To launch on the remote, run the command from the client machine.",
             )
             sys.exit(1)
         user = remote_cfg.get("user", "ubuntu")
@@ -3233,7 +3281,7 @@ def _do_session_launch(
         aliases = _config.get_project_aliases()
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
-            reporter.error("--project name must not contain path separators")
+            reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
@@ -3241,7 +3289,7 @@ def _do_session_launch(
             try:
                 remote_prefix = _config.resolve_project_prefix_by_name(remote_project)
             except _config.ProjectPrefixError as exc:
-                reporter.error(str(exc))
+                reporter.error("request", str(exc))
                 sys.exit(1)
         else:
             remote_prefix = project_prefix
@@ -3313,13 +3361,13 @@ def _do_session_launch(
             preflight_ssh_args += ["-i", identity_file]
         ssh_args.append(f"{user}@{vpn_host}")
         preflight_ssh_args.append(f"{user}@{vpn_host}")
-        with reporter.phase("Remote", "probing configured host") as _remote_phase:
+        with reporter.phase("remote", "probing configured host") as _remote_phase:
             remote_shell = _resolve_remote_shell(preflight_ssh_args)
             _remote_phase.outcome("host ready")
         # A write, unlike the read-only shell probe above it -- it runs `ai
         # update` on the remote host. Unconditional here because the remote
         # dry-run exit above already returned before this line is ever reached.
-        with reporter.phase("Update", "syncing remote ai-cli-utils") as _update_phase:
+        with reporter.phase("update", "syncing remote ai-cli-utils") as _update_phase:
             _remote_update_ok, _remote_update_detail = _update_remote_ai_cli(preflight_ssh_args, remote_shell)
             _update_phase.outcome(_remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})")
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
@@ -3350,15 +3398,15 @@ def _do_session_launch(
             _chief_of_staff.chief_slot(name)
         )
         if chief_unnumbered:
-            reporter.phase("Session").outcome(f"{name} (the remote host selects its chief)")
+            reporter.phase("session").outcome(f"{name} (the remote host selects its chief)")
         else:
-            with reporter.phase("Session", "allocating remote session") as _session_phase:
+            with reporter.phase("session", "allocating remote session") as _session_phase:
                 try:
                     remote_session_id, _ = _request_remote_session_allocation(
                         preflight_ssh_args, engine, remote_prefix, name, remote_shell
                     )
                 except RuntimeError as exc:
-                    reporter.error(str(exc))
+                    reporter.error("session", str(exc))
                     sys.exit(1)
                 _session_phase.outcome(f"resolved {remote_session_id}")
         if remote_session_id:
@@ -3419,7 +3467,7 @@ def _do_session_launch(
         mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
         if transport == "mosh":
-            reporter.phase("Transport").outcome("mosh selected")
+            reporter.phase("transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
@@ -3444,9 +3492,9 @@ def _do_session_launch(
         else:
             # Pure SSH transport — no VPN switching.
             if sys.platform == "win32":
-                reporter.error("remote SSH transport is not supported on Windows")
+                reporter.error("transport", "remote SSH transport is not supported on Windows")
                 sys.exit(1)
-            reporter.phase("Transport").outcome("SSH selected")
+            reporter.phase("transport").outcome("SSH selected")
             _record_id = _track_launch(
                 reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
             )
@@ -3520,7 +3568,7 @@ def _do_session_launch(
             project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
         )
     except _session_naming.HostAliasError as exc:
-        reporter.error(str(exc))
+        reporter.error("session", str(exc))
         sys.exit(1)
     prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
 
@@ -3536,7 +3584,7 @@ def _do_session_launch(
                 legacy_prefix=project_prefix,
             )
         except _session.SessionSlotAmbiguityError as exc:
-            reporter.error(str(exc))
+            reporter.error("session", str(exc))
             sys.exit(1)
         _print_launch_plan(
             engine=engine,
@@ -3582,8 +3630,9 @@ def _do_session_launch(
             session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
         if not session:
             reporter.error(
+                "resume",
                 f"no running session to resume: '{_session.session_name_for(prefix, name) if name else prefix + '*'}' "
-                "is not a tmux session on this host; drop -r/--resume to start it"
+                "is not a tmux session on this host; drop -r/--resume to start it",
             )
             sys.exit(1)
         if not is_remote:
@@ -3603,9 +3652,9 @@ def _do_session_launch(
             engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=project_prefix
         )
     except _session.SessionSlotAmbiguityError as exc:
-        reporter.error(str(exc))
+        reporter.error("session", str(exc))
         sys.exit(1)
-    reporter.phase("Session").outcome(f"resolved {ai_name}")
+    reporter.phase("session").outcome(f"resolved {ai_name}")
 
     # Worktree setup
     worktree_path = None
@@ -3618,17 +3667,18 @@ def _do_session_launch(
         _repair_root = _session.detect_repo_root()
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
-        with reporter.phase("Worktree", "creating isolated worktree") as _worktree_phase:
+        with reporter.phase("worktree", "creating isolated worktree") as _worktree_phase:
             try:
                 worktree_result = _session.create_worktree(ai_name, with_status=True)
             except RuntimeError as exc:
                 reporter.error(
+                    "worktree",
                     # Deliberately does NOT offer -W/--no-worktree as the way out: it
                     # launches in the repository root, which is the exact outcome this
                     # message is refusing, so advertising it here talks the user into
                     # breaking session isolation to escape a message about isolation.
                     f"could not create or reuse the isolated session worktree; refusing to launch in the "
-                    f"repository root. {exc} Re-run once the git worktree error above is resolved."
+                    f"repository root. {exc} Re-run once the git worktree error above is resolved.",
                 )
                 sys.exit(1)
             if isinstance(worktree_result, tuple):
@@ -3638,10 +3688,11 @@ def _do_session_launch(
                 worktree_path, worktree_created = worktree_result, False
             if not worktree_path:
                 reporter.error(
+                    "worktree",
                     # Same reasoning as the RuntimeError branch above: -W/--no-worktree
                     # is not the escape hatch from a refusal to use the repository root.
                     "could not create or reuse the isolated session worktree; refusing to launch in the "
-                    "repository root. Re-run once the git worktree error above is resolved."
+                    "repository root. Re-run once the git worktree error above is resolved.",
                 )
                 sys.exit(1)
             # The opt-out is named on creation only: a directory appearing under
@@ -3658,9 +3709,9 @@ def _do_session_launch(
                 worktree_path, engine=engine, session_name=session_id
             )
         except CanonicalWorktreeRegistryError as exc:
-            reporter.error(f"{exc}; refusing to launch an unprotected canonical session worktree.")
+            reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
             sys.exit(1)
-        reporter.detail("Worktree", f"canonical registry {registry_action}: {registry_path}")
+        reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
@@ -3686,7 +3737,7 @@ def _do_session_launch(
                     env=_git_env(),
                     check=False,
                 )
-                reporter.phase("Worktree").outcome(
+                reporter.phase("worktree").outcome(
                     f"index corruption auto-healed in {worktree_path.name} "
                     f"({len(_deleted.stdout.strip().splitlines())} staged deletions reset to HEAD)"
                 )
@@ -3695,7 +3746,7 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
-            with reporter.phase("Worktree", "synchronizing") as _sync_phase:
+            with reporter.phase("worktree", "synchronizing") as _sync_phase:
                 pull, stranded = pull_rebase_autostash(worktree_path)
                 if pull.returncode != 0 and not stranded and not _conflicted_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
@@ -3723,15 +3774,17 @@ def _do_session_launch(
                     _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
                     _detail = f" Last git error: {_reason[-1]}" if _reason else ""
                     reporter.warning(
+                        "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
                         f"(exit {pull.returncode}) — starting the session on the branch as-is "
-                        f"(it may be behind main). Index restored to HEAD.{_detail}"
+                        f"(it may be behind main). Index restored to HEAD.{_detail}",
                     )
                 elif pull.returncode != 0 and not stranded:
                     reporter.warning(
+                        "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
                         f"(exit {pull.returncode}). Left as-is — this worktree already had "
-                        f"a conflict in progress and nothing here will discard it."
+                        f"a conflict in progress and nothing here will discard it.",
                     )
                 if stranded:
                     # Refuse the launch. Dropping an agent into a worktree whose index
@@ -3739,12 +3792,13 @@ def _do_session_launch(
                     # across six worktrees. Nothing is auto-repaired: the user's work is
                     # in the stash and only they can say how to reconcile it.
                     reporter.error(
+                        "worktree",
                         f"syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
                         f"  `git pull --rebase --autostash` exited {pull.returncode} but did not finish cleanly.\n"
                         f"  Refusing to launch a session into a conflicted worktree.\n"
                         f"  Nothing was discarded. Inspect, then resolve:\n"
                         f"    git -C {worktree_path} status\n"
-                        f"    git -C {worktree_path} stash list"
+                        f"    git -C {worktree_path} stash list",
                     )
                     sys.exit(1)
                 # Repair backstop again after this launch's git work.
@@ -3758,10 +3812,11 @@ def _do_session_launch(
                 _missing_symlinks = detect_missing_tracked_symlinks(worktree_path)
                 if _missing_symlinks:
                     reporter.warning(
+                        "worktree",
                         f"{worktree_path.name} is missing {len(_missing_symlinks)} tracked "
                         f"symlink(s) present in HEAD (checkout dropped them silently) — "
                         f"e.g. {_missing_symlinks[0]}. Restore with "
-                        f"`git -C {worktree_path} checkout -- <path>`."
+                        f"`git -C {worktree_path} checkout -- <path>`.",
                     )
                 # Shape C: a tracked REGULAR file the index still holds but that
                 # is gone from disk. Neither check above can see it — there is no stranded
@@ -3772,11 +3827,12 @@ def _do_session_launch(
                 _phantom = detect_phantom_deleted_files(worktree_path)
                 if _phantom:
                     reporter.warning(
+                        "worktree",
                         f"{worktree_path.name} is missing {len(_phantom)} tracked "
                         f"file(s) that the index still holds — e.g. {_phantom[0]}. "
                         f"Committing now would delete content that is still live on the "
                         f"remote. Restore with "
-                        f"`git -C {worktree_path} checkout -- <path>` before committing."
+                        f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     )
                 _sync_phase.outcome("ready")
 
@@ -3802,7 +3858,7 @@ def _do_session_launch(
         try:
             os.chdir(target_root)
         except OSError as exc:
-            reporter.error(f"cannot enter session directory {target_root}: {exc}")
+            reporter.error("session", f"cannot enter session directory {target_root}: {exc}")
             sys.exit(1)
         if engine == "c":
             # Pin the task-list namespace to ai_name, matching the tmux session
@@ -3834,10 +3890,11 @@ def _do_session_launch(
             else:
                 pid_detail = f" (pid {exc.pid})" if exc.pid is not None else ""
                 reporter.error(
+                    "resume",
                     f"session '{exc.title}' is still running{pid_detail}; bare mode cannot reattach "
                     f"to {exc.transcript}.\n"
                     "Launch aborted to avoid starting a duplicate Claude Code process. "
-                    "Return to the terminal running the existing session."
+                    "Return to the terminal running the existing session.",
                 )
                 sys.exit(1)
         else:
@@ -3982,10 +4039,12 @@ def _do_session_launch(
     if existing.returncode == 0 and sandbox:
         identity = _tmux_ownership.capture_tmux_session_identity(session_id)
         if identity is None:
-            reporter.error(f"tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it")
+            reporter.error(
+                "tmux", f"tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it"
+            )
             sys.exit(1)
         if not _tmux_ownership.kill_owned_tmux_session(identity):
-            reporter.error(f"tmux session '{session_id}' changed before replacement; refusing to kill it")
+            reporter.error("tmux", f"tmux session '{session_id}' changed before replacement; refusing to kill it")
             sys.exit(1)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     if existing.returncode == 0:
@@ -4082,7 +4141,8 @@ def _do_session_launch(
                 stderr2 = _decode_tmux_stderr(raw2).strip()
                 Path(_script_path).unlink()
                 reporter.error(
-                    f"failed to create tmux session '{session_id}'\n  (with --): {stderr}\n  (without --): {stderr2}"
+                    "tmux",
+                    f"failed to create tmux session '{session_id}'\n  (with --): {stderr}\n  (without --): {stderr2}",
                 )
                 sys.exit(1)
             result = result2
@@ -4116,7 +4176,7 @@ def _do_session_launch(
             _ownership_lines.append(
                 f"  A session named '{session_id}' may remain; remove it with: tmux kill-session -t {session_id}"
             )
-            reporter.error("\n".join(_ownership_lines))
+            reporter.error("tmux", "\n".join(_ownership_lines))
             sys.exit(1)
         generation = secrets.token_urlsafe(32)
         marked = subprocess.run(
@@ -4126,12 +4186,12 @@ def _do_session_launch(
         )
         if marked.returncode != 0:
             Path(_script_path).unlink(missing_ok=True)
-            reporter.error(f"failed to establish ownership of tmux session '{session_id}'")
+            reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
         identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
         if identity is None:
             Path(_script_path).unlink(missing_ok=True)
-            reporter.error(f"failed to establish ownership of tmux session '{session_id}'")
+            reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
         tmux_options = (
@@ -4144,7 +4204,7 @@ def _do_session_launch(
             if configured.returncode != 0:
                 _tmux_ownership.kill_owned_tmux_session(identity)
                 Path(_script_path).unlink(missing_ok=True)
-                reporter.error(f"failed to configure tmux session '{session_id}'")
+                reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(identity.session_id)
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
@@ -4205,7 +4265,7 @@ def _session_command(engine: str):
                 continuing=os.environ.pop(_LAUNCH_REEXEC_ENV, "") == "1",
             )
             config = _config.load_config()
-            reporter.detail("Request", "configuration loaded")
+            reporter.detail("request", "configuration loaded")
             # A dry run must not reinstall this CLI or start a tunnel either. Both
             # sit above _do_session_launch, so its own dry-run exit cannot cover
             # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
@@ -4213,7 +4273,7 @@ def _session_command(engine: str):
             if not dry_run:
                 _ensure_dolt_server()
                 trigger_background_update()
-                with reporter.phase("Install", "checking installed version") as install_phase:
+                with reporter.phase("install", "checking installed version") as install_phase:
                     origin = _launch_install_origin()
                     client = _sync_launch_client(config, origin) if remote else None
                     reexec = _auto_update_if_stale(config) is True
@@ -4222,10 +4282,11 @@ def _session_command(engine: str):
                     install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
                 if client is not None and client.check.state is ClientState.BEHIND:
                     reporter.warning(
+                        "install",
                         f"this machine's ai-cli-utils checkout {client.checkout} is {client.check.behind} "
                         f"commit(s) behind origin/main and was NOT updated: {client.check.reason}.\n"
                         f"  The launch continues on the older client. Fix it, then re-run the launch:\n"
-                        f"    {client.check.fix}"
+                        f"    {client.check.fix}",
                     )
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
@@ -4399,6 +4460,7 @@ def _running_chief(registration: dict | None, naming_prefix: str) -> "tuple[str,
     if len(found) > 1:
         _out.error(
             Tag.COS,
+            "start",
             "several chief-of-staff tmux sessions are running and none is registered "
             f"({', '.join(name for _agent, name in found)}); there is one chief per machine. "
             "Attach to the one to keep with `ai attach <session>` and end the others.",
@@ -4464,13 +4526,13 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         _chief_of_staff.validate_chief_home(home)
         existing = _chief_of_staff.read_registration(home)
     except _chief_of_staff.ChiefOfStaffError as exc:
-        _out.error(Tag.COS, f"{exc}")
+        _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
     config = _config.load_config()
     try:
         prefix = options.get("project_prefix") or _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
     except _config.ProjectPrefixError as exc:
-        _out.error(Tag.COS, f"{exc}")
+        _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
     is_remote = _session._resolve_is_remote(options.get("is_remote", False))
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
@@ -4478,7 +4540,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     try:
         naming_prefix = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
     except _session_naming.HostAliasError as exc:
-        _out.error(Tag.COS, f"{exc}")
+        _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
 
     def register(ai_name: str, tmux_target: str) -> None:
@@ -4494,7 +4556,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             machine_name=_config.detect_machine_profile()["host_id"],
             launch_cwd=str(Path.cwd()),
         )
-        _out.emit(Tag.COS, f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
+        _out.emit(Tag.COS, "register", f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
 
     requested_slot = _chief_of_staff.chief_slot(session_name)
     running = _running_chief(existing, naming_prefix)
@@ -4507,6 +4569,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         if not _chief_of_staff.same_chief(requested_slot, running_slot):
             _out.error(
                 Tag.COS,
+                "start",
                 f"a chief-of-staff is already running on this machine (agent {agent!r}, tmux session {target!r}) "
                 f"and {requested_slot} is not it; there is one chief per machine. Attach to it with "
                 f"`ai c {running_slot}` (from another machine: `ai c {running_slot} -R -p {_chief_project_alias()}`) "
@@ -4517,6 +4580,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             if dry_run:
                 _out.emit(
                     Tag.PLAN,
+                    "plan",
                     "\n".join(
                         [
                             "dry run -- nothing was created, started, or reaped.",
@@ -4530,10 +4594,13 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
                 sys.exit(0)
             if not registered:
                 register(agent, target)
-            _out.emit(Tag.COS, f"attaching to the running chief-of-staff {agent} (tmux session {target})", err=True)
+            _out.emit(
+                Tag.COS, "attach", f"attaching to the running chief-of-staff {agent} (tmux session {target})", err=True
+            )
             _do_attach(target)
         _out.emit(
             Tag.COS,
+            "attach",
             f"chief-of-staff {agent} is in tmux session {target} but its process has exited; "
             f"resuming it as {running_slot} (its worktree and conversation)",
             err=True,
@@ -4548,6 +4615,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         if _chief_of_staff.same_chief(requested_slot, registered_slot):
             _out.emit(
                 Tag.COS,
+                "start",
                 f"chief-of-staff {existing.get('native_agent_name')} is registered but not running; "
                 f"resuming it as {registered_slot} (its worktree and conversation)",
                 err=True,
@@ -4565,7 +4633,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
         )
     except _session.SessionSlotAmbiguityError as exc:
-        _out.error(Tag.COS, f"{exc}")
+        _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
 
     if resuming and resumed_name != ai_name:
@@ -4577,6 +4645,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             end_first = f"end its tmux session (`tmux kill-session -t ={running[1]}`), then " if running else ""
             _out.error(
                 Tag.COS,
+                "start",
                 f"chief-of-staff {resumed_name} is recorded under a name this host no longer gives it "
                 f"({ai_name}); relaunching would start a new conversation and leave its worktree behind. "
                 f"On {_config.detect_machine_profile()['host_id']}, {end_first}move it with "
@@ -4592,6 +4661,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         if _chief_has_saved_session(engine, ai_name):
             _out.emit(
                 Tag.COS,
+                "resume",
                 f"chief-of-staff {ai_name} is not running; resuming its saved session as {requested_slot}",
                 err=True,
             )
@@ -4600,6 +4670,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             slot = _chief_of_staff.chief_slot(ai_name)
             _out.error(
                 Tag.COS,
+                "resume",
                 f"no resumable chief session for {ai_name} on {_config.detect_machine_profile()['host_id']}: "
                 "nothing running, and no saved session to resume; start one with "
                 f"`ai c {slot}` (from another machine: `ai c {slot} -R -p {_chief_project_alias()}`).",
@@ -4740,11 +4811,12 @@ _cli_group.add_command(cmd_cos, name="fm")
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
 def cmd_upgrade():
-    _out.emit(Tag.UPDATE, "Upgrading ai-cli-utils...", err=True)
+    _out.emit(Tag.UPDATE, "update", "Upgrading ai-cli-utils...", err=True)
     uv_bin = shutil.which("uv")
     if not uv_bin:
         _out.emit(
             Tag.UPDATE,
+            "update",
             "Cannot find 'uv' on PATH — unable to upgrade. Install uv, or add its\n"
             "directory to PATH, then re-run 'ai upgrade'.",
             err=True,
@@ -4769,7 +4841,7 @@ def cmd_register(project, prefix, project_type):
         root = _config.register_project(project, prefix, project_type)
     except _config.ProjectPrefixError as exc:
         raise click.ClickException(str(exc)) from exc
-    _out.emit(Tag.REGISTER, f"Registered {root} with prefix {prefix}")
+    _out.emit(Tag.REGISTER, "register", f"Registered {root} with prefix {prefix}")
 
 
 @_cli_group.command("setup", help="Run interactive setup wizard")
@@ -4837,18 +4909,22 @@ def cmd_doctor(dry_run):
         ("tmux", tmux_ok, tmux_note),
         ("zsh", _zsh.installed, zsh_note),
     ):
-        _out.emit(Tag.DOCTOR, f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
+        _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 
     if _direnv_setup.is_bypassed(config):
-        _out.emit(Tag.DOCTOR, f"  SKIP  direnv    bypassed via {_direnv_setup.BYPASS_ENV} or [direnv] enabled = false")
+        _out.emit(
+            Tag.DOCTOR,
+            "check",
+            f"  SKIP  direnv    bypassed via {_direnv_setup.BYPASS_ENV} or [direnv] enabled = false",
+        )
         return
 
     envrc = _direnv_setup.find_envrc(root)
     result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run)
     if result.installed:
-        _out.emit(Tag.DOCTOR, f"  OK    direnv    {result.detail or result.tool or 'usable'}")
+        _out.emit(Tag.DOCTOR, "check", f"  OK    direnv    {result.detail or result.tool or 'usable'}")
         return
-    _out.emit(Tag.DOCTOR, f"  MISS  direnv    {envrc} will not load", err=True)
+    _out.emit(Tag.DOCTOR, "check", f"  MISS  direnv    {envrc} will not load", err=True)
     raise SystemExit(1)
 
 
@@ -5001,8 +5077,8 @@ def cmd_notifications_list():
 
     notifier = Notifier()
     channels = notifier.list_channels()
-    _out.emit(Tag.NOTIFY, f"{'Channel':<10} {'Enabled':<10} {'Credentials'}")
-    _out.emit(Tag.NOTIFY, "-" * 55)
+    _out.emit(Tag.NOTIFY, "list", f"{'Channel':<10} {'Enabled':<10} {'Credentials'}")
+    _out.emit(Tag.NOTIFY, "list", "-" * 55)
     for ch in channels:
         enabled_str = "yes" if ch["enabled"] else "no"
         creds_str = (
@@ -5010,7 +5086,7 @@ def cmd_notifications_list():
             if ch["credentials"]
             else "(no credentials needed)"
         )
-        _out.emit(Tag.NOTIFY, f"{ch['name']:<10} {enabled_str:<10} {creds_str}")
+        _out.emit(Tag.NOTIFY, "list", f"{ch['name']:<10} {enabled_str:<10} {creds_str}")
     sys.exit(0)
 
 
@@ -5033,17 +5109,17 @@ def cmd_notifications_log(last, since, from_date, to_date, source, failed):
         failed_only=failed,
     )
     if not rows:
-        _out.emit(Tag.NOTIFY, "No notifications found.")
+        _out.emit(Tag.NOTIFY, "list", "No notifications found.")
         sys.exit(0)
-    _out.emit(Tag.NOTIFY, f"{'Time':<22} {'Source':<14} {'Title':<36} {'Channels'}")
-    _out.emit(Tag.NOTIFY, "-" * 90)
+    _out.emit(Tag.NOTIFY, "list", f"{'Time':<22} {'Source':<14} {'Title':<36} {'Channels'}")
+    _out.emit(Tag.NOTIFY, "list", "-" * 90)
     for row in rows:
         time_str = row["fired_at"][:19].replace("T", " ")
         succeeded = row.get("channels_succeeded", [])
         channels_str = " ".join(f"{ch}✓" if ch in succeeded else f"{ch}✗" for ch in row.get("channels_attempted", []))
         title_val = row["title"]
         title_trunc = title_val[:33] + "..." if len(title_val) > 36 else title_val
-        _out.emit(Tag.NOTIFY, f"{time_str:<22} {row.get('source', ''):<14} {title_trunc:<36} {channels_str}")
+        _out.emit(Tag.NOTIFY, "list", f"{time_str:<22} {row.get('source', ''):<14} {title_trunc:<36} {channels_str}")
     sys.exit(0)
 
 
@@ -5090,7 +5166,7 @@ def cmd_cc_usage_push(dry_run):
     config = _config.load_config()
     result = scan_and_push(config=config, dry_run=dry_run)
     if result.error:
-        _out.error(Tag.USAGE, f"{result.error}")
+        _out.error(Tag.USAGE, "push", f"{result.error}")
         if result.error_kind == "config":
             sys.exit(EX_CONFIG)
         if result.error_kind == "transient":
@@ -5098,11 +5174,14 @@ def cmd_cc_usage_push(dry_run):
         sys.exit(1)
     if dry_run:
         _out.emit(
-            Tag.USAGE, f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)"
+            Tag.USAGE,
+            "push",
+            f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)",
         )
     else:
         _out.emit(
             Tag.USAGE,
+            "push",
             f"Pushed {result.inserted} new events, {result.skipped} skipped "
             f"({result.scanned_sessions} sessions scanned)",
         )
@@ -5114,8 +5193,8 @@ def cmd_cc_usage_status():
     from .cc_usage import get_cursor_summary
 
     summary = get_cursor_summary()
-    _out.emit(Tag.USAGE, f"Sessions tracked: {summary['sessions_tracked']}")
-    _out.emit(Tag.USAGE, f"Last push:        {summary['last_push'] or 'never'}")
+    _out.emit(Tag.USAGE, "status", f"Sessions tracked: {summary['sessions_tracked']}")
+    _out.emit(Tag.USAGE, "status", f"Last push:        {summary['last_push'] or 'never'}")
     sys.exit(0)
 
 
@@ -5241,16 +5320,16 @@ def _adopt_sessions(dry_run: bool) -> None:
     except (_iterm2.PersistenceConfigError, _session_registry.RegistryError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     for note in outcome.notes:
-        _out.emit(Tag.SESSIONS, note)
+        _out.emit(Tag.SESSIONS, "adopt", note)
     for line in outcome.lines:
-        _out.emit(Tag.SESSIONS, _describe_adopt_line(line, dry_run))
+        _out.emit(Tag.SESSIONS, "adopt", _describe_adopt_line(line, dry_run))
     adopted = outcome.count("adopted")
     counts = (
         f"{adopted} to adopt" if dry_run else f"{adopted} adopted",
         f"{outcome.count('already recorded')} already recorded",
         f"{outcome.count('skipped')} skipped",
     )
-    _out.emit(Tag.SESSIONS, ", ".join(counts) + (" (dry run: registry not written)" if dry_run else ""))
+    _out.emit(Tag.SESSIONS, "adopt", ", ".join(counts) + (" (dry run: registry not written)" if dry_run else ""))
 
 
 def _record_session_exit(name: str | None, cause: str | None, evidence: str | None, *, combined: bool) -> None:
@@ -5273,7 +5352,7 @@ def _record_session_exit(name: str | None, cause: str | None, evidence: str | No
     if not marked:
         raise click.ClickException(f"no recorded session named {name} in {_session_registry.registry_path()}")
     for record in marked:
-        _out.emit(Tag.SESSIONS, f"{record.get('name')}: exit recorded (cause={cause})")
+        _out.emit(Tag.SESSIONS, "exit", f"{record.get('name')}: exit recorded (cause={cause})")
 
 
 @cmd_iterm2_group.command("sessions", help="List the sessions recorded for iTerm2 restore; prune or refresh them")
@@ -5334,11 +5413,11 @@ def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run, r
                 probe_remote=probe_remote, remote_config=_config.load_config() if probe_remote else None
             )
             for record, reason in removed:
-                _out.emit(Tag.SESSIONS, f"removed {record.get('name')} ({reason})", err=as_json)
+                _out.emit(Tag.SESSIONS, "prune", f"removed {record.get('name')} ({reason})", err=as_json)
             if not removed:
-                _out.emit(Tag.SESSIONS, "nothing to prune", err=as_json)
+                _out.emit(Tag.SESSIONS, "prune", "nothing to prune", err=as_json)
         if refresh:
-            _out.emit(Tag.SESSIONS, _session_registry.refresh().summary(), err=as_json)
+            _out.emit(Tag.SESSIONS, "refresh", _session_registry.refresh().summary(), err=as_json)
         doc = _session_registry.load_registry()
     except (_session_registry.RegistryError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -5346,9 +5425,9 @@ def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run, r
         _out.raw(Untagged.JSON, json.dumps(doc, indent=2))
         return
     if not doc["sessions"]:
-        _out.emit(Tag.SESSIONS, "no sessions recorded")
+        _out.emit(Tag.SESSIONS, "list", "no sessions recorded")
     for record in doc["sessions"]:
-        _out.emit(Tag.SESSIONS, _describe_session_record(record))
+        _out.emit(Tag.SESSIONS, "list", _describe_session_record(record))
 
 
 @cmd_iterm2_group.command("restore", help="Re-attach the recorded sessions in iTerm2 (macOS)")
@@ -5370,8 +5449,8 @@ def cmd_iterm2_restore(startup, dry_run, only, arrangement):
             dry_run=dry_run,
             only=only,
             arrangement=arrangement,
-            echo=lambda line: _out.emit(Tag.RESTORE, line),
-            ask=lambda question: _out.confirm(Tag.RESTORE, question),
+            echo=lambda line: _out.emit(Tag.RESTORE, "restore", line),
+            ask=lambda question: _out.confirm(Tag.RESTORE, "restore", question),
         )
     except (_iterm2.PersistenceConfigError, _session_registry.RegistryError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -5429,17 +5508,17 @@ def cmd_cc_migrate(dest, title, session_id, source, keep_source, preserve_cwd, d
             force=force,
         )
     except ValueError as exc:
-        _out.error(Tag.MIGRATE, f"{exc}")
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
         sys.exit(1)
 
     verb = "Would migrate" if result.dry_run else ("Copied" if not result.moved else "Migrated")
-    _out.emit(Tag.MIGRATE, f"{verb} {result.source_jsonl}")
-    _out.emit(Tag.MIGRATE, f"  -> {result.dest_jsonl}")
-    _out.emit(Tag.MIGRATE, f"  {result.lines} lines, {result.rewritten} cwd rewrites")
+    _out.emit(Tag.MIGRATE, "migrate", f"{verb} {result.source_jsonl}")
+    _out.emit(Tag.MIGRATE, "migrate", f"  -> {result.dest_jsonl}")
+    _out.emit(Tag.MIGRATE, "migrate", f"  {result.lines} lines, {result.rewritten} cwd rewrites")
     if result.sidecar_moved is not None:
-        _out.emit(Tag.MIGRATE, f"  sidecar dir -> {result.sidecar_moved}")
+        _out.emit(Tag.MIGRATE, "migrate", f"  sidecar dir -> {result.sidecar_moved}")
     for warning in result.warnings:
-        _out.emit(Tag.MIGRATE, f"  warning: {warning}", err=True)
+        _out.emit(Tag.MIGRATE, "migrate", f"  warning: {warning}", err=True)
     sys.exit(0)
 
 
@@ -5449,70 +5528,87 @@ def _print_adoption(result, out=None) -> None:
     if result.already_adopted:
         _out.emit(
             Tag.ADOPT,
+            "adopt",
             f"{result.ai_name}: already adopted — {result.resolved} resolves in {result.dest_root}",
             file=stream,
         )
         return
     verb = "Would adopt" if result.dry_run else "Adopted"
-    _out.emit(Tag.ADOPT, f"{verb} {result.ai_name} -> {result.dest_root}", file=stream)
+    _out.emit(Tag.ADOPT, "adopt", f"{verb} {result.ai_name} -> {result.dest_root}", file=stream)
     if result.retitled_from:
-        _out.emit(Tag.ADOPT, f"  retitled {result.retitled_from!r} -> {result.dest_root.name!r}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  retitled {result.retitled_from!r} -> {result.dest_root.name!r}", file=stream)
     if result.worktree_created:
         _out.emit(
-            Tag.ADOPT, f"  worktree {'to create' if result.dry_run else 'created'}: {result.dest_root}", file=stream
+            Tag.ADOPT,
+            "adopt",
+            f"  worktree {'to create' if result.dry_run else 'created'}: {result.dest_root}",
+            file=stream,
         )
     if result.migration is not None:
-        _out.emit(Tag.ADOPT, f"  transcript: {result.migration.source_jsonl}", file=stream)
-        _out.emit(Tag.ADOPT, f"           -> {result.migration.dest_jsonl}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  transcript: {result.migration.source_jsonl}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"           -> {result.migration.dest_jsonl}", file=stream)
         _out.emit(
-            Tag.ADOPT, f"  {result.migration.lines} lines, {result.migration.rewritten} cwd rewrites", file=stream
+            Tag.ADOPT,
+            "adopt",
+            f"  {result.migration.lines} lines, {result.migration.rewritten} cwd rewrites",
+            file=stream,
         )
     elif result.source_jsonl is not None:
-        _out.emit(Tag.ADOPT, f"  transcript: {result.source_jsonl} ({result.source_lines} lines)", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  transcript: {result.source_jsonl} ({result.source_lines} lines)", file=stream)
     if result.worktree_records_cleared:
         _out.emit(
             Tag.ADOPT,
+            "adopt",
             f"  worktree binding: {result.worktree_records_cleared} stale record(s) cleared "
             f"(Claude Code would otherwise move the transcript back out)",
             file=stream,
         )
     renumbered = [m for m in result.tasks_moved if m.renumbered_from]
-    _out.emit(Tag.ADOPT, f"  tasks: {len(result.tasks_moved)} moved, {len(renumbered)} renumbered", file=stream)
+    _out.emit(
+        Tag.ADOPT, "adopt", f"  tasks: {len(result.tasks_moved)} moved, {len(renumbered)} renumbered", file=stream
+    )
     for move in renumbered:
-        _out.emit(Tag.ADOPT, f"    task {move.renumbered_from} -> {move.dest.stem} ({move.dest.parent})", file=stream)
+        _out.emit(
+            Tag.ADOPT, "adopt", f"    task {move.renumbered_from} -> {move.dest.stem} ({move.dest.parent})", file=stream
+        )
     _out.emit(
         Tag.ADOPT,
+        "adopt",
         f"  memory: {len(result.memory_copied)} copied, {len(result.memory_conflicts)} left alone",
         file=stream,
     )
     for conflict in result.memory_conflicts:
-        _out.emit(Tag.ADOPT, f"    kept existing {conflict}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"    kept existing {conflict}", file=stream)
     for line in result.hook_lines:
-        _out.emit(Tag.ADOPT, f"  {line}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  {line}", file=stream)
     if result.resolved is not None:
-        _out.emit(Tag.ADOPT, f"  resolve probe: `ai c` finds {result.resolved}", file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  resolve probe: `ai c` finds {result.resolved}", file=stream)
 
 
 def _print_collision(exc, out=None) -> None:
     """Print both collision candidates and the retitle remedy, for a human."""
     stream = out
-    _out.error(Tag.ADOPT, f"{exc}", file=stream)
-    _out.emit(Tag.ADOPT, "Candidates:", err=True, file=stream)
+    _out.error(Tag.ADOPT, "adopt", f"{exc}", file=stream)
+    _out.emit(Tag.ADOPT, "adopt", "Candidates:", err=True, file=stream)
     for candidate in exc.candidates:
-        _out.emit(Tag.ADOPT, f"  {candidate.describe()}", err=True, file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  {candidate.describe()}", err=True, file=stream)
     if exc.prefix and exc.free_index:
         proposed = f"{exc.prefix}-{exc.free_index}"
         _out.emit(
             Tag.ADOPT,
+            "adopt",
             f"Proposed remedy — retitle the session you are adopting to {proposed!r} "
             f"(lowest index claimed by neither a worktree nor a transcript title) and adopt it there:",
             err=True,
             file=stream,
         )
-        _out.emit(Tag.ADOPT, f"  ai session-adopt {exc.title} -c retitle -T {proposed}", err=True, file=stream)
-        _out.emit(Tag.ADOPT, f"  ai session-adopt {exc.title} -c retitle -I {exc.free_index}", err=True, file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  ai session-adopt {exc.title} -c retitle -T {proposed}", err=True, file=stream)
+        _out.emit(
+            Tag.ADOPT, "adopt", f"  ai session-adopt {exc.title} -c retitle -I {exc.free_index}", err=True, file=stream
+        )
     _out.emit(
         Tag.ADOPT,
+        "adopt",
         "This gate is unconditional: -y/--yes does not cover it, and there is no automatic mode. "
         "Confirm the new index yourself before anything is written.",
         err=True,
@@ -5584,45 +5680,46 @@ def cmd_session_adopt(
     # directory is derived from: two answers to one question, so both at once is refused
     # rather than one silently winning.
     if transcript is not None and source is not None:
-        _out.error(Tag.ADOPT, "-t/--transcript and -s/--source both name the session's source; pass one")
+        _out.error(Tag.ADOPT, "adopt", "-t/--transcript and -s/--source both name the session's source; pass one")
         sys.exit(1)
     if transcript is not None and adopt_every:
-        _out.error(Tag.ADOPT, "-t/--transcript adopts one session; it cannot be combined with -a/--all")
+        _out.error(Tag.ADOPT, "adopt", "-t/--transcript adopts one session; it cannot be combined with -a/--all")
         sys.exit(1)
 
     if adopt_every:
         outcomes = adopt_all(repo_root, source_root=source, dry_run=dry_run)
         if not outcomes:
-            _out.emit(Tag.ADOPT, "No titled sessions found — nothing to adopt.")
+            _out.emit(Tag.ADOPT, "adopt", "No titled sessions found — nothing to adopt.")
             sys.exit(0)
         failures = 0
         for title, outcome in outcomes:
             if isinstance(outcome, TitleCollision):
                 failures += 1
                 _print_collision(outcome)
-                _out.emit(Tag.ADOPT, f"Paused on {title} — continuing with the rest.", err=True)
+                _out.emit(Tag.ADOPT, "adopt", f"Paused on {title} — continuing with the rest.", err=True)
             elif isinstance(outcome, AdoptionError):
                 failures += 1
-                _out.emit(Tag.ADOPT, f"Skipped {title}: {outcome}", err=True)
+                _out.emit(Tag.ADOPT, "adopt", f"Skipped {title}: {outcome}", err=True)
             else:
                 _print_adoption(outcome)
-        _out.emit(Tag.ADOPT, f"\n{len(outcomes) - failures} adopted, {failures} skipped.")
+        _out.emit(Tag.ADOPT, "adopt", f"\n{len(outcomes) - failures} adopted, {failures} skipped.")
         sys.exit(1 if failures else 0)
 
     if not name:
-        _out.error(Tag.ADOPT, "NAME is required (or use -a/--all)")
+        _out.error(Tag.ADOPT, "adopt", "NAME is required (or use -a/--all)")
         sys.exit(1)
 
     if new_index is not None and not new_title:
         split = split_ai_name(name)
         if not split:
-            _out.error(Tag.ADOPT, f"cannot derive a prefix from {name!r} — pass -T/--new-title instead")
+            _out.error(Tag.ADOPT, "adopt", f"cannot derive a prefix from {name!r} — pass -T/--new-title instead")
             sys.exit(1)
         new_title = f"{split[0]}-{new_index}"
 
     if on_collision == "retitle" and not new_title:
         _out.error(
             Tag.ADOPT,
+            "adopt",
             "-c/--on-collision retitle needs the human-confirmed title (-T/--new-title) "
             "or index (-I/--new-index). Run without -c first to see the candidates and the "
             "proposed free index.",
@@ -5638,6 +5735,7 @@ def cmd_session_adopt(
         if found is None or found.resolve() != transcript:
             _out.error(
                 Tag.ADOPT,
+                "adopt",
                 f"{transcript} is not the session titled {name!r} in its directory"
                 + (f" (that title resolves to {found})" if found is not None else ""),
             )
@@ -5664,38 +5762,38 @@ def cmd_session_adopt(
         if not dry_run:
             if not yes and not result.already_adopted:
                 _print_adoption(result)
-                if not _out.confirm(Tag.ADOPT, f"Adopt {name} into {result.dest_root}?"):
-                    _out.emit(Tag.ADOPT, "Aborted.", err=True)
+                if not _out.confirm(Tag.ADOPT, "adopt", f"Adopt {name} into {result.dest_root}?"):
+                    _out.emit(Tag.ADOPT, "adopt", "Aborted.", err=True)
                     sys.exit(1)
             result = _run(False)
     except TitleCollision as exc:
         _print_collision(exc)
         sys.exit(1)
     except (AdoptionError, ValueError) as exc:
-        _out.error(Tag.ADOPT, f"{exc}")
+        _out.error(Tag.ADOPT, "adopt", f"{exc}")
         sys.exit(1)
 
     _print_adoption(result)
     for warning in result.warnings:
-        _out.emit(Tag.ADOPT, f"  warning: {warning}", err=True)
+        _out.emit(Tag.ADOPT, "adopt", f"  warning: {warning}", err=True)
     sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
 
 
 def _print_migration(result) -> None:
     """Every planned (or performed) move of a ``session-migrate`` run, then its warnings."""
     verb = "would migrate" if result.dry_run else "migrated"
-    _out.emit(Tag.MIGRATE, f"{result.old} -> {result.new}: {verb}")
+    _out.emit(Tag.MIGRATE, "migrate", f"{result.old} -> {result.new}: {verb}")
     for move in result.moves:
-        _out.emit(Tag.MIGRATE, f"  {move.describe()}")
+        _out.emit(Tag.MIGRATE, "migrate", f"  {move.describe()}")
     for task in result.task_moves:
         renumbered = f" (renumbered from {task.renumbered_from})" if task.renumbered_from else ""
-        _out.emit(Tag.MIGRATE, f"  task: {task.source} -> {task.dest}{renumbered}")
+        _out.emit(Tag.MIGRATE, "migrate", f"  task: {task.source} -> {task.dest}{renumbered}")
     for move in result.resume_moves:
-        _out.emit(Tag.MIGRATE, f"  resume: {move.describe()}")
+        _out.emit(Tag.MIGRATE, "migrate", f"  resume: {move.describe()}")
     if result.resolved is not None:
-        _out.emit(Tag.MIGRATE, f"  resolve probe: `ai c` finds {result.resolved}")
+        _out.emit(Tag.MIGRATE, "migrate", f"  resolve probe: `ai c` finds {result.resolved}")
     for warning in result.warnings:
-        _out.emit(Tag.MIGRATE, f"  warning: {warning}", err=True)
+        _out.emit(Tag.MIGRATE, "migrate", f"  warning: {warning}", err=True)
 
 
 @_cli_group.command(
@@ -5738,12 +5836,12 @@ def cmd_session_migrate(old, new, repo, dry_run, yes):
         if not dry_run:
             if not yes:
                 _print_migration(result)
-                if not _out.confirm(Tag.MIGRATE, f"Migrate {old} to {new}?"):
-                    _out.emit(Tag.MIGRATE, "Aborted.", err=True)
+                if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {new}?"):
+                    _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)
                     sys.exit(1)
             result = _run(False)
     except (AdoptionError, RuntimeError) as exc:
-        _out.error(Tag.MIGRATE, f"{exc}")
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
         sys.exit(1)
 
     _print_migration(result)
@@ -5753,19 +5851,27 @@ def cmd_session_migrate(old, new, repo, dry_run, yes):
 def _print_retirement(result) -> None:
     """What a ``session-retire`` run removed (or would), what it preserved and what it left."""
     verb = "would retire" if result.dry_run else "retired"
-    _out.emit(Tag.RETIRE, f"{result.name}: {verb} {result.worktree}")
+    _out.emit(Tag.RETIRE, "retire", f"{result.name}: {verb} {result.worktree}")
     checked_out = result.branch or "detached HEAD"
-    _out.emit(Tag.RETIRE, f"  checkout: {result.worktree} ({checked_out} at {result.head}) -- git worktree remove")
+    _out.emit(
+        Tag.RETIRE, "retire", f"  checkout: {result.worktree} ({checked_out} at {result.head}) -- git worktree remove"
+    )
     for anchor in result.anchors:
         state = "already in place" if anchor.exists else "write"
-        _out.emit(Tag.RETIRE, f"  anchor: {anchor.ref} -> {anchor.tip} ({state}); branch {anchor.branch} stays")
+        _out.emit(
+            Tag.RETIRE, "retire", f"  anchor: {anchor.ref} -> {anchor.tip} ({state}); branch {anchor.branch} stays"
+        )
     if result.registry_entries:
-        _out.emit(Tag.RETIRE, f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}")
-    _out.emit(Tag.RETIRE, f"  ledger: append to {result.ledger}")
+        _out.emit(
+            Tag.RETIRE,
+            "retire",
+            f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}",
+        )
+    _out.emit(Tag.RETIRE, "retire", f"  ledger: append to {result.ledger}")
     if result.project_dir is not None:
-        _out.emit(Tag.RETIRE, f"  Claude Code project dir left in place: {result.project_dir}")
+        _out.emit(Tag.RETIRE, "retire", f"  Claude Code project dir left in place: {result.project_dir}")
     for warning in result.warnings:
-        _out.emit(Tag.RETIRE, f"  warning: {warning}", err=True)
+        _out.emit(Tag.RETIRE, "retire", f"  warning: {warning}", err=True)
 
 
 @_cli_group.command(
@@ -5805,12 +5911,12 @@ def cmd_session_retire(name, repo, dry_run, yes):
         if not dry_run:
             if not yes:
                 _print_retirement(result)
-                if not _out.confirm(Tag.RETIRE, f"Retire {name}?"):
-                    _out.emit(Tag.RETIRE, "Aborted.", err=True)
+                if not _out.confirm(Tag.RETIRE, "retire", f"Retire {name}?"):
+                    _out.emit(Tag.RETIRE, "retire", "Aborted.", err=True)
                     sys.exit(1)
             result = retire_session(repo_root, name, dry_run=False)
     except (AdoptionError, RuntimeError) as exc:
-        _out.error(Tag.RETIRE, f"{exc}")
+        _out.error(Tag.RETIRE, "retire", f"{exc}")
         sys.exit(1)
 
     _print_retirement(result)
@@ -5822,35 +5928,39 @@ def _print_audit(report, ready, skipped, out=None) -> None:
     stream = out
     _out.emit(
         Tag.AUDIT,
+        "audit",
         f"Scanned {report.scanned_transcripts} transcripts in {report.scanned_project_dirs} project "
         f"directories — {len(report.sessions)} titled session(s) across {len(report.repos)} repo(s).",
         file=stream,
     )
 
     if report.collisions:
-        _out.emit(Tag.AUDIT, f"\nTitle collisions ({len(report.collisions)}) — a human must choose:", file=stream)
+        _out.emit(
+            Tag.AUDIT, "audit", f"\nTitle collisions ({len(report.collisions)}) — a human must choose:", file=stream
+        )
         for title, group in report.collisions.items():
-            _out.emit(Tag.AUDIT, f"  {title!r} claimed by {len(group)} transcripts:", file=stream)
+            _out.emit(Tag.AUDIT, "audit", f"  {title!r} claimed by {len(group)} transcripts:", file=stream)
             for record in group:
                 _out.emit(
                     Tag.AUDIT,
+                    "audit",
                     f"    {record.transcript} ({record.lines} lines, cwd={record.cwd or '<unrecorded>'})",
                     file=stream,
                 )
 
     if report.sessions:
-        _out.emit(Tag.AUDIT, "\nSessions:", file=stream)
+        _out.emit(Tag.AUDIT, "audit", "\nSessions:", file=stream)
         for record in report.sessions:
-            _out.emit(Tag.AUDIT, f"  {record.describe()}", file=stream)
+            _out.emit(Tag.AUDIT, "audit", f"  {record.describe()}", file=stream)
 
     if ready:
-        _out.emit(Tag.AUDIT, f"\nAdoptable ({len(ready)}):", file=stream)
+        _out.emit(Tag.AUDIT, "audit", f"\nAdoptable ({len(ready)}):", file=stream)
         for record in ready:
-            _out.emit(Tag.AUDIT, f"  {record.title} -> {record.slot}", file=stream)
+            _out.emit(Tag.AUDIT, "audit", f"  {record.title} -> {record.slot}", file=stream)
     if skipped:
-        _out.emit(Tag.AUDIT, f"\nSkipped ({len(skipped)}):", file=stream)
+        _out.emit(Tag.AUDIT, "audit", f"\nSkipped ({len(skipped)}):", file=stream)
         for record, reason in skipped:
-            _out.emit(Tag.AUDIT, f"  {record.title}: {reason}", file=stream)
+            _out.emit(Tag.AUDIT, "audit", f"  {record.title}: {reason}", file=stream)
 
 
 @_cli_group.command(
@@ -5885,7 +5995,7 @@ def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
 
     if not report.sessions:
         scope = " matching the filters" if (repo or title) else ""
-        _out.emit(Tag.AUDIT, f"No titled sessions found{scope} — nothing to audit.")
+        _out.emit(Tag.AUDIT, "audit", f"No titled sessions found{scope} — nothing to audit.")
         sys.exit(0)
 
     if not run_adopt:
@@ -5894,11 +6004,11 @@ def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
 
     _print_audit(report, ready, skipped)
     if not ready:
-        _out.emit(Tag.AUDIT, "\nNothing safe to adopt.")
+        _out.emit(Tag.AUDIT, "audit", "\nNothing safe to adopt.")
         sys.exit(1 if skipped else 0)
 
-    if not dry_run and not yes and not _out.confirm(Tag.ADOPT, f"Adopt {len(ready)} session(s)?"):
-        _out.emit(Tag.AUDIT, "Aborted.", err=True)
+    if not dry_run and not yes and not _out.confirm(Tag.ADOPT, "adopt", f"Adopt {len(ready)} session(s)?"):
+        _out.emit(Tag.AUDIT, "adopt", "Aborted.", err=True)
         sys.exit(1)
 
     outcomes, _ = adopt_ready(report, dry_run=dry_run)
@@ -5907,13 +6017,13 @@ def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
         if isinstance(outcome, TitleCollision):
             failures += 1
             _print_collision(outcome)
-            _out.emit(Tag.AUDIT, f"Paused on {record.title} — continuing with the rest.", err=True)
+            _out.emit(Tag.AUDIT, "adopt", f"Paused on {record.title} — continuing with the rest.", err=True)
         elif isinstance(outcome, AdoptionError):
             failures += 1
-            _out.emit(Tag.AUDIT, f"Skipped {record.title}: {outcome}", err=True)
+            _out.emit(Tag.AUDIT, "adopt", f"Skipped {record.title}: {outcome}", err=True)
         else:
             _print_adoption(outcome)
-    _out.emit(Tag.AUDIT, f"\n{len(outcomes) - failures} adopted, {failures + len(skipped)} skipped.")
+    _out.emit(Tag.AUDIT, "adopt", f"\n{len(outcomes) - failures} adopted, {failures + len(skipped)} skipped.")
     sys.exit(1 if (failures or skipped) else 0)
 
 
@@ -6024,6 +6134,7 @@ def cmd_sync(action, args):
     if not action:
         _out.emit(
             Tag.SYNC,
+            "usage",
             "Usage: ai sync [push|pull|conflicts|resolve|watch|cleanup|repair-worktree] "
             "[-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]",
         )
@@ -6056,6 +6167,7 @@ def cmd_sync(action, args):
         if len(positional) < 2:
             _out.emit(
                 Tag.SYNC,
+                "usage",
                 "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
                 "Example: ai sync repair-worktree myproject wt-1\n"
                 "Copies all conversations from the main project CC dir into the worktree CC dir\n"
@@ -6086,11 +6198,12 @@ def cmd_sync(action, args):
             verbose=verbose,
         )
         verb = "Would remove" if dry_run else "Removed"
-        _out.emit(Tag.SYNC, f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
+        _out.emit(Tag.SYNC, "cleanup", f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
         sys.exit(0)
     else:
         _out.emit(
             Tag.SYNC,
+            "usage",
             f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
             err=True,
         )
@@ -6120,7 +6233,9 @@ def cmd_ws_pull(workspace_path, use_remote, dry_run, verbose):
         remote = cfg.get("remote_path", "")
         if not remote:
             _out.error(
-                Tag.WORKSPACE, "[workspace] remote_path not configured in config.toml. Set it or use --workspace PATH."
+                Tag.WORKSPACE,
+                "pull",
+                "[workspace] remote_path not configured in config.toml. Set it or use --workspace PATH.",
             )
             sys.exit(1)
         ws_path = Path(remote).expanduser().resolve()
@@ -6128,7 +6243,9 @@ def cmd_ws_pull(workspace_path, use_remote, dry_run, verbose):
         local = cfg.get("local_path", "")
         if not local:
             _out.error(
-                Tag.WORKSPACE, "[workspace] local_path not configured in config.toml. Set it or use --workspace PATH."
+                Tag.WORKSPACE,
+                "pull",
+                "[workspace] local_path not configured in config.toml. Set it or use --workspace PATH.",
             )
             sys.exit(1)
         ws_path = Path(local).expanduser().resolve()
@@ -6149,19 +6266,19 @@ def cmd_reconnect(sessions):
 def cmd_ssh(alias):
     """Connect to ALIAS, or the configured default remote machine."""
     if sys.platform == "win32":
-        _out.error(Tag.REMOTE, "SSH shells are not supported on Windows")
+        _out.error(Tag.REMOTE, "connect", "SSH shells are not supported on Windows")
         sys.exit(1)
 
     config = _config.load_config()
     try:
         remote_cfg = _config.get_remote_machine(config, alias)
     except _config.RemoteMachineError as exc:
-        _out.error(Tag.REMOTE, f"{exc}")
+        _out.error(Tag.REMOTE, "connect", f"{exc}")
         sys.exit(1)
 
     host = remote_cfg.get("host", "")
     if not host:
-        _out.error(Tag.REMOTE, "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
+        _out.error(Tag.REMOTE, "connect", "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
         sys.exit(1)
     user = remote_cfg.get("user", "ubuntu")
     port = str(remote_cfg.get("port", 22))
@@ -6209,11 +6326,11 @@ def cmd_trust_backfill(root):
     # projects live elsewhere silently backfilled nothing.
     added = backfill_projects_trust(Path(root).expanduser() if root else _get_projects_dir())
     if added:
-        _out.emit(Tag.TRUST, f"Registered workspace trust for {len(added)} workspace(s) in ~/.claude.json:")
+        _out.emit(Tag.TRUST, "register", f"Registered workspace trust for {len(added)} workspace(s) in ~/.claude.json:")
         for key in added:
-            _out.emit(Tag.TRUST, f"  + {key}")
+            _out.emit(Tag.TRUST, "register", f"  + {key}")
     else:
-        _out.emit(Tag.TRUST, "All workspaces under the root are already trusted — nothing to change.")
+        _out.emit(Tag.TRUST, "register", "All workspaces under the root are already trusted — nothing to change.")
 
 
 @_cli_group.command("attach", help="Attach to a tmux session by name")

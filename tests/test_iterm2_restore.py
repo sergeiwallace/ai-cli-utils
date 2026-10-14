@@ -173,10 +173,10 @@ def _restore(*flags: str, stdin: str = ""):
 
 
 def _lines(out: str) -> list[str]:
-    """The restore lines, each required to carry the ``[restore]`` tag, with it removed."""
+    """The restore lines, each required to carry the ``[restore] restore:`` tag and operation, with them removed."""
     lines = [line for line in out.splitlines() if line.strip()]
-    assert all(line.startswith("[restore] ") for line in lines), lines
-    return [line.removeprefix("[restore] ") for line in lines]
+    assert all(line.startswith("[restore] restore: ") for line in lines), lines
+    return [line.removeprefix("[restore] restore: ") for line in lines]
 
 
 # --- T-3.0 it2 absent or refused ---------------------------------------------------

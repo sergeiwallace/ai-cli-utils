@@ -304,7 +304,7 @@ class TestGetEngineScript:
         assert '"$@" </dev/tty &' in script
         assert '"$@" <&0 &' in script
         assert 'wait "$active_agent_pid"' in script
-        assert '_ai_emit warning "direnv could not load $direnv_root/.envrc' in script
+        assert '_ai_emit warning direnv "direnv could not load $direnv_root/.envrc' in script
         assert 'direnv exec "$direnv_root" "$@"' not in script
 
     def test_given_worktree_when_generating_script_then_direnv_uses_worktree_cwd(self):
