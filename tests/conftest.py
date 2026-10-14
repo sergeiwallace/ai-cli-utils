@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import types
@@ -25,6 +26,12 @@ import ai_cli.trust as _trust_module
 from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path
 from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
+
+# Several launch tests patch sys.platform for the whole process. Read the interpreter's
+# build config first, so a stdlib module first imported under a patched platform (zoneinfo,
+# which pydantic imports when the first record loads the output settings) does not go
+# looking for that platform's sysconfig data and fail.
+sysconfig.get_config_vars()
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 
