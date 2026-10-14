@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 from test_line_discipline import Terminal, _launch, _rows, posix_pty
+from test_output_rendering import _reattach_with_stale_launcher
 
 from ai_cli import output as _out
 from ai_cli.config import get_xdg_config_home
@@ -31,7 +32,9 @@ from ai_cli.output import Level, Record, Tag
 REPO = Path(__file__).resolve().parents[1]
 # Present so the launch's own config load does not append a [machine] table mid-test.
 MACHINE = '[machine]\nhost_id = "test-host"\nos_type = "linux"\n\n'
-START = "Starting Claude Code session: local, tmux"
+# The start line is a launch phase: its label renders as the operation element.
+STARTING = "Starting Claude Code session"
+START = f"{STARTING}: local, tmux"
 MODE = "launching inside tmux (tmux is the default session mode)"
 PLAN = "dry run -- nothing was created, started, or reaped."
 CONFIG_ERROR = re.compile(r"^\[config\] load: Error: (?P<path>.+?): (?P<rest>.*)$", re.MULTILINE)
@@ -94,6 +97,7 @@ def _internal_emit(capsys, monkeypatch, *args: str) -> tuple[str, str]:
     ("config", "start", "mode", "plan"),
     [
         pytest.param("", f"[launch] {START}", f"[launch] Mode: {MODE}", f"[plan] {PLAN}", id="no-config"),
+        pytest.param("[output]\n", f"[launch] {START}", f"[launch] Mode: {MODE}", f"[plan] {PLAN}", id="empty-table"),
         pytest.param(
             '[output.elements.tag]\nprefix = "<"\nsuffix = ">"\n',
             f"<launch> {START}",
@@ -104,35 +108,35 @@ def _internal_emit(capsys, monkeypatch, *args: str) -> tuple[str, str]:
         pytest.param("[output.elements.tag]\nenabled = false\n", START, f"Mode: {MODE}", PLAN, id="tag-disabled"),
         pytest.param(
             "[output.elements.operation]\nenabled = false\n",
-            f"[launch] {START}",
+            "[launch] local, tmux",
             f"[launch] {MODE}",
             f"[plan] {PLAN}",
             id="operation-disabled",
         ),
         pytest.param(
             '[output.elements.operation]\nsuffix = " >"\n',
-            f"[launch] {START}",
+            f"[launch] {STARTING} > local, tmux",
             f"[launch] Mode > {MODE}",
             f"[plan] {PLAN}",
             id="operation-suffix",
         ),
         pytest.param(
             '[output]\norder = ["description", "operation", "tag"]\n',
-            f"{START} [launch]",
+            f"local, tmux {STARTING}: [launch]",
             f"{MODE} Mode: [launch]",
             f"{PLAN} [plan]",
             id="order",
         ),
         pytest.param(
             '[output]\nseparator = " | "\n',
-            f"[launch] | {START}",
+            f"[launch] | {STARTING}: | local, tmux",
             f"[launch] | Mode: | {MODE}",
             f"[plan] | {PLAN}",
             id="separator",
         ),
         pytest.param(
             '[output.elements.description]\nprefix = "\'"\nsuffix = "\'"\n',
-            f"[launch] '{START}'",
+            f"[launch] {STARTING}: 'local, tmux'",
             f"[launch] Mode: '{MODE}'",
             f"[plan] '{PLAN}'",
             id="description-delimiters",
@@ -209,12 +213,12 @@ def test_given_configured_colours_when_ai_c_r_reattaches_on_a_pty_then_each_elem
     _write_config(_COLOUR_CONFIG)
     terminal = Terminal(columns=400)
     try:
-        code = _launch(tmp_path, attempts=2, ssh=lambda *_a, **_k: 255, stdout=terminal.stream, stderr=terminal.stream)
+        # A stale launcher makes the transport print a warning, so the level element shows.
+        _reattach_with_stale_launcher(tmp_path, terminal)
         screen = terminal.screen()
     finally:
         terminal.close()
 
-    assert code == 255
     rows = _rows(screen)
     warning_row = next(index for index, row in enumerate(rows) if row.startswith("[transport] Warning: "))
     dolt_row = next(index for index, row in enumerate(rows) if row.startswith("[dolt_server] healthy"))
@@ -232,7 +236,7 @@ def test_given_configured_colours_when_ai_c_r_writes_to_a_pipe_then_no_escape_is
 
     assert code == 255
     written = sink.getvalue()
-    assert any(line.startswith("[transport] Warning: ") for line in written.splitlines()), written
+    assert any(line.startswith("[transport] Connection lost") for line in written.splitlines()), written
     assert "\x1b" not in written
 
 
@@ -265,7 +269,7 @@ def test_given_a_config_edit_between_reconnect_attempts_when_ai_c_r_runs_then_th
     assert code == 255
     lines = sink.getvalue().splitlines()
     assert any(line.startswith("[dolt_server] healthy") for line in lines), lines
-    assert any(line.startswith("<transport> Warning: ") for line in lines), lines
+    assert any(line.startswith("<transport> Connection lost") for line in lines), lines
     assert not any(line.startswith("[transport] ") for line in lines), lines
 
 
@@ -333,7 +337,8 @@ _INVALID = [
     pytest.param("[output]\norder = ['tag', 'operation']\n", ["output.order"], id="order-without-description"),
     pytest.param("[output]\nseparator = 3\n", ["output.separator"], id="wrong-type"),
     pytest.param(
-        "[output.elements.description]\nenabled = false\n",
+        # Continues the valid [output.elements.description] table the test writes first.
+        "enabled = false\n",
         ["output.elements.description.enabled"],
         id="description-disabled",
     ),

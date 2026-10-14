@@ -25,6 +25,10 @@ there too. structlog and Rich are imported on the first record, so ``raw()``
 paths (``--version``, the statusline, ``ai internal`` replies) never pay for
 them.
 
+Which elements a line has, their order, delimiters and styles come from the
+``[output]`` table of ``config.toml`` (AI-CLI-mu4d, :mod:`ai_cli.output_settings`),
+checked before every record, so an edit applies to the next line.
+
 Line discipline (AI-CLI-8h3u): every record is one locked write whose text is
 made inert (no control bytes), ending in CR LF on a POSIX terminal so it lands
 at column 0 even while a foreign program has output post-processing off. While
@@ -57,15 +61,10 @@ if TYPE_CHECKING:
     from rich.console import Console
     from rich.text import Text
 
+    from .output_settings import OutputSettings
+
 TAG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 OPERATION_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
-
-# Rich style strings for each element. T-3 (AI-CLI-mu4d) moves them into config.
-TAG_STYLE = "bold blue"
-OPERATION_STYLE = "bold cyan"
-LABEL_STYLE = "bold cyan"
-WARNING_STYLE = "bold yellow"
-ERROR_STYLE = "bold red"
 
 # A child `ai` process run by run_relayed() (or `ai update`'s self-update) writes
 # one JSON record per line when this is set, and the parent re-emits each record
@@ -148,9 +147,6 @@ class Level(StrEnum):
     ERROR = "error"
 
 
-LEVEL_LABELS = {Level.WARNING: ("Warning:", WARNING_STYLE), Level.ERROR: ("Error:", ERROR_STYLE)}
-
-
 for _tag in Tag:
     if not TAG_PATTERN.match(_tag.value):
         raise ValueError(f"log type tag {_tag.value!r} does not match {TAG_PATTERN.pattern}")
@@ -161,7 +157,8 @@ class Record:
     """One logical line, built once by the structlog pipeline and rendered per sink.
 
     ``label`` (with ``label_style``) is the launch reporter's phase name, which
-    becomes the operation element in T-5 (AI-CLI-rbuf). ``continued`` marks the
+    becomes the operation element in T-5 (AI-CLI-rbuf); until then it renders in
+    that element's place and style. ``continued`` marks the
     second and later lines of a multi-line message, which repeat the tag but not
     the label or level.
     """
@@ -409,18 +406,54 @@ def make_record(tag: Tag, text: str, **fields: Any) -> Record:
 # --- the renderer: Rich styles each element ---------------------------------------
 
 
-def _elements(record: Record) -> list[tuple[str, str]]:
-    parts = [(f"[{record.tag.value}]", TAG_STYLE)]
-    if record.op is not None:
-        parts.append((f"{record.op}:", OPERATION_STYLE))
-    if not record.continued:
-        if record.label is not None:
-            parts.append((f"{record.label}:", record.label_style or LABEL_STYLE))
-        if record.level in LEVEL_LABELS:
-            parts.append(LEVEL_LABELS[record.level])
-    if record.text:
-        parts.append((record.text, record.text_style))
-    return parts
+def _element(name: str, record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
+    elements = settings.elements
+    if name == "tag" and elements.tag.enabled:
+        tag = elements.tag
+        return [(tag.wrap(record.tag.value), tag.styles.get(record.tag.value, tag.style))]
+    if name == "operation" and elements.operation.enabled:
+        operation = elements.operation
+        parts = []
+        if record.op is not None:
+            parts.append((operation.wrap(record.op), operation.styles.get(record.op, operation.style)))
+        if record.label is not None and not record.continued:
+            parts.append((operation.wrap(record.label), record.label_style or operation.style))
+        return parts
+    if name == "level" and elements.level.enabled:
+        level = elements.level
+        if record.continued or record.level.value not in level.show:
+            return []
+        return [(level.wrap(record.level.value.capitalize()), level.styles.get(record.level.value, level.style))]
+    if name == "description" and record.text:
+        description = elements.description
+        return [(description.wrap(record.text), record.text_style or description.style)]
+    return []
+
+
+def _elements(record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
+    return [part for name in settings.order for part in _element(name, record, settings)]
+
+
+def _settings() -> OutputSettings:
+    """The settings for the next record; a newly broken ``[output]`` table is reported first."""
+    from . import output_settings
+
+    with _lock:
+        settings, errors = output_settings.current()
+        if errors:
+            _report_config_errors(errors, output_settings.defaults())
+    return settings
+
+
+def _report_config_errors(errors: Sequence[str], settings: OutputSettings) -> None:
+    # Rendered with the shipped defaults: the table being refused cannot style its own errors.
+    records = [_build(message, tag=Tag.CONFIG, op="load", level=Level.ERROR) for message in errors]
+    _close_open_lines()
+    if _relay_records:
+        _write(sys.stderr, [_relay_json(record) for record in records])
+        return
+    color = wants_color(sys.stderr)
+    _write(sys.stderr, [render_record(record, color=color, stream=sys.stderr, settings=settings) for record in records])
 
 
 _consoles: dict[int, Console] = {}
@@ -441,15 +474,26 @@ def _console(stream: TextIO) -> Console:
     return console
 
 
-def _styled_text(record: Record) -> Text:
+def _styled_text(parts: list[tuple[str, str]], separator: str) -> Text:
     from rich.text import Text
 
     line = Text()
-    for index, (value, style) in enumerate(_elements(record)):
+    for index, (value, style) in enumerate(parts):
         if index:
-            line.append(" ")
+            line.append(separator)
         line.append(value, style=style)
     return line
+
+
+def check_style(style: str) -> None:
+    """Raise ``ValueError`` when ``style`` is not a style string Rich can render."""
+    from rich.errors import StyleSyntaxError
+    from rich.style import Style
+
+    try:
+        Style.parse(style)
+    except StyleSyntaxError as exc:
+        raise ValueError(f"{style!r} is not a valid style: {exc}") from None
 
 
 def _legacy_windows_console(stream: TextIO, console: Console) -> bool:
@@ -464,16 +508,24 @@ def _legacy_windows_console(stream: TextIO, console: Console) -> bool:
         return False
 
 
-def render_record(record: Record, *, color: bool, stream: TextIO | None = None) -> str:
-    """``record`` as one line with no terminator; styled when ``color``, plain otherwise."""
+def render_record(
+    record: Record, *, color: bool, stream: TextIO | None = None, settings: OutputSettings | None = None
+) -> str:
+    """``record`` as one line with no terminator; styled when ``color``, plain otherwise.
+
+    ``settings`` defaults to the current ``[output]`` configuration.
+    """
+    settings = settings if settings is not None else _settings()
+    parts = _elements(record, settings)
+    plain = settings.separator.join(value for value, _style in parts)
     if not color:
-        return " ".join(value for value, _style in _elements(record))
+        return plain
     target = stream if stream is not None else sys.stderr
     console = _console(target)
     if _legacy_windows_console(target, console):
-        return " ".join(value for value, _style in _elements(record))
+        return plain
     with _lock, console.capture() as capture:
-        console.print(_styled_text(record), end="")
+        console.print(_styled_text(parts, settings.separator), end="")
     return capture.get()
 
 

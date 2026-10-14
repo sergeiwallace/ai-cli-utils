@@ -191,11 +191,13 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     return True
 
 
-def get_xdg_config_home() -> Path:
+def get_xdg_config_home(*, migrate: bool = True) -> Path:
     if sys.platform == "win32":
         base = resolve_base_dir("APPDATA", Path.home() / "AppData" / "Roaming")
         return base / "ai-cli-utils"
     base = resolve_base_dir("XDG_CONFIG_HOME", Path.home() / ".config")
+    if not migrate:
+        return base / "ai-cli-utils"
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 

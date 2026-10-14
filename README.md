@@ -499,7 +499,9 @@ a launch can be read at a glance and its log replayed later:
   resolved paths and every duration.
 - Every element of a line is styled: the tag bold blue, a phase label bold cyan,
   `Ready:` bold green, `Warning:` bold yellow and `Error:` bold red. Text a command
-  passes in carries no styling of its own; escape sequences in it are removed.
+  passes in carries no styling of its own; escape sequences in it are removed. The
+  elements, their order, delimiters and colours are configurable (see
+  [Output configuration](#output-configuration)).
 - Colour is used only when stderr is a terminal. Redirected output, CI logs and the
   per-launch log under the state directory receive the plain text. Set `NO_COLOR`
   to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
@@ -601,6 +603,113 @@ To add another machine, give it a short alias and select it for one launch with
 `ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses
 `[remote] default`. Existing flat `[remote]` configurations remain supported as
 one implicit default machine.
+
+### Output configuration
+
+An `[output]` table in `config.toml` controls every element of every line an `ai`
+command prints: which elements appear, their order, the delimiters around them,
+their colours and the patterns their values must match. Without the table, lines
+render as shown under [Launch output](#launch-output). Any key you set overrides the
+shipped default of the same name; the rest keep their defaults. The shipped defaults,
+which list every key:
+
+```toml
+[output]
+order = ["datetime", "tag", "operation", "level", "description"]
+separator = " "
+
+[output.elements.datetime]
+enabled = false
+format = "%Y-%m-%d %H:%M:%S %Z"
+timezone = "America/New_York"
+prefix = ""
+suffix = ""
+style = "dim"
+pattern = '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5}$'
+
+[output.elements.tag]
+enabled = true
+prefix = "["
+suffix = "]"
+style = "bold blue"
+pattern = '^[a-z0-9_-]+$'
+
+[output.elements.tag.styles]
+# transport = "bold magenta"
+
+[output.elements.operation]
+enabled = true
+required = false
+default = "general"
+prefix = ""
+suffix = ":"
+style = "bold cyan"
+pattern = '^[a-z][a-z0-9-]*$'
+vocabulary = [
+    "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
+    "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
+    "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
+]
+
+[output.elements.operation.styles]
+handoff = "bold green"
+
+[output.elements.level]
+enabled = true
+show = ["warning", "error"]
+prefix = ""
+suffix = ":"
+style = ""
+
+[output.elements.level.styles]
+warning = "bold yellow"
+error = "bold red"
+
+[output.elements.description]
+enabled = true
+prefix = ""
+suffix = ""
+style = ""
+pattern = '^[^\x00-\x1f\x7f]*$'
+```
+
+- `order` lists the elements left to right, and `separator` goes between two that
+  are present. An element left out of `order` does not appear. `order` must include
+  `description` and may name each element once.
+- `elements` holds one table per element. Each element has `enabled`, `prefix` and
+  `suffix` (the delimiters written around its value) and `style`.
+- `style` is a [Rich style](https://rich.readthedocs.io/en/stable/style.html): attributes
+  such as `bold`, `dim`, `italic` and `underline`, a named colour, `color(n)` for the
+  256-colour palette, or `#rrggbb`. Rich downgrades a colour the terminal cannot show.
+  Colour reaches a terminal only; a pipe, a log file or `NO_COLOR` gets plain text.
+- `styles` in the `tag`, `operation` and `level` tables overrides `style` for one tag,
+  operation or level by name, for example `transport = "bold magenta"`.
+- `pattern` is a regular expression a value must match, checked when the table is
+  read. The `tag` pattern must match every tag the package uses. The `operation`
+  pattern must match every name in its `vocabulary`. The `datetime` pattern must
+  match what `format` renders. The `description` pattern must compile.
+- `datetime` is the time a line was produced. `format` is a strftime format using
+  the directives every platform supports (`%a %A %b %B %c %d %f %H %I %j %m %M %p
+  %S %U %w %W %x %X %y %Y %z %Z %%`). `timezone` is `UTC`, `local` or an IANA zone
+  name such as `Europe/Berlin`. This release reads and checks these settings but does
+  not render the element yet, so it stays `enabled = false`.
+- `tag` is the log type tag, `[launch]` by default. With `enabled = false` lines
+  carry no tag.
+- `operation` is the step a line belongs to, such as `reconnect:`; a launch phase name
+  such as `Worktree:` renders in its place. `vocabulary` lists the allowed operation
+  names: you can add names but not remove a shipped one. `default` must be in the
+  vocabulary. `required` and `default` are read and checked in this release, and a
+  line without an operation renders without the element.
+- `level` is the `Warning:`/`Error:` label. `show` lists the levels that get a label,
+  from `detail`, `info`, `warning` and `error`.
+- `description` is the text itself. It cannot be disabled.
+
+The table is read again whenever `config.toml` changes, so an edit applies to the next
+line, even inside a running `ai c` session. If any part of `[output]` is invalid, none
+of it applies: lines render with the shipped defaults and each problem is printed once
+as `[config] load: Error: <file>: <key>: <reason>`, for example
+`output.elements.tag.style: 'bold blu' is not a valid style`. The command itself
+carries on.
 
 ### iTerm2 Config
 
