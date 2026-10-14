@@ -562,6 +562,12 @@ re-authenticate and retries on a 30s backoff doubling to 15 minutes, for up to `
 reconnect_auth_wait_seconds` (default 14400, four hours) of continuous credential failure,
 then reattaches by itself once a login succeeds.
 
+**A remote launch that refuses is not a dropped link (AI-CLI-a8h5).** When the remote `ai`
+refuses to launch (a chief home it cannot find, a session that must be migrated first), it
+exits 78 rather than 1. ssh relays that status, and the ladder stops on it with one message
+under the remote's own reason, verdict `refused`, cause `remote_launch`, instead of
+retrying the same refusal `reconnect_attempts` times.
+
 Among transport faults it stays deliberately indifferent to *why* the link dropped, because
 from the client side an intermediary's idle timeout, its absolute session cap and a real
 network failure are not distinguishable — reattaching covers all three.

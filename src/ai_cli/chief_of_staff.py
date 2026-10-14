@@ -136,23 +136,39 @@ def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict |
     """Return the chief home: an explicit ``fm_home``, else the per-machine state path.
 
     The machine key comes from ``machine_key`` or ``$AI_MACHINE_ID`` and must be a plain
-    token, because it becomes a path component.
+    token, because it becomes a path component. With neither, the one home the installer
+    seeded on this machine is used: a non-interactive shell (the remote side of ``-R``
+    runs in one) skips an rc file that exports the key, but the home it named is still on
+    disk. Several seeded homes are a refusal, never a pick.
     """
     environ = os.environ if env is None else env
     if fm_home:
         return Path(fm_home).expanduser()
+    root = _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / "firstmate" / "chief-of-staff"
     key = machine_key or environ.get(MACHINE_KEY_ENV, "")
     if not key:
+        seeded = sorted(path.name for path in _seeded_homes(root))
+        if len(seeded) == 1:
+            return root / seeded[0]
+        found = f"; {root} holds several homes ({', '.join(seeded)}), so name one" if seeded else ""
         raise ChiefOfStaffError(
-            f"no machine key: pass -k/--machine-key or export {MACHINE_KEY_ENV} "
+            f"no machine key{found}: pass -k/--machine-key or export {MACHINE_KEY_ENV} "
             "(your environment's installer provisions it), or name the home with -H/--fm-home"
         )
     if not _MACHINE_KEY.match(key):
         raise ChiefOfStaffError(
             f"machine key {key!r} is not a plain token ([A-Za-z0-9._-]); refusing to use it as a path"
         )
-    state = _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    return state / "firstmate" / "chief-of-staff" / key
+    return root / key
+
+
+def _seeded_homes(root: Path) -> list[Path]:
+    """The chief homes under ``root`` that carry the installer's required files."""
+    try:
+        candidates = [path for path in root.iterdir() if _MACHINE_KEY.match(path.name) and path.is_dir()]
+    except OSError:
+        return []
+    return [path for path in candidates if all((path / name).is_file() for name in REQUIRED_HOME_FILES)]
 
 
 def validate_chief_home(home: Path) -> None:

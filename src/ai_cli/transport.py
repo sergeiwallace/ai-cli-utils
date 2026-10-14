@@ -82,6 +82,12 @@ def restore_terminal(stream=None) -> None:
 #: is a transport failure, and the remote tmux session is still sitting there detached.
 _SSH_OPERATOR_EXIT_CODES = frozenset({0, 130})
 
+#: The exit status the remote ``ai`` uses when it refused to launch (a missing chief home, a
+#: session that must be migrated first, ...). ssh relays it unchanged, and it is not a
+#: dropped link: every reattach would be refused the same way, so the ladder stops on it.
+#: 78 is ``EX_CONFIG`` from BSD ``sysexits.h``; neither ssh nor tmux exits with it.
+REMOTE_LAUNCH_REFUSED_EXIT = 78
+
 #: stderr text that marks a failed attempt as a CREDENTIAL fault rather than a lost link.
 #: ssh exits 255 for both, so its own stderr and its ``ProxyCommand``'s (which inherits it)
 #: are the only place the two differ. Matched case-insensitively.
@@ -280,6 +286,17 @@ def run_ssh_with_reconnect(
             if returncode in _SSH_OPERATOR_EXIT_CODES:
                 verdict = "clean_exit" if returncode == 0 else "interrupted"
                 cause = None
+                break
+            if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                verdict = "refused"
+                cause = "remote_launch"
+                restore_terminal()
+                _out.emit(
+                    Tag.TRANSPORT,
+                    "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
+                    "since every retry would be refused the same way. Fix that, then re-run the same command.",
+                    err=True,
+                )
                 break
             drops += 1
             connected = _format_uptime(_monotonic() - started)

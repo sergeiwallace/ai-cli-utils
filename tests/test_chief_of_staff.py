@@ -23,6 +23,7 @@ import pytest
 from conftest import run_cli
 
 from ai_cli import chief_of_staff as cos
+from ai_cli.transport import REMOTE_LAUNCH_REFUSED_EXIT
 
 VALID_POLICY = '{"schema_version":1,"primary":"native","fallbacks":["agent-mail","fm-send"]}\n'
 
@@ -716,7 +717,7 @@ class TestRemoteChief:
                 ["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate", "c-r-aih-fw-firstmate-2"]
             )
             launch.assert_not_called()
-        assert code == 1
+        assert code == REMOTE_LAUNCH_REFUSED_EXIT
         assert "already running" in err
 
     def test_given_no_host_alias_on_remote_when_remote_side_runs_then_refuses_without_registration(self, seeded_home):
@@ -731,7 +732,7 @@ class TestRemoteChief:
             )
             code, _out, err = run_cli(["ai", "c", "--is-remote", "--project-prefix", "aih", "--firstmate"])
             launch.assert_not_called()
-        assert code == 1
+        assert code == REMOTE_LAUNCH_REFUSED_EXIT
         assert "no host alias configured" in err
         assert not cos.registration_path(seeded_home).exists()
 
@@ -1053,7 +1054,7 @@ class TestResumeAndCreate:
             stack.enter_context(patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[]))
             code, _out, err = run_cli(["ai", *argv])
             launch.assert_not_called()
-        assert code == 1
+        assert code == (REMOTE_LAUNCH_REFUSED_EXIT if "--is-remote" in argv else 1)
         last = err.strip().splitlines()[-1]
         assert "no resumable chief session for aih-fw-firstmate-1 on workstation" in last
         assert "start one with `ai c firstmate-1`" in last
@@ -1184,3 +1185,83 @@ class TestProjectOptionWins:
         assert "-p/--project other-repo names another project" in err
         assert "pass `-p aih`" in err
         launch.assert_not_called()
+
+
+class TestRemoteRelaunchOfAChief:
+    """`ai c firstmate-1 -R` from another machine, as the remote `ai` receives it (AI-CLI-a8h5).
+
+    The dispatcher runs the remote side as ``<shell> -l -c 'ai c --is-remote ...'``. That
+    shell is login but not interactive, so a machine key exported below an rc file's
+    "not interactive: return" guard never reaches it. Measured on the reporting host: the
+    key was unset under ``bash -l -c`` and set under ``bash -i``, so every reattach refused
+    with "no machine key" and the local reconnect ladder retried that refusal ten times.
+    """
+
+    def test_given_no_machine_key_in_the_remote_shell_when_the_remote_side_launches_then_the_one_seeded_home_is_used(
+        self, seeded_home, fw_alias, monkeypatch
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", *REMOTE_SIDE, "firstmate-1"])
+            launch.assert_called_once()
+        assert code == 0, err
+        assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        assert registration["machine_key"] == "machine-key-1"
+
+    def test_given_two_seeded_homes_and_no_machine_key_when_the_remote_side_launches_then_it_refuses_naming_both(
+        self, seeded_home, fw_alias, monkeypatch
+    ):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        other = seeded_home.parent / "machine-key-2"
+        shutil.copytree(seeded_home, other)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", *REMOTE_SIDE, "firstmate-1"])
+            launch.assert_not_called()
+        assert code == REMOTE_LAUNCH_REFUSED_EXIT
+        assert "machine-key-1, machine-key-2" in err
+        assert "-k/--machine-key" in err
+
+    def test_given_a_chief_registered_under_an_older_prefix_when_relaunched_then_refuses_naming_session_migrate(
+        self, seeded_home, fw_alias, harness_project
+    ):
+        """The host now names chiefs `aih-fw-...`; the registered one is `aih-firstmate-1`.
+
+        Relaunching under the new name would open a fresh worktree and a new conversation
+        and strand the old ones, while saying it resumed them.
+        """
+        registration = _register(seeded_home, agent="aih-firstmate-1", target="c-aih-firstmate-1")
+        (harness_project / ".worktrees" / "aih-firstmate-1").mkdir(parents=True)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", *REMOTE_SIDE, "firstmate-1"])
+            launch.assert_not_called()
+        assert code == REMOTE_LAUNCH_REFUSED_EXIT
+        assert f"ai session-migrate aih-firstmate-1 aih-fw-firstmate-1 -r {harness_project}" in err
+        assert json.loads(cos.registration_path(seeded_home).read_text()) == registration
+        assert not (harness_project / ".worktrees" / "aih-fw-firstmate-1").exists()
+
+    def test_given_the_old_chief_already_migrated_when_relaunched_by_its_old_name_then_resumes_under_the_new_one(
+        self, seeded_home, fw_alias, harness_project
+    ):
+        _register(seeded_home, agent="aih-firstmate-1", target="c-aih-firstmate-1")
+        (harness_project / ".worktrees" / "aih-fw-firstmate-1").mkdir(parents=True)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", *REMOTE_SIDE, "firstmate-1"])
+            kwargs = launch.call_args.kwargs
+        assert code == 0, err
+        assert kwargs["name"] == "firstmate-1"
+        registration = json.loads(cos.registration_path(seeded_home).read_text())
+        assert registration["native_agent_name"] == "aih-fw-firstmate-1"
+
+    def test_given_a_local_launch_refusal_when_not_remote_then_it_still_exits_one(self, monkeypatch, fw_alias):
+        monkeypatch.delenv(cos.MACHINE_KEY_ENV, raising=False)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "firstmate-1"])
+            launch.assert_not_called()
+        assert code == 1
+        assert "no machine key" in err

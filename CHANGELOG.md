@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Lines are also coloured again after the per-launch log starts: its stderr mirror had
   made the terminal look like a pipe. Every exec now flushes output first.
 
+- `ai c firstmate-N -R` no longer loops on `no machine key`. The remote side runs in a
+  login shell that is not interactive, so a machine key exported in an rc file below its
+  "not interactive: return" guard never reached it. With no key, the remote `ai` now uses
+  the one chief home the installer seeded on that machine, and refuses, naming each one,
+  when there are several. A remote launch that refuses now exits 78, and the ssh reconnect
+  ladder stops on that code with one message instead of retrying the same refusal ten
+  times. A chief registered under a name the host no longer gives it (its host alias
+  changed) is refused with the `ai session-migrate OLD NEW -r DIR` command to run first,
+  where it used to start a new conversation under the new name and leave the old worktree
+  behind.
+
 - `ai register -p DIR` now refuses a directory that is not itself a repository root but
   sits inside one, naming the containing repository. It used to register that ancestor
   and rewrite the `issue-prefix` in its `.beads/config.yaml`, a repository the caller
