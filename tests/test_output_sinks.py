@@ -117,6 +117,16 @@ def _launch(capsys, dolt_script, dolt_reply: str, *, argv=("ai", "c", "-R", "2")
     return exc_info.value.code, capsys.readouterr().err
 
 
+def _write_launch_config(body: str) -> Path:
+    """Write ``config.toml`` where the launch reads it: ``_launch`` runs it as Linux on every host.
+
+    On Windows the resolver otherwise picks APPDATA, so a file written outside the
+    platform patch is one the launch never reads.
+    """
+    with patch("sys.platform", "linux"):
+        return _write_config(body)
+
+
 def _log_lines() -> list[str]:
     logs = sorted((_config.get_xdg_state_home() / "launch-logs").glob("*.log"))
     assert len(logs) == 1, logs
@@ -233,7 +243,7 @@ def _store_is_locked(_tmp_path):
 
 
 def _telemetry_disabled(_tmp_path):
-    _write_config("[telemetry]\nenabled = false\n")
+    _write_launch_config("[telemetry]\nenabled = false\n")
 
 
 @pytest.mark.parametrize(
@@ -356,7 +366,7 @@ def test_given_foreign_stderr_text_when_a_launch_runs_then_the_log_file_mirrors_
 def test_given_sink_settings_when_ai_c_hands_off_then_each_sink_follows_them(
     config, on_terminal, in_file, in_telemetry, capsys, dolt_script
 ):
-    _write_config(config)
+    _write_launch_config(config)
 
     code, err = _launch(capsys, dolt_script, f"{WARNING_LINE}\n")
 
@@ -367,7 +377,7 @@ def test_given_sink_settings_when_ai_c_hands_off_then_each_sink_follows_them(
 
 
 def test_given_min_level_info_when_ai_c_hands_off_then_info_records_reach_telemetry(capsys, dolt_script):
-    _write_config("[output.sinks.telemetry]\nmin_level = 'info'\n")
+    _write_launch_config("[output.sinks.telemetry]\nmin_level = 'info'\n")
 
     code, _err = _launch(capsys, dolt_script, "[dolt_server] ensure: healthy (socket accepted)\n")
 
@@ -380,7 +390,7 @@ def test_given_min_level_info_when_ai_c_hands_off_then_info_records_reach_teleme
 def test_given_the_datetime_element_disabled_when_ai_c_launches_then_the_file_still_leads_with_the_time(
     capsys, dolt_script
 ):
-    _write_config("[output.elements.datetime]\nenabled = false\n")
+    _write_launch_config("[output.elements.datetime]\nenabled = false\n")
 
     code, err = _launch(capsys, dolt_script, f"{WARNING_LINE}\n")
 
