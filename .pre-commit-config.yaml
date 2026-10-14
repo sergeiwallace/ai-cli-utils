@@ -20,7 +20,7 @@ default_stages: [pre-commit]
 # hooks (check-json/check-yaml/end-of-file-fixer/trailing-whitespace): bd's output
 # doesn't satisfy them, and the pre-push stash/auto-fix/restore dance conflicts on
 # the churning store files (SW-841 #73). Global-exclude the whole dir. Committed
-# .beads/issues.jsonl is still version-controlled; it's just not linted.
+# .beads/issues.jsonl, in a repo that still tracks that mirror, is version-controlled but not linted.
 exclude: ^\.beads/
 
 repos:
@@ -266,7 +266,7 @@ repos:
       # same pattern as bd-new/bdx) rather than vendored per repo.
       # Bypass: SKIP=bd-precommit-validate git commit
       - id: bd-precommit-validate
-        name: bd dual-ID invariant (staged .beads/issues.jsonl)
+        name: bd dual-ID invariant (a staged .beads/issues.jsonl mirror, if tracked)
         entry: bd-precommit-validate
         language: system
         pass_filenames: false
