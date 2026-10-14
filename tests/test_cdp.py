@@ -687,6 +687,55 @@ def _real_edge() -> str | None:
     return shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable")
 
 
+def _security_agent_windows() -> set[int]:
+    """Window numbers of on-screen windows owned by SecurityAgent, which draws keychain dialogs.
+
+    Empty off macOS. Read in-process through CoreGraphics, a read-only query that needs no
+    helper process. Owner names are readable without Screen Recording permission and window
+    titles are not, so this matches the owner and the caller compares against a baseline.
+    """
+    if sys.platform != "darwin":
+        return set()
+    import ctypes
+
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    vp = ctypes.c_void_p
+    cg.CGWindowListCopyWindowInfo.restype = vp
+    cg.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    cf.CFArrayGetCount.restype = ctypes.c_long
+    cf.CFArrayGetCount.argtypes = [vp]
+    cf.CFArrayGetValueAtIndex.restype = vp
+    cf.CFArrayGetValueAtIndex.argtypes = [vp, ctypes.c_long]
+    cf.CFDictionaryGetValue.restype = vp
+    cf.CFDictionaryGetValue.argtypes = [vp, vp]
+    cf.CFStringGetCString.restype = ctypes.c_bool
+    cf.CFStringGetCString.argtypes = [vp, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    cf.CFNumberGetValue.restype = ctypes.c_bool
+    cf.CFNumberGetValue.argtypes = [vp, ctypes.c_int, vp]
+    cf.CFRelease.argtypes = [vp]
+    owner_key = vp.in_dll(cg, "kCGWindowOwnerName")
+    number_key = vp.in_dll(cg, "kCGWindowNumber")
+    on_screen_only, utf8, sint64 = 1, 0x08000100, 4
+
+    windows = cg.CGWindowListCopyWindowInfo(on_screen_only, 0)
+    found: set[int] = set()
+    try:
+        for i in range(cf.CFArrayGetCount(windows)):
+            info = cf.CFArrayGetValueAtIndex(windows, i)
+            owner = cf.CFDictionaryGetValue(info, owner_key)
+            name = ctypes.create_string_buffer(256)
+            if not owner or not cf.CFStringGetCString(owner, name, len(name), utf8):
+                continue
+            if name.value == b"SecurityAgent":
+                number = ctypes.c_int64()
+                cf.CFNumberGetValue(cf.CFDictionaryGetValue(info, number_key), sint64, ctypes.byref(number))
+                found.add(number.value)
+    finally:
+        cf.CFRelease(windows)
+    return found
+
+
 class TestCdpEdgeRealBoundary:
     """Real-boundary check for Edge and ``--remote-allow-origins=*``.
 
@@ -729,6 +778,12 @@ class TestCdpEdgeRealBoundary:
             # aborts at startup (SIGABRT, measured on the hosted Ubuntu runner). The
             # sandbox is not what this test is about.
             args.append("--no-sandbox")
+        if sys.platform == "darwin":
+            # The suite points HOME at an empty temp dir, where macOS finds no default
+            # keychain. Edge writes its "Safe Storage" key there at startup, so without this
+            # flag every run raised SecurityAgent's "A keychain cannot be found to store
+            # Microsoft Edge" dialog on the operator's screen.
+            args.append("--use-mock-keychain")
         if allow_origins:
             args.append("--remote-allow-origins=*")
         env = None
@@ -741,6 +796,7 @@ class TestCdpEdgeRealBoundary:
             edge_home = tmp_path / "edge-home"
             (edge_home / "AppData" / "Local").mkdir(parents=True)
             env = {**os.environ, "USERPROFILE": str(edge_home)}
+        dialogs_before = _security_agent_windows()
         proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         try:
             ws_url = None
@@ -760,6 +816,10 @@ class TestCdpEdgeRealBoundary:
             assert ws_url, (
                 f"real Edge never opened its CDP port; returncode={proc.poll()!r}, "
                 f"DevToolsActivePort present={active.is_file()}, profile present={profile.is_dir()}"
+            )
+            # The keychain dialog was measured up 0.6 s after launch, before the CDP port.
+            assert _security_agent_windows() <= dialogs_before, (
+                "launching the real Edge raised a SecurityAgent (keychain) dialog"
             )
 
             async def attach() -> dict:
