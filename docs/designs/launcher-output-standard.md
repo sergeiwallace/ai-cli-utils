@@ -582,6 +582,68 @@ Phase 4, T-6, as built:
 - **Cost.** Each reload costs one `ai internal progress`, the same Python start as one
   `ai internal emit`, and nothing on a launch without reloads.
 
+Phase 5, T-7, as built:
+
+- **One dispatch.** `output._write_records` sends each batch of records to the terminal,
+  to the attached file sink and to the telemetry buffer, under the output lock, reading
+  the settings once for the batch. `emit(..., terminal=False)` keeps a record off the
+  terminal only. `LaunchReporter` uses it for a `-q` launch's info lines and for detail
+  lines without `-v`, so the file still gets them. The reporter no longer takes a
+  `logger`. A child `ai` that answers its parent in records writes to no sink itself;
+  the parent's sinks get the relayed records.
+- **File sink.** `output.attach_file_sink(callable)` takes one plain line per record. The
+  launch attaches `LaunchLog.write_line` for exactly the launch and detaches it in the
+  launch's `finally`. A record renders with the configured elements and no colour; the
+  datetime is switched on, and put first when `order` leaves it out. The file has no
+  separate level column: like the terminal, a warning or error carries its label and
+  an info line carries none.
+- **Non-record text.** The stderr mirror (`_LoggingStderr`) is an
+  `output.MirroredStream`. `_write` writes a record to its `unmirrored` stream, so the
+  mirror sees only text that is not a record, which it logs as `<datetime> <text>`
+  (`output.file_text_line`). `_log_level`, the stdlib `logging` handler and its
+  `asctime LEVEL` format are gone.
+- **A log that cannot be written.** `create_launch_log` returns `LaunchLog(path=None)`
+  when the directory or the file cannot be created, and the session script then gets no
+  log path. A write that fails closes the file and drops the line.
+- **Telemetry sink.** A record at or above `min_level` is buffered as one
+  `telemetry.log.<tag>` event while `[output.sinks.telemetry] enabled` and
+  `[telemetry] enabled` both allow it. The second is read from the same cached parse of
+  `config.toml` (`output_settings.telemetry_enabled()`), so it costs no extra `stat`.
+  The event's data is `at` (ISO 8601 in the configured datetime zone, so its offset
+  matches the terminal's zone), `tag`, `op` (the operation the line shows, the default
+  for an op-less record), `level` and `text`. The row's `ts` is the record's instant.
+  `flush_sinks()` hands the batch to `telemetry.store_log_records`: one transaction,
+  a 50 ms busy timeout, and any exception drops the batch silently. It runs at
+  `LaunchReporter.handoff()` (a remote session holds the terminal for hours without
+  exec'ing), in the exec helper, before the pty handoff, and at exit.
+- **No `fields` yet.** No producer passes structured extras, so `Record` has no `fields`
+  mapping and an event carries the five elements only. It arrives with its first
+  producer.
+- **Not covered: the session script's lines.** `ai internal emit` and
+  `ai internal progress` reply through `raw()`, so their records reach no sink in that
+  process. The script still appends its plain line to the launch log itself, with its
+  own UTC stamp, and nothing it prints reaches telemetry. The
+  [Session-script producers](#session-script-producers) section says `_ai_emit` lines
+  reach all three sinks; that is not built yet.
+- **Found while building.** `telemetry._DB_PATH` was computed at import, so a process
+  whose HOME changed after import wrote the store under the old home. The test suite
+  is such a process, and with this sink its warnings would have reached the operator's
+  real store. The path is now resolved at call time, `tests/conftest.py` drops buffered
+  records and any attached launch log when a test ends, and `telemetry.py` imports
+  `asyncio` only on its bus paths.
+- **Cost.** Measured 2026-10-14 on the same host under load (8–11 on 10 cores), against
+  `origin/main` at `1a29912` unpacked into its own directory, runs interleaved, HOME and
+  XDG directories isolated. `ai c 7 --dry-run`, which ends on six error records and so
+  stores six events at exit, took a median of 0.68 s on the base, 0.66 s with the sink
+  and 0.71 s with `[telemetry] enabled = false` (10 runs each). `ai internal emit
+  session warning reload plain hello` took a median of 0.56 s on the base and 0.59 s
+  on this branch (20 runs each), with the same modules imported: no measurable change.
+  In process, a flush that stores six events took a median of 3–6 ms. With the store
+  locked by another writer it took 61 ms (max 64 ms over 10). On this host
+  `sqlite3.connect` itself stalled for about 165 ms in 2 of 60 samples in one run and
+  in none of 60 in the next. That stall is in the file open, which no SQLite timeout
+  bounds, so a writable store can rarely exceed the 100 ms budget.
+
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
 the fix every record ended that way, from the tee's relay mid-attempt and from every
