@@ -340,7 +340,13 @@ def test_given_a_working_ai_entry_point_when_the_session_script_emits_then_the_r
     _, stderr = _finish_supervisor(process)
 
     reason = "supervisor is not in the terminal foreground process group"
-    assert f"rendered:[session] session: stale-session reaper evidence disabled: {reason}\n" in stderr, stderr
+    # The real CLI renders the shipped line, which leads with the wall-clock time.
+    rendered = re.compile(
+        rf"^rendered:\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}} [A-Z]{{2,5}} "
+        rf"\[session\] session: stale-session reaper evidence disabled: {reason}$",
+        re.MULTILINE,
+    )
+    assert rendered.search(stderr), stderr
 
 
 @pytest.mark.parametrize(

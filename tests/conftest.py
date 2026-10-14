@@ -1478,6 +1478,37 @@ def _no_real_nats_connections(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _undated_output_lines(request):
+    """Render lines without the datetime element unless a test is about it (AI-CLI-fx4b).
+
+    The shipped default leads every line with the wall-clock time, which no line
+    assertion written as ``[tag] text`` can match. The datetime's own tests, and any
+    test that pins the full shipped line, opt out with the ``shipped_output_datetime``
+    marker and freeze the clock themselves. The shipped table is cached and every
+    reader (the renderer's defaults, the validator's merge) shares that one dict, so
+    it is switched off in place and restored after the test. A fresh interpreter, such
+    as a generated session script's ``ai internal emit``, still renders the shipped line.
+    """
+    if request.node.get_closest_marker("shipped_output_datetime"):
+        yield
+        return
+
+    from ai_cli import output_settings
+
+    datetime_element = output_settings.shipped_table()["elements"]["datetime"]
+    shipped = datetime_element["enabled"]
+    datetime_element["enabled"] = False
+    output_settings.defaults.cache_clear()
+    output_settings._loaded = None
+    try:
+        yield
+    finally:
+        datetime_element["enabled"] = shipped
+        output_settings.defaults.cache_clear()
+        output_settings._loaded = None
+
+
+@pytest.fixture(autouse=True)
 def _projects_dir_contains_the_checkout(monkeypatch):
     """Make ``projects_dir`` resolve to this checkout's own parent directory.
 
