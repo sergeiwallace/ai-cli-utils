@@ -508,7 +508,7 @@ Refused before anything is written, `-n` included, with every blocking item name
 | a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `session-migrate` |
 | a heartbeat in `session-heartbeats/` for one of those tmux sessions, written in this boot within the reaper's `[stale_session_reaper] stale_after_seconds` | the reaper's own freshness rule; an unreadable record or one that cannot be dated counts as fresh |
 | an uncommitted change, or an untracked file that is not ignored | removing the checkout would lose it (ignored files are removed with it) |
-| a checked-out commit (branch or detached HEAD) in neither the branch's upstream nor `origin/main` | the commit would survive only on a branch nobody pushed |
+| a checked-out commit (branch or detached HEAD) in neither the branch's upstream nor `origin/main`, whose content has not landed there either | the commit would survive only on a branch nobody pushed. A squash-merged branch passes on content: every line it added since its merge-base is on the target, was there in a commit since then, or replaced a line the target also rewrote. A binary file passes only when the target's blob is the same, and a branch that adds no line never passes this way |
 | an existing `refs/preserved/session-retire/<branch>` at a different commit | it preserves an earlier tip and is never overwritten |
 
 Otherwise, in order:
