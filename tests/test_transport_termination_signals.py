@@ -60,13 +60,15 @@ def _wait_for(path: Path, deadline: float) -> None:
         time.sleep(0.05)
 
 
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+# By name: Windows has no SIGHUP, and the list is built at collection, before the skip applies.
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
 def test_given_a_remote_session_under_ssh_when_the_launcher_is_signalled_then_the_terminal_cleanup_and_outcome_survive(
-    tmp_path, signum
+    tmp_path, signame
 ):
     import pty
     import termios
 
+    signum = getattr(signal, signame)
     ready = tmp_path / "ssh-ready"
     cleaned = tmp_path / "cleanup-ran"
     outcome = tmp_path / "outcome.json"
