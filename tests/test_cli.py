@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -1759,7 +1760,10 @@ class TestCliLsDispatch:
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
                             cli()
-        assert "10s" in capsys.readouterr().out
+        # The listing reads the clock after this test does, so a slow runner shows 11s or more.
+        # What this pins is the seconds suffix, not the exact count.
+        shown = re.search(r"\b(\d+)s ago\b", capsys.readouterr().out)
+        assert shown and 10 <= int(shown.group(1)) < 60
 
     def test_when_session_age_is_days_then_displays_d_suffix(self, capsys):
         now = int(time.time())
