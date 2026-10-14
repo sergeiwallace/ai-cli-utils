@@ -813,6 +813,7 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
@@ -872,6 +873,7 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
         patch("ai_cli.main._direnv_env_usable", return_value=True),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
@@ -902,6 +904,7 @@ def test_given_bare_launch_when_no_worktree_flag_then_runs_in_repo_root(real_rep
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),

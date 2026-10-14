@@ -81,10 +81,10 @@ default and preferred transport.
 | AC-3 | `tests/test_bare_pty_host.py::test_given_no_pty_api_when_a_bare_launch_runs_then_no_submission_fifo_exists` |
 | AC-4 | `tests/test_bare_pty_host.py::test_given_a_bare_pty_session_when_the_operator_types_then_keys_and_ctrl_c_reach_the_agent_unchanged` |
 | AC-5 | `tests/test_bare_pty_host.py::test_given_a_bare_pty_session_when_the_terminal_is_resized_then_the_agent_sees_the_new_size` |
-| AC-6 | `tests/test_bare_pty_host.py::test_given_a_bare_pty_session_when_the_agent_exits_then_status_and_terminal_are_restored`, `...when_the_launcher_gets_<signal>_then_...` |
+| AC-6 | `tests/test_bare_pty_host.py::test_given_a_bare_pty_session_when_the_agent_exits_then_status_and_terminal_are_restored`, `tests/test_bare_pty_host.py::test_given_a_bare_pty_session_when_the_launcher_gets_a_termination_signal_then_it_exits_128_plus_signum_restored` (SIGTERM, SIGHUP) |
 | AC-7 | `tests/test_bare_pty_host.py::test_given_tmux_hosts_the_session_when_launched_then_no_pty_is_hosted` |
 | AC-8 | covered by AC-3's test, which drives the no-pty-API resolution to the `execvp` path |
-| AC-9 | `tests/test_bare_pty_host.py::test_given_the_pty_host_source_then_it_never_uses_tiocsti` |
+| AC-9 | No dedicated test: the AC-2 test proves delivery through a plain master write, and the scope is stated in `src/ai_cli/pty_host.py`'s module docstring |
 
 ## Decisions
 

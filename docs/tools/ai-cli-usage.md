@@ -184,11 +184,26 @@ Set `[session] use_pty = false` to make tmux the only accepted transport; every 
 launch is then refused rather than started without a managed compaction path. That is an
 explicit opt-out, so it refuses on every platform, including ones with no pty API.
 
-The pty carries the submission and nothing else. Your own terminal stays the terminal, so
-resize (SIGWINCH) and Ctrl-C keep reaching the engine from there, and the pty path
-deliberately provides **no detach/reattach and no scrollback** — those are what tmux is
-for, and reimplementing them here would be reimplementing a multiplexer badly. `TIOCSTI`
-is never used: it is privileged and denied on macOS.
+The pty carries the submission and nothing else. On the pty path the launcher stays
+running instead of exec'ing the engine: it starts the engine on a pty it owns, puts your
+terminal in raw mode and copies bytes both ways unchanged. Text written to the session's
+FIFO, `$XDG_STATE_HOME/ai-cli-utils/pty/<session>.in` (mode `0600`, also passed to the
+engine as `AI_CLI_SUBMIT_FIFO`), is read by the engine as if typed, for example
+`printf '/compact\r' > "$AI_CLI_SUBMIT_FIFO"`. A submitter gets no screen to read back, so
+it confirms a compaction from the transcript, not the pane.
+
+- **Resize:** SIGWINCH on the launcher copies your window size onto the pty, and the engine
+  gets its own SIGWINCH.
+- **Ctrl-C:** your terminal is raw, so the key arrives at the engine's pty as the byte
+  `0x03`; the engine handles it as it would in a plain terminal. The launcher is never
+  interrupted.
+- **SIGTERM / SIGHUP:** forwarded to the engine. The launcher waits for it to exit,
+  restores your terminal, removes the FIFO and exits `128 + signum`. Otherwise it exits
+  with the engine's own status.
+
+The pty path deliberately provides **no detach/reattach and no scrollback**. Those are
+what tmux is for, and reimplementing them here would be reimplementing a multiplexer
+badly. `TIOCSTI` is never used: it is privileged and denied on macOS.
 
 **Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
 and conversation resume all still apply — tmux is not a prerequisite for any of them.

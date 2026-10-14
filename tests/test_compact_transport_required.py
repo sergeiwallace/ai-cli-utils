@@ -97,6 +97,7 @@ def _run_launch(repo, tmp_path, monkeypatch, **over):
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
