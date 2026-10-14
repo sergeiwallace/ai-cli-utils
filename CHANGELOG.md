@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session started with no terminal attached (a detached `ai c`) no longer stalls for
+  several seconds on a busy machine before starting the agent. Its wait for a terminal to
+  attach is now capped at about a second of real time; it used to count polls, and on a
+  loaded host each poll took long enough to stretch that wait to 7 seconds.
+
 - A remote session that stops relaunching its agent, for example after `/login` forces
   an exit and the next launch fails before you have logged in again, now tells you how
   to get the agent back. The shell it leaves in the tmux pane lists `exit 78` to

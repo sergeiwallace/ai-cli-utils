@@ -123,12 +123,20 @@ def tmux_socket():
     shutil.rmtree(sock_dir, ignore_errors=True)
 
 
-def _start_session(sock: str, tmp_path: Path, session: str, *, rewrite_once_during_startup: bool) -> Path:
+def _start_session(
+    sock: str,
+    tmp_path: Path,
+    session: str,
+    *,
+    rewrite_once_during_startup: bool,
+    extra_fakes: dict[str, str] | None = None,
+) -> Path:
     """Run the generated stable script as a tmux pane, exactly as ``ai c`` does.
 
     ``rewrite_once_during_startup`` makes the first ``ai ps cron`` -- which the child
     runs after taking its baseline mtime and before its loop-top check -- give the
     stable script a new mtime, the way a concurrent ``ai c`` or ``ai update`` does.
+    ``extra_fakes`` adds stand-in executables, by name, ahead of the real ones on PATH.
     Returns the file the stand-in agent appends its pid to when it starts.
     """
     started = tmp_path / "started"
@@ -158,6 +166,8 @@ def _start_session(sock: str, tmp_path: Path, session: str, *, rewrite_once_duri
     if not _host_stat_is_gnu():
         (fake_bin / "stat").write_text(_GNU_STAT)
     (fake_bin / "python3").symlink_to(sys.executable)
+    for name, body in (extra_fakes or {}).items():
+        (fake_bin / name).write_text(body)
     for fake in fake_bin.iterdir():
         if not fake.is_symlink():
             fake.chmod(0o755)
@@ -228,5 +238,37 @@ def test_given_gnu_stat_and_one_stable_script_rewrite_when_the_session_starts_th
         assert (tmp_path / "rewritten").exists(), "the stand-in never rewrote the script, so this proves nothing"
         assert _pane_history(tmux_socket, session).count(_RELOAD_LINE) == 1
         assert len(_lines(started)) == 1
+    finally:
+        _release(_lines(started))
+
+
+@pytest.mark.real_tmux
+def test_given_no_attached_client_and_a_slow_tmux_when_the_session_starts_then_the_attach_wait_is_bounded_by_time(
+    tmux_socket, tmp_path
+):
+    """The first-run wait for a tmux client is about 1 s of wall time, not 20 polls (AI-CLI-b22m).
+
+    Each poll forks ``tmux list-clients``. On a loaded host a fork costs far more than the
+    0.05 s sleep between polls, so a wait bounded by its poll count measured 7 s on every
+    launch with no attached client. A stand-in ``tmux`` that answers ``list-clients`` slowly
+    makes the difference countable instead of timed: 20 polls under a count bound, a few
+    under a time bound.
+    """
+    real_tmux = shutil.which("tmux")
+    assert real_tmux, "tmux_socket already proved tmux runnable"
+    polls = tmp_path / "list-clients-polls"
+    slow_tmux = (
+        f'#!/bin/sh\nif [ "$1" = list-clients ]; then echo poll >> {polls}; sleep 0.5; fi\nexec {real_tmux} "$@"\n'
+    )
+    session = "attach-wait"
+    started = _start_session(
+        tmux_socket, tmp_path, session, rewrite_once_during_startup=False, extra_fakes={"tmux": slow_tmux}
+    )
+    try:
+        assert _wait_for_agent_start(tmux_socket, session, started), (
+            f"the agent never started; pane: {_pane_history(tmux_socket, session)!r}"
+        )
+        count = len(_lines(polls))
+        assert 0 < count <= 8, f"the attach wait polled {count} times; a 1 s wall bound allows a handful"
     finally:
         _release(_lines(started))
