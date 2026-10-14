@@ -32,7 +32,19 @@ HEARTBEAT_VERSION = 1
 DEFAULT_MODE = "observe"
 DEFAULT_STALE_AFTER_SECONDS = 600
 REAPER_CADENCE_SECONDS = 60
-_TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#{pane_id}\t#{pane_pid}"
+#: How a pane's life is identified when tmux no longer formats its pid.
+#:
+#: tmux 3.8's ``format_cb_pane_pid`` prints the pid only while ``wp->fd != -1``; 3.7
+#: printed it for any pane. The fd closes when the pane's pty does, so on 3.8 a dead
+#: (remain-on-exit) pane lists an empty ``#{pane_pid}``, and so does a pane whose pty
+#: closed before tmux reaped its child -- that one is not dead and its process may still
+#: be running. ``#{pane_dead_time}`` is set only once tmux has reaped the child and kept
+#: the pane, and respawning clears it, so it binds one dead life of a pane. tmux reports
+#: it in whole seconds: a pane respawned and dead again within the second of its first
+#: death looks the same, and the fence still kills only a session whose every pane is
+#: dead at that moment. A pane with neither a pid nor a death time has no identity, and
+#: its session is always preserved.
+_TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_time}"
 #: The fence's canonical session fingerprint.
 #:
 #: The window loop is ``#{W:...}`` and deliberately carries no sort argument. It used
@@ -53,17 +65,17 @@ _TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#
 #: has always relied on natural order for the same reason.
 _TMUX_FINGERPRINT_FORMAT = (
     "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
-    "#{W:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}"
+    "#{W:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_dead_time};}]}"
 )
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _WINDOW_ID_RE = re.compile(r"^@\d+$")
 _PANE_ID_RE = re.compile(r"^%\d+$")
 _GENERATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _FINGERPRINT_RE = re.compile(
-    r"^(?P<session>\$\d+)\|(?P<generation>[A-Za-z0-9_-]{1,128})\|(?P<attached>[01])\|(?P<windows>(?:@\d+\[(?:%\d+=[1-9]\d*=[01];)+\])+)$"
+    r"^(?P<session>\$\d+)\|(?P<generation>[A-Za-z0-9_-]{1,128})\|(?P<attached>[01])\|(?P<windows>(?:@\d+\[(?:%\d+=(?:[1-9]\d*)?=[01]=(?:[1-9]\d*)?;)+\])+)$"
 )
-_WINDOW_FINGERPRINT_RE = re.compile(r"(@\d+)\[((?:%\d+=[1-9]\d*=[01];)+)\]")
-_PANE_FINGERPRINT_RE = re.compile(r"(%\d+)=([1-9]\d*)=([01]);")
+_WINDOW_FINGERPRINT_RE = re.compile(r"(@\d+)\[((?:%\d+=(?:[1-9]\d*)?=[01]=(?:[1-9]\d*)?;)+)\]")
+_PANE_FINGERPRINT_RE = re.compile(r"(%\d+)=([1-9]\d*)?=([01])=([1-9]\d*)?;")
 
 
 @dataclass(frozen=True)
@@ -76,10 +88,15 @@ class ReaperConfig:
 
 @dataclass(frozen=True)
 class Pane:
-    """One pane leader from a captured tmux session snapshot."""
+    """One pane leader from a captured tmux session snapshot.
+
+    ``pid`` is None where tmux formats none (see ``_TMUX_FORMAT``); ``dead_time`` is
+    tmux's death time for a dead pane, None for a live one.
+    """
 
     pane_id: str
-    pid: int
+    pid: int | None
+    dead_time: int | None = None
 
 
 @dataclass(frozen=True)
@@ -135,22 +152,20 @@ class SubprocessTmuxAdapter:
         grouped: dict[tuple[str, str, str], list[Pane]] = {}
         for line in result.stdout.splitlines():
             parts = line.split("\t")
-            if len(parts) != 5:
+            if len(parts) != 7:
                 raise ValueError("tmux_read_failed")
-            session_id, session_name, generation_token, pane_id, raw_pid = parts
+            session_id, session_name, generation_token, pane_id, raw_pid, dead, raw_dead_time = parts
             # The tmux option is the sole managed-session marker.  Tokenless
             # sessions are intentionally ignored rather than classified by name.
             if not generation_token:
                 continue
             if not all((session_id, session_name, pane_id)):
                 raise ValueError("generation_mismatch")
-            try:
-                pid = int(raw_pid)
-            except ValueError as exc:
-                raise ValueError("pid_invalid") from exc
-            if pid <= 0:
-                raise ValueError("pid_invalid")
-            grouped.setdefault((session_id, session_name, generation_token), []).append(Pane(pane_id, pid))
+            if dead not in {"0", "1"}:
+                raise ValueError("tmux_read_failed")
+            pid = _optional_positive_int(raw_pid, "pid_invalid")
+            dead_time = _optional_positive_int(raw_dead_time, "tmux_read_failed") if dead == "1" else None
+            grouped.setdefault((session_id, session_name, generation_token), []).append(Pane(pane_id, pid, dead_time))
         return tuple(
             SessionCandidate(session_id, session_name, generation_token, tuple(panes))
             for (session_id, session_name, generation_token), panes in grouped.items()
@@ -414,6 +429,13 @@ class StaleSessionReaper:
     def _ended_snapshot(self, candidate: SessionCandidate) -> tuple[ProcessObservation, ...] | None:
         observations: list[ProcessObservation] = []
         for pane in candidate.panes:
+            if pane.pid is None:
+                # Only a pane tmux has reaped and kept dead carries a death time.
+                if pane.dead_time is None:
+                    self._log("pid_invalid", candidate)
+                    return None
+                observations.append(ProcessObservation(pane, "GONE", None))
+                continue
             if pane.pid <= 0:
                 self._log("pid_invalid", candidate)
                 return None
@@ -536,7 +558,7 @@ def _valid_candidate(candidate: SessionCandidate) -> bool:
         bool(_SESSION_ID_RE.fullmatch(candidate.session_id))
         and bool(_GENERATION_TOKEN_RE.fullmatch(candidate.generation_token))
         and all(_PANE_ID_RE.fullmatch(pane_id) for pane_id in pane_ids)
-        and all(pane.pid > 0 for pane in candidate.panes)
+        and all(_pane_identified(pane) for pane in candidate.panes)
         and len(pane_ids) == len(set(pane_ids))
     )
 
@@ -550,20 +572,47 @@ def _valid_fingerprint(
     match = _FINGERPRINT_RE.fullmatch(fingerprint)
     if match is None:
         return False
-    panes: dict[str, int] = {}
+    panes: dict[str, tuple[int | None, int | None]] = {}
     for window_match in _WINDOW_FINGERPRINT_RE.finditer(match.group("windows")):
         if _WINDOW_ID_RE.fullmatch(window_match.group(1)) is None:
             return False
         for pane_match in _PANE_FINGERPRINT_RE.finditer(window_match.group(2)):
-            pane_id, raw_pid, dead = pane_match.groups()
+            pane_id, raw_pid, dead, raw_dead_time = pane_match.groups()
             if pane_id in panes or (require_dead and dead != "1"):
                 return False
-            panes[pane_id] = int(raw_pid)
+            pane = Pane(
+                pane_id,
+                int(raw_pid) if raw_pid else None,
+                int(raw_dead_time) if raw_dead_time and dead == "1" else None,
+            )
+            if not _pane_identified(pane):
+                return False
+            panes[pane_id] = (pane.pid, pane.dead_time)
     if candidate is None:
         return True
     if match.group("session") != candidate.session_id or match.group("generation") != candidate.generation_token:
         return False
-    return panes == {pane.pane_id: pane.pid for pane in candidate.panes}
+    return panes == {pane.pane_id: (pane.pid, pane.dead_time) for pane in candidate.panes}
+
+
+def _optional_positive_int(raw: str, reason: str) -> int | None:
+    """An empty tmux field is None; anything else must be a positive decimal."""
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(reason) from exc
+    if value <= 0:
+        raise ValueError(reason)
+    return value
+
+
+def _pane_identified(pane: Pane) -> bool:
+    """A pane is identified by its pid, or, once tmux no longer formats it, by its death."""
+    if pane.pid is not None:
+        return pane.pid > 0
+    return pane.dead_time is not None and pane.dead_time > 0
 
 
 def _same_snapshot(initial: tuple[ProcessObservation, ...], final: tuple[ProcessObservation, ...]) -> bool:
