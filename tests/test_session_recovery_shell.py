@@ -135,8 +135,9 @@ class _RemoteSession:
         assert created.returncode == 0, created.stderr
 
     def pane(self) -> str:
+        # -J joins a line the 120-column pane wrapped, so a long record still reads as one line.
         return subprocess.run(
-            ["tmux", "-S", self.sock, "capture-pane", "-p", "-S", "-", "-t", self.session],
+            ["tmux", "-S", self.sock, "capture-pane", "-p", "-J", "-S", "-", "-t", self.session],
             capture_output=True,
             text=True,
             check=False,
