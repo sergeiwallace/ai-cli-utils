@@ -391,6 +391,75 @@ class TestADroppedLinkReattaches:
         assert restore.call_count == 3
 
 
+class TestARemoteLaunchRefusalIsNotADroppedLink:
+    """The remote `ai` refusing to launch exits with its own code, and the ladder stops on it.
+
+    Measured (AI-CLI-a8h5): the remote side refused every attempt with the same configuration
+    error, ssh relayed its exit 1, and the ladder printed "Connection lost" and retried ten
+    times. A refusal is deterministic, so retrying only repeats it.
+    """
+
+    def _remote_launch(self, ssh_exit_codes):
+        """Drive a real `ai c firstmate-1 -R` dispatch with ssh stubbed at the subprocess boundary."""
+        from conftest import make_subprocess_result, run_cli
+
+        calls = []
+
+        def fake_call(argv, **_kwargs):
+            calls.append(list(argv))
+            return ssh_exit_codes[min(len(calls), len(ssh_exit_codes)) - 1]
+
+        def fake_run(command, **_kwargs):
+            if command[0] != "ssh":
+                return make_subprocess_result()
+            if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+                return make_subprocess_result(stdout="/usr/bin/bash\n")
+            remote = command[-1]
+            if "allocate-session-name" in remote:
+                return make_subprocess_result(
+                    stdout=json.dumps({"session_id": "c-r-aih-fw-firstmate-1", "ai_name": "aih-fw-firstmate-1"})
+                )
+            return make_subprocess_result(stdout="current")
+
+        config = {
+            "remote": {
+                "default": "fw",
+                "machines": {
+                    "fw": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}
+                },
+            }
+        }
+        with (
+            # One patch serves the preflight and the cleanup command alike: both modules
+            # share the one ``subprocess`` module, so a second patch would replace this one.
+            patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+            patch("ai_cli.transport.subprocess.call", side_effect=fake_call),
+            patch("ai_cli.transport.time.sleep"),
+            patch("ai_cli.transport.restore_terminal"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.config.get_project_aliases", return_value={"aih": "ai-harness"}),
+            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="aih"),
+        ):
+            code, _out, err = run_cli(["ai", "c", "firstmate-1", "-R"], config=config)
+        return code, calls, err
+
+    def test_given_the_remote_launcher_refuses_when_dispatched_then_ssh_runs_once_and_the_refusal_is_final(self):
+        code, calls, err = self._remote_launch([_transport.REMOTE_LAUNCH_REFUSED_EXIT])
+
+        assert len(calls) == 1
+        assert code == _transport.REMOTE_LAUNCH_REFUSED_EXIT
+        assert "reattaching in" not in err
+        assert "refused to launch" in err
+
+    def test_given_a_refusal_after_a_drop_when_reattaching_then_the_ladder_stops_there(self):
+        code, calls, err = self._remote_launch([255, _transport.REMOTE_LAUNCH_REFUSED_EXIT, 0])
+
+        assert len(calls) == 2
+        assert code == _transport.REMOTE_LAUNCH_REFUSED_EXIT
+        assert err.count("reattaching in") == 1
+
+
 class TestALongLivedSessionKeepsItsReconnectBudget:
     """The budget bounds ONE outage, not the life of the session.
 

@@ -4438,6 +4438,8 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     requested_slot = _chief_of_staff.chief_slot(session_name)
     running = _running_chief(existing, naming_prefix)
     resuming = False
+    # The session name the chief being resumed was recorded under.
+    resumed_name = ""
     if running is not None:
         agent, target, registered = running
         running_slot = _chief_of_staff.chief_slot(agent)
@@ -4477,6 +4479,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         )
         session_name = running_slot
         resuming = True
+        resumed_name = agent
         # -r would reattach to the frozen pane; the relaunch reaps it and resumes instead.
         options["resume"] = False
     elif existing is not None and existing.get("native_agent_name"):
@@ -4490,6 +4493,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             )
             session_name = registered_slot
             resuming = True
+            resumed_name = str(existing.get("native_agent_name"))
             if not bare:
                 # In tmux mode -r means "attach to the running session", and there is none:
                 # the relaunch under the same name is what resumes the conversation.
@@ -4502,6 +4506,22 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     except _session.SessionSlotAmbiguityError as exc:
         _out.error(Tag.COS, f"{exc}")
         sys.exit(1)
+
+    if resuming and resumed_name != ai_name:
+        # The host now names its chiefs differently (a new host alias): relaunching under the
+        # new name would open a fresh worktree and conversation and strand the recorded ones.
+        project_dir = _config._find_project_dir(_chief_of_staff.CHIEF_PROJECT)
+        worktrees = project_dir / _session.WORKTREE_DIR
+        if (worktrees / resumed_name).is_dir() and not (worktrees / ai_name).exists():
+            end_first = f"end its tmux session (`tmux kill-session -t ={running[1]}`), then " if running else ""
+            _out.error(
+                Tag.COS,
+                f"chief-of-staff {resumed_name} is recorded under a name this host no longer gives it "
+                f"({ai_name}); relaunching would start a new conversation and leave its worktree behind. "
+                f"On {_config.detect_machine_profile()['host_id']}, {end_first}move it with "
+                f"`ai session-migrate {resumed_name} {ai_name} -r {project_dir}` and re-run this command.",
+            )
+            sys.exit(1)
 
     if options.get("resume") and not resuming and not bare:
         # Nothing running and nothing registered under this name: -r can still resume a
@@ -4567,19 +4587,27 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"launch the chief as `ai c firstmate[-N]`, or add a suffix with `ai c --firstmate SUFFIX`"
         )
     remote_args: list[str] = []
-    if firstmate:
-        remote_args = _prepare_firstmate_launch(engine, machine_key, fm_home, options)
-    elif machine_key or fm_home:
-        raise click.UsageError(
-            "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
-            "add -F/--firstmate (or use `ai cos`) to launch one"
-        )
-    else:
-        # A chief that launches an ordinary session would otherwise hand it the chief's
-        # role and home through the inherited environment.
-        os.environ.pop(_chief_of_staff.ROLE_ENV, None)
-        os.environ.pop(_chief_of_staff.FM_HOME_ENV, None)
-    _session_command(engine)(ctx, **options, remote_args=remote_args)
+    try:
+        if firstmate:
+            remote_args = _prepare_firstmate_launch(engine, machine_key, fm_home, options)
+        elif machine_key or fm_home:
+            raise click.UsageError(
+                "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
+                "add -F/--firstmate (or use `ai cos`) to launch one"
+            )
+        else:
+            # A chief that launches an ordinary session would otherwise hand it the chief's
+            # role and home through the inherited environment.
+            os.environ.pop(_chief_of_staff.ROLE_ENV, None)
+            os.environ.pop(_chief_of_staff.FM_HOME_ENV, None)
+        _session_command(engine)(ctx, **options, remote_args=remote_args)
+    except SystemExit as exc:
+        # As the remote side of -R, a launch that refused before handing off exits with a
+        # code of its own, so the dispatcher's reconnect ladder can tell a refusal, which
+        # every retry repeats, from a dropped link (whose exit status ssh also relays).
+        if options.get("is_remote") and exc.code == 1:
+            sys.exit(_transport.REMOTE_LAUNCH_REFUSED_EXIT)
+        raise
 
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")

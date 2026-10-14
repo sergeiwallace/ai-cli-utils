@@ -157,6 +157,7 @@ def test_given_two_near_simultaneous_starts_when_reaper_is_missing_then_only_one
     assert ConcurrentCircusClient.add_count == 1
 
 
+@pytest.mark.real_reaper_spawn
 def test_given_claude_launch_when_reaper_start_is_scheduled_then_launch_does_not_wait_for_it():
     with (
         patch("ai_cli.process_manager.sys.platform", "linux"),
@@ -173,6 +174,7 @@ def test_given_claude_launch_when_reaper_start_is_scheduled_then_launch_does_not
     )
 
 
+@pytest.mark.real_reaper_spawn
 def test_given_native_windows_launch_when_reaper_start_is_scheduled_then_it_is_a_noop():
     with (
         patch("ai_cli.process_manager._native_windows", return_value=True),

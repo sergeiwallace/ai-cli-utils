@@ -1557,6 +1557,25 @@ def _restore_process_working_directory():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_session_reaper_spawn(request):
+    """Keep a test's local `ai c` launch from starting the real stale-session reaper.
+
+    Every local Claude launch calls ``_start_stale_session_reaper_for_launch``, which
+    ``Popen``s ``ai session-reaper start`` detached, and ``ai`` resolves to the INSTALLED
+    package on PATH, not the code under test. The spawn guard above matches program names
+    and ``ai`` is not one it refuses, so a chief-launch test left a real reaper start behind
+    (measured: four "stale-session-reaper: failed to start" lines after
+    tests/test_chief_of_staff.py passed). Tests that drive the scheduler itself opt out
+    with the ``real_reaper_spawn`` marker and mock ``subprocess.Popen`` themselves.
+    """
+    if request.node.get_closest_marker("real_reaper_spawn"):
+        yield
+        return
+    with patch("ai_cli.process_manager._start_stale_session_reaper_for_launch"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
 

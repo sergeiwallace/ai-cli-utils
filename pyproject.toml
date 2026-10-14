@@ -131,6 +131,7 @@ markers = [
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
     "real_nats: test drives NATSClient.connect itself (opts out of the conftest connection block)",
+    "real_reaper_spawn: test drives _start_stale_session_reaper_for_launch itself (opts out of the conftest no-op; must mock subprocess.Popen itself)",
 ]
 
 [tool.pyright]

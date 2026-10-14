@@ -18,6 +18,7 @@ import pytest
 
 from ai_cli.config import ProjectPrefixError, resolve_project_prefix_by_name
 from ai_cli.main import _resolve_remote_project, cli
+from ai_cli.transport import REMOTE_LAUNCH_REFUSED_EXIT
 
 _BARE_CONFIG = {"session": {"use_tmux": False}}
 #: Every key ``detect_machine_profile`` returns, including which tier supplied the host_id --
@@ -59,7 +60,7 @@ def test_given_a_remote_launch_when_the_project_dir_is_absent_then_it_refuses_na
         with pytest.raises(SystemExit) as exc_info:
             cli()
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == REMOTE_LAUNCH_REFUSED_EXIT
     mock_chdir.assert_not_called()
     err = capsys.readouterr().err
     assert "test-host" in err
@@ -107,7 +108,7 @@ def test_given_a_remote_launch_when_a_file_sits_at_the_project_path_then_it_refu
         with pytest.raises(SystemExit) as exc_info:
             cli()
 
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == REMOTE_LAUNCH_REFUSED_EXIT
     mock_chdir.assert_not_called()
     assert str(not_a_dir) in capsys.readouterr().err
 
