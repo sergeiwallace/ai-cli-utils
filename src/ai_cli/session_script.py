@@ -1029,11 +1029,12 @@ def get_engine_script(
       # Re-emit iTerm2 setup + set status to running.
       # On first launch, wait for the tmux client to attach — DCS passthrough sequences
       # are discarded when no client is connected, so firing before attach is a no-op.
+      # The wait is bounded by elapsed time, not by its poll count: each poll forks
+      # tmux, and on a loaded host that fork alone outlasts the sleep (AI-CLI-b22m).
       if $first_run && [[ -n "$TMUX" ]]; then
-        _cli_wait=0
-        while [[ $( tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l ) -eq 0 ]] && (( _cli_wait < 20 )); do
+        _cli_wait_until=$((SECONDS + 2))
+        while [[ $( tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l ) -eq 0 ]] && (( SECONDS < _cli_wait_until )); do
           sleep 0.05
-          (( _cli_wait++ ))
         done
       fi
       _iterm2_fleet_setup "$tmux_session"
