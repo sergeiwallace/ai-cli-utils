@@ -553,7 +553,7 @@ ai setup
 
 ### Tool Config
 
-Configuration lives in `~/.config/ai-cli/config.toml`. A default config is created on first run.
+Configuration lives in `~/.config/ai-cli-utils/config.toml` (on Windows, `config.toml` in the ai-cli-utils folder under `%APPDATA%`). A default config is created on first run. An older `~/.config/ai-cli/` directory is moved to the new name on first use.
 
 ```toml
 [project]
