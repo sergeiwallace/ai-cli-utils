@@ -536,6 +536,7 @@ class TestCliSessionSetupBranches:
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch.dict(os.environ, {"STALE_PROJECT_OVERRIDE": "present"}),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+            patch("ai_cli.main._pty_handoff", return_value=mock_exec),
         ):
             with pytest.raises(SystemExit):
                 cli()
@@ -567,6 +568,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+            patch("ai_cli.main._pty_handoff", return_value=mock_exec),
         ):
             with pytest.raises(SystemExit):
                 cli()
@@ -593,6 +595,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+            patch("ai_cli.main._pty_handoff", return_value=mock_exec),
         ):
             with pytest.raises(SystemExit):
                 cli()
@@ -613,6 +616,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+            patch("ai_cli.main._pty_handoff", return_value=mock_exec),
         ):
             with pytest.raises(SystemExit):
                 cli()

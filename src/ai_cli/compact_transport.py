@@ -48,12 +48,12 @@ native Windows pseudo-console (ConPTY, Windows 10 1809+) would also serve but ne
 a dependency this package does not carry, tracked as ``AI-CLI-ysht``.
 
 SCOPE, stated rather than implied. This module answers whether a transport CAN be
-established -- a necessary condition, resolved before anything is created. It does
-not host a session on a pty; that is ``AI-CLI-0nvi``. When it does, the pty is
-allocated to CARRY THE SUBMISSION, not to host the session's UI: the operator's own
-terminal stays the terminal, so SIGWINCH/resize and Ctrl-C keep reaching the engine
-from there, and the pty path deliberately implements NO detach/reattach and NO
-scrollback. Those are the reasons tmux exists and tmux remains the way to get them.
+established -- a necessary condition, resolved before anything is created. Hosting
+the session on the pty is ``pty_host``'s job, and the pty there is allocated to CARRY
+THE SUBMISSION, not to host the session's UI: the operator's own terminal stays the
+terminal, so SIGWINCH/resize and Ctrl-C keep reaching the engine from there, and the
+pty path deliberately implements NO detach/reattach and NO scrollback. Those are the
+reasons tmux exists and tmux remains the way to get them.
 """
 
 import os

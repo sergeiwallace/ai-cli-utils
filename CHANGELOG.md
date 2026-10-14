@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A bare `ai c` launch (`-b/--bare`, `[session] use_tmux = false`, or no usable tmux) now
+  runs the agent on a pseudo-terminal the launcher owns instead of replacing itself with
+  the agent. Text written to the session's FIFO, at
+  `$XDG_STATE_HOME/ai-cli-utils/pty/<session>.in` and passed to the agent as
+  `AI_CLI_SUBMIT_FIFO`, is read by the agent as typed input, so the auto-compact prompt
+  can be submitted without tmux. Keystrokes, Ctrl-C and window resizes reach the agent
+  unchanged. SIGTERM and SIGHUP are forwarded to it, and the terminal is restored on
+  every exit. There is no scrollback, detach or reattach on this path; tmux remains the
+  default transport and is unchanged. Windows keeps its current bare launch.
+
 ### Changed
 
 - Every line an `ai` command prints is now rendered by one renderer, and every element

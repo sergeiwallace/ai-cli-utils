@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -219,7 +219,31 @@ def _exec_handoff(file: str, args: list[str]) -> NoReturn:
     os.execvp(file, args)
 
 
-def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
+def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
+    """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
+
+    Used on the bare paths when the compact transport resolved to the pty, so the
+    auto-compact prompt can be submitted without tmux. ``pty_host`` is POSIX-only and
+    imported here, on the one path that can reach it.
+    """
+
+    def handoff(file: str, args: list[str]) -> NoReturn:
+        from . import pty_host
+
+        try:
+            sys.exit(pty_host.host(file, args, session=session))
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            _out.error(Tag.LAUNCH, f"could not start the session on a launcher-owned pty: {exc}")
+            sys.exit(1)
+
+    return handoff
+
+
+def _exec_with_direnv(
+    project_root: Path, command: list[str], handoff: Callable[[str, list[str]], NoReturn] = _exec_handoff
+) -> None:
     """Replace this process with ``command``, under direnv when that is possible.
 
     direnv is an enhancement, never a precondition for starting a session.  Three
@@ -241,15 +265,19 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
 
     The decision itself lives in :func:`_direnv_prefix` so the tmux ``--once``
     launch path applies the identical policy instead of its own hardcode.
+
+    *handoff* is the exec itself, or :func:`_pty_handoff` on a bare launch whose
+    compact transport is the launcher-owned pty; both raise ``FileNotFoundError``
+    for a program that cannot be run.
     """
     prefix = _direnv_prefix(project_root)
     if prefix:
         # FileNotFoundError falls through to a direct exec below
         with contextlib.suppress(FileNotFoundError):
-            _exec_handoff(prefix[0], [*prefix, *command])
+            handoff(prefix[0], [*prefix, *command])
 
     try:
-        _exec_handoff(command[0], command)
+        handoff(command[0], command)
     except FileNotFoundError:
         _out.error(Tag.LAUNCH, f"{command[0]} not found on PATH.")
         sys.exit(1)
@@ -3150,6 +3178,7 @@ def _do_session_launch(
     # A remote dispatch is excluded, like the tmux probes above it: the terminal that
     # will own the session is on the REMOTE host, so a local probe would be a verdict
     # about the wrong machine.
+    compact_transport = None
     if not remote:
         compact_transport = _compact_transport.resolve(
             tmux_usable=not bare,
@@ -3813,7 +3842,8 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            _exec_with_direnv(target_root, command)
+            on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            _exec_with_direnv(target_root, command, handoff=_pty_handoff(session_id) if on_pty else _exec_handoff)
 
     # tmux panes inherit their session environment from the long-lived server,
     # not the process that runs `tmux new-session`. Carry the launch context so
