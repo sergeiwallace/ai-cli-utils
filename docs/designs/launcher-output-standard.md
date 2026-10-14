@@ -1412,7 +1412,13 @@ follow-up. Confidence: medium-high.
 ---
 
 > **Feedback Round 1:** Your approval/feedback on each decision:
-> 1. D-1: <approval or feedback>
+> 1. D-1: is option C best practice / most robust? i don't care about extra dependencies. also, i
+>    want live displays. why would that be an issue for claude code? can you /delegate opus
+>    /research-doc and/or /delegate opus /bug-fix those issues and bugs to figure out how we can
+>    enable live displays for our tmux process-wrapped cc sessions? i want that. and i have no
+>    problem with structlog + rich/click. those all are popular well supported and capable and
+>    reliable / robust open source packages, right? so let's use them if that adds capabilities
+>    and means we have less to build ourselves and maintain. (maintainer, 2026-10-13)
 > 2. D-2: <approval or feedback>
 > 3. D-3: <approval or feedback>
 > 4. D-4: <approval or feedback>
