@@ -468,6 +468,11 @@ def _settings() -> OutputSettings:
     return settings
 
 
+def settings() -> OutputSettings:
+    """The current ``[output]`` settings, reporting a newly broken table first."""
+    return _settings()
+
+
 def _report_config_errors(errors: Sequence[str], settings: OutputSettings) -> None:
     # Rendered with the shipped defaults: the table being refused cannot style its own errors.
     records = [_build(message, tag=Tag.CONFIG, op="load", level=Level.ERROR) for message in errors]
@@ -569,6 +574,16 @@ def render_record(
     with _lock, console.capture() as capture:
         console.print(_styled_text(parts, settings.separator), end="")
     return capture.get()
+
+
+def render_progress(record: Record, *, color: bool, in_place: bool) -> str:
+    """``record`` as a progress row (rule L4): ``in_place`` returns to column 0 and clears the row first.
+
+    The row carries no terminator, so the next progress row replaces it; whoever
+    writes next is responsible for closing it with a line ending.
+    """
+    line = render_record(record, color=color)
+    return _CLEAR_ROW + line if in_place else line
 
 
 def _relay_json(record: Record) -> str:

@@ -267,8 +267,8 @@ Measured at base `06635ff`:
 ## Design Overview
 
 **Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) and T-3
-(AI-CLI-mu4d) implemented. Phase 3: T-4 (AI-CLI-fx4b) and T-5 (AI-CLI-rbuf) implemented. Phases 4
-and 5 not started.
+(AI-CLI-mu4d) implemented. Phase 3: T-4 (AI-CLI-fx4b) and T-5 (AI-CLI-rbuf) implemented. Phase 4:
+T-6 (AI-CLI-zss5) implemented; live reload check pending. Phase 5 not started.
 
 Phase 1, as built under today's Click renderer:
 
@@ -390,9 +390,9 @@ Phase 2, T-3, as built:
   Decision: of (a) accept and ignore the two keys, (b) render them in T-3, and
   (c) refuse `true` until T-4/T-5, the driver chose (c) (Claude Opus 5.5, 2026-10-14):
   (a) leaves keys that silently do nothing, and (b) pulls T-4/T-5 rendering into T-3.
-  <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]` and
-  `[output.progress.reload]` tables are not in the schema yet, so a user table that
-  sets them is refused as unknown keys. T-6 and T-7 add them with their behaviour.
+  <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]`
+  tables are not in the schema yet, so a user table that sets them is refused as
+  unknown keys. T-7 adds them with their behaviour; T-6 added `[output.progress.reload]`.
 - **Two kinds of check.** Checks on one key run as pydantic validators, so they are
   all reported together. That covers types, unknown keys, style strings
   (`output.check_style`, Rich's `Style.parse`), regexes, the zone name, strftime
@@ -523,6 +523,62 @@ Phase 3, T-4, as built:
   supervisor's stderr relay, which prefixes `[session]` to a line with no tag, also
   passes through a line that starts with a date and carries a `[tag]`, so a rendered
   record is not tagged twice.
+
+Phase 4, T-6, as built:
+
+- **The child names the reason and stays quiet.** Instead of printing a line, a child
+  that reloads writes `script-updated` (the stable script's mtime changed) or
+  `ai-cli-updated` (the template was refreshed after an update) to
+  `session-reload-reason-<session>` in the state directory, then exits 78.
+- **The supervisor counts.** After each child it restores the terminal's foreground
+  group, then reads and removes the reason file. A child that left a reason extends the
+  run of consecutive reloads; any other exit, including the remote recovery shell's
+  `exit 78` relaunch, resets it. The file rather than the exit status is the signal:
+  macOS CI showed a reload whose row never appeared, consistent with the child's status
+  being lost to the stop its promotion left pending (see the zsh fix below). The row is drawn only when the restore
+  succeeded, so the supervisor writes only while it holds the foreground group.
+  Measured while testing: the supervisor is a session leader whose parent is outside
+  its session, so its process group is orphaned and a background write gets `EIO`
+  rather than `SIGTTOU`. Without the gate the row would be lost, not stopped. The
+  `TOSTOP` test therefore proves that no process stops; no supervisor-side mutation
+  turns it red.
+- **Found while testing (fixed separately).** Under zsh a child that exits at once
+  after its promotion lost its status: the first `wait` reported the shim's stop
+  (128 + SIGSTOP), so a clean 77 respawned forever and a 78 read as a plain restart.
+  `_supervisor_wait_for_child` now waits once more for a child that is gone.
+- **`ai internal progress <tag> <op> <terminal|plain> <attempt> <started> <reason>`**
+  renders the row: `[session] reload: session script updated, reloading (attempt 3, 4s)`.
+  `started` is the epoch second of the first reload in the run, and the elapsed time is
+  whole seconds. It reads `[output.progress.reload]` at call time: from `warn_after` the
+  row is at warning level, from `error_after` at error level, and at exactly
+  `error_after` the reply leads with one error record, `reloaded 6 times in a row in 9s
+  without reaching the agent; press Ctrl+C twice within 3 seconds to stop the session`.
+  Like `emit`, it runs before the `ai internal` config load.
+- **In place, not live.** `output.render_progress` puts CR and erase-line (`_CLEAR_ROW`)
+  before the rendered record, with no terminator, so each frame overwrites the last.
+  The persistent error is its own frame ended with CR LF, so it stays in scrollback
+  above the row. A `plain` target (stderr not a terminal, or `TERM=dumb`) replies with
+  ordinary lines and the supervisor ends each with a newline. No refresh thread, no
+  Rich live display: `live_display.py` stays the placeholder owner.
+- **Open-row marker.** After printing an in-place row the supervisor creates
+  `session-progress-open-<session>`. `_ai_close_progress` writes CR LF and removes it,
+  in shell. `_ai_emit` calls it first, the child calls it as soon as its loop-top check
+  decides not to reload (before the watcher, direnv and the agent can write), and the
+  supervisor's EXIT trap calls it. A new supervisor removes a stale marker without
+  writing.
+- **Fallback.** When `ai internal progress` fails or replies empty, the supervisor
+  prints the same text through `_ai_emit info reload`, which closes the open row and,
+  if the renderer is still unavailable, prints `[session] reload: ... (attempt N, Ts)`
+  as plain text. The loop is unchanged.
+- **No `kind` on the record.** The row is the whole reply of a one-shot process, so
+  `Record` needed no `kind` field, and no in-process `progress()` producer exists. Both
+  arrive with the first in-process caller.
+- **Supervisors already running** keep their old code, because a reload replaces only
+  the child. Under such a supervisor a new child's reload is silent: it no longer prints
+  the old line, and the old supervisor has no row to draw. Once its tmux session is
+  started again, the session gets the row. No compatibility path was added (pre-v1 rule).
+- **Cost.** Each reload costs one `ai internal progress`, the same Python start as one
+  `ai internal emit`, and nothing on a launch without reloads.
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
@@ -1306,33 +1362,39 @@ makes it visible and does not fix it.
     `src/ai_cli/output.py`
   - Tests added: `tests/test_reload_progress.py` (generated script on a pty)
 - **Tasks and acceptance criteria:**
-  - **T-6 (AI-CLI-zss5): one reload line that gets louder when it stalls**
-    - [ ] When the child exits 78 repeatedly on a terminal, the screen shall show one reload row that
+  - **T-6 (AI-CLI-zss5): one reload line that gets louder when it stalls** (implemented; all tests in
+    `tests/test_reload_progress.py`; live reload check pending)
+    - [x] When the child exits 78 repeatedly on a terminal, the screen shall show one reload row that
       updates in place with the reason, the attempt count and the elapsed time since the first
       consecutive reload, not one row per reload. Proved by
       `test_given_repeated_reloads_on_a_pty_when_the_supervisor_restarts_then_one_row_updates_in_place`
       (the generated script; the stable script's mtime is bumped N times).
-    - [ ] When consecutive reloads reach `warn_after`, the row shall render at warning level. When they
+    - [x] When consecutive reloads reach `warn_after`, the row shall render at warning level. When they
       reach `error_after`, a persistent error record (count, elapsed time, how to stop) shall appear
       on its own row and stay in scrollback while the in-place row keeps updating. Proved by
       `test_given_reloads_past_both_thresholds_when_rendered_then_the_warning_and_persistent_error_appear`.
-    - [ ] When the agent starts, another record is printed, or the supervisor exits, the open reload
+    - [x] When the agent starts, another record is printed, or the supervisor exits, the open reload
       row shall be closed first, so the next output starts on the next row. Proved by
-      `test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_on_the_next_row`.
-    - [ ] If stderr is not a terminal, then each reload shall produce one plain line with the attempt
+      `test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_on_the_next_row`
+      (parametrised over the three closers: the agent, a supervisor record and the EXIT trap).
+    - [x] If stderr is not a terminal, then each reload shall produce one plain line with the attempt
       count and no CR or escapes. Proved by
       `test_given_redirected_output_when_reloads_repeat_then_each_is_one_plain_counted_line`.
-    - [ ] If `ai internal progress` fails, then the supervisor shall print a plain tagged line with the
+    - [x] If `ai internal progress` fails, then the supervisor shall print a plain tagged line with the
       attempt count and the reload loop shall continue unchanged. Proved by
       `test_given_no_ai_entry_point_when_a_reload_happens_then_a_plain_counted_line_is_printed`.
-    - [ ] The supervisor shall write the reload row only while it is the terminal's foreground process
+    - [x] The supervisor shall write the reload row only while it is the terminal's foreground process
       group. With `TOSTOP` set, a reload sequence shall complete with no stopped process. Proved by
       `test_given_tostop_on_the_pty_when_reloads_repeat_then_the_supervisor_is_never_stopped`.
-    - [ ] If a child exits with any status other than 78, then the consecutive count shall reset.
+    - [x] If a child exits with any status other than 78, then the consecutive count shall reset.
       Proved by `test_given_a_reload_then_a_normal_agent_exit_when_reloading_again_then_the_count_restarts_at_1`.
-    - [ ] When a single legitimate reload happens, the reload row shall render at info level, close
+    - [x] When a single legitimate reload happens, the reload row shall render at info level, close
       when the agent starts, and leave no warning or error. Proved by
       `test_given_one_reload_when_the_agent_starts_then_no_escalation_is_shown`.
+    - [x] If `[output.progress.reload]` sets a threshold below 1, a non-integer, an unknown key, or an
+      `error_after` below `warn_after`, then the table shall be refused under the T-3 rule, naming the
+      key and the file path. Proved by
+      `test_given_an_invalid_reload_threshold_when_ai_internal_progress_runs_then_defaults_apply_and_the_key_is_named`.
 - **Exit gate:** T-6 ACs green, gate and CI green, and a live reload on a real host (rewrite the
   session's stable script) showing one updating row that closes when the agent starts.
 
@@ -1405,7 +1467,7 @@ makes it visible and does not fix it.
 | 5 | Phase 2 | Live `ai c -R` shows coloured `[transport]` and `[dolt_server]` lines | - [ ] | |
 | 6 | Phase 3 | Datetime element and D-3 presentation | - [x] | T-4: bare, first, `dim`; on by default; `format_datetime` shared by renderer and validator; session-script fallback stamped |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [x] | T-5: every module migrated in one change, so no allowlist was needed; the parity rows are checked by `tests/test_launch_reporter.py` |
-| 8 | Phase 4 | Reload progress (D-4); live reload shows one updating row | - [ ] | |
+| 8 | Phase 4 | Reload progress (D-4); live reload shows one updating row | - [ ] | T-6 built as D-4 (a): `ai internal progress`, `output.render_progress`, the supervisor's count, the open-row marker; all T-6 ACs green. Live reload on a real host not yet run |
 | 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [ ] | |
 
 **Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked -->

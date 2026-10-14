@@ -323,6 +323,7 @@ def get_engine_script(
     _ai_emit() {{
       local _ai_emit_level="$1" _ai_emit_op="$2" _ai_emit_target=plain _ai_emit_plain="[session] $2: " _ai_emit_line="" _ai_emit_stamp=""
       shift 2
+      _ai_close_progress
       [[ "$_ai_emit_level" == warning ]] && _ai_emit_plain+="Warning: "
       [[ "$_ai_emit_level" == error ]] && _ai_emit_plain+="Error: "
       _ai_emit_plain+="$*"
@@ -343,6 +344,20 @@ def get_engine_script(
         printf '%s\n' "$_ai_emit_line" >&3
       else
         printf '%s\n' "$_ai_emit_line" >&2
+      fi
+    }}
+    # The one line ever left open on the pane is the supervisor's in-place reload row
+    # (AI-CLI-zss5). It is written by one process and must be ended by whichever writes
+    # next, so a marker file records it: _ai_emit, the child before it starts the agent
+    # and the supervisor's EXIT trap all close it, with a line ending and no Python start.
+    _ai_progress_marker=""
+    _ai_close_progress() {{
+      [[ -n "$_ai_progress_marker" && -f "$_ai_progress_marker" ]] || return 0
+      rm -f "$_ai_progress_marker"
+      if [[ -n "$_ai_emit_terminal_fd" ]]; then
+        printf '\\r\\n' >&3
+      else
+        printf '\\r\\n' >&2
       fi
     }}
     if ! $_ai_cli_child_mode; then
@@ -373,11 +388,14 @@ def get_engine_script(
       engine={shell["engine"]}
       _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
       mkdir -p "$_ai_state_dir/session-leases" "$_ai_state_dir/session-heartbeats"
+      _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"
+      _ai_reload_reason_file="$_ai_state_dir/session-reload-reason-$tmux_session"
       # A new supervisor starts a new Ctrl+C gesture. Replaceable children
       # below share these files only for this supervisor's lifetime.
       rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
         "$_ai_state_dir/session-int-exit-$tmux_session" \
-        "$_ai_state_dir/session-agent-exits-$tmux_session"
+        "$_ai_state_dir/session-agent-exits-$tmux_session" \
+        "$_ai_progress_marker" "$_ai_reload_reason_file"
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
@@ -452,13 +470,14 @@ def get_engine_script(
       fi
       _heartbeat_pid=""
       _supervisor_cleanup() {{
+        _ai_close_progress
         [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
         [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
         rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
           "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session" \\
           "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session" \\
-          "$_ai_state_dir/session-agent-exits-$tmux_session"
+          "$_ai_state_dir/session-agent-exits-$tmux_session" "$_ai_reload_reason_file"
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
       }}
@@ -477,11 +496,22 @@ def get_engine_script(
         # before the wait begins. The lost status fell back to 0, and 0 means
         # "restart the child", so a clean 77 exit became an endless respawn loop
         # and the tmux session was never torn down.
+        #
+        # A gone child can still owe its exit status. Its exec shim stops itself until
+        # promoted, and zsh's first `wait` reports that stop (128 + SIGSTOP); a child
+        # that then exits at once is gone before the check below, so the stop used to
+        # stand in for its exit and a clean 77 respawned forever. One more `wait`
+        # collects the real status under zsh; bash, which has nothing left, says 127.
         _child_wait_status=0
         while :; do
           wait "$_child_pid"
           _child_wait_status=$?
-          kill -0 "$_child_pid" 2>/dev/null || break
+          if ! kill -0 "$_child_pid" 2>/dev/null; then
+            wait "$_child_pid" 2>/dev/null
+            _child_reaped_status=$?
+            (( _child_reaped_status != 127 )) && _child_wait_status=$_child_reaped_status
+            break
+          fi
         done
         return "$_child_wait_status"
       }}
@@ -533,6 +563,34 @@ def get_engine_script(
         [[ -t 0 ]] || return 0
         trap '' TTOU
         python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
+      }}
+      # Consecutive reloads share one in-place row (AI-CLI-zss5): the reason, the attempt
+      # and the time since the first, rendered by `ai internal progress`, which escalates
+      # past the configured thresholds so a reload loop gets louder rather than looking
+      # healthy. Only this shell spans reloads, so only it can count them, and it writes
+      # the row only once it holds the terminal's foreground group again.
+      _reload_count=0
+      _reload_started=0
+      _reload_reason=""
+      _supervisor_show_reload() {{
+        local _reload_fd=2 _reload_target=plain _reload_line=""
+        [[ -n "$_ai_emit_terminal_fd" ]] && _reload_fd=3
+        [[ -t $_reload_fd && "${{TERM:-}}" != dumb ]] && _reload_target=terminal
+        _reload_line=$(trap '' INT; ai internal progress session reload "$_reload_target" "$_reload_count" "$_reload_started" "$_reload_reason" 2>/dev/null) || _reload_line=""
+        if [[ -z "$_reload_line" ]]; then
+          # No renderer (the entry point is mid-reinstall, which is when an ai-cli update
+          # reloads): one plain counted line per reload, and the loop carries on.
+          if [[ "$_reload_reason" == ai-cli-updated ]]; then
+            _ai_emit info reload "ai-cli updated, reloading the session template (attempt $_reload_count, $(( $(date +%s) - _reload_started ))s)"
+          else
+            _ai_emit info reload "session script updated, reloading (attempt $_reload_count, $(( $(date +%s) - _reload_started ))s)"
+          fi
+        elif [[ "$_reload_target" == terminal ]]; then
+          printf '%s' "$_reload_line" >&$_reload_fd
+          : > "$_ai_progress_marker"
+        else
+          printf '%s\n' "$_reload_line" >&$_reload_fd
+        fi
       }}
       _supervisor_term() {{
         if $_supervisor_terminating; then
@@ -626,7 +684,8 @@ def get_engine_script(
         fi
         _supervisor_wait_for_child
         _child_status=$?
-        _supervisor_restore_terminal || true
+        _supervisor_restore_terminal
+        _supervisor_foreground=$?
         rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
           break
@@ -635,6 +694,20 @@ def get_engine_script(
         # 77 is clean local final exit and 79 is remote recovery-shell completion.
         if (( _child_status == 77 || _child_status == 79 )); then
           break
+        fi
+        # A reload names its reason in the state file, and the file, not the exit
+        # status, is the signal: a child that exits at once can still lose its status
+        # to the stop its promotion left pending. An exit without a reason (the remote
+        # recovery shell's `exit 78` relaunch, a normal restart) ends the run.
+        _reload_reason=""
+        read -r _reload_reason < "$_ai_reload_reason_file" 2>/dev/null || true
+        rm -f "$_ai_reload_reason_file"
+        if [[ -n "$_reload_reason" ]]; then
+          (( _reload_count == 0 )) && _reload_started=$(date +%s)
+          _reload_count=$((_reload_count + 1))
+          (( _supervisor_foreground == 0 )) && _supervisor_show_reload
+        else
+          _reload_count=0
         fi
       done
       if $_supervisor_tmux_ownership_established; then
@@ -655,6 +728,8 @@ def get_engine_script(
     tmux_session={shell["session"]}
     _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
+    _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"
+    _ai_reload_reason_file="$_ai_state_dir/session-reload-reason-$tmux_session"
     # A managed session can restart its agent after a normal exit. Load the
     # project environment into this persistent shell once, rather than running
     # `direnv exec` for every replacement agent (and re-emitting .envrc output).
@@ -1060,10 +1135,13 @@ def get_engine_script(
         # Fail CLOSED: an unknown mtime on either side means "do not reload".
         # Reading an unmeasurable probe as "changed" is what looped forever.
         if [[ -n "$_cur_mtime" && -n "$_script_start_mtime" && "$_cur_mtime" != "$_script_start_mtime" ]]; then
-          _ai_emit info reload "session script updated — reloading..."
+          # The supervisor shows the reload; this child only names why it is asking.
+          printf '%s\n' script-updated > "$_ai_reload_reason_file"
           exit 78
         fi
       fi
+      # Not reloading: end the supervisor's reload row before anything here writes.
+      _ai_close_progress
       start_watcher
       start_ts=$(date +%s)
       agent_attempted=false
@@ -1252,12 +1330,13 @@ with open(path, 'w') as f:
         _need_reload=true
       fi
       if $_need_reload; then
-        _ai_emit info reload "ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
+          printf '%s\n' ai-cli-updated > "$_ai_reload_reason_file"
           exit 78
         elif [[ -f "$_script_stable_path" ]]; then
           # Fall back to the stable script `ai update` rewrote for this session.
+          printf '%s\n' ai-cli-updated > "$_ai_reload_reason_file"
           exit 78
         else
           # Do NOT advance _template_version/_template_commit on failure — a transient

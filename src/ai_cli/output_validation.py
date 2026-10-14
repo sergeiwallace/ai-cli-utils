@@ -14,7 +14,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, ValidationInfo
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, ValidationInfo
 from pydantic_core import ErrorDetails
 
 from .output import Level, Tag, check_style, format_datetime, resolve_zone
@@ -129,10 +129,20 @@ class Elements(_Table):
     description: DescriptionElement
 
 
+class ReloadProgress(_Table):
+    warn_after: Annotated[int, Field(ge=1)]
+    error_after: Annotated[int, Field(ge=1)]
+
+
+class Progress(_Table):
+    reload: ReloadProgress
+
+
 class OutputSettings(_Table):
     order: list[ElementName]
     separator: str
     elements: Elements
+    progress: Progress
 
 
 def _unknown(names: Iterable[str], known: Iterable[str]) -> list[str]:
@@ -201,6 +211,15 @@ def _cross_field_errors(settings: OutputSettings) -> list[tuple[str, str]]:
         (f"output.elements.operation.styles.{name}", f"{name!r} is not in the operation vocabulary")
         for name in _unknown(operation.styles, vocabulary)
     )
+
+    reload = settings.progress.reload
+    if reload.error_after < reload.warn_after:
+        errors.append(
+            (
+                "output.progress.reload.error_after",
+                f"{reload.error_after} is less than warn_after ({reload.warn_after}): a stall must warn before it errors",
+            )
+        )
     return errors
 
 

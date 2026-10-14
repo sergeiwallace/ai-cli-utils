@@ -44,7 +44,9 @@ _OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"
 # outcomes, the agent's own start record or the session ending, under a ceiling that
 # only a hung startup reaches.
 _STARTUP_CEILING_SECONDS = max(_OBSERVE_SECONDS, 300.0)
-_RELOAD_LINE = "[session] reload: session script updated — reloading..."
+# The supervisor's reload row (AI-CLI-zss5). Its plain fallback, which these stand-ins
+# produce, prints one counted line per reload.
+_RELOAD_LINE = "session script updated, reloading (attempt "
 
 # GNU coreutils `stat`, as measured on Linux 2026-09-06: `-f` is FILESYSTEM mode and
 # takes no argument, so in `stat -f "%m" FILE` the `%m` is a second FILENAME. It

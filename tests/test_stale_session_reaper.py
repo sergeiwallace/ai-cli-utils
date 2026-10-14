@@ -2482,6 +2482,42 @@ fi
     _finish_supervisor(process)
 
 
+def test_given_a_child_that_exits_77_at_once_when_supervised_on_a_pty_then_the_supervisor_ends_without_a_respawn(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A child's status survives the stop notice its promotion leaves pending.
+
+    The exec shim stops itself until promoted, so the first `wait` reports that stop
+    (128 + SIGSTOP) rather than an exit. Measured under zsh: a child that then exits at
+    once is already gone when the liveness check runs, so the loop ended with the stop
+    status, a clean 77 read as "restart", and the supervisor respawned it forever.
+    """
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_CHILD_READY.count"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  printf '%s\\n' "$((count + 1))" > "$count_file"
+  exit 77
+fi
+"""
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_body=child_body,
+        pseudo_terminal=True,
+        wait_for_child_ready=False,
+    )
+    try:
+        process.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        pass
+    count = (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip()
+    _finish_supervisor(process)
+
+    assert count == "1", f"the supervisor started {count} children for one clean exit"
+
+
 def test_given_generated_session_script_when_rendered_then_it_never_signals_any_mosh_server():
     """The generated script used to `kill` any `mosh-server` process anywhere
     on the host whose command line matched this session's own --project-prefix and was older

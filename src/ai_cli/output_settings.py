@@ -87,10 +87,22 @@ class Elements:
 
 
 @dataclass(frozen=True)
+class ReloadProgress:
+    warn_after: int
+    error_after: int
+
+
+@dataclass(frozen=True)
+class Progress:
+    reload: ReloadProgress
+
+
+@dataclass(frozen=True)
 class OutputSettings:
     order: Sequence[str]
     separator: str
     elements: Elements
+    progress: Progress
 
 
 def _settings(table: dict[str, Any]) -> OutputSettings:
@@ -106,6 +118,7 @@ def _settings(table: dict[str, Any]) -> OutputSettings:
             level=LevelElement(**elements["level"]),
             description=DescriptionElement(**elements["description"]),
         ),
+        progress=Progress(reload=ReloadProgress(**table["progress"]["reload"])),
     )
 
 
