@@ -24,9 +24,7 @@ _NOT_A_HOOK = {"install.sh"}
 #: Scripts that are deliberately not registered, each with the reason. Adding a
 #: name here is the explicit way to keep a script inert; removing it is how the
 #: script is switched on (register it in .pre-commit-config.yaml in the same change).
-_INTENTIONALLY_INERT = {
-    "commit-msg": "requiring a CHANGELOG entry per feat: commit awaits a policy decision (AI-CLI-mgzo)",
-}
+_INTENTIONALLY_INERT: dict[str, str] = {}
 
 _ENTRY = re.compile(r"^\s*entry:\s*(\S+)", re.MULTILINE)
 

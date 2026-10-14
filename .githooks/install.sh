@@ -34,10 +34,11 @@ fi
 # pre-commit install refuses to run if core.hooksPath is set.
 git config --local --unset-all core.hooksPath 2>/dev/null || true
 
-pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push
+# Re-runs must not move an installed chain wrapper to pre-push.legacy.
+pre-commit install --overwrite --install-hooks --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 
 echo ""
-echo "Hooks active for pre-commit + pre-push stages."
+echo "Hooks active for pre-commit + commit-msg + pre-push stages."
 echo "  - Skip specific hook:   SKIP=hook-id git commit"
 echo "  - Update hook pins:     pre-commit autoupdate"
 echo "  - Full-repo audit:      pre-commit run --all-files"

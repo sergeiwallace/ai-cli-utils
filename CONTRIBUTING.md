@@ -46,7 +46,7 @@ uv sync --dev
 uv run ai setup
 
 # Set up pre-commit hooks (optional but recommended)
-uv run pre-commit install
+uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 
 # Verify everything works
 uv run python scripts/check_python_version_sync.py
@@ -244,7 +244,8 @@ match the pin, so this can't drift silently again.
 ## Pull Request Process
 
 1. Fork the repo and create a branch from `main` (`feature/short-description` or `fix/short-description`)
-2. Make your changes
+2. Make your changes. A `feat:` or `feat(scope):` commit must stage a `CHANGELOG.md` entry under
+   `[Unreleased]`; the commit-msg hook refuses it otherwise
 3. Ensure the hard gate passes
 4. Open a PR against `main`
 5. Describe what changed and why in the PR description

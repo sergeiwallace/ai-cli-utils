@@ -456,10 +456,10 @@ def test_given_a_clean_index_when_the_script_runs_as_a_subprocess_then_exits_zer
 def test_given_the_real_precommit_config_when_read_then_the_guard_is_registered_at_commit_stage():
     """A guard that is not registered enforces nothing, however good its body is.
 
-    This repo already carries one such file -- `.githooks/commit-msg`, which no
-    `.pre-commit-config.yaml` entry names, so its CHANGELOG rule has been
-    checking nothing. Asserting the registration here means this guard cannot go
-    the same way silently.
+    This repo has had one such file: `.githooks/commit-msg` sat in the tree for
+    weeks with no `.pre-commit-config.yaml` entry naming it, so its CHANGELOG
+    rule checked nothing. Asserting the registration here means this guard cannot
+    go the same way silently.
     """
     config = (REPO_ROOT / ".pre-commit-config.yaml").read_text()
 

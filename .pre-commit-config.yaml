@@ -1,8 +1,9 @@
 ---
 # Pre-commit framework config (adopted 2026-04-23).
-# Runs on every `git commit` (pre-commit stage) and `git push` (pre-push stage).
+# Runs on every `git commit` (pre-commit and commit-msg stages) and `git push`
+# (pre-push stage).
 #
-# Install: `pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push`
+# Install: `pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`
 # (Auto-run by copier `_tasks` on copy + update.)
 #
 # Update hook pins: `pre-commit autoupdate` (quarterly).
@@ -114,6 +115,14 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
+      # Every feat: / feat(scope): commit must stage a CHANGELOG.md change
+      # (AI-CLI-mgzo). The commit-msg stage hands the hook the message file.
+      # Bypass: SKIP_CHANGELOG=1 git commit
+      - id: changelog-for-feat
+        name: changelog entry required for feat commits
+        entry: .githooks/commit-msg
+        language: script
+        stages: [commit-msg]
       # Fail if any .claude/settings.json hook command points at a script that
       # no longer exists (e.g. a copier _exclude removed it but the
       # _skip_if_exists settings.json still references it). Cheap; runs every

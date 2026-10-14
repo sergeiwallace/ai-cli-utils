@@ -14,13 +14,24 @@ fi
 
 FIRST_LINE=$(head -1 "$1")
 
+# Measured against HEAD on every commit, an amend included: no hook stage can tell
+# `git commit --amend -m ...` from a new commit (prepare-commit-msg reports both as
+# "message", and the author date can match HEAD's on a new commit made in the same
+# second), and guessing would let a new commit through on HEAD's entry.
+changelog_staged() {
+    # A here-string, not a pipe: under pipefail an early `grep -q` exit can SIGPIPE git.
+    grep -qx "CHANGELOG.md" <<<"$(git diff --cached --name-only)"
+}
+
 # Match feat: or feat(scope): on the first line only (conventional commit prefix)
 if echo "$FIRST_LINE" | grep -qE "^feat(\([^)]+\))?:"; then
-    if ! git diff --cached --name-only | grep -q "^CHANGELOG.md$"; then
+    if ! changelog_staged; then
         echo ""
         echo "[commit-msg] ERROR: feat: commits require a CHANGELOG.md [Unreleased] entry."
         echo "[commit-msg] Add the entry, stage CHANGELOG.md, then retry."
         echo "[commit-msg] To bypass: SKIP_CHANGELOG=1 git commit ..."
+        echo "[commit-msg] Rewording a feat: commit that already has its entry is an amend"
+        echo "[commit-msg] with no CHANGELOG.md change; use SKIP_CHANGELOG=1 git commit --amend ..."
         echo ""
         exit 1
     fi
