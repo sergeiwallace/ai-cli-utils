@@ -168,9 +168,7 @@ def _stop_epilogue(is_remote: bool) -> str:
     if not is_remote:
         return "exit 77"
     return (
-        '_ai_emit info "Session ended: the agent will not be relaunched on its own."; '
-        '_ai_emit info "  exit 78   relaunch the agent in this pane"; '
-        '_ai_emit info "  exit      close this session"; '
+        "_ai_emit info \"Session ended. Type 'exit 78' to relaunch the agent here, or 'exit' to close this session.\"; "
         '"$SHELL"; _recovery_status=$?; '
         'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
         "exit 79"
