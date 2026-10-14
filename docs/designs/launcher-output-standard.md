@@ -613,7 +613,8 @@ Phase 5, T-7, as built:
   matches the terminal's zone), `tag`, `op` (the operation the line shows, the default
   for an op-less record), `level` and `text`. The row's `ts` is the record's instant.
   `flush_sinks()` hands the batch to `telemetry.store_log_records`: one transaction,
-  a 50 ms busy timeout, and any exception drops the batch silently. It runs at
+  `BEGIN IMMEDIATE` first with a 30 ms busy timeout, so taking the write lock is its only
+  wait, and any exception drops the batch silently. It runs at
   `LaunchReporter.handoff()` (a remote session holds the terminal for hours without
   exec'ing), in the exec helper, before the pty handoff, and at exit.
 - **No `fields` yet.** No producer passes structured extras, so `Record` has no `fields`
@@ -639,7 +640,9 @@ Phase 5, T-7, as built:
   session warning reload plain hello` took a median of 0.56 s on the base and 0.59 s
   on this branch (20 runs each), with the same modules imported: no measurable change.
   In process, a flush that stores six events took a median of 3–6 ms. With the store
-  locked by another writer it took 61 ms (max 64 ms over 10). On this host
+  locked by another writer it took 61 ms (max 64 ms over 10) with a 50 ms timeout, and
+  159 ms on a macOS CI runner. With `BEGIN IMMEDIATE` and 30 ms it takes 37 ms (max 39 ms
+  over 15) here. On this host
   `sqlite3.connect` itself stalled for about 165 ms in 2 of 60 samples in one run and
   in none of 60 in the next. That stall is in the file open, which no SQLite timeout
   bounds, so a writable store can rarely exceed the 100 ms budget.

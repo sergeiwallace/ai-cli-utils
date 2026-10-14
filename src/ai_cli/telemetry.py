@@ -19,9 +19,9 @@ from .output import Tag
 # Set only to point the store elsewhere; otherwise resolved under the home directory
 # at call time, so a process whose HOME changes after import writes where HOME is.
 _DB_PATH: Path | None = None
-# A log-record batch waits at most this long for a store another writer holds, so
-# telemetry can never hold up a launch's handoff (the T-7 budget is 100 ms).
-_LOG_BATCH_TIMEOUT_S = 0.05
+# A log-record batch waits at most this long, once, for a store another writer holds,
+# so telemetry can never hold up a launch's handoff (the T-7 budget is 100 ms).
+_LOG_BATCH_TIMEOUT_S = 0.03
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -67,11 +67,11 @@ def _db_path() -> Path:
     return _DB_PATH or Path.home() / ".ai-cli" / "telemetry.db"
 
 
-def init_db(db_path: Path | None = None, *, timeout: float = 5.0) -> sqlite3.Connection:
+def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     """Initialize the telemetry SQLite database."""
     path = db_path or _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=timeout)
+    conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     return conn
@@ -107,13 +107,23 @@ def store_log_records(events: list[tuple[float, str, dict]]) -> None:
     """
     machine = _get_machine_id()
     session = os.environ.get("AI_TMUX_SESSION")
-    conn = init_db(timeout=_LOG_BATCH_TIMEOUT_S)
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # SQLite's busy timeout applies to each statement that meets a lock, so it bounds a
+    # batch only if one statement can wait. BEGIN IMMEDIATE takes the write lock first;
+    # once it is held, nothing after it waits for another writer. The 30 ms leaves room
+    # for a slow host: a macOS CI runner took 159 ms over a 50 ms timeout.
+    conn = sqlite3.connect(str(path), timeout=_LOG_BATCH_TIMEOUT_S, isolation_level=None)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        for statement in _SCHEMA.split(";"):
+            if statement.strip():
+                conn.execute(statement)
         conn.executemany(
             "INSERT INTO events (ts, subject, machine, session, data) VALUES (?, ?, ?, ?, ?)",
             [(ts, subject, machine, session, json.dumps(data)) for ts, subject, data in events],
         )
-        conn.commit()
+        conn.execute("COMMIT")
     finally:
         conn.close()
 

@@ -4385,6 +4385,10 @@ def _session_command(engine: str):
         finally:
             _launch_reporter.activate(previous_reporter)
             _out.attach_file_sink(previous_file_sink)
+            # Released here, not at process exit: Windows refuses to delete or prune a
+            # file another handle still holds, and a launch that returns may be followed
+            # by another in the same process.
+            launch_log.close()
 
     _impl.__name__ = f"cmd_session_{engine}"
     return _impl

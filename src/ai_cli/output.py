@@ -255,7 +255,9 @@ def _eol(stream: TextIO) -> str:
 
 
 def _unmirrored(stream: TextIO) -> TextIO:
-    return stream.unmirrored if isinstance(stream, MirroredStream) else stream
+    while isinstance(stream, MirroredStream):
+        stream = stream.unmirrored
+    return stream
 
 
 def _write(stream: TextIO, lines: list[str], *, nl: bool = True) -> None:
