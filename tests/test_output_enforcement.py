@@ -6,6 +6,13 @@ package source and fail on any way of reaching the terminal that bypasses
 ``sys.stdout``/``sys.stderr`` write, ``os.write`` to fd 1 or 2, a prompting
 ``input()``, a ``logging.StreamHandler``, or a child process left to inherit the
 terminal. The allowlists below are the only exceptions, each with its reason.
+
+Styling has the same shape (AI-CLI-yxt0): every element is styled by the one
+renderer in ``ai_cli.output``, so ``click.style``, a Rich import or an ANSI escape
+literal anywhere else is a line that bypasses it. Rich live displays (``Live``,
+``Progress``, ``Status``) are allowed, but only inside the one owner module that
+tears them down before anything else can own the terminal
+(docs/research/rich-live-displays-in-wrapped-sessions.md, section 5).
 """
 
 from __future__ import annotations
@@ -16,8 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-
-from ai_cli.output import Tag
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "ai_cli"
 
@@ -36,6 +41,22 @@ INHERITED_TERMINAL_ALLOWLIST = {
     ("transport.py", "_run_transport_loop"): "interactive mosh/ssh session: the remote shell owns the terminal",
     ("native_deps.py", "_authenticate_root"): "sudo -v password prompt must reach the terminal, or the install hangs",
 }
+
+# Rich may be imported only by the renderer and by the live-display owner.
+RICH_IMPORTERS = {
+    "output.py": "the one renderer: Rich renders each record's elements",
+    "live_display.py": "the live-display owner: the only module that may run a Rich Live, Progress or Status",
+}
+LIVE_DISPLAY_OWNER = "live_display.py"
+LIVE_DISPLAY_MODULES = {"rich.live", "rich.progress", "rich.status"}
+
+# (file, top-level function or assigned name) -> why it may carry an ANSI escape literal.
+# A None name covers the whole file.
+ESCAPE_LITERAL_ALLOWLIST = {
+    ("transport.py", "_TERMINAL_RESTORE"): "terminal-control resets after a remote program, not a styled line",
+    ("quota.py", None): "statusline segments Claude Code renders verbatim; the statusline path must not import Rich",
+}
+_ESCAPE_LITERAL = re.compile(r"\x1b\[|\\(?:033|x1b|e|u001b)\[")
 
 STD_STREAMS = {"sys.stdout", "sys.stderr", "sys.__stdout__", "sys.__stderr__"}
 SAFE_STREAM_ATTRS = {"isatty", "fileno", "flush", "encoding"}
@@ -116,7 +137,9 @@ def scan_source(source: str, file: str) -> list[Violation]:
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             module = node.module if isinstance(node, ast.ImportFrom) else None
             names = [alias.name for alias in node.names]
-            if (module or "").split(".")[0] == "rich" or any(name.split(".")[0] == "rich" for name in names):
+            if file not in RICH_IMPORTERS and (
+                (module or "").split(".")[0] == "rich" or any(name.split(".")[0] == "rich" for name in names)
+            ):
                 flag(node, "rich bypasses the tagged interface")
             if module == "click" and any(name in CLICK_WRITERS for name in names):
                 flag(node, "importing a click writer by name bypasses the tagged interface")
@@ -209,6 +232,122 @@ def test_given_a_write_through_the_interface_when_scanned_then_it_passes(snippet
     assert scan_source(snippet, "probe.py") == []
 
 
+def _named_owners(tree: ast.Module) -> dict[int, str]:
+    """Each node's top-level function, or the name a top-level assignment binds."""
+    owner = _enclosing_functions(tree)
+    for top in tree.body:
+        if isinstance(top, (ast.Assign, ast.AnnAssign)):
+            targets = top.targets if isinstance(top, ast.Assign) else [top.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            for node in ast.walk(top):
+                owner[id(node)] = names[0] if names else ""
+    return owner
+
+
+def scan_styling(source: str, file: str) -> list[Violation]:
+    """Every way ``source`` styles text itself instead of through the renderer."""
+    tree = ast.parse(source)
+    owner = _named_owners(tree)
+    found: list[Violation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _dotted(node) in {"click.style", "click.secho", "click.unstyle"}:
+            found.append(Violation(file, node.lineno, f"{_dotted(node)} styles outside ai_cli.output"))
+        elif isinstance(node, ast.ImportFrom) and node.module == "click":
+            found.extend(
+                Violation(file, node.lineno, f"imports click.{alias.name}, which styles outside ai_cli.output")
+                for alias in node.names
+                if alias.name in {"style", "secho", "unstyle"}
+            )
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _ESCAPE_LITERAL.search(node.value):
+            name = owner.get(id(node), "")
+            if (file, None) not in ESCAPE_LITERAL_ALLOWLIST and (file, name) not in ESCAPE_LITERAL_ALLOWLIST:
+                found.append(Violation(file, node.lineno, "an ANSI escape literal styles outside ai_cli.output"))
+    return found
+
+
+def test_given_the_package_source_when_scanned_then_no_styling_bypasses_the_renderer():
+    violations = [
+        violation
+        for path in sorted(PACKAGE.rglob("*.py"))
+        if path.name not in RICH_IMPORTERS
+        for violation in scan_styling(path.read_text(encoding="utf-8"), path.name)
+    ]
+    assert not violations, "styling outside the renderer:\n" + "\n".join(map(str, violations))
+    for file, name in ESCAPE_LITERAL_ALLOWLIST:
+        tree = ast.parse((PACKAGE / file).read_text(encoding="utf-8"))
+        assert name is None or name in set(_named_owners(tree).values()), (file, name)
+
+
+@pytest.mark.parametrize(
+    ("snippet", "expected"),
+    [
+        ('import click\ndef report():\n    return click.style("[transport]", fg="cyan")', "click.style"),
+        ("from click import style", "click.style"),
+        ('LINE = "\\x1b[1;34m[transport]\\x1b[0m"', "ANSI escape literal"),
+        ("RESET = '\\033[0m'", "ANSI escape literal"),
+        ("from rich.text import Text", "rich"),
+    ],
+)
+def test_given_a_styling_bypass_when_scanned_then_it_is_reported(snippet, expected):
+    """Mutation control: a producer that styles its own text is caught, so the clean result means something."""
+    violations = scan_styling(snippet, "transport.py") + scan_source(snippet, "transport.py")
+    assert any(expected in v.what for v in violations), violations
+
+
+def scan_live_displays(source: str, file: str) -> list[Violation]:
+    """Every Rich live display ``source`` starts outside the owner module."""
+    if file == LIVE_DISPLAY_OWNER:
+        return []
+    tree = ast.parse(source)
+    found: list[Violation] = []
+    imports_rich = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            modules = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+        else:
+            continue
+        imports_rich = imports_rich or any(module.split(".")[0] == "rich" for module in modules)
+        if any(module in LIVE_DISPLAY_MODULES for module in modules):
+            found.append(Violation(file, node.lineno, f"a Rich live display outside {LIVE_DISPLAY_OWNER}"))
+    if imports_rich:
+        # Console.status starts a Live; with Rich importable only here, any .status() call is suspect.
+        found.extend(
+            Violation(file, node.lineno, f"Console.status starts a live display outside {LIVE_DISPLAY_OWNER}")
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "status"
+        )
+    return found
+
+
+def test_given_the_package_source_when_scanned_then_no_rich_live_display_is_used():
+    violations = [
+        violation
+        for path in sorted(PACKAGE.rglob("*.py"))
+        for violation in scan_live_displays(path.read_text(encoding="utf-8"), path.name)
+    ]
+    assert not violations, "live display outside its owner:\n" + "\n".join(map(str, violations))
+    assert (PACKAGE / LIVE_DISPLAY_OWNER).is_file()
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from rich.live import Live",
+        "import rich.progress",
+        "from rich import status",
+        "from rich.progress import Progress, SpinnerColumn",
+        'from rich.console import Console\nwith Console().status("working"):\n    pass',
+    ],
+)
+def test_given_a_live_display_outside_its_owner_when_scanned_then_it_is_reported(snippet):
+    """Mutation control: each way of starting a live display is caught outside the owner, and only there."""
+    assert scan_live_displays(snippet, "output.py")
+    assert scan_live_displays(snippet, LIVE_DISPLAY_OWNER) == []
+
+
 # The generated session script runs in the tmux pane: its own messages are lines too.
 _SHELL_MESSAGE = re.compile(r"""(?<![\w-])(?:echo|printf '%s\\{1,2}n')\s+"([^"$]*)""")
 
@@ -230,12 +369,24 @@ def _untagged(messages: list[str]) -> list[str]:
     return [m for m in messages if m and not re.match(r"^\[[a-z0-9_-]+\] ", m)]
 
 
-def test_given_the_session_script_source_when_scanned_then_every_message_it_prints_is_tagged():
-    messages = _script_messages((PACKAGE / "session_script.py").read_text(encoding="utf-8"))
-    assert len([m for m in messages if m]) >= 10, "the scan matched too few messages to prove anything"
-    assert not _untagged(messages)
-    used = {re.match(r"^\[([a-z0-9_-]+)\] ", m).group(1) for m in messages if m}  # type: ignore[union-attr]
-    assert used <= {tag.value for tag in Tag}, used - {tag.value for tag in Tag}
+_AI_EMIT_BODY = re.compile(r"\n(\s*)_ai_emit\(\) \{\{\n.*?\n\1\}\}\n", re.DOTALL)
+_AI_EMIT_CALL = re.compile(r"(?<![\w-])_ai_emit (\w+) ")
+
+
+def test_given_the_session_script_source_when_scanned_then_every_message_uses_ai_emit():
+    source = (PACKAGE / "session_script.py").read_text(encoding="utf-8")
+    assert _AI_EMIT_BODY.search(source), "the _ai_emit shell function is missing"
+    outside = _AI_EMIT_BODY.sub("\n", source)
+    levels = _AI_EMIT_CALL.findall(outside)
+    assert len(levels) >= 10, "the scan matched too few messages to prove anything"
+    assert set(levels) <= {"info", "warning", "error"}, levels
+    assert [m for m in _script_messages(outside) if m] == []
+
+
+def test_given_a_bare_echo_when_the_session_script_is_scanned_then_it_is_reported():
+    """Mutation control: a message printed outside _ai_emit is caught, so the clean result means something."""
+    script = '    _ai_emit() {{\n      printf \'%s\\n\' "[session] $*" >&2\n    }}\n    echo "[session] bypass"\n'
+    assert _script_messages(_AI_EMIT_BODY.sub("\n", "\n" + script)) == ["[session] bypass"]
 
 
 def test_given_an_untagged_echo_when_the_session_script_is_scanned_then_it_is_reported():

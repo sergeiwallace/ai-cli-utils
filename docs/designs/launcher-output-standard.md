@@ -266,7 +266,8 @@ Measured at base `06635ff`:
 
 ## Design Overview
 
-**Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented; Phases 2 to 5 not started.
+**Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) implemented,
+T-3 not started. Phases 3 to 5 not started.
 
 Phase 1, as built under today's Click renderer:
 
@@ -308,6 +309,61 @@ Phase 1, as built under today's Click renderer:
   prompt-toolkit's `ptterm` and `termtosvg` both declare it as a runtime dependency in
   their `setup.py`. pyte does not parse a `<`-prefixed CSI, so the tests drop the kitty
   keyboard pop before rendering.
+
+Phase 2, T-2, as built on D-1 (c):
+
+- **The record.** `output.Record` is a frozen dataclass: `at` (aware UTC), `tag`, `text`,
+  `level` (`detail`, `info`, `warning`, `error`), `op`, and three transitional fields.
+  `label` and `label_style` carry the launch reporter's phase name until T-5 turns it
+  into the operation element. `text_style` is the reporter's outcome style. `continued`
+  marks the second and later lines of one message, which repeat the tag but not the
+  label or level. `kind` and `fields` arrive with their first producers (T-6, T-7).
+- **structlog builds it.** `structlog.wrap_logger` over a sink that returns the finished
+  record, with three processors: a signature check (a `Tag` member, an op matching
+  `^[a-z][a-z0-9-]*$`, a known level), a timestamp (kept when the caller supplies one,
+  as the relay does), and the record builder, which also makes the text inert. It is a
+  wrapped logger, not `structlog.configure`, so an application that imports `ai_cli`
+  keeps its own structlog configuration.
+- **Rich renders it.** `render_record(record, color=...)` builds one span per element
+  (tag `bold blue`, op `bold cyan`, phase label `bold cyan`, `Warning:` `bold yellow`,
+  `Error:` `bold red`) and captures them through one `Console` per stream, built with
+  `markup=False`, `highlight=False`, `emoji=False`, `soft_wrap=True` and
+  `force_terminal=True`. The colour decision stays `wants_color(stream)`; Rich picks the
+  depth. A legacy Windows console renders plain. Without colour the same elements are
+  joined as plain text, so a pipe never imports Rich.
+- **Producers.** `emit`, `warning`, `error`, `cont`, `relay`, `run_relayed`, the prompts
+  and `TaggedLogHandler` all build records. `warning`/`error` set the level instead of
+  passing a styled label. `emit`, `relay` and `run_relayed` take an optional keyword
+  `op`; T-5 makes it a required positional argument.
+- **Structured relay.** `run_relayed` and the launch-time `ai update` call set
+  `AI_CLI_RECORD_RELAY=1` for the child (`output.record_relay_env()`). A child `ai` reads
+  and removes the flag at import, so it reaches only that child, and then writes each
+  record as one JSON line marked `"ai_cli_record": 1`. `relay` re-emits a valid record
+  with the child's tag, op, level and time, through the same pipeline checks. Any other
+  line, a malformed record included, becomes the description of a caller's tag/op
+  record. A child that was not asked for records (an older `ai`) still prints `[tag] ...` text; such a line is parsed back into a record with its own tag and level, so it is styled and tagged once.
+- **`ai internal emit <tag> <info|warning|error> <terminal|plain> <text...>`** replies
+  with one rendered record on stdout (`Untagged.INTERNAL_REPLY`). It runs before the
+  `ai internal` config load. `terminal` styles the reply unless `NO_COLOR` or
+  `TERM=dumb` says not to. Positional, like every other `ai internal` action.
+- **`_ai_emit <level> <text>`** in the generated script runs `ai internal emit` and
+  prints the reply itself. An empty reply or a non-zero exit (the entry point missing or
+  mid-reinstall, or an older `ai` that does not know `emit`) prints the same grammar as
+  plain text, so a message is never lost. In a supervisor that records its stderr in the
+  launch log, fd 2 is the log relay, so the record goes to the terminal on fd 3 and the
+  log gets the plain line. All 15 message sites use it; the levels match what each line
+  printed before (one `warning`, the rest `info`). The renderer runs with SIGINT ignored, so
+  a Ctrl+C cannot cost a message. The double Ctrl+C notice is rendered in the background:
+  it is printed from the INT trap, and a shell drops a second SIGINT that lands while that
+  trap is still running, which a 0.6 s render made likely (measured: the second press was
+  lost and the session kept running). The op argument the design's
+  `_ai_emit <level> <op> <text>` names is added with the rest of the operation migration
+  in T-5.
+- **Live-display owner.** `src/ai_cli/live_display.py` exists as a documented
+  placeholder, so the enforcement rule below has a named owner. It contains no display.
+- **Import cost.** structlog and Rich are imported on the first record, so `-V`, the
+  statusline and `ai internal` replies import neither
+  ([Measured Rich import cost](#measured-rich-import-cost)).
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
@@ -421,11 +477,22 @@ flush_sinks()                                               # before any exec or
    op must be a string literal that appears in the shipped default vocabulary, or a name from the
    named adapter allowlist.
 2. No styling outside the output module: no `click.style`/`click.secho`, no `rich` import, and no
-   ANSI escape literal (`\x1b[`, `\033[`). Only two named exceptions remain: the terminal-restore
-   sequences in `transport.py`, and the session script's agent-terminal reset.
-3. **Under D-1 (a):** no `rich.live`, `rich.progress` or `rich.status` import, no `Console.status`,
-   `Live` or `Progress` reference anywhere in the package, and `Console` is constructed only in the
-   output module. This is the "live display banned" half of option (a), made mechanical.
+   ANSI escape literal (`\x1b[`, `\033[`). Two named exceptions remain: the terminal-restore
+   sequences in `transport.py` (`_TERMINAL_RESTORE`), and `quota.py`, whose statusline segments
+   carry their own SGR because Claude Code renders them verbatim and the statusline must not
+   import Rich. The session script's agent-terminal reset is no longer an exception: since
+   AI-CLI-no36 it renders `_TERMINAL_RESTORE` rather than carrying its own copy.
+3. **Live displays have one owner** (D-1 (c) wants them; this replaces the ban option (a)
+   carried). Every Rich `Live`, `Progress` or `Status` is entered through one owner module,
+   `src/ai_cli/live_display.py`, which tears it down before anything else can own the terminal:
+   on context exit, in `flush_sinks()` (so every exec and `atexit`), on `foreign_terminal()`
+   entry, in the SIGTERM and SIGHUP handlers, and before any child that inherits the terminal.
+   The rule and its three tests come from
+   [the live-display research](../research/rich-live-displays-in-wrapped-sessions.md), section 5
+   and finding B-4. T-2 ships the first test: an AST scan that fails any import of `rich.live`,
+   `rich.progress` or `rich.status`, and any `Console.status` call, outside the owner. The owner
+   itself, and the pty exit-path and non-TTY tests, come with the first live display
+   (AI-CLI-zss5); its signal handlers come with AI-CLI-a1vv.
 4. Every `os.exec*` call site, and the transport handoff, is preceded by `flush_sinks()` and by
    closing any open progress line. The test checks this by routing every exec through one helper
    that does both, and banning direct `os.exec*` elsewhere.
@@ -467,8 +534,9 @@ variants, `color(n)` for 256 colours, and `#rrggbb`. It also owns colour-depth d
 **If D-1 is (c), structlog plus Rich or Click:** a structlog processor chain builds the record. It
 needs a custom timestamper, because structlog's `TimeStamper` offers UTC or local time, not an
 arbitrary IANA zone. A custom renderer emits this grammar through Rich or Click as above. A JSON
-renderer would serve the file and telemetry sinks. Tag and op enforcement move from the call
-signature into a processor (a runtime check). Rules 1 and 2 of the enforcement test stay.
+renderer would serve the file and telemetry sinks. Tag and op enforcement stay static at the call
+signature, and a processor only checks them. Rules 1 and 2 of the enforcement test stay. This is
+the branch T-2 built: the Rich bullets above apply unchanged, with structlog in front of them.
 
 ### Line discipline
 
@@ -585,10 +653,12 @@ the same `_ai_emit` path.
 
 The generated script has about 15 `echo`/`printf` message sites today (all `[session] ...`). Each
 becomes a call to a single shell function, `_ai_emit <level> <op> <text>`. The function first closes
-an open progress line, then runs `ai internal emit --tag session --op <op> --level <level> -- <text>`,
-so the line gets the call-time config, colour, datetime and all three sinks. If that command fails,
-the function prints the same grammar as plain text: a `date`-formatted timestamp in the default
-format, `[session] <op>: <text>`. The script reaches the `ai` CLI the same way it already does for
+an open progress line, then runs `ai internal emit`, so the line gets the call-time config, colour,
+datetime and all three sinks. If that command fails, the function prints the same grammar as plain
+text: a `date`-formatted timestamp in the default format, `[session] <op>: <text>`. As built in T-2
+(see the [Design Overview](#design-overview)), the call is
+`ai internal emit session <level> <terminal|plain> <text>` and the script prints its reply. The op
+argument arrives in T-5, the timestamp in T-4 and the progress-line close in T-6. The script reaches the `ai` CLI the same way it already does for
 `ai internal get-version`. That costs one Python start per message (see
 [Risks](#risks-and-mitigations) row 4), which is acceptable because these lines appear on restart,
 reload, double Ctrl+C and session end, not in a loop.
@@ -718,6 +788,27 @@ cumulative time `-X importtime` reports for the module.
 So option (a) adds roughly 40 ms, about 15%, to a launch's import time. A lazy import keeps that cost
 off the statusline, `--version` and `ai internal` reply paths.
 
+Re-measured for T-2 on 2026-10-14 under option (c), on the same machine, with Python 3.14.7,
+structlog 26.1.0, Rich 15.0.0, Pygments 2.21.0 and markdown-it-py 4.2.0. A four-worker test run
+was active on the machine, so treat the ranges as an upper bound. `import structlog` also imports
+Rich, because `structlog.dev` loads `rich.traceback` and `rich.pretty` when Rich is installed, and
+it imports `asyncio`.
+
+| What | Command | Result |
+|---|---|---|
+| structlog on top of the CLI and Rich (its own increment) | `python -X importtime -c 'import ai_cli.main, rich.console, rich.text, structlog'` | `structlog` 49–70 ms over 6 runs; `rich.console` 35–47 ms in the same runs |
+| structlog and Rich together on top of the CLI | `python -X importtime -c 'import ai_cli.main, structlog, rich.console'` | `structlog` 73–110 ms over 6 runs (it pulls Rich in), while `ai_cli.main` took 168–259 ms |
+| `ai internal get-version` end to end (imports neither) | `python -m ai_cli.main internal get-version`, best 5 of 6 | 399–513 ms, median 434 ms |
+| `ai internal emit`, plain reply | `python -m ai_cli.main internal emit session info plain hello` | 565–649 ms, median 609 ms |
+| `ai internal emit`, styled reply | `... emit session info terminal hello` | 610–729 ms, median 664 ms |
+
+structlog is the more costly of the two, so both are imported lazily on the first record and
+neither reaches `-V`, the statusline or an `ai internal` reply (T-2 AC, checked in a fresh
+interpreter). Any command that prints a record pays about 75–110 ms more than before. Each
+session-script message costs one `ai internal emit`, about 0.6 s on this machine, which is why
+the double Ctrl+C notice renders in the background (a shell drops a second SIGINT that lands
+while its INT trap is still running).
+
 ## Integration
 
 - **`src/ai_cli/output.py`** becomes the record, settings, renderer, line-discipline and sink module.
@@ -844,46 +935,56 @@ makes it visible and does not fix it.
 - **Scope:** the record model, the renderer on the D-1 library, styled elements everywhere,
   structured relay, `_ai_emit`, then the `[output]` config.
 - **Deliverables:**
-  - Files created: `src/ai_cli/data/output.toml`
+  - Files created: `src/ai_cli/data/output.toml` (T-3), `src/ai_cli/live_display.py` (T-2, a
+    placeholder owner)
   - Files modified: `src/ai_cli/output.py`, `src/ai_cli/launch_reporter.py`,
-    `src/ai_cli/session_script.py`, `src/ai_cli/main.py`, `pyproject.toml` (under D-1 (a), `rich`),
+    `src/ai_cli/session_script.py`, `src/ai_cli/main.py`, `pyproject.toml` (`structlog`, `rich`),
     `README.md`
   - Tests added: `tests/test_output_rendering.py`, `tests/test_output_config.py`, additions to
     `tests/test_output_enforcement.py` and `tests/test_tagged_launch_output.py`
 - **Tasks and acceptance criteria:**
-  - **T-2 (AI-CLI-yxt0): every line through the one renderer, every element styled**
-    - [ ] When `ai c -R` reattaches on a terminal, every `[transport]` and `[dolt_server]` line shall
+  - **T-2 (AI-CLI-yxt0): every line through the one renderer, every element styled** (implemented;
+    live reattach check pending)
+    - [x] When `ai c -R` reattaches on a terminal, every `[transport]` and `[dolt_server]` line shall
       carry the configured style on each enabled element: tag, operation, level where shown, and
       description where it has a style. Proved by
       `test_given_a_tty_reattach_when_run_through_cli_then_transport_and_dolt_server_lines_are_styled_per_element`
-      (pty; the screen model reads per-cell attributes).
-    - [ ] When any producer emits, the bytes written shall equal the renderer's output for that
+      (pty; the screen model reads per-cell attributes; the same test checks each record's bytes
+      against `render_record`).
+    - [x] When any producer emits, the bytes written shall equal the renderer's output for that
       record. A `click.style`, `click.secho`, `rich` import or ANSI escape literal outside the output
       module (other than the two named terminal-control exceptions) shall fail the enforcement test.
       Proved by `test_given_the_package_source_when_scanned_then_no_styling_bypasses_the_renderer`
-      with a mutation control that inserts `click.style` into a producer.
-    - [ ] If a producer passes text that already contains SGR sequences, then the renderer shall strip
+      with a mutation control that inserts `click.style` into a producer
+      (`test_given_a_styling_bypass_when_scanned_then_it_is_reported`). The second exception is
+      `quota.py`'s statusline, not the session script's reset (see [Enforcement](#enforcement)).
+    - [x] If a producer passes text that already contains SGR sequences, then the renderer shall strip
       them, so element styles cannot be overridden from a call site. Proved by
       `test_given_pre_styled_text_when_emitted_then_only_element_styles_reach_the_terminal`.
-    - [ ] When `run_relayed` runs a child `ai` process, its lines shall be re-emitted once, with the
+    - [x] When `run_relayed` runs a child `ai` process, its lines shall be re-emitted once, with the
       child's tag, op, level and timestamp. If a child line is not a valid record, then it shall be
       relayed as a description under the caller's tag and op. Proved by
       `test_given_a_child_ai_update_when_relayed_through_cli_then_each_line_is_tagged_once` and
       `test_given_a_malformed_child_record_when_relayed_then_it_becomes_a_description`.
-    - [ ] When the generated session script prints any message, it shall go through `_ai_emit`. If
+    - [x] When the generated session script prints any message, it shall go through `_ai_emit`. If
       `ai internal emit` fails, then the script shall print the same grammar as plain text. Proved by
       the tightened `test_given_the_session_script_source_when_scanned_then_every_message_uses_ai_emit`
-      and `test_given_no_ai_entry_point_when_the_session_script_emits_then_a_plain_tagged_line_is_printed`.
-    - [ ] Where stderr is not a terminal, or `NO_COLOR` is set non-empty, or `TERM=dumb`, the system
+      and `test_given_no_ai_entry_point_when_the_session_script_emits_then_a_plain_tagged_line_is_printed`,
+      plus `test_given_a_working_ai_entry_point_when_the_session_script_emits_then_the_renderer_prints_the_line`
+      and the mutation control `test_given_a_bare_echo_when_the_session_script_is_scanned_then_it_is_reported`.
+    - [x] Where stderr is not a terminal, or `NO_COLOR` is set non-empty, or `TERM=dumb`, the system
       shall write no SGR bytes (parity). Proved by
       `test_given_no_color_or_dumb_term_when_ai_c_runs_on_a_pty_then_no_sgr_is_written`.
-    - [ ] Where D-1 is (a): no `rich.live`, `rich.progress` or `rich.status` import and no
-      `Console.status`, `Live` or `Progress` use shall exist in the package, and `ai -V`, the
-      statusline and `ai internal` replies shall not import Rich. Proved by
-      `test_given_the_package_source_when_scanned_then_no_rich_live_display_is_used` and
+    - [x] An import of `rich.live`, `rich.progress` or `rich.status`, or a `Console.status` call,
+      outside the live-display owner module shall fail the enforcement test (enforcement rule 3,
+      replacing the ban written for D-1 (a)). Proved by
+      `test_given_the_package_source_when_scanned_then_no_rich_live_display_is_used` with the
+      mutation control `test_given_a_live_display_outside_its_owner_when_scanned_then_it_is_reported`.
+    - [x] `ai -V`, the statusline and `ai internal` replies shall import neither Rich nor
+      structlog. Proved by
       `test_given_version_and_statusline_paths_when_run_through_cli_then_rich_is_not_imported`
-      (checks `sys.modules`).
-    - [ ] If a long description exceeds the terminal width, then it shall be written as one record
+      (a fresh interpreter per path; checks `sys.modules`).
+    - [x] If a long description exceeds the terminal width, then it shall be written as one record
       with no inserted line break (soft wrap). Proved by
       `test_given_a_narrow_pty_when_a_long_record_is_emitted_then_one_line_is_written`.
   - **T-3 (AI-CLI-mu4d): one config file for every element**
@@ -1096,7 +1197,7 @@ makes it visible and does not fix it.
 | 1 | T-5 touches about 600 call sites and conflicts with concurrent work | Long-lived branch, painful rebases | Module-by-module batches, each its own PR; a shrinking unmigrated-module allowlist in the enforcement test, so partial progress merges safely |
 | 2 | The datetime makes every line about 24 characters wider | Lines wrap in narrow panes | Soft wrap (no inserted breaks); README shows `%H:%M:%S` and disabling the element |
 | 3 | A US Eastern default surprises users of a public package elsewhere | Times read as wrong | The default is the maintainer's explicit ask (quoted above). The README puts `timezone = "local"` first and `%Z` always shows the zone |
-| 4 | Each session-script line starts Python (`ai_cli.main` imports in 217–293 ms measured) | A visible delay on restart and reload lines | These lines are infrequent; `ai internal emit` should avoid importing heavy modules, and T-2 measures it; the plain fallback covers failure |
+| 4 | Each session-script line starts Python (`ai_cli.main` imports in 217–293 ms measured) | A visible delay on restart and reload lines | These lines are infrequent. T-2 measured about 0.6 s per `ai internal emit` ([Measured Rich import cost](#measured-rich-import-cost)); it runs before the `ai internal` config load, the double Ctrl+C notice renders in the background so the trap returns at once, and the plain fallback covers failure |
 | 5 | A wrong terminal width makes the L6 fence mis-wrap | One misplaced or blank row | The fence degrades to CR LF when the width is unknown; pty tests at several widths |
 | 6 | A future Rich release changes markup or wrapping defaults | Swallowed tags or split lines | Flags are always explicit; a byte-level reference-record test; a `rich` lower bound in `pyproject.toml` |
 | 7 | Tests that match `^\[tag\] ` break once a datetime leads | Mass test churn | `parse_line()` derived from settings, used by tests and by the relay fallback |

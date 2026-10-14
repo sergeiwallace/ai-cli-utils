@@ -168,10 +168,7 @@ def _stop_epilogue(is_remote: bool) -> str:
     if not is_remote:
         return "exit 77"
     return (
-        "printf '%s\\n' "
-        '"[session] Session ended: the agent will not be relaunched on its own." '
-        '"[session]   exit 78   relaunch the agent in this pane" '
-        '"[session]   exit      close this session"; '
+        "_ai_emit info \"Session ended. Type 'exit 78' to relaunch the agent here, or 'exit' to close this session.\"; "
         '"$SHELL"; _recovery_status=$?; '
         'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
         "exit 79"
@@ -315,11 +312,40 @@ def get_engine_script(
       shift
     fi
     _ai_launch_log={shell["launch_log_path"]}
+    # Every message this script prints is one record from the `ai` renderer
+    # (AI-CLI-yxt0): `_ai_emit <info|warning|error> <text>`. The script prints the
+    # reply itself, so a renderer that cannot run (the entry point missing, or
+    # mid-reinstall) or replies empty leaves the same grammar in plain text, and
+    # the message is never lost. In a supervisor that records its stderr in the
+    # launch log, fd 2 is that relay, so the record goes to the terminal on fd 3
+    # and the log gets the plain line.
+    _ai_emit_terminal_fd=""
+    _ai_emit() {{
+      local _ai_emit_level="$1" _ai_emit_target=plain _ai_emit_plain="[session] " _ai_emit_line=""
+      shift
+      [[ "$_ai_emit_level" == warning ]] && _ai_emit_plain+="Warning: "
+      [[ "$_ai_emit_level" == error ]] && _ai_emit_plain+="Error: "
+      _ai_emit_plain+="$*"
+      if [[ -n "$_ai_emit_terminal_fd" ]]; then
+        [[ -t 3 ]] && _ai_emit_target=terminal
+        printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_emit_plain" >> "$_ai_launch_log"
+      else
+        [[ -t 2 ]] && _ai_emit_target=terminal
+      fi
+      # A Ctrl+C while the renderer runs must not cost the message.
+      _ai_emit_line=$(trap '' INT; ai internal emit session "$_ai_emit_level" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
+      if [[ -n "$_ai_emit_terminal_fd" ]]; then
+        printf '%s\n' "${{_ai_emit_line:-$_ai_emit_plain}}" >&3
+      else
+        printf '%s\n' "${{_ai_emit_line:-$_ai_emit_plain}}" >&2
+      fi
+    }}
     if ! $_ai_cli_child_mode; then
       # Preserve interactive stderr while recording supervisor-only diagnostics.
       # Child bodies restore fd 2 below so normal agent output does not grow this log.
       if [[ -n "$_ai_launch_log" ]]; then
         exec 3>&2
+        _ai_emit_terminal_fd=3
         exec 2> >(while IFS= read -r _ai_log_line; do
           printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_log_line" >> "$_ai_launch_log"
           # Relay, never pass through: a child line that carries no tag gets [session].
@@ -387,7 +413,7 @@ def get_engine_script(
         _supervisor_signal_model_verified=true
       else
         _supervisor_signal_model_verified=false
-        printf '%s\\n' "[session] stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+        _ai_emit info "stale-session reaper evidence disabled: $_supervisor_signal_model_reason"
       fi
       if [[ -n "$generation_token" ]]; then
         _supervisor_tmux_session_id=$(tmux display-message -p '#{{session_id}}' 2>/dev/null || true)
@@ -415,7 +441,7 @@ def get_engine_script(
           export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"
         else
           _supervisor_signal_model_reason="generation lease backend unavailable"
-          printf '%s\n' "[session] stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+          _ai_emit info "stale-session reaper evidence disabled: $_supervisor_signal_model_reason"
         fi
       fi
       _heartbeat_pid=""
@@ -557,12 +583,14 @@ def get_engine_script(
         _supervisor_promote_child
         _promotion_status=$?
         if (( _promotion_status != 0 )); then
+          # Reported only once the child is gone and the terminal is back: rendering
+          # starts a process, and the stopped child must be released first.
           if (( _promotion_status == 2 )); then
-            printf '%s\n' "[session] interrupted before the session shell reached the terminal foreground" >&2
+            _promotion_failure="interrupted before the session shell reached the terminal foreground"
           elif [[ -n "${{_child_pgid:-}}" ]]; then
-            printf '%s\n' "[session] could not promote the session shell's process group $_child_pgid to the terminal foreground" >&2
+            _promotion_failure="could not promote the session shell's process group $_child_pgid to the terminal foreground"
           else
-            printf '%s\n' "[session] the session shell never reported a process group, so it was never promoted to the terminal foreground" >&2
+            _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
           fi
           # The child wrapper SIGSTOPs itself waiting for this promotion to
           # succeed. A stopped process only records a SIGTERM as pending; it
@@ -587,6 +615,7 @@ def get_engine_script(
           # wedged pane could not deliver Ctrl+C to anything.
           _supervisor_restore_terminal || true
           rm -f "$_supervisor_child_ready_path"
+          _ai_emit info "$_promotion_failure"
           exit 1
         fi
         _supervisor_wait_for_child
@@ -605,10 +634,10 @@ def get_engine_script(
       if $_supervisor_tmux_ownership_established; then
         _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
         if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
-          printf '%s\n' "[session] refusing to kill tmux session: ownership fence mismatch" >&2
+          _ai_emit info "refusing to kill tmux session: ownership fence mismatch"
         fi
       else
-        printf '%s\n' "[session] skipping tmux session cleanup because supervisor ownership was not established" >&2
+        _ai_emit info "skipping tmux session cleanup because supervisor ownership was not established"
       fi
       exit 0
     fi
@@ -686,7 +715,10 @@ def get_engine_script(
       fi
       _child_int_deadline=$((_child_int_now + 3))
       printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
-      printf '%s\n' "[session] Ctrl+C again within 3s to exit" >&2
+      # In the background: a shell drops a second SIGINT that lands while its INT trap is
+      # still running, and rendering takes a Python start. The deadline is already
+      # written, so the trap must return at once for the second press to be seen.
+      _ai_emit info "Ctrl+C again within 3s to exit" &
     }}
     trap '_child_record_int' INT
     # Input modes an agent arms (SGR mouse tracking, modifyOtherKeys, the kitty
@@ -718,7 +750,7 @@ def get_engine_script(
           if _direnv_exports="$(direnv export bash)"; then
             eval "$_direnv_exports"
           else
-            echo "[session] Warning: direnv could not load $direnv_root/.envrc — starting without the project environment." >&2
+            _ai_emit warning "direnv could not load $direnv_root/.envrc — starting without the project environment."
           fi
         fi
       fi
@@ -1019,7 +1051,7 @@ def get_engine_script(
         # Fail CLOSED: an unknown mtime on either side means "do not reload".
         # Reading an unmeasurable probe as "changed" is what looped forever.
         if [[ -n "$_cur_mtime" && -n "$_script_start_mtime" && "$_cur_mtime" != "$_script_start_mtime" ]]; then
-          echo "[session] session script updated — reloading..."
+          _ai_emit info "session script updated — reloading..."
           exit 78
         fi
       fi
@@ -1158,7 +1190,7 @@ with open(path, 'w') as f:
         agent_exit_count=$((agent_exit_count + 1))
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then
-          echo "[session] AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+          _ai_emit info "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
           break
         fi
       fi
@@ -1188,7 +1220,7 @@ with open(path, 'w') as f:
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        echo "[session] AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+        _ai_emit info "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
@@ -1210,7 +1242,7 @@ with open(path, 'w') as f:
         _need_reload=true
       fi
       if $_need_reload; then
-        echo "[session] ai-cli updated — reloading session template..."
+        _ai_emit info "ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
           exit 78
@@ -1220,7 +1252,7 @@ with open(path, 'w') as f:
         else
           # Do NOT advance _template_version/_template_commit on failure — a transient
           # refresh error must not permanently disable self-update. Retry next restart.
-          echo "[session] Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
+          _ai_emit info "Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
         fi
       fi
       # The persistent supervisor, not this replaceable child, owns restarts.

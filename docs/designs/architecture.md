@@ -45,7 +45,8 @@ The tool installs as a single `ai` command. There is no server component — all
 | File | Description |
 |------|-------------|
 | `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
-| `output.py` | The one terminal-output interface: `emit(tag, message)` requires a `Tag` enum member and prefixes every line `[<tag>] `; `warning`/`error`, tagged prompts, `run_relayed` for child-process output, and `raw(Untagged.<reason>, ...)` for the named machine-readable exceptions. Owns TTY / `NO_COLOR` styling |
+| `output.py` | The one terminal-output interface: `emit(tag, message)` requires a `Tag` enum member and prefixes every line `[<tag>] `; `warning`/`error`, tagged prompts, `run_relayed` for child-process output, and `raw(Untagged.<reason>, ...)` for the named machine-readable exceptions. structlog builds one `Record` per line and Rich renders each element; owns TTY / `NO_COLOR` styling and the structured relay of a child `ai`'s records ([launcher-output-standard.md](launcher-output-standard.md)) |
+| `live_display.py` | Placeholder owner of Rich live displays (`Live`, `Progress`, `Status`); the only module the enforcement test lets import them. Its contract arrives with the first live display (AI-CLI-zss5) |
 | `launch_reporter.py` | The launch phase grammar (`[launch] Phase: outcome`, heartbeats, elapsed, `Ready:` handoff), written through `output` under `Tag.LAUNCH` |
 | `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `myproject.toml`) |
 | `direnv_setup.py` | Portable checks and approval helpers for project `.envrc` files |

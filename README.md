@@ -497,6 +497,9 @@ a launch can be read at a glance and its log replayed later:
   line before the launcher hands the terminal to the engine.
 - `-q/--quiet` keeps only warnings and errors; `-v/--verbose` adds skipped steps,
   resolved paths and every duration.
+- Every element of a line is styled: the tag bold blue, a phase label bold cyan,
+  `Ready:` bold green, `Warning:` bold yellow and `Error:` bold red. Text a command
+  passes in carries no styling of its own; escape sequences in it are removed.
 - Colour is used only when stderr is a terminal. Redirected output, CI logs and the
   per-launch log under the state directory receive the plain text. Set `NO_COLOR`
   to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
@@ -520,12 +523,16 @@ supervisor's `dolt_server: healthy (socket accepted)` prints as:
 
 All of it goes through one module, `ai_cli.output`, whose `emit(tag, message)`
 takes a member of the `Tag` enum and refuses anything else, and which owns the
-colour rules above. Untagged output is a short, named list (`Untagged`), kept so
+colour rules above. [structlog](https://www.structlog.org/) builds one record per
+line and [Rich](https://rich.readthedocs.io/) renders its elements, so a line from
+the session script, a relayed child process or a nested `ai` command (which hands its
+records to the parent as JSON) is styled the same way as any other. Untagged output is a short, named list (`Untagged`), kept so
 programs can parse it: `--json` documents, `ai internal` replies, the Claude Code
 statusline segment, `-V/--version`, Click's `--help` text and terminal escape
 sequences. A test scans the package source and fails on any other way of reaching
 the terminal (`print`, `click.echo`, a `sys.stdout`/`sys.stderr` write, a prompting
-`input()`, or a child process left to inherit the terminal).
+`input()`, or a child process left to inherit the terminal), and on any styling done
+outside the renderer (`click.style`, a Rich import, an ANSI escape literal).
 
 ## Configuration
 

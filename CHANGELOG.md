@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every line an `ai` command prints is now rendered by one renderer, and every element
+  of it is styled. `[transport]` and `[dolt_server]` lines used to print plain; the tag
+  is now bold blue on every line (it was dim), `Warning:` and `Error:` keep their colours,
+  and text passed in with its own escape sequences is shown without them. The session
+  script's messages go through the same renderer via a new `ai internal emit`, and fall
+  back to the same text uncoloured when it cannot run. A nested `ai` command such as the
+  launch-time `ai update` hands its lines to the parent as records, so each keeps its own
+  tag instead of being tagged twice. structlog and Rich are new runtime dependencies; the
+  `--version`, statusline and `ai internal` reply paths do not import them.
+
 ### Fixed
 
 - A remote session that stops relaunching its agent, for example after `/login` forces

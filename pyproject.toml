@@ -55,6 +55,8 @@ dependencies = [
     # ZoneInfoNotFoundError without it, breaking offset-aware datetime parsing
     # in quota reset-time handling (AI-CLI-6ibt).
     "tzdata>=2025.2; sys_platform == 'win32'",
+    "structlog>=25.4",
+    "rich>=15.0",
 ]
 
 [tool.uv]

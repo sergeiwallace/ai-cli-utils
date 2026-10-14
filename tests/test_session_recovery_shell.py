@@ -153,6 +153,11 @@ class _RemoteSession:
         assert _wait_for(lambda: _STOP_LINE in self.pane(), _STOP_SECONDS), (
             f"the launch loop never stopped; pane: {self.pane()!r}"
         )
+        # The banner is rendered after the stop line by its own process, so the stop
+        # line alone does not mean the banner is on screen yet.
+        assert _wait_for(lambda: "close this session" in self.pane(), _STOP_SECONDS), (
+            f"the recovery banner never appeared; pane: {self.pane()!r}"
+        )
         time.sleep(1)
 
     def release(self) -> None:
