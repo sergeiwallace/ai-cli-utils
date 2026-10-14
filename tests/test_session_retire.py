@@ -196,7 +196,7 @@ def test_given_uncommitted_and_untracked_work_when_retiring_then_each_file_is_na
 def test_given_a_commit_in_neither_upstream_nor_origin_main_when_retiring_then_it_is_refused(slot):
     _git("commit", "-q", "--allow-empty", "-m", "local only", cwd=slot["wt"])
     err = _refused(slot, "-n")
-    assert f"{BRANCH} has 1 commit(s) in neither refs/remotes/origin/main" in err
+    assert f"{BRANCH} has 1 commit(s) not in refs/remotes/origin/main" in err
 
 
 def test_given_a_topic_branch_pushed_to_its_upstream_when_retired_then_both_tips_are_anchored(slot):
@@ -224,3 +224,96 @@ def test_given_the_help_when_printed_then_it_names_every_option_and_the_rename_v
     assert code == 0
     for flag in ("-n, --dry-run", "-y, --yes", "-r, --repo", "session-migrate"):
         assert flag in out
+
+
+def _commit(wt: Path, files: dict[str, str], message: str) -> None:
+    for rel, text in files.items():
+        (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+        (wt / rel).write_text(text)
+    _git("add", "-A", cwd=wt)
+    _git("commit", "-qm", message, cwd=wt)
+
+
+def _land_on_main(repo: Path, files: dict[str, str], message: str) -> None:
+    """Commit ``files`` on the main checkout, push it and refresh ``origin/main``."""
+    _commit(repo, files, message)
+    _git("push", "-q", "origin", "main", cwd=repo)
+    _git("fetch", "-q", "origin", cwd=repo)
+
+
+@pytest.fixture
+def squashed(slot):
+    """The slot's branch made two commits; main then landed their content as one squash."""
+    wt = slot["wt"]
+    _commit(wt, {"README.md": "hi\nsecond line\n"}, "edit readme")
+    _commit(wt, {"src/app.py": "def run():\n    return 1\n"}, "add app")
+    _land_on_main(
+        slot["repo"], {"README.md": "hi\nsecond line\n", "src/app.py": "def run():\n    return 1\n"}, "squash"
+    )
+    return slot
+
+
+def test_given_a_squash_merged_branch_when_retired_then_it_is_removed_and_its_original_tip_anchored(squashed):
+    repo, wt = squashed["repo"], squashed["wt"]
+    tip = _ref(repo, f"refs/heads/{BRANCH}")
+    assert _git("rev-list", "--count", f"{tip}", "--not", "origin/main", cwd=repo).strip() == "2"
+
+    code, out, err = _retire(repo, "-y")
+    assert code == 0, out + err
+    assert not wt.exists()
+    assert _ref(repo, f"{ANCHORS}/{BRANCH}") == tip == _ref(repo, f"refs/heads/{BRANCH}")
+
+
+def test_given_a_squash_merged_branch_whose_line_main_rewrote_later_when_retired_then_it_is_removed(squashed):
+    _land_on_main(squashed["repo"], {"src/app.py": "def run():\n    return 2\n"}, "later rewrite")
+    code, out, err = _retire(squashed["repo"], "-y")
+    assert code == 0, out + err
+    assert not squashed["wt"].exists()
+
+
+def test_given_a_squash_merged_branch_with_one_line_not_on_main_when_retiring_then_it_names_the_file(squashed):
+    _commit(squashed["wt"], {"src/extra.py": "UNSHIPPED = True\n"}, "local only")
+    err = _refused(squashed, "-y")
+    assert f"{BRANCH} has 3 commit(s) not in refs/remotes/origin/main" in err
+    assert "src/extra.py" in err and "UNSHIPPED = True" in err
+
+
+def test_given_a_line_main_never_carried_inserted_beside_a_rewritten_one_when_retiring_then_it_is_refused(squashed):
+    _commit(squashed["wt"], {"src/app.py": "def run():\n    NEW = 1\n    return 3\n"}, "insert and rewrite")
+    _land_on_main(squashed["repo"], {"src/app.py": "def run():\n    return 2\n"}, "later rewrite")
+    err = _refused(squashed, "-y")
+    assert "src/app.py" in err and "NEW = 1" in err
+
+
+def test_given_the_branch_tracks_origin_main_when_refused_then_the_message_names_that_ref_once(slot):
+    _git("branch", "-q", "--set-upstream-to", "origin/main", BRANCH, cwd=slot["wt"])
+    _commit(slot["wt"], {"notes.md": "draft\n"}, "local only")
+    err = _refused(slot, "-n")
+    assert f"{BRANCH} has 1 commit(s) not in refs/remotes/origin/main" in err
+    assert " nor " not in err
+
+
+def test_given_a_topic_branch_with_a_separate_upstream_when_refused_then_the_message_names_both_refs(slot):
+    wt = slot["wt"]
+    _git("switch", "-q", "-c", "topic", cwd=wt)
+    _commit(wt, {"pushed.md": "pushed\n"}, "pushed")
+    _git("push", "-q", "-u", "origin", "topic", cwd=wt)
+    _commit(wt, {"local.md": "local\n"}, "local only")
+    err = _refused(slot, "-n")
+    assert "topic has 1 commit(s) in neither refs/remotes/origin/topic nor refs/remotes/origin/main" in err
+
+
+def test_given_a_base_line_both_sides_rewrote_and_main_won_when_retired_then_it_is_removed(slot):
+    _commit(slot["wt"], {"README.md": "hello\n"}, "reword")
+    _land_on_main(slot["repo"], {"README.md": "hey\n"}, "reword differently")
+    code, out, err = _retire(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not slot["wt"].exists()
+
+
+def test_given_a_binary_file_main_never_carried_when_retiring_then_it_is_refused(squashed):
+    (squashed["wt"] / "logo.bin").write_bytes(b"\x00\x01\x02binary")
+    _git("add", "-A", cwd=squashed["wt"])
+    _git("commit", "-qm", "add logo", cwd=squashed["wt"])
+    err = _refused(squashed, "-y")
+    assert "logo.bin adds `(binary content)`" in err

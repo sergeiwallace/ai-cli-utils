@@ -20,7 +20,15 @@ not be running (a Claude Code process named NAME or working in the slot, a tmux
 session that hosts it, or a heartbeat fresher than the stale-session reaper's
 ``stale_after_seconds``); the checkout must have no uncommitted change or
 untracked file that is not ignored; and its checked-out commit must be contained
-in its branch's upstream or ``origin/main``.
+in its branch's upstream or ``origin/main``, or its content must have landed there.
+
+A squash merge never makes a branch's commits ancestors of the target, so ancestry
+alone refuses every squash-merged slot. The content proof covers that case, line by
+line against the target's current tree: every line the branch adds since its
+merge-base must be on the target at the same path, have been there at some commit
+since the merge-base (it landed and was rewritten later), or have replaced a base line
+the target also rewrote (the target moved on past it). A branch that adds no line at all
+proves nothing and still refuses.
 """
 
 from __future__ import annotations
@@ -131,6 +139,95 @@ def _fresh_heartbeats(name: str, state: Path, threshold: int, boot: str | None, 
     return found
 
 
+def _u0_hunks(diff: str) -> list[tuple[list[str], list[str]]]:
+    """The ``(removed, added)`` stripped lines of each hunk of a ``git diff -U0``."""
+    hunks: list[tuple[list[str], list[str]]] = []
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            hunks.append(([], []))
+        elif hunks and line[:1] in "-+" and not line.startswith(("---", "+++")):
+            hunks[-1][0 if line[0] == "-" else 1].append(line[1:].strip())
+    return hunks
+
+
+def _unlanded_lines(repo: Path, head: str, target: str) -> dict[str, list[str]] | None:
+    """Each path's added lines that did not land on ``target``; ``None`` when that cannot be read.
+
+    An added line has landed when the target's copy of the path carries it, when a
+    commit on the target since the merge-base carried it there, or when it replaced a
+    base line the target also rewrote. The replacement is read positionally
+    from a hunk that adds no more lines than it removes; any other hunk explains none of
+    its lines, since git cannot say which of its additions is an insertion.
+
+    A binary path has landed only when the target's blob is the branch's. A branch that
+    adds nothing is reported under ``""``: no content was compared, so nothing is proved.
+    """
+    base = _git(repo, "merge-base", head, target).stdout.strip()
+    if not base:
+        return None
+    numstat = _git(repo, "diff", "--no-renames", "--numstat", "-z", base, head)
+    if numstat.returncode != 0:
+        return None
+    unlanded: dict[str, list[str]] = {}
+    compared = False
+    for entry in filter(None, numstat.stdout.split("\0")):
+        added_count, _removed_count, path = entry.split("\t", 2)
+        if added_count == "0":
+            continue
+        compared = True
+        if added_count == "-":
+            if _resolve_blob(repo, f"{head}:{path}") != _resolve_blob(repo, f"{target}:{path}"):
+                unlanded[path] = ["(binary content)"]
+            continue
+        branch_diff = _git(repo, "diff", "-U0", "--no-renames", base, head, "--", path)
+        target_diff = _git(repo, "diff", "-U0", "--no-renames", base, target, "--", path)
+        if branch_diff.returncode != 0 or target_diff.returncode != 0:
+            return None
+        shown = _git(repo, "show", f"{target}:{path}")
+        on_target = {line.strip() for line in shown.stdout.splitlines()} if shown.returncode == 0 else set()
+        target_removed = {line for removed, _added in _u0_hunks(target_diff.stdout) for line in removed}
+        # Each added line's verdict at every position it is added; all must hold.
+        explained: dict[str, list[bool]] = {}
+        for removed, added in _u0_hunks(branch_diff.stdout):
+            pairable = len(added) <= len(removed)
+            for index, line in enumerate(added):
+                explained.setdefault(line, []).append(pairable and removed[index] in target_removed)
+        absent = [line for line, verdicts in explained.items() if line and line not in on_target and not all(verdicts)]
+        if absent:
+            absent = _never_on_target(repo, base, target, path, absent)
+        if absent is None:
+            return None
+        if absent:
+            unlanded[path] = absent
+    if not compared:
+        unlanded[""] = []
+    return unlanded
+
+
+def _never_on_target(repo: Path, base: str, target: str, path: str, lines: list[str]) -> list[str] | None:
+    """The ``lines`` no commit on ``target`` since ``base`` carried at ``path``.
+
+    A squash merge leaves the merge-base where it was, so a line that landed and was
+    then rewritten by a later change is absent from the target's tree yet on its history.
+    """
+    log = _git(repo, "log", "--format=%H", "--no-renames", f"{base}..{target}", "--", path)
+    if log.returncode != 0:
+        return None
+    remaining = set(lines)
+    for commit in log.stdout.split():
+        shown = _git(repo, "show", f"{commit}:{path}")
+        if shown.returncode == 0:
+            remaining -= {line.strip() for line in shown.stdout.splitlines()}
+        if not remaining:
+            break
+    return [line for line in lines if line in remaining]
+
+
+def _resolve_blob(repo: Path, spec: str) -> str | None:
+    res = _git(repo, "rev-parse", "--verify", "--quiet", spec)
+    return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else None
+
+
 def _content_blockers(wt: Path, head: str, branch: str | None) -> list[str]:
     """Everything in the checkout that removing it could lose."""
     blockers: list[str] = []
@@ -149,6 +246,7 @@ def _content_blockers(wt: Path, head: str, branch: str | None) -> list[str]:
             bases.append(upstream)
     if _resolve(wt, INTEGRATION_REF):
         bases.append(INTEGRATION_REF)
+    bases = list(dict.fromkeys(bases))
     label = branch or f"detached HEAD {head[:12]}"
     if not bases:
         blockers.append(f"{label} has no upstream and there is no origin/main to prove its commits are contained in")
@@ -156,9 +254,27 @@ def _content_blockers(wt: Path, head: str, branch: str | None) -> list[str]:
     unique = _git(wt, "rev-list", head, "--not", *bases)
     if unique.returncode != 0:
         blockers.append(f"cannot compare {label} with {', '.join(bases)}: {(unique.stderr or '').strip()}")
-    elif unique.stdout.split():
-        count = len(unique.stdout.split())
-        blockers.append(f"{label} has {count} commit(s) in neither {' nor '.join(bases)}")
+        return blockers
+    if not unique.stdout.split():
+        return blockers
+    count = len(unique.stdout.split())
+    where = f"in neither {' nor '.join(bases)}" if len(bases) > 1 else f"not in {bases[0]}"
+    reasons: list[str] = []
+    for target in bases:
+        unlanded = _unlanded_lines(wt, head, target)
+        if unlanded == {}:
+            return blockers
+        if unlanded is None:
+            reasons.append(f"its content could not be compared with {target}")
+        elif "" in unlanded:
+            reasons.append(f"it adds no line, so no content proves it landed on {target}")
+        else:
+            path, lines = sorted(unlanded.items())[0]
+            total = sum(len(v) for v in unlanded.values())
+            reasons.append(
+                f"{total} added line(s) in {len(unlanded)} file(s) are not on {target}, e.g. {path} adds `{lines[0]}`"
+            )
+    blockers.append(f"{label} has {count} commit(s) {where}, and {'; '.join(reasons)}")
     return blockers
 
 
