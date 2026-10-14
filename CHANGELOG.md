@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every line an `ai` command prints now starts with the time it was produced, as
+  `2026-07-01 14:30:00 EDT`: 24-hour, in US Eastern time by default, dim on a terminal.
+  The `[output.elements.datetime]` table sets its `format`, `timezone` (`UTC`, `local`
+  or an IANA zone name), delimiters and `style`, or turns it off with `enabled = false`.
+  An invalid format or zone is refused when the table is read, naming the file and the
+  key, and lines render with the defaults. The session script's plain fallback line
+  carries the same time.
 - A bare `ai c` launch (`-b/--bare`, `[session] use_tmux = false`, or no usable tmux) now
   runs the agent on a pseudo-terminal the launcher owns instead of replacing itself with
   the agent. Text written to the session's FIFO, at

@@ -321,7 +321,7 @@ def get_engine_script(
     # and the log gets the plain line.
     _ai_emit_terminal_fd=""
     _ai_emit() {{
-      local _ai_emit_level="$1" _ai_emit_op="$2" _ai_emit_target=plain _ai_emit_plain="[session] $2: " _ai_emit_line=""
+      local _ai_emit_level="$1" _ai_emit_op="$2" _ai_emit_target=plain _ai_emit_plain="[session] $2: " _ai_emit_line="" _ai_emit_stamp=""
       shift 2
       [[ "$_ai_emit_level" == warning ]] && _ai_emit_plain+="Warning: "
       [[ "$_ai_emit_level" == error ]] && _ai_emit_plain+="Error: "
@@ -334,10 +334,15 @@ def get_engine_script(
       fi
       # A Ctrl+C while the renderer runs must not cost the message.
       _ai_emit_line=$(trap '' INT; ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
+      if [[ -z "$_ai_emit_line" ]]; then
+        # The renderer's default datetime leads the plain line too.
+        _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
+        _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
+      fi
       if [[ -n "$_ai_emit_terminal_fd" ]]; then
-        printf '%s\n' "${{_ai_emit_line:-$_ai_emit_plain}}" >&3
+        printf '%s\n' "$_ai_emit_line" >&3
       else
-        printf '%s\n' "${{_ai_emit_line:-$_ai_emit_plain}}" >&2
+        printf '%s\n' "$_ai_emit_line" >&2
       fi
     }}
     if ! $_ai_cli_child_mode; then
@@ -349,9 +354,10 @@ def get_engine_script(
         exec 2> >(while IFS= read -r _ai_log_line; do
           printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_log_line" >> "$_ai_launch_log"
           # Relay, never pass through: a child line that carries no tag gets `[session] session:`.
+          # A rendered record may lead with its datetime (`2026-01-15 13:30:00 EST [tag] ...`).
           # No `case` here: bash 3.2 (macOS /bin/bash) ends a process substitution at
           # the first unparenthesized case-pattern `)`, so the whole script fails to parse.
-          if [[ "$_ai_log_line" == "["*"] "* ]]; then
+          if [[ "$_ai_log_line" == "["*"] "* || "$_ai_log_line" == [0-9][0-9][0-9][0-9]-*" ["*"] "* ]]; then
             printf '%s\n' "$_ai_log_line" >&3
           elif [[ -n "$_ai_log_line" ]]; then
             printf '[session] session: %s\n' "$_ai_log_line" >&3

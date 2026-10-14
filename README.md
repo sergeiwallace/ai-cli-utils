@@ -478,15 +478,15 @@ Every line the launcher prints on its own behalf follows one grammar on stderr, 
 a launch can be read at a glance and its log replayed later:
 
 ```text
-[launch] start: Starting Claude Code session (local, tmux)
-[launch] install: editable checkout 0.8.0; current
-[launch] tmux: 3.7c at /opt/homebrew/bin/tmux
-[launch] mode: launching inside tmux (tmux is the default session mode)
-[launch] session: resolved myproject-3
-[launch] worktree: creating isolated worktree
-[launch] worktree: still creating isolated worktree (10s elapsed)
-[launch] worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
-[launch] handoff: ready, handing off to Claude Code (myproject-3)
+2026-10-13 14:03:07 EDT [launch] start: Starting Claude Code session (local, tmux)
+2026-10-13 14:03:07 EDT [launch] install: editable checkout 0.8.0; current
+2026-10-13 14:03:07 EDT [launch] tmux: 3.7c at /opt/homebrew/bin/tmux
+2026-10-13 14:03:07 EDT [launch] mode: launching inside tmux (tmux is the default session mode)
+2026-10-13 14:03:08 EDT [launch] session: resolved myproject-3
+2026-10-13 14:03:08 EDT [launch] worktree: creating isolated worktree
+2026-10-13 14:03:18 EDT [launch] worktree: still creating isolated worktree (10s elapsed)
+2026-10-13 14:03:20 EDT [launch] worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
+2026-10-13 14:03:21 EDT [launch] handoff: ready, handing off to Claude Code (myproject-3)
 ```
 
 Each phase is the line's operation (see
@@ -501,6 +501,11 @@ Each phase is the line's operation (see
   interrupted reports it at error or warning level under its own operation.
 - `-q/--quiet` keeps only warnings and errors; `-v/--verbose` adds skipped steps,
   resolved paths and every duration.
+- Every line starts with the time it was produced, 24-hour, in US Eastern time with
+  the zone's abbreviation (`EDT` or `EST`). The time is dim on a terminal and comes
+  before the tag, as in Python's `logging` and structlog. Its zone, format, delimiters
+  and colour are configurable, and it can be turned off (see
+  [Output configuration](#output-configuration)).
 - Every element of a line is styled: the tag bold blue, the operation bold cyan,
   `handoff:` bold green, `Warning:` bold yellow and `Error:` bold red. Text a command
   passes in carries no styling of its own; escape sequences in it are removed. The
@@ -628,7 +633,7 @@ order = ["datetime", "tag", "operation", "level", "description"]
 separator = " "
 
 [output.elements.datetime]
-enabled = false
+enabled = true
 format = "%Y-%m-%d %H:%M:%S %Z"
 timezone = "America/New_York"
 prefix = ""
@@ -704,8 +709,12 @@ pattern = '^[^\x00-\x1f\x7f]*$'
 - `datetime` is the time a line was produced. `format` is a strftime format using
   the directives every platform supports (`%a %A %b %B %c %d %f %H %I %j %m %M %p
   %S %U %w %W %x %X %y %Y %z %Z %%`). `timezone` is `UTC`, `local` or an IANA zone
-  name such as `Europe/Berlin`. This release checks these settings but does not render
-  the element yet: `enabled = true` is refused as not supported yet.
+  name such as `Europe/Berlin`. The default is `America/New_York`; set
+  `timezone = "local"` for the host's own zone. `%Z` shows the zone's abbreviation, so
+  a line always says which zone its time is in. For a shorter line, set
+  `format = "%H:%M:%S"` together with `pattern = '^\d{2}:\d{2}:\d{2}$'`, or turn the
+  element off with `enabled = false`. A `format` that renders empty or fails the
+  `pattern`, or a `timezone` that names no known zone, is refused when the table is read.
 - `tag` is the log type tag, `[launch]` by default. With `enabled = false` lines
   carry no tag.
 - `operation` is the step a line belongs to, such as `reconnect:`, `ensure:` or a

@@ -400,11 +400,6 @@ _INVALID = [
         id="datetime-timezone",
     ),
     pytest.param(
-        "[output.elements.datetime]\nenabled = true\n",
-        ["output.elements.datetime.enabled"],
-        id="datetime-not-supported-yet",
-    ),
-    pytest.param(
         "[output]\nseparator = 3\n[output.elements.tag]\nstyle = 'bold blu'\n",
         ["output.separator", "output.elements.tag.style"],
         id="two-errors",
@@ -633,5 +628,8 @@ def test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_i
         check=False,
     )
 
-    assert result.stdout == "[session] reload: hi\n", result.stderr
+    # A fresh interpreter renders the shipped line, which leads with the wall-clock time.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} \[session\] reload: hi\n", result.stdout), (
+        result.stderr
+    )
     assert f"LOADED {loaded}\n" in result.stderr, result.stderr

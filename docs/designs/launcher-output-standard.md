@@ -267,8 +267,8 @@ Measured at base `06635ff`:
 ## Design Overview
 
 **Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) and T-3
-(AI-CLI-mu4d) implemented. Phase 3: T-5 (AI-CLI-rbuf) implemented. Phases 4 and 5 not
-started.
+(AI-CLI-mu4d) implemented. Phase 3: T-4 (AI-CLI-fx4b) and T-5 (AI-CLI-rbuf) implemented. Phases 4
+and 5 not started.
 
 Phase 1, as built under today's Click renderer:
 
@@ -379,7 +379,10 @@ Phase 2, T-3, as built:
 - **Shipped values differ from the schema block below in two keys.**
   `elements.datetime.enabled` is `false` and `elements.operation.required` is `false`,
   so a host with no `[output]` table renders T-2's bytes exactly (a golden test pins
-  them). T-4 and T-5 turn both on with their behaviour. In T-3 a user table that sets
+  them). T-4 and T-5 turn both on with their behaviour. T-4 has done so for the
+  datetime: the golden test runs with the element off, and
+  `test_given_no_output_config_when_a_record_renders_then_the_datetime_leads_the_t2_bytes`
+  pins the same bytes after the shipped datetime. In T-3 a user table that sets
   either to `true` is refused at load like any invalid value, naming the path and the
   key, with "true is not supported yet". Every other datetime and operation key is
   validated normally; checking the datetime `format` renders a strftime sample in the
@@ -490,6 +493,36 @@ Phase 3, T-5, as built:
 - **Launch log.** `launch_logging._log_level` skips the operation element as well as the
   tag, so `[launch] tmux: Error: ...` is still logged at ERROR until T-7 removes the
   heuristic.
+
+Phase 3, T-4, as built:
+
+- **On by default.** `elements.datetime.enabled` ships `true`, and the T-3 refusal of
+  `true` is gone. Every record renders its time first, bare and dim, as D-3 chose:
+  `2026-07-01 14:30:00 EDT [launch] ...`. `enabled = false` turns it off.
+- **One instant per record.** The time is the record's `at`, captured once when the
+  record is built (UTC). `emit` captures it once per message, so every line of a
+  multi-line message shows the same time. A relayed child record keeps the child's
+  time.
+- **Rendering.** `output.format_datetime` converts `at` to the configured zone and
+  applies the strftime `format`. `output.resolve_zone` maps `UTC` to `datetime.UTC`,
+  `local` to the host's zone (read per record, so a host zone change applies), and any
+  other name to `zoneinfo.ZoneInfo`, cached per name. The validator renders its two
+  samples through the same function, so what is checked at load is what renders. On
+  Windows the `tzdata` dependency (already declared for `win32`) supplies the zone
+  database.
+- **Cost.** zoneinfo is imported on the first datetime, never at module load, so
+  `--version` and the statusline do not pay for it. Its increment on the record path
+  is 5–7 ms under `-X importtime` (4 runs, with `ai_cli.main`, structlog and Rich
+  already imported). A record still constructs no `pathlib.Path`: `ZoneInfo` finds a
+  system zone file through `os.path`. `ai internal emit session info terminal hello`,
+  run 12 times interleaved with the T-3 base on a busy host (2026-10-14), took
+  0.45–0.80 s (median 0.55 s) against the base's 0.45–0.90 s (median 0.59 s): no
+  measurable change.
+- **Session script.** When `ai internal emit` cannot render, `_ai_emit`'s plain line now
+  leads with `TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z'`, the default format. The
+  supervisor's stderr relay, which prefixes `[session]` to a line with no tag, also
+  passes through a line that starts with a date and carries a `[tag]`, so a rendered
+  record is not tagged twice.
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
@@ -784,7 +817,7 @@ datetime and all three sinks. If that command fails, the function prints the sam
 text: a `date`-formatted timestamp in the default format, `[session] <op>: <text>`. As built in T-2
 (see the [Design Overview](#design-overview)), the call is
 `ai internal emit session <level> <op> <terminal|plain> <text>` and the script prints its reply. T-5
-added the op argument; the timestamp arrives in T-4 and the progress-line close in T-6. The script reaches the `ai` CLI the same way it already does for
+added the op argument and T-4 the timestamp; the progress-line close arrives in T-6. The script reaches the `ai` CLI the same way it already does for
 `ai internal get-version`. That costs one Python start per message (see
 [Risks](#risks-and-mitigations) row 4), which is acceptable because these lines appear on restart,
 reload, double Ctrl+C and session end, not in a loop.
@@ -1183,21 +1216,32 @@ makes it visible and does not fix it.
   - Tests added: `tests/test_output_datetime.py`, `tests/test_output_operation.py`, enforcement
     additions
 - **Tasks and acceptance criteria:**
-  - **T-4 (AI-CLI-fx4b): a configurable datetime on every line**
-    - [ ] When a record renders with the default config, its first element shall be the record's time
+  - **T-4 (AI-CLI-fx4b): a configurable datetime on every line** (implemented; all tests in
+    `tests/test_output_datetime.py`)
+    - [x] When a record renders with the default config, its first element shall be the record's time
       as `YYYY-MM-DD HH:MM:SS <TZ>`, 24-hour, in `America/New_York`. At a frozen `2026-07-01T18:30:00Z`
       that is `2026-07-01 14:30:00 EDT`; at `2026-01-15T18:30:00Z` it is `2026-01-15 13:30:00 EST`.
       Proved by `test_given_default_config_when_ai_c_dry_runs_then_each_line_starts_with_eastern_time`,
       which also runs on `test-windows` (tzdata).
-    - [ ] Where config sets `format`, `timezone` (`UTC`, `local` or an IANA name), `prefix`/`suffix`
+    - [x] Where config sets `format`, `timezone` (`UTC`, `local` or an IANA name), `prefix`/`suffix`
       or `style`, rendering shall follow it. Proved by the table-driven
-      `test_given_datetime_overrides_when_ai_c_dry_runs_then_the_datetime_follows_them`.
-    - [ ] If the format has an unsupported directive, renders empty, or fails the datetime `pattern`,
+      `test_given_datetime_overrides_when_ai_c_dry_runs_then_the_datetime_follows_them`. The
+      `local` case sets the host zone to `Asia/Tokyo`, so it cannot pass by matching the
+      default, and is POSIX-only (`time.tzset`). Style is covered through `ai internal emit`
+      to a terminal by
+      `test_given_a_datetime_style_when_ai_internal_emit_targets_a_terminal_then_the_datetime_takes_it`.
+    - [x] If the format has an unsupported directive, renders empty, or fails the datetime `pattern`,
       or the timezone does not resolve, then the config shall be refused under the T-3 rule, naming
       `output.elements.datetime.format` or `.timezone` and the file path. Proved by
       `test_given_an_invalid_datetime_setting_when_loaded_then_it_is_refused_with_path_and_key`.
-    - [ ] When one record is split across lines, every line shall carry the same instant. Proved by
-      `test_given_a_multi_line_message_when_emitted_then_every_line_has_the_same_time`.
+    - [x] When one record is split across lines, every line shall carry the same instant. Proved by
+      `test_given_a_multi_line_message_when_emitted_then_every_line_has_the_same_time` (the
+      frozen clock advances a second on every read).
+    - [x] If `ai internal emit` cannot render, then the session script's plain line shall still
+      lead with the time, and the supervisor's stderr relay shall not tag a datetime-led record
+      again. Proved by
+      `test_given_no_ai_entry_point_when_the_session_script_emits_then_the_plain_line_leads_with_eastern_time`
+      and `test_given_a_datetime_led_record_on_supervisor_stderr_when_relayed_then_it_is_not_tagged_again`.
   - **T-5 (AI-CLI-rbuf): a mandatory, configurable operation on every line** (implemented; tests in
     `tests/test_output_operation.py` and `tests/test_output_enforcement.py`)
     - [x] When any producer in the package emits, it shall pass an operation from the shipped
@@ -1359,7 +1403,7 @@ makes it visible and does not fix it.
 | 3 | Phase 2 | One renderer; enforcement rules 1–4; D-1 as decided | - [ ] | |
 | 4 | Phase 2 | `[output]` schema, refusal (D-5), call-time reading, README keys (D-2) | - [x] | T-3: `output_settings.py`, `data/output.toml`; `datetime.enabled`/`operation.required = true` refused until T-4/T-5 (driver decision (c)); sinks/progress keys arrive with T-6/T-7 |
 | 5 | Phase 2 | Live `ai c -R` shows coloured `[transport]` and `[dolt_server]` lines | - [ ] | |
-| 6 | Phase 3 | Datetime element and D-3 presentation | - [ ] | |
+| 6 | Phase 3 | Datetime element and D-3 presentation | - [x] | T-4: bare, first, `dim`; on by default; `format_datetime` shared by renderer and validator; session-script fallback stamped |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [x] | T-5: every module migrated in one change, so no allowlist was needed; the parity rows are checked by `tests/test_launch_reporter.py` |
 | 8 | Phase 4 | Reload progress (D-4); live reload shows one updating row | - [ ] | |
 | 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [ ] | |
