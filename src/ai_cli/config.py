@@ -15,6 +15,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import overload
 
 from . import output as _out
 from .output import Tag
@@ -63,7 +64,13 @@ def _migrate_xdg_dir(old: Path, new: Path) -> Path:
 BASE_DIR_RESOLVER_NAME = "resolve_base_dir"
 
 
-def resolve_base_dir(env_var: str, fallback: Path) -> Path:
+@overload
+def resolve_base_dir(env_var: str, fallback: Path) -> Path: ...
+@overload
+def resolve_base_dir(env_var: str, fallback: str) -> str: ...
+
+
+def resolve_base_dir(env_var: str, fallback: Path | str) -> Path | str:
     """Return the base directory named by *env_var*, or *fallback*.
 
     A value that is present but empty, or present but relative, is ignored. The
@@ -77,8 +84,14 @@ def resolve_base_dir(env_var: str, fallback: Path) -> Path:
     invoked from instead of the user's home.
 
     *fallback* must itself be absolute; a relative one would reintroduce the same
-    defect through the single place it would be invisible.
+    defect through the single place it would be invisible. A ``str`` fallback gets
+    a ``str`` answer, built with ``os.path`` alone (see :func:`config_file_text`).
     """
+    if isinstance(fallback, str):
+        if not os.path.isabs(fallback):  # noqa: PTH117 -- the text form, see config_file_text
+            raise ValueError(f"fallback for {env_var} must be an absolute path, got: {fallback}")
+        raw_text = os.environ.get(env_var)
+        return raw_text if raw_text and os.path.isabs(raw_text) else fallback  # noqa: PTH117
     if not fallback.is_absolute():
         raise ValueError(f"fallback for {env_var} must be an absolute path, got: {fallback}")
 
@@ -191,14 +204,27 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     return True
 
 
-def get_xdg_config_home(*, migrate: bool = True) -> Path:
+def get_xdg_config_home() -> Path:
     if sys.platform == "win32":
         base = resolve_base_dir("APPDATA", Path.home() / "AppData" / "Roaming")
         return base / "ai-cli-utils"
     base = resolve_base_dir("XDG_CONFIG_HOME", Path.home() / ".config")
-    if not migrate:
-        return base / "ai-cli-utils"
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
+
+
+def config_file_text() -> str:
+    """``config.toml``'s path as text, never migrating the old directory.
+
+    Built with ``os.path`` only: the output renderer resolves it before every record,
+    and a record must render even while a caller has patched ``os.name``, under which
+    ``pathlib.Path`` cannot be constructed.
+    """
+    home = os.path.expanduser("~")  # noqa: PTH111 -- text on purpose, as the docstring says
+    if sys.platform == "win32":
+        base = resolve_base_dir("APPDATA", os.path.join(home, "AppData", "Roaming"))  # noqa: PTH118
+    else:
+        base = resolve_base_dir("XDG_CONFIG_HOME", os.path.join(home, ".config"))  # noqa: PTH118
+    return os.path.join(base, "ai-cli-utils", "config.toml")  # noqa: PTH118
 
 
 def validate_task_prefix(prefix: str) -> str:

@@ -17,16 +17,19 @@ the shipped defaults, so a broken table cannot affect its own error lines.
 
 from __future__ import annotations
 
+import os
+import pkgutil
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
 from typing import Any
 
-from .config import get_xdg_config_home
+from .config import config_file_text
 
-DEFAULTS_FILE = Path(__file__).parent / "data" / "output.toml"
+# Paths here are text, never pathlib: a record must render even while a caller has
+# patched os.name, under which pathlib.Path cannot be constructed.
+DEFAULTS_RESOURCE = "data/output.toml"
 ELEMENTS = ("datetime", "tag", "operation", "level", "description")
 
 
@@ -108,7 +111,10 @@ def _settings(table: dict[str, Any]) -> OutputSettings:
 
 @cache
 def shipped_table() -> dict[str, Any]:
-    return tomllib.loads(DEFAULTS_FILE.read_text(encoding="utf-8"))["output"]
+    data = pkgutil.get_data("ai_cli", DEFAULTS_RESOURCE)
+    if data is None:
+        raise FileNotFoundError(f"ai_cli/{DEFAULTS_RESOURCE} is missing from the installed package")
+    return tomllib.loads(data.decode("utf-8"))["output"]
 
 
 @cache
@@ -127,9 +133,8 @@ def merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def config_path() -> Path:
-    # Not migrated: reading output settings must never move the user's config directory.
-    return get_xdg_config_home(migrate=False) / "config.toml"
+def config_path() -> str:
+    return config_file_text()
 
 
 @dataclass(frozen=True)
@@ -138,9 +143,10 @@ class _Loaded:
     errors: tuple[str, ...]
 
 
-def _load(path: Path) -> _Loaded:
+def _load(path: str) -> _Loaded:
     try:
-        text = path.read_bytes().decode("utf-8")
+        with open(path, "rb") as config_file:  # noqa: PTH123 -- text path, see DEFAULTS_RESOURCE
+            text = config_file.read().decode("utf-8")
     except FileNotFoundError:
         return _Loaded(defaults(), ())
     except (OSError, UnicodeDecodeError) as exc:
@@ -160,9 +166,9 @@ def _load(path: Path) -> _Loaded:
     return _Loaded(_settings(table), ())
 
 
-def _identity(path: Path) -> tuple[object, ...] | None:
+def _identity(path: str) -> tuple[object, ...] | None:
     try:
-        stat = path.stat()
+        stat = os.stat(path)  # noqa: PTH116 -- text path, see DEFAULTS_RESOURCE
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -183,7 +189,7 @@ def current() -> tuple[OutputSettings, tuple[str, ...]]:
     """
     global _loaded_key, _loaded, _reported
     path = config_path()
-    key = (str(path), _identity(path))
+    key = (path, _identity(path))
     if _loaded is None or key != _loaded_key:
         _loaded_key, _loaded = key, _load(path)
     if _loaded.errors == _reported:
