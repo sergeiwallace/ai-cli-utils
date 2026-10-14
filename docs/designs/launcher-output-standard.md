@@ -266,8 +266,8 @@ Measured at base `06635ff`:
 
 ## Design Overview
 
-**Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) implemented,
-T-3 not started. Phases 3 to 5 not started.
+**Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) and T-3
+(AI-CLI-mu4d) implemented. Phases 3 to 5 not started.
 
 Phase 1, as built under today's Click renderer:
 
@@ -364,6 +364,78 @@ Phase 2, T-2, as built on D-1 (c):
 - **Import cost.** structlog and Rich are imported on the first record, so `-V`, the
   statusline and `ai internal` replies import neither
   ([Measured Rich import cost](#measured-rich-import-cost)).
+
+Phase 2, T-3, as built:
+
+- **Settings.** `src/ai_cli/output_settings.py` holds the settings the renderer reads
+  (frozen dataclasses), the loader and the call-time check. `src/ai_cli/output_validation.py`
+  holds the schema (pydantic models with `extra="forbid"` and `strict=True`). The loader
+  imports it only when `config.toml` has an `[output]` table, so with none a record never
+  imports pydantic.
+  `src/ai_cli/data/output.toml` holds every key's shipped value. A user's `[output]`
+  table is merged over it key by key (tables merge, any other value replaces), then
+  validated as a whole.
+- **Shipped values differ from the schema block below in two keys.**
+  `elements.datetime.enabled` is `false` and `elements.operation.required` is `false`,
+  so a host with no `[output]` table renders T-2's bytes exactly (a golden test pins
+  them). T-4 and T-5 turn both on with their behaviour. In T-3 a user table that sets
+  either to `true` is refused at load like any invalid value, naming the path and the
+  key, with "true is not supported yet". Every other datetime and operation key is
+  validated normally; checking the datetime `format` renders a strftime sample in the
+  zone, which is validation, not rendering. T-4 and T-5 remove the two refusals.
+  Decision: of (a) accept and ignore the two keys, (b) render them in T-3, and
+  (c) refuse `true` until T-4/T-5, the driver chose (c) (Claude Opus 5.5, 2026-10-14):
+  (a) leaves keys that silently do nothing, and (b) pulls T-4/T-5 rendering into T-3.
+  <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]` and
+  `[output.progress.reload]` tables are not in the schema yet, so a user table that
+  sets them is refused as unknown keys. T-6 and T-7 add them with their behaviour.
+- **Two kinds of check.** Checks on one key run as pydantic validators, so they are
+  all reported together. That covers types, unknown keys, style strings
+  (`output.check_style`, Rich's `Style.parse`), regexes, the zone name, strftime
+  directives, level names and element names. Checks that span keys run once every key
+  is valid by itself. That covers `order` repeats and `description`, the disabled
+  description, every `Tag` against the tag pattern, `tag.styles` names, the shipped
+  vocabulary and the operation pattern, `default` and `operation.styles` names, and
+  the datetime format rendered at a January and a July instant against its pattern.
+  The shipped defaults are not validated at run time; a test validates them by
+  supplying an empty `[output]` table.
+- **Refusal (D-5).** Any error sets the whole user table aside. Records render with
+  the shipped defaults, and each error becomes one
+  `[config] load: Error: <path>: <dotted key>: <reason>` record on stderr, rendered
+  with the shipped defaults. A list index is dropped from the key (`show.0` is
+  reported as `show`). An unreadable file, invalid UTF-8 or invalid TOML is one error
+  naming the path, with no key. An error set is printed once per process. When the
+  file changes but the errors stay the same (for example the launch's own
+  machine-profile write), it is not printed again.
+- **Call time.** `render_record` asks `output_settings.current()` for settings before
+  every record, under the output lock. `current()` stats the file. It re-reads only
+  when the path, mtime, size or inode changed, so the cost per record is one `stat`.
+  It resolves the config path without the old-directory migration, so rendering never
+  moves a user's directory. The session script needs nothing more: each `_ai_emit` is
+  its own `ai internal emit` process, which reads the file afresh. That process's
+  stderr goes to `/dev/null`, so a config error is not shown on that path and the
+  reply renders with the defaults.
+- **Phase labels.** The launch reporter's phase label renders in the operation
+  element's place, with its prefix and suffix, in `label_style` or else the operation
+  style. The reporter no longer passes the phase style itself, so `operation.style`
+  colours phase labels. `Ready:` and a failed outcome keep the reporter's own styles
+  until T-5.
+- **Import cost.** Every session-script message is one `ai internal emit`, so the
+  no-table path must stay cheap. In the first version every record imported pydantic and
+  validated the shipped defaults. `ai_cli.output_settings` then cost 72–91 ms cumulative
+  under `-X importtime`, and `ai internal emit session info plain hello` took 0.61–0.70 s
+  wall clock (6 runs, best 0.61 s). The driver measured main at about 0.35 s best case.
+  With the split, the module costs 2.9–3.4 ms (3 runs) and the same command takes
+  0.38–0.56 s (6 runs, best 0.38 s, measured 2026-10-14 on a busy host).
+  `test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_is_not_imported`
+  checks in a fresh interpreter that neither pydantic nor the validation module is
+  imported without a user table, and that both are imported with one.
+- **Found while testing.** About fifteen launch tests, and the subprocess driver in
+  `tests/test_line_discipline.py`, patch `sys.platform` to `linux` for the whole
+  process. On macOS, any stdlib module that first reads `sysconfig` after the patch
+  then fails to import, depending on test order. zoneinfo is one, and pydantic imports
+  it on the first record. `tests/conftest.py` and the driver now read the build config
+  before any test runs.
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
@@ -987,28 +1059,48 @@ makes it visible and does not fix it.
     - [x] If a long description exceeds the terminal width, then it shall be written as one record
       with no inserted line break (soft wrap). Proved by
       `test_given_a_narrow_pty_when_a_long_record_is_emitted_then_one_line_is_written`.
-  - **T-3 (AI-CLI-mu4d): one config file for every element**
-    - [ ] When `[output]` sets enable, order, separator, prefix, suffix and style for each element,
+  - **T-3 (AI-CLI-mu4d): one config file for every element** (implemented; all tests in
+    `tests/test_output_config.py`)
+    - [x] When `[output]` sets enable, order, separator, prefix, suffix and style for each element,
       `ai c 7 --dry-run` shall render exactly that. Proved by the table-driven
-      `test_given_output_config_when_ai_c_dry_runs_then_lines_follow_the_configured_elements`.
-    - [ ] When `config.toml` changes between two records in one process, the second record shall use
+      `test_given_output_config_when_ai_c_dry_runs_then_lines_follow_the_configured_elements`. The
+      level element, which a dry run never shows, is covered through `ai internal emit` by
+      `test_given_output_config_when_ai_internal_emit_runs_then_the_reply_follows_the_configured_elements`.
+      Colour is covered by
+      `test_given_configured_colours_when_ai_c_r_reattaches_on_a_pty_then_each_element_takes_its_colour`
+      (pty, per-cell attributes), by
+      `test_given_configured_colours_when_ai_c_r_writes_to_a_pipe_then_no_escape_is_written` and by
+      `test_given_a_configured_style_when_ai_internal_emit_targets_a_terminal_then_the_reply_carries_it`.
+    - [x] When `config.toml` changes between two records in one process, the second record shall use
       the new settings. Proved by
       `test_given_a_config_edit_between_reconnect_attempts_when_ai_c_r_runs_then_the_next_line_uses_it`
-      (the ssh stub rewrites the file between attempts).
-    - [ ] If `[output]` contains an invalid value (each refusal listed under
+      (the ssh stub rewrites the file between attempts) and
+      `test_given_a_config_edit_between_two_ai_internal_emits_when_run_in_one_process_then_the_second_uses_it`.
+      The generated session script follows the file through its `ai internal emit` processes:
+      `test_given_an_output_config_when_the_session_script_emits_then_the_rendered_line_follows_it`.
+    - [x] If `[output]` contains an invalid value (each refusal listed under
       [Validation](#validation-and-call-time-reading)), then the system shall apply none of `[output]`,
       shall render with the shipped defaults, shall print one `[config]` error line per error naming
       the file path and the dotted key, and shall exit as it would have without the error. Proved by
-      the parametrised `test_given_invalid_output_config_when_ai_c_dry_runs_then_defaults_render_and_path_and_key_are_named`.
-    - [ ] If `config.toml` cannot be read or is not valid TOML, then the same fallback shall apply and
+      the parametrised `test_given_invalid_output_config_when_ai_c_dry_runs_then_defaults_render_and_path_and_key_are_named`
+      (23 cases, one with two errors).
+    - [x] If `config.toml` cannot be read or is not valid TOML, then the same fallback shall apply and
       no traceback shall reach the terminal. Proved by
       `test_given_unparseable_config_when_ai_c_runs_then_defaults_render_with_one_error_line`.
-    - [ ] While one invalid file state persists, its error lines shall be printed once per process.
+    - [x] While one invalid file state persists, its error lines shall be printed once per process.
       Proved by `test_given_a_persisting_invalid_config_when_many_records_render_then_the_error_prints_once`.
-    - [ ] While the file is unchanged, rendering shall not re-parse it. Proved by
+    - [x] While the file is unchanged, rendering shall not re-parse it. Proved by
       `test_given_an_unchanged_config_when_1000_records_render_then_it_is_parsed_once`.
-    - [ ] Every schema key shall be documented in the README "Output configuration" section. Proved by
+    - [x] Every schema key shall be documented in the README "Output configuration" section. Proved by
       `test_given_the_output_schema_when_compared_to_the_readme_then_every_key_is_documented`.
+    - [x] With no `[output]` table, every line shall be byte-identical to T-2's. Proved by
+      `test_given_no_output_config_when_a_record_renders_then_it_matches_the_t2_bytes` (bytes captured
+      from the T-2 renderer) and
+      `test_given_no_output_config_when_ai_internal_emit_targets_a_terminal_then_it_matches_the_t2_bytes`.
+    - [x] With no user `[output]` table, rendering shall not import pydantic or the validation
+      module. Proved by
+      `test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_is_not_imported`
+      (a fresh interpreter per case).
 - **Exit gate:** T-2 and T-3 ACs green, gate and CI green, and a live `ai c -R` reattach showing
   coloured `[transport]` and `[dolt_server]` lines (the yxt0 done-when).
 
@@ -1181,7 +1273,7 @@ makes it visible and does not fix it.
 | 1 | N/A | **Design Overview filled**: confirm the `## Design Overview` section above is filled in with concrete implementation knowledge, not left as a stub | - [ ] | |
 | 2 | Phase 1 | Line discipline L1–L7; live reattach leaves a clean prompt | - [ ] | |
 | 3 | Phase 2 | One renderer; enforcement rules 1–4; D-1 as decided | - [ ] | |
-| 4 | Phase 2 | `[output]` schema, refusal (D-5), call-time reading, README keys (D-2) | - [ ] | |
+| 4 | Phase 2 | `[output]` schema, refusal (D-5), call-time reading, README keys (D-2) | - [x] | T-3: `output_settings.py`, `data/output.toml`; `datetime.enabled`/`operation.required = true` refused until T-4/T-5 (driver decision (c)); sinks/progress keys arrive with T-6/T-7 |
 | 5 | Phase 2 | Live `ai c -R` shows coloured `[transport]` and `[dolt_server]` lines | - [ ] | |
 | 6 | Phase 3 | Datetime element and D-3 presentation | - [ ] | |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [ ] | |

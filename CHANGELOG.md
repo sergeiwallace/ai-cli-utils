@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An `[output]` table in `config.toml` controls every element of every output line:
+  which elements appear, their order, the separator, each element's prefix, suffix and
+  colour, per-tag, per-operation and per-level colours, and the regex patterns values
+  must match. It is read again whenever the file changes, so an edit applies to the next
+  line of a running session. An invalid table is ignored as a whole. Lines then render
+  with the shipped defaults, and each problem is reported once as a `[config]` error
+  naming the file and the key. With no `[output]` table, output is unchanged. Turning on
+  the datetime element or requiring an operation is refused as not supported yet. The README's
+  "Output configuration" section lists every key.
+
 - The commit-msg hook now runs: `.githooks/install.sh` installs the commit-msg stage, and a
   `feat:` or `feat(scope):` commit that does not stage a `CHANGELOG.md` change is refused. The
   script existed before but no hook stage ran it, so about half of recent features reached

@@ -34,9 +34,10 @@ PREFIX = f"[{Tag.LAUNCH.value}]"
 HEARTBEAT_SECONDS = 10.0
 SLOW_OUTCOME_SECONDS = 2.0
 
-_PHASE_STYLE = output.LABEL_STYLE
+# Empty: a phase label takes the configured operation style ([output.elements.operation]).
+_PHASE_STYLE = ""
 _READY_STYLE = "bold green"
-_ERROR_STYLE = output.ERROR_STYLE
+_ERROR_STYLE = "bold red"
 _DIM_STYLE = "dim"
 
 
@@ -179,7 +180,7 @@ class LaunchReporter:
                 err=True,
                 file=self.stream,
                 level=record_level,
-                label=None if record_level in output.LEVEL_LABELS else phase,
+                label=None if record_level in (output.Level.WARNING, output.Level.ERROR) else phase,
                 label_style=phase_style,
                 body_style=outcome_style,
             )

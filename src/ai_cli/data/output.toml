@@ -1,0 +1,61 @@
+# Shipped defaults for every log-line element. A user's `[output]` table in
+# config.toml is layered over this one key by key, and the result is validated
+# as a whole: an invalid user table is set aside and these defaults render.
+# Every key must be present here; the loader refuses any key not listed.
+
+[output]
+order = ["datetime", "tag", "operation", "level", "description"]
+separator = " "
+
+[output.elements.datetime]
+enabled = false
+format = "%Y-%m-%d %H:%M:%S %Z"
+timezone = "America/New_York"
+prefix = ""
+suffix = ""
+style = "dim"
+pattern = '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5}$'
+
+[output.elements.tag]
+enabled = true
+prefix = "["
+suffix = "]"
+style = "bold blue"
+pattern = '^[a-z0-9_-]+$'
+
+[output.elements.tag.styles]
+
+[output.elements.operation]
+enabled = true
+required = false
+default = "general"
+prefix = ""
+suffix = ":"
+style = "bold cyan"
+pattern = '^[a-z][a-z0-9-]*$'
+vocabulary = [
+    "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
+    "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
+    "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
+]
+
+[output.elements.operation.styles]
+handoff = "bold green"
+
+[output.elements.level]
+enabled = true
+show = ["warning", "error"]
+prefix = ""
+suffix = ":"
+style = ""
+
+[output.elements.level.styles]
+warning = "bold yellow"
+error = "bold red"
+
+[output.elements.description]
+enabled = true
+prefix = ""
+suffix = ""
+style = ""
+pattern = '^[^\x00-\x1f\x7f]*$'

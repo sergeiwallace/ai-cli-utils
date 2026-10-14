@@ -307,11 +307,15 @@ def test_given_termios_failing_when_a_record_is_written_then_it_is_still_written
 
 _DRIVER = textwrap.dedent(
     """
-    import os, sys, termios
+    import os, sys, sysconfig, termios
     from contextlib import ExitStack
     from pathlib import Path
     from unittest.mock import patch
 
+    # The launch patches sys.platform for the whole process. Read the build config first, as
+    # the pytest process already has: a stdlib module imported later (zoneinfo, by pydantic on
+    # the first record) would otherwise look for the patched platform's sysconfig data.
+    sysconfig.get_config_vars()
     sys.path[:0] = [sys.argv[1], sys.argv[2]]
     from tests import test_line_discipline as harness
     from ai_cli.main import cli
