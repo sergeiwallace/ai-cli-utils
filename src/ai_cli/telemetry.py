@@ -19,9 +19,12 @@ from .output import Tag
 # Set only to point the store elsewhere; otherwise resolved under the home directory
 # at call time, so a process whose HOME changes after import writes where HOME is.
 _DB_PATH: Path | None = None
-# A log-record batch waits at most this long, once, for a store another writer holds,
-# so telemetry can never hold up a launch's handoff (the T-7 budget is 100 ms).
-_LOG_BATCH_TIMEOUT_S = 0.03
+# A log-record batch never waits for a store another writer holds: it is dropped at once,
+# so telemetry can never hold up a launch's handoff (the T-7 budget is 100 ms). Any busy
+# timeout above zero is spent in SQLite's busy handler as a run of short sleeps, which a
+# loaded macOS runner overshoots: a 30 ms timeout measured about 100 ms there (AI-CLI-n0d7).
+# The launch log keeps every record, so only the telemetry copy of that batch is lost.
+_LOG_BATCH_TIMEOUT_S = 0.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -105,17 +108,18 @@ def store_log_records(events: list[tuple[float, str, dict]]) -> None:
     Not published to the bus (D-6): this runs right before an exec, where a
     network round trip has no place.
     """
-    machine = _get_machine_id()
-    session = os.environ.get("AI_TMUX_SESSION")
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # SQLite's busy timeout applies to each statement that meets a lock, so it bounds a
-    # batch only if one statement can wait. BEGIN IMMEDIATE takes the write lock first;
-    # once it is held, nothing after it waits for another writer. The 30 ms leaves room
-    # for a slow host: a macOS CI runner took 159 ms over a 50 ms timeout.
+    # BEGIN IMMEDIATE takes the write lock first, with no busy wait, so a store another
+    # writer holds fails here at once; once the lock is held, nothing after it waits.
     conn = sqlite3.connect(str(path), timeout=_LOG_BATCH_TIMEOUT_S, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Only a batch that holds the lock pays for its rows' machine id: the first
+        # lookup in a process costs tens of milliseconds, which a locked store, whose
+        # batch is dropped anyway, must not spend (a macOS runner reached 111 ms).
+        machine = _get_machine_id()
+        session = os.environ.get("AI_TMUX_SESSION")
         for statement in _SCHEMA.split(";"):
             if statement.strip():
                 conn.execute(statement)

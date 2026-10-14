@@ -282,6 +282,48 @@ def test_given_an_unwritable_telemetry_store_when_ai_c_hands_off_then_the_launch
         assert _telemetry() == []
 
 
+def test_given_a_locked_store_and_a_slow_machine_lookup_when_ai_c_hands_off_then_the_lookup_is_never_paid(
+    capsys, dolt_script, tmp_path
+):
+    """A locked store loses its batch, so it must not pay for the rows it cannot write (AI-CLI-n0d7).
+
+    The first machine-id lookup in a process costs tens of milliseconds warm and far more
+    cold; paid before the lock attempt, it pushed a slow macOS runner past the 100 ms
+    budget (111 ms) although the batch was dropped anyway.
+    """
+    from ai_cli import telemetry
+
+    holder = _store_is_locked(tmp_path)
+    looked_up: list[float] = []
+
+    def slow_machine_id():
+        looked_up.append(time.perf_counter())
+        time.sleep(0.08)
+        return "host-1"
+
+    spent: list[float] = []
+    real_flush = _out.flush_sinks
+
+    def timed_flush():
+        started = time.perf_counter()
+        real_flush()
+        spent.append(time.perf_counter() - started)
+
+    try:
+        with (
+            patch.object(telemetry, "_get_machine_id", side_effect=slow_machine_id),
+            patch.object(_out, "flush_sinks", side_effect=timed_flush),
+        ):
+            code, err = _launch(capsys, dolt_script, f"{WARNING_LINE}\n")
+    finally:
+        holder.close()
+
+    assert code == 0
+    assert "handoff: ready, handing off" in err
+    assert looked_up == [], "the machine id was looked up for a batch the locked store could not take"
+    assert sum(spent) <= 0.1, f"the telemetry sink added {sum(spent) * 1000:.0f} ms before handoff"
+
+
 # --- AC 4: the launch log failing leaves the terminal alone -----------------------
 
 
