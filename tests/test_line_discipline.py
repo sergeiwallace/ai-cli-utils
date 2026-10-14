@@ -417,7 +417,8 @@ TAGGED_RECORD = re.compile(r"^\[(?P<tag>[a-z0-9_-]+)\] (?:Warning: )?(?P<body>.*
 
 def test_given_concurrent_producers_when_records_are_written_then_no_line_interleaves(tmp_path):
     read_fd, write_fd = os.pipe()
-    sink = io.TextIOWrapper(io.FileIO(write_fd, "w"), encoding="utf-8", write_through=True)
+    # newline="\n": no translation, so a Windows sink sees the same bytes the package wrote.
+    sink = io.TextIOWrapper(io.FileIO(write_fd, "w"), encoding="utf-8", newline="\n", write_through=True)
     chunks: list[bytes] = []
     reader = threading.Thread(target=lambda: chunks.extend(iter(lambda: os.read(read_fd, 65536), b"")))
     reader.start()
