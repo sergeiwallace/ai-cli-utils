@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A telemetry store that another process holds locked no longer delays a launch's
+  handoff past its 100 ms budget. The batch looked up the machine id before trying for
+  the lock, and the first lookup in a process takes tens of milliseconds, so a locked
+  store paid for rows it then dropped (111 ms on a slow macOS runner). The lock is now
+  taken first, and only a batch that holds it looks the machine id up (AI-CLI-n0d7).
 - On tmux 3.8 the stale-session reaper, and a relaunch over a session whose pane has
   died, no longer fail for every session when one pane is dead. tmux 3.8 stopped printing
   a dead pane's pid, and the reaper read that empty pid as a malformed listing, so it

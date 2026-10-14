@@ -105,8 +105,6 @@ def store_log_records(events: list[tuple[float, str, dict]]) -> None:
     Not published to the bus (D-6): this runs right before an exec, where a
     network round trip has no place.
     """
-    machine = _get_machine_id()
-    session = os.environ.get("AI_TMUX_SESSION")
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # SQLite's busy timeout applies to each statement that meets a lock, so it bounds a
@@ -116,6 +114,11 @@ def store_log_records(events: list[tuple[float, str, dict]]) -> None:
     conn = sqlite3.connect(str(path), timeout=_LOG_BATCH_TIMEOUT_S, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Only a batch that holds the lock pays for its rows' machine id: the first
+        # lookup in a process costs tens of milliseconds, which a locked store, whose
+        # batch is dropped anyway, must not spend (a macOS runner reached 111 ms).
+        machine = _get_machine_id()
+        session = os.environ.get("AI_TMUX_SESSION")
         for statement in _SCHEMA.split(";"):
             if statement.strip():
                 conn.execute(statement)
