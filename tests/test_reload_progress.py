@@ -44,7 +44,7 @@ import pyte
 from ai_cli.session_script import get_engine_script, resolve_session_shell
 
 REPO = Path(__file__).resolve().parents[1]
-COLUMNS, ROWS = 160, 48
+COLUMNS, ROWS = 240, 48  # wide enough that no record wraps
 SESSION = "test-session"
 _CEILING_SECONDS = max(float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60")), 240.0)
 
@@ -56,6 +56,8 @@ _CONTROLLING_EXEC = (
 _UNMODELLED_CSI = re.compile(rb"\x1b\[<[0-9;]*u")
 _SGR = re.compile(r"\x1b\[[0-9;]*m")
 _RELOAD_ROW = "reloading (attempt "
+# A rendered record may lead with its datetime element.
+_SESSION_LINE = re.compile(r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} )?\[session\] reload: ")
 
 
 class Session:
@@ -395,7 +397,7 @@ def test_given_redirected_output_when_reloads_repeat_then_each_is_one_plain_coun
 
     lines = [line for line in text.split("\n") if _RELOAD_ROW in line]
     assert [re.search(r"attempt (\d+)", line)[1] for line in lines] == ["1", "2", "3"], text  # type: ignore[index]
-    assert all(line.startswith("[session] ") for line in lines), lines
+    assert all(_SESSION_LINE.match(line) for line in lines), lines
     assert "\r" not in text and "\x1b" not in text, repr(text)
 
 
@@ -407,7 +409,7 @@ def test_given_no_ai_entry_point_when_a_reload_happens_then_a_plain_counted_line
     lines = [row for row in rows if _RELOAD_ROW in row]
     assert len(lines) == 2, rows
     for attempt, line in enumerate(lines, start=1):
-        assert line.startswith("[session] "), line
+        assert _SESSION_LINE.match(line), line
         assert re.search(rf"session script updated, reloading \(attempt {attempt}, \d+s\)$", line), line
 
 
