@@ -1212,7 +1212,10 @@ makes it visible and does not fix it.
       `test_given_a_dropped_link_when_ai_c_r_reattaches_then_transport_and_dolt_lines_carry_operations`.
       The reconnect and credential notices carry `reconnect:` and `auth-wait:`. ssh's own stderr,
       which the tee relays while an attempt runs, carries `connect:`, because it is output of the
-      connection attempt, not a reconnect notice.
+      connection attempt, not a reconnect notice. Decision: of (a) `connect:` for the relayed ssh
+      stderr and (b) `reconnect:` on every tee line, the driver chose (a) (Claude Opus 5.5,
+      2026-10-14): those lines are the connection attempt's own output.
+      <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-rbuf/tee-stderr-operation -->
     - [x] Where `operation.required = true` (the default), an op-less record from a named adapter (a
       stdlib logging record) shall render with the configured `default`. Where it is `false`, the
       record shall render without the operation element. Proved by
