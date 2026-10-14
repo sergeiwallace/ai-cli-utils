@@ -1,9 +1,10 @@
 """Session-script warnings and errors reach the launch log and telemetry (AI-CLI-cuwe).
 
 The generated session script prints every message through `ai internal emit` and its reload row
-through `ai internal progress`. Those used to reach the terminal only. Now a warning or an error
-is also stored in the launch log the script was generated for and in telemetry, as the same record
-the terminal shows, and an info line stays on the terminal. Each test runs the script on a pty with
+through `ai internal progress`. Those used to reach the terminal only. Now each record also goes
+to the launch log the script was generated for and to telemetry, as the same record the terminal
+shows, and `[output.sinks.*]` decides what each keeps: by default the file takes every level and
+telemetry warnings and errors. A reload row is stored only once it has escalated. Each test runs the script on a pty with
 the `test_reload_progress` harness, so `ai internal emit` and `ai internal progress` are the real
 CLI in a fresh interpreter, and HOME (where the telemetry store lives) is the test's own.
 """
@@ -85,23 +86,49 @@ def test_given_a_session_script_warning_when_emitted_then_terminal_log_and_telem
     assert subject == "telemetry.log.session"
 
 
-def test_given_a_session_script_info_line_when_emitted_then_only_the_terminal_shows_it(
+def _info_and_warning_session(start, launch_log: Path, config: str = "") -> Session:
+    # Child 1 fails its direnv export (a warning) and runs the agent; child 2 finds an exit
+    # request, so the supervisor ends with its cleanup info line.
+    session = start(
+        reload_on=(),
+        agent_runs=(2.0, 600.0),
+        launch_log=launch_log,
+        direnv_fails=True,
+        exit_on_cron=2,
+        config=config,
+    )
+    session.wait_for_exit()
+    return session
+
+
+def test_given_a_session_script_info_line_when_emitted_then_the_terminal_and_log_show_it_but_not_telemetry(
     session_factory,  # noqa: F811
     launch_log,
 ):
-    session = session_factory(
-        reload_on=(), agent_runs=(2.0, 600.0), launch_log=launch_log, direnv_fails=True, exit_on_cron=2
+    session = _info_and_warning_session(session_factory, launch_log)
+
+    [terminal] = _containing(_terminal_lines(session), CLEANUP_TEXT)
+    [logged] = _containing(_log(launch_log), CLEANUP_TEXT)
+    assert _fields(logged) == _fields(terminal)
+    assert _fields(terminal)["level"] == "info", terminal
+    events = _telemetry(session)
+    # The same session's warning reached telemetry, so the store was reachable.
+    assert [data for _subject, data in events if DIRENV_TEXT in data["text"]], events
+    assert [data for _subject, data in events if data["level"] == "info"] == [], events
+
+
+def test_given_a_file_sink_min_level_of_warning_when_the_script_emits_then_the_log_keeps_only_the_warning(
+    session_factory,  # noqa: F811
+    launch_log,
+):
+    session = _info_and_warning_session(
+        session_factory, launch_log, config='[output.sinks.file]\nmin_level = "warning"\n'
     )
-    session.wait_for_exit()
 
     assert _containing(_terminal_lines(session), CLEANUP_TEXT), session.rows()
     lines = _log(launch_log)
-    events = _telemetry(session)
-    # The same session's warning was stored in both, so the sinks were reachable.
     assert _containing(lines, DIRENV_TEXT), lines
-    assert [data["text"] for _subject, data in events if DIRENV_TEXT in data["text"]], events
     assert not _containing(lines, CLEANUP_TEXT), lines
-    assert [data for _subject, data in events if data["level"] == "info"] == [], events
 
 
 def test_given_reloads_past_both_thresholds_when_rendered_then_only_the_escalated_rows_are_stored(

@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Warnings and errors the session script prints, such as a failed direnv load or a
-  reload row that has escalated, are now stored in the session's launch log and in
-  telemetry as the same record the terminal shows. Info lines from the session script
-  stay on the terminal and are no longer appended to the launch log. When the renderer
-  cannot run, a warning or error's plain fallback line is still appended to the log.
+- Lines the session script prints now reach the session's launch log as the same
+  record the terminal shows, and its warnings and errors, such as a failed direnv load,
+  also reach telemetry. A reload row is stored only once it has escalated to a warning
+  or an error. When the renderer cannot run, the plain fallback line is still appended
+  to the log. `[output.sinks.file]` gains `min_level` (default `detail`, every level),
+  like `[output.sinks.telemetry]`.
 - The per-launch log and telemetry now come from the same record as the terminal line,
   so all three carry the same time, tag, operation, level and text. The log file gets
   the line's elements as plain text and always starts with the time, even when the

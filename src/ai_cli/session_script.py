@@ -317,10 +317,9 @@ def get_engine_script(
     # (AI-CLI-yxt0): `_ai_emit <info|warning|error> <operation> <text>`. The script prints the
     # reply itself, so a renderer that cannot run (the entry point missing, or
     # mid-reinstall) or replies empty leaves the same grammar in plain text, and
-    # the message is never lost. `ai internal emit` stores a warning or an error in
-    # this launch's log and in telemetry (AI-CLI-cuwe), and the plain fallback of one
-    # is appended to the log here; an info line reaches the terminal only. In a
-    # supervisor that records its stderr in the launch log, fd 2 is that relay, so
+    # the message is never lost. `ai internal emit` also sends the record to this
+    # launch's log and to telemetry under `[output.sinks.*]` (AI-CLI-cuwe), and the
+    # plain fallback is appended to the log here. In a supervisor that records its stderr in the launch log, fd 2 is that relay, so
     # the record goes to the terminal on fd 3.
     _ai_emit_terminal_fd=""
     _ai_emit() {{
@@ -341,7 +340,7 @@ def get_engine_script(
         # The renderer's default datetime leads the plain line too.
         _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
-        if [[ "$_ai_emit_level" != info && -n "$_ai_launch_log" ]]; then
+        if [[ -n "$_ai_launch_log" ]]; then
           printf '%s\n' "$_ai_emit_line" 2>/dev/null >> "$_ai_launch_log"
         fi
       fi

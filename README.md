@@ -522,9 +522,9 @@ Each phase is the line's operation (see
   the telemetry event come from one record, so they carry the same time, tag,
   operation, level and text (see [Output configuration](#output-configuration)). A log
   directory that cannot be written is skipped; the launch carries on. Once the session
-  is running, its warnings and errors, such as a failed direnv load or a reload row
-  that has escalated, join the same launch's log and telemetry; its info lines stay on
-  the terminal.
+  is running, the lines its session script prints join the same launch's log, and
+  its warnings and errors, such as a failed direnv load, also reach telemetry. A reload
+  row is stored only once it has escalated.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a
@@ -710,6 +710,7 @@ enabled = true
 
 [output.sinks.file]
 enabled = true
+min_level = "detail"
 
 [output.sinks.telemetry]
 enabled = true
@@ -760,7 +761,8 @@ min_level = "warning"
   numbers of at least 1, and `error_after` may not be less than `warn_after`.
 - `sinks` decides where each line goes. `terminal` is the styled line on the screen.
   `file` is the per-launch log, which gets the same elements as plain text and always
-  starts with the datetime, even when the element is off for the terminal. `telemetry`
+  starts with the datetime, even when the element is off for the terminal; it keeps
+  each line at or above its `min_level` (default `detail`, every line). `telemetry`
   stores each line at or above `min_level` (`detail`, `info`, `warning` or `error`) in
   the local telemetry database, in one batch just before the launch hands off or the
   command exits. `[telemetry] enabled = false` also turns it off. Each sink has

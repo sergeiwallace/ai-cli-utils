@@ -103,15 +103,15 @@ class Sink:
 
 
 @dataclass(frozen=True)
-class TelemetrySink(Sink):
+class LevelledSink(Sink):
     min_level: str
 
 
 @dataclass(frozen=True)
 class Sinks:
     terminal: Sink
-    file: Sink
-    telemetry: TelemetrySink
+    file: LevelledSink
+    telemetry: LevelledSink
 
 
 @dataclass(frozen=True)
@@ -139,8 +139,8 @@ def _settings(table: dict[str, Any]) -> OutputSettings:
         progress=Progress(reload=ReloadProgress(**table["progress"]["reload"])),
         sinks=Sinks(
             terminal=Sink(**sinks["terminal"]),
-            file=Sink(**sinks["file"]),
-            telemetry=TelemetrySink(**sinks["telemetry"]),
+            file=LevelledSink(**sinks["file"]),
+            telemetry=LevelledSink(**sinks["telemetry"]),
         ),
     )
 

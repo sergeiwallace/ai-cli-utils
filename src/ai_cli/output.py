@@ -727,8 +727,10 @@ def _write_records(
             )
         if _file_sink is not None and settings.sinks.file.enabled:
             file_settings = _file_settings(settings)
+            floor = _LEVEL_RANK[Level(settings.sinks.file.min_level)]
             for record in records:
-                _file_sink(render_record(record, color=False, settings=file_settings))
+                if _LEVEL_RANK[record.level] >= floor:
+                    _file_sink(render_record(record, color=False, settings=file_settings))
         telemetry = settings.sinks.telemetry
         if telemetry.enabled:
             floor = _LEVEL_RANK[Level(telemetry.min_level)]

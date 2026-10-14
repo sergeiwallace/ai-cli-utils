@@ -1651,8 +1651,8 @@ def _internal_emit(args: list[str]) -> int:
     The generated session script prints the reply itself, so it can fall back to
     the same grammar in plain text whenever this exits non-zero or replies empty.
     ``terminal`` styles the reply unless ``NO_COLOR`` or ``TERM=dumb`` says not to.
-    ``op`` must be in the configured operation vocabulary. A warning or an error is
-    also stored in the launch log and in telemetry; an info line is not.
+    ``op`` must be in the configured operation vocabulary. The record is also sent
+    to the launch log and to telemetry, under their ``[output.sinks.*]`` settings.
     """
     usage = "Usage: ai internal emit <tag> <info|warning|error> <operation> <terminal|plain> <text>"
     if len(args) < 5 or args[1] not in _EMIT_LEVELS or args[3] not in _EMIT_TARGETS:
@@ -1674,21 +1674,19 @@ def _internal_emit(args: list[str]) -> int:
 
 
 def _store_session_records(records: list[_out.Record]) -> None:
-    """Store a session-script reply's warnings and errors in its launch log and in telemetry (AI-CLI-cuwe).
+    """Send a session-script reply's records to its launch log and to telemetry (AI-CLI-cuwe).
 
-    Info lines stay on the terminal. The script names its launch's log in
-    ``AI_CLI_LAUNCH_LOG``; without one the records still reach telemetry.
+    ``[output.sinks.*]`` decides what each sink keeps. The script names its
+    launch's log in ``AI_CLI_LAUNCH_LOG``; without one the records still reach
+    telemetry.
     """
-    due = [record for record in records if record.level is not _out.Level.INFO]
-    if not due:
-        return
     from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
 
     path = os.environ.get(LAUNCH_LOG_ENV, "")
     log = open_launch_log(path) if path else None
     previous = _out.attach_file_sink(log.write_line if log is not None else None)
     try:
-        _out.store(due)
+        _out.store(records)
         _out.flush_sinks()
     finally:
         _out.attach_file_sink(previous)
@@ -1758,7 +1756,9 @@ def _internal_progress(args: list[str]) -> int:
         reply = persistent + ("\r\n" if terminal else "\n") + reply
         records.insert(0, stall)
     _out.raw(Untagged.INTERNAL_REPLY, reply)
-    _store_session_records(records)
+    if level is not _out.Level.INFO:
+        # A row that has not escalated is transient: the next row replaces it.
+        _store_session_records(records)
     return 0
 
 
