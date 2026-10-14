@@ -124,3 +124,24 @@ def test_given_a_fix_commit_without_changelog_when_committed_then_it_lands(hooke
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(repo, "log", "-1", "--format=%s", env=env).stdout.strip() == "fix: correct a thing"
+
+
+def test_given_a_feat_commit_carrying_changelog_when_its_message_is_amended_then_it_lands(hooked_repo):
+    """An amend replaces HEAD, so the CHANGELOG change HEAD already carries still counts."""
+    repo, env = hooked_repo
+    assert _commit(repo, env, "feat: add a thing", changelog=True).returncode == 0
+
+    result = _git(repo, "commit", "--amend", "-m", "feat: add a better thing", env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(repo, "log", "-1", "--format=%s", env=env).stdout.strip() == "feat: add a better thing"
+
+
+def test_given_a_commit_without_changelog_when_amended_to_feat_then_the_hook_refuses_it(hooked_repo):
+    repo, env = hooked_repo
+    assert _commit(repo, env, "fix: correct a thing", changelog=False).returncode == 0
+
+    result = _git(repo, "commit", "--amend", "-m", "feat: add a thing", env=env)
+
+    assert result.returncode != 0
+    assert "feat: commits require a CHANGELOG.md [Unreleased] entry" in result.stdout + result.stderr
