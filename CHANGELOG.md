@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sending SIGTERM or SIGHUP to `ai c -R` (closing its terminal window, `kill`) now
+  forwards the signal to ssh or mosh, waits for it to restore the terminal, then runs
+  the session's cleanup and records a `terminated` outcome. The launcher used to die
+  on the spot, leaving the terminal in raw mode with mouse reporting on.
+
 - A restarted agent's terminal is now reset with the same sequence the remote transport
   sends, autowrap and colour reset included. The session script kept its own copy, which
   had drifted and sent a different modifyOtherKeys form.
