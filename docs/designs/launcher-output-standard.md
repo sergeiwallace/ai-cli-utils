@@ -367,8 +367,11 @@ Phase 2, T-2, as built on D-1 (c):
 
 Phase 2, T-3, as built:
 
-- **Settings.** `src/ai_cli/output_settings.py` holds the schema (pydantic models with
-  `extra="forbid"` and `strict=True`), the loader and the call-time check.
+- **Settings.** `src/ai_cli/output_settings.py` holds the settings the renderer reads
+  (frozen dataclasses), the loader and the call-time check. `src/ai_cli/output_validation.py`
+  holds the schema (pydantic models with `extra="forbid"` and `strict=True`). The loader
+  imports it only when `config.toml` has an `[output]` table, so with none a record never
+  imports pydantic.
   `src/ai_cli/data/output.toml` holds every key's shipped value. A user's `[output]`
   table is merged over it key by key (tables merge, any other value replaces), then
   validated as a whole.
@@ -394,8 +397,8 @@ Phase 2, T-3, as built:
   description, every `Tag` against the tag pattern, `tag.styles` names, the shipped
   vocabulary and the operation pattern, `default` and `operation.styles` names, and
   the datetime format rendered at a January and a July instant against its pattern.
-  The shipped defaults are validated without the costly checks (style, zone), so a
-  record with no user table imports neither Rich's style parser nor `zoneinfo`.
+  The shipped defaults are not validated at run time; a test validates them by
+  supplying an empty `[output]` table.
 - **Refusal (D-5).** Any error sets the whole user table aside. Records render with
   the shipped defaults, and each error becomes one
   `[config] load: Error: <path>: <dotted key>: <reason>` record on stderr, rendered
@@ -417,11 +420,16 @@ Phase 2, T-3, as built:
   style. The reporter no longer passes the phase style itself, so `operation.style`
   colours phase labels. `Ready:` and a failed outcome keep the reporter's own styles
   until T-5.
-- **Import cost.** Measured on 2026-10-14 on the same machine, with a busy host
-  (12 agent units running): `ai_cli.output_settings`, which includes pydantic, takes
-  72–91 ms cumulative under `-X importtime` in `ai internal emit`, over 4 runs. It is
-  imported on the first record only, so `-V`, the statusline and the other
-  `ai internal` replies are unaffected.
+- **Import cost.** Every session-script message is one `ai internal emit`, so the
+  no-table path must stay cheap. In the first version every record imported pydantic and
+  validated the shipped defaults. `ai_cli.output_settings` then cost 72–91 ms cumulative
+  under `-X importtime`, and `ai internal emit session info plain hello` took 0.61–0.70 s
+  wall clock (6 runs, best 0.61 s). The driver measured main at about 0.35 s best case.
+  With the split, the module costs 2.9–3.4 ms (3 runs) and the same command takes
+  0.38–0.56 s (6 runs, best 0.38 s, measured 2026-10-14 on a busy host).
+  `test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_is_not_imported`
+  checks in a fresh interpreter that neither pydantic nor the validation module is
+  imported without a user table, and that both are imported with one.
 - **Found while testing.** About fifteen launch tests, and the subprocess driver in
   `tests/test_line_discipline.py`, patch `sys.platform` to `linux` for the whole
   process. On macOS, any stdlib module that first reads `sysconfig` after the patch
@@ -1089,6 +1097,10 @@ makes it visible and does not fix it.
       `test_given_no_output_config_when_a_record_renders_then_it_matches_the_t2_bytes` (bytes captured
       from the T-2 renderer) and
       `test_given_no_output_config_when_ai_internal_emit_targets_a_terminal_then_it_matches_the_t2_bytes`.
+    - [x] With no user `[output]` table, rendering shall not import pydantic or the validation
+      module. Proved by
+      `test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_is_not_imported`
+      (a fresh interpreter per case).
 - **Exit gate:** T-2 and T-3 ACs green, gate and CI green, and a live `ai c -R` reattach showing
   coloured `[transport]` and `[dolt_server]` lines (the yxt0 done-when).
 

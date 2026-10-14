@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from contextlib import ExitStack
@@ -552,3 +553,60 @@ def test_given_the_output_schema_when_compared_to_the_readme_then_every_key_is_d
     # Every schema key is also explained in prose; the entries of a `styles` map are examples.
     for key in sorted(key for key in _flatten(shipped["output"]) if ".styles." not in key):
         assert f"`{key.rsplit('.', 1)[-1]}`" in section, key
+
+
+# --- cost: with no user table, a record never pays for validation -----------------
+
+_IMPORT_PROBE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["ai", *sys.argv[2:]]
+from ai_cli.main import cli
+try:
+    cli()
+except SystemExit:
+    pass
+loaded = sorted(name for name in ("pydantic", "ai_cli.output_validation") if name in sys.modules)
+sys.__stderr__.write(f"LOADED {','.join(loaded) or '-'}\\n")
+"""
+
+
+@pytest.mark.parametrize(
+    ("config", "loaded"),
+    [
+        pytest.param(None, "-", id="no-config-file"),
+        pytest.param("", "-", id="no-output-table"),
+        pytest.param("[output]\nseparator = ' '\n", "ai_cli.output_validation,pydantic", id="user-table"),
+    ],
+)
+def test_given_no_user_output_table_when_ai_internal_emit_runs_then_validation_is_not_imported(
+    config, loaded, tmp_path
+):
+    home = tmp_path / "home"
+    env = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "LC_ALL", "SYSTEMROOT"}}
+    env.update(
+        HOME=str(home),
+        USERPROFILE=str(home),
+        XDG_STATE_HOME=str(home / "state"),
+        XDG_CONFIG_HOME=str(home / "config"),
+        XDG_CACHE_HOME=str(home / "cache"),
+        LOCALAPPDATA=str(home / "state"),
+        APPDATA=str(home / "appdata"),
+    )
+    if config is not None:
+        with patch.dict(os.environ, env, clear=True):
+            path = _config_file()
+        path.parent.mkdir(parents=True)
+        path.write_text(MACHINE + config, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE, str(REPO / "src"), "internal", "emit", "session", "info", "plain", "hi"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.stdout == "[session] hi\n", result.stderr
+    assert f"LOADED {loaded}\n" in result.stderr, result.stderr
