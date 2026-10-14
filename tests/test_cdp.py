@@ -747,7 +747,12 @@ class TestCdpEdgeRealBoundary:
             active = profile / "DevToolsActivePort"
             deadline = time.monotonic() + 60.0
             while time.monotonic() < deadline and proc.poll() is None:
-                lines = active.read_text(encoding="utf-8").splitlines() if active.is_file() else []
+                try:
+                    lines = active.read_text(encoding="utf-8").splitlines() if active.is_file() else []
+                except OSError:
+                    # Windows Edge holds the file open without read-sharing while it
+                    # writes it, so a read in that window is refused: not written yet.
+                    lines = []
                 if len(lines) >= 2:
                     ws_url = f"ws://127.0.0.1:{lines[0].strip()}{lines[1].strip()}"
                     break
