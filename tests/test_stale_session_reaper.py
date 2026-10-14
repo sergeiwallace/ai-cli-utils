@@ -29,7 +29,7 @@ from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
 from process_ownership import reap, spawn_owned_sleeper
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
-from ai_cli.session_script import get_engine_script
+from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
 from ai_cli.stale_session_reaper import (
     _TMUX_FINGERPRINT_FORMAT,
     Pane,
@@ -2485,12 +2485,12 @@ fi
 def test_given_a_child_that_exits_77_at_once_when_supervised_on_a_pty_then_the_supervisor_ends_without_a_respawn(
     tmp_path: Path, supported_session_shell: str
 ):
-    """A child's status survives the stop notice its promotion leaves pending.
+    """A child that exits 77 at once is started once, however its promotion went.
 
-    The exec shim stops itself until promoted, so the first `wait` reports that stop
-    (128 + SIGSTOP) rather than an exit. Measured under zsh: a child that then exits at
-    once is already gone when the liveness check runs, so the loop ended with the stop
-    status, a clean 77 read as "restart", and the supervisor respawned it forever.
+    The exec shim used to stop itself until promoted, so zsh's first `wait` reported that
+    stop (128 + SIGSTOP) rather than an exit, and a clean 77 read as "restart" made the
+    supervisor respawn it. The shim now parks without stopping (AI-CLI-k6ce); the test
+    after this one pins the wait's reading of the status directly.
     """
     child_body = f"""#!{supported_session_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
@@ -2516,6 +2516,66 @@ fi
     _finish_supervisor(process)
 
     assert count == "1", f"the supervisor started {count} children for one clean exit"
+
+
+def _supervisor_function(script: str, name: str) -> str:
+    """One of the generated supervisor's shell function definitions, read out of the script."""
+    start = script.index(f"{name}() {{")
+    end = script.index("\n      }\n", start) + len("\n      }\n")
+    return script[start:end]
+
+
+def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty_then_it_reads_77(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The supervisor's wait reads a promoted child's clean 77 exactly (AI-CLI-k6ce).
+
+    The full-supervisor test above passes or fails on how fast the child shell starts, so it
+    went red only on a slow CI runner. This one drives the shipped pieces directly: the exec
+    shim and the promotion and wait functions, on a real pty, with a child that exits
+    77 once the wait has begun. Measured under zsh 5.9 on macOS with the shim's former
+    self-SIGSTOP: the wait returned 19, SIGCONT's number there, on every run and never 77,
+    because zsh had recorded the stop and the resume as the child's status. The supervisor
+    reads 19 as "restart". Bash read 77 either way, so this is a zsh regression.
+    """
+    script_bin = shutil.which("script")
+    if script_bin is None:
+        pytest.skip("script binary unavailable for terminal process-group test")
+
+    script = get_engine_script("c", "session-1", "test-session", "test-", "myproject")
+    ready = tmp_path / "ready"
+    ready.touch()
+    status = tmp_path / "status"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        f"""{_supervisor_function(script, "_supervisor_promote_child")}
+{_supervisor_function(script, "_supervisor_wait_for_child")}
+trap ':' INT
+_supervisor_int_count=0
+exec 9<&0
+export AI_CLI_SUPERVISOR_TERMINAL_FD=9
+_supervisor_child_ready_path={shlex.quote(str(ready))}
+export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
+python3 -c '{CHILD_BODY_SHIM}' sh -c 'sleep 0.3; exit 77' <&0 &
+_child_pid=$!
+_supervisor_promote_child || exit 1
+_supervisor_wait_for_child
+printf '%s\\n' "$?" > {shlex.quote(str(status))}
+""",
+        encoding="utf-8",
+    )
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("AI_CLI_SUPERVISOR_")}
+    environment["ZDOTDIR"] = str(_zsh_rc_free_home(tmp_path))
+    command = [supported_session_shell, str(harness)]
+    if sys.platform == "darwin":
+        command = [script_bin, "-q", "/dev/null", *command]
+    else:
+        command = [script_bin, "-q", "-c", shlex.join(command), "/dev/null"]
+    subprocess.run(command, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, check=False)
+
+    assert status.read_text(encoding="utf-8").strip() == "77", (
+        "the supervisor's wait misread a clean 77 exit, so it would restart the child"
+    )
 
 
 def test_given_generated_session_script_when_rendered_then_it_never_signals_any_mosh_server():

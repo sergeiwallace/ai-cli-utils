@@ -26,22 +26,32 @@ SESSION_SHELL_PREFERENCE = ("zsh", "bash")
 # shell shim running `uv run`, uv SPAWNS the interpreter as a child and waits, so `setpgrp()` runs a
 # level further down and the new group's id is the grandchild's pid. Promoting `$!` then hands the
 # terminal to a process group with no members, and all three symptoms follow from that single fact --
-# the SIGCONT goes to the empty group so the stopped child never resumes and the pane stays blank,
+# the SIGCONT goes to the empty group so the parked child never resumes and the pane stays blank,
 # the promotion loop burns its whole budget and fails, and Ctrl+C is delivered to a group containing
 # no processes, so the pane cannot even be interrupted.
 #
+# It PARKS in `sigwait` for the promotion's SIGCONT rather than stopping itself (AI-CLI-k6ce). A
+# self-SIGSTOP leaves a stop in the supervisor shell's job table, and zsh then misreports the
+# child's exit: its first `wait` returns the stale stop (128 + SIGSTOP) and a second `wait` returned
+# 19 or 0 in place of a clean 77, so the supervisor read a final exit as "restart" and respawned the
+# child. A process blocked in `sigwait` never stops, so the shell has only the real exit to report.
+# SIGCONT is blocked BEFORE the readiness write, so a promotion that lands before the park leaves it
+# pending rather than lost, and unblocked again before the exec, because the mask is inherited.
+#
 # The write is `os.write` on a raw descriptor rather than `open(...).write(...)`: the very next
-# statement stops this process, and a buffered write flushed only when the file object is collected
-# would race that stop. The supervisor is what resumes the process, so losing the write deadlocks
-# the handoff rather than delaying it.
+# statement parks this process, and a buffered write flushed only when the file object is collected
+# would race that park. The supervisor is what wakes the process, so losing the write deadlocks the
+# handoff rather than delaying it.
 CHILD_BODY_SHIM = (
     "import os, signal, sys; "
     'fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); '
     'terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); '
     'ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); '
     "os.isatty(0) and (os.setpgrp(), "
+    "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCONT}), "
     "os.write(os.open(ready_path, os.O_WRONLY | os.O_TRUNC), str(os.getpgrp()).encode()), "
-    "os.kill(os.getpid(), signal.SIGSTOP)); "
+    "signal.sigwait({signal.SIGCONT}), "
+    "signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGCONT})); "
     "signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); "
     "os.execvp(sys.argv[1], sys.argv[1:])"
 )
@@ -501,11 +511,11 @@ def get_engine_script(
         # "restart the child", so a clean 77 exit became an endless respawn loop
         # and the tmux session was never torn down.
         #
-        # A gone child can still owe its exit status. Its exec shim stops itself until
-        # promoted, and zsh's first `wait` reports that stop (128 + SIGSTOP); a child
-        # that then exits at once is gone before the check below, so the stop used to
-        # stand in for its exit and a clean 77 respawned forever. One more `wait`
-        # collects the real status under zsh; bash, which has nothing left, says 127.
+        # A gone child can still owe its exit status: a trapped signal can end the
+        # `wait` just before the child exits and is reaped. One more `wait` collects
+        # it; a shell with nothing left says 127. The exec shim parks rather than
+        # stopping itself, because a stop in the job table made zsh report that stop
+        # here, and then a wrong code from this second `wait`, in place of the exit.
         _child_wait_status=0
         while :; do
           wait "$_child_pid"
@@ -660,12 +670,12 @@ def get_engine_script(
           else
             _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
           fi
-          # The child wrapper SIGSTOPs itself waiting for this promotion to
-          # succeed. A stopped process only records a SIGTERM as pending; it
-          # never acts on it until continued, so a bare SIGTERM here left the
-          # wait below blocked forever on a child that could never die
-          # (AI-CLI-jpnd). Continue its whole process group after the TERM so
-          # it wakes, sees the pending signal, and actually exits.
+          # The child wrapper parks waiting for this promotion to succeed. It
+          # used to SIGSTOP itself, and a stopped process only records a SIGTERM
+          # as pending, so a bare SIGTERM here left the wait below blocked
+          # forever on a child that could never die (AI-CLI-jpnd). Continuing
+          # its whole process group after the TERM still wakes anything in that
+          # group that is stopped, so it sees the pending signal and exits.
           #
           # That CONT has to name the group the child REPORTED. It used to name
           # "-$_child_pid", and when a spawning wrapper sits in between, that

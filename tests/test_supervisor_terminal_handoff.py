@@ -306,17 +306,17 @@ def test_promoting_the_backgrounded_pid_leaves_an_empty_foreground_group():
         )
 
 
-def test_the_readiness_write_is_unbuffered_so_the_stop_cannot_strand_it():
-    """The child stops itself immediately after reporting, so the write must already have landed.
+def test_the_readiness_write_is_unbuffered_so_the_park_cannot_strand_it():
+    """The child parks immediately after reporting, so the write must already have landed.
 
-    A buffered write flushed only when the file object is garbage collected races the SIGSTOP on the
-    very next statement, and the supervisor is the thing that would resume it.
+    A buffered write flushed only when the file object is garbage collected races the park on the
+    very next statement, and the supervisor is the thing that would wake it.
     """
     assert "os.write(" in CHILD_BODY_SHIM, (
         "the readiness write is no longer unbuffered; a buffered write depends on refcount timing "
         "for something the handoff cannot retry"
     )
-    assert "SIGSTOP" in CHILD_BODY_SHIM
-    assert CHILD_BODY_SHIM.index("os.write(") < CHILD_BODY_SHIM.index("SIGSTOP"), (
-        "the group is reported after the process stops itself, so the supervisor can never read it"
+    assert "sigwait" in CHILD_BODY_SHIM
+    assert CHILD_BODY_SHIM.index("os.write(") < CHILD_BODY_SHIM.index("sigwait"), (
+        "the group is reported after the process parks, so the supervisor can never read it"
     )
