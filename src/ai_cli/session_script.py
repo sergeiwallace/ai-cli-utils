@@ -477,11 +477,22 @@ def get_engine_script(
         # before the wait begins. The lost status fell back to 0, and 0 means
         # "restart the child", so a clean 77 exit became an endless respawn loop
         # and the tmux session was never torn down.
+        #
+        # A gone child can still owe its exit status. Its exec shim stops itself until
+        # promoted, and zsh's first `wait` reports that stop (128 + SIGSTOP); a child
+        # that then exits at once is gone before the check below, so the stop used to
+        # stand in for its exit and a clean 77 respawned forever. One more `wait`
+        # collects the real status under zsh; bash, which has nothing left, says 127.
         _child_wait_status=0
         while :; do
           wait "$_child_pid"
           _child_wait_status=$?
-          kill -0 "$_child_pid" 2>/dev/null || break
+          if ! kill -0 "$_child_pid" 2>/dev/null; then
+            wait "$_child_pid" 2>/dev/null
+            _child_reaped_status=$?
+            (( _child_reaped_status != 127 )) && _child_wait_status=$_child_reaped_status
+            break
+          fi
         done
         return "$_child_wait_status"
       }}
