@@ -38,6 +38,12 @@ _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="the session supervisor is a POSIX shell script")
 
 _OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+# The agent starts only after the whole generated startup has run: ~20 s on a
+# lightly loaded 10-core host, and past 60 s with eight copies of this file running
+# at once (AI-CLI-h17u, measured 2026-10-14). So startup is waited on by its two real
+# outcomes, the agent's own start record or the session ending, under a ceiling that
+# only a hung startup reaches.
+_STARTUP_CEILING_SECONDS = max(_OBSERVE_SECONDS, 300.0)
 _RELOAD_LINE = "[session] session script updated — reloading..."
 
 # GNU coreutils `stat`, as measured on Linux 2026-09-06: `-f` is FILESYSTEM mode and
@@ -83,12 +89,22 @@ def _host_stat_is_gnu() -> bool:
     return probe.returncode == 0 and "GNU coreutils" in probe.stdout
 
 
-def _wait_for(predicate, timeout: float = _OBSERVE_SECONDS) -> bool:
-    deadline = time.monotonic() + timeout
+def _session_alive(sock: str, session: str) -> bool:
+    return (
+        subprocess.run(["tmux", "-S", sock, "has-session", "-t", session], capture_output=True, check=False).returncode
+        == 0
+    )
+
+
+def _wait_for_agent_start(sock: str, session: str, started: Path) -> bool:
+    """True once the agent records its start; False as soon as the session is gone."""
+    deadline = time.monotonic() + _STARTUP_CEILING_SECONDS
     while time.monotonic() < deadline:
-        if predicate():
+        if _lines(started):
             return True
-        time.sleep(0.05)
+        if not _session_alive(sock, session):
+            return bool(_lines(started))
+        time.sleep(0.2)
     return False
 
 
@@ -188,7 +204,7 @@ def test_given_gnu_stat_and_an_unchanged_stable_script_when_the_session_starts_t
     session = "reload-steady"
     started = _start_session(tmux_socket, tmp_path, session, rewrite_once_during_startup=False)
     try:
-        assert _wait_for(lambda: bool(_lines(started))), (
+        assert _wait_for_agent_start(tmux_socket, session, started), (
             f"the agent never started; pane: {_pane_history(tmux_socket, session)!r}"
         )
         assert _RELOAD_LINE not in _pane_history(tmux_socket, session), (
@@ -206,7 +222,7 @@ def test_given_gnu_stat_and_one_stable_script_rewrite_when_the_session_starts_th
     session = "reload-once"
     started = _start_session(tmux_socket, tmp_path, session, rewrite_once_during_startup=True)
     try:
-        assert _wait_for(lambda: bool(_lines(started))), (
+        assert _wait_for_agent_start(tmux_socket, session, started), (
             f"the agent never started; pane: {_pane_history(tmux_socket, session)!r}"
         )
         assert (tmp_path / "rewritten").exists(), "the stand-in never rewrote the script, so this proves nothing"
