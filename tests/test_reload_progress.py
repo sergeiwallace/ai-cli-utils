@@ -407,7 +407,8 @@ def test_given_no_ai_entry_point_when_a_reload_happens_then_a_plain_counted_line
     rows = session.rows()
 
     lines = [row for row in rows if _RELOAD_ROW in row]
-    assert len(lines) == 2, rows
+    cron_calls = (session.tmp_path / "cron-calls").read_text(encoding="utf-8").strip()
+    assert len(lines) == 2, f"children started: {cron_calls}; screen: {rows}"
     for attempt, line in enumerate(lines, start=1):
         assert _SESSION_LINE.match(line), line
         assert re.search(rf"session script updated, reloading \(attempt {attempt}, \d+s\)$", line), line
