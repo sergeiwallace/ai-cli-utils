@@ -8,7 +8,7 @@ order = ["datetime", "tag", "operation", "level", "description"]
 separator = " "
 
 [output.elements.datetime]
-enabled = false
+enabled = true
 format = "%Y-%m-%d %H:%M:%S %Z"
 timezone = "America/New_York"
 prefix = ""

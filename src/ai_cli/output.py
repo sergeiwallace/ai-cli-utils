@@ -3,9 +3,9 @@
 Every line this package prints goes through :func:`emit` (or its ``warning`` /
 ``error`` shorthands) and is rendered as::
 
-    [<tag>] <operation>: <text>
-    [<tag>] <operation>: Warning: <text>
-    [<tag>] <operation>: Error: <text>
+    <datetime> [<tag>] <operation>: <text>
+    <datetime> [<tag>] <operation>: Warning: <text>
+    <datetime> [<tag>] <operation>: Error: <text>
 
 ``tag`` must be a :class:`Tag` member: a plain string is refused with
 ``TypeError``, so an untagged line cannot be produced by passing the wrong
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -54,7 +55,7 @@ import sys
 import threading
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -431,6 +432,9 @@ def make_record(tag: Tag, text: str, **fields: Any) -> Record:
 
 def _element(name: str, record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
     elements = settings.elements
+    if name == "datetime" and elements.datetime.enabled:
+        when = elements.datetime
+        return [(when.wrap(format_datetime(record.at, when.format, when.timezone)), when.style)]
     if name == "tag" and elements.tag.enabled:
         tag = elements.tag
         return [(tag.wrap(record.tag.value), tag.styles.get(record.tag.value, tag.style))]
@@ -513,6 +517,25 @@ def check_style(style: str) -> None:
         Style.parse(style)
     except StyleSyntaxError as exc:
         raise ValueError(f"{style!r} is not a valid style: {exc}") from None
+
+
+@functools.cache
+def resolve_zone(name: str) -> tzinfo | None:
+    """The zone ``name`` names: ``UTC``, ``local`` (None: the host's zone, read per record) or an IANA name."""
+    if name == "UTC":
+        return UTC
+    if name == "local":
+        return None
+    # Imported on the first datetime, not at module load: `--version` and the statusline never pay for it.
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo(name)
+
+
+def format_datetime(at: datetime, fmt: str, timezone: str) -> str:
+    """``at`` in ``timezone``, formatted by the strftime ``fmt``; an unknown zone raises ``KeyError``."""
+    zone = resolve_zone(timezone)
+    return (at.astimezone(zone) if zone is not None else at.astimezone()).strftime(fmt)
 
 
 def _legacy_windows_console(stream: TextIO, console: Console) -> bool:

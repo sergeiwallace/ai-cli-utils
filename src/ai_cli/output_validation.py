@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, ValidationInfo
 from pydantic_core import ErrorDetails
 
-from .output import Level, Tag, check_style
+from .output import Level, Tag, check_style, format_datetime, resolve_zone
 from .output_settings import ELEMENTS, merge, shipped_table
 
 # strftime directives that render the same on every platform's C library.
@@ -45,22 +45,10 @@ def _regex(value: str, info: ValidationInfo) -> str:
     return value
 
 
-def _zone(name: str) -> dt.tzinfo | None:
-    """The zone ``name`` names: ``UTC``, ``local`` (None: the host's zone) or an IANA name."""
-    if name == "UTC":
-        return dt.UTC
-    if name == "local":
-        return None
-    # Imported here: without a user table no zone is ever resolved, so no record pays for it.
-    from zoneinfo import ZoneInfo
-
-    return ZoneInfo(name)
-
-
 def _timezone(value: str, info: ValidationInfo) -> str:
     if _checking(info):
         try:
-            _zone(value)
+            resolve_zone(value)
         except (KeyError, ValueError):  # ZoneInfoNotFoundError is a KeyError
             raise ValueError(f"{value!r} is not UTC, local or a known IANA time zone") from None
     return value
@@ -72,13 +60,6 @@ def _datetime_format(value: str, info: ValidationInfo) -> str:
     unsupported = sorted({f"%{char}" for char in re.findall(r"%(.?)", value)} - {f"%{c}" for c in DATETIME_DIRECTIVES})
     if unsupported:
         raise ValueError(f"unsupported directive {', '.join(unsupported)} in {value!r}")
-    return value
-
-
-def _not_supported_yet(value: bool, info: ValidationInfo) -> bool:
-    # Refused until the element's own task lands: the datetime element (AI-CLI-fx4b).
-    if _checking(info) and value:
-        raise ValueError("true is not supported yet; this release renders it as false")
     return value
 
 
@@ -113,7 +94,6 @@ class Element(_Table):
 
 
 class DatetimeElement(Element):
-    enabled: Annotated[bool, AfterValidator(_not_supported_yet)]
     format: Annotated[str, AfterValidator(_datetime_format)]
     timezone: Annotated[str, AfterValidator(_timezone)]
     pattern: Regex
@@ -155,12 +135,6 @@ class OutputSettings(_Table):
     elements: Elements
 
 
-def format_datetime(at: dt.datetime, element: DatetimeElement) -> str:
-    """``at`` in the element's zone and format."""
-    zone = _zone(element.timezone)
-    return (at.astimezone(zone) if zone is not None else at.astimezone()).strftime(element.format)
-
-
 def _unknown(names: Iterable[str], known: Iterable[str]) -> list[str]:
     allowed = set(known)
     return [name for name in names if name not in allowed]
@@ -168,7 +142,7 @@ def _unknown(names: Iterable[str], known: Iterable[str]) -> list[str]:
 
 def _check_datetime(element: DatetimeElement, errors: list[tuple[str, str]]) -> None:
     for sample in _SAMPLE_TIMES:
-        rendered = format_datetime(sample, element)
+        rendered = format_datetime(sample, element.format, element.timezone)
         if not rendered:
             errors.append(("output.elements.datetime.format", f"{element.format!r} renders empty"))
             return
