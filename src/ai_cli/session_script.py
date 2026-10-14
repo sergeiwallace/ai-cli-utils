@@ -355,9 +355,9 @@ def get_engine_script(
       [[ -n "$_ai_progress_marker" && -f "$_ai_progress_marker" ]] || return 0
       rm -f "$_ai_progress_marker"
       if [[ -n "$_ai_emit_terminal_fd" ]]; then
-        printf '\r\n' >&3
+        printf '\\r\\n' >&3
       else
-        printf '\r\n' >&2
+        printf '\\r\\n' >&2
       fi
     }}
     if ! $_ai_cli_child_mode; then
@@ -695,13 +695,13 @@ def get_engine_script(
         if (( _child_status == 77 || _child_status == 79 )); then
           break
         fi
-        # A reload names its reason; a 78 without one (the remote recovery shell's
-        # relaunch) is a restart, which ends the run of consecutive reloads.
+        # A reload names its reason in the state file, and the file, not the exit
+        # status, is the signal: a child that exits at once can still lose its status
+        # to the stop its promotion left pending. An exit without a reason (the remote
+        # recovery shell's `exit 78` relaunch, a normal restart) ends the run.
         _reload_reason=""
-        if (( _child_status == 78 )); then
-          read -r _reload_reason < "$_ai_reload_reason_file" 2>/dev/null || true
-          rm -f "$_ai_reload_reason_file"
-        fi
+        read -r _reload_reason < "$_ai_reload_reason_file" 2>/dev/null || true
+        rm -f "$_ai_reload_reason_file"
         if [[ -n "$_reload_reason" ]]; then
           (( _reload_count == 0 )) && _reload_started=$(date +%s)
           _reload_count=$((_reload_count + 1))
