@@ -782,7 +782,7 @@ class TestCdpEdgeRealBoundary:
             # The suite points HOME at an empty temp dir, where macOS finds no default
             # keychain. Edge writes its "Safe Storage" key there at startup, so without this
             # flag every run raised SecurityAgent's "A keychain cannot be found to store
-            # Microsoft Edge" dialog on the operator's screen (AIH-uxua4).
+            # Microsoft Edge" dialog on the operator's screen.
             args.append("--use-mock-keychain")
         if allow_origins:
             args.append("--remote-allow-origins=*")
