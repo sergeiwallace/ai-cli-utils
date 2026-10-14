@@ -386,6 +386,16 @@ _INVALID = [
         id="datetime-timezone",
     ),
     pytest.param(
+        "[output.elements.datetime]\nenabled = true\n",
+        ["output.elements.datetime.enabled"],
+        id="datetime-not-supported-yet",
+    ),
+    pytest.param(
+        "[output.elements.operation]\nrequired = true\n",
+        ["output.elements.operation.required"],
+        id="operation-required-not-supported-yet",
+    ),
+    pytest.param(
         "[output]\nseparator = 3\n[output.elements.tag]\nstyle = 'bold blu'\n",
         ["output.separator", "output.elements.tag.style"],
         id="two-errors",

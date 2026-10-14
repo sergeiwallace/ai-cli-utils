@@ -691,15 +691,15 @@ pattern = '^[^\x00-\x1f\x7f]*$'
 - `datetime` is the time a line was produced. `format` is a strftime format using
   the directives every platform supports (`%a %A %b %B %c %d %f %H %I %j %m %M %p
   %S %U %w %W %x %X %y %Y %z %Z %%`). `timezone` is `UTC`, `local` or an IANA zone
-  name such as `Europe/Berlin`. This release reads and checks these settings but does
-  not render the element yet, so it stays `enabled = false`.
+  name such as `Europe/Berlin`. This release checks these settings but does not render
+  the element yet: `enabled = true` is refused as not supported yet.
 - `tag` is the log type tag, `[launch]` by default. With `enabled = false` lines
   carry no tag.
 - `operation` is the step a line belongs to, such as `reconnect:`; a launch phase name
   such as `Worktree:` renders in its place. `vocabulary` lists the allowed operation
   names: you can add names but not remove a shipped one. `default` must be in the
-  vocabulary. `required` and `default` are read and checked in this release, and a
-  line without an operation renders without the element.
+  vocabulary. A line without an operation renders without the element. `required` set to `true`,
+  which would give it `default` instead, is refused as not supported yet.
 - `level` is the `Warning:`/`Error:` label. `show` lists the levels that get a label,
   from `detail`, `info`, `warning` and `error`.
 - `description` is the text itself. It cannot be disabled.

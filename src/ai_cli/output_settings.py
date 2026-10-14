@@ -89,6 +89,14 @@ def _datetime_format(value: str, info: ValidationInfo) -> str:
     return value
 
 
+def _not_supported_yet(value: bool, info: ValidationInfo) -> bool:
+    # Refused until the element's own task lands: the datetime element (AI-CLI-fx4b) and the
+    # operation enforcement (AI-CLI-rbuf). Each removes its refusal when it ships.
+    if _checking(info) and value:
+        raise ValueError("true is not supported yet; this release renders it as false")
+    return value
+
+
 def _one_of(allowed: tuple[str, ...], what: str) -> Callable[[str], str]:
     def check(value: str) -> str:
         if value not in allowed:
@@ -120,6 +128,7 @@ class Element(_Table):
 
 
 class DatetimeElement(Element):
+    enabled: Annotated[bool, AfterValidator(_not_supported_yet)]
     format: Annotated[str, AfterValidator(_datetime_format)]
     timezone: Annotated[str, AfterValidator(_timezone)]
     pattern: Regex
@@ -131,7 +140,7 @@ class TagElement(Element):
 
 
 class OperationElement(Element):
-    required: bool
+    required: Annotated[bool, AfterValidator(_not_supported_yet)]
     default: str
     pattern: Regex
     vocabulary: list[str]

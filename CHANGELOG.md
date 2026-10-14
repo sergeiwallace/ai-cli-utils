@@ -113,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must match. It is read again whenever the file changes, so an edit applies to the next
   line of a running session. An invalid table is ignored as a whole. Lines then render
   with the shipped defaults, and each problem is reported once as a `[config]` error
-  naming the file and the key. With no `[output]` table, output is unchanged. The README's
+  naming the file and the key. With no `[output]` table, output is unchanged. Turning on
+  the datetime element or requiring an operation is refused as not supported yet. The README's
   "Output configuration" section lists every key.
 
 - The commit-msg hook now runs: `.githooks/install.sh` installs the commit-msg stage, and a

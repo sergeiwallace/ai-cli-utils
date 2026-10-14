@@ -375,9 +375,15 @@ Phase 2, T-3, as built:
 - **Shipped values differ from the schema block below in two keys.**
   `elements.datetime.enabled` is `false` and `elements.operation.required` is `false`,
   so a host with no `[output]` table renders T-2's bytes exactly (a golden test pins
-  them). T-4 and T-5 turn both on with their behaviour. In T-3 both settings are read
-  and validated but have no effect: the datetime element renders nothing, and an
-  op-less record renders without an operation. The `[output.sinks.*]` and
+  them). T-4 and T-5 turn both on with their behaviour. In T-3 a user table that sets
+  either to `true` is refused at load like any invalid value, naming the path and the
+  key, with "true is not supported yet". Every other datetime and operation key is
+  validated normally; checking the datetime `format` renders a strftime sample in the
+  zone, which is validation, not rendering. T-4 and T-5 remove the two refusals.
+  Decision: of (a) accept and ignore the two keys, (b) render them in T-3, and
+  (c) refuse `true` until T-4/T-5, the driver chose (c) (Claude Opus 5.5, 2026-10-14):
+  (a) leaves keys that silently do nothing, and (b) pulls T-4/T-5 rendering into T-3.
+  <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]` and
   `[output.progress.reload]` tables are not in the schema yet, so a user table that
   sets them is refused as unknown keys. T-6 and T-7 add them with their behaviour.
 - **Two kinds of check.** Checks on one key run as pydantic validators, so they are
@@ -1069,7 +1075,7 @@ makes it visible and does not fix it.
       shall render with the shipped defaults, shall print one `[config]` error line per error naming
       the file path and the dotted key, and shall exit as it would have without the error. Proved by
       the parametrised `test_given_invalid_output_config_when_ai_c_dry_runs_then_defaults_render_and_path_and_key_are_named`
-      (21 cases, one with two errors).
+      (23 cases, one with two errors).
     - [x] If `config.toml` cannot be read or is not valid TOML, then the same fallback shall apply and
       no traceback shall reach the terminal. Proved by
       `test_given_unparseable_config_when_ai_c_runs_then_defaults_render_with_one_error_line`.
@@ -1255,7 +1261,7 @@ makes it visible and does not fix it.
 | 1 | N/A | **Design Overview filled**: confirm the `## Design Overview` section above is filled in with concrete implementation knowledge, not left as a stub | - [ ] | |
 | 2 | Phase 1 | Line discipline L1–L7; live reattach leaves a clean prompt | - [ ] | |
 | 3 | Phase 2 | One renderer; enforcement rules 1–4; D-1 as decided | - [ ] | |
-| 4 | Phase 2 | `[output]` schema, refusal (D-5), call-time reading, README keys (D-2) | - [x] | T-3: `output_settings.py`, `data/output.toml`; datetime/required read but inert until T-4/T-5; sinks/progress keys arrive with T-6/T-7 |
+| 4 | Phase 2 | `[output]` schema, refusal (D-5), call-time reading, README keys (D-2) | - [x] | T-3: `output_settings.py`, `data/output.toml`; `datetime.enabled`/`operation.required = true` refused until T-4/T-5 (driver decision (c)); sinks/progress keys arrive with T-6/T-7 |
 | 5 | Phase 2 | Live `ai c -R` shows coloured `[transport]` and `[dolt_server]` lines | - [ ] | |
 | 6 | Phase 3 | Datetime element and D-3 presentation | - [ ] | |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [ ] | |
