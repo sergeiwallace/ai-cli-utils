@@ -107,6 +107,10 @@ class _RemoteSession:
                 fake.chmod(0o755)
         home = tmp_path / "home"
         home.mkdir()
+        # A home with no zsh startup file makes zsh (where its newuser module is built
+        # in, as on Debian and Ubuntu) run the full-screen newuser wizard, which clears
+        # the pane before the stop line and banner can be read.
+        (home / ".zshrc").write_text("# test home\n")
         script.write_text(
             get_engine_script(
                 "c", "recovery", session, "c-recovery-", "recovery", worktree_dir=str(tmp_path), is_remote=True
