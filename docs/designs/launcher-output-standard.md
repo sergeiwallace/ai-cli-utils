@@ -268,7 +268,8 @@ Measured at base `06635ff`:
 
 **Status:** Phase 1 (T-1, AI-CLI-8h3u) implemented. Phase 2: T-2 (AI-CLI-yxt0) and T-3
 (AI-CLI-mu4d) implemented. Phase 3: T-4 (AI-CLI-fx4b) and T-5 (AI-CLI-rbuf) implemented. Phase 4:
-T-6 (AI-CLI-zss5) implemented; live reload check pending. Phase 5 not started.
+T-6 (AI-CLI-zss5) implemented; live reload check pending. Phase 5: T-7 (AI-CLI-2gq3) implemented;
+live launch check pending.
 
 Phase 1, as built under today's Click renderer:
 
@@ -391,8 +392,9 @@ Phase 2, T-3, as built:
   (c) refuse `true` until T-4/T-5, the driver chose (c) (Claude Opus 5.5, 2026-10-14):
   (a) leaves keys that silently do nothing, and (b) pulls T-4/T-5 rendering into T-3.
   <!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=claude-opus-5-5; ai-profile=driver; decision-id=AI-CLI-mu4d/datetime-required-before-t4-t5 --> The `[output.sinks.*]`
-  tables are not in the schema yet, so a user table that sets them is refused as
-  unknown keys. T-7 adds them with their behaviour; T-6 added `[output.progress.reload]`.
+  and `[output.progress.reload]` tables were not in T-3's schema, so a user table that set
+  them was refused as unknown keys. T-6 added `[output.progress.reload]` and T-7 added
+  `[output.sinks.*]`, each with its behaviour.
 - **Two kinds of check.** Checks on one key run as pydantic validators, so they are
   all reported together. That covers types, unknown keys, style strings
   (`output.check_style`, Rich's `Style.parse`), regexes, the zone name, strftime
@@ -1406,28 +1408,41 @@ makes it visible and does not fix it.
     `README.md`
   - Tests added: `tests/test_output_sinks.py`
 - **Tasks and acceptance criteria:**
-  - **T-7 (AI-CLI-2gq3): terminal, file and telemetry agree**
-    - [ ] When `ai c` launches and emits a record, the terminal line, the per-launch log file line and
+  - **T-7 (AI-CLI-2gq3): terminal, file and telemetry agree** (implemented; all tests in
+    `tests/test_output_sinks.py`; live launch check pending)
+    - [x] When `ai c` launches and emits a record, the terminal line, the per-launch log file line and
       the telemetry event shall carry the same datetime, tag, operation, level and description.
       Proved by `test_given_one_warning_event_when_ai_c_launches_then_terminal_file_and_telemetry_agree`
-      (through `cli()`, frozen clock, XDG and home redirected, all three parsed to fields).
-    - [ ] When a record is at or above `min_level`, the system shall store one telemetry event for it
+      (through `cli()`, frozen clock, XDG and home redirected, all three parsed to fields). The test
+      also requires exactly one file line for the record, so a record cannot reach the file twice.
+    - [x] When a record is at or above `min_level`, the system shall store one telemetry event for it
       before handoff or exit. Below `min_level`, it shall store none. Proved by
-      `test_given_records_of_each_level_when_the_launch_hands_off_then_only_warning_and_above_reach_telemetry`.
-    - [ ] If the telemetry store is unwritable, or `[telemetry] enabled = false`, then the launch shall
+      `test_given_records_of_each_level_when_the_launch_hands_off_then_only_warning_and_above_reach_telemetry`,
+      which reads the store at the handoff's own flush.
+    - [x] If the telemetry store is unwritable, or `[telemetry] enabled = false`, then the launch shall
       proceed, the telemetry sink shall add no more than 100 ms before handoff, and no traceback
       shall reach the terminal. Proved by
-      `test_given_an_unwritable_telemetry_store_when_ai_c_hands_off_then_the_launch_proceeds_promptly`.
-    - [ ] If the log file cannot be written, then terminal output shall be unaffected. Proved by
+      `test_given_an_unwritable_telemetry_store_when_ai_c_hands_off_then_the_launch_proceeds_promptly`,
+      with three cases: the store's directory is a file, another writer holds the database locked,
+      and `[telemetry] enabled = false`. It times every `flush_sinks()` of the launch.
+    - [x] If the log file cannot be written, then terminal output shall be unaffected. Proved by
       `test_given_an_unwritable_launch_log_when_ai_c_runs_then_terminal_output_is_unchanged`.
-    - [ ] When an info record's description contains the word "failed", the log file shall store it at
+    - [x] When an info record's description contains the word "failed", the log file shall store it at
       info level (the text heuristic is gone: **intentional change**). Proved by
       `test_given_an_info_line_mentioning_failed_when_logged_then_its_level_is_info`.
-    - [ ] While the terminal is not verbose, `detail` records shall still reach the log file (parity).
+    - [x] While the terminal is not verbose, `detail` records shall still reach the log file (parity).
       Proved by `test_given_a_non_verbose_launch_when_details_are_recorded_then_the_file_has_them`.
-    - [ ] When non-record text reaches stderr during a launch (a traceback, foreign tool output), it
+    - [x] When non-record text reaches stderr during a launch (a traceback, foreign tool output), it
       shall still be mirrored into the log file (parity). Proved by
       `test_given_foreign_stderr_text_when_a_launch_runs_then_the_log_file_mirrors_it`.
+    - [x] Where `[output.sinks.terminal]`, `[output.sinks.file]` or `[output.sinks.telemetry]` turns a
+      sink off or sets `min_level`, only that sink shall change, and the file shall lead with the
+      datetime even when the element is off for the terminal. An invalid sink setting shall be refused
+      under the T-3 rule. Proved by
+      `test_given_sink_settings_when_ai_c_hands_off_then_each_sink_follows_them`,
+      `test_given_min_level_info_when_ai_c_hands_off_then_info_records_reach_telemetry`,
+      `test_given_the_datetime_element_disabled_when_ai_c_launches_then_the_file_still_leads_with_the_time`
+      and `test_given_an_invalid_sink_setting_when_ai_c_dry_runs_then_defaults_render_and_the_key_is_named`.
 - **Exit gate:** T-7 ACs green, gate and CI green, and a live launch whose log file and telemetry rows
   match its terminal lines.
 
@@ -1468,7 +1483,7 @@ makes it visible and does not fix it.
 | 6 | Phase 3 | Datetime element and D-3 presentation | - [x] | T-4: bare, first, `dim`; on by default; `format_datetime` shared by renderer and validator; session-script fallback stamped |
 | 7 | Phase 3 | Operation element; unmigrated-module allowlist empty; T-5 parity table | - [x] | T-5: every module migrated in one change, so no allowlist was needed; the parity rows are checked by `tests/test_launch_reporter.py` |
 | 8 | Phase 4 | Reload progress (D-4); live reload shows one updating row | - [ ] | T-6 built as D-4 (a): `ai internal progress`, `output.render_progress`, the supervisor's count, the open-row marker; all T-6 ACs green. Live reload on a real host not yet run |
-| 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [ ] | |
+| 9 | Phase 5 | Three sinks agree; telemetry path (D-6) | - [x] | T-7: one `_write_records` feeds the terminal, the attached launch-log file and the telemetry buffer; `flush_sinks()` stores the batch locally, no bus publish (D-6 (a)); `_log_level` deleted. Live launch check not yet run |
 
 **Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked -->
 
