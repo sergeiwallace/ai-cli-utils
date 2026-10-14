@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The commit-msg hook now runs: `.githooks/install.sh` installs the commit-msg stage, and a
+  `feat:` or `feat(scope):` commit that does not stage a `CHANGELOG.md` change is refused. The
+  script existed before but no hook stage ran it, so about half of recent features reached
+  `main` without an entry. `SKIP_CHANGELOG=1` bypasses it for one commit.
+
 - `ai session-adopt -t/--transcript FILE` adopts a transcript whose source directory no longer
   exists, the case where `-s/--source` cannot be guessed. It refuses alongside `-s` or `-a`, and
   refuses a file that is not the one its title resolves to.
