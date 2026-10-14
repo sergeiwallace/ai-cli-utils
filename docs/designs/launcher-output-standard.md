@@ -416,11 +416,12 @@ Phase 2, T-3, as built:
   72–91 ms cumulative under `-X importtime` in `ai internal emit`, over 4 runs. It is
   imported on the first record only, so `-V`, the statusline and the other
   `ai internal` replies are unaffected.
-- **Found while testing.** `tests/test_line_discipline.py`'s subprocess driver patches
-  `sys.platform` to `linux` for the whole process. On macOS, any stdlib module that
-  first reads `sysconfig` after the patch (zoneinfo, imported by pydantic on the first
-  record) then fails to import. The driver now reads the build config before the
-  patch, which is the state the pytest process is already in.
+- **Found while testing.** About fifteen launch tests, and the subprocess driver in
+  `tests/test_line_discipline.py`, patch `sys.platform` to `linux` for the whole
+  process. On macOS, any stdlib module that first reads `sysconfig` after the patch
+  then fails to import, depending on test order. zoneinfo is one, and pydantic imports
+  it on the first record. `tests/conftest.py` and the driver now read the build config
+  before any test runs.
 
 Root cause of the run-together lines, as reproduced. While a foreign program has `OPOST`
 off, a record ending in a bare LF moves down a row without returning to column 0. Before
