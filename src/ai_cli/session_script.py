@@ -1,6 +1,6 @@
 """Engine launch bash template generator.
 
-Depends on: config.py.
+Depends on: config.py, launch_logging.py.
 """
 
 import json
@@ -9,6 +9,7 @@ import shlex
 import shutil
 
 from . import config as _config
+from .launch_logging import LAUNCH_LOG_ENV
 
 # Interpreters that can run the generated session template, most preferred first.
 # zsh stays first because that is what every host has used to date; the ordering,
@@ -316,9 +317,10 @@ def get_engine_script(
     # (AI-CLI-yxt0): `_ai_emit <info|warning|error> <operation> <text>`. The script prints the
     # reply itself, so a renderer that cannot run (the entry point missing, or
     # mid-reinstall) or replies empty leaves the same grammar in plain text, and
-    # the message is never lost. In a supervisor that records its stderr in the
-    # launch log, fd 2 is that relay, so the record goes to the terminal on fd 3
-    # and the log gets the plain line.
+    # the message is never lost. `ai internal emit` also sends the record to this
+    # launch's log and to telemetry under `[output.sinks.*]` (AI-CLI-cuwe), and the
+    # plain fallback is appended to the log here. In a supervisor that records its stderr in the launch log, fd 2 is that relay, so
+    # the record goes to the terminal on fd 3.
     _ai_emit_terminal_fd=""
     _ai_emit() {{
       local _ai_emit_level="$1" _ai_emit_op="$2" _ai_emit_target=plain _ai_emit_plain="[session] $2: " _ai_emit_line="" _ai_emit_stamp=""
@@ -329,16 +331,18 @@ def get_engine_script(
       _ai_emit_plain+="$*"
       if [[ -n "$_ai_emit_terminal_fd" ]]; then
         [[ -t 3 ]] && _ai_emit_target=terminal
-        printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_emit_plain" >> "$_ai_launch_log"
       else
         [[ -t 2 ]] && _ai_emit_target=terminal
       fi
       # A Ctrl+C while the renderer runs must not cost the message.
-      _ai_emit_line=$(trap '' INT; ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
+      _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
         # The renderer's default datetime leads the plain line too.
         _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
+        if [[ -n "$_ai_launch_log" ]]; then
+          printf '%s\n' "$_ai_emit_line" 2>/dev/null >> "$_ai_launch_log"
+        fi
       fi
       if [[ -n "$_ai_emit_terminal_fd" ]]; then
         printf '%s\n' "$_ai_emit_line" >&3
@@ -576,7 +580,7 @@ def get_engine_script(
         local _reload_fd=2 _reload_target=plain _reload_line=""
         [[ -n "$_ai_emit_terminal_fd" ]] && _reload_fd=3
         [[ -t $_reload_fd && "${{TERM:-}}" != dumb ]] && _reload_target=terminal
-        _reload_line=$(trap '' INT; ai internal progress session reload "$_reload_target" "$_reload_count" "$_reload_started" "$_reload_reason" 2>/dev/null) || _reload_line=""
+        _reload_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal progress session reload "$_reload_target" "$_reload_count" "$_reload_started" "$_reload_reason" 2>/dev/null) || _reload_line=""
         if [[ -z "$_reload_line" ]]; then
           # No renderer (the entry point is mid-reinstall, which is when an ai-cli update
           # reloads): one plain counted line per reload, and the loop carries on.

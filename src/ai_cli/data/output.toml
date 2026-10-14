@@ -74,12 +74,14 @@ error_after = 6
 
 # Where each record goes. The terminal gets the styled line; the per-launch log file
 # gets the same elements in plain text, always led by the datetime; telemetry stores
-# each record at or above `min_level`, in one batch before a handoff or exit.
+# its records in one batch before a handoff or exit. The file and telemetry each take
+# only records at or above their `min_level`.
 [output.sinks.terminal]
 enabled = true
 
 [output.sinks.file]
 enabled = true
+min_level = "detail"
 
 [output.sinks.telemetry]
 enabled = true

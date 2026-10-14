@@ -142,14 +142,14 @@ class Sink(_Table):
     enabled: bool
 
 
-class TelemetrySink(Sink):
+class LevelledSink(Sink):
     min_level: LevelName
 
 
 class Sinks(_Table):
     terminal: Sink
-    file: Sink
-    telemetry: TelemetrySink
+    file: LevelledSink
+    telemetry: LevelledSink
 
 
 class OutputSettings(_Table):

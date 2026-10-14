@@ -322,6 +322,15 @@ def attach_file_sink(sink: Callable[[str], None] | None) -> Callable[[str], None
     return previous
 
 
+def store(records: Sequence[Record]) -> None:
+    """Send ``records`` to the file and telemetry sinks, not the terminal: for a reply printed through :func:`raw`.
+
+    ``ai internal emit`` replies with the rendered line so the session script can
+    print it, and stores the same record here.
+    """
+    _write_records(sys.stderr, list(records), terminal=False)
+
+
 def file_text_line(text: str) -> str:
     """``text`` that is not a record (a traceback, a foreign tool's line) as a log-file line, led by the time."""
     settings = _settings()
@@ -718,8 +727,10 @@ def _write_records(
             )
         if _file_sink is not None and settings.sinks.file.enabled:
             file_settings = _file_settings(settings)
+            floor = _LEVEL_RANK[Level(settings.sinks.file.min_level)]
             for record in records:
-                _file_sink(render_record(record, color=False, settings=file_settings))
+                if _LEVEL_RANK[record.level] >= floor:
+                    _file_sink(render_record(record, color=False, settings=file_settings))
         telemetry = settings.sinks.telemetry
         if telemetry.enabled:
             floor = _LEVEL_RANK[Level(telemetry.min_level)]

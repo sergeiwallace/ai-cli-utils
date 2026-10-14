@@ -75,6 +75,8 @@ class Session:
         own_tmux_session: bool = False,
         tostop: bool = False,
         pty_backed: bool = True,
+        launch_log: Path | None = None,
+        direnv_fails: bool = False,
     ) -> None:
         self.tmp_path = tmp_path
         self.started = tmp_path / "agent-started"
@@ -94,11 +96,21 @@ class Session:
             (config_dir / "config.toml").write_text(config, encoding="utf-8")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        self._fakes(bin_dir, script, state, reload_on, agent_runs, renderer, exit_on_cron, own_tmux_session)
+        self._fakes(
+            bin_dir, script, state, reload_on, agent_runs, renderer, exit_on_cron, own_tmux_session, direnv_fails
+        )
         shell = resolve_session_shell()
         assert shell, "the suite needs zsh or bash"
         script.write_text(
-            get_engine_script("c", "session-1", SESSION, "test-", "myproject", worktree_dir=str(worktree))
+            get_engine_script(
+                "c",
+                "session-1",
+                SESSION,
+                "test-",
+                "myproject",
+                worktree_dir=str(worktree),
+                launch_log_path=str(launch_log) if launch_log is not None else None,
+            )
         )
         script.chmod(0o700)
         env = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "LC_ALL", "USER", "LOGNAME"}}
@@ -158,6 +170,7 @@ class Session:
         renderer: bool,
         exit_on_cron: int | None,
         own_tmux_session: bool,
+        direnv_fails: bool,
     ) -> None:
         counter = bin_dir.parent / "cron-calls"
         int_exit = state / "ai-cli-utils" / f"session-int-exit-{SESSION}"
@@ -207,7 +220,7 @@ class Session:
                 )
                 + "exit 0\n"
             ),
-            "direnv": "#!/bin/sh\nexit 0\n",
+            "direnv": f"#!/bin/sh\nexit {1 if direnv_fails else 0}\n",
         }
         for name, body in fakes.items():
             path = bin_dir / name
