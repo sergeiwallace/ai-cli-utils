@@ -65,3 +65,9 @@ prefix = ""
 suffix = ""
 style = ""
 pattern = '^[^\x00-\x1f\x7f]*$'
+
+# The session supervisor's in-place reload row: consecutive reloads before it turns
+# into a warning, and before a persistent error line names the stall.
+[output.progress.reload]
+warn_after = 3
+error_after = 6

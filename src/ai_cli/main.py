@@ -1671,6 +1671,68 @@ def _internal_emit(args: list[str]) -> int:
     return 0
 
 
+_RELOAD_REASONS = {
+    "script-updated": "session script updated, reloading",
+    "ai-cli-updated": "ai-cli updated, reloading the session template",
+}
+
+
+def _internal_progress(args: list[str]) -> int:
+    """``ai internal progress <tag> <op> <terminal|plain> <attempt> <started> <reason>``: the reload row.
+
+    The session supervisor runs this once per consecutive reload (AI-CLI-zss5).
+    ``started`` is the epoch second of the first reload in the run. The row turns
+    into a warning at ``[output.progress.reload] warn_after`` and an error at
+    ``error_after``, where the reply also leads with one persistent error line
+    naming the stall and how to stop it, so a loop gets louder instead of looking
+    healthy. ``terminal`` replies with an in-place row (no terminator) the next
+    row replaces; ``plain`` with ordinary lines.
+    """
+    usage = "Usage: ai internal progress <tag> <operation> <terminal|plain> <attempt> <started> <reason>"
+    if (
+        len(args) != 6
+        or args[2] not in _EMIT_TARGETS
+        or not args[3].isdigit()
+        or not args[4].isdigit()
+        or args[5] not in _RELOAD_REASONS
+    ):
+        _out.emit(Tag.INTERNAL, "usage", usage, err=True)
+        return 1
+    try:
+        tag = Tag(args[0])
+    except ValueError:
+        _out.emit(Tag.INTERNAL, "usage", f"ai internal progress: unknown tag {args[0]!r}", err=True)
+        return 1
+    op = args[1]
+    if op not in _out.vocabulary():
+        _out.emit(Tag.INTERNAL, "usage", f"ai internal progress: {op!r} is not in the operation vocabulary", err=True)
+        return 1
+    attempt = int(args[3])
+    elapsed = f"{max(0, int(time.time()) - int(args[4]))}s"
+    thresholds = _out.settings().progress.reload
+    level = _out.Level.INFO
+    if attempt >= thresholds.error_after:
+        level = _out.Level.ERROR
+    elif attempt >= thresholds.warn_after:
+        level = _out.Level.WARNING
+    terminal = args[2] == "terminal"
+    color = terminal and _out.color_allowed()
+    row = _out.make_record(tag, f"{_RELOAD_REASONS[args[5]]} (attempt {attempt}, {elapsed})", op=op, level=level)
+    reply = _out.render_progress(row, color=color, in_place=terminal)
+    if attempt == thresholds.error_after:
+        stall = _out.make_record(
+            tag,
+            f"reloaded {attempt} times in a row in {elapsed} without reaching the agent; "
+            "press Ctrl+C twice within 3 seconds to stop the session",
+            op=op,
+            level=_out.Level.ERROR,
+        )
+        persistent = _out.render_progress(stall, color=color, in_place=terminal)
+        reply = persistent + ("\r\n" if terminal else "\n") + reply
+    _out.raw(Untagged.INTERNAL_REPLY, reply)
+    return 0
+
+
 def _handle_internal(argv: list[str]) -> None:
     """Handle `ai internal <action> [args...]` — invoked from bash hooks.
 
@@ -1684,6 +1746,8 @@ def _handle_internal(argv: list[str]) -> None:
     if action == "emit":
         # Before the config load: the session script runs this once per message.
         sys.exit(_internal_emit(argv[1:]))
+    if action == "progress":
+        sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
     if action == "get-latest-gemini-id":

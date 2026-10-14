@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An invalid format or zone is refused when the table is read, naming the file and the
   key, and lines render with the defaults. The session script's plain fallback line
   carries the same time.
+- When a session reloads its script, the pane now shows one row that updates in place,
+  `[session] reload: session script updated, reloading (attempt 3, 4s)`, instead of
+  printing the same `session script updated — reloading...` line once per reload. The
+  row names the reason, the attempt and the time since the first consecutive reload.
+  It turns into a warning from the third consecutive reload, and at the sixth an error
+  line naming the count and how to stop the session (Ctrl+C twice within 3 seconds) is
+  also printed and stays in scrollback, so a reload loop gets louder rather than looking
+  healthy. Both thresholds are `warn_after` and `error_after` in the new
+  `[output.progress.reload]` config table. When stderr is not a terminal, each reload
+  prints one plain counted line. Sessions already running keep their old supervisor
+  until they are started again, and until then their reloads print nothing.
 - A bare `ai c` launch (`-b/--bare`, `[session] use_tmux = false`, or no usable tmux) now
   runs the agent on a pseudo-terminal the launcher owns instead of replacing itself with
   the agent. Text written to the session's FIFO, at

@@ -689,6 +689,10 @@ prefix = ""
 suffix = ""
 style = ""
 pattern = '^[^\x00-\x1f\x7f]*$'
+
+[output.progress.reload]
+warn_after = 3
+error_after = 6
 ```
 
 - `order` lists the elements left to right, and `separator` goes between two that
@@ -727,6 +731,12 @@ pattern = '^[^\x00-\x1f\x7f]*$'
 - `level` is the `Warning:`/`Error:` label. `show` lists the levels that get a label,
   from `detail`, `info`, `warning` and `error`.
 - `description` is the text itself. It cannot be disabled.
+- `progress` holds the `reload` table, which sets when the reload row escalates. When a session
+  script keeps reloading, its pane shows one row that updates in place with the reason,
+  the attempt and the time since the first reload. From `warn_after` consecutive
+  reloads the row is a warning; at `error_after` an error line naming the count and
+  how to stop the session is also printed and stays in scrollback. Both are whole
+  numbers of at least 1, and `error_after` may not be less than `warn_after`.
 
 The table is read again whenever `config.toml` changes, so an edit applies to the next
 line, even inside a running `ai c` session. If any part of `[output]` is invalid, none
