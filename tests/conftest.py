@@ -17,6 +17,7 @@ import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 
 import ai_cli.config as _config_module
@@ -33,7 +34,23 @@ from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 # looking for that platform's sysconfig data and fail.
 sysconfig.get_config_vars()
 
-_TEST_TMUX_PREFIX = "pytest-leak-guard-"
+# Every test gets its own tmux default server directory (AI-CLI-9h1c). A test path that
+# slips past its patches resolves tmux's DEFAULT socket, which is the operator's live
+# server, and the spawn guard lets read-only queries through by design: a chief-of-staff
+# test read the live server's version that way. The directory name carries the owning
+# worker's pid so a later run can tell a killed run's leftovers from a live run's.
+TMUX_ISOLATION_PREFIX = "aitmx-"
+
+# tmux sockets are AF_UNIX paths under a ~104-byte limit and macOS's $TMPDIR is a long
+# /var/folders/<hash>/T/ path, so the short /tmp keeps the socket inside it. Windows has
+# no /tmp, and no AF_UNIX tmux either, so tempfile's own default costs nothing there.
+TMUX_ISOLATION_PARENT = "/tmp" if Path("/tmp").is_dir() else None
+
+# Taken at import, before any fixture patches them or re-points PATH, so a teardown can
+# always reach the private server it is cleaning up, whatever the test left in place.
+_REAL_POPEN = subprocess.Popen
+_REAL_RMTREE = shutil.rmtree
+_TMUX_BINARY = shutil.which("tmux")
 
 # Anything that puts a banner on the operator's screen or scripts their live
 # terminal. Guarded at the process boundary rather than per call site because per-call
@@ -852,20 +869,77 @@ def _refuse_real_windows_registry_reads():
             sys.modules["winreg"] = saved
 
 
-def _cleanup_test_tmux_sessions(run):
-    """Kill only sessions created with the test-only leak-guard prefix."""
-    try:
-        sessions = run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
-    except OSError:
-        return
-    if sessions.returncode != 0:
-        return
-    for session_name in sessions.stdout.splitlines():
-        if session_name.startswith(_TEST_TMUX_PREFIX):
+def _retire_tmux_isolation_dir(tmux_tmpdir: Path) -> None:
+    """Kill every tmux server listening under ``tmux_tmpdir``, then remove it. Never raises.
+
+    tmux puts the default socket at ``<TMUX_TMPDIR>/tmux-<uid>/default``, so a socket
+    exists here only if something under test started a server with a bare ``tmux``.
+    """
+    if _TMUX_BINARY is not None:
+        for socket in tmux_tmpdir.glob("tmux-*/*"):
             try:
-                run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+                killer = _REAL_POPEN(
+                    [_TMUX_BINARY, "-S", str(socket), "kill-server"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             except OSError:
-                return
+                continue
+            try:
+                killer.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                killer.kill()
+                killer.wait()
+    _REAL_RMTREE(tmux_tmpdir, ignore_errors=True)
+
+
+def _tmux_isolation_dir_owner(entry: Path) -> int | None:
+    """The pid in a :data:`TMUX_ISOLATION_PREFIX` directory's name, or ``None`` if it is not one."""
+    owner = entry.name.removeprefix(TMUX_ISOLATION_PREFIX).split("-", 1)[0]
+    if not owner.isdigit():
+        return None
+    try:
+        st = entry.lstat()
+    except OSError:
+        return None
+    # Another user's directory, or a symlink planted in a shared /tmp, is never ours to reap.
+    if not stat.S_ISDIR(st.st_mode) or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+        return None
+    return int(owner)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reap_tmux_isolation_dirs_of_killed_runs():
+    """Kill the private tmux servers a killed run left behind, before this run starts.
+
+    A killed run skips every teardown, so :func:`_isolate_tmux_default_server` cannot
+    clean up after it. Only a directory whose owning pid is gone is touched: other
+    suites run concurrently on the same host, and their servers are live.
+    """
+    parent = Path(TMUX_ISOLATION_PARENT or tempfile.gettempdir())
+    for entry in parent.glob(f"{TMUX_ISOLATION_PREFIX}*"):
+        owner = _tmux_isolation_dir_owner(entry)
+        if owner is not None and not psutil.pid_exists(owner):
+            _retire_tmux_isolation_dir(entry)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tmux_default_server(monkeypatch):
+    """Point tmux's default server at a private, per-test directory (AI-CLI-9h1c).
+
+    ``TMUX`` is removed as well as ``TMUX_TMPDIR`` redirected, because a run started
+    inside a tmux pane inherits ``TMUX``, which names the operator's socket outright and
+    wins over ``TMUX_TMPDIR``. Tests that drive a real server pass ``-S <socket>`` and
+    are unaffected. Any server a bare ``tmux`` call starts lives only as long as the test.
+    """
+    tmux_tmpdir = Path(tempfile.mkdtemp(prefix=f"{TMUX_ISOLATION_PREFIX}{os.getpid()}-", dir=TMUX_ISOLATION_PARENT))
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmux_tmpdir))
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    try:
+        yield tmux_tmpdir
+    finally:
+        _retire_tmux_isolation_dir(tmux_tmpdir)
 
 
 @pytest.fixture(autouse=True)
@@ -1010,13 +1084,6 @@ def _fail_on_laundered_protected_spawn(request):
         "subprocess.Popen or os.execvp in the test rather than relying on this guard. An "
         "unrefused one replaces the pytest process and the run reports success with no results."
     )
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _cleanup_test_tmux_sessions_after_suite():
-    """Backstop cleanup for test-only tmux names if an explicit mock is bypassed."""
-    yield
-    _cleanup_test_tmux_sessions(subprocess.run)
 
 
 def snapshot_tree(path: Path) -> dict[str, tuple[int, int]] | None:

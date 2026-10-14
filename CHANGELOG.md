@@ -97,6 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still refuses, and the refusal names the file and the line. The tip is anchored as
   before. The refusal no longer names `refs/remotes/origin/main` twice when the
   branch tracks it.
+- The test suite no longer reaches the tmux server you run it under. A test that made a
+  bare `tmux` call, such as the launch report's server-version query, used tmux's default
+  socket, which is your live server. Every test now gets its own `TMUX_TMPDIR` under
+  `/tmp` with `TMUX` unset, and any server a test starts there is killed when it ends. A
+  killed run's leftovers are killed by the next run. The suite-end cleanup that listed
+  and killed test-named sessions on your default server is gone.
 - On tmux 3.8 the stale-session reaper, and a relaunch over a session whose pane has
   died, no longer fail for every session when one pane is dead. tmux 3.8 stopped printing
   a dead pane's pid, and the reaper read that empty pid as a malformed listing, so it
