@@ -228,10 +228,11 @@ at column 0 of a fresh line, even while ssh holds the terminal in raw mode, and 
 left open is a progress line, which is closed before anything else is written. The repeated
 "session script updated — reloading..." line becomes one in-place status line with an attempt count
 that escalates to a warning and then a persistent error, so a stuck reload becomes louder rather
-than hidden. The one decision left for the maintainer is the rendering library ([D-1](#d-1)): Rich
-for static styled output with its live displays banned by test (recommended), Click with a renderer
-we build ourselves, or structlog in front of either. Everything else in this design holds under any
-of the three, and each section states what changes if (b) or (c) is chosen.
+than hidden. The maintainer decided the rendering library ([D-1](#d-1)) on 2026-10-13: structlog
+builds the record and Rich renders it, option (c). Live displays are wanted rather than banned, and
+how to run them safely in tmux-wrapped sessions is researched in AI-CLI-g013, whose findings set the
+live-display rules for T-2 and T-6. Where a section below says "if D-1 is (c)", that branch now
+applies.
 
 ## Problem Statement
 
@@ -706,7 +707,7 @@ degrade, not an off switch.
 | Order | Task | Issue | Scope in one line | Depends on | Waits for D-1? |
 |---|---|---|---|---|---|
 | 1 | T-1 | AI-CLI-8h3u | Line discipline L1–L7 under today's renderer | none | No |
-| 2 | T-2 | AI-CLI-yxt0 | Record model, one renderer on the D-1 library, every element styled, structured relay, `_ai_emit` | T-1 | **Yes** |
+| 2 | T-2 | AI-CLI-yxt0 | structlog record model, one Rich renderer, every element styled, structured relay, `_ai_emit` | T-1 | No (decided: (c)) |
 | 3 | T-3 | AI-CLI-mu4d | `[output]` config: schema, validation, refusal, call-time reading, README | T-2 | No (style grammar follows D-1) |
 | 4 | T-4 | AI-CLI-fx4b | Datetime element | T-3 | No |
 | 5 | T-5 | AI-CLI-rbuf | Operation element, vocabulary, migration of every call site | T-3 | No |
@@ -1059,7 +1060,7 @@ makes it visible and does not fix it.
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
-| D-1 | Output rendering library | (a) Rich for static styled output, its live displays banned; (b) keep Click and build the renderer ourselves; (c) structlog plus Rich or Click | (a) | | | Config-driven styles and colour depth are what (b) would hand-roll; the live-renderer objection is met by an enforcement ban; +35–49 ms measured | `[PENDING]` |
+| D-1 | Output rendering library | (a) Rich for static styled output, its live displays banned; (b) keep Click and build the renderer ourselves; (c) structlog plus Rich or Click | (a) | (c) structlog + Rich, live displays wanted | Yes | Config-driven styles and colour depth are what (b) would hand-roll; the live-renderer objection is met by an enforcement ban; +35–49 ms measured; maintainer: dependencies are not a cost, structlog's processors and JSON output are worth having, live displays wanted (AI-CLI-g013) | ✅ Approved |
 | D-2 | Where the output configuration lives | (a) `[output]` in `config.toml`; (b) a separate `output.toml` | (a) | (a) | No | One file users already edit; house pattern; a dedicated loader removes (b)'s isolation advantage | `✅ Resolved by architect (Claude)` |
 | D-3 | Datetime presentation | (a) bare, first, own colour; (b) parentheses; (c) brackets | (a) | (a) | No | Python logging and structlog put a bare timestamp first; parentheses and brackets already mean something in this grammar | `✅ Resolved by architect (Claude)` |
 | D-4 | Reload progress display shape | (a) supervisor-owned in-place line, no live renderer; (b) a bounded live region torn down on every exit; (c) one persistent counted line per reload | (a) | (a) | No | What was asked, with no renderer to tear down; (b) has no process to live in; (c) is the non-TTY degrade | `✅ Resolved by architect (Claude)` |
@@ -1070,7 +1071,7 @@ makes it visible and does not fix it.
 
 <a id="d-1"></a>
 
-#### D-1: Output rendering library — `[PENDING]`
+#### D-1: Output rendering library — ✅ Approved: (c) structlog + Rich
 
 **Context.** PR #216 shipped a Click-only reporter (its plan's D-3), and the epic's comment on #216
 states that the maintainer may overrule this. The 2026-10-12 children now require config-driven
@@ -1137,9 +1138,21 @@ hand-off, still stands under every option.
 
 ##### Recommendation
 
-> **Decision:** `PENDING` (recommended: (a) Rich for static styled output, live displays banned)
-<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
-<!-- decision-lineage: decision-id=AI-CLI-1o9b/D-1; decision-topic=launcher-output-rendering-library; governs=doc:docs/designs/launcher-output-standard.md; normalized-proposition=the ai CLI renders every log record through Rich static console output and bans Rich live displays; applicability=repo:ai-cli-utils; outcome-id=; relation=partial-overlap; related-decision-id=launch-output-contract-plan/D-3; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+> **Decision:** ✅ Approved by the maintainer (2026-10-13): (c), structlog for the record model
+> with Rich rendering it. The live-display ban in (a) is dropped: live displays are wanted, and how
+> to run them safely in tmux-wrapped sessions is the subject of AI-CLI-g013's research doc.
+<!-- decision-record: chosen-option=(c); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=AI-CLI-1o9b/D-1; decision-topic=launcher-output-rendering-library; governs=doc:docs/designs/launcher-output-standard.md; normalized-proposition=the ai CLI builds every log record with structlog and renders it with Rich, live displays allowed; applicability=repo:ai-cli-utils; outcome-id=; relation=partial-overlap; related-decision-id=launch-output-contract-plan/D-3; supersedes=; approval-log-decision-id=AI-CLI-1o9b/D-1; approval-actor=maintainer; approval-date=2026-10-13; approval-commit= -->
+
+The recommendation was (a). The maintainer chose (c) and diverged on two points. First, dependencies
+are not a cost here, so structlog's processor chain, context binding and JSON output are worth
+having rather than building. Second, live displays are wanted rather than banned. The Cons listed for
+(c) are answered as follows. The extra layer is accepted for the capabilities above. The US Eastern
+default needs one custom `TimeStamper`-style processor and the line grammar needs one custom renderer
+processor, both small. Tag and op enforcement stays static at the call signature (`Tag`, the op
+argument), and a processor only checks it, so the shipped guarantee is not weakened. structlog's
+global configuration is set once in `output.py`, the only entry point. T-2 is re-scoped to this
+choice. T-6 (zss5) and the live-display rules wait for the AI-CLI-g013 findings.
 
 Recommend (a). The requirements that arrived on 2026-10-12 move the centre of gravity from "print a
 few phase lines" (where the research doc correctly preferred Click) to "every element's colour, order
@@ -1426,6 +1439,22 @@ follow-up. Confidence: medium-high.
 > 6. D-6: <approval or feedback>
 > - <enter feedback here>
 
+> **AI Response Round 1:**
+> - D-1: yes. Rich is the most widely used Python terminal-rendering library, and structlog is the
+>   most widely used structured-logging library. Both are mature and actively maintained, and
+>   structlog's console renderer uses Rich itself when it is installed. D-1 is recorded as (c),
+>   structlog plus Rich. Live displays were a concern for two reasons: a live region owns the
+>   terminal through a refresh thread, so it must be torn down before the launcher execs tmux or
+>   Claude Code (a crash that skipped that teardown left the terminal broken, AI-CLI-w679), and the
+>   session supervisor writes while it may not own the foreground process group, so it can be
+>   stopped by SIGTTOU. Neither forbids live displays. AI-CLI-g013 researches how to run them
+>   safely, and its findings set the rules for T-2 and T-6.
+
+---
+
+> **Feedback Round 2:**
+> - <enter feedback here>
+
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
 > **AI Response Round N:**
@@ -1477,6 +1506,7 @@ follow-up. Confidence: medium-high.
 | 2026-10-13 | AI-CLI-1o9b/D-5 | architect (Claude Opus 5.5) | Resolved; the safe failure mode for a launcher |
 | 2026-10-13 | AI-CLI-1o9b/D-6 | architect (Claude Opus 5.5) | Resolved; bus publish deferred behind Open Question 3 |
 | 2026-10-13 | AI-CLI-1o9b/D-1 | — | Left `[PENDING]` for the maintainer, recommendation (a) |
+| 2026-10-13 | AI-CLI-1o9b/D-1 | maintainer | Approved (c), structlog + Rich; live displays wanted, safe use researched in AI-CLI-g013 (Feedback Round 1) |
 
 <!-- /doc:region name="overview" -->
 
