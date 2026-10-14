@@ -184,6 +184,11 @@ def _write(stream: TextIO, lines: list[str], *, nl: bool = True, color: bool | N
     eol = _eol(stream)
     lead = _CLEAR_ROW if _foreign_depth and eol == "\r\n" else ""
     text = eol.join(lead + (line if color else click.unstyle(line)) for line in lines)
+    # Every terminal line passes here, so CodeQL's name heuristic traces spend.py's
+    # `deep_research_oauth` run counters ("password") and its configured
+    # `gcp_project_id` ("private") to this write. Neither is a credential: a count of
+    # runs and a project identifier the user configured so `ai spend` can name it.
+    # codeql[py/clear-text-logging-sensitive-data]
     stream.write(text + eol if nl else text)
     stream.flush()
 
