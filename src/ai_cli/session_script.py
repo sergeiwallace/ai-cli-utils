@@ -219,6 +219,12 @@ def get_engine_script(
     # ``or "bash"`` only guards template *generation* on a host with neither shell;
     # the launch path itself refuses to start in that case, with a real message.
     _session_shell = resolve_session_shell() or "bash"
+    # The agent reset is the transport's restore sequence, rendered for printf, so the
+    # two cannot drift apart again (AI-CLI-no36). Imported here: transport imports
+    # this module at load time.
+    from .transport import _TERMINAL_RESTORE
+
+    _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
 
     # Resolve iTerm2 slot values for embedding in bash template
     _cfg = iterm2_cfg or {}
@@ -666,7 +672,7 @@ def get_engine_script(
     _reset_agent_terminal() {{
       [[ -t 0 ]] || return 0
       if [[ -t 1 ]]; then
-        printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1005l\\033[?1006l\\033[?1015l\\033[>4m\\033[<u\\033[?2004l\\033[?1004l\\033[?1049l\\033[?25h'
+        printf {_terminal_reset}
       fi
       stty sane 2>/dev/null || true
       python3 -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true

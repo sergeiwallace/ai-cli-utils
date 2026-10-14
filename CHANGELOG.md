@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A restarted agent's terminal is now reset with the same sequence the remote transport
+  sends, autowrap and colour reset included. The session script kept its own copy, which
+  had drifted and sent a different modifyOtherKeys form.
+
 - `ai c -R` reattach output no longer runs lines together or joins the last line to the
   shell prompt. While ssh held the terminal in raw mode, a relayed line ended in a bare
   line feed and so did not return to column 0. Text the remote side left after a carriage
