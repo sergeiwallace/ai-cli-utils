@@ -946,11 +946,14 @@ def get_engine_script(
     # hits the pane the user is currently viewing and can never collide with
     # another session (unlike the old shared-GUID scheme, AI-CLI-59).  Only fires
     # when the session is attached — a detached session has no client tty and
-    # must not touch any pane.  Falls back to OSC 1 when not attached.
+    # must not touch any pane.  Falls back to OSC 1 when not attached, and when
+    # `set-iterm2-name` renamed nothing: on the remote end of `ai c -R` there is
+    # no iTerm2 to script, and the escape sequence is the only way the session's
+    # own name reaches the pane over ssh.
     _iterm2_rename() {{
       local dname="$1"
       if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
-        ( ai internal set-iterm2-name "$tmux_session" "$dname" 2>/dev/null ) &
+        ( ai internal set-iterm2-name "$tmux_session" "$dname" 2>/dev/null || _it2 "\\033]1;$dname\\007" ) &
       else
         _it2 "\\033]1;$dname\\007"
       fi

@@ -16,9 +16,11 @@ everywhere, Windows included.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import select
+import shlex
 import struct
 import subprocess
 import sys
@@ -82,6 +84,13 @@ def _preflight_answering(dolt_stdout: str):
             return subprocess.CompletedProcess(command, 0, stdout=dolt_stdout, stderr=None)
         if isinstance(command, (list, tuple)) and command and command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return subprocess.CompletedProcess(command, 0, stdout="zsh\n", stderr="")
+        if isinstance(command, (list, tuple)) and command and "allocate-session-name" in str(command[-1]):
+            # The remote allocator's reply for the slot (AI-CLI-6dft). Computed here rather than
+            # through conftest: a subprocess driver imports this module as `tests.test_line_discipline`.
+            tokens = shlex.split(shlex.split(command[-1])[-1])
+            engine, prefix, name = tokens[tokens.index("allocate-session-name") + 1 :][:3]
+            reply = {"session_id": f"{engine}-r-{prefix}-{name}", "ai_name": f"{prefix}-{name}"}
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(reply), stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="current", stderr="")
 
     return _preflight

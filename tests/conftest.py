@@ -1741,6 +1741,22 @@ def make_subprocess_result(returncode=0, stdout="", stderr=""):
     return m
 
 
+def remote_allocation_reply(command):
+    """What ``ai internal allocate-session-name`` prints on a remote host with no live sessions.
+
+    ``ai c -R`` asks the remote host which session a slot resolves to, numeric slots
+    included (AI-CLI-6dft). Returns the reply for an ssh call that runs the allocator,
+    or None for any other command, so a fake ``subprocess.run`` can answer it first.
+    """
+    if not isinstance(command, (list, tuple)) or not command or "allocate-session-name" not in str(command[-1]):
+        return None
+    tokens = shlex.split(shlex.split(command[-1])[-1])
+    engine, project_prefix, name = tokens[tokens.index("allocate-session-name") + 1 :][:3]
+    with patch("ai_cli.session._tmux_session_names", return_value=[]):
+        session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
+    return make_subprocess_result(stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}))
+
+
 def make_iterm2_config(
     palette=None,
     enabled=True,

@@ -1903,8 +1903,9 @@ def _handle_internal(argv: list[str]) -> None:
         # exactly the visible pane and can't collide across sessions.
         target = argv[1]
         tty = target if target.startswith("/dev/") else _iterm2._iterm_pane_tty_for_tmux_session(target)
-        _iterm2._set_iterm2_name_by_tty(tty, argv[2])
-        sys.exit(0)
+        # Non-zero when nothing was renamed (no iTerm2 API on this host, or no pane on
+        # that tty), so the session script can fall back to an escape sequence.
+        sys.exit(0 if _iterm2._set_iterm2_name_by_tty(tty, argv[2]) else 1)
     elif action == "open-vscode-remote":
         if len(argv) not in (3, 4):
             _out.emit(
@@ -3307,8 +3308,11 @@ def _do_session_launch(
         # cleanup command.  It must use the exact session identity the remote
         # launch will create.  Guessing ``...-1`` for unnamed launches made all
         # wrappers to a host share those resources even though the remote tmux
-        # sessions were separately numbered. An explicit numeric slot is already
-        # its own canonical identity and needs no allocation preflight.
+        # sessions were separately numbered. A numeric slot is asked about too: the
+        # remote host joins its own host alias into the name, and only it knows that
+        # alias or which session (a migrated one, or one named before the alias joined
+        # the name) the slot resolves to. Composing `<engine>-r-<prefix>-<slot>` here
+        # titled the pane and keyed the transport after a session that does not exist.
         remote_session_id = ""
         # An unnumbered chief request (`ai cos -R`, `ai c firstmate -R`) means whichever
         # chief the remote host has, which only that host's registration can say: a slot
@@ -3318,7 +3322,7 @@ def _do_session_launch(
         )
         if chief_unnumbered:
             reporter.phase("Session").outcome(f"{name} (the remote host selects its chief)")
-        elif not name or not name.isdigit():
+        else:
             with reporter.phase("Session", "allocating remote session") as _session_phase:
                 try:
                     remote_session_id, _ = _request_remote_session_allocation(
@@ -3328,8 +3332,6 @@ def _do_session_launch(
                     reporter.error(str(exc))
                     sys.exit(1)
                 _session_phase.outcome(f"resolved {remote_session_id}")
-        else:
-            reporter.phase("Session").outcome(f"resolved {name}")
         if remote_session_id:
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:

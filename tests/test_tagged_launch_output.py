@@ -16,6 +16,7 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
+from conftest import remote_allocation_reply
 
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, cli
 
@@ -62,6 +63,8 @@ def _preflight(command, **_kwargs):
         return subprocess.CompletedProcess(command, 0, stdout=f"{DOLT_LINE}\n", stderr=None)
     if isinstance(command, (list, tuple)) and command and command[-1] == _REMOTE_SHELL_PROBE_CMD:
         return subprocess.CompletedProcess(command, 0, stdout="zsh\n", stderr="")
+    if (allocation := remote_allocation_reply(command)) is not None:
+        return allocation
     return subprocess.CompletedProcess(command, 0, stdout="current", stderr="")
 
 

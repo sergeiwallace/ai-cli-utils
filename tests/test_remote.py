@@ -6,12 +6,22 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import _run_cli_with_args
+from conftest import _run_cli_with_args, remote_allocation_reply
 
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, _update_remote_ai_cli, cli
 from ai_cli.session import build_session_name
 
 # --- --remote flag tests ---
+
+
+def _answering_allocation(fallback):
+    """A ``subprocess.run`` stand-in that answers the remote allocator and defers the rest to ``fallback``."""
+
+    def run(command, *args, **kwargs):
+        allocation = remote_allocation_reply(command)
+        return allocation if allocation is not None else fallback(command, *args, **kwargs)
+
+    return run
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +67,9 @@ def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(ca
         # The remote-shell probe runs before the Windows check below it, and
         # would otherwise make a real, unmocked SSH connection attempt to
         # "example.com" during this test.
-        patch("ai_cli.main.subprocess.run") as mock_probe,
+        patch(
+            "ai_cli.main.subprocess.run", side_effect=_answering_allocation(lambda *_a, **_k: MagicMock())
+        ) as mock_probe,
         pytest.raises(SystemExit) as exc_info,
     ):
         cli()
@@ -242,6 +254,10 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
         patch("ai_cli.session.get_project_prefix", return_value="session"),
         patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as runner,
         patch("ai_cli.main.trigger_background_update"),
+        patch(
+            "ai_cli.main.subprocess.run",
+            side_effect=_answering_allocation(lambda *_a, **_k: MagicMock(returncode=1, stdout="", stderr="")),
+        ),
     ):
         try:
             cli()
@@ -372,6 +388,8 @@ def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_ha
     def fake_probe(command, **_kwargs):
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+        if (allocation := remote_allocation_reply(command)) is not None:
+            return allocation
         return MagicMock(returncode=1, stdout="")
 
     with (
@@ -489,7 +507,9 @@ class TestRemoteSessionIterm2Emit:
         if vscode_authority is not None:
             config["remote"]["vscode_authority"] = vscode_authority
         call_order = []
-        mock_preflight_run = preflight_run or MagicMock()
+        mock_preflight_run = preflight_run or MagicMock(
+            side_effect=_answering_allocation(lambda *_a, **_k: MagicMock())
+        )
 
         if transport == "mosh":
             mock_emit = MagicMock()
@@ -552,6 +572,8 @@ class TestRemoteSessionIterm2Emit:
         def fake_probe(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="/usr/bin/bash\n", stderr="")
+            if (allocation := remote_allocation_reply(command)) is not None:
+                return allocation
             return MagicMock(returncode=1, stdout="")
 
         async def fake_transport_loop(ssh_args, mosh_args, *_args, **_kwargs):
@@ -595,7 +617,10 @@ class TestRemoteSessionIterm2Emit:
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("ai_cli.main.subprocess.run", return_value=MagicMock(stdout="/bin/bash\n", returncode=0)),
+            patch(
+                "ai_cli.main.subprocess.run",
+                side_effect=_answering_allocation(lambda *_a, **_k: MagicMock(stdout="/bin/bash\n", returncode=0)),
+            ),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
