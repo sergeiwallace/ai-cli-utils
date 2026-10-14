@@ -548,7 +548,10 @@ Phase 4, T-6, as built:
 - **Found while testing (fixed separately).** Under zsh a child that exits at once
   after its promotion lost its status: the first `wait` reported the shim's stop
   (128 + SIGSTOP), so a clean 77 respawned forever and a 78 read as a plain restart.
-  `_supervisor_wait_for_child` now waits once more for a child that is gone.
+  `_supervisor_wait_for_child` now waits once more for a child that is gone. That
+  second `wait` still misread the exit on macOS (19, SIGCONT's number there, in place
+  of 77), so the shim no longer stops at all: it parks in `sigwait` for the
+  promotion's SIGCONT, and zsh has only the real exit to report (AI-CLI-k6ce).
 - **`ai internal progress <tag> <op> <terminal|plain> <attempt> <started> <reason>`**
   renders the row: `[session] reload: session script updated, reloading (attempt 3, 4s)`.
   `started` is the epoch second of the first reload in the run, and the elapsed time is

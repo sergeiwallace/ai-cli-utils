@@ -103,6 +103,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/tmp` with `TMUX` unset, and any server a test starts there is killed when it ends. A
   killed run's leftovers are killed by the next run. The suite-end cleanup that listed
   and killed test-named sessions on your default server is gone.
+- Under zsh on macOS, a session whose agent ends cleanly is no longer restarted. The
+  session shell's wrapper used to stop itself until it was handed the terminal, and zsh
+  then reported that stop and resume (19) in place of the agent's real exit, so a clean
+  final exit read as "restart". The wrapper now waits for the handoff without stopping.
 - On tmux 3.8 the stale-session reaper, and a relaunch over a session whose pane has
   died, no longer fail for every session when one pane is dead. tmux 3.8 stopped printing
   a dead pane's pid, and the reaper read that empty pid as a malformed listing, so it
