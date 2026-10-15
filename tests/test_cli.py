@@ -43,6 +43,26 @@ def _venv_python(venv: Path) -> Path:
     return win if win.exists() else venv / "bin" / "python"
 
 
+def _uv_test_environment(tmp_path: Path) -> dict[str, str]:
+    """Return the minimal environment needed by real-uv integration tests."""
+    environment = {"UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+    if sys.platform == "win32":
+        for name in ("SYSTEMROOT", "TEMP", "TMP", "WINDIR"):
+            if value := os.environ.get(name):
+                environment[name] = value
+    return environment
+
+
+def test_given_ambient_sensitive_value_when_uv_test_environment_is_built_then_it_is_not_inherited(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("TEST_SENSITIVE_VALUE", "must-not-be-inherited")
+
+    environment = _uv_test_environment(tmp_path)
+
+    assert "TEST_SENSITIVE_VALUE" not in environment
+
+
 def _successful_worktree(tmp_path, ai_name):
     path = tmp_path / ".worktrees" / ai_name
     path.mkdir(parents=True)
@@ -3393,7 +3413,7 @@ class TestSelfUpdatePreservesEditableInstall:
             encoding="utf-8",
         )
         venv = tmp_path / "venv"
-        uv_env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+        uv_env = _uv_test_environment(tmp_path)
         subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True, env=uv_env)
         python = _venv_python(venv)
 
@@ -3443,7 +3463,7 @@ class TestSelfUpdatePreservesEditableInstall:
             encoding="utf-8",
         )
         venv = tmp_path / "venv"
-        uv_env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+        uv_env = _uv_test_environment(tmp_path)
         subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True, env=uv_env)
         python = _venv_python(venv)
 
