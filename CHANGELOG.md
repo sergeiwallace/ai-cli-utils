@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai session-audit` judges a session by the most recent cwd its transcript records that exists
+  on this host, not by the first one. A session that moved hosts or was migrated now reads
+  `in-slot, resolvable`, and a session whose repo does not exist on this host is skipped, never
+  offered for adoption into a missing path.
 - A session no longer prints `no such file or directory: ...session-reload-reason-...` each
   time its agent exits without a reload pending.
 - A reload after the agent has started and run counts from attempt 1 again. Every

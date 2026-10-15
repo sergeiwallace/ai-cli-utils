@@ -631,6 +631,89 @@ def test_triage_given_a_slot_resident_session_whose_records_carry_the_old_cwd_wh
     assert "already adopted" in reason
 
 
+def test_survey_given_a_migrated_session_whose_first_cwd_is_gone_when_surveyed_then_it_reads_in_slot_and_resolvable(
+    fleet, audit, tmp_path
+):
+    """A session that moved hosts records its OLD cwd first and its slot last.
+
+    Measured live: a 551 MB transcript recorded a since-removed EFS cwd on its
+    first 35,638 lines and its current ``.worktrees/<title>`` slot on 97,304
+    later ones. Judging it by the first cwd attributed it to a repo that does not
+    exist on this host and offered to adopt it there.
+    """
+    slot = _add_worktree(fleet["myproject"], "myproject-9")
+    gone = tmp_path / "efs" / "projects" / "myproject" / WORKTREES / "myproject-4"
+    project_dir = cc_project_dir(slot, fleet["home"])
+    project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    uuid = "99999999-2222-4333-8444-555555555555"
+    lines = [_record(type="user", sessionId=uuid, cwd=str(gone), customTitle="myproject-9")]
+    lines += [_record(type="user", sessionId=uuid, cwd=str(gone), n=i) for i in range(5)]
+    lines += [_record(type="user", sessionId=uuid, cwd=str(slot / "docs"), n=i) for i in range(2)]
+    lines += [_record(type="user", sessionId=uuid, cwd=str(slot), n=i) for i in range(5)]
+    (slot / "docs").mkdir()
+    transcript = project_dir / f"{uuid}.jsonl"
+    transcript.write_text("\n".join(lines) + "\n")
+
+    record = next(r for r in audit().sessions if r.title == "myproject-9")
+
+    assert record.cwd == str(slot)
+    assert record.repo_root == fleet["myproject"]
+    assert record.in_correct_slot is True
+    assert record.slug_matches is True
+    assert record.resolves == transcript
+    ready, skipped = triage(audit())
+    assert "myproject-9" not in {r.title for r in ready}
+    reason = next(reason for r, reason in skipped if r.title == "myproject-9")
+    assert "already adopted" in reason
+
+
+def test_triage_given_a_session_whose_only_cwd_is_missing_when_triaged_then_not_resolvable_and_not_offered(
+    fleet, audit, tmp_path
+):
+    """No adopt target is offered under a repo that does not exist on this host."""
+    gone = tmp_path / "efs" / "projects" / "otherrepo" / WORKTREES / "otherrepo-3"
+    _write_transcript_in_project_dir(
+        cc_project_dir(gone, fleet["home"]), "33333333-2222-4333-8444-555555555555", "otherrepo-3", gone
+    )
+
+    record = next(r for r in audit().sessions if r.title == "otherrepo-3")
+    assert record.cwd == str(gone)
+    assert record.resolves is None
+    assert "NOT-resolvable" in record.describe()
+
+    ready, skipped = triage(audit())
+    assert "otherrepo-3" not in {r.title for r in ready}
+    reason = next(reason for r, reason in skipped if r.title == "otherrepo-3")
+    assert "does not exist on this host" in reason
+
+
+def test_survey_given_a_transcript_far_larger_than_one_record_when_surveyed_then_it_is_streamed(fleet, audit):
+    """Live transcripts exceed 1 GB, so the cwd scan must never hold the file whole."""
+    import tracemalloc
+
+    slot = _add_worktree(fleet["myproject"], "myproject-6")
+    project_dir = cc_project_dir(slot, fleet["home"])
+    project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    uuid = "66666666-2222-4333-8444-555555555555"
+    pad = "x" * 4000
+    transcript = project_dir / f"{uuid}.jsonl"
+    with transcript.open("w") as fh:
+        fh.write(_record(type="user", sessionId=uuid, cwd=str(slot), customTitle="myproject-6") + "\n")
+        for i in range(4000):
+            fh.write(_record(type="user", sessionId=uuid, cwd=str(slot), n=i, pad=pad) + "\n")
+    size = transcript.stat().st_size
+
+    tracemalloc.start()
+    try:
+        record = next(r for r in audit().sessions if r.title == "myproject-6")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert record.cwd == str(slot)
+    assert peak < size / 4, f"peak {peak} bytes for a {size}-byte transcript — it was not streamed"
+
+
 def test_triage_given_an_unadopted_session_when_triaged_then_still_adoptable(fleet, audit):
     """The other direction: a transcript in the repo-root project dir IS adoptable.
 
