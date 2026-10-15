@@ -1459,10 +1459,11 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
     for item in [m for m in moves if m.kind == "chief registration" and m.action == "rewrite"]:
         home = Path(item.source).parent.parent
         registration = _cos.read_registration(home) or {}
+        target = registration.get("tmux_target")
         registration.update(
             native_agent_name=new,
             session=renamed(registration.get("session")),
-            tmux_target=tmux.get(registration.get("tmux_target"), registration.get("tmux_target")),
+            tmux_target=tmux.get(target, target) if isinstance(target, str) else target,
         )
         _cos._write_private_json(_cos.registration_path(home), registration)
         registry = _cos._read_json_object(_cos.registry_path(home), "chief registry")
