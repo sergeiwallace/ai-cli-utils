@@ -3021,6 +3021,21 @@ def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
     return f"launcher on {local}; session on {remote_alias or host or 'the default remote'} (remote)"
 
 
+def _tmux_session_has_live_pane(session_name: str) -> bool:
+    """True when tmux has a session named exactly ``session_name`` with a live pane.
+
+    The ``=`` target is load-bearing: a bare name is a PREFIX match in tmux, so
+    ``c-x-1`` would answer for a live ``c-x-10``.
+    """
+    result = subprocess.run(
+        ["tmux", "list-panes", "-s", "-t", f"={session_name}", "-F", "#{pane_dead}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and "0" in (result.stdout or "").split()
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -3898,7 +3913,20 @@ def _do_session_launch(
             reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
             sys.exit(1)
         reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
-        if worktree_path:
+        # A launch that is about to ATTACH to a running engine must leave its checkout's
+        # git state alone: the sync below resets the index, rebases the branch and
+        # stashes/pops uncommitted edits, all under an agent that is working in that
+        # tree right now (AI-CLI-gnng). It used to run for every launch, before the
+        # has-session check further down that knows the session is live. A session
+        # with only dead panes is replaced rather than attached, and --sandbox replaces
+        # a live one, so both of those are still synchronized for the engine they start.
+        _attaching_live = bool(worktree_path) and not bare and not sandbox and _tmux_session_has_live_pane(session_id)
+        if _attaching_live:
+            reporter.phase("worktree").outcome(
+                f"sync skipped: {session_id} is running in {worktree_path.name if worktree_path else ''}; "
+                "attaching without touching its git state"
+            )
+        if worktree_path and not _attaching_live:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
             # --autostash saves the corrupt index, rebase runs cleanly, then pops the corrupt
