@@ -3618,14 +3618,30 @@ def _do_session_launch(
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
     if is_remote:
-        aliases = _config.get_project_aliases()
-        raw_project, project_source = _resolve_remote_project(project, config)
-        if raw_project:
-            project_name = aliases.get(raw_project, raw_project)
-            project_dir = _config._find_project_dir(project_name)
-            if not project_dir.is_dir():
-                _exit_missing_project_dir(project_name, project_dir, project_source, f"ai {engine} -R -p PROJECT")
-            os.chdir(project_dir)
+        # A running pane already owns its cwd. Resolve the same target used below
+        # before requiring a checkout that only a fresh launch needs.
+        remote_session_exists = False
+        if name and not bare:
+            try:
+                remote_naming_prefix = _session_naming.naming_prefix(
+                    project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
+                )
+                remote_session_id, _ = _session.build_session_name(
+                    engine, remote_naming_prefix, name, config, is_remote=True, legacy_prefix=project_prefix
+                )
+            except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
+                reporter.error("session", str(exc))
+                sys.exit(1)
+            remote_session_exists = remote_session_id in _session._tmux_session_names()
+        if not remote_session_exists:
+            aliases = _config.get_project_aliases()
+            raw_project, project_source = _resolve_remote_project(project, config)
+            if raw_project:
+                project_name = aliases.get(raw_project, raw_project)
+                project_dir = _config._find_project_dir(project_name)
+                if not project_dir.is_dir():
+                    _exit_missing_project_dir(project_name, project_dir, project_source, f"ai {engine} -R -p PROJECT")
+                os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
         # git worktrees and Gemini chats directories resolve relative to the correct root.

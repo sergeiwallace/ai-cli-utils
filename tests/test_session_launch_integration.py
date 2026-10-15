@@ -428,6 +428,70 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
         assert engine_script.call_args.args[3] == "c-aih-"
 
 
+@pytest.mark.parametrize("name", ["2", "c-r-myproject-tst-2"])
+def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_without_chdir(
+    patched_subprocess, tmp_path, capsys, name
+):
+    server = patched_subprocess
+    target = "c-r-myproject-tst-2"
+    existing = server.new_session(session_name=target, detach=True, window_command=_LIVE_CHILD_COMMAND)
+    before_id = existing.id
+    absent = tmp_path / "projects" / "otherproject"
+    kwargs = _base_launch_kwargs(name=name)
+    kwargs.update(is_remote=True, project="otherproject")
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config.get_project_aliases", return_value={}),
+        patch("ai_cli.config._find_project_dir", return_value=absent),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+        patch("ai_cli.main.os.chdir") as chdir,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**kwargs)
+
+    _assert_launch_reached_exec(server, capsys)
+    assert exc_info.value.code == 0
+    chdir.assert_not_called()
+    assert {s.name: s.id for s in server.sessions} == {target: before_id}
+    assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
+    assert server._execvp_calls == [("tmux", ["tmux", "attach-session", "-d", "-t", target])]
+
+
+def test_given_fresh_remote_session_when_project_dir_is_absent_then_refuses_before_creation(
+    patched_subprocess, tmp_path, capsys
+):
+    server = patched_subprocess
+    absent = tmp_path / "projects" / "otherproject"
+    kwargs = _base_launch_kwargs(name="2")
+    kwargs.update(is_remote=True, project="otherproject")
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config.get_project_aliases", return_value={}),
+        patch("ai_cli.config._find_project_dir", return_value=absent),
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
+        patch("ai_cli.main.os.chdir") as chdir,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**kwargs)
+
+    assert exc_info.value.code == 1
+    assert str(absent) in capsys.readouterr().err
+    chdir.assert_not_called()
+    assert not server._execvp_calls
+    assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
+    assert not server.sessions
+
+
 def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     """Pre-create ``session_name`` with a pane that is already dead.
 
