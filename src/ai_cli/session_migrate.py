@@ -766,7 +766,10 @@ def finish_session(
     moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
     state_moves = _plan_state(old, new, state)
     map_moves = _plan_session_maps(old, new, home, state)
-    project_dirs = [(cc_project_dir(repo_root, home), None), (cc_project_dir(new_wt, home), None)]
+    project_dirs: list[tuple[Path, Path | None]] = [
+        (cc_project_dir(repo_root, home), None),
+        (cc_project_dir(new_wt, home), None),
+    ]
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
     lock_moves = _plan_slot_lock(repo_root, old)
