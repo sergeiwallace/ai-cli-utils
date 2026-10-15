@@ -574,7 +574,9 @@ def resolve_session(prefix: str, name: str) -> str:
         # returned): it exists or it does not. Probing PREFIX+NAME for it, and then
         # "<that>-*", is how `c-r-aih-fw-c-r-aih-fw-firstmate-1` was ever looked up.
         return name if name in _tmux_session_names() else ""
-    res = subprocess.run(["tmux", "has-session", "-t", target], capture_output=True, check=False)
+    # Exact `=NAME`: a bare name is a unique-PREFIX match in tmux, so slot 1 would
+    # answer for a live slot 10 and -r would attach there (AI-CLI-gqb3).
+    res = subprocess.run(["tmux", "has-session", "-t", f"={target}"], capture_output=True, check=False)
     if res.returncode == 0:
         return target
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)

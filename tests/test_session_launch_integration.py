@@ -155,12 +155,12 @@ def patched_subprocess(tmux_server, tmp_path):
                 return type("TmuxVersion", (), {"returncode": 0, "stdout": "tmux 3.7c\n", "stderr": ""})()
 
             if sub == "has-session":
-                # Check via libtmux — no tmux binary call needed.
-                try:
-                    target = cmd[cmd.index("-t") + 1]
-                except (ValueError, IndexError):
-                    return _FAIL()
-                return _OK() if any(s.name == target for s in server.sessions) else _FAIL()
+                # Ask the real server: tmux's own target resolution IS the behavior
+                # under test (a bare name is a prefix match, `=NAME` is exact), so a
+                # name comparison here would hide exactly that (AI-CLI-gqb3).
+                return real_subprocess_run(
+                    ["tmux", "-S", str(server.socket_path), *cmd[1:]], capture_output=True, check=False
+                )
 
             if sub == "new-session":
                 # Create via libtmux — avoids server bootstrap / TERM requirements.
@@ -382,6 +382,49 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     assert "c-myproject-tst-2" in after
     # The existing session id must survive — i.e. no new-session was issued
     assert after["c-myproject-tst-2"] in before_ids
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_given_slot_10_live_when_free_slot_1_is_launched_then_slot_1_is_created_and_slot_10_untouched(
+    patched_subprocess, capsys, sandbox
+):
+    """tmux resolves a bare `-t NAME` by exact name, then by unique PREFIX (AI-CLI-gqb3).
+
+    So with only `c-myproject-tst-10` running, `has-session -t c-myproject-tst-1`
+    succeeds: the launch for free slot 1 decided the session already existed and
+    attached to slot 10 instead, and with --sandbox it captured slot 10's identity
+    through the same target and killed it as the session "to replace".
+    """
+    server = patched_subprocess
+    neighbour = server.new_session(session_name="c-myproject-tst-10", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    neighbour_id = neighbour.id
+    # Owned, as every session this launcher creates is, so --sandbox would accept it.
+    marked = server.cmd("set-option", "-t", neighbour_id, "@ai_cli_session_generation", "test-generation")
+    assert marked.returncode == 0, marked.stderr
+    kwargs = _base_launch_kwargs(name="1")
+    kwargs["sandbox"] = sandbox
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    _assert_launch_reached_exec(server, capsys)
+    after = {s.name: s.id for s in server.sessions}
+    assert after.get("c-myproject-tst-10") == neighbour_id, "the launch for slot 1 replaced slot 10"
+    assert "c-myproject-tst-1" in after, "slot 1 was never created"
+    attach_target = server._execvp_calls[-1][1][-1]
+    assert attach_target not in {"c-myproject-tst-10", neighbour_id}, f"attached to slot 10 via {attach_target!r}"
 
 
 @pytest.mark.parametrize("resume", [False, True])
