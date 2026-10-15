@@ -26,7 +26,11 @@ tasks, memory and resume hand-off:
   bookkeeping remains;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
-  session maps and the iTerm2 restore registry;
+  session maps, the iTerm2 restore registry and the ``launch-logs/`` files of a launch
+  named for the session;
+* the chief-of-staff registration ``ai cos`` wrote, when it names the old session
+  (``state/chief-session.json`` and ``registry.json``'s chief fields), unless its tmux
+  target is live;
 * the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` and its
   ``wt/<old>/*`` branches in every repo under ``projects_dir``
   (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
@@ -1053,6 +1057,8 @@ def migrate_session(
     moves += map_moves
     iterm2_moves = _plan_iterm2(old)
     moves += iterm2_moves
+    launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
+    moves += launcher_moves
 
     project_dirs = [(cc_project_dir(repo_root, home), None), (old_pd, new_pd)]
     held_moves = _plan_held_output(old, new, project_dirs)
@@ -1114,6 +1120,8 @@ def migrate_session(
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
         _apply_iterm2(old, new)
+    _apply_launch_logs(launcher_moves, result)
+    _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     _apply_beads(old, new, beads, result)
@@ -1264,7 +1272,9 @@ def finish_session(
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
     lock_moves = _plan_slot_lock(repo_root, old)
     iterm2_moves = _plan_iterm2(old)
-    moves += state_moves + map_moves + iterm2_moves + held_moves + memory_moves + index_moves + lock_moves
+    launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
+    moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
+    moves += lock_moves
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
     evidence = _migration_evidence(old, new, state)
@@ -1293,6 +1303,8 @@ def finish_session(
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
         _apply_iterm2(old, new)
+    _apply_launch_logs(launcher_moves, result)
+    _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     if evidence:
@@ -1363,3 +1375,101 @@ def _apply_iterm2(old: str, new: str) -> None:
         return changed
 
     _session_registry._mutate(change)
+
+
+#: ``<name>-<UTC stamp>-<pid>.log``, the name :func:`ai_cli.launch_logging.create_launch_log` gives.
+_LAUNCH_LOG_TAIL = re.compile(r"-(\d{8}T\d{6}\.\d+Z-\d+\.log)")
+
+
+def _plan_launch_logs(old: str, new: str, state: Path) -> list[PlannedMove]:
+    """Each ``launch-logs/<name>-<stamp>-<pid>.log`` of a launch named for OLD, renamed for NEW.
+
+    Kept per name and pruned only when that name launches again, so a log left under OLD is
+    never pruned; under NEW it joins NEW's retention. A name only the slot number gives
+    (``3-<stamp>``) names no session and stays.
+    """
+    from .launch_logging import _LOG_DIRECTORY, _safe_session_name
+
+    logs = state / _LOG_DIRECTORY
+    if not logs.is_dir():
+        return []
+    names = {
+        _safe_session_name(o): _safe_session_name(n)
+        for o, n in ((old, new), *zip(_session_variants(old), _session_variants(new), strict=True))
+    }
+    moves: list[PlannedMove] = []
+    for source in sorted(logs.iterdir()):
+        for old_name, new_name in names.items():
+            tail = (
+                _LAUNCH_LOG_TAIL.fullmatch(source.name[len(old_name) :]) if source.name.startswith(old_name) else None
+            )
+            if tail and source.is_file():
+                dest = logs / f"{new_name}-{tail.group(1)}"
+                moves.append(PlannedMove("launch log", str(source), str(dest), "conflict" if dest.exists() else "move"))
+                break
+    return moves
+
+
+def _apply_launch_logs(moves: list[PlannedMove], result: MigrationResult) -> None:
+    for item in [m for m in moves if m.kind == "launch log" and m.action == "move"]:
+        try:
+            Path(item.source).rename(item.dest)
+        except OSError as exc:
+            result.warnings.append(f"launch log {item.source} FAILED to move to {item.dest}: {exc}")
+
+
+def _plan_chief(old: str, new: str, tmux: list[str], result: MigrationResult) -> list[PlannedMove]:
+    """The chief-of-staff registration ``ai cos`` wrote naming OLD, and its registry's chief fields.
+
+    Rewritten for NEW unless its tmux target is live, which leaves it named for ``--finish``
+    and fails the run. A registration or registry that cannot be read refuses the migration.
+    """
+    from . import chief_of_staff as _cos
+
+    root = _cos.chief_homes_root()
+    moves: list[PlannedMove] = []
+    for home in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+        try:
+            registration = _cos.read_registration(home)
+            _cos._read_json_object(_cos.registry_path(home), "chief registry")
+        except _cos.ChiefOfStaffError as exc:
+            raise MigrationError(f"{exc}; refusing before any write") from exc
+        if not registration or registration.get("native_agent_name") != old:
+            continue
+        path = str(_cos.registration_path(home))
+        target = registration.get("tmux_target")
+        if isinstance(target, str) and target in tmux:
+            reason = f"its tmux target {target} is live, so the chief may be running"
+            moves.append(PlannedMove("chief registration", path, reason, "kept"))
+            result.kept.append(f"{path}: {reason}")
+            result.warnings.append(f"chief registration {path} was NOT re-keyed: {reason}; re-run with --finish")
+            continue
+        moves.append(PlannedMove("chief registration", path, f"{old} -> {new}", "rewrite"))
+    return moves
+
+
+def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
+    from . import chief_of_staff as _cos
+
+    tmux = dict(zip(_session_variants(old), _session_variants(new), strict=True))
+
+    def renamed(session: object) -> object:
+        return new + session[len(old) :] if isinstance(session, str) and session.startswith(f"{old}@") else session
+
+    for item in [m for m in moves if m.kind == "chief registration" and m.action == "rewrite"]:
+        home = Path(item.source).parent.parent
+        registration = _cos.read_registration(home) or {}
+        registration.update(
+            native_agent_name=new,
+            session=renamed(registration.get("session")),
+            tmux_target=tmux.get(registration.get("tmux_target"), registration.get("tmux_target")),
+        )
+        _cos._write_private_json(_cos.registration_path(home), registration)
+        registry = _cos._read_json_object(_cos.registry_path(home), "chief registry")
+        if registry is None:
+            continue
+        registry["chief_of_staff_session"] = renamed(registry.get("chief_of_staff_session"))
+        routes = registry.get("chief_routes")
+        if isinstance(routes, dict) and routes.get("native_agent_name") == old:
+            routes["native_agent_name"] = new
+        _cos._write_private_json(_cos.registry_path(home), registry)

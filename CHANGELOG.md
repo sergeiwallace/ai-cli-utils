@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai session-migrate` (and `--finish`) now re-keys the chief-of-staff registration `ai cos`
+  wrote when it names OLD (`state/chief-session.json` and `registry.json`'s chief fields,
+  leaving it named and exiting 1 while its tmux target is live), and renames OLD's
+  `launch-logs/` files for NEW so NEW's retention prunes them. Resume `evidence/` files
+  (`<key>-<attempt id>-<reason>.txt`) are now re-keyed with the rest of the resume tree. The
+  per-class table in `docs/tools/cc-session-adoption.md` lists every class found left under
+  the old name, its owner and its disposition (AI-CLI-2oes).
+
 - `ai session-migrate` now cleans up the old name in every other repo once the session has
   moved: a `.worktrees/OLD` slot that is clean and landed is retired the way
   `ai session-retire` retires one (tips anchored, checkout removed), an empty `OLD-agents`
