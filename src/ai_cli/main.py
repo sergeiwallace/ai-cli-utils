@@ -4534,6 +4534,7 @@ def _session_options(func):
     # available failure, and docs/tools/ai-cli-usage.md has advertised this flag
     # for `ai c`/`ai g` the whole time (AI-CLI-wepi).
     func = click.option(
+        "-d",
         "--dry-run",
         is_flag=True,
         help="Print the resolved launch plan and exit; creates and starts nothing",
