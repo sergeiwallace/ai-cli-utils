@@ -52,6 +52,7 @@ Depends only on the standard library and the shipped adoption module.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -275,9 +276,51 @@ def survey(
     )
 
 
+def _recorded_cwds(path: Path) -> list[str]:
+    """Every distinct cwd the transcript records, ordered by its LAST occurrence.
+
+    Streamed line by line, and only lines naming a cwd are parsed, because live
+    transcripts exceed 1 GB.
+    """
+    last_seen: dict[str, int] = {}
+    try:
+        with path.open("rb") as fh:
+            for number, raw in enumerate(fh):
+                if b'"cwd"' not in raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(record, dict) and record.get("cwd"):
+                    last_seen[str(record["cwd"])] = number
+    except OSError:
+        return []
+    return sorted(last_seen, key=last_seen.__getitem__)
+
+
+def _session_cwd(path: Path, project_dir: Path, home: Path) -> str:
+    """The cwd to judge this session by: the most recent one that exists on this host.
+
+    A session that moved hosts, or was migrated, keeps its old cwd on its early
+    records, so the first recorded cwd can name a path that is gone. Among the
+    cwds that exist, one that slugifies to the transcript's own project directory
+    wins over a subdirectory the session merely ``cd``-ed into. When none exists
+    the most recent recorded cwd is returned, and :func:`triage` reports it.
+    """
+    cwds = _recorded_cwds(path)
+    existing = [cwd for cwd in cwds if Path(cwd).is_dir()]
+    for cwd in reversed(existing):
+        if cc_project_dir(Path(cwd), home) == project_dir:
+            return cwd
+    if existing:
+        return existing[-1]
+    return cwds[-1] if cwds else ""
+
+
 def _build_record(candidate, project_dir: Path, home: Path, live: list) -> SessionRecord:
     """Turn one titled transcript into a :class:`SessionRecord`."""
-    cwd = candidate.cwd
+    cwd = _session_cwd(candidate.path, project_dir, home)
     repo_root: Path | None = None
     location = UNKNOWN
     slug_matches = False
@@ -286,7 +329,7 @@ def _build_record(candidate, project_dir: Path, home: Path, live: list) -> Sessi
         slug_matches = cc_project_dir(Path(cwd), home) == project_dir
 
     split = split_ai_name(candidate.title)
-    slot = repo_root / WORKTREES / candidate.title if repo_root is not None else None
+    slot = repo_root / WORKTREES / candidate.title if repo_root is not None and repo_root.is_dir() else None
     return SessionRecord(
         title=candidate.title,
         transcript=candidate.path,
@@ -337,6 +380,10 @@ def triage(report: AuditReport) -> tuple[list[SessionRecord], list[tuple[Session
             skipped.append((record, "transcript records no cwd — cannot tell which directory it ran in"))
         elif record.repo_root is None:
             skipped.append((record, f"no owning repo found above {record.cwd} — nothing to adopt it into"))
+        elif not record.repo_root.is_dir():
+            skipped.append(
+                (record, f"owning repo {record.repo_root} does not exist on this host — nothing to adopt it into")
+            )
         elif record.index is None:
             skipped.append((record, f"title {record.title!r} is not <prefix>-<index>, so `ai c <n>` cannot address it"))
         elif record.in_correct_slot and record.resolves is not None:
