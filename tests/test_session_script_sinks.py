@@ -24,7 +24,7 @@ import sqlite3
 from pathlib import Path
 
 from test_output_sinks import _event_fields, _fields
-from test_reload_progress import _SGR, Session, session_factory  # noqa: F401  (the fixture)
+from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
 
 DIRENV_TEXT = "direnv could not load"
 CLEANUP_TEXT = "skipping tmux session cleanup because supervisor ownership was not established"
@@ -59,9 +59,15 @@ def _telemetry(session: Session) -> list[tuple[str, dict]]:
     return [(subject, json.loads(data)) for subject, data in rows]
 
 
+# Every CSI sequence, not only SGR: the supervisor resets the terminal's modes after each
+# child (`\x1b[?1000l`, `\x1b[>4;0m`, `\x1b[<u`), and those bytes would otherwise prefix
+# the next line the script prints.
+_CSI = re.compile(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]")
+
+
 def _terminal_lines(session: Session) -> list[str]:
     # Read from the bytes, not the modelled screen: a line naming the test's worktree path wraps.
-    text = _SGR.sub("", bytes(session.received).decode("utf-8", errors="replace"))
+    text = _CSI.sub("", bytes(session.received).decode("utf-8", errors="replace"))
     return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
 
 
