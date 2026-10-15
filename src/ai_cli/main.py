@@ -3001,6 +3001,17 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
         reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
+def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
+    """Name the machine this launcher runs on and the one the session will run on (AI-CLI-x5vn)."""
+    local = _config.detect_machine_profile()["host_id"]
+    if remote_cfg is None:
+        return f"launcher on {local}; session on {local} (local)"
+    host = str(remote_cfg.get("host") or "")
+    if remote_alias and host and remote_alias != host:
+        return f"launcher on {local}; session on {remote_alias} ({host}, remote)"
+    return f"launcher on {local}; session on {remote_alias or host or 'the default remote'} (remote)"
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -3105,6 +3116,7 @@ def _do_session_launch(
         except _config.RemoteMachineError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
+    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias))
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not

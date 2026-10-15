@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every `ai c`, `ai g`, `ai p` and `ai cx` launch prints a `host` line naming the machine the
+  launcher runs on and the machine the session will run on, so a `-R` launch says where it
+  is going: `launcher on host-a; session on box (box.example.com, remote)`.
 - Lines the session script prints now reach the session's launch log as the same
   record the terminal shows, and its warnings and errors, such as a failed direnv load,
   also reach telemetry. A reload row is stored only once it has escalated to a warning
