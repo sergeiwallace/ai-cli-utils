@@ -2011,6 +2011,70 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
         os.close(master_fd)
 
 
+def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it_tears_down_its_tmux_session(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A Ctrl+C while a child is still being started is a deliberate stop (AI-CLI-5t3j).
+
+    Between children (an `ai` update reload, a restart after a normal exit) only the
+    supervisor sees Ctrl+C, and a press before promotion returns 2. The supervisor used to
+    `exit 1` there, skipping the fenced `kill-session` a final exit runs. The window keeps
+    `remain-on-exit on`, so the pane stayed up dead: keystrokes went nowhere and the tmux
+    session was never removed. The pty is owned by another session, as in the promotion
+    failure test above, so the promotion loop keeps retrying until the press arrives.
+    """
+    import pty  # not at module scope: see the promotion failure test above (AI-CLI-ta1l)
+
+    master_fd, initial_slave_fd = pty.openpty()
+    slave_name = os.ttyname(initial_slave_fd)
+    os.close(initial_slave_fd)
+    owner_fd = os.open(slave_name, os.O_RDWR)
+    owner = subprocess.Popen(
+        ["bash", "-c", "echo owner-up; sleep 60"],
+        stdin=owner_fd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        text=True,
+    )
+    os.close(owner_fd)
+    try:
+        assert owner.stdout is not None
+        owner.stdout.readline()
+        slave_fd = os.open(slave_name, os.O_RDWR)
+        try:
+            process, _, _ = _start_generated_supervisor(
+                tmp_path, supported_session_shell, stdin_fd=slave_fd, wait_for_child_ready=False
+            )
+        finally:
+            os.close(slave_fd)
+        # The supervisor's own ready file holds the child's group once the promotion loop
+        # is running; the press must land inside that loop, not before the child exists.
+        state = tmp_path / "state" / "ai-cli-utils"
+        deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+        while time.monotonic() < deadline and not any(
+            path.read_text(encoding="utf-8").strip() for path in state.glob("child-ready.*")
+        ):
+            if process.poll() is not None:
+                pytest.fail(f"supervisor exited before its promotion loop: {_communicate_supervisor(process)!r}")
+            time.sleep(0.02)
+        os.kill(process.pid, signal.SIGINT)
+        stdout, stderr = _communicate_supervisor(process)
+
+        assert "interrupted before the session shell reached the terminal foreground" in stderr, stderr
+        events = (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+        cleanup_events = [event for event in events if event.startswith("if-shell -F -t $1 ")]
+        assert cleanup_events, f"a Ctrl+C during a child's start left its tmux session up: {events!r}"
+        assert cleanup_events[0].endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
+        assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
+    finally:
+        if "process" in locals() and process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        owner.kill()
+        owner.wait(timeout=_PROCESS_WAIT_SECONDS)
+        os.close(master_fd)
+
+
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(
     tmp_path: Path, supported_session_shell: str
 ):
