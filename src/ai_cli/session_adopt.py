@@ -690,7 +690,9 @@ _RESUME_SEPARATORS = ("__", "-")
 #: the lengths are floored well above a session index so ``oldname`` does not
 #: claim ``oldname-3.log`` from ``oldname-3``. Observed ids are 32 hex characters
 #: and observed timestamps 10 digits, in every file of a 14-subdirectory tree.
-_RESUME_ID_RE = re.compile(r"(?:[0-9a-f]{16,}|[0-9]{9,})(?:\..*)?$")
+#: The id may be followed by a dotted suffix or a hyphenated one: ``evidence/``
+#: files are ``<key>-<attempt id>-<reason>.txt`` (AI-CLI-2oes).
+_RESUME_ID_RE = re.compile(r"(?:[0-9a-f]{16,}|[0-9]{9,})(?:[.-].*)?$")
 
 
 @dataclass

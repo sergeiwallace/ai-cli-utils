@@ -6071,6 +6071,10 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish, beads_only):
     step keyed by the old name for a slot that already moved, so a migration
     run before a step existed, or one a live process held back, completes.
 
+    The chief-of-staff registration ``ai cos`` wrote, when it names OLD, and OLD's
+    launch logs follow NEW too; a registration whose tmux target is live is kept,
+    named, and the command exits 1.
+
     Every run also cleans up the old name in the other repos under the projects
     dir: a ``.worktrees/OLD`` slot is retired like ``ai session-retire`` (tips
     anchored, checkout removed) when it is clean and landed, and kept and named,

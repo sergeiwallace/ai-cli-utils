@@ -132,6 +132,11 @@ def tmux_panes_all_dead(target: str) -> bool:
         return False
 
 
+def chief_homes_root() -> Path:
+    """The directory holding one chief home per machine key."""
+    return _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / "firstmate" / "chief-of-staff"
+
+
 def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict | None = None) -> Path:
     """Return the chief home: an explicit ``fm_home``, else the per-machine state path.
 
@@ -144,7 +149,7 @@ def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict |
     environ = os.environ if env is None else env
     if fm_home:
         return Path(fm_home).expanduser()
-    root = _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / "firstmate" / "chief-of-staff"
+    root = chief_homes_root()
     key = machine_key or environ.get(MACHINE_KEY_ENV, "")
     if not key:
         seeded = sorted(path.name for path in _seeded_homes(root))

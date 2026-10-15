@@ -346,6 +346,7 @@ known patterns, because the patterns are not uniform:
 |---|---|
 | `<name>.…` | `outbox/`, `logs/`, `history/`, `notices/` (incl. `.delivered.md`) |
 | `<name>-<id>.…` | `attempts/`, `injected/`, `confirmed/`, `failed/` |
+| `<name>-<id>-<reason>.…` | `evidence/` |
 | `<name>__<id>.…` | `pollers/` |
 
 A fix matching only `<name>-` misses `pollers/` entirely — which is how the first
@@ -469,6 +470,8 @@ ai c myrepo-box-3                             # resume under the new name
 | `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
+| `launch-logs/<name>-<stamp>-<pid>.log` for OLD and each of its tmux names (`c-OLD`, `c-r-OLD`, ...) | renamed for NEW, so NEW's 20-per-name retention prunes them; a log under the slot number alone (`3-<stamp>`) names no session and stays |
+| The chief-of-staff registration `ai cos` wrote, when it names OLD (`<chief home>/state/chief-session.json`, and `registry.json`'s `chief_of_staff_session` and `chief_routes.native_agent_name`) | rewritten for NEW, tmux target included; `vp_sessions` is left to its hook. Kept and named, exiting 1, while its tmux target is live; a file that cannot be read refuses the migration |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
 | An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`) |
 | A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai session-retire`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/session-retire/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
@@ -477,6 +480,27 @@ ai c myrepo-box-3                             # resume under the new name
 | `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
 | Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing: each store it changed is named `publish needed`, and publishing it is a separate step. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
+
+### Per-session state found left under OLD (AI-CLI-2oes)
+
+Each class an earlier migration left keyed by the old name, where it lives, who owns it,
+and what a migration now does with it. The ai-harness classes run as `session-migrate.d/` hooks
+(`scripts/session_rekey_cli.py <class>`, installed by ai-harness's held-hook step); each one
+lists what it plans in `--dry-run`, runs again in `--finish`, names a file it cannot read and
+exits non-zero, and leaves a live claim in place, named, exiting 1 so `--finish` is re-run once
+it is free.
+
+| Class | Location | Key | Owner | Disposition |
+|---|---|---|---|---|
+| Chief-of-staff registration | `$XDG_STATE_HOME/firstmate/chief-of-staff/<machine key>/state/chief-session.json`, and `registry.json`'s chief fields beside it | `native_agent_name`, `session` (`<name>@<host>`), `tmux_target` | ai-cli-utils (`ai cos`) | **migrate** (core). Left while its tmux target is live |
+| Chief registry VP row | the same `registry.json`, `vp_sessions[]` | `vp_id` `<name>@<host>` | ai-harness (`chief_of_staff.merge_inventory`) | **migrate** with its enrolment (hook `chief-of-staff`), so the chief does not enrol the session twice. **Keep as history** when NEW already has its own row: the chief ages the old one out as `gone`. Left while the chief that writes the file runs, because it rewrites the file without a lock |
+| Worktree determinations | `$XDG_STATE_HOME/ai-harness/worktree-lifecycle/index.json` and the per-repo reap ledgers it indexes | `worktree_path` / `candidate_id` inside `.worktrees/OLD` or `.worktrees/OLD-agents` | ai-harness (`worktree_determinations.py`) | **keep as history**, each named (hook `worktree-determinations`): a determination judged one path at a proof digest that includes the branch the migration renames, so it cannot carry, and the reconciler asks once at the new path. The ledgers are append-only |
+| Work-queue session files | `~/.claude/state/wq/session-<host>_OLD.json`, `heartbeat-<host>_OLD`, `goal-cleared-<host>_OLD` (and `unknown_OLD`, the id used when no machine resolved) | wq id `<host>/<name>` | ai-harness (`wq_hooks.py`, `queue_waker.py`) | **remove when proved stale** (hook `work-queue`): the record is rewritten at every start and names a transcript path the migration moved; the heartbeat is a throttle stamp; the goal-cleared mark is a byte offset into a transcript the migration rewrote. Left while the heartbeat is inside the waker's three-window lease |
+| Peer-relay cursors | `$XDG_STATE_HOME/ai-harness/peer-relay/<project slug>__<session id>.{offset,seen.json}` | project slug of `.worktrees/OLD` or `OLD-agents/<leaf>` | ai-harness (`peer_relay_verify.py`) | seen set **migrated** to the new slug (hook `peer-relay`); offset **removed** (it no longer lands on a line once the transcript's cwd fields are rewritten; first sight starts at end of file); both removed when NEW has its own cursor or no transcript remains. Left while the old transcript has not moved |
+| Launch logs | `$XDG_STATE_HOME/ai-cli-utils/launch-logs/<name>-<stamp>-<pid>.log` | the name the launch was given | ai-cli-utils (`launch_logging.py`) | **migrate** (core) |
+| Resume evidence | `~/.claude/resume/evidence/<key>-<attempt id>-<reason>.txt` | resume key | ai-cli-utils resume rekey (written by ai-harness's `EvidenceObserver`) | **migrate** (core): the matcher now accepts a hyphenated suffix after the id |
+| Resume attempt records | `~/.claude/resume/attempts/<key>-<id>.json`, body field `key` | resume key, read from the body | ai-harness (`context_supervisor.ResumeStore`) | **migrate** (hook `compact-lifecycle`): the core renames the file but not the body, and the supervisor reads the key from the body, so a renamed record was invisible to NEW while the supervisor kept logging `CC-REAUTH-REFUSED key=OLD`; the hook sets `key` to NEW and repoints `evidence_path` at the moved capture |
+| Buzz keys `OLD-<2 hex>@<host>.key` | `$XDG_CONFIG_HOME/ai-harness/buzz/` | a sub-agent's own identity | ai-harness (`buzz_channel.py`) | **keep**, each named (hook `buzz`): a different identity from OLD's, retired by the notifier with its agent; only OLD's own key `OLD@<host>.key` is carried |
 
 `ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
 to NEW: a migration run before one of these steps existed, or one whose agent worktree
