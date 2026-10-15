@@ -632,3 +632,189 @@ def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slo
     assert code == 1
     assert f"hosts {NEW}" in err
     assert left["slot_lock"].exists()
+
+
+# A stand-in for ``bd``: it serves each store's issues from one JSON file and logs every call,
+# both outside the stores, so a real Beads store is never read or written.
+_FAKE_BD = """\
+import json, os, sys, time
+from pathlib import Path
+
+db = Path(os.environ["FAKE_BD_DB"])
+data = json.loads(db.read_text())
+store = str(Path.cwd().resolve())
+with open(os.environ["FAKE_BD_LOG"], "a") as log:
+    log.write(json.dumps({"store": store, "argv": sys.argv[1:]}) + "\\n")
+if data["fail"].get(store) == "error":
+    sys.exit("Error: no beads database found")
+if data["fail"].get(store) == "hang":
+    time.sleep(20)
+args = [a for a in sys.argv[1:] if a != "--sandbox"]
+issues = data["stores"][store]
+
+
+def opt(name):
+    return args[args.index(name) + 1]
+
+
+if args[0] == "list":
+    # Looser than an exact match on purpose: the caller must check the assignee itself.
+    print(json.dumps([i for i in issues if opt("--assignee") in (i.get("assignee") or "")]))
+elif args[0] == "update":
+    issue = next(i for i in issues if i["id"] == args[1])
+    if issue["assignee"] != opt("--if-assignee"):
+        sys.exit(13)
+    issue["assignee"] = opt("--assignee")
+elif args[:2] == ["comments", "add"]:
+    next(i for i in issues if i["id"] == args[2]).setdefault("comments", []).append(" ".join(args[3:]))
+db.write_text(json.dumps(data))
+"""
+
+
+@pytest.fixture
+def stores(slot, tmp_path, monkeypatch):
+    """Two Beads stores under the projects dir, the slot's repo and a workspace with no ``.worktrees/``."""
+    workspace = tmp_path / "workspace"
+    for store in (slot["repo"], workspace):
+        (store / ".beads").mkdir(parents=True)
+    fake = tmp_path / "fakebd"
+    fake.mkdir()
+    script = fake / "bd"
+    script.write_text(f"#!{sys.executable}\n{_FAKE_BD}", encoding="utf-8")
+    script.chmod(0o755)
+    db = fake / "db.json"
+    issues = {
+        str(slot["repo"]): [
+            {"id": "TST-1", "status": "open", "assignee": OLD},
+            {"id": "TST-2", "status": "in_progress", "assignee": OLD},
+            {"id": "TST-3", "status": "closed", "assignee": OLD},
+            {"id": "TST-4", "status": "open", "assignee": f"{OLD}3"},
+            {"id": "TST-5", "status": "open", "assignee": "other-1"},
+        ],
+        str(workspace.resolve()): [{"id": "WS-1", "status": "blocked", "assignee": OLD}],
+    }
+    db.write_text(json.dumps({"stores": issues, "fail": {}}), encoding="utf-8")
+    monkeypatch.setenv("FAKE_BD_DB", str(db))
+    monkeypatch.setenv("FAKE_BD_LOG", str(fake / "calls.jsonl"))
+    monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ['PATH']}")
+    return {"repo": slot["repo"], "workspace": workspace.resolve(), "db": db, "log": fake / "calls.jsonl"}
+
+
+def _assignees(stores) -> dict[str, str]:
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    return {i["id"]: i["assignee"] for store in data["stores"].values() for i in store}
+
+
+def _bd_writes(stores) -> list[list[str]]:
+    if not stores["log"].exists():
+        return []
+    calls = [json.loads(line)["argv"] for line in stores["log"].read_text(encoding="utf-8").splitlines()]
+    return [argv for argv in calls if "list" not in argv]
+
+
+def test_given_issues_assigned_to_old_when_migrated_then_new_holds_each_and_the_report_names_it(stores):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    held = _assignees(stores)
+    assert (held["TST-1"], held["TST-2"], held["WS-1"]) == (NEW, NEW, NEW)
+    for issue, store in (("TST-1", stores["repo"]), ("TST-2", stores["repo"]), ("WS-1", stores["workspace"])):
+        assert f"beads issue: {issue} [{OLD}] ({store}) -> {NEW}" in out, out
+    comments = json.loads(stores["db"].read_text(encoding="utf-8"))["stores"][str(stores["workspace"])][0]["comments"]
+    assert comments == [f"Re-keyed from {OLD} to {NEW} by `ai session-migrate`."]
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store: {store} (publish needed" in out, out
+
+
+def test_given_closed_and_similarly_named_issues_when_migrated_then_neither_is_rewritten(stores):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    held = _assignees(stores)
+    assert (held["TST-3"], held["TST-4"], held["TST-5"]) == (OLD, f"{OLD}3", "other-1")
+    touched = {argv[argv.index("update") + 1] for argv in _bd_writes(stores) if "update" in argv}
+    assert touched == {"TST-1", "TST-2", "WS-1"}
+    update = next(argv for argv in _bd_writes(stores) if "update" in argv)
+    assert update == ["--sandbox", "update", "TST-1", "--assignee", NEW, "--if-assignee", OLD, "--force"]
+
+
+def test_given_issues_assigned_to_old_when_dry_run_then_each_is_listed_per_store_and_nothing_is_written(stores):
+    before = stores["db"].read_text(encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "--dry-run")
+
+    assert code == 0, out + err
+    for issue, store in (("TST-1", stores["repo"]), ("TST-2", stores["repo"]), ("WS-1", stores["workspace"])):
+        assert f"beads issue: {issue} [{OLD}] ({store}) -> {NEW}" in out, out
+    assert "TST-3" not in out and "TST-4" not in out
+    assert _bd_writes(stores) == []
+    assert stores["db"].read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("failure", ["error", "hang"])
+def test_given_an_unreadable_store_when_migrated_then_it_is_named_and_the_run_exits_1(stores, failure):
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    data["fail"][str(stores["workspace"])] = failure
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+
+    with patch("ai_cli.session_migrate._BD_TIMEOUT", 1):
+        code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['workspace']} FAILED to read" in err
+    assert f"beads store: {stores['workspace']} (unreadable" in out
+    assert _assignees(stores)["WS-1"] == OLD
+    assert _assignees(stores)["TST-1"] == NEW
+
+
+def test_given_a_store_unreadable_during_the_migration_when_finished_then_its_issues_are_re_keyed(stores):
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    data["fail"][str(stores["workspace"])] = "error"
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+    code, out, err = _migrate(stores["repo"], "-y")
+    assert code == 1, out + err
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    data["fail"] = {}
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    assert _assignees(stores)["WS-1"] == NEW
+    assert "session-migrations.jsonl records it" in out
+
+
+def test_given_a_migration_from_before_the_re_key_when_finished_then_its_issues_are_re_keyed(stores, slot):
+    code, out, err = _migrate(stores["repo"], "-y")
+    assert code == 0, out + err
+    (slot["state"] / "session-migrations.jsonl").unlink()
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    for store in data["stores"].values():
+        for issue in store:
+            if issue["assignee"] == NEW:
+                issue["assignee"] = OLD
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    held = _assignees(stores)
+    assert (held["TST-1"], held["TST-2"], held["WS-1"], held["TST-3"]) == (NEW, NEW, NEW, OLD)
+    assert f"session-meta-c-{NEW}.json binds {NEW}" in out
+
+
+def test_given_no_record_of_the_migration_on_this_host_when_finished_then_nothing_is_re_keyed_and_it_says_why(
+    stores, slot
+):
+    # Moved by hand: no ledger row, and the metadata and canonical registry still bind the old slot.
+    _git("worktree", "move", str(slot["wt"]), str(stores["repo"] / ".worktrees" / NEW), cwd=stores["repo"])
+    before = stores["db"].read_text(encoding="utf-8")
+
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    assert stores["db"].read_text(encoding="utf-8") == before
+    assert _bd_writes(stores) == []
+    reason = f"this host holds no record that {OLD} was migrated to {NEW} here"
+    assert f"beads issue: TST-1 [{OLD}] ({stores['repo']}) (left alone: {reason}" in out, out
+    assert f"beads issues on {OLD} were NOT re-keyed to {NEW}: {reason}" in err

@@ -99,6 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai session-migrate OLD NEW` now re-keys Beads assignees. Every non-closed issue assigned to
+  exactly OLD, in every store under the projects dir, is reassigned to NEW through `bd update
+  --if-assignee OLD --force` and given a comment naming the migration, so the migrated
+  session can close and reassign its own issues without `--force`. `--dry-run` lists each
+  issue per store; a store bd cannot read is named and fails the run; each changed store is
+  named as needing its publish step. `--finish` re-keys issues a past migration left on OLD
+  when this host records that migration, and lists them unchanged when it does not.
+
 - `ai session-audit` judges a session by the most recent cwd its transcript records that exists
   on this host, not by the first one. A session that moved hosts or was migrated now reads
   `in-slot, resolvable`, and a session whose repo does not exist on this host is skipped, never

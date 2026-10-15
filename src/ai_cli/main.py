@@ -6030,6 +6030,11 @@ def _print_migration(result) -> None:
         "`OLD-agents` container removed; anything kept is named with its reason and the "
         "command exits 1. On a repo whose OLD slot is such a leftover, it does only that "
         "cleanup, even while NEW is live elsewhere.\n\n"
+        "Every Beads issue assigned to exactly OLD and not closed, in each store under the "
+        "projects dir, is re-keyed to NEW with `bd update --if-assignee OLD --force` and a "
+        "comment; a store bd cannot read is named and the command exits 1, and each changed "
+        "store is named as needing its publish step. With --finish it re-keys only when this "
+        "host records that OLD was migrated to NEW.\n\n"
         "\b\nFor a session started outside `ai`, use `ai session-adopt`."
     ),
 )
@@ -6067,6 +6072,9 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
     full one named. Run with ``-r`` on a repo whose OLD slot is such a leftover
     (branch already ``wt/NEW/...``, no transcript), it does only that cleanup, so
     it works while NEW is live in its own slot elsewhere.
+
+    Every run re-keys the Beads issues assigned to OLD to NEW in each store under the
+    projects dir; ``--finish`` does so only when this host records the migration.
     """
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session

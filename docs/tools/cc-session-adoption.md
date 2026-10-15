@@ -475,6 +475,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
 | `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
+| Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox update <id> --assignee NEW --if-assignee OLD --force`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). `--force` takes over OLD's in-progress claim; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing: each store it changed is named `publish needed`, and publishing it is a separate step. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 `ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
@@ -484,6 +485,14 @@ repeat (agent worktrees, branches, containers and markers; launcher state, maps 
 locks; held-output and memory files; the task namespace and resume tree; every hook)
 and refuses while `.worktrees/OLD` is still a registered slot or either session is
 running. `-n` prints its plan with nothing written.
+
+`--finish` also re-keys the Beads issues still assigned to OLD, but only when this
+host holds a record that OLD was migrated to NEW here: a `session-migrations.jsonl`
+row naming the pair, or, for a migration run before that ledger existed, a
+`session-meta-<engine>-NEW.json` or canonical-registry entry binding NEW to the
+slot. An assignee carries no host and other machines share the stores, so without
+such a record the issues are listed as `left alone` with the reason, and nothing
+is changed.
 
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project

@@ -34,6 +34,12 @@ tasks, memory and resume hand-off:
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
   that proves it clean and landed, and kept and named, failing the run, otherwise; and
   every ``<old>-agents`` container left holding a file is named;
+* every Beads issue assigned to exactly ``<old>`` and not closed, in the slot's repo and
+  every directory under ``projects_dir`` with a ``.beads/`` store, re-keyed to ``<new>``
+  through ``bd update --if-assignee`` and given a comment; bd runs with ``--sandbox``, so
+  each changed store is named as needing its publish step, and a store bd cannot read is
+  named and fails the run. Each completed migration is appended to
+  :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
 * whatever the external hooks in ``session-migrate.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -59,6 +65,7 @@ so it has no holder).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -66,6 +73,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config as _config
@@ -662,11 +670,15 @@ def clean_leftovers(
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
     result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
+    beads = _plan_beads(old, _stores(projects_dir, repo_root))
+    _describe_beads(old, new, beads, result)
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, dry_run)
     result.moves += _sweep_containers(_containers(old, repos), live_cwds, dry_run=dry_run)
     _record_kept(leftovers, result)
+    if not dry_run:
+        _apply_beads(old, new, beads, result)
     return result
 
 
@@ -688,6 +700,177 @@ def _clean_other_repos(
     if not result.dry_run:
         result.moves += _sweep_containers(containers, live_cwds, dry_run=False)
     _record_kept(leftovers, result)
+
+
+#: Every completed migration on this host, one ``{"old", "new", ...}`` line each, beside
+#: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
+MIGRATION_LEDGER = "session-migrations.jsonl"
+
+#: Seconds one ``bd`` call may take before its store counts as unreadable.
+_BD_TIMEOUT = 120
+
+
+def _bd(store: Path, *args: str) -> subprocess.CompletedProcess:
+    """``bd --sandbox <args>`` in ``store``, so bd opens that store and never pushes it.
+
+    ``BEADS_DIR`` and ``BEADS_DB`` would point bd at another store whatever its cwd, so they
+    are dropped. Publishing a store is a separate, serial step for whoever runs the migration.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+    return subprocess.run(
+        ["bd", "--sandbox", *args],
+        cwd=store,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=_BD_TIMEOUT,
+        check=False,
+    )
+
+
+@dataclass
+class _Store:
+    """One Beads store's non-closed issues assigned to exactly the old name, or why it could not be read."""
+
+    path: Path
+    issues: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
+    """The slot's repo, then every directory under ``projects_dir``, that holds a ``.beads/`` store."""
+    candidates = [repo_root, *(sorted(c.resolve() for c in projects_dir.iterdir()) if projects_dir.is_dir() else [])]
+    found: list[Path] = []
+    for path in candidates:
+        if path not in found and (path / ".beads").is_dir():
+            found.append(path)
+    return found
+
+
+def _plan_beads(old: str, stores: list[Path]) -> list[_Store]:
+    """Read each store's issues held by ``old``: exactly that name, any status but closed."""
+    planned: list[_Store] = []
+    for path in stores:
+        store = _Store(path)
+        planned.append(store)
+        try:
+            listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            store.error = _one_line(str(exc))
+            continue
+        if listed.returncode != 0:
+            store.error = _one_line(listed.stderr or f"bd exited {listed.returncode}")
+            continue
+        try:
+            rows = json.loads(listed.stdout or "null")
+        except json.JSONDecodeError as exc:
+            store.error = f"bd list printed no JSON ({exc})"
+            continue
+        if not isinstance(rows, list):
+            store.error = "bd list printed no issue list"
+            continue
+        store.issues = [
+            str(row["id"])
+            for row in rows
+            if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
+        ]
+    return planned
+
+
+def _describe_beads(old: str, new: str, stores: list[_Store], result: MigrationResult, *, held: str = "") -> None:
+    """Name every issue the run re-keys (or, with ``held``, leaves and why) and every unreadable store."""
+    for store in stores:
+        if store.error is not None:
+            result.moves.append(PlannedMove("beads store", str(store.path), store.error, "unreadable"))
+            result.warnings.append(
+                f"beads store {store.path} FAILED to read, so its issues on {old} are not known: {store.error}"
+            )
+        for issue in store.issues:
+            action = f"left alone: {held}" if held else "move"
+            result.moves.append(PlannedMove("beads issue", f"{issue} [{old}] ({store.path})", new, action))
+    if held and any(store.issues for store in stores):
+        result.warnings.append(f"beads issues on {old} were NOT re-keyed to {new}: {held}")
+
+
+def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResult) -> None:
+    """Re-key each planned issue through ``bd update``, guarded on its assignee still being ``old``.
+
+    ``--force`` lets the new name take over the old one's in-progress claim; ``--if-assignee``
+    keeps it from touching an issue anyone else picked up meanwhile.
+    """
+    for store in [s for s in stores if s.error is None and s.issues]:
+        changed = 0
+        for issue in store.issues:
+            where = f"beads issue {issue} in {store.path}"
+            try:
+                done = _bd(store.path, "update", issue, "--assignee", new, "--if-assignee", old, "--force")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                result.warnings.append(f"{where} FAILED to re-key: {_one_line(str(exc))}")
+                continue
+            if done.returncode == 13:
+                result.warnings.append(f"{where} was left alone: its assignee is no longer {old}")
+                continue
+            if done.returncode != 0:
+                result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
+                continue
+            changed += 1
+            note = f"Re-keyed from {old} to {new} by `ai session-migrate`."
+            try:
+                noted = _bd(store.path, "comments", "add", issue, note)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                noted = subprocess.CompletedProcess([], 1, "", str(exc))
+            if noted.returncode != 0:
+                result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
+        if changed:
+            result.moves.append(
+                PlannedMove(
+                    "beads store",
+                    str(store.path),
+                    f"{changed} re-keyed, local until the store is published",
+                    "publish needed",
+                )
+            )
+
+
+def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    row = {
+        "time": datetime.now(UTC).isoformat(),
+        "old": old,
+        "new": new,
+        "repo": str(repo_root),
+        "worktree": str(new_wt),
+    }
+    with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
+        ledger.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def _migration_evidence(old: str, new: str, new_wt: Path, state: Path) -> str | None:
+    """What on this host shows ``old`` was migrated to the registered slot ``new_wt``, or ``None``.
+
+    A Beads assignee carries no host, and other machines' sessions share the stores, so a
+    ``--finish`` re-keys only on such a record: this host's migration ledger naming the pair,
+    or, for a migration run before the ledger existed, the launcher's session metadata or the
+    canonical registry binding ``new`` to the slot.
+    """
+    ledger = state / MIGRATION_LEDGER
+    with contextlib.suppress(OSError):
+        for line in ledger.read_text(encoding="utf-8").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict) and (row.get("old"), row.get("new")) == (old, new):
+                    return f"{ledger} records it"
+    for session in _session_variants(new):
+        meta = state / f"session-meta-{session}.json"
+        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError):
+            if Path(json.loads(meta.read_text(encoding="utf-8"))["worktree_dir"]).resolve(strict=False) == new_wt:
+                return f"{meta} binds {new} to {new_wt}"
+    registry = get_canonical_worktree_registry_path()
+    with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, KeyError):
+        for entry in json.loads(registry.read_text(encoding="utf-8"))["worktrees"]:
+            if entry["path"] == str(new_wt) and str(entry.get("session_name") or "").endswith(new):
+                return f"{registry} binds {new} to {new_wt}"
+    return None
 
 
 def migrate_session(
@@ -849,6 +1032,8 @@ def migrate_session(
 
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    beads = _plan_beads(old, _stores(projects, repo_root))
+    _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
@@ -859,6 +1044,7 @@ def migrate_session(
         if not new_wt.exists():
             raise MigrationError(f"git worktree move failed, nothing was migrated: {why}")
         raise MigrationError(f"the worktree moved but is not usable yet, so nothing else was migrated: {why}")
+    _record_migration(state, old, new, repo_root, new_wt)
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:
@@ -898,6 +1084,7 @@ def migrate_session(
         _apply_iterm2(old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _apply_beads(old, new, beads, result)
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)
@@ -974,8 +1161,9 @@ def finish_session(
     held at the time. Runs every planner of :func:`migrate_session` that is keyed by the old
     name and is safe to repeat: agent worktrees, branches, containers and markers; the
     launcher's state, maps and locks; held-output and memory files in the repo's and the
-    slot's project directories; the task namespace and resume tree; and every external hook.
-    Neither session may be running. Raises :class:`MigrationError` before writing anything.
+    slot's project directories; the task namespace and resume tree; every external hook; and
+    the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
+    record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1047,6 +1235,12 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + held_moves + memory_moves + index_moves + lock_moves
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    evidence = _migration_evidence(old, new, new_wt, state)
+    if evidence:
+        moves.append(PlannedMove("migration record", evidence, "", "report"))
+    beads = _plan_beads(old, _stores(projects, repo_root))
+    held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
+    _describe_beads(old, new, beads, result, held=held)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
@@ -1069,6 +1263,8 @@ def finish_session(
         _apply_iterm2(old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    if evidence:
+        _apply_beads(old, new, beads, result)
     return result
 
 
