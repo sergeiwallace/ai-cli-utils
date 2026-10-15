@@ -6025,6 +6025,11 @@ def _print_migration(result) -> None:
     "session-migrate",
     help=(
         "Rename a session already registered in an `ai` slot.\n\n"
+        "Afterwards it cleans up the old name in every other repo: a clean, landed "
+        "`.worktrees/OLD` slot is retired (tips anchored, checkout removed) and an empty "
+        "`OLD-agents` container removed; anything kept is named with its reason and the "
+        "command exits 1. On a repo whose OLD slot is such a leftover, it does only that "
+        "cleanup, even while NEW is live elsewhere.\n\n"
         "\b\nFor a session started outside `ai`, use `ai session-adopt`."
     ),
 )
@@ -6054,6 +6059,14 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
     before the first write, ``--dry-run`` included. ``--finish`` repeats every
     step keyed by the old name for a slot that already moved, so a migration
     run before a step existed, or one a live process held back, completes.
+
+    Every run also cleans up the old name in the other repos under the projects
+    dir: a ``.worktrees/OLD`` slot is retired like ``ai session-retire`` (tips
+    anchored, checkout removed) when it is clean and landed, and kept and named,
+    exiting 1, when it is not; an empty ``OLD-agents`` container is removed and a
+    full one named. Run with ``-r`` on a repo whose OLD slot is such a leftover
+    (branch already ``wt/NEW/...``, no transcript), it does only that cleanup, so
+    it works while NEW is live in its own slot elsewhere.
     """
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session
@@ -6079,7 +6092,7 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
         sys.exit(1)
 
     _print_migration(result)
-    sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
+    sys.exit(1 if result.kept or any("FAILED" in w for w in result.warnings) else 0)
 
 
 def _print_retirement(result) -> None:

@@ -470,10 +470,11 @@ ai c myrepo-box-3                             # resume under the new name
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
-| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; anything still holding a file stays |
+| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`) |
+| A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai session-retire`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/session-retire/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
-| `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it |
+| `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 `ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
@@ -483,6 +484,15 @@ repeat (agent worktrees, branches, containers and markers; launcher state, maps 
 locks; held-output and memory files; the task namespace and resume tree; every hook)
 and refuses while `.worktrees/OLD` is still a registered slot or either session is
 running. `-n` prints its plan with nothing written.
+
+Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
+leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
+directory, and another repo holds the registered `.worktrees/NEW`), the command,
+with or without `--finish`, does only the cleanup: it retires every old-name slot
+proved landed and removes every empty `OLD-agents` container, in every repo, and
+keeps and names the rest. Because it touches nothing NEW could be using, it runs
+while NEW is live in its own slot. It still refuses while a process named OLD runs
+or any process works inside that slot.
 
 Left alone deliberately: the rest of the repo-root memory directory (shared by every session
 of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and

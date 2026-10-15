@@ -343,3 +343,154 @@ def test_given_a_locked_agent_worktree_with_a_submodule_when_migrated_then_it_is
     assert "locked" in out + err
     assert submodule_fleet["leaf"].is_dir()
     _usable(submodule_fleet["leaf"])
+
+
+# A session already migrated OLD -> NEW leaves, in another repo it edited, a slot still named
+# ``.worktrees/OLD``: its branch was renamed with the session's other ``wt/<old>/*`` branches,
+# but nothing moved or retired the folder.
+
+RETIRE_ANCHORS = "refs/preserved/session-retire"
+
+
+def _init_pushed(projects: Path, name: str) -> Path:
+    """A repo under ``projects`` whose ``main`` is pushed to a bare ``origin``."""
+    origin = projects.parent / f"{name}-origin.git"
+    _git("init", "-q", "--bare", "-b", "main", str(origin), cwd=projects.parent)
+    repo = _init(projects / name)
+    _git("config", "maintenance.auto", "false", cwd=repo)
+    _git("config", "gc.auto", "0", cwd=repo)
+    _git("remote", "add", "origin", str(origin), cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+    _git("fetch", "-q", "origin", cwd=repo)
+    return repo
+
+
+@pytest.fixture
+def leftover(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    home = _init_pushed(projects, "homerepo")
+    home_slot = home / ".worktrees" / NEW
+    _git("worktree", "add", "-q", str(home_slot), "-b", f"wt-{NEW}", cwd=home)
+    second = _init_pushed(projects, "secondrepo")
+    slot = second / ".worktrees" / OLD
+    branch = f"wt/{NEW}/fix-thing"
+    _git("worktree", "add", "-q", "--no-track", str(slot), "-b", branch, "origin/main", cwd=second)
+    return {
+        "projects": projects,
+        "home": home,
+        "home_slot": home_slot,
+        "second": second,
+        "slot": slot,
+        "branch": branch,
+        "tip": _git("rev-parse", branch, cwd=second).strip(),
+    }
+
+
+def _run_in(fleet, repo: Path, *flags: str):
+    with (
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
+        patch("ai_cli.config._get_projects_dir", return_value=fleet["projects"]),
+    ):
+        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), *flags])
+
+
+def _registered(repo: Path) -> str:
+    return _git("worktree", "list", "--porcelain", cwd=repo)
+
+
+@pytest.mark.parametrize("flags", [("-y",), ("--finish", "-y")])
+def test_given_a_landed_old_slot_in_another_repo_when_migrated_there_while_new_is_live_then_it_is_retired(
+    leftover, flags
+):
+    _live(leftover["home_slot"], name=NEW)
+
+    code, out, err = _run_in(leftover, leftover["second"], *flags)
+
+    assert code == 0, out + err
+    slot, second = leftover["slot"], leftover["second"]
+    assert not slot.exists()
+    assert f"worktree {slot.as_posix()}\n" not in _registered(second)
+    assert _git("rev-parse", f"{RETIRE_ANCHORS}/{leftover['branch']}", cwd=second).strip() == leftover["tip"]
+    assert _git("rev-parse", leftover["branch"], cwd=second).strip() == leftover["tip"]
+    assert f"leftover slot: {slot} (removed" in out
+    assert leftover["home_slot"].is_dir()
+
+
+def test_given_a_landed_old_slot_in_another_repo_when_dry_run_then_its_removal_is_listed_and_nothing_changes(
+    leftover,
+):
+    _live(leftover["home_slot"], name=NEW)
+    before = snapshot_tree(leftover["projects"])
+
+    code, out, err = _run_in(leftover, leftover["second"], "-n")
+
+    assert code == 0, out + err
+    assert f"leftover slot: {leftover['slot']} (would be removed" in out
+    assert snapshot_tree(leftover["projects"]) == before
+
+
+def test_given_a_landed_old_slot_in_another_repo_when_the_home_slot_is_migrated_then_it_is_retired(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    home = _init_pushed(projects, "homerepo")
+    _git("worktree", "add", "-q", str(home / ".worktrees" / OLD), "-b", f"wt-{OLD}", cwd=home)
+    second = _init_pushed(projects, "secondrepo")
+    slot = second / ".worktrees" / OLD
+    _git("worktree", "add", "-q", "--no-track", str(slot), "-b", f"wt/{OLD}/fix-thing", "origin/main", cwd=second)
+    fleet = {"projects": projects}
+
+    code, out, err = _run_in(fleet, home, "-y")
+
+    assert code == 0, out + err
+    assert (home / ".worktrees" / NEW).is_dir()
+    assert not slot.exists()
+    assert _git("rev-parse", f"{RETIRE_ANCHORS}/wt/{NEW}/fix-thing", cwd=second).strip()
+    assert f"leftover slot: {slot} (removed" in out
+
+
+@pytest.mark.parametrize("kind", ["uncommitted", "unlanded"])
+def test_given_an_old_slot_holding_unlanded_work_when_migrated_then_it_is_kept_named_and_exits_1(leftover, kind):
+    slot = leftover["slot"]
+    (slot / "wip.txt").write_text("not committed\n")
+    if kind == "unlanded":
+        _git("add", "wip.txt", cwd=slot)
+        _git("commit", "-qm", "local only", cwd=slot)
+    _live(leftover["home_slot"], name=NEW)
+    before = snapshot_tree(slot)
+
+    code, out, err = _run_in(leftover, leftover["second"], "-y")
+
+    assert code == 1, out + err
+    assert snapshot_tree(slot) == before
+    assert f"worktree {slot.as_posix()}\n" in _registered(leftover["second"])
+    assert f"leftover slot: {slot} (kept:" in out
+    assert ("untracked: wip.txt" if kind == "uncommitted" else "not in") in out + err
+
+
+def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_go_and_full_ones_are_named(leftover):
+    empty = leftover["home"] / ".worktrees" / f"{OLD}-agents"
+    (empty / "nested").mkdir(parents=True)
+    full = leftover["second"] / ".worktrees" / f"{OLD}-agents"
+    full.mkdir(parents=True)
+    (full / "notes.txt").write_text("keep me\n")
+    _live(leftover["home_slot"], name=NEW)
+
+    code, out, err = _run_in(leftover, leftover["second"], "-y")
+
+    assert code == 0, out + err
+    assert not empty.exists()
+    assert f"agent container: {empty} (removed: empty)" in out
+    assert (full / "notes.txt").read_text() == "keep me\n"
+    assert f"agent container: {full} (kept: holds notes.txt)" in out
+
+
+def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_then_it_refuses(leftover):
+    _live(leftover["slot"] / "src", name=NEW)
+    before = snapshot_tree(leftover["second"])
+
+    code, out, err = _run_in(leftover, leftover["second"], "-y")
+
+    assert code == 1
+    assert "still running" in out + err
+    assert snapshot_tree(leftover["second"]) == before
