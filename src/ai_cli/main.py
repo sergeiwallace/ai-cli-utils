@@ -3618,8 +3618,8 @@ def _do_session_launch(
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
     if is_remote:
-        # A running pane already owns its cwd. Resolve the same target used below
-        # before requiring a checkout that only a fresh launch needs.
+        # Resolve the same target used below before requiring the project selected
+        # for a fresh launch. Reattach must use the existing session's checkout.
         remote_session_exists = False
         if name and not bare:
             try:
@@ -3633,6 +3633,42 @@ def _do_session_launch(
                 reporter.error("session", str(exc))
                 sys.exit(1)
             remote_session_exists = remote_session_id in _session._tmux_session_names()
+        if remote_session_exists:
+            from .canonical_worktrees import (
+                CanonicalWorktreeRegistryError,
+                _load_registry,
+                get_canonical_worktree_registry_path,
+            )
+
+            try:
+                # The public path-only reader cannot identify a session. Reuse the
+                # validated loader rather than parsing a second registry format.
+                entries = _load_registry(get_canonical_worktree_registry_path())["worktrees"]
+                session_paths = {
+                    Path(entry["path"])
+                    for entry in entries
+                    if entry.get("session_name") == remote_session_id and entry.get("engine") == engine
+                }
+                if len(session_paths) > 1:
+                    raise CanonicalWorktreeRegistryError(f"multiple canonical worktrees for {remote_session_id}")
+                if session_paths:
+                    reattach_dir = session_paths.pop()
+                else:
+                    # Sessions launched without worktrees (or before registration
+                    # was introduced) still have a tmux-owned pane directory.
+                    result = subprocess.run(
+                        ["tmux", "display-message", "-p", "-t", f"={remote_session_id}:", "#{pane_current_path}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if result.returncode != 0 or not result.stdout.strip():
+                        raise CanonicalWorktreeRegistryError(f"cannot resolve directory for {remote_session_id}")
+                    reattach_dir = Path(result.stdout.strip())
+                os.chdir(reattach_dir)
+            except (CanonicalWorktreeRegistryError, OSError) as exc:
+                reporter.error("worktree", f"cannot enter existing session directory: {exc}")
+                sys.exit(1)
         if not remote_session_exists:
             aliases = _config.get_project_aliases()
             raw_project, project_source = _resolve_remote_project(project, config)

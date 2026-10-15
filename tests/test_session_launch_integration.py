@@ -25,6 +25,7 @@ import pytest
 from conftest import tmux_runnable
 
 from ai_cli import launch_reporter, tmux_ownership, tmux_setup
+from ai_cli.canonical_worktrees import register_canonical_worktree
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -237,6 +238,8 @@ def patched_subprocess(tmux_server, tmp_path):
             return _OK()
 
         if head == "git":
+            if getattr(server, "_real_git", False):
+                return real_subprocess_run(cmd, *args, **kwargs)
             return _OK()
 
         # Pass anything else through to the REAL subprocess.run, captured before
@@ -429,12 +432,14 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
 
 
 @pytest.mark.parametrize("name", ["2", "c-r-myproject-tst-2"])
-def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_without_chdir(
+def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_in_own_directory(
     patched_subprocess, tmp_path, capsys, name
 ):
     server = patched_subprocess
     target = "c-r-myproject-tst-2"
-    existing = server.new_session(session_name=target, detach=True, window_command=_LIVE_CHILD_COMMAND)
+    existing = server.new_session(
+        session_name=target, detach=True, start_directory=str(tmp_path), window_command=_LIVE_CHILD_COMMAND
+    )
     before_id = existing.id
     absent = tmp_path / "projects" / "otherproject"
     kwargs = _base_launch_kwargs(name=name)
@@ -460,7 +465,7 @@ def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_with
 
     _assert_launch_reached_exec(server, capsys)
     assert exc_info.value.code == 0
-    chdir.assert_not_called()
+    chdir.assert_called_once_with(tmp_path)
     assert {s.name: s.id for s in server.sessions} == {target: before_id}
     assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
     assert server._execvp_calls == [("tmux", ["tmux", "attach-session", "-d", "-t", target])]
@@ -490,6 +495,64 @@ def test_given_fresh_remote_session_when_project_dir_is_absent_then_refuses_befo
     assert not server._execvp_calls
     assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
     assert not server.sessions
+
+
+@pytest.mark.parametrize("project_exists", [False, True])
+def test_given_live_remote_worktree_when_launched_from_elsewhere_then_reuses_own_checkout(
+    patched_subprocess, tmp_path, monkeypatch, capsys, project_exists
+):
+    server = patched_subprocess
+    server._real_git = True
+    repo = tmp_path / "myproject"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+
+    git("init", "-q")
+    git("-c", "user.name=user", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "initial")
+    worktree = repo / ".worktrees" / "myproject-tst-2"
+    git("worktree", "add", "--detach", str(worktree))
+    target = "c-r-myproject-tst-2"
+    existing = server.new_session(
+        session_name=target, detach=True, start_directory=str(worktree), window_command=_LIVE_CHILD_COMMAND
+    )
+    before_id = existing.id
+    register_canonical_worktree(worktree, engine="c", session_name=target)
+    unrelated = tmp_path / "elsewhere"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    selected = tmp_path / "otherproject"
+    if project_exists:
+        selected.mkdir()
+    kwargs = _base_launch_kwargs(name="2")
+    kwargs.update(is_remote=True, project="otherproject", no_worktree=False, config={"worktree": {"enabled": True}})
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config._find_project_dir", return_value=selected),
+        patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**kwargs)
+
+    _assert_launch_reached_exec(server, capsys)
+    assert exc_info.value.code == 0
+    assert {s.name: s.id for s in server.sessions} == {target: before_id}
+    assert server._execvp_calls == [("tmux", ["tmux", "attach-session", "-d", "-t", target])]
+    assert [
+        entry for entry in git("worktree", "list", "--porcelain").stdout.splitlines() if entry.startswith("worktree ")
+    ] == [f"worktree {repo}", f"worktree {worktree}"]
+    assert not (unrelated / ".worktrees").exists()
+    assert not (selected / ".worktrees").exists()
 
 
 def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
