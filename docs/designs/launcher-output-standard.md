@@ -1094,6 +1094,10 @@ session  worktree  terminal  tmux  direnv  mode  handoff  ensure  reload  config
 cleanup  exit  general
 ```
 
+`host` (AI-CLI-x5vn) came later: one line per launch, after the remote target resolves, naming the
+machine the launcher runs on and the one the session will run on, for example
+`[launch] host: launcher on host-a; session on box (box.example.com, remote)`.
+
 The other `ai` commands added one operation per step they report. For example, `ai sync`
 pushes, pulls, stages, translates, repairs and resolves, and the daemons start, stop,
 report status and watch:

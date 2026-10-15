@@ -36,7 +36,7 @@ pattern = '^[a-z][a-z0-9-]*$'
 # Every operation the package emits. A user's table may add operations but not remove
 # these. The launch phases come first, then the operations of the other commands.
 vocabulary = [
-    "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
+    "start", "request", "host", "install", "update", "reexec", "remote", "probe", "transport",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
     "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
