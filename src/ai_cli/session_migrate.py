@@ -798,15 +798,16 @@ def _describe_beads(old: str, new: str, stores: list[_Store], result: MigrationR
 def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResult) -> None:
     """Re-key each planned issue through ``bd update``, guarded on its assignee still being ``old``.
 
-    ``--force`` lets the new name take over the old one's in-progress claim; ``--if-assignee``
-    keeps it from touching an issue anyone else picked up meanwhile.
+    bd runs as ``--actor <old>``: the holder hands its own claim over, so an in-progress issue
+    moves without ``--force`` (which bd refuses beside ``--if-assignee`` anyway), and
+    ``--if-assignee`` keeps it from touching an issue anyone else picked up meanwhile.
     """
     for store in [s for s in stores if s.error is None and s.issues]:
         changed = 0
         for issue in store.issues:
             where = f"beads issue {issue} in {store.path}"
             try:
-                done = _bd(store.path, "update", issue, "--assignee", new, "--if-assignee", old, "--force")
+                done = _bd(store.path, "--actor", old, "update", issue, "--assignee", new, "--if-assignee", old)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 result.warnings.append(f"{where} FAILED to re-key: {_one_line(str(exc))}")
                 continue

@@ -650,6 +650,9 @@ if data["fail"].get(store) == "error":
 if data["fail"].get(store) == "hang":
     time.sleep(20)
 args = [a for a in sys.argv[1:] if a != "--sandbox"]
+actor = "tester"
+if args[0] == "--actor":
+    actor, args = args[1], args[2:]
 issues = data["stores"][store]
 
 
@@ -661,7 +664,12 @@ if args[0] == "list":
     # Looser than an exact match on purpose: the caller must check the assignee itself.
     print(json.dumps([i for i in issues if opt("--assignee") in (i.get("assignee") or "")]))
 elif args[0] == "update":
+    # The two refusals real bd makes (bd 1.3.0).
+    if "--force" in args and "--if-assignee" in args:
+        sys.exit("Error: if any flags in the group [force if-assignee] are set none of the others can be")
     issue = next(i for i in issues if i["id"] == args[1])
+    if issue["status"] == "in_progress" and issue["assignee"] != actor and "--force" not in args:
+        sys.exit(f"Error: held by {issue['assignee']}; coordinate with the holder")
     if issue["assignee"] != opt("--if-assignee"):
         sys.exit(13)
     issue["assignee"] = opt("--assignee")
@@ -736,7 +744,7 @@ def test_given_closed_and_similarly_named_issues_when_migrated_then_neither_is_r
     touched = {argv[argv.index("update") + 1] for argv in _bd_writes(stores) if "update" in argv}
     assert touched == {"TST-1", "TST-2", "WS-1"}
     update = next(argv for argv in _bd_writes(stores) if "update" in argv)
-    assert update == ["--sandbox", "update", "TST-1", "--assignee", NEW, "--if-assignee", OLD, "--force"]
+    assert update == ["--sandbox", "--actor", OLD, "update", "TST-1", "--assignee", NEW, "--if-assignee", OLD]
 
 
 def test_given_issues_assigned_to_old_when_dry_run_then_each_is_listed_per_store_and_nothing_is_written(stores):
