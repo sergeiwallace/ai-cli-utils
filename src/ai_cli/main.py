@@ -6039,21 +6039,30 @@ def _print_migration(result) -> None:
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Print every planned move without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
-def cmd_session_migrate(old, new, repo, dry_run, yes):
+@click.option(
+    "--finish",
+    is_flag=True,
+    help="The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included",
+)
+def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
     Renames a session already registered in an ``ai c`` slot: worktree, branch,
     transcript, tasks, memory and resume state. One started outside ``ai`` is
     registered with ``ai session-adopt`` instead. The session must not be
     running: exit it and end its tmux session first. Every refusal is checked
-    before the first write, ``--dry-run`` included.
+    before the first write, ``--dry-run`` included. ``--finish`` repeats every
+    step keyed by the old name for a slot that already moved, so a migration
+    run before a step existed, or one a live process held back, completes.
     """
     from .session_adopt import AdoptionError
-    from .session_migrate import migrate_session
+    from .session_migrate import finish_session, migrate_session
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
 
     def _run(preview: bool):
+        if finish:
+            return finish_session(repo_root, old, new, dry_run=preview)
         return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
 
     try:

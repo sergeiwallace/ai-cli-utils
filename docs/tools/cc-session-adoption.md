@@ -470,10 +470,21 @@ ai c myrepo-box-3                             # resume under the new name
 | `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
+| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; anything still holding a file stays |
+| `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
+| `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
+| `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
-Left alone deliberately: `ai-watcher-lock-<engine>-OLD` (a lock, and the session
-is not running), the rest of the repo-root memory directory (shared by every session
+`ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
+to NEW: a migration run before one of these steps existed, or one whose agent worktree
+a live process held. It repeats every step keyed by the old name that is safe to
+repeat (agent worktrees, branches, containers and markers; launcher state, maps and
+locks; held-output and memory files; the task namespace and resume tree; every hook)
+and refuses while `.worktrees/OLD` is still a registered slot or either session is
+running. `-n` prints its plan with nothing written.
+
+Left alone deliberately: the rest of the repo-root memory directory (shared by every session
 of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
