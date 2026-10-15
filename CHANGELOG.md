@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai session-migrate` now cleans up the old name in every other repo once the session has
+  moved: a `.worktrees/OLD` slot that is clean and landed is retired the way
+  `ai session-retire` retires one (tips anchored, checkout removed), an empty `OLD-agents`
+  container is removed, and anything kept is named with its reason and makes the command
+  exit 1. Run with `-r` on a repo whose OLD slot is such a leftover, it does only that
+  cleanup, so it no longer refuses while NEW is live in its own slot elsewhere.
 - `ai session-migrate OLD NEW --finish` carries or removes every leftover still named OLD for a
   slot that already moved to NEW, hooks included, so a migration run before a step existed
   completes without hand steps.

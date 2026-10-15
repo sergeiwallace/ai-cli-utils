@@ -30,6 +30,10 @@ tasks, memory and resume hand-off:
 * the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` and its
   ``wt/<old>/*`` branches in every repo under ``projects_dir``
   (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
+* every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
+  :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
+  that proves it clean and landed, and kept and named, failing the run, otherwise; and
+  every ``<old>-agents`` container left holding a file is named;
 * whatever the external hooks in ``session-migrate.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -39,6 +43,14 @@ must be a registered worktree, nothing may already exist at the new slot or its
 project directory, no nested worktree may live inside the old slot, and the
 session must not be running -- neither a Claude Code process nor the tmux session
 whose wrapper would restart it.
+
+A slot that is a migrated session's leftover is cleaned up instead of migrated: its
+branch already carries the ``wt/<new>/`` prefix, it has no Claude Code project
+directory, and another repo holds the registered ``.worktrees/<new>``. That run, with
+or without ``--finish``, touches only the old-name slots and empty ``<old>-agents``
+containers in every repo (:func:`clean_leftovers`), so it proceeds while ``<new>`` is
+live elsewhere. It still refuses while a process named ``<old>`` runs or any process
+works inside the slot.
 
 Nothing is overwritten. A destination that already exists is reported and left
 alone, and a lock is never carried to the new name (the session is not running,
@@ -137,6 +149,8 @@ class MigrationResult:
     resolved: Path | None = None
     dry_run: bool = False
     warnings: list[str] = field(default_factory=list)
+    #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
+    kept: list[str] = field(default_factory=list)
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -463,6 +477,219 @@ def _plan_iterm2(old: str) -> list[PlannedMove]:
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
 
 
+@dataclass
+class _Leftover:
+    """A slot ``<repo>/.worktrees/<old>`` outside the session's home, and whether it may go."""
+
+    repo: Path
+    slot: Path
+    kept: str | None = None
+
+
+def _one_line(reason: str) -> str:
+    reason = re.sub(r":\s*\n\s*", ": ", reason.strip())
+    return "; ".join(part.strip() for part in reason.splitlines() if part.strip())
+
+
+def _registered_slot(repo: Path, name: str) -> Path | None:
+    from .session import _registered_worktree_at, registered_worktrees
+
+    return _registered_worktree_at(repo / ".worktrees" / name, registered_worktrees(repo))
+
+
+def _migrated_home(repo_root: Path, old_wt: Path, new: str, home: Path, projects_dir: Path) -> Path | None:
+    """The registered ``.worktrees/<new>`` of another repo when ``old_wt`` is a migrated session's leftover.
+
+    It is one when its checked-out branch already carries the new session's ``wt/<new>/``
+    prefix, so the migration has reached it. A slot with a Claude Code project directory is a
+    session home in its own right, so it is never a leftover: its transcripts move only with
+    a full migration.
+    """
+    from .session import _current_branch
+
+    if not (_current_branch(old_wt) or "").startswith(f"wt/{new}/") or cc_project_dir(old_wt, home).is_dir():
+        return None
+    for repo in _agents._repos(projects_dir, repo_root)[1:]:
+        found = _registered_slot(repo, new)
+        if found is not None:
+            return found
+    return None
+
+
+def _plan_leftovers(
+    old: str,
+    new: str,
+    repos: list[Path],
+    *,
+    home: Path,
+    state: Path,
+    proc_dir: Path | None,
+    tmux: list[str],
+    strict: Path | None = None,
+) -> list[_Leftover]:
+    """Every ``<repo>/.worktrees/<old>`` in ``repos``, each proved removable or kept with its reason.
+
+    The proof is ``ai session-retire``'s own, run as a preview: no live owner, nothing
+    uncommitted or untracked, and the checked-out commit contained in, or landed on, its
+    upstream or ``origin/main``. A live refusal for ``strict`` is raised instead of kept.
+    """
+    from .session_retire import RetireError, retire_session
+
+    found: list[_Leftover] = []
+    for repo in repos:
+        slot = _registered_slot(repo, old)
+        if slot is None:
+            continue
+        item = _Leftover(repo, slot)
+        found.append(item)
+        if cc_project_dir(slot, home).is_dir():
+            item.kept = (
+                f"it has a Claude Code project directory, so it is a session home; carry it with "
+                f"`ai session-migrate {old} {new} -r {repo}`"
+            )
+            continue
+        try:
+            retire_session(
+                repo, old, dry_run=True, claude_home=home, state_dir=state, proc_dir=proc_dir, tmux_names=lambda: tmux
+            )
+        except LiveSessionError as exc:
+            if slot == strict:
+                raise
+            item.kept = _one_line(str(exc))
+        except RetireError as exc:
+            item.kept = _one_line(str(exc))
+    return found
+
+
+def _describe_leftovers(leftovers: list[_Leftover], dry_run: bool) -> list[PlannedMove]:
+    verb = "would be removed" if dry_run else "removed"
+    return [
+        PlannedMove(
+            "leftover slot",
+            str(item.slot),
+            item.kept or "tips anchored under refs/preserved/session-retire/",
+            "kept" if item.kept else verb,
+        )
+        for item in leftovers
+    ]
+
+
+def _apply_leftovers(
+    old: str, leftovers: list[_Leftover], *, home: Path, state: Path, proc_dir: Path | None, tmux: list[str]
+) -> list[str]:
+    """Retire each removable leftover; one whose retirement now refuses is kept with that reason."""
+    from .session_retire import RetireError, retire_session
+
+    warnings: list[str] = []
+    for item in [i for i in leftovers if i.kept is None]:
+        try:
+            done = retire_session(
+                item.repo,
+                old,
+                claude_home=home,
+                state_dir=state,
+                proc_dir=proc_dir,
+                tmux_names=lambda: tmux,
+            )
+        except (RetireError, LiveSessionError) as exc:
+            item.kept = _one_line(str(exc))
+            continue
+        warnings += done.warnings
+    return warnings
+
+
+def _record_kept(leftovers: list[_Leftover], result: MigrationResult) -> None:
+    for item in leftovers:
+        if item.kept:
+            result.kept.append(f"{item.slot}: {item.kept}")
+            result.warnings.append(f"leftover slot {item.slot} was NOT removed: {item.kept}")
+
+
+def _containers(old: str, repos: list[Path]) -> list[Path]:
+    return [c for c in ((r / ".worktrees" / f"{old}-agents").resolve() for r in repos) if c.is_dir()]
+
+
+def _holds_a_file(path: Path) -> bool:
+    if path.is_symlink() or not path.is_dir():
+        return True
+    return any(_holds_a_file(child) for child in path.iterdir())
+
+
+def _sweep_containers(containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool) -> list[PlannedMove]:
+    """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
+
+    A container already gone is not listed: the agent plan's own line covers it.
+    """
+    moves: list[PlannedMove] = []
+    for container in [c for c in containers if c.is_dir()]:
+        holder = _agents._holder(container, live_cwds)
+        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child))
+        if holder is not None:
+            moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
+        elif held:
+            moves.append(PlannedMove("agent container", str(container), f"holds {', '.join(held)}", "kept"))
+        elif dry_run:
+            moves.append(PlannedMove("agent container", str(container), "empty", "would be removed"))
+        else:
+            _agents._remove_if_empty(container)
+            moves.append(PlannedMove("agent container", str(container), "empty", "removed"))
+    return moves
+
+
+def clean_leftovers(
+    repo_root: Path,
+    old: str,
+    new: str,
+    old_wt: Path,
+    home_slot: Path,
+    *,
+    dry_run: bool,
+    home: Path,
+    state: Path,
+    proc_dir: Path | None,
+    tmux: list[str],
+    projects_dir: Path,
+) -> MigrationResult:
+    """Clean up after a session already migrated to ``home_slot``: ``old_wt`` is one of its leftovers.
+
+    Touches only what a live ``new`` session elsewhere cannot be relying on: every old-name slot
+    proved landed (retired, tips anchored) and every empty ``<old>-agents`` container. A live
+    process named ``old`` or working in ``old_wt`` refuses the run, as for a full migration.
+    """
+    _refuse_live(old, old, old_wt, old_wt, home, proc_dir, tmux, verb="cleaned up")
+    repos = _agents._repos(projects_dir, repo_root)
+    leftovers = _plan_leftovers(old, new, repos, home=home, state=state, proc_dir=proc_dir, tmux=tmux, strict=old_wt)
+    live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
+    result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
+    result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
+    if not dry_run:
+        result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
+    result.moves += _describe_leftovers(leftovers, dry_run)
+    result.moves += _sweep_containers(_containers(old, repos), live_cwds, dry_run=dry_run)
+    _record_kept(leftovers, result)
+    return result
+
+
+def _clean_other_repos(
+    result: MigrationResult,
+    leftovers: list[_Leftover],
+    containers: list[Path],
+    live_cwds: list[tuple[int, Path]],
+    *,
+    home: Path,
+    state: Path,
+    proc_dir: Path | None,
+    tmux: list[str],
+) -> None:
+    """After a home migration: retire the other repos' old-name slots and report every container's fate."""
+    if not result.dry_run:
+        result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
+    result.moves += _describe_leftovers(leftovers, result.dry_run)
+    if not result.dry_run:
+        result.moves += _sweep_containers(containers, live_cwds, dry_run=False)
+    _record_kept(leftovers, result)
+
+
 def migrate_session(
     repo_root: Path,
     old: str,
@@ -512,12 +739,32 @@ def migrate_session(
             f"{old_wt} contains other registered worktrees ({', '.join(str(w) for w in nested)}); moving it "
             f"would orphan their registrations. Move each out with `git worktree move` first."
         )
-    _refuse_live(old, new, old_wt, new_wt, home, proc_dir, (tmux_names or _tmux_names)())
+    projects = (projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve()
+    tmux = (tmux_names or _tmux_names)()
+    home_slot = _migrated_home(repo_root, old_wt, new, home, projects)
+    if home_slot is not None:
+        return clean_leftovers(
+            repo_root,
+            old,
+            new,
+            old_wt,
+            home_slot,
+            dry_run=dry_run,
+            home=home,
+            state=state,
+            proc_dir=proc_dir,
+            tmux=tmux,
+            projects_dir=projects,
+        )
+    _refuse_live(old, new, old_wt, new_wt, home, proc_dir, tmux)
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
+    leftovers = _plan_leftovers(
+        old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
+    )
     agent_plan = _agents.plan_agents(
         old,
         new,
-        projects_dir=(projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve(),
+        projects_dir=projects,
         slot_repo=repo_root,
         old_wt=old_wt,
         new_wt=new_wt,
@@ -602,7 +849,9 @@ def migrate_session(
 
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
+        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
     moved, why = move_worktree(repo_root, old_wt, new_wt)
@@ -648,6 +897,7 @@ def migrate_session(
     if iterm2_moves:
         _apply_iterm2(old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
+    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)
@@ -733,22 +983,42 @@ def finish_session(
     home = claude_home if claude_home is not None else Path.home() / ".claude"
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
     registered = registered_worktrees(repo_root)
+    projects = (projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve()
+    tmux = (tmux_names or _tmux_names)()
     old_wt = repo_root / ".worktrees" / old
-    if _registered_worktree_at(old_wt, registered) is not None:
-        raise MigrationError(f"{old_wt} is still a registered slot -- migrate it without --finish first")
+    still = _registered_worktree_at(old_wt, registered)
+    if still is not None:
+        home_slot = _migrated_home(repo_root, still, new, home, projects)
+        if home_slot is None:
+            raise MigrationError(f"{old_wt} is still a registered slot -- migrate it without --finish first")
+        return clean_leftovers(
+            repo_root,
+            old,
+            new,
+            still,
+            home_slot,
+            dry_run=dry_run,
+            home=home,
+            state=state,
+            proc_dir=proc_dir,
+            tmux=tmux,
+            projects_dir=projects,
+        )
     new_wt = _registered_worktree_at(repo_root / ".worktrees" / new, registered)
     if new_wt is None:
         raise MigrationError(f"{repo_root / '.worktrees' / new} is not a registered slot -- nothing to finish")
-    tmux = (tmux_names or _tmux_names)()
     _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
     hosting = sorted(set(tmux) & set(_session_variants(new)))
     if hosting:
         raise LiveSessionError(f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing")
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
+    leftovers = _plan_leftovers(
+        old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
+    )
     agent_plan = _agents.plan_agents(
         old,
         new,
-        projects_dir=(projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve(),
+        projects_dir=projects,
         slot_repo=repo_root,
         old_wt=old_wt.resolve(strict=False),
         new_wt=new_wt,
@@ -777,7 +1047,9 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + held_moves + memory_moves + index_moves + lock_moves
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
+        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -796,6 +1068,7 @@ def finish_session(
     if iterm2_moves:
         _apply_iterm2(old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
+    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     return result
 
 
