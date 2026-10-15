@@ -884,3 +884,158 @@ def test_given_no_ledger_row_when_re_keyed_beads_only_then_nothing_is_written(st
     assert stores["db"].read_text(encoding="utf-8") == before
     assert _bd_writes(stores) == []
     assert f"beads issues on {OLD} were NOT re-keyed to {NEW}" in err
+
+
+# -- AI-CLI-2oes: the chief's registration, launch logs and resume evidence -----------------
+
+LAUNCH_SUFFIX = "20261012T192719.410821Z-4063408.log"
+EVIDENCE_ID = "6caa27dd582811e0"
+
+
+def _chief_home() -> Path:
+    return Path(os.environ["XDG_STATE_HOME"]) / "firstmate" / "chief-of-staff" / "m-test"
+
+
+def _seed_chief(name: str = OLD, tmux_target: str | None = None) -> dict[str, Path]:
+    """A chief registration naming ``name``, as `ai cos` writes it."""
+    home = _chief_home()
+    (home / "state").mkdir(parents=True, exist_ok=True)
+    registration = home / "state" / "chief-session.json"
+    registration.write_text(
+        json.dumps(
+            {
+                "native_agent_name": name,
+                "session": f"{name}@host",
+                "tmux_target": tmux_target or f"c-r-{name}",
+                "machine_name": "host",
+                "chief_generation": 2,
+            }
+        )
+    )
+    registry = home / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "chief_of_staff_session": f"{name}@host",
+                "chief_generation": 2,
+                "chief_routes": {"native_agent_name": name, "route_revision": 2},
+                "vp_sessions": [{"vp_id": "other-1@host"}],
+            }
+        )
+    )
+    return {"registration": registration, "registry": registry}
+
+
+def _seed_logs_and_evidence(slot) -> dict[str, Path]:
+    logs = slot["state"] / "launch-logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    seeded = {
+        "bare": logs / f"{OLD}-{LAUNCH_SUFFIX}",
+        "tmux": logs / f"c-r-{OLD}-{LAUNCH_SUFFIX}",
+        "longer": logs / f"{OLD}0-{LAUNCH_SUFFIX}",
+        "slot": logs / f"3-{LAUNCH_SUFFIX}",
+    }
+    evidence = slot["claude"] / "resume" / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    seeded["evidence"] = evidence / f"{OLD}-{EVIDENCE_ID}-stage-verify-mismatch.txt"
+    seeded["not-an-id"] = evidence / f"{OLD}-generic-dragon.txt"
+    for path in seeded.values():
+        path.write_text("x\n")
+    return seeded
+
+
+def _assert_chief_names_new(chief: dict[str, Path]) -> None:
+    registration = json.loads(chief["registration"].read_text(encoding="utf-8"))
+    assert (registration["native_agent_name"], registration["session"], registration["tmux_target"]) == (
+        NEW,
+        f"{NEW}@host",
+        f"c-r-{NEW}",
+    )
+    assert registration["chief_generation"] == 2
+    registry = json.loads(chief["registry"].read_text(encoding="utf-8"))
+    assert registry["chief_of_staff_session"] == f"{NEW}@host"
+    assert registry["chief_routes"] == {"native_agent_name": NEW, "route_revision": 2}
+    assert registry["vp_sessions"] == [{"vp_id": "other-1@host"}]
+
+
+def _assert_logs_and_evidence_follow_new(slot, seeded: dict[str, Path]) -> None:
+    logs = slot["state"] / "launch-logs"
+    assert (logs / f"{NEW}-{LAUNCH_SUFFIX}").is_file() and not seeded["bare"].exists()
+    assert (logs / f"c-r-{NEW}-{LAUNCH_SUFFIX}").is_file() and not seeded["tmux"].exists()
+    assert seeded["longer"].is_file(), "another session's log"
+    assert seeded["slot"].is_file(), "a slot-number launch names no session"
+    evidence = seeded["evidence"].with_name(f"{NEW}-{EVIDENCE_ID}-stage-verify-mismatch.txt")
+    assert evidence.is_file() and not seeded["evidence"].exists()
+    assert seeded["not-an-id"].is_file()
+
+
+def test_given_the_chief_registration_names_old_when_migrated_then_it_and_the_registry_name_new(slot):
+    chief = _seed_chief()
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    _assert_chief_names_new(chief)
+    assert f"chief registration: {chief['registration']}" in out
+
+
+def test_given_launch_logs_and_evidence_keyed_by_old_when_migrated_then_they_follow_new(slot):
+    seeded = _seed_logs_and_evidence(slot)
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    _assert_logs_and_evidence_follow_new(slot, seeded)
+    assert f"launch log: {seeded['bare']} -> " in out
+    assert f"evidence/{seeded['evidence'].name} -> " in out
+
+
+def test_given_the_new_classes_when_dry_run_then_each_is_listed_and_nothing_changes(slot):
+    chief = _seed_chief()
+    seeded = _seed_logs_and_evidence(slot)
+    before = _everything(slot)
+
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+
+    assert code == 0, out + err
+    assert _everything(slot) == before
+    assert f"chief registration: {chief['registration']} (rewrite: {OLD} -> {NEW})" in out
+    assert f"launch log: {seeded['tmux']} -> " in out
+    assert f"evidence/{seeded['evidence'].name} -> " in out
+
+
+def test_given_a_migration_run_before_these_classes_when_finished_then_each_follows_new(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    chief = _seed_chief()
+    seeded = _seed_logs_and_evidence(slot)
+
+    code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    _assert_chief_names_new(chief)
+    _assert_logs_and_evidence_follow_new(slot, seeded)
+
+
+def test_given_an_unreadable_chief_registration_when_migrating_then_it_is_named_and_nothing_moves(slot):
+    chief = _seed_chief()
+    chief["registration"].write_text("{not json")
+    before = _everything(slot)
+
+    code, _out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 1
+    assert str(chief["registration"]) in err
+    assert _everything(slot) == before
+
+
+def test_given_the_chief_registration_targets_a_live_tmux_session_when_migrated_then_it_is_left_and_named(slot):
+    chief = _seed_chief(tmux_target="cos-chief")
+    before = chief["registration"].read_bytes()
+
+    code, out, err = _migrate(slot["repo"], "-y", tmux=["cos-chief"])
+
+    assert code == 1, "a claim left for --finish fails the run"
+    assert chief["registration"].read_bytes() == before
+    assert "tmux target cos-chief is live" in out + err
