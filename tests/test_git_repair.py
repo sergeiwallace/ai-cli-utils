@@ -260,7 +260,10 @@ def _make_remote(path):
 
 
 def _clone(remote, local):
-    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True)
+    # --no-local: a path clone copies the source's objects/ file by file, and on a macOS
+    # runner it died with ENOENT on a `.tmp-*-pack-*.rev` that vanished from the source
+    # mid-copy (AI-CLI-99pc). The pack protocol reads no transient file.
+    subprocess.run(["git", "clone", "-q", "--no-local", str(remote), str(local)], check=True)
     _git(local, "config", "user.email", "t@t")
     _git(local, "config", "user.name", "t")
     return local
