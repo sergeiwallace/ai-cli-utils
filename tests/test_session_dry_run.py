@@ -43,6 +43,12 @@ def test_dry_run_is_a_declared_option_not_an_engine_passthrough():
     assert "--dry-run" in _declared_option_names()
 
 
+def test_given_the_session_options_when_declared_then_dry_run_has_a_short_form():
+    """Every option has a short and a long form, and an undeclared `-d` would be
+    forwarded to the engine rather than rejected, so only its declaration proves it."""
+    assert "-d" in _declared_option_names()
+
+
 def test_dry_run_appears_in_help_so_it_is_discoverable():
     code, out, _err = run_cli(["ai", "c", "--help"])
     assert code == 0

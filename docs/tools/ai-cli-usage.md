@@ -80,7 +80,7 @@ Behaviour is split across focused modules so `main.py` stays thin:
 ### ai c
 
 ```bash
-ai c [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
+ai c [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```text
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
@@ -93,7 +93,7 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   whatever directory it started in. A value that is neither a registered prefix nor an
   existing repository is reported as unknown input.
 - `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
-- `--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
+- `-d`/`--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
   read off the command line: the session index actually free, the tmux-vs-bare decision
   after config and the tmux preflight, the worktree path and branch. It returns above
   every write, so it creates no worktree or branch, registers no workspace trust, reaps
@@ -225,7 +225,7 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 ### ai g
 
 ```bash
-ai g [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
+ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```text
 
 Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.

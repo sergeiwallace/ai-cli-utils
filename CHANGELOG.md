@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c` and `ai g` accept `-d` as the short form of `--dry-run`.
 - Every `ai c`, `ai g`, `ai p` and `ai cx` launch prints a `host` line naming the machine the
   launcher runs on and the machine the session will run on, so a `-R` launch says where it
   is going: `launcher on host-a; session on box (box.example.com, remote)`.
