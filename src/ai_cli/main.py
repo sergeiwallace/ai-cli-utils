@@ -6031,7 +6031,7 @@ def _print_migration(result) -> None:
         "command exits 1. On a repo whose OLD slot is such a leftover, it does only that "
         "cleanup, even while NEW is live elsewhere.\n\n"
         "Every Beads issue assigned to exactly OLD and not closed, in each store under the "
-        "projects dir, is re-keyed to NEW with `bd update --if-assignee OLD --force` and a "
+        "projects dir, is re-keyed to NEW with `bd --actor OLD update --if-assignee OLD` and a "
         "comment; a store bd cannot read is named and the command exits 1, and each changed "
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
