@@ -696,7 +696,8 @@ def stores(slot, tmp_path, monkeypatch):
     db.write_text(json.dumps({"stores": issues, "fail": {}}), encoding="utf-8")
     monkeypatch.setenv("FAKE_BD_DB", str(db))
     monkeypatch.setenv("FAKE_BD_LOG", str(fake / "calls.jsonl"))
-    monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ['PATH']}")
+    # Run the fake through this interpreter: Windows cannot execute an extensionless shebang script.
+    monkeypatch.setattr("ai_cli.session_migrate.BD_COMMAND", (sys.executable, str(script)))
     return {"repo": slot["repo"], "workspace": workspace.resolve(), "db": db, "log": fake / "calls.jsonl"}
 
 

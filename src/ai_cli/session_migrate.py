@@ -709,6 +709,9 @@ MIGRATION_LEDGER = "session-migrations.jsonl"
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
 
+#: The argv prefix that runs bd.
+BD_COMMAND: tuple[str, ...] = ("bd",)
+
 
 def _bd(store: Path, *args: str) -> subprocess.CompletedProcess:
     """``bd --sandbox <args>`` in ``store``, so bd opens that store and never pushes it.
@@ -718,7 +721,7 @@ def _bd(store: Path, *args: str) -> subprocess.CompletedProcess:
     """
     env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
     return subprocess.run(
-        ["bd", "--sandbox", *args],
+        [*BD_COMMAND, "--sandbox", *args],
         cwd=store,
         capture_output=True,
         text=True,
