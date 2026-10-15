@@ -555,6 +555,83 @@ def test_given_live_remote_worktree_when_launched_from_elsewhere_then_reuses_own
     assert not (selected / ".worktrees").exists()
 
 
+@pytest.mark.parametrize("registered_by", ["session-start-hook", "nobody"])
+def test_given_dead_remote_session_when_relaunched_from_elsewhere_then_reuses_its_worktree(
+    patched_subprocess, tmp_path, monkeypatch, capsys, registered_by
+):
+    """`ai c 1 -R` (with or without -p) against a session whose pane died (AI-CLI-fkvp).
+
+    The canonical registry is keyed by path and every registration overwrites the
+    entry's engine and name, so the launcher's own `(c, c-r-<ai_name>)` entry is
+    replaced moments later by a Claude Code SessionStart hook writing
+    `(claude-session-start, <ai_name>)`. That hook shape is what a real host holds.
+    With the pane dead, tmux reports no `pane_current_path`, so a lookup that
+    only knew the launcher's shape had nothing left and refused:
+    "cannot resolve directory for c-r-<ai_name>".
+
+    `nobody`: a session with no registry entry at all (pruned, or launched before
+    registration existed) still records where it was started, which is the
+    repository the launcher stood in.
+    """
+    server = patched_subprocess
+    server._real_git = True
+    repo = tmp_path / "myproject"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+
+    git("init", "-q")
+    git("-c", "user.name=user", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "initial")
+    worktree = repo / ".worktrees" / "myproject-tst-2"
+    git("worktree", "add", "--detach", str(worktree))
+    target = "c-r-myproject-tst-2"
+    unrelated = tmp_path / "elsewhere"
+    unrelated.mkdir()
+    if registered_by == "session-start-hook":
+        register_canonical_worktree(worktree, engine="claude-session-start", session_name="myproject-tst-2")
+        # Started somewhere unhelpful, so only the registry can name the worktree.
+        monkeypatch.chdir(unrelated)
+    else:
+        monkeypatch.chdir(repo)
+    _create_dead_session(server, target)
+    monkeypatch.chdir(unrelated)
+    selected = tmp_path / "otherproject"
+    kwargs = _base_launch_kwargs(name="2")
+    kwargs.update(is_remote=True, project="otherproject", no_worktree=False, config={"worktree": {"enabled": True}})
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config._find_project_dir", return_value=selected),
+        patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+        patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**kwargs)
+
+    _assert_launch_reached_exec(server, capsys)
+    assert exc_info.value.code == 0
+    # The dead session was replaced by a live one under the same name. (Not compared
+    # by session id: killing a server's only session ends that server, and the next
+    # one numbers its first session $0 again.)
+    assert [s.name for s in server.sessions] == [target]
+    assert server.cmd("list-panes", "-t", target, "-F", "#{pane_dead}").stdout == ["0"]
+    # ...in the session's own checkout: no second worktree anywhere.
+    assert [
+        entry for entry in git("worktree", "list", "--porcelain").stdout.splitlines() if entry.startswith("worktree ")
+    ] == [f"worktree {repo}", f"worktree {worktree}"]
+    assert not (unrelated / ".worktrees").exists()
+    assert not selected.exists()
+
+
 def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     """Pre-create ``session_name`` with a pane that is already dead.
 

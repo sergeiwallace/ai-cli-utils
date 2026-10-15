@@ -45,6 +45,12 @@ Follow-up: after the initial project-validation fix, the same reconnect reaches
 worktree setup but exits with "could not create or reuse the isolated session worktree"
 when the launcher starts outside the session's repository.
 
+Second follow-up (AI-CLI-fkvp): with both fixes merged, `ai c 1 -R`, with or without
+`-p`, against a session whose pane had died exited with
+`cannot enter existing session directory: cannot resolve directory for c-r-<ai_name>`.
+The `-p`-less reproduction rules project selection out: the refusal is inside the
+existing-session branch, which never consults it.
+
 ## Environment
 
 Reproduced on Linux with Python 3.14 and tmux, using a test-owned private server.
@@ -72,6 +78,23 @@ the requested session is already running elsewhere. No naming-contract or migrat
 is needed; the existing session-name builder resolves both numeric and full-name inputs.
 The fix fits entirely inside the remote project branch without changing public APIs.
 
+Second follow-up root cause: the canonical worktree registry is keyed by **path**, and
+every registration overwrites that entry's `engine` and `session_name`. The launcher
+registers `(c, c-r-<ai_name>)`; seconds later a Claude Code SessionStart hook registers
+the same path as `(claude-session-start, <ai_name>)`. Last writer wins, so the hook's
+shape is what a real host holds (13 of 15 entries on the reporting host; the other two
+belonged to sessions where the hook had not re-registered). The first follow-up's lookup
+required `session_name == c-r-<ai_name>` **and** `engine == c`, so it almost always
+missed and fell through to tmux `#{pane_current_path}`. A dead pane (its `remain-on-exit`
+session survives a crashed or exited engine) reports that format as empty, so the
+fallback refused. The registry had the answer the whole time, under the other key.
+
+Rejected: "the engine should scope the match". `ai_name` carries no engine segment, so
+every engine's session in one slot shares the `.worktrees/<ai_name>` checkout, and the
+prefixed tmux name already encodes its engine. Rejected: "fall through to the
+fresh-launch project path for a dead pane". That re-couples reattach to `-p`, the
+dependency the original fix removed.
+
 ## Prior Fix Attempts
 
 | Date | What was tried | Outcome |
@@ -96,6 +119,14 @@ exact tmux target's pane directory. Ambiguous registry entries, malformed regist
 and inaccessible directories refuse instead of using the unrelated project or cwd.
 The fresh-launch block is unchanged. The cause is launcher ordering, not a missing
 Git worktree: the regression creates and registers a real checkout before launch.
+
+Second follow-up fix: match a registry entry whose `session_name` is either the
+prefixed tmux name or the bare `ai_name` (case-insensitively, as `_matching_worktrees`
+already compares slot directories), whatever engine wrote it. More than one distinct
+path still refuses as ambiguous. With no entry, the tmux fallback now asks for
+`#{?pane_current_path,#{pane_current_path},#{pane_start_path}}`: a dead pane keeps the
+directory it started in, which is the directory its launch stood in. The later
+all-dead-pane handling then replaces the session in that checkout.
 
 ## Verification
 
@@ -139,6 +170,30 @@ again (exit 1); restoring it and running
 `uv run pytest tests/test_session_launch_integration.py -k 'live_remote or fresh_remote' -n 0 -q --tb=short`
 passed all five cases (exit 0). Document validation and `git diff --check` also passed.
 
+Second follow-up verification (AI-CLI-fkvp):
+
+- Frozen regression
+  `test_given_dead_remote_session_when_relaunched_from_elsewhere_then_reuses_its_worktree`,
+  parametrized `session-start-hook` (hook-shaped entry, pane started somewhere unrelated,
+  so only the registry can answer) and `nobody` (no entry, pane started in the repo, so
+  only `pane_start_path` can answer). Both use a real git worktree and a real dead pane
+  on a private tmux server. RED on unfixed code: 2 failed, both with
+  `cannot resolve directory for c-r-myproject-tst-2`. GREEN after the fix.
+- A first draft also compared session ids before and after, which cannot work: killing
+  a server's only session ends that server and the next numbers its session `$0` again.
+  That assertion was dropped and RED re-proved on reverted production code before
+  re-applying the fix.
+- `uv run pytest tests/test_session_launch_integration.py`: 24 passed.
+- Full gate: ruff check exit 0, ruff format --check exit 0, pyright src/ 0 errors,
+  pytest 4313 passed and 21 skipped once a docstring the public-name hygiene scan
+  flagged was made generic.
+- Live replay on the reporting host, against the real dead-pane session, of the remote
+  half of the launch (`ai c --is-remote --project-prefix <P> [--project <repo>] --dry-run
+  c-r-<ai_name>`, run from `$HOME`; the dry-run exit comes after this resolution and
+  before any write). The installed unfixed build printed the reported error both with
+  and without `--project`. The fixed build resolved the session's real
+  `.worktrees/<ai_name>` checkout and its branch both times and exited 0.
+
 ## Lessons Learned
 
 Missing-directory tests covered fresh launches but did not combine an absent checkout
@@ -146,6 +201,10 @@ with an already-live remote session. Test prerequisites separately for session c
 and reattachment, and assert the actual attach handoff rather than accepting any exit.
 Keep worktree creation enabled in reattach regression coverage: a live pane's cwd
 does not establish the launcher's cwd.
+
+A reader of shared state must accept every shape its writers produce. Before matching
+on a registry field, find every writer of that file (here, two repositories) and test
+the shape the dominant writer leaves behind, not the shape this code path wrote.
 
 <!-- /doc:region name="summary" -->
 
@@ -172,6 +231,13 @@ no redesign is needed. This is an implement/medium task because it is a bounded
 regression in an existing launch path. The fallback probe initially returned no
 directory; a real private tmux probe established the complete exact pane target
 `=SESSION:` with `pane_current_path`, and all 199 focused cases passed.
+
+2026-10-15: Second follow-up (AI-CLI-fkvp), Opus worker delegated by the session
+tracking the reattach chain. Read the live registry (hook shape dominant) and the dead
+pane's formats on a private tmux server (`pane_current_path` empty, `pane_start_path`
+kept), froze the two-case RED, then broadened the registry match and added the
+start-path fallback. Scope signals all negative: one block in the existing-session
+branch, no schema or public contract change.
 
 <!-- /doc:region name="fix_log" -->
 
