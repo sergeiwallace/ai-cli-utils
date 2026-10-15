@@ -559,7 +559,7 @@ def get_engine_script(
           fi
           if [[ -s "$_supervisor_child_ready_path" ]]; then
             _child_pgid=""
-            read -r _child_pgid < "$_supervisor_child_ready_path" 2>/dev/null || true
+            {{ read -r _child_pgid < "$_supervisor_child_ready_path"; }} 2>/dev/null || true
             if [[ "$_child_pgid" =~ ^[0-9]+$ ]] \\
               && python3 -c '{PROMOTE_CHILD_SNIPPET}' "$_child_pgid" 2>/dev/null; then
               rm -f "$_supervisor_child_ready_path"
@@ -720,7 +720,10 @@ def get_engine_script(
         # to the stop its promotion left pending. An exit without a reason (the remote
         # recovery shell's `exit 78` relaunch, a normal restart) ends the run.
         _reload_reason=""
-        read -r _reload_reason < "$_ai_reload_reason_file" 2>/dev/null || true
+        # The group owns the redirect: a failed `<` on the read itself reports before
+        # any `2>` on that command applies, and zsh reports it on the shell's own stderr,
+        # so the missing file printed an error on every exit (AI-CLI-kqc5).
+        {{ read -r _reload_reason < "$_ai_reload_reason_file"; }} 2>/dev/null || true
         rm -f "$_ai_reload_reason_file"
         if [[ -n "$_reload_reason" ]]; then
           (( _reload_count == 0 )) && _reload_started=$(date +%s)

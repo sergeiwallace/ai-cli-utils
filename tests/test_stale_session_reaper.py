@@ -2582,6 +2582,44 @@ fi
     assert count == "1", f"the supervisor started {count} children for one clean exit"
 
 
+def test_given_a_child_that_exits_without_a_reload_reason_when_supervised_then_no_missing_file_error_is_printed(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A child exit with no reload pending reads an absent reason file silently (AI-CLI-kqc5).
+
+    `read -r x < "$file" 2>/dev/null` applies its redirections left to right, so the
+    failed `<` reported "no such file or directory" before stderr was redirected. Seen
+    live on every agent exit that was not a reload. The first child exits 0 with no
+    reason, which takes that path; the second exits 77 so the supervisor ends.
+    """
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_CHILD_READY.count"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  printf '%s\\n' "$((count + 1))" > "$count_file"
+  (( count == 0 )) && exit 0
+  exit 77
+fi
+"""
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_body=child_body,
+        pseudo_terminal=True,
+        wait_for_child_ready=False,
+    )
+    try:
+        process.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        pass
+    count = (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip()
+    stdout, stderr = _finish_supervisor(process)
+
+    assert count == "2", f"the no-reason exit path was not reached: {count} child start(s)"
+    assert "session-reload-reason" not in stdout + stderr
+
+
 def _supervisor_function(script: str, name: str) -> str:
     """One of the generated supervisor's shell function definitions, read out of the script."""
     start = script.index(f"{name}() {{")
