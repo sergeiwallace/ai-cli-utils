@@ -473,7 +473,7 @@ ai c myrepo-box-3                             # resume under the new name
 | An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; anything still holding a file stays |
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
-| `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it |
+| `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
 | State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
 
 `ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
