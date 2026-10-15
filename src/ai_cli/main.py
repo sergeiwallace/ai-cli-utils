@@ -1386,8 +1386,17 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
             return False
     except OSError:
         pass
-    script_path.write_text(script, encoding="utf-8")
-    script_path.chmod(0o700)
+    # Replaced, never rewritten in place (AI-CLI-59g7): the supervisor is executing this
+    # file, and bash and zsh read a running script incrementally, so truncating the same
+    # inode made it resume at its old byte offset inside the new text. A rename leaves the
+    # running shell on the old inode; the next exec opens the new one.
+    temporary = script_path.with_name(f".{script_path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(script, encoding="utf-8")
+        temporary.chmod(0o700)
+        temporary.replace(script_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 

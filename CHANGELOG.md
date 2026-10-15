@@ -89,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after an `ai` update, or a restart) now ends the session and removes its tmux session.
   It used to exit without that teardown, and because the window keeps exited panes, the
   pane stayed up dead and ignored every key.
+- `ai update` replaces a running session's script instead of rewriting it in place. The
+  session's supervisor is executing that file, and the shell reads a running script as it
+  goes, so an in-place rewrite made it continue partway through the new text. Seen as a
+  reload that ran the wrong lines and looked for `session-reload-reason-` with no session
+  name.
 
 - A telemetry store that another process holds locked no longer delays a launch's
   handoff past its 100 ms budget (102 to 111 ms on a macOS runner). Two costs added up:
