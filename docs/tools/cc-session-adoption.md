@@ -483,7 +483,7 @@ ai c myrepo-box-3                             # resume under the new name
 
 ### Per-session state found left under OLD (AI-CLI-2oes)
 
-Each class a migration on sem-kg-ec2 left keyed by the old name, where it lives, who owns it,
+Each class an earlier migration left keyed by the old name, where it lives, who owns it,
 and what a migration now does with it. The ai-harness classes run as `session-migrate.d/` hooks
 (`scripts/session_rekey_cli.py <class>`, installed by ai-harness's held-hook step); each one
 lists what it plans in `--dry-run`, runs again in `--finish`, names a file it cannot read and
