@@ -491,7 +491,7 @@ def test_given_a_transcript_record_with_a_lone_surrogate_when_migrated_then_it_c
 
 
 def _leftovers(slot) -> dict:
-    """The old-name artifacts the two sem-kg-ec2 migrations left behind, recreated on the fixture."""
+    """The old-name artifacts two real migrations left behind, recreated on the fixture."""
     repo, claude = slot["repo"], slot["claude"]
     container = repo / ".worktrees" / f"{OLD}-agents"
     (container / "reaped-leaf").mkdir(parents=True)
