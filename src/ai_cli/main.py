@@ -3647,7 +3647,7 @@ def _do_session_launch(
                 remote_naming_prefix = _session_naming.naming_prefix(
                     project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
                 )
-                remote_session_id, _ = _session.build_session_name(
+                remote_session_id, remote_ai_name = _session.build_session_name(
                     engine, remote_naming_prefix, name, config, is_remote=True, legacy_prefix=project_prefix
                 )
             except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
@@ -3665,10 +3665,20 @@ def _do_session_launch(
                 # The public path-only reader cannot identify a session. Reuse the
                 # validated loader rather than parsing a second registry format.
                 entries = _load_registry(get_canonical_worktree_registry_path())["worktrees"]
+                # Match the entry by either name the session goes by, whatever engine
+                # wrote it. The registry is keyed by PATH and each registration
+                # overwrites the entry's engine and name, so the launcher's own
+                # `(c, c-r-<ai_name>)` is replaced moments later by ai-harness's
+                # SessionStart hook writing `(claude-session-start, <ai_name>)` --
+                # the shape a real host almost always holds (AI-CLI-fkvp). The engine
+                # scopes nothing here: ai_name has no engine segment, so every engine's
+                # session in one slot shares one worktree, and the prefixed name
+                # already carries its engine.
+                session_keys = {remote_session_id.casefold(), remote_ai_name.casefold()}
                 session_paths = {
                     Path(entry["path"])
                     for entry in entries
-                    if entry.get("session_name") == remote_session_id and entry.get("engine") == engine
+                    if str(entry.get("session_name", "")).casefold() in session_keys
                 }
                 if len(session_paths) > 1:
                     raise CanonicalWorktreeRegistryError(f"multiple canonical worktrees for {remote_session_id}")
@@ -3676,9 +3686,19 @@ def _do_session_launch(
                     reattach_dir = session_paths.pop()
                 else:
                     # Sessions launched without worktrees (or before registration
-                    # was introduced) still have a tmux-owned pane directory.
+                    # was introduced) still have a tmux-owned pane directory. A dead
+                    # pane reports no current path, only the one it started in --
+                    # the directory its launch stood in, which is where a relaunch
+                    # (it recreates a dead session) must stand too.
                     result = subprocess.run(
-                        ["tmux", "display-message", "-p", "-t", f"={remote_session_id}:", "#{pane_current_path}"],
+                        [
+                            "tmux",
+                            "display-message",
+                            "-p",
+                            "-t",
+                            f"={remote_session_id}:",
+                            "#{?pane_current_path,#{pane_current_path},#{pane_start_path}}",
+                        ],
                         capture_output=True,
                         text=True,
                         check=False,
