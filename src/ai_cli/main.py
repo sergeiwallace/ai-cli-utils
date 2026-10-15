@@ -4095,7 +4095,7 @@ def _do_session_launch(
             # raw bare process has no shared terminal to attach to, so refuse
             # rather than silently fork another Claude Code session.
             tmux_session = (
-                subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+                subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
                 if shutil.which("tmux")
                 else None
             )
@@ -4248,10 +4248,14 @@ def _do_session_launch(
         ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name
     )
 
-    # Check if session already exists (e.g., re-attaching after disconnect)
-    existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+    # Check if session already exists (e.g., re-attaching after disconnect). Every
+    # probe of THIS session's existence or identity uses the exact `=NAME` target: a
+    # bare name is a unique-PREFIX match in tmux, so with slot 1 free and slot 10 live
+    # `-t c-x-1` answers for c-x-10 -- which attached to slot 10, and under --sandbox
+    # killed it as the session "to replace" (AI-CLI-gqb3).
+    existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
     if existing.returncode == 0 and sandbox:
-        identity = _tmux_ownership.capture_tmux_session_identity(session_id)
+        identity = _tmux_ownership.capture_tmux_session_identity(f"={session_id}:")
         if identity is None:
             reporter.error(
                 "tmux", f"tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it"
@@ -4260,7 +4264,7 @@ def _do_session_launch(
         if not _tmux_ownership.kill_owned_tmux_session(identity):
             reporter.error("tmux", f"tmux session '{session_id}' changed before replacement; refusing to kill it")
             sys.exit(1)
-        existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+        existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
     if existing.returncode == 0:
         # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
         # a dead pane and no process to react to a fresh script. Reattaching to it
@@ -4283,7 +4287,7 @@ def _do_session_launch(
             and fingerprint is not None
             and adapter.fence_and_kill(candidate.session_id, fingerprint)
         ):
-            existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+            existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
