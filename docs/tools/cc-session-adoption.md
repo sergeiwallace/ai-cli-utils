@@ -487,12 +487,17 @@ and refuses while `.worktrees/OLD` is still a registered slot or either session 
 running. `-n` prints its plan with nothing written.
 
 `--finish` also re-keys the Beads issues still assigned to OLD, but only when this
-host holds a record that OLD was migrated to NEW here: a `session-migrations.jsonl`
-row naming the pair, or, for a migration run before that ledger existed, a
-`session-meta-<engine>-NEW.json` or canonical-registry entry binding NEW to the
-slot. An assignee carries no host and other machines share the stores, so without
-such a record the issues are listed as `left alone` with the reason, and nothing
-is changed.
+host's `session-migrations.jsonl` (in the state directory) has a row naming
+exactly that pair. An assignee carries no host and other machines share the
+stores, so without the row the issues are listed as `left alone` with the
+reason, and nothing is changed. Session metadata or a registry entry binding NEW
+to its slot never names OLD, so neither counts. For a migration run before the
+ledger existed, append the row by hand from the migrating session's own record,
+one JSON object per line: `{"old": "OLD", "new": "NEW", "repo": "<repo>",
+"source": "<where the pair is recorded>"}`, then run `--finish -n` to check the
+plan. `--finish` refuses while either session runs; `ai session-migrate OLD NEW
+--beads-only` does only this re-key, under the same ledger rule, and runs while
+NEW is live, so a migrated session already back at work need not exit for it.
 
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project

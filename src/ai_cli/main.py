@@ -6034,7 +6034,8 @@ def _print_migration(result) -> None:
         "projects dir, is re-keyed to NEW with `bd update --if-assignee OLD --force` and a "
         "comment; a store bd cannot read is named and the command exits 1, and each changed "
         "store is named as needing its publish step. With --finish it re-keys only when this "
-        "host records that OLD was migrated to NEW.\n\n"
+        "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
+        "runs while NEW is live.\n\n"
         "\b\nFor a session started outside `ai`, use `ai session-adopt`."
     ),
 )
@@ -6054,7 +6055,12 @@ def _print_migration(result) -> None:
     is_flag=True,
     help="The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included",
 )
-def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
+@click.option(
+    "--beads-only",
+    is_flag=True,
+    help="Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running",
+)
+def cmd_session_migrate(old, new, repo, dry_run, yes, finish, beads_only):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
     Renames a session already registered in an ``ai c`` slot: worktree, branch,
@@ -6077,11 +6083,13 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish):
     projects dir; ``--finish`` does so only when this host records the migration.
     """
     from .session_adopt import AdoptionError
-    from .session_migrate import finish_session, migrate_session
+    from .session_migrate import finish_session, migrate_session, rekey_beads
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
 
     def _run(preview: bool):
+        if beads_only:
+            return rekey_beads(repo_root, old, new, dry_run=preview)
         if finish:
             return finish_session(repo_root, old, new, dry_run=preview)
         return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)

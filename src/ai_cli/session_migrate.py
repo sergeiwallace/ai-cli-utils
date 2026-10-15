@@ -845,13 +845,14 @@ def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: 
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
 
 
-def _migration_evidence(old: str, new: str, new_wt: Path, state: Path) -> str | None:
-    """What on this host shows ``old`` was migrated to the registered slot ``new_wt``, or ``None``.
+def _migration_evidence(old: str, new: str, state: Path) -> str | None:
+    """This host's migration-ledger row naming exactly the pair ``(old, new)``, or ``None``.
 
     A Beads assignee carries no host, and other machines' sessions share the stores, so a
-    ``--finish`` re-keys only on such a record: this host's migration ledger naming the pair,
-    or, for a migration run before the ledger existed, the launcher's session metadata or the
-    canonical registry binding ``new`` to the slot.
+    ``--finish`` re-keys only on a record that names both names. Session metadata or a
+    registry entry binding ``new`` to its slot never names ``old``, so neither counts: a
+    migration run before the ledger existed gets its row written by hand, from the
+    migrating session's own record.
     """
     ledger = state / MIGRATION_LEDGER
     with contextlib.suppress(OSError):
@@ -860,17 +861,44 @@ def _migration_evidence(old: str, new: str, new_wt: Path, state: Path) -> str | 
                 row = json.loads(line)
                 if isinstance(row, dict) and (row.get("old"), row.get("new")) == (old, new):
                     return f"{ledger} records it"
-    for session in _session_variants(new):
-        meta = state / f"session-meta-{session}.json"
-        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError):
-            if Path(json.loads(meta.read_text(encoding="utf-8"))["worktree_dir"]).resolve(strict=False) == new_wt:
-                return f"{meta} binds {new} to {new_wt}"
-    registry = get_canonical_worktree_registry_path()
-    with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, KeyError):
-        for entry in json.loads(registry.read_text(encoding="utf-8"))["worktrees"]:
-            if entry["path"] == str(new_wt) and str(entry.get("session_name") or "").endswith(new):
-                return f"{registry} binds {new} to {new_wt}"
     return None
+
+
+def rekey_beads(
+    repo_root: Path,
+    old: str,
+    new: str,
+    *,
+    dry_run: bool = False,
+    state_dir: Path | None = None,
+    projects_dir: Path | None = None,
+) -> MigrationResult:
+    """Re-key only the Beads issues still on ``old``, for a migration this host records.
+
+    The rest of :func:`finish_session` refuses while either session runs, because it moves
+    their transcripts and task files. Re-keying touches neither, and ``--if-assignee`` keeps
+    it from taking an issue someone picked up meanwhile, so this runs with ``new`` live.
+    Without this host's ledger row for the pair it lists the issues and changes nothing.
+    """
+    repo_root = repo_root.resolve()
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    projects = (projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve()
+    result = MigrationResult(
+        old=old,
+        new=new,
+        old_worktree=repo_root / ".worktrees" / old,
+        new_worktree=repo_root / ".worktrees" / new,
+        dry_run=dry_run,
+    )
+    evidence = _migration_evidence(old, new, state)
+    if evidence:
+        result.moves.append(PlannedMove("migration record", evidence, "", "report"))
+    beads = _plan_beads(old, _stores(projects, repo_root))
+    held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
+    _describe_beads(old, new, beads, result, held=held)
+    if evidence and not dry_run:
+        _apply_beads(old, new, beads, result)
+    return result
 
 
 def migrate_session(
@@ -1235,7 +1263,7 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + held_moves + memory_moves + index_moves + lock_moves
     _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
-    evidence = _migration_evidence(old, new, new_wt, state)
+    evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
     beads = _plan_beads(old, _stores(projects, repo_root))

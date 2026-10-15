@@ -105,7 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session can close and reassign its own issues without `--force`. `--dry-run` lists each
   issue per store; a store bd cannot read is named and fails the run; each changed store is
   named as needing its publish step. `--finish` re-keys issues a past migration left on OLD
-  when this host records that migration, and lists them unchanged when it does not.
+  when this host's `session-migrations.jsonl` has a row naming exactly that pair, and lists
+  them unchanged when it does not. `--beads-only` does just that re-key and runs while NEW is
+  live.
 
 - `ai session-audit` judges a session by the most recent cwd its transcript records that exists
   on this host, not by the first one. A session that moved hosts or was migrated now reads

@@ -784,23 +784,42 @@ def test_given_a_store_unreadable_during_the_migration_when_finished_then_its_is
     assert "session-migrations.jsonl records it" in out
 
 
-def test_given_a_migration_from_before_the_re_key_when_finished_then_its_issues_are_re_keyed(stores, slot):
+def test_given_a_migration_from_before_the_re_key_when_finished_then_only_a_ledger_row_naming_the_pair_re_keys(
+    stores, slot
+):
     code, out, err = _migrate(stores["repo"], "-y")
     assert code == 0, out + err
-    (slot["state"] / "session-migrations.jsonl").unlink()
+    ledger = slot["state"] / "session-migrations.jsonl"
+    ledger.unlink()
     data = json.loads(stores["db"].read_text(encoding="utf-8"))
     for store in data["stores"].values():
         for issue in store:
             if issue["assignee"] == NEW:
                 issue["assignee"] = OLD
     stores["db"].write_text(json.dumps(data), encoding="utf-8")
+    before = stores["db"].read_text(encoding="utf-8")
 
+    # The session metadata and registry bind NEW to the slot but never name OLD: not evidence.
+    assert (slot["state"] / f"session-meta-c-{NEW}.json").exists()
+    code, out, err = _finish(stores["repo"], "-y")
+    assert code == 0, out + err
+    assert stores["db"].read_text(encoding="utf-8") == before
+    assert f"beads issues on {OLD} were NOT re-keyed to {NEW}" in err
+
+    # A row for another pair is not evidence either.
+    ledger.write_text(json.dumps({"old": f"{OLD}x", "new": NEW}) + "\n", encoding="utf-8")
+    code, out, err = _finish(stores["repo"], "-y")
+    assert code == 0, out + err
+    assert stores["db"].read_text(encoding="utf-8") == before
+
+    with ledger.open("a", encoding="utf-8") as rows:
+        rows.write(json.dumps({"old": OLD, "new": NEW, "source": "hand-written"}) + "\n")
     code, out, err = _finish(stores["repo"], "-y")
 
     assert code == 0, out + err
     held = _assignees(stores)
     assert (held["TST-1"], held["TST-2"], held["WS-1"], held["TST-3"]) == (NEW, NEW, NEW, OLD)
-    assert f"session-meta-c-{NEW}.json binds {NEW}" in out
+    assert "session-migrations.jsonl records it" in out
 
 
 def test_given_no_record_of_the_migration_on_this_host_when_finished_then_nothing_is_re_keyed_and_it_says_why(
@@ -818,3 +837,41 @@ def test_given_no_record_of_the_migration_on_this_host_when_finished_then_nothin
     reason = f"this host holds no record that {OLD} was migrated to {NEW} here"
     assert f"beads issue: TST-1 [{OLD}] ({stores['repo']}) (left alone: {reason}" in out, out
     assert f"beads issues on {OLD} were NOT re-keyed to {NEW}: {reason}" in err
+
+
+def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move(stores, slot):
+    code, out, err = _migrate(stores["repo"], "-y")
+    assert code == 0, out + err
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    for store in data["stores"].values():
+        for issue in store:
+            if issue["assignee"] == NEW:
+                issue["assignee"] = OLD
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+    sessions = slot["claude"] / "sessions"
+    sessions.mkdir(exist_ok=True)
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps(
+            {"pid": os.getpid(), "name": NEW, "cwd": str(stores["repo"] / ".worktrees" / NEW), "sessionId": UUID}
+        )
+    )
+    code, out, err = _finish(stores["repo"], "-y")
+    assert code == 1 and "still running" in err, out + err
+
+    with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
+        code, out, err = run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
+
+    assert code == 0, out + err
+    held = _assignees(stores)
+    assert (held["TST-1"], held["TST-2"], held["WS-1"], held["TST-3"], held["TST-4"]) == (NEW, NEW, NEW, OLD, f"{OLD}3")
+    assert "session-migrations.jsonl records it" in out
+
+
+def test_given_no_ledger_row_when_re_keyed_beads_only_then_nothing_is_written(stores, slot):
+    before = stores["db"].read_text(encoding="utf-8")
+    with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
+        code, out, err = run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
+    assert code == 0, out + err
+    assert stores["db"].read_text(encoding="utf-8") == before
+    assert _bd_writes(stores) == []
+    assert f"beads issues on {OLD} were NOT re-keyed to {NEW}" in err
