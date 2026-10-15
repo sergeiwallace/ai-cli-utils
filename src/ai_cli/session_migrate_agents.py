@@ -328,7 +328,9 @@ def plan_agents(
                 tip = _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{entry.branch}")
                 entry.tip = tip.stdout.strip()
         plan.entries += repo_entries
-        if any(e.worktree for e in repo_entries):
+        # An emptied container is planned too: its last worktree may have been reaped before
+        # the migration, and nothing else removes a directory still named for the old session.
+        if any(e.worktree for e in repo_entries) or container.is_dir():
             plan.containers.append(container)
 
         moved = {e.worktree: e.dest for e in repo_entries if e.worktree and e.moves}

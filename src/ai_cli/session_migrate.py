@@ -15,7 +15,11 @@ tasks, memory and resume hand-off:
   memory), with each transcript's recorded cwd repointed, its ``customTitle``
   renamed and its stale worktree binding cleared;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
-  and the slot's project directories (filename prefix only);
+  and the slot's project directories (filename prefix only), and the memory files
+  named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
+  the links to them in ``MEMORY.md``;
+* the old name's locks, ``.worktrees/.<old>.lock`` and ``ai-watcher-lock-*-<old>``,
+  removed once no process holds them, and an emptied ``<old>-agents`` container;
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``session-adopt``
   uses for the same two; the old namespace directory is removed once only its
@@ -233,10 +237,32 @@ def _plan_state(old: str, new: str, state: Path) -> list[PlannedMove]:
                 moves.append(PlannedMove(kind, str(source), str(dest), "conflict" if dest.exists() else "move"))
         lock = state / f"ai-watcher-lock-{old_session}"
         if lock.exists():
-            moves.append(
-                PlannedMove("watcher lock", str(lock), "", "left alone: a lock, and the session is not running")
-            )
+            holder = _watcher_holder(lock)
+            if holder is None:
+                moves.append(PlannedMove("watcher lock", str(lock), "", _STALE_LOCK))
+            else:
+                moves.append(PlannedMove("watcher lock", str(lock), "", f"left alone: {holder}"))
     return moves
+
+
+#: The action of a stale lock the migration removes; never carried to the new name.
+_STALE_LOCK = "removed: no live holder"
+
+
+def _watcher_holder(lock: Path) -> str | None:
+    """Why ``lock`` may still be held, or ``None`` when it provably is not.
+
+    The wrapper's watcher writes its shell's pid into the file and removes the file on exit,
+    so a file naming a pid that no longer runs is a leftover. Anything else, a live pid or a
+    file that names no pid, is kept: a pid that answers may be the watcher itself.
+    """
+    try:
+        pid = int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return "it names no pid, so its holder cannot be ruled out"
+    if pid <= 0:
+        return f"it names pid {pid}"
+    return f"its pid {pid} is running" if _config._pid_alive(pid) else None
 
 
 def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[PlannedMove]:
@@ -273,6 +299,133 @@ def _plan_held_output(old: str, new: str, dirs: list[tuple[Path, Path | None]]) 
             action = "conflict" if (memory / name).exists() else "move"
             moves.append(PlannedMove("held output", str(source), str((after or project) / "memory" / name), action))
     return moves
+
+
+def _memory_pattern(old: str) -> re.Pattern[str]:
+    """``<prefix>-<old>.md`` or ``<prefix>-<old>-<N>.md``: a memory file keyed by the session name.
+
+    The prefix is lowercase words (``active-work-``, ``.resume-``), so a ``.held-output-``
+    replay file, whose suffix carries a slug, is never matched here.
+    """
+    return re.compile(rf"(?P<prefix>\.?[a-z]+(?:-[a-z]+)*-){re.escape(old)}(?P<suffix>(?:-\d+)?\.md)")
+
+
+def _names_another_session(prefix: str, old: str, others: set[str]) -> bool:
+    """Whether ``<prefix><old>`` ends in a different session's name, e.g. ``kg-aih-3`` for ``aih-3``."""
+    words = prefix.lstrip(".").rstrip("-").split("-")
+    return any("-".join([*words[i:], old]) in others for i in range(len(words)))
+
+
+def _plan_memory(
+    old: str, new: str, dirs: list[tuple[Path, Path | None]], others: set[str]
+) -> tuple[list[PlannedMove], list[PlannedMove]]:
+    """``(renames, index rewrites)`` for the memory files named for the session in each project dir.
+
+    A memory directory is shared by every session of a repo, so only a file whose name ends in
+    exactly the old session's name is renamed, never one that ends in a longer session name
+    that happens to contain it (``others``). Each ``MEMORY.md`` that names a renamed file has
+    that file name rewritten, and nothing else in it.
+    """
+    pattern = _memory_pattern(old)
+    renames: list[PlannedMove] = []
+    rewrites: list[PlannedMove] = []
+    for project, after in dirs:
+        memory = project / "memory"
+        if not memory.is_dir():
+            continue
+        here: list[PlannedMove] = []
+        for source in sorted(memory.iterdir()):
+            match = pattern.fullmatch(source.name)
+            if not match or not source.is_file() or _names_another_session(match["prefix"], old, others):
+                continue
+            name = f"{match['prefix']}{new}{match['suffix']}"
+            action = "conflict" if (memory / name).exists() else "move"
+            here.append(PlannedMove("memory file", str(source), str((after or project) / "memory" / name), action))
+        renames += here
+        index = memory / "MEMORY.md"
+        moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action == "move"}
+        if moved and index.is_file():
+            text = index.read_text(encoding="utf-8")
+            named = sorted(name for name in moved if _rewrite_index(text, {name: moved[name]})[1])
+            if named:
+                rewrites.append(PlannedMove("memory index", str(index), ", ".join(named), "rewrite"))
+    return renames, rewrites
+
+
+def _rewrite_index(text: str, renames: dict[str, str]) -> tuple[str, int]:
+    """``text`` with each renamed file name, and its ``[[stem]]`` link, naming the new file."""
+    count = 0
+    for old_name, new_name in renames.items():
+        for before, after in ((old_name, new_name), (f"[[{old_name[:-3]}]]", f"[[{new_name[:-3]}]]")):
+            text, hits = re.subn(rf"(?<![\w.-]){re.escape(before)}(?![\w-])", after, text)
+            count += hits
+    return text, count
+
+
+def _apply_memory(renames: list[PlannedMove], rewrites: list[PlannedMove], result: MigrationResult) -> None:
+    """Rename the planned memory files, then rewrite each index that names them, in place."""
+    for item in [m for m in renames if m.action == "move"]:
+        source = Path(item.source)
+        target = source.with_name(Path(item.dest).name)
+        if target.exists():
+            result.warnings.append(f"memory file {source} was NOT renamed: {target} appeared meanwhile")
+            continue
+        source.rename(target)
+    for item in rewrites:
+        index = Path(item.source)
+        moved = {
+            Path(m.source).name: Path(m.dest).name
+            for m in renames
+            if m.action == "move" and Path(m.source).parent == index.parent
+        }
+        before = index.read_text(encoding="utf-8")
+        text, _hits = _rewrite_index(before, moved)
+        temp = index.with_name(index.name + ".migrate-tmp")
+        temp.write_text(text, encoding="utf-8")
+        # Another live session may edit the shared index; replace it only if it is unchanged.
+        if index.read_text(encoding="utf-8") != before:
+            temp.unlink()
+            result.warnings.append(f"memory index {index} changed during the migration; re-run with --finish")
+            continue
+        temp.replace(index)
+
+
+def _session_names(home: Path, repo_root: Path, *exclude: str) -> set[str]:
+    """Every other session name this host knows: task namespaces and slot directories."""
+    names: set[str] = set()
+    for parent in (home / "tasks", repo_root / ".worktrees"):
+        if parent.is_dir():
+            names.update(p.name for p in parent.iterdir() if p.is_dir())
+    return names - set(exclude)
+
+
+def _plan_slot_lock(repo_root: Path, old: str) -> list[PlannedMove]:
+    """The launcher's ``.worktrees/.<old>.lock``: removed when no process holds it."""
+    lock = repo_root / ".worktrees" / f".{old}.lock"
+    if not lock.is_file():
+        return []
+    action = _STALE_LOCK if _slot_lock_free(lock) else "left alone: a process holds it"
+    return [PlannedMove("slot lock", str(lock), "", action)]
+
+
+def _slot_lock_free(lock: Path) -> bool:
+    """Whether a non-blocking exclusive lock on ``lock`` succeeds, i.e. no launcher holds it."""
+    import portalocker
+
+    try:
+        with portalocker.Lock(str(lock), mode="a", timeout=0, fail_when_locked=True):
+            return True
+    except (portalocker.exceptions.LockException, OSError):
+        return False
+
+
+def _remove_stale_locks(moves: list[PlannedMove]) -> None:
+    """Unlink each lock planned as stale, re-proving it free right before the unlink."""
+    for item in [m for m in moves if m.action == _STALE_LOCK]:
+        lock = Path(item.source)
+        free = _slot_lock_free(lock) if item.kind == "slot lock" else _watcher_holder(lock) is None
+        if free:
+            lock.unlink(missing_ok=True)
 
 
 #: Task-namespace bookkeeping that means nothing once the namespace's tasks have moved.
@@ -439,24 +592,15 @@ def migrate_session(
     iterm2_moves = _plan_iterm2(old)
     moves += iterm2_moves
 
-    held_moves = _plan_held_output(old, new, [(cc_project_dir(repo_root, home), None), (old_pd, new_pd)])
+    project_dirs = [(cc_project_dir(repo_root, home), None), (old_pd, new_pd)]
+    held_moves = _plan_held_output(old, new, project_dirs)
     moves += held_moves
+    memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
+    moves += memory_moves + index_moves
+    lock_moves = _plan_slot_lock(repo_root, old)
+    moves += lock_moves
 
-    old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
-    result.task_moves, result.resume_moves = rekey_name_artifacts(
-        new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
-    )
-    if old_ns.is_dir():
-        leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
-        if leftover:
-            moves.append(PlannedMove("task namespace", str(old_ns), f"holds {', '.join(leftover)}", "left in place"))
-        else:
-            moves.append(PlannedMove("task namespace", str(old_ns), "", "removed after rekey"))
-    for item in moves:
-        if item.action == "conflict":
-            result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
-    for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
-        result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+    _plan_task_rekey(old, new, home, result)
     hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
     if dry_run:
         return result
@@ -486,6 +630,8 @@ def migrate_session(
     for item in [m for m in held_moves if m.action == "move"]:
         source = Path(item.source)
         source.rename(source.with_name(Path(item.dest).name))
+    _apply_memory(memory_moves, index_moves, result)
+    _remove_stale_locks(lock_moves)
 
     if old_pd.is_dir():
         old_pd.rename(new_pd)
@@ -495,6 +641,46 @@ def migrate_session(
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
 
+    _apply_task_rekey(old, new, home, result)
+    _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
+    _remove_stale_locks(state_moves)
+    _apply_session_maps(map_moves, old, new, home, state)
+    if iterm2_moves:
+        _apply_iterm2(old, new)
+    _run_live_hooks(hooks, old, new, repo_root, result)
+
+    if titled:
+        result.resolved = probe_resolves(new_wt, new, home)
+        if result.resolved is None:
+            result.warnings.append(
+                f"post-migrate check FAILED: `ai c` in {new_wt} resolves no transcript titled {new!r}"
+            )
+    return result
+
+
+def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+    """Plan the task-namespace and resume-tree rekey, and turn every planned conflict into a warning."""
+    old_ns = home / "tasks" / old
+    result.task_moves, result.resume_moves = rekey_name_artifacts(
+        new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
+    )
+    if old_ns.is_dir():
+        leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
+        if leftover:
+            result.moves.append(
+                PlannedMove("task namespace", str(old_ns), f"holds {', '.join(leftover)}", "left in place")
+            )
+        else:
+            result.moves.append(PlannedMove("task namespace", str(old_ns), "", "removed after rekey"))
+    for item in result.moves:
+        if item.action == "conflict":
+            result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
+    for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
+        result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+
+
+def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+    old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=False
@@ -512,22 +698,104 @@ def migrate_session(
                 (old_ns / name).unlink(missing_ok=True)
             old_ns.rmdir()
 
-    _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
-    _apply_session_maps(map_moves, old, new, home, state)
-    if iterm2_moves:
-        _apply_iterm2(old, new)
 
+def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult) -> None:
     for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
-        moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
+        result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
         if not run.ok:
             result.warnings.append(_hooks.failure_warning(run))
 
-    if titled:
-        result.resolved = probe_resolves(new_wt, new, home)
-        if result.resolved is None:
-            result.warnings.append(
-                f"post-migrate check FAILED: `ai c` in {new_wt} resolves no transcript titled {new!r}"
-            )
+
+def finish_session(
+    repo_root: Path,
+    old: str,
+    new: str,
+    *,
+    dry_run: bool = False,
+    claude_home: Path | None = None,
+    state_dir: Path | None = None,
+    proc_dir: Path | None = None,
+    tmux_names: Callable[[], list[str]] | None = None,
+    projects_dir: Path | None = None,
+) -> MigrationResult:
+    """Finish a migration whose slot already moved to ``new``: every leftover still named ``old``.
+
+    For a session migrated before a step existed, or one whose agent worktree a live process
+    held at the time. Runs every planner of :func:`migrate_session` that is keyed by the old
+    name and is safe to repeat: agent worktrees, branches, containers and markers; the
+    launcher's state, maps and locks; held-output and memory files in the repo's and the
+    slot's project directories; the task namespace and resume tree; and every external hook.
+    Neither session may be running. Raises :class:`MigrationError` before writing anything.
+    """
+    from .session import _registered_worktree_at, registered_worktrees
+
+    repo_root = repo_root.resolve()
+    home = claude_home if claude_home is not None else Path.home() / ".claude"
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    registered = registered_worktrees(repo_root)
+    old_wt = repo_root / ".worktrees" / old
+    if _registered_worktree_at(old_wt, registered) is not None:
+        raise MigrationError(f"{old_wt} is still a registered slot -- migrate it without --finish first")
+    new_wt = _registered_worktree_at(repo_root / ".worktrees" / new, registered)
+    if new_wt is None:
+        raise MigrationError(f"{repo_root / '.worktrees' / new} is not a registered slot -- nothing to finish")
+    tmux = (tmux_names or _tmux_names)()
+    _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
+    hosting = sorted(set(tmux) & set(_session_variants(new)))
+    if hosting:
+        raise LiveSessionError(f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing")
+    live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
+    agent_plan = _agents.plan_agents(
+        old,
+        new,
+        projects_dir=(projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve(),
+        slot_repo=repo_root,
+        old_wt=old_wt.resolve(strict=False),
+        new_wt=new_wt,
+        live_cwds=live_cwds,
+    )
+
+    result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
+    moves = result.moves
+    markers = _session_home_markers(repo_root, old_wt.resolve(strict=False))
+    slot_renames = agent_plan.renames(repo_root)
+    for key, _value in markers:
+        moves.append(
+            PlannedMove("session-home marker", key, f"{_agents.renamed_key(key, slot_renames)} = {new_wt}", "rewrite")
+        )
+    moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
+    state_moves = _plan_state(old, new, state)
+    map_moves = _plan_session_maps(old, new, home, state)
+    project_dirs: list[tuple[Path, Path | None]] = [
+        (cc_project_dir(repo_root, home), None),
+        (cc_project_dir(new_wt, home), None),
+    ]
+    held_moves = _plan_held_output(old, new, project_dirs)
+    memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
+    lock_moves = _plan_slot_lock(repo_root, old)
+    iterm2_moves = _plan_iterm2(old)
+    moves += state_moves + map_moves + iterm2_moves + held_moves + memory_moves + index_moves + lock_moves
+    _plan_task_rekey(old, new, home, result)
+    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    if dry_run:
+        return result
+
+    agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
+    result.warnings += agent_warnings
+    for key, _value in markers:
+        _git(repo_root, "config", _agents.renamed_key(key, agent_renames.get(repo_root, {})), str(new_wt))
+    for item in [m for m in held_moves if m.action == "move"]:
+        source = Path(item.source)
+        source.rename(source.with_name(Path(item.dest).name))
+    _apply_memory(memory_moves, index_moves, result)
+    _remove_stale_locks(lock_moves)
+    _apply_task_rekey(old, new, home, result)
+    _apply_state(state_moves, old, new, old_wt, new_wt, None, result)
+    _remove_stale_locks(state_moves)
+    _apply_session_maps(map_moves, old, new, home, state)
+    if iterm2_moves:
+        _apply_iterm2(old, new)
+    _run_live_hooks(hooks, old, new, repo_root, result)
     return result
 
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai session-migrate OLD NEW --finish` carries or removes every leftover still named OLD for a
+  slot that already moved to NEW, hooks included, so a migration run before a step existed
+  completes without hand steps.
+- `ai session-migrate` now also renames memory files named for the session (`active-work-OLD.md`,
+  `.resume-OLD-N.md`) and the links to them in `MEMORY.md`, removes an emptied
+  `.worktrees/OLD-agents/` container, and removes the old name's slot lock and watcher lock
+  once no process holds them.
 - `ai c` and `ai g` accept `-d` as the short form of `--dry-run`.
 - Every `ai c`, `ai g`, `ai p` and `ai cx` launch prints a `host` line naming the machine the
   launcher runs on and the machine the session will run on, so a `-R` launch says where it

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +38,13 @@ def _git(*args: str, cwd: Path) -> str:
 def _jsonl(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+
+def _dead_pid() -> int:
+    """The pid of a process that has already exited."""
+    child = subprocess.Popen([sys.executable, "-c", ""])
+    child.wait()
+    return child.pid
 
 
 @pytest.fixture
@@ -104,7 +112,7 @@ def slot(tmp_path):
     (state / f"session-meta-c-{OLD}.json").write_text(json.dumps(meta))
     (state / "sessions" / f"c-{OLD}.sh").write_text(f"ai_name={OLD}\n")
     (state / f"cc-resume-prompt-c-{OLD}").write_text("resume me\n")
-    (state / f"ai-watcher-lock-c-{OLD}").write_text("1234")
+    (state / f"ai-watcher-lock-c-{OLD}").write_text(str(_dead_pid()))
     (claude / "cc-sessions.json").write_text(json.dumps({OLD: UUID, "other-1": "x"}))
     (state / "iterm2-sessions.json").write_text(
         json.dumps(
@@ -197,8 +205,8 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     record = json.loads((state / "iterm2-sessions.json").read_text(encoding="utf-8"))["sessions"][0]
     assert (record["name"], record["relaunch_argv"]) == (f"c-{NEW}", ["ai", "c", NEW])
 
-    # a lock is never carried to the new name
-    assert (state / f"ai-watcher-lock-c-{OLD}").exists()
+    # a lock is never carried to the new name, and one whose pid is gone is removed
+    assert not (state / f"ai-watcher-lock-c-{OLD}").exists()
     assert not (state / f"ai-watcher-lock-c-{NEW}").exists()
 
 
@@ -477,3 +485,150 @@ def test_given_a_transcript_record_with_a_lone_surrogate_when_migrated_then_it_c
     assert last["cwd"] == str(new_wt)
     assert last["message"]["content"] == "cut \ud83d here"
     assert not (slot["claude"] / "tasks" / OLD).exists()
+
+
+# --- leftovers named for the old session (AI-CLI-96ja) -------------------------------------
+
+
+def _leftovers(slot) -> dict:
+    """The old-name artifacts two real migrations left behind, recreated on the fixture."""
+    repo, claude = slot["repo"], slot["claude"]
+    container = repo / ".worktrees" / f"{OLD}-agents"
+    (container / "reaped-leaf").mkdir(parents=True)
+    slot_lock = repo / ".worktrees" / f".{OLD}.lock"
+    slot_lock.write_text("")
+    memory = cc_project_dir(repo, claude) / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / f"active-work-{OLD}.md").write_text("my state\n")
+    (memory / f".resume-{OLD}-12.md").write_text("old resume\n")
+    (claude / "tasks" / f"kg-{OLD}").mkdir(parents=True)
+    (memory / f"active-work-kg-{OLD}.md").write_text("another session's state\n")
+    (memory / "MEMORY.md").write_text(
+        f"- **{OLD}** -- [state](active-work-{OLD}.md) and [[active-work-{OLD}]]\n"
+        f"- **kg-{OLD}** -- [state](active-work-kg-{OLD}.md)\n"
+    )
+    return {"container": container, "slot_lock": slot_lock, "memory": memory}
+
+
+def _assert_leftovers_carried(slot, left: dict) -> None:
+    memory = left["memory"]
+    assert not left["container"].exists()
+    assert not left["slot_lock"].exists()
+    assert not (memory / f"active-work-{OLD}.md").exists()
+    assert (memory / f"active-work-{NEW}.md").read_text(encoding="utf-8") == "my state\n"
+    assert (memory / f".resume-{NEW}-12.md").read_text(encoding="utf-8") == "old resume\n"
+    assert (memory / f"active-work-kg-{OLD}.md").read_text(encoding="utf-8") == "another session's state\n"
+    assert (memory / "MEMORY.md").read_text(encoding="utf-8") == (
+        f"- **{OLD}** -- [state](active-work-{NEW}.md) and [[active-work-{NEW}]]\n"
+        f"- **kg-{OLD}** -- [state](active-work-kg-{OLD}.md)\n"
+    )
+    assert not (slot["state"] / f"ai-watcher-lock-c-{OLD}").exists()
+
+
+def test_given_old_name_leftovers_when_migrated_then_each_is_carried_or_removed_and_another_sessions_file_is_kept(
+    slot,
+):
+    left = _leftovers(slot)
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    _assert_leftovers_carried(slot, left)
+    assert f"memory file: {left['memory'] / f'active-work-{OLD}.md'}" in out
+    assert f"agent container: {left['container']}" in out
+
+
+def test_given_old_name_leftovers_when_dry_run_then_each_is_planned_and_nothing_changes(slot):
+    left = _leftovers(slot)
+    before = _everything(slot)
+
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+
+    assert code == 0, out + err
+    assert _everything(slot) == before
+    for expected in (
+        f"agent container: {left['container']} (removed once empty)",
+        f"slot lock: {left['slot_lock']} (removed: no live holder)",
+        f"memory file: {left['memory'] / f'active-work-{OLD}.md'} -> ",
+        f"memory index: {left['memory'] / 'MEMORY.md'} (rewrite: active-work-{OLD}.md)",
+        f"watcher lock: {slot['state'] / f'ai-watcher-lock-c-{OLD}'} (removed: no live holder)",
+    ):
+        assert expected in out, f"{expected!r} missing from:\n{out}"
+
+
+def test_given_a_watcher_lock_naming_a_live_pid_when_migrated_then_it_is_left_alone(slot):
+    lock = slot["state"] / f"ai-watcher-lock-c-{OLD}"
+    lock.write_text(str(os.getpid()))
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    assert lock.read_text(encoding="utf-8") == str(os.getpid())
+    assert f"its pid {os.getpid()} is running" in out
+
+
+def test_given_a_slot_lock_a_process_holds_when_migrated_then_it_is_left_alone(slot):
+    import portalocker
+
+    lock = slot["repo"] / ".worktrees" / f".{OLD}.lock"
+    with portalocker.Lock(str(lock), mode="a", timeout=0):
+        code, out, err = _migrate(slot["repo"], "-y")
+        assert code == 0, out + err
+        assert lock.exists()
+    assert "slot lock" in out and "left alone: a process holds it" in out
+
+
+def _finish(repo: Path, *flags: str, tmux: list[str] | None = None):
+    with (
+        patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])),
+        patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
+    ):
+        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), "--finish", *flags])
+
+
+def test_given_a_slot_migrated_before_these_steps_when_finished_then_every_leftover_is_carried_or_removed(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    left = _leftovers(slot)
+    (slot["state"] / f"ai-watcher-lock-c-{OLD}").write_text(str(_dead_pid()))
+
+    code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    _assert_leftovers_carried(slot, left)
+    assert (slot["repo"] / ".worktrees" / NEW).is_dir()
+
+
+def test_given_leftovers_when_finish_dry_runs_then_nothing_changes(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    _leftovers(slot)
+    before = _everything(slot)
+
+    code, out, err = _finish(slot["repo"], "--dry-run")
+
+    assert code == 0, out + err
+    assert _everything(slot) == before
+    assert "memory file:" in out and "slot lock:" in out
+
+
+def test_given_the_old_slot_is_still_registered_when_finished_then_it_is_refused(slot):
+    before = _everything(slot)
+
+    code, _out, err = _finish(slot["repo"], "-y")
+
+    assert code == 1
+    assert "migrate it without --finish first" in err
+    assert _everything(slot) == before
+
+
+def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    left = _leftovers(slot)
+
+    code, _out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
+
+    assert code == 1
+    assert f"hosts {NEW}" in err
+    assert left["slot_lock"].exists()
