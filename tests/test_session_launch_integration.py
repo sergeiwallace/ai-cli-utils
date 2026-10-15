@@ -632,6 +632,87 @@ def test_given_dead_remote_session_when_relaunched_from_elsewhere_then_reuses_it
     assert not selected.exists()
 
 
+@pytest.mark.parametrize("pane", ["live", "dead"])
+def test_given_session_running_in_its_worktree_when_reattached_then_its_git_state_is_left_alone(
+    patched_subprocess, tmp_path, monkeypatch, capsys, pane
+):
+    """A reattach must not run git mutations under a running agent (AI-CLI-gnng).
+
+    The launch's worktree sync -- an index "auto-heal" that resets the index to HEAD
+    once more than 50 deletions are staged, then `git pull --rebase --autostash`
+    with `rebase --abort` + `restore --staged .` on failure -- ran for every launch,
+    before the has-session check that knows a live process owns the checkout. So
+    reattaching to an agent that had staged a directory removal silently unstaged it.
+
+    `dead`: a session whose pane died is replaced, not attached, so its checkout is
+    still synchronized before the new engine starts. That is the half of the
+    contract that keeps "skip the sync" from becoming "never sync".
+    """
+    server = patched_subprocess
+    server._real_git = True
+    repo = tmp_path / "myproject"
+    repo.mkdir()
+
+    def git(*args, cwd=repo):
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    for index in range(51):
+        (repo / f"file{index}.txt").write_text(f"{index}\n")
+    git("add", ".")
+    git("-c", "user.name=user", "-c", "user.email=test@example.com", "commit", "-q", "-m", "initial")
+    # A session worktree is anchored to a remote branch, which the reuse path checks.
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], capture_output=True, check=True)
+    git("remote", "add", "origin", str(origin))
+    git("push", "-q", "origin", "main")
+    git("fetch", "-q", "origin")
+    worktree = repo / ".worktrees" / "myproject-tst-2"
+    git("worktree", "add", "-q", "-b", "wt-myproject-tst-2", str(worktree))
+    # The running agent's own work in progress: a 51-file removal, staged.
+    git("rm", "-q", *[f"file{index}.txt" for index in range(51)], cwd=worktree)
+    head_before = git("rev-parse", "HEAD", cwd=worktree).stdout
+
+    def staged_deletions() -> int:
+        return len(git("diff", "--cached", "--name-only", "--diff-filter=D", cwd=worktree).stdout.splitlines())
+
+    assert staged_deletions() == 51
+    target = "c-myproject-tst-2"
+    if pane == "live":
+        server.new_session(
+            session_name=target, detach=True, start_directory=str(worktree), window_command=_LIVE_CHILD_COMMAND
+        )
+    else:
+        _create_dead_session(server, target)
+    monkeypatch.chdir(repo)
+    kwargs = _base_launch_kwargs(name="2")
+    kwargs.update(no_worktree=False, config={"worktree": {"enabled": True}})
+
+    with (
+        _tmux_versions_agreeing(),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**kwargs)
+
+    _assert_launch_reached_exec(server, capsys)
+    assert exc_info.value.code == 0
+    if pane == "live":
+        assert staged_deletions() == 51, "the reattach rewrote the running agent's index"
+        assert git("rev-parse", "HEAD", cwd=worktree).stdout == head_before
+    else:
+        assert staged_deletions() == 0, "a replaced dead session's worktree must still be synchronized"
+
+
 def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     """Pre-create ``session_name`` with a pane that is already dead.
 
