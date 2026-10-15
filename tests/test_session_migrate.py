@@ -550,7 +550,7 @@ def test_given_old_name_leftovers_when_dry_run_then_each_is_planned_and_nothing_
         f"agent container: {left['container']} (removed once empty)",
         f"slot lock: {left['slot_lock']} (removed: no live holder)",
         f"memory file: {left['memory'] / f'active-work-{OLD}.md'} -> ",
-        f"memory index: {left['memory'] / 'MEMORY.md'}",
+        f"memory index: {left['memory'] / 'MEMORY.md'} (rewrite: active-work-{OLD}.md)",
         f"watcher lock: {slot['state'] / f'ai-watcher-lock-c-{OLD}'} (removed: no live holder)",
     ):
         assert expected in out, f"{expected!r} missing from:\n{out}"

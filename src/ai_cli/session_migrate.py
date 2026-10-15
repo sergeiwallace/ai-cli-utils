@@ -344,8 +344,11 @@ def _plan_memory(
         renames += here
         index = memory / "MEMORY.md"
         moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action == "move"}
-        if moved and index.is_file() and _rewrite_index(index.read_text(encoding="utf-8"), moved)[1]:
-            rewrites.append(PlannedMove("memory index", str(index), ", ".join(sorted(moved)), "rewrite"))
+        if moved and index.is_file():
+            text = index.read_text(encoding="utf-8")
+            named = sorted(name for name in moved if _rewrite_index(text, {name: moved[name]})[1])
+            if named:
+                rewrites.append(PlannedMove("memory index", str(index), ", ".join(named), "rewrite"))
     return renames, rewrites
 
 
