@@ -694,6 +694,12 @@ def get_engine_script(
           _supervisor_restore_terminal || true
           rm -f "$_supervisor_child_ready_path"
           _ai_emit info terminal "$_promotion_failure"
+          # A Ctrl+C while a child is still starting (a reload, a restart) is a
+          # deliberate stop, so it ends the session the way a final exit does. An
+          # `exit 1` here skipped the fenced teardown below, and the window's
+          # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
+          # A real promotion failure still exits 1 and leaves its error on screen.
+          (( _promotion_status == 2 )) && break
           exit 1
         fi
         _supervisor_wait_for_child

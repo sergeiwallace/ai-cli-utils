@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Ctrl+C that reaches a session while it is still starting its next agent (a reload
+  after an `ai` update, or a restart) now ends the session and removes its tmux session.
+  It used to exit without that teardown, and because the window keeps exited panes, the
+  pane stayed up dead and ignored every key.
+
 - A telemetry store that another process holds locked no longer delays a launch's
   handoff past its 100 ms budget (102 to 111 ms on a macOS runner). Two costs added up:
   the batch looked up the machine id before trying for the lock, and its 30 ms busy
