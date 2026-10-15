@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A session no longer prints `no such file or directory: ...session-reload-reason-...` each
   time its agent exits without a reload pending.
+- A reload after the agent has started and run counts from attempt 1 again. Every
+  update's reload used to add to one count for the life of the session, so the third and
+  sixth showed the reload-loop warning and error though nothing was looping.
 - A Ctrl+C that reaches a session while it is still starting its next agent (a reload
   after an `ai` update, or a restart) now ends the session and removes its tmux session.
   It used to exit without that teardown, and because the window keeps exited panes, the

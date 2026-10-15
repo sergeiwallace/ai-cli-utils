@@ -404,12 +404,13 @@ def get_engine_script(
       mkdir -p "$_ai_state_dir/session-leases" "$_ai_state_dir/session-heartbeats"
       _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"
       _ai_reload_reason_file="$_ai_state_dir/session-reload-reason-$tmux_session"
+      _ai_reload_run_file="$_ai_state_dir/session-reload-run-$tmux_session"
       # A new supervisor starts a new Ctrl+C gesture. Replaceable children
       # below share these files only for this supervisor's lifetime.
       rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
         "$_ai_state_dir/session-int-exit-$tmux_session" \
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
-        "$_ai_progress_marker" "$_ai_reload_reason_file"
+        "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
@@ -726,8 +727,12 @@ def get_engine_script(
         {{ read -r _reload_reason < "$_ai_reload_reason_file"; }} 2>/dev/null || true
         rm -f "$_ai_reload_reason_file"
         if [[ -n "$_reload_reason" ]]; then
+          # A child that reached its agent start removed the run file, so this reload
+          # begins a new run even though that child then reloaded (AI-CLI-pfnh).
+          [[ -f "$_ai_reload_run_file" ]] || _reload_count=0
           (( _reload_count == 0 )) && _reload_started=$(date +%s)
           _reload_count=$((_reload_count + 1))
+          : > "$_ai_reload_run_file"
           (( _supervisor_foreground == 0 )) && _supervisor_show_reload
         else
           _reload_count=0
@@ -753,6 +758,7 @@ def get_engine_script(
     mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
     _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"
     _ai_reload_reason_file="$_ai_state_dir/session-reload-reason-$tmux_session"
+    _ai_reload_run_file="$_ai_state_dir/session-reload-run-$tmux_session"
     # A managed session can restart its agent after a normal exit. Load the
     # project environment into this persistent shell once, rather than running
     # `direnv exec` for every replacement agent (and re-emitting .envrc output).
@@ -1163,8 +1169,10 @@ def get_engine_script(
           exit 78
         fi
       fi
-      # Not reloading: end the supervisor's reload row before anything here writes.
+      # Not reloading: end the supervisor's reload row before anything here writes, and
+      # its run, so a reload after this agent counts from 1 (AI-CLI-pfnh).
       _ai_close_progress
+      rm -f "$_ai_reload_run_file"
       start_watcher
       start_ts=$(date +%s)
       agent_attempted=false

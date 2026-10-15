@@ -77,6 +77,7 @@ class Session:
         pty_backed: bool = True,
         launch_log: Path | None = None,
         direnv_fails: bool = False,
+        update_pending: bool = False,
     ) -> None:
         self.tmp_path = tmp_path
         self.started = tmp_path / "agent-started"
@@ -113,6 +114,9 @@ class Session:
             )
         )
         script.chmod(0o700)
+        if update_pending:
+            # A stamp the template did not bake in: each child reloads after its agent exits.
+            (state / "ai-cli-utils" / "last_update_commit.txt").write_text("an-update-after-launch\n")
         env = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "LC_ALL", "USER", "LOGNAME"}}
         env.update(
             PATH=os.pathsep.join((str(bin_dir), os.environ.get("PATH", ""))),
@@ -446,6 +450,23 @@ def test_given_a_reload_then_a_normal_agent_exit_when_reloading_again_then_the_c
     attempts = [re.search(r"attempt (\d+)", frame)[1] for frame in session.frames()]  # type: ignore[index]
     assert attempts == ["1", "1"], session.frames()
     assert len(_reload_rows(rows)) == 2, rows
+
+
+def test_given_an_update_reload_after_each_agent_run_when_reloading_again_then_the_count_restarts_at_1(
+    session_factory,
+):
+    """An agent start ends a reload run, even when the same child then reloads (AI-CLI-pfnh).
+
+    The update check runs after an agent exits, inside the child that ran it, so the child
+    exits with a reload reason and the supervisor never sees a reasonless exit to reset on.
+    Live, a reload after a normal agent read "attempt 2, 79s".
+    """
+    session = session_factory(reload_on=(), agent_runs=(4.0, 4.0, 600.0), update_pending=True)
+    session.wait_for_agents(3)
+
+    text = _SGR.sub("", bytes(session.received).decode("utf-8", errors="replace"))
+    rows = [frame.split("\r")[0] for frame in text.split("\r\x1b[K")[1:] if "updated, reloading" in frame]
+    assert [re.search(r"attempt (\d+)", row)[1] for row in rows] == ["1", "1"], rows  # type: ignore[index]
 
 
 def test_given_one_reload_when_the_agent_starts_then_no_escalation_is_shown(session_factory):
