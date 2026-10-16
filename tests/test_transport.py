@@ -646,7 +646,7 @@ class TestRunTransportLoop:
         # VPN state: False for initial check (→ mosh), True for every poll tick after
         vpn_call_count = {"n": 0}
 
-        def vpn_side_effect():
+        def vpn_side_effect(cache_ttl=0):
             vpn_call_count["n"] += 1
             return vpn_call_count["n"] > 1  # First call False, rest True
 

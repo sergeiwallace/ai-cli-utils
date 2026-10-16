@@ -120,6 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remote mosh sessions share a VPN-state cache for the configured `vpn_poll_interval`,
+  so concurrent tabs run one detection command per interval. Detection and cache locking
+  run in worker threads to keep the transport event loop responsive.
+
 - `ai session-migrate OLD NEW` now re-keys Beads assignees. Every non-closed issue assigned to
   exactly OLD, in every store under the projects dir, is reassigned to NEW through `bd --actor
   OLD update --if-assignee OLD` and given a comment naming the migration, so the migrated
