@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A bare session hosted on the launcher's pty now records when the operator last typed, in
+  `<session>.input-at` beside its submission FIFO (one line, epoch seconds), written atomically
+  at mode 0600 from launch until exit. A submitter that must not write over a draft can read it
+  instead of the terminal's access time, which Linux moves only in 8-second steps. Text arriving
+  through the FIFO does not move it.
+
 - `ai c NEW` (and every engine launch) now runs the pending `session-migrate --finish` of any
   migration to NEW this host's `session-migrations.jsonl` records, before the session starts,
   so a migration made while NEW was live completes on its next launch. A finish that completes
