@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c NEW` (and every engine launch) now runs the pending `session-migrate --finish` of any
+  migration to NEW this host's `session-migrations.jsonl` records, before the session starts,
+  so a migration made while NEW was live completes on its next launch. A finish that completes
+  appends a `"finished": true` row for the pair, from `ai c` or a manual `--finish`, so it runs
+  once; one that refuses or fails is reported on one line with the retry command and never
+  blocks the launch.
+
 - `ai session-migrate` (and `--finish`) now re-keys the chief-of-staff registration `ai cos`
   wrote when it names OLD (`state/chief-session.json` and `registry.json`'s chief fields,
   leaving it named and exiting 1 while its tmux target is live), and renames OLD's

@@ -523,6 +523,17 @@ plan. `--finish` refuses while either session runs; `ai session-migrate OLD NEW
 --beads-only` does only this re-key, under the same ledger rule, and runs while
 NEW is live, so a migrated session already back at work need not exit for it.
 
+A `--finish` that re-keyed on that row and left nothing undone appends a row with
+`"finished": true` for the pair; the ledger is append-only, so the migration's own
+row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, and the
+remote side of `-R`) checks the ledger once the session name is resolved and,
+before the worktree or the session exists, runs the finish of each pair migrated
+to NEW with no later `finished` row: the same planner, hooks and Beads rule as
+`--finish -y`. That covers a migration made while NEW was live, which `--finish`
+itself could never complete. A finish that refuses or leaves work undone is
+reported on one line naming the pair and the `--finish -y` command to retry,
+records nothing, and the launch continues. A dry run (`-d`) finishes nothing.
+
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
 directory, and another repo holds the registered `.worktrees/NEW`), the command,
