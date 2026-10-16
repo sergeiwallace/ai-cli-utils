@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import portalocker
 import psutil
 
 from . import output as _out
@@ -461,7 +462,67 @@ def _write_transport_outcome(path: Path, **fields) -> None:
         path.write_text(json.dumps(record))
 
 
-def _is_vpn_active() -> bool:
+def _read_vpn_cache(path: Path, ttl: float) -> bool | None:
+    """Read a fresh, well-formed answer; reject future timestamps after clock changes."""
+    try:
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict) or not isinstance(state.get("active"), bool):
+            return None
+        checked_at = state.get("checked_at")
+        if type(checked_at) in (int, float) and 0 <= time.time() - checked_at < ttl:
+            return state["active"]
+    except (OSError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _write_vpn_cache(path: Path, active: bool) -> None:
+    """Publish the complete answer atomically, without affecting detection on failure."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix=".vpn-state-", suffix=".tmp", dir=path.parent, delete=False
+        ) as f:
+            temporary = Path(f.name)
+            json.dump({"active": active, "checked_at": time.time()}, f)
+        temporary.replace(path)
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
+def _is_vpn_active(cache_ttl: float = 0) -> bool:
+    """Share detection between transport sessions for their configured polling interval.
+
+    A separate lock file serializes readers and refreshers across processes, including
+    the cache recheck after waiting. Callers outside the transport loop keep uncached
+    detection by default. Filesystem failures fall back to direct detection.
+    """
+    if cache_ttl <= 0:
+        return _detect_vpn_active()
+    active = None
+    try:
+        state_dir = get_xdg_state_home()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        path = state_dir / "vpn-state.json"
+        with (state_dir / "vpn-state.lock").open("a") as lock:
+            portalocker.lock(lock, portalocker.LOCK_EX)
+            try:
+                active = _read_vpn_cache(path, cache_ttl)
+                if active is None:
+                    active = _detect_vpn_active()
+                    _write_vpn_cache(path, active)
+            finally:
+                portalocker.unlock(lock)
+    except (OSError, portalocker.exceptions.LockException):
+        pass
+    return _detect_vpn_active() if active is None else active
+
+
+def _detect_vpn_active() -> bool:
     """Return True if a VPN (Mullvad or any tunnel interface) is currently active.
 
     Checks Mullvad CLI first (fast, authoritative). Falls back to scanning
@@ -675,7 +736,10 @@ async def _run_transport_loop(
     *tailscale_host* — when set, the loop will attempt to start Tailscale
     automatically before falling back to SSH if mosh fails fast without VPN.
     """
+    from .config import get_remote_machine
     from .messaging import NATSClient
+
+    _vpn_poll_interval = get_remote_machine(config).get("vpn_poll_interval", 3)
 
     state_dir = get_xdg_state_home()
     transport_file = state_dir / f"transport-{session_name}.json"
@@ -706,7 +770,7 @@ async def _run_transport_loop(
     with _terminate_after_child() as raise_if_terminated:
         try:
             while True:
-                vpn_active = _is_vpn_active()
+                vpn_active = await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval)
                 vpn_changed.clear()
 
                 args = ssh_args if (vpn_active or force_ssh) else mosh_args
@@ -724,9 +788,6 @@ async def _run_transport_loop(
 
                 start_time = _monotonic()
                 _vpn_poll_ticks = 0
-                from .config import get_remote_machine
-
-                _vpn_poll_interval = get_remote_machine(config).get("vpn_poll_interval", 3)
                 _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
                 # Poll process while watching for NATS VPN signal.
                 # Also poll VPN state directly every vpn_poll_interval seconds as a
@@ -743,7 +804,11 @@ async def _run_transport_loop(
                             proc.wait()
                         break
                     _vpn_poll_ticks += 1
-                    if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0 and _is_vpn_active():
+                    if (
+                        transport_type == "mosh"
+                        and _vpn_poll_ticks % _vpn_poll_every == 0
+                        and await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval)
+                    ):
                         _out.emit(
                             Tag.TRANSPORT, "reconnect", "\nVPN detected — switching from mosh to SSH...", err=True
                         )
@@ -784,7 +849,7 @@ async def _run_transport_loop(
                                 err=True,
                             )
                             break
-                    if _is_vpn_active():
+                    if await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval):
                         _out.emit(
                             Tag.TRANSPORT,
                             "reconnect",
@@ -824,7 +889,11 @@ async def _run_transport_loop(
                     continue
 
                 # SSH retry with backoff when VPN is active
-                if transport_type == "ssh" and elapsed < 3 and _is_vpn_active():
+                if (
+                    transport_type == "ssh"
+                    and elapsed < 3
+                    and await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval)
+                ):
                     for delay in (1, 2, 4):
                         _out.emit(Tag.TRANSPORT, "reconnect", f"\nSSH failed — retrying in {delay}s...", err=True)
                         time.sleep(delay)
