@@ -44,6 +44,8 @@ tasks, memory and resume hand-off:
   each changed store is named as needing its publish step, and a store bd cannot read is
   named and fails the run. Each completed migration is appended to
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
+  a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
+  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`);
 * whatever the external hooks in ``session-migrate.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -163,6 +165,11 @@ class MigrationResult:
     warnings: list[str] = field(default_factory=list)
     #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
     kept: list[str] = field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        """Whether the run left work undone: a kept slot or a ``FAILED`` warning."""
+        return bool(self.kept) or any("FAILED" in w for w in self.warnings)
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -840,17 +847,46 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
             )
 
 
-def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
+def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {
-        "time": datetime.now(UTC).isoformat(),
-        "old": old,
-        "new": new,
-        "repo": str(repo_root),
-        "worktree": str(new_wt),
-    }
+    row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
+    _append_ledger(state, old, new, repo_root, worktree=str(new_wt))
+
+
+def _ledger_rows(state: Path) -> list[dict]:
+    rows: list[dict] = []
+    with contextlib.suppress(OSError):
+        for line in (state / MIGRATION_LEDGER).read_text(encoding="utf-8").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    rows.append(row)
+    return rows
+
+
+def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str, Path]]:
+    """``(old, repo)`` for each migration to ``new`` this host records with no later ``finished`` row.
+
+    The ledger is append-only: a completed ``--finish`` appends ``"finished": true`` for its
+    pair rather than rewriting the migration's row, and a later migration of the same pair
+    makes it pending again. A row without a ``repo`` names no slot to finish and is skipped.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    pending: dict[str, Path] = {}
+    for row in _ledger_rows(state):
+        old, repo = row.get("old"), row.get("repo")
+        if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
+            continue
+        if row.get("finished") is True:
+            pending.pop(old, None)
+        else:
+            pending[old] = Path(repo)
+    return list(pending.items())
 
 
 def _migration_evidence(old: str, new: str, state: Path) -> str | None:
@@ -862,13 +898,8 @@ def _migration_evidence(old: str, new: str, state: Path) -> str | None:
     migration run before the ledger existed gets its row written by hand, from the
     migrating session's own record.
     """
-    ledger = state / MIGRATION_LEDGER
-    with contextlib.suppress(OSError):
-        for line in ledger.read_text(encoding="utf-8").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                row = json.loads(line)
-                if isinstance(row, dict) and (row.get("old"), row.get("new")) == (old, new):
-                    return f"{ledger} records it"
+    if any((row.get("old"), row.get("new")) == (old, new) for row in _ledger_rows(state)):
+        return f"{state / MIGRATION_LEDGER} records it"
     return None
 
 
@@ -1204,6 +1235,7 @@ def finish_session(
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
+    A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1309,6 +1341,8 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
+        if not result.failed:
+            _append_ledger(state, old, new, repo_root, finished=True)
     return result
 
 

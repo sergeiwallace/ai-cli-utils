@@ -3036,6 +3036,34 @@ def _tmux_session_has_live_pane(session_name: str) -> bool:
     return result.returncode == 0 and "0" in (result.stdout or "").split()
 
 
+def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
+    """Run ``session-migrate --finish`` for each migration to ``ai_name`` this host recorded unfinished.
+
+    A migration made while its new session was live could never be finished: ``--finish``
+    refuses a running session, so its old-keyed leftovers stayed. The launch is the one
+    moment the new session is known not to be running. A finish that refuses or leaves work
+    undone is reported on one line with the command to retry, records nothing, and never
+    blocks the launch.
+    """
+    from .session_migrate import finish_session, pending_finishes
+
+    for old, repo in pending_finishes(ai_name):
+        retry = f"`ai session-migrate {old} {ai_name} -r {repo} --finish -y`"
+        try:
+            result = finish_session(repo, old, ai_name)
+        except Exception as exc:  # a finish failure must never block the launch
+            reason = " ".join(str(exc).split()) or type(exc).__name__
+            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
+            continue
+        for move in result.moves:
+            reporter.detail("migrate", move.describe())
+        if result.failed:
+            reason = " ".join("; ".join([*result.kept, *result.warnings]).split())
+            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
+        else:
+            reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -3856,6 +3884,7 @@ def _do_session_launch(
         reporter.error("session", str(exc))
         sys.exit(1)
     reporter.phase("session").outcome(f"resolved {ai_name}")
+    _finish_recorded_migrations(ai_name, reporter)
 
     # Worktree setup
     worktree_path = None
@@ -4967,7 +4996,15 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         raise
 
 
-@_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
+@_cli_group.command(
+    "c",
+    context_settings=SESSION_CONTEXT,
+    help=(
+        "Launch a Claude Code session. A migration to the session's name that this host "
+        "recorded and never finished is finished first, as `ai session-migrate OLD NEW "
+        "--finish -y` would; a finish that fails is reported and the launch continues."
+    ),
+)
 @_session_options
 def cmd_c(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
@@ -6112,7 +6149,7 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish, beads_only):
         sys.exit(1)
 
     _print_migration(result)
-    sys.exit(1 if result.kept or any("FAILED" in w for w in result.warnings) else 0)
+    sys.exit(1 if result.failed else 0)
 
 
 def _print_retirement(result) -> None:
