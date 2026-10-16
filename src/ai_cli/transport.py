@@ -469,7 +469,11 @@ def _read_vpn_cache(path: Path, ttl: float) -> bool | None:
         if not isinstance(state, dict) or not isinstance(state.get("active"), bool):
             return None
         checked_at = state.get("checked_at")
-        if type(checked_at) in (int, float) and 0 <= time.time() - checked_at < ttl:
+        if (
+            isinstance(checked_at, (int, float))
+            and not isinstance(checked_at, bool)
+            and 0 <= time.time() - checked_at < ttl
+        ):
             return state["active"]
     except (OSError, ValueError, OverflowError):
         pass
