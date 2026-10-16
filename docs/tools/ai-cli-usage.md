@@ -190,7 +190,10 @@ terminal in raw mode and copies bytes both ways unchanged. Text written to the s
 FIFO, `$XDG_STATE_HOME/ai-cli-utils/pty/<session>.in` (mode `0600`, also passed to the
 engine as `AI_CLI_SUBMIT_FIFO`), is read by the engine as if typed, for example
 `printf '/compact\r' > "$AI_CLI_SUBMIT_FIFO"`. A submitter gets no screen to read back, so
-it confirms a compaction from the transcript, not the pane.
+it confirms a compaction from the transcript, not the pane. Beside the FIFO,
+`<session>.input-at` (mode `0600`) holds the epoch time, in seconds, of your last keystroke,
+or of the launch if you have not typed yet. A submitter reads it to avoid writing over a
+draft you have started. Text from the FIFO does not change it.
 
 - **Resize:** SIGWINCH on the launcher copies your window size onto the pty, and the engine
   gets its own SIGWINCH.

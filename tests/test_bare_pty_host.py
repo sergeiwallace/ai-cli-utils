@@ -306,6 +306,63 @@ def test_given_a_bare_launch_when_text_is_written_to_the_submission_fifo_then_th
     assert not session.fifo().exists(), "the FIFO must be removed when the session ends"
 
 
+# --- The operator-input sidecar the FIFO compact route proves idleness from -----
+
+
+def _input_at(session: _Session) -> Path:
+    return session.fifo().with_name(session.fifo().name.removesuffix(".in") + ".input-at")
+
+
+@posix_pty
+def test_given_a_bare_pty_session_when_the_operator_types_then_the_input_sidecar_records_that_time(session_factory):
+    seen: dict[str, object] = {}
+
+    def drive(session: _Session) -> None:
+        sidecar = _input_at(session)
+        _wait_for(sidecar.exists, "the input sidecar to exist from launch")
+        seen["at_launch"] = float(sidecar.read_text())
+        seen["mode"] = sidecar.stat().st_mode & 0o777
+        time.sleep(0.05)
+        before = time.time()
+        session.terminal.type(b"hi")
+        _wait_for(lambda: b"hi" in session.read(), "typed keys to reach the agent")
+        _wait_for(lambda: float(sidecar.read_text()) >= before, "the sidecar to record the typed input")
+        seen["after_typing"] = float(sidecar.read_text())
+        seen["before_typing"] = before
+        seen["path"] = sidecar
+        session.terminal.type(b"EXIT")
+
+    session = session_factory(drive)
+    session.run()
+
+    assert seen["mode"] == 0o600, f"the sidecar must be private to the operator, got {oct(seen['mode'])}"
+    assert seen["after_typing"] >= seen["before_typing"] > seen["at_launch"], (
+        "typing must move the recorded time past the moment the keys were sent"
+    )
+    assert not seen["path"].exists(), "the sidecar must be removed when the session ends, with the FIFO"
+
+
+@posix_pty
+def test_given_a_bare_pty_session_when_only_the_fifo_submits_then_the_input_sidecar_does_not_move(session_factory):
+    """Negative control: a submission is not operator input, so the idle proof must not see one."""
+    seen: dict[str, float] = {}
+
+    def drive(session: _Session) -> None:
+        sidecar = _input_at(session)
+        _wait_for(sidecar.exists, "the input sidecar to exist from launch")
+        seen["at_launch"] = float(sidecar.read_text())
+        with session.fifo().open("wb", buffering=0) as handle:
+            handle.write(b"/compact\r")
+        _wait_for(lambda: b"/compact\r" in session.read(), "the agent to read the submission")
+        seen["after_submit"] = float(sidecar.read_text())
+        session.terminal.type(b"EXIT")
+
+    session = session_factory(drive)
+    session.run()
+
+    assert seen["after_submit"] == seen["at_launch"], "a FIFO submission must not count as operator input"
+
+
 # --- AC-3: the negative control ------------------------------------------------
 
 

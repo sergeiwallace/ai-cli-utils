@@ -43,6 +43,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 import tty
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,32 @@ _CHUNK = 65536
 def submit_fifo_path(session: str) -> Path:
     """Where a submitter writes text for *session* to read as typed input."""
     return get_xdg_state_home() / "pty" / f"{session}.in"
+
+
+def input_at_path(session: str) -> Path:
+    """Where the launcher records when the operator last typed into *session*.
+
+    A submitter that must not write over a draft (the auto-compact FIFO route) reads
+    this instead of the terminal's access time, which Linux moves only in 8-second
+    steps. The file holds one line, the epoch time in seconds as a decimal, of the
+    last operator input relayed to the agent, or of the launch when there was none.
+    It exists for exactly as long as the FIFO does.
+    """
+    return submit_fifo_path(session).with_name(f"{session}.input-at")
+
+
+def _record_input(path: Path) -> None:
+    # Written to a temporary name and renamed over the path, so a reader never sees a
+    # partial line. A failed write must not stop the relay: the reader then sees an
+    # older time or no file, and both make it refuse or wait rather than send.
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    with contextlib.suppress(OSError):
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, f"{time.time():.6f}\n".encode())
+        finally:
+            os.close(fd)
+        temporary.replace(path)
 
 
 def _copy_winsize(src: int, dst: int) -> None:
@@ -93,7 +120,7 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view) :]
 
 
-def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subprocess.Popen) -> None:
+def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subprocess.Popen, input_at: Path) -> None:
     """Copy operator input and FIFO submissions to the agent, and its output back, until it exits."""
     wake_r, wake_w = os.pipe()
     for fd in (wake_r, wake_w):
@@ -124,6 +151,9 @@ def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subpr
                     typed = b""
                 if typed:
                     _write_all(master, typed)
+                    # Only the operator's keys move it: a FIFO submission is not input
+                    # a submitter could be writing over.
+                    _record_input(input_at)
                 else:
                     readers.remove(stdin_fd)
             if fifo_fd in readable:
@@ -173,6 +203,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
     stdin_fd = sys.stdin.fileno()
     stdout_fd = sys.stdout.fileno()
     fifo = submit_fifo_path(session)
+    input_at = input_at_path(session)
     master, slave = os.openpty()
     fds = [master]
     # Installed before the spawn, so a SIGTERM or SIGHUP at any point either unwinds
@@ -181,6 +212,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
         try:
             _copy_winsize(stdin_fd, slave)
             _make_fifo(fifo)
+            _record_input(input_at)
             try:
                 proc = subprocess.Popen(
                     args,
@@ -202,7 +234,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
             try:
                 if saved is not None:
                     tty.setraw(stdin_fd, termios.TCSANOW)
-                _relay(master, stdin_fd, stdout_fd, fifo_fd, proc)
+                _relay(master, stdin_fd, stdout_fd, fifo_fd, proc, input_at)
                 returncode = proc.wait()
                 raise_if_terminated()
             finally:
@@ -216,6 +248,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
             for fd in fds:
                 with contextlib.suppress(OSError):
                     os.close(fd)
-            with contextlib.suppress(FileNotFoundError):
-                fifo.unlink()
+            for path in (fifo, input_at):
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
     return 128 - returncode if returncode < 0 else returncode
