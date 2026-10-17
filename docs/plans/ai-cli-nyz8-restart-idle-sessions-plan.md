@@ -367,8 +367,10 @@ compaction.
 
 ##### (a) Pass when either holds; compute the percentage in the package
 
-- Just compacted: the latest `compact_boundary` record has `compactMetadata.trigger` `auto` (or
-  `manual`), and at most `compaction_fresh_turns` assistant turns follow it.
+- Just auto-compacted: the latest `compact_boundary` record has `compactMetadata.trigger` `auto`,
+  and at most `compaction_fresh_turns` assistant turns follow it. A manual compaction, such as
+  one the pre-step's `/save-state` leads to, does not satisfy this arm; the session then passes
+  only through the threshold arm, which a fresh compaction normally meets.
 - Under threshold: the latest main-chain `usage` gives
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, divided by the model's
   window (from the model id, or `context_window_tokens`), is at or below `context_threshold_pct`.
