@@ -514,7 +514,7 @@ Lists the sessions `ai c` has recorded, local and remote, with the iTerm2 window
 ai iterm2 restore [-s|--startup] [-d|--dry-run] [-o|--only local|remote] [-a|--arrangement NAME]
 ```
 
-Re-attaches the recorded sessions after an iTerm2 restart (macOS). It opens the saved arrangement on demand, then types each session's `ai` command into its recorded pane when that pane is an idle shell, or into a new tab, and prints one `restored`, `skipped` or `dead` line per session. `--dry-run` prints the plan and changes nothing; `--startup` is the form iTerm2's startup hook runs. Off unless `[iterm2.persistence.restore] enabled = true`; see [Restore](../iterm2-persistence.md#restore-ai-iterm2-restore).
+Re-attaches the recorded sessions after an iTerm2 restart (macOS). It opens the saved arrangement on demand, then types each session's `ai` command into its recorded pane when that pane is an idle shell (it never opens a tab or window, and at startup relaunches nothing when any session survived the restart), and prints one `restored`, `skipped` or `dead` line per session. `--dry-run` prints the plan and changes nothing; `--startup` is the form iTerm2's startup hook runs. Off unless `[iterm2.persistence.restore] enabled = true`; see [Restore](../iterm2-persistence.md#restore-ai-iterm2-restore).
 
 ### ai vpn-watch
 
