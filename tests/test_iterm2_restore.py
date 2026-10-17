@@ -71,6 +71,8 @@ class FakeSystem:
         self.timeout_on: str | None = None
         self.it2_hangs = False
         self.pane_answers: list[dict] | None = None
+        #: Successive answers for the idle-shell ``ps`` pass; the last one repeats.
+        self.idle_answers: list[set[str]] | None = None
         self.calls: list[tuple[str, str]] = []
 
     def _osascript(self, script: str) -> tuple[str, str]:
@@ -97,7 +99,10 @@ class FakeSystem:
         elif program == "tmux" and cmd[1] == "list-clients":
             stdout = self.attached.get(cmd[3], "")
         elif program == "ps":
-            rows = [f"{Path(tty).name} S+ -zsh" for tty in self.idle]
+            idle = self.idle
+            if self.idle_answers:
+                idle = self.idle_answers.pop(0) if len(self.idle_answers) > 1 else self.idle_answers[0]
+            rows = [f"{Path(tty).name} S+ -zsh" for tty in idle]
             rows += [f"{Path(_BUSY).name} Ss /usr/bin/login", f"{Path(_BUSY).name} S+ tmux", "?? Ss launchd"]
             stdout = "\n".join(rows)
         elif program == "it2":
@@ -112,6 +117,10 @@ class FakeSystem:
 
     def kinds(self) -> list[str]:
         return [kind for kind, _ in self.calls]
+
+    def scripts(self) -> list[str]:
+        """Every AppleScript sent to iTerm2, whatever it was classified as."""
+        return [script for kind, script in self.calls if kind != "it2"]
 
     def typed(self) -> list[tuple[str, str]]:
         """(where, script) for each launch: "new-tab" or the tty a pane write targeted."""
@@ -140,10 +149,15 @@ def machine(tmp_path, monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr(iterm2_restore.time, "sleep", sleeps.append)
     fake = FakeSystem()
+    # A remote record is open when its launcher process still runs on a tty; the test
+    # names those by record id instead of spawning launchers.
+    launchers: dict[str, str] = {}
+    monkeypatch.setattr("ai_cli.session_registry._launcher_tty", lambda record: launchers.get(record.get("id"), ""))
 
     class Machine:
         system = fake
         slept = sleeps
+        live_launchers = launchers
         it2_path = it2
         registry = state / "iterm2-sessions.json"
 
@@ -160,6 +174,16 @@ def machine(tmp_path, monkeypatch):
             state.mkdir(parents=True, exist_ok=True)
             doc = {"schema": 1, "machine": "test", "sessions": list(records)}
             Machine.registry.write_text(json.dumps(doc), encoding="utf-8")
+
+        @staticmethod
+        def seat(*records: dict) -> None:
+            """Record the sessions, each in its own idle shell pane: window 0, tab 0, pane N on /dev/ttys3NN."""
+            for number, record in enumerate(records):
+                tty = f"/dev/ttys3{number:02d}"
+                record["iterm2"] = {**_pane(0, 0, number, f"U-{record['name']}"), "tty": tty}
+                fake.panes[tty] = _pane(0, 0, number, f"U-{record['name']}")
+                fake.idle.add(tty)
+            Machine.sessions(*records)
 
     # A context patch, not monkeypatch: monkeypatch unwinds after conftest's autouse
     # subprocess guard, and would put the guard's mock back once the guard has gone.
@@ -189,7 +213,7 @@ def test_given_it2_unavailable_when_restoring_on_demand_then_sessions_restore_an
     machine.config(
         'default_arrangement = "layout-a"\n' + ("use_it2 = false\n" if unavailable == "use_it2-false" else "")
     )
-    machine.sessions(_record("c-myproject-1"))
+    machine.seat(_record("c-myproject-1"))
     if unavailable == "absent":
         machine.it2_path.unlink()
     elif unavailable == "prompt-never-answered":
@@ -199,8 +223,8 @@ def test_given_it2_unavailable_when_restoring_on_demand_then_sessions_restore_an
 
     assert code == 0
     assert "arrangement: open it via Window > Restore Window Arrangement > layout-a" in out
-    assert "c-myproject-1: restored (new tab)" in out
-    assert [where for where, _ in machine.system.typed()] == ["new-tab"]
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
+    assert [where for where, _ in machine.system.typed()] == ["/dev/ttys300"]
     if unavailable == "use_it2-false":
         assert "it2" not in machine.system.kinds()
 
@@ -257,14 +281,15 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
     machine,
 ):
     machine.config('default_arrangement = "layout-a"')
-    machine.system.panes = {_IDLE: _pane(0, 1, 0, "U-IDLE")}
     machine.system.gone = {"c-myproject-9", "c-myproject-8"}
-    machine.sessions(
-        _record("c-myproject-2", position=_pane(0, 2, 0, "U-OLD")),
-        _record("c-myproject-1", position=_pane(0, 1, 0, "U-OLD-1")),
+    stale = _record("c-myproject-2")
+    machine.seat(
         _record("c-myproject-9", boot_id="boot-before"),
+        _record("c-myproject-1"),
+        stale,
         _record("c-myproject-8", exit_cause="manual_exit"),
     )
+    machine.system.idle.discard(stale["iterm2"]["tty"])
     before = machine.registry.read_bytes()
 
     code, out, _ = _restore("--dry-run")
@@ -273,9 +298,9 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
     assert _lines(out) == [
         "c-myproject-9: would record exit (cause=host_reboot; tmux session no longer exists)",
         "arrangement: would restore 'layout-a' with it2",
-        "c-myproject-1: would restore (window 0 tab 1 pane 0): cd /work/myproject && ai c 1",
-        "c-myproject-2: would restore (new tab): cd /work/myproject && ai c 2",
-        "c-myproject-9: would restore (new tab): cd /work/myproject && AIH_LAUNCH_REASON=host_reboot ai c 9",
+        "c-myproject-9: would restore (window 0 tab 0 pane 0): cd /work/myproject && AIH_LAUNCH_REASON=host_reboot ai c 9",
+        "c-myproject-1: would restore (window 0 tab 0 pane 1): cd /work/myproject && ai c 1",
+        "c-myproject-2: skipped (no idle shell pane at its recorded position; restore opens no new tab)",
         "c-myproject-8: skipped (cause=manual_exit; restore.relaunch.scenarios.manual_exit = false)",
     ]
     assert "new-tab" not in machine.system.kinds()
@@ -286,7 +311,7 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
 
 def test_given_max_sessions_when_restoring_then_the_most_recently_refreshed_are_restored_and_the_rest_skipped(machine):
     machine.config("max_sessions = 2")
-    machine.sessions(
+    machine.seat(
         _record("c-myproject-1", refreshed="2026-01-01T08:00:00Z"),
         _record("c-myproject-2", refreshed="2026-01-01T11:00:00Z"),
         _record("c-myproject-3", refreshed="2026-01-01T10:00:00Z"),
@@ -295,15 +320,15 @@ def test_given_max_sessions_when_restoring_then_the_most_recently_refreshed_are_
     code, out, _ = _restore()
 
     assert code == 0
-    assert "c-myproject-2: restored (new tab)" in out
-    assert "c-myproject-3: restored (new tab)" in out
+    assert "c-myproject-2: restored (window 0 tab 0 pane 1)" in out
+    assert "c-myproject-3: restored (window 0 tab 0 pane 2)" in out
     assert "c-myproject-1: skipped (max_sessions=2)" in out
     assert len(machine.system.typed()) == 2
 
 
 def test_given_remote_hosts_when_a_remote_alias_is_not_listed_then_that_session_is_skipped_and_named(machine):
     machine.config('remote_hosts = ["devbox"]')
-    machine.sessions(
+    machine.seat(
         _record("c-r-myproject-1", kind="remote", alias="devbox"),
         _record("c-r-myproject-2", kind="remote", alias="otherbox"),
     )
@@ -311,7 +336,7 @@ def test_given_remote_hosts_when_a_remote_alias_is_not_listed_then_that_session_
     code, out, _ = _restore()
 
     assert code == 0
-    assert "c-r-myproject-1: restored (new tab)" in out
+    assert "c-r-myproject-1: restored (window 0 tab 0 pane 0)" in out
     assert "c-r-myproject-2: skipped (remote_hosts does not list 'otherbox')" in out
     (only,) = machine.system.typed()
     assert "ai c -R -m devbox 1" in only[1]
@@ -330,25 +355,25 @@ def test_given_a_selection_rule_when_restoring_then_a_filtered_session_is_skippe
     machine, restore_keys, flags, skipped_line
 ):
     machine.config(restore_keys)
-    machine.sessions(_record("c-myproject-1"), _record("c-r-myproject-2", kind="remote"))
+    machine.seat(_record("c-myproject-1"), _record("c-r-myproject-2", kind="remote"))
 
     code, out, _ = _restore(*flags)
 
     assert code == 0
     assert skipped_line in out
-    assert "c-r-myproject-2: restored (new tab)" in out
+    assert "c-r-myproject-2: restored (window 0 tab 0 pane 1)" in out
 
 
 def test_given_confirm_when_the_user_declines_then_neither_iterm2_nor_the_registry_changes(machine):
     machine.config("confirm = true")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9"))
+    machine.seat(_record("c-myproject-1"), _record("c-myproject-9"))
     before = machine.registry.read_bytes()
 
     code, out, _ = _restore(stdin="n\n")
 
     assert code == 0
-    assert "c-myproject-1: would restore (new tab): cd /work/myproject && ai c 1" in out
+    assert "c-myproject-1: would restore (window 0 tab 0 pane 0): cd /work/myproject && ai c 1" in out
     assert "restore cancelled; nothing changed" in out
     assert machine.system.typed() == []
     assert machine.registry.read_bytes() == before
@@ -359,12 +384,12 @@ def test_given_confirm_when_the_user_accepts_then_dead_records_not_relaunched_ar
 ):
     machine.config("confirm = true")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9", exit_cause="manual_exit"))
+    machine.seat(_record("c-myproject-1"), _record("c-myproject-9", exit_cause="manual_exit"))
 
     code, out, _ = _restore(stdin="y\n")
 
     assert code == 0
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
     assert [r["name"] for r in json.loads(machine.registry.read_text(encoding="utf-8"))["sessions"]] == [
         "c-myproject-1"
     ]
@@ -372,14 +397,13 @@ def test_given_confirm_when_the_user_accepts_then_dead_records_not_relaunched_ar
 
 def test_given_confirm_when_run_at_startup_then_it_never_asks(machine):
     machine.config("confirm = true\non_startup = true")
-    machine.system.panes = {_BUSY: _pane(0, 0, 0, "U-BUSY")}
-    machine.sessions(_record("c-myproject-1"))
+    machine.seat(_record("c-myproject-1"))
 
     code, out, _ = _restore("--startup")
 
     assert code == 0
     assert "Restore 1 session(s)?" not in out
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
 
 
 def test_given_no_registry_when_restoring_then_it_says_no_sessions_are_recorded(machine):
@@ -396,7 +420,7 @@ def test_given_no_registry_when_restoring_then_it_says_no_sessions_are_recorded(
 
 def test_given_an_arrangement_on_demand_when_restoring_then_it2_restores_it_before_any_session_opens(machine):
     machine.config('default_arrangement = "layout-a"')
-    machine.sessions(_record("c-myproject-1"))
+    machine.seat(_record("c-myproject-1"))
 
     code, out, _ = _restore()
 
@@ -404,7 +428,7 @@ def test_given_an_arrangement_on_demand_when_restoring_then_it2_restores_it_befo
     assert "arrangement: restored 'layout-a' with it2" in out
     kinds = machine.system.kinds()
     restore_call = machine.system.calls.index(("it2", "window arrange restore layout-a"))
-    assert restore_call < kinds.index("new-tab")
+    assert restore_call < kinds.index("write-pane")
     assert restore_call < kinds.index("list-panes")
 
 
@@ -448,7 +472,7 @@ def test_given_startup_when_iterm2_has_no_window_yet_then_it_waits_for_the_arran
 
 def test_given_the_named_arrangement_does_not_exist_when_restoring_then_it_is_reported_and_sessions_continue(machine):
     machine.config('default_arrangement = "no-such-layout"')
-    machine.sessions(_record("c-myproject-1"))
+    machine.seat(_record("c-myproject-1"))
 
     code, out, _ = _restore()
 
@@ -457,10 +481,10 @@ def test_given_the_named_arrangement_does_not_exist_when_restoring_then_it_is_re
         "arrangement: 'no-such-layout' is not a saved arrangement (saved: 'layout-a'); restoring sessions only" in out
     )
     assert ("it2", "window arrange restore no-such-layout") not in machine.system.calls
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
 
 
-def test_given_recorded_panes_when_restoring_then_idle_ones_are_filled_busy_ones_overflow_and_launches_stagger(machine):
+def test_given_recorded_panes_when_restoring_then_idle_ones_are_filled_the_rest_skipped_and_launches_stagger(machine):
     machine.config("stagger_seconds = 2.5")
     machine.system.panes = {
         _IDLE: _pane(0, 0, 0, "U-A"),
@@ -477,46 +501,46 @@ def test_given_recorded_panes_when_restoring_then_idle_ones_are_filled_busy_ones
     code, out, _ = _restore()
 
     assert code == 0
-    assert [where for where, _ in machine.system.typed()] == [_IDLE, "new-tab", _SECOND_IDLE, "new-tab"]
+    assert [where for where, _ in machine.system.typed()] == [_IDLE, _SECOND_IDLE]
     assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
-    assert "c-myproject-2: restored (new tab)" in out
+    assert "c-myproject-2: skipped (no idle shell pane at its recorded position; restore opens no new tab)" in out
     assert "c-myproject-3: restored (window 1 tab 0 pane 0)" in out
-    assert "c-myproject-4: restored (new tab)" in out
-    assert machine.slept == [2.5, 2.5, 2.5]
+    assert "c-myproject-4: skipped (no idle shell pane at its recorded position; restore opens no new tab)" in out
+    assert machine.slept == [2.5]
 
 
-def test_given_fill_arrangement_false_when_a_recorded_pane_is_idle_then_the_session_still_opens_in_a_new_tab(machine):
+def test_given_fill_arrangement_false_when_a_recorded_pane_is_idle_then_the_session_is_skipped_and_no_tab_opens(
+    machine,
+):
     machine.config("fill_arrangement = false")
     machine.system.panes = {_IDLE: _pane(0, 0, 0, "U-A")}
     machine.sessions(_record("c-myproject-1", position=_pane(0, 0, 0, "U-A")))
 
-    _restore()
+    code, out, _ = _restore()
 
-    assert [where for where, _ in machine.system.typed()] == ["new-tab"]
+    assert code == 0
+    assert machine.system.typed() == []
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
+    assert "c-myproject-1: skipped (fill_arrangement = false; restore opens no new tab)" in out
 
 
 def test_given_a_session_already_attached_when_restoring_then_it_is_skipped_not_stolen(machine):
     machine.config("")
-    machine.system.panes = {_BUSY: _pane(0, 4, 0, "U-B")}
     machine.system.attached = {"c-myproject-1": _BUSY}
-    machine.sessions(_record("c-myproject-1"), _record("c-myproject-2"))
+    machine.seat(_record("c-myproject-1"), _record("c-myproject-2"))
+    machine.system.panes[_BUSY] = _pane(0, 4, 0, "U-B")
 
     code, out, _ = _restore()
 
     assert code == 0
     assert f"c-myproject-1: skipped (already open on {_BUSY} (window 0 tab 4 pane 0))" in out
-    assert [where for where, _ in machine.system.typed()] == ["new-tab"]
+    assert [where for where, _ in machine.system.typed()] == ["/dev/ttys301"]
 
 
-@pytest.mark.parametrize("hung_call", ["new-tab", "write-pane"])
-def test_given_iterm2_stops_answering_when_restoring_then_it_stops_reports_the_rest_and_leaves_the_registry(
-    machine, hung_call
-):
+def test_given_iterm2_stops_answering_when_restoring_then_it_stops_reports_the_rest_and_leaves_the_registry(machine):
     machine.config("")
-    machine.system.panes = {_IDLE: _pane(0, 0, 0, "U-A")}
-    machine.system.timeout_on = hung_call
-    first_position = _pane(0, 0, 0, "U-A") if hung_call == "write-pane" else None
-    machine.sessions(_record("c-myproject-1", position=first_position), _record("c-myproject-2"))
+    machine.system.timeout_on = "write-pane"
+    machine.seat(_record("c-myproject-1"), _record("c-myproject-2"))
     before = machine.registry.read_bytes()
 
     code, out, _ = _restore()
@@ -529,7 +553,7 @@ def test_given_iterm2_stops_answering_when_restoring_then_it_stops_reports_the_r
     assert machine.registry.read_bytes() == before
 
 
-def test_given_the_pane_lookup_times_out_when_restoring_then_sessions_degrade_to_new_tabs(machine):
+def test_given_the_pane_lookup_times_out_when_restoring_then_nothing_is_restored_and_no_tab_opens(machine):
     machine.config("")
     machine.system.timeout_on = "list-panes"
     machine.sessions(_record("c-myproject-1", position=_pane(0, 0, 0, "U-A")))
@@ -537,8 +561,10 @@ def test_given_the_pane_lookup_times_out_when_restoring_then_sessions_degrade_to
     code, out, _ = _restore()
 
     assert code == 0
-    assert "panes: not read (iTerm2 did not answer in 10s); sessions open in new tabs" in out
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "panes: not read (iTerm2 did not answer in 10s); no session is restored" in out
+    assert "c-myproject-1: skipped (no idle shell pane at its recorded position; restore opens no new tab)" in out
+    assert machine.system.typed() == []
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
 
 
 def test_given_a_non_macos_platform_when_restoring_then_it_exits_zero_with_the_platform_message(machine, monkeypatch):
@@ -551,6 +577,132 @@ def test_given_a_non_macos_platform_when_restoring_then_it_exits_zero_with_the_p
     assert code == 0
     assert _lines(out) == ["restore is macOS/iTerm2 only"]
     assert machine.system.calls == []
+
+
+# --- Only existing panes, only sessions that were running, never a live pane -------
+#
+# Frozen regression tests for an iTerm2 restart on 2026-10-17: restore opened seven new
+# tabs for registry records whose launchers had died days earlier, three of those
+# re-dialled remote sessions that had survived in their own panes and detached them to
+# the shell, and one "new tab" write landed in the prompt of a running Claude Code pane.
+
+_LIVE_A = "/dev/ttys201"
+_LIVE_B = "/dev/ttys202"
+_TAB_OPENERS = ("create tab", "create window", "current session")
+
+
+def _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine) -> None:
+    for script in machine.system.scripts():
+        for opener in _TAB_OPENERS:
+            assert opener not in script, f"restore sent {opener!r} to iTerm2:\n{script}"
+
+
+def test_given_a_session_with_no_idle_recorded_pane_when_restoring_then_no_tab_or_window_opens_and_it_is_skipped(
+    machine,
+):
+    machine.config("")
+    machine.system.panes = {_BUSY: _pane(0, 0, 0, "U-BUSY")}
+    machine.sessions(
+        _record("c-myproject-1"),
+        _record("c-myproject-2", position=_pane(0, 0, 0, "U-BUSY")),
+    )
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
+    assert machine.system.typed() == []
+    assert "c-myproject-1: skipped (no idle shell pane at its recorded position; restore opens no new tab)" in out
+    assert "c-myproject-2: skipped (no idle shell pane at its recorded position; restore opens no new tab)" in out
+
+
+def test_given_sessions_survived_the_iterm2_restart_when_restoring_at_startup_then_one_without_a_client_is_not_relaunched(
+    machine,
+):
+    machine.config("on_startup = true")
+    machine.system.panes = {
+        _LIVE_A: _pane(0, 0, 0, "U-LOCAL"),
+        _LIVE_B: _pane(0, 0, 3, "U-REMOTE"),
+        _IDLE: _pane(0, 1, 0, "U-STALE"),
+    }
+    machine.system.attached = {"c-myproject-1": _LIVE_A}
+    machine.live_launchers["id-c-r-myproject-ec2-3"] = _LIVE_B
+    machine.sessions(
+        _record("c-myproject-1", position=_pane(0, 0, 0, "U-LOCAL")),
+        _record("c-r-myproject-ec2-3", kind="remote", position=_pane(0, 0, 3, "U-REMOTE")),
+        _record("c-r-myproject-ec2-4", kind="remote", position=_pane(0, 1, 0, "U-STALE")),
+    )
+
+    code, out, _ = _restore("--startup")
+
+    assert code == 0
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
+    assert machine.system.typed() == []
+    assert "c-myproject-1: skipped (already open on /dev/ttys201 (window 0 tab 0 pane 0))" in out
+    assert "c-r-myproject-ec2-3: skipped (already open on /dev/ttys202 (window 0 tab 0 pane 3))" in out
+    assert (
+        "c-r-myproject-ec2-4: skipped (not running when iTerm2 quit: 2 sessions survived the restart, "
+        "so iTerm2 kept every session that was)"
+    ) in out
+
+
+def test_given_a_record_that_relaunches_an_open_session_when_restoring_then_it_is_skipped_and_nothing_is_typed(
+    machine,
+):
+    machine.config("")
+    machine.system.panes = {_LIVE_B: _pane(0, 0, 3, "U-LIVE"), _IDLE: _pane(0, 0, 6, "U-OLD")}
+    machine.live_launchers["id-c-r-myproject-ec2-2"] = _LIVE_B
+    machine.sessions(
+        _record("c-r-myproject-2", kind="remote", position=_pane(0, 0, 6, "U-OLD")),
+        _record("c-r-myproject-ec2-2", kind="remote", position=_pane(0, 0, 3, "U-LIVE")),
+    )
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
+    assert machine.system.typed() == []
+    assert (
+        "c-r-myproject-2: skipped (relaunches the same session as c-r-myproject-ec2-2, already open on /dev/ttys202)"
+    ) in out
+
+
+def test_given_two_records_that_relaunch_the_same_session_when_restoring_then_only_the_most_recent_is_typed(machine):
+    machine.config("")
+    machine.system.panes = {_IDLE: _pane(0, 0, 3, "U-NEW"), _SECOND_IDLE: _pane(0, 0, 6, "U-OLD")}
+    machine.sessions(
+        _record("c-r-myproject-2", kind="remote", refreshed="2026-01-01T08:00:00Z", position=_pane(0, 0, 6, "U-OLD")),
+        _record(
+            "c-r-myproject-ec2-2", kind="remote", refreshed="2026-01-01T10:00:00Z", position=_pane(0, 0, 3, "U-NEW")
+        ),
+    )
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert [where for where, _ in machine.system.typed()] == [_IDLE]
+    assert "c-r-myproject-ec2-2: restored (window 0 tab 0 pane 3)" in out
+    assert "c-r-myproject-2: skipped (relaunches the same session as c-r-myproject-ec2-2)" in out
+
+
+def test_given_a_pane_stops_being_an_idle_shell_before_its_turn_when_restoring_then_nothing_is_typed_into_it(machine):
+    machine.config("stagger_seconds = 2")
+    machine.system.panes = {_IDLE: _pane(0, 0, 0, "U-A"), _SECOND_IDLE: _pane(0, 0, 1, "U-B")}
+    # Both panes are at a prompt when restore plans; by the time the second write is due a
+    # session has started in the second one.
+    machine.system.idle_answers = [{_IDLE, _SECOND_IDLE}, {_IDLE}]
+    machine.sessions(
+        _record("c-myproject-1", position=_pane(0, 0, 0, "U-A")),
+        _record("c-myproject-2", position=_pane(0, 0, 1, "U-B")),
+    )
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    _assert_no_tab_opened_and_nothing_typed_into_the_focused_pane(machine)
+    assert [where for where, _ in machine.system.typed()] == [_IDLE]
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
+    assert f"c-myproject-2: skipped (the pane on {_SECOND_IDLE} is no longer an idle shell)" in out
 
 
 # --- Exit causes, the relaunch filter and the handoff ------------------------------
@@ -576,20 +728,20 @@ def test_given_a_dead_record_with_no_exit_when_restoring_then_the_sweep_records_
 ):
     machine.config("")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-9", boot_id=record_boot_id))
+    machine.seat(_record("c-myproject-9", boot_id=record_boot_id))
 
     code, out, _ = _restore()
 
     assert code == 0
     assert f"c-myproject-9: exit recorded (cause={cause}; tmux session no longer exists)" in out
-    assert f"c-myproject-9: restored (new tab; cause={cause})" in out
+    assert f"c-myproject-9: restored (window 0 tab 0 pane 0; cause={cause})" in out
     recorded = _registry_records(machine)["c-myproject-9"]["exit"]
     assert recorded["cause"] == cause
     assert recorded["evidence"]["reason"] == "tmux session no longer exists"
     assert recorded["evidence"]["boot_id"] == TEST_BOOT_ID
     assert recorded["evidence"]["record_boot_id"] == record_boot_id
     ((where, script),) = machine.system.typed()
-    assert where == "new-tab"
+    assert where == "/dev/ttys300"
     assert _typed_text(script) == f"cd /work/myproject && AIH_LAUNCH_REASON={cause} ai c 9"
 
 
@@ -597,7 +749,7 @@ def test_given_a_relaunch_command_when_typed_then_aih_launch_reason_is_in_the_en
     """An assignment before ``cd`` would scope it to ``cd`` alone; it must prefix ``ai`` itself."""
     machine.config("")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-9", boot_id="boot-before"))
+    machine.seat(_record("c-myproject-9", boot_id="boot-before"))
 
     _restore()
 
@@ -638,7 +790,7 @@ def test_given_a_cause_whose_toggle_is_false_when_restoring_then_it_is_listed_sk
     toggles = "" if scenario == "manual_exit" else f"{scenario} = false"
     machine.config(f"[iterm2.persistence.restore.relaunch.scenarios]\n{toggles}")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-1"), _record("c-myproject-9", **record_kwargs))
+    machine.seat(_record("c-myproject-1"), _record("c-myproject-9", **record_kwargs))
 
     code, out, _ = _restore()
 
@@ -651,12 +803,12 @@ def test_given_a_cause_whose_toggle_is_false_when_restoring_then_it_is_listed_sk
 def test_given_manual_exit_switched_on_when_restoring_then_a_manually_exited_session_is_relaunched(machine):
     machine.config("[iterm2.persistence.restore.relaunch.scenarios]\nmanual_exit = true")
     machine.system.gone = {"c-myproject-9"}
-    machine.sessions(_record("c-myproject-9", exit_cause="manual_exit"))
+    machine.seat(_record("c-myproject-9", exit_cause="manual_exit"))
 
     code, out, _ = _restore()
 
     assert code == 0
-    assert "c-myproject-9: restored (new tab; cause=manual_exit)" in out
+    assert "c-myproject-9: restored (window 0 tab 0 pane 0; cause=manual_exit)" in out
     ((_, script),) = machine.system.typed()
     assert _typed_text(script) == "cd /work/myproject && AIH_LAUNCH_REASON=manual_exit ai c 9"
 
@@ -675,13 +827,13 @@ def test_given_a_cleanly_ended_remote_record_with_no_exit_when_swept_then_it_rea
 
 def test_given_a_live_record_when_restoring_then_no_exit_is_recorded_and_it_relaunches_without_a_reason(machine):
     machine.config("")
-    machine.sessions(_record("c-myproject-1", boot_id="boot-before"))
+    machine.seat(_record("c-myproject-1", boot_id="boot-before"))
 
     code, out, _ = _restore()
 
     assert code == 0
     assert "exit recorded" not in out
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
     assert _registry_records(machine)["c-myproject-1"].get("exit") is None
     ((_, script),) = machine.system.typed()
     assert _typed_text(script) == "cd /work/myproject && ai c 1"
@@ -690,12 +842,12 @@ def test_given_a_live_record_when_restoring_then_no_exit_is_recorded_and_it_rela
 def test_given_a_live_session_carrying_a_stale_manual_exit_when_restoring_then_it_is_re_attached_not_filtered(machine):
     """The launcher relaunches claude after ``/exit`` in the same tmux session; that session still needs its pane."""
     machine.config("")
-    machine.sessions(_record("c-myproject-1", exit_cause="manual_exit"))
+    machine.seat(_record("c-myproject-1", exit_cause="manual_exit"))
 
     code, out, _ = _restore()
 
     assert code == 0
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
     ((_, script),) = machine.system.typed()
     assert _typed_text(script) == "cd /work/myproject && ai c 1"
 
@@ -725,12 +877,12 @@ def test_given_on_terminal_reopen_false_when_restoring_on_demand_then_sessions_s
         "[iterm2.persistence.restore]\nenabled = true\n"
         "[iterm2.persistence.restore.relaunch]\non_terminal_reopen = false\n"
     )
-    machine.sessions(_record("c-myproject-1"))
+    machine.seat(_record("c-myproject-1"))
 
     code, out, _ = _restore()
 
     assert code == 0
-    assert "c-myproject-1: restored (new tab)" in out
+    assert "c-myproject-1: restored (window 0 tab 0 pane 0)" in out
 
 
 def test_given_dry_run_when_the_sweep_would_classify_then_the_registry_is_not_written(machine):

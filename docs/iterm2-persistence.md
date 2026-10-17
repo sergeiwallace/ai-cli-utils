@@ -202,15 +202,17 @@ A session that is relaunched because it was gone gets its cause in front of the 
 6. Opens the arrangement, on demand only, when `mode` includes `"arrangement"` and a name is set (`--arrangement` or `default_arrangement`). With `use_it2 = true` it asks iTerm2's bundled `it2` utility for the saved arrangements and restores the named one; a name that is not saved is reported and the run continues with sessions only. When `it2` is absent, raises a permission prompt that is not answered within 15 seconds, or `use_it2 = false`, it prints `arrangement: open it via Window > Restore Window Arrangement > <name>` and continues. On `--startup` the arrangement is not opened again, because iTerm2's own "open default arrangement at startup" preference already opened it.
 7. Reads every iTerm2 pane once (one AppleScript pass). At startup an empty answer is retried once a second for up to 15 seconds while iTerm2 finishes opening its windows.
 8. Places each session:
+   - Restore never opens a tab or a window. A session goes back only into an existing pane, its own recorded one, or it is skipped.
    - A session that already has a client (a local session attached in some terminal, or a remote session whose ssh connection is still running) is skipped as `already open`, because re-attaching it would pull it out of the pane showing it.
-   - With `fill_arrangement = true`, a session whose recorded pane still exists and is an idle shell is typed into that pane. The pane is found by its iTerm2 session UUID, or, when that UUID is gone (an arrangement restore assigns new ones), by its recorded window, tab and pane, which is the last refreshed position.
-   - Every other session opens a new tab in the frontmost window (a new window when there is none).
-   - `stagger_seconds` passes between launches.
-9. Prints one line per record: `<name>: restored (window W tab T pane P)` or `restored (new tab)` (with `; cause=<cause>` added for a relaunched gone session), or `<name>: skipped (<rule or cause>)`.
+   - A record whose relaunch command, run from the same directory, would attach to the same session as an open one is skipped as `relaunches the same session as <name>, already open on <tty>`. Of two such records with neither open, only the most recently refreshed is typed; the other is skipped as `relaunches the same session as <name>`. Typing both would make the second attach pull the session away from the first (`attach-session -d`).
+   - On `--startup`, when any selected session survived the restart (it is `already open`), iTerm2 kept the processes of its panes, so every session that was running when iTerm2 quit is still open. Every other record is skipped as `not running when iTerm2 quit: N sessions survived the restart, so iTerm2 kept every session that was`. Only when no session survived (a reboot, or iTerm2's session server went away) does startup relaunch anything.
+   - With `fill_arrangement = true`, a session whose recorded pane still exists and is an idle shell is typed into that pane. The pane is found by its iTerm2 session UUID, or, when that UUID is gone (an arrangement restore assigns new ones), by its recorded window, tab and pane, which is the last refreshed position. A session whose recorded pane is missing or busy is skipped as `no idle shell pane at its recorded position; restore opens no new tab`; with `fill_arrangement = false` every session is skipped.
+   - `stagger_seconds` passes between launches, and the pane is checked again just before each write: one where a session has started since the plan is skipped as `the pane on <tty> is no longer an idle shell`, and one that has closed as `the pane on <tty> no longer exists`.
+9. Prints one line per record: `<name>: restored (window W tab T pane P)` (with `; cause=<cause>` added for a relaunched gone session), or `<name>: skipped (<rule or cause>)`.
 
 A pane counts as an idle shell when the only process in its terminal's foreground process group is a shell (`zsh`, `bash`, `fish` and similar), read from one `ps` pass. iTerm2's own `is at shell prompt` needs shell integration and `is processing` is false for a quiet Claude Code session, so neither is used. A pane whose state cannot be read is treated as busy.
 
-If iTerm2 stops answering an AppleScript call (10 seconds), restore stops, prints `stopped: ...; the sessions below stay in the registry` and one `not restored` line for each session it had not yet launched, and exits 1. Restore never removes a record it was going to launch, so those sessions are still there for the next run. If only the pane list times out, the run continues with new tabs.
+If iTerm2 stops answering an AppleScript call (10 seconds), restore stops, prints `stopped: ...; the sessions below stay in the registry` and one `not restored` line for each session it had not yet launched, and exits 1. Restore never removes a record it was going to launch, so those sessions are still there for the next run. If only the pane list times out, it prints `panes: not read (...); no session is restored` and skips every session.
 
 ### Startup vs on demand
 
@@ -226,7 +228,7 @@ Both are the same command. On demand (no flag) it honours `on_demand`, opens the
 | `mode` | `"sessions"` never opens an arrangement; `"arrangement"` opens it and skips every session; `"arrangement+sessions"` does both. |
 | `default_arrangement` | The saved arrangement opened on demand; `--arrangement` overrides it. Empty opens none. |
 | `use_it2` | `true` opens the arrangement with `it2`; `false` prints the menu path instead. Never used at startup. |
-| `fill_arrangement` | `true` types a session into its recorded pane when that pane is an idle shell; `false` always opens a new tab. |
+| `fill_arrangement` | `true` types a session into its recorded pane when that pane is an idle shell; `false` restores no session, since restore never opens a new tab. |
 | `include_local`, `include_remote` | `false` skips that kind (`skipped (include_local=false)`). |
 | `include`, `exclude` | Session-name globs; a session failing `include` or matching `exclude` is skipped with the glob. |
 | `remote_hosts` | Non-empty: a remote session whose alias is not listed is skipped (`remote_hosts does not list '<alias>'`). |

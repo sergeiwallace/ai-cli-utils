@@ -2,8 +2,8 @@
 
 The registry supplies the sessions, a saved iTerm2 arrangement supplies the window
 shape, and tmux (locally) or the remote host's tmux supplies survival. Each selected
-session is brought back by typing its recorded ``relaunch_argv`` into a pane: its own
-recorded pane when that pane is an idle shell, otherwise a new tab in the frontmost
+session is brought back by typing its recorded ``relaunch_argv`` into its own recorded
+pane, and only when that pane is still an idle shell; restore never opens a tab or a
 window. Everything iTerm2 is asked to do goes through AppleScript, except restoring a
 saved arrangement by name, which only iTerm2's ``it2`` utility can do.
 
@@ -29,7 +29,7 @@ ITERM2_TIMEOUT_SECONDS = 10
 #: script can answer, so a call that outlives this is treated as "it2 unavailable".
 IT2_TIMEOUT_SECONDS = 15
 #: On ``--startup``, how long to wait for iTerm2 to open its first window before
-#: giving up on in-place fill and opening new tabs.
+#: giving up on in-place fill (and restoring no session).
 STARTUP_WAIT_SECONDS = 15
 #: Bound on the one ``ps`` pass that finds idle shells.
 PS_TIMEOUT_SECONDS = 5
@@ -52,7 +52,7 @@ class _Entry:
     record: dict
     verdict: str  # "restore" | "skipped"
     detail: str = ""
-    tty: str | None = None  # the pane to type into; None opens a new tab
+    tty: str | None = None  # the existing pane to type into
 
     @property
     def name(self) -> str:
@@ -162,8 +162,8 @@ def _idle_shell_ttys() -> set[str]:
 
     A pane at its prompt has the shell as its only foreground (``+``) process; a pane
     running tmux, ssh or Claude Code has that program in the foreground instead. Any
-    failure answers "no idle panes", so the caller opens new tabs rather than typing
-    into a pane it could not inspect.
+    failure answers "no idle panes", so the caller types into no pane it could not
+    inspect.
     """
     try:
         result = subprocess.run(
@@ -204,35 +204,72 @@ def _resolve_pane(position: dict, panes: dict[str, dict]) -> str | None:
     return None
 
 
+def _relaunch_target(record: dict) -> tuple:
+    """What a record's relaunch would attach to: the same command from the same directory."""
+    return (record.get("kind"), record.get("cwd"), tuple(str(p) for p in record.get("relaunch_argv") or []))
+
+
 def _placed(
     selected: list[_Entry], settings: dict, startup: bool, echo: Callable[[str], None]
 ) -> tuple[list[_Entry], list[_Entry]]:
-    """Choose a pane or a new tab for each selected session; return (to restore, already open).
+    """Choose the existing pane each session goes back into; return (to restore, skipped).
 
-    A session that already has a client is skipped: re-running its ``relaunch_argv``
-    re-attaches with ``attach-session -d``, which would pull it out of the pane showing it.
+    Restore never opens a tab or a window: a session goes back only into its own recorded
+    pane, and only when that pane is an idle shell. A session that already has a client
+    is skipped, and so is any record whose ``relaunch_argv`` would attach to the same
+    session as an open one or as one already chosen, because re-running it re-attaches
+    with ``attach-session -d`` and pulls the session out of the pane showing it.
+
+    At ``--startup``, a session that survived the restart means iTerm2 kept the processes
+    of its panes, so every session that was running when iTerm2 quit is still open, and a
+    record without a client was not running then and is not relaunched.
     """
     fill = settings["fill_arrangement"]
     panes = _list_panes(startup, echo) if selected else {}
     idle = _idle_shell_ttys() if fill and panes else set()
-    claimed: set[str] = set()
-    entries: list[_Entry] = []
-    already_open: list[_Entry] = []
+    current = {id(e): _session_registry._current_tty(e.record) for e in selected}
+    skipped: list[_Entry] = []
+    open_targets: dict[tuple, tuple[str, str]] = {}
     for chosen in selected:
-        record = chosen.record
-        current = _session_registry._current_tty(record)
-        if current:
-            shown = f" ({_where(panes[current])})" if current in panes else ""
-            already_open.append(_Entry(record, "skipped", f"already open on {current}{shown}"))
+        tty = current[id(chosen)]
+        if tty:
+            shown = f" ({_where(panes[tty])})" if tty in panes else ""
+            skipped.append(_Entry(chosen.record, "skipped", f"already open on {tty}{shown}"))
+            open_targets.setdefault(_relaunch_target(chosen.record), (chosen.name, tty))
+    survivors = len(skipped)
+    chosen_targets: dict[tuple, str] = {}
+    placements: dict[int, _Entry] = {}
+    claimed: set[str] = set()
+    by_recency = sorted(selected, key=lambda e: str(e.record.get("refreshed_at") or ""), reverse=True)
+    for chosen in by_recency:
+        if current[id(chosen)]:
             continue
+        record = chosen.record
+        target = _relaunch_target(record)
         position = record.get("iterm2")
         tty = _resolve_pane(position, panes) if fill and isinstance(position, dict) else None
-        if tty and tty in idle and tty not in claimed:
+        if target in open_targets:
+            twin, twin_tty = open_targets[target]
+            reason = f"relaunches the same session as {twin}, already open on {twin_tty}"
+        elif startup and survivors:
+            reason = (
+                f"not running when iTerm2 quit: {survivors} session{'s' if survivors != 1 else ''} "
+                "survived the restart, so iTerm2 kept every session that was"
+            )
+        elif target in chosen_targets:
+            reason = f"relaunches the same session as {chosen_targets[target]}"
+        elif not fill:
+            reason = "fill_arrangement = false; restore opens no new tab"
+        elif tty and tty in idle and tty not in claimed:
             claimed.add(tty)
-            entries.append(_Entry(record, "restore", _where(panes[tty]), tty))
+            chosen_targets[target] = chosen.name
+            placements[id(chosen)] = _Entry(record, "restore", _where(panes[tty]), tty)
+            continue
         else:
-            entries.append(_Entry(record, "restore", "new tab"))
-    return entries, already_open
+            reason = "no idle shell pane at its recorded position; restore opens no new tab"
+        skipped.append(_Entry(record, "skipped", reason))
+    entries = [placements[id(e)] for e in selected if id(e) in placements]
+    return entries, skipped
 
 
 def _shell_command(record: dict, cause: str | None = None) -> str:
@@ -294,24 +331,6 @@ return "miss"
     return _osascript(script) == "ok"
 
 
-def _write_into_new_tab(text: str) -> None:
-    """Open a tab in the frontmost window (a window when there is none) and type ``text`` there."""
-    script = f"""if application "iTerm2" is not running then return "not-running"
-tell application "iTerm2"
-    if (count windows) is 0 then
-        set w to (create window with default profile)
-    else
-        set w to current window
-        if w is missing value then set w to window 1
-        tell w to create tab with default profile
-    end if
-    tell current session of current tab of w to write text "{_applescript_text(text)}"
-end tell
-return "ok"
-"""
-    _osascript(script)
-
-
 def _it2(*args: str) -> subprocess.CompletedProcess | None:
     """Run ``it2``; None when it is absent, cannot run, or did not finish (an unanswered prompt)."""
     if not IT2_PATH.exists():
@@ -355,7 +374,7 @@ def _arrangement_plan(name: str, settings: dict, startup: bool) -> str:
 
 
 def _list_panes(startup: bool, echo: Callable[[str], None]) -> dict[str, dict]:
-    """One AppleScript pass over iTerm2's panes; empty (so new tabs) when it cannot be read.
+    """One AppleScript pass over iTerm2's panes; empty (so nothing is placed) when it cannot be read.
 
     At startup iTerm2 may still be opening its arrangement, so an empty answer is retried
     once a second for up to :data:`STARTUP_WAIT_SECONDS`.
@@ -364,7 +383,7 @@ def _list_panes(startup: bool, echo: Callable[[str], None]) -> dict[str, dict]:
         try:
             panes = _iterm2._iterm2_panes_by_tty(ITERM2_TIMEOUT_SECONDS)
         except _iterm2.Iterm2PaneLookupError as exc:
-            echo(f"panes: not read ({exc}); sessions open in new tabs")
+            echo(f"panes: not read ({exc}); no session is restored")
             return {}
         if panes or not startup or attempt == STARTUP_WAIT_SECONDS:
             return panes
@@ -469,25 +488,30 @@ def restore(
 
     if wants_arrangement and not startup:
         echo(_restore_arrangement(name, settings["use_it2"]))
-    entries, already_open = _placed(selected, settings, startup, echo)
+    entries, not_placed = _placed(selected, settings, startup, echo)
     for index, entry in enumerate(entries):
         if index:
             time.sleep(settings["stagger_seconds"])
         cause = causes.get(entry.record.get("id"))
         text = _shell_command(entry.record, cause)
+        # Seconds can pass between the plan and this write; a pane where a session has
+        # started since is a live session, and typing into it would be read as its input.
+        if entry.tty not in _idle_shell_ttys():
+            echo(_line(_Entry(entry.record, "skipped", f"the pane on {entry.tty} is no longer an idle shell")))
+            continue
         try:
-            if entry.tty is None or not _write_into_pane(entry.tty, text):
-                if entry.tty is not None:
-                    entry.detail = "new tab"
-                _write_into_new_tab(text)
+            written = _write_into_pane(entry.tty, text)
         except Iterm2NotAnswering as exc:
             echo(f"stopped: {exc}; the sessions below stay in the registry")
             for remaining in entries[index:]:
                 echo(f"{remaining.name}: not restored ({exc})")
             return 1
+        if not written:
+            echo(_line(_Entry(entry.record, "skipped", f"the pane on {entry.tty} no longer exists")))
+            continue
         if cause:
             entry.detail += f"; cause={cause}"
         echo(_line(entry))
-    for entry in already_open + skipped + filtered:
+    for entry in not_placed + skipped + filtered:
         echo(_line(entry))
     return 0

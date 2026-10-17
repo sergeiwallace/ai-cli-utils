@@ -136,6 +136,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rejected pushes retain their committed update in a clean checkout, backing up
   any additional dirty content first. Start-of-run leftover protection is unchanged.
 
+- `ai iterm2 restore` no longer opens tabs or windows, and no longer types into a pane that
+  is not an idle shell at the moment of the write. A session goes back only into its own
+  recorded pane when that pane is an idle shell; otherwise it is skipped with the reason. At
+  `--startup`, when any session survived the iTerm2 restart, records without a client are
+  not relaunched, because iTerm2 kept every session that was running. A record whose
+  relaunch would attach to a session that is already open, or that another record already
+  relaunches, is skipped, so a stale record can no longer re-dial a live remote session and
+  detach it from its pane. Before this, an iTerm2 restart opened a new tab for every record
+  whose launcher had long since exited, three of those detached live remote sessions to the
+  shell, and one "new tab" write typed its command into a running Claude Code prompt.
+
 - Remote mosh sessions share a VPN-state cache for the configured `vpn_poll_interval`,
   so concurrent tabs run one detection command per interval. Detection and cache locking
   run in worker threads to keep the transport event loop responsive.
