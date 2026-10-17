@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from conftest import run_cli
 
 from ai_cli.copier_update import (
@@ -19,8 +21,11 @@ from ai_cli.copier_update import (
     _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
+    _excluded_on_update,
     _find_copier_projects,
+    _reachable_source,
     _repo_root,
+    _resolve_copier_source,
     _run_copier_update,
     _run_isolated,
     _template_diff,
@@ -820,6 +825,225 @@ def test_given_template_file_in_new_directory_when_verifying_parity_then_update_
         status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
 
     assert (status, detail) == ("ok", "")
+
+
+def _project_with_added_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """A template that adds skills/lint/SKILL.md and a project one commit behind it."""
+    template = tmp_path / "template"
+    project = tmp_path / "project"
+    for directory in (template, project):
+        directory.mkdir()
+        subprocess.run(["git", "init"], cwd=directory, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=directory, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=directory, check=True)
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "skills" / "lint").mkdir(parents=True)
+    (template / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+    subprocess.run(["git", "add", "skills"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "add a skill"], cwd=template, check=True, capture_output=True)
+    (project / "message.txt").write_text("original\n")
+    (project / ".copier-answers.yml").write_text(
+        f"_src_path: {template}\n_commit: {old_commit}\nfeature_enabled: true\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "initial project"], cwd=project, check=True, capture_output=True)
+    return template, project
+
+
+def _update_with_pre_commit_hook(tmp_path: Path, hook_body: str) -> tuple[str, str, Path]:
+    _, project = _project_with_added_skill(tmp_path)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\n" + hook_body)
+    hook.chmod(0o755)
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "skills" / "lint").mkdir(parents=True)
+            (project / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+    return status, str(detail), project
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_reformats_files_when_committing_update_then_it_retries_and_commits(tmp_path):
+    """A formatter hook aborts the first commit but leaves its fixes; the update commits them."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path,
+        "if [ ! -f .git/hook-ran ]; then touch .git/hook-ran; echo formatted >> skills/lint/SKILL.md; exit 1; fi\n",
+    )
+    assert (status, detail) == ("ok", "")
+    committed = subprocess.run(
+        ["git", "show", "HEAD:skills/lint/SKILL.md"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout
+    assert committed == "skill\nformatted\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_keeps_rewriting_and_failing_when_committing_update_then_it_retries_once(tmp_path):
+    """A hook that rewrites files and fails every time is not looped on: one retry, then the update fails."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path,
+        'echo x >> .git/hook-count; echo y >> skills/lint/SKILL.md; echo "hook says no" >&2; exit 1\n',
+    )
+    assert status == "failed"
+    assert "hook says no" in detail
+    assert (project / ".git" / "hook-count").read_text().count("x") == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_fails_without_rewriting_when_committing_update_then_it_does_not_retry(tmp_path):
+    """A hook rejecting the content (no rewrite) is a real failure, not an autofix: no second attempt."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path, 'echo x >> .git/hook-count; echo "hook says no" >&2; exit 1\n'
+    )
+    assert status == "failed"
+    assert "hook says no" in detail
+    assert (project / ".git" / "hook-count").read_text().count("x") == 1
+
+
+def _probe_runner(ssh_reachable: bool):
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return MagicMock(returncode=0 if ssh_reachable else 128, stdout="", stderr="Permission denied (publickey).")
+
+    return run, calls
+
+
+def test_given_ssh_template_source_when_host_has_no_ssh_access_then_it_is_read_over_https(tmp_path):
+    """The framework host authenticates over HTTPS; a stored git@github.com source must still resolve."""
+    _reachable_source.cache_clear()
+    run, calls = _probe_runner(ssh_reachable=False)
+    answers = {"_src_path": "git@github.com:example-org/example-template.git"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        resolved = _resolve_copier_source(tmp_path, answers)
+        again = _resolve_copier_source(tmp_path, answers)
+    assert resolved == again == "https://github.com/example-org/example-template.git"
+    assert len(calls) == 1, "the reachability probe is cached per source"
+
+
+def test_given_ssh_template_source_when_host_has_ssh_access_then_the_stored_source_is_kept(tmp_path):
+    _reachable_source.cache_clear()
+    run, _ = _probe_runner(ssh_reachable=True)
+    answers = {"_src_path": "ssh://git@github.com/example-org/example-template"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/example-org/example-template"
+
+
+def test_given_bare_template_name_when_only_a_sibling_checkout_exists_then_the_sibling_is_used(tmp_path):
+    project = tmp_path / "app"
+    project.mkdir()
+    sibling = tmp_path / "project-template"
+    sibling.mkdir()
+    assert _resolve_copier_source(project, {"_src_path": "project-template"}) == str(sibling.resolve())
+
+
+def test_given_bare_template_name_when_a_nested_copy_exists_then_the_nested_copy_wins(tmp_path):
+    project = tmp_path / "app"
+    nested = project / "project-template"
+    nested.mkdir(parents=True)
+    (tmp_path / "project-template").mkdir()
+    assert _resolve_copier_source(project, {"_src_path": "project-template"}) == str(nested.resolve())
+
+
+def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
+    _reachable_source.cache_clear()
+    run, calls = _probe_runner(ssh_reachable=False)
+    answers = {"_src_path": "https://github.com/example-org/example-template"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        assert _resolve_copier_source(tmp_path, answers) == "https://github.com/example-org/example-template"
+    assert calls == []
+
+
+def test_given_file_mentioning_conflict_marker_mid_line_when_scanning_then_it_is_not_a_conflict(tmp_path):
+    """A comment that quotes the marker (llm-lab's .markdownlint.yaml) is not a merge conflict."""
+    quoting = tmp_path / "quoting.yaml"
+    quoting.write_text("# audit docs show literal patterns (e.g. git conflict markers `^<<<<<<< `)\nMD038: false\n")
+    assert _conflict_files(tmp_path, [str(quoting)]) == []
+    assert _conflict_files(tmp_path) == []
+
+
+def test_given_file_with_line_start_conflict_marker_when_scanning_then_it_is_a_conflict(tmp_path):
+    conflicted = tmp_path / "conflicted.yaml"
+    conflicted.write_text("a: 1\n<<<<<<< before updating\nb: 2\n=======\nb: 3\n>>>>>>> after updating\n")
+    assert [Path(p) for p in _conflict_files(tmp_path, [str(conflicted)])] == [conflicted]
+    assert [Path(p) for p in _conflict_files(tmp_path)] == [conflicted]
+
+
+_PYTHON_ONLY_EXCLUDES = {
+    "_exclude": [
+        "docs/static-excluded.md",
+        "{% if 'python' not in tech_stack %}pytest_memory_guard.py{% endif %}",
+        "{% if not include_ci %}.github/workflows/ci.yml{% endif %}",
+        "{% if not use_jira %}docs/jira.md{% endif %}",
+        "*.pyc",
+    ],
+    "include_ci": {"type": "bool", "default": True},
+}
+
+
+def test_given_non_python_stack_when_listing_exclusions_then_python_only_files_are_excluded():
+    """personal-site (typescript) never receives pytest_memory_guard.py, so it is not a missing file."""
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "typescript", "use_jira": False})
+    assert excluded == {"docs/static-excluded.md", "pytest_memory_guard.py", "docs/jira.md"}
+
+
+def test_given_python_stack_when_listing_exclusions_then_the_python_file_is_expected():
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "python", "use_jira": True})
+    assert excluded == {"docs/static-excluded.md"}
+
+
+def test_given_unknown_answer_when_listing_exclusions_then_that_entry_stays_strict():
+    """No answer and no default for use_jira: leave docs/jira.md expected rather than guess."""
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "typescript"})
+    assert "docs/jira.md" not in excluded
+    assert "pytest_memory_guard.py" in excluded
+
+
+def test_given_file_project_removed_when_verifying_parity_then_it_is_not_missing(tmp_path):
+    """The old template shipped install.sh, the project has no copy, and Copier keeps it removed."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "kept.txt").write_text("changed\n")
+    porcelain = " M kept.txt\n"
+    template_paths = {"kept.txt", ".githooks/install.sh"}
+    error = _verify_update_parity(tmp_path, porcelain, template_paths, set())
+    assert error is not None and ".githooks/install.sh" in error
+    assert (
+        _verify_update_parity(
+            tmp_path,
+            porcelain,
+            template_paths,
+            set(),
+            previous_template_paths={"kept.txt", ".githooks/install.sh"},
+        )
+        is None
+    )
+
+
+def test_given_file_project_still_has_when_copier_leaves_it_unchanged_then_parity_still_fails(tmp_path):
+    """Only a file the project removed is forgiven; one it has but Copier skipped is still missing."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "kept.txt").write_text("changed\n")
+    (tmp_path / "other.txt").write_text("not touched\n")
+    error = _verify_update_parity(
+        tmp_path,
+        " M kept.txt\n",
+        {"kept.txt", "other.txt"},
+        set(),
+        previous_template_paths={"kept.txt", "other.txt"},
+    )
+    assert error is not None and "other.txt" in error
 
 
 def test_do_update_pushfail(tmp_path):

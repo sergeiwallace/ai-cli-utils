@@ -26,14 +26,17 @@ does not require a caller-managed cleanup step or leave resources behind.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import jinja2
 import yaml
 
 from . import output as _out
@@ -85,6 +88,7 @@ class TemplateChanges:
     skip_if_exists: set[str]
     deleted_paths: set[str]
     excluded_on_update: set[str] = field(default_factory=set)
+    previous_paths: set[str] = field(default_factory=set)
 
 
 def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
@@ -153,20 +157,25 @@ def _changed_paths(porcelain: str, base: Path) -> list[str]:
     return paths
 
 
+_CONFLICT_MARKER = r"^<<<<<<<( |$)"
+
+
 def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[str]:
     """Return files containing git conflict markers.
 
     When `paths` is given, only those files are scanned — this is the correct scope
     after a copier run, because a *real* conflict marker only ever appears in a file
     copier itself modified. Scanning the whole tree (paths=None) also matches files
-    that merely reference `<<<<<<<` as content (test fixtures, conflict-handling code,
-    docs about merges) and reports them as false-positive conflicts.
+    that start a line with `<<<<<<<` as content (test fixtures, conflict-handling code,
+    docs about merges) and reports them as false-positive conflicts. Only a line that
+    *starts* with the marker counts, the shape Git and Copier both write, so a comment that
+    merely mentions it mid-line is not a conflict.
     """
     if paths is not None:
         existing = [p for p in paths if Path(p).exists()]
         if not existing:
             return []
-        cmd = ["grep", "-l", "--binary-files=without-match", "<<<<<<<", *existing]
+        cmd = ["grep", "-lE", "--binary-files=without-match", _CONFLICT_MARKER, *existing]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().splitlines()
@@ -174,9 +183,9 @@ def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[s
 
     cmd = [
         "grep",
-        "-rl",
+        "-rlE",
         "--binary-files=without-match",
-        "<<<<<<<",
+        _CONFLICT_MARKER,
         str(project_dir),
     ]
     for d in _EXCLUDE_DIRS:
@@ -197,16 +206,48 @@ def _load_answers(answers_file: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+_SSH_GITHUB_SOURCE = re.compile(r"^(?:git@github\.com:|ssh://git@github\.com/)(?P<path>[^/]+/[^/]+?)(?:\.git)?/?$")
+
+
+@functools.cache
+def _reachable_source(source: str) -> str:
+    """A GitHub SSH template source this host cannot reach is read over HTTPS instead.
+
+    A project stores whichever spelling the machine that generated it used. A host with SSH keys
+    keeps the stored SSH URL; a host that authenticates over HTTPS (framework-fedora) cannot clone
+    it, so every update of such a project failed before Copier ran. The stored answer is untouched:
+    only this run's source changes, and the answers file is restored afterwards.
+    """
+    match = _SSH_GITHUB_SOURCE.match(source)
+    if match is None:
+        return source
+    env = {**_git_env(), "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        probe = subprocess.run(
+            ["git", "ls-remote", "--exit-code", source, "HEAD"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return f"https://github.com/{match['path']}.git"
+    return source if probe.returncode == 0 else f"https://github.com/{match['path']}.git"
+
+
 def _resolve_copier_source(project_dir: Path, answers: dict[str, object]) -> str | None:
     """Resolve a local Copier source before changing the working directory."""
     source = answers.get("_src_path")
     if not isinstance(source, str) or not source:
         return None
     if source.startswith(("git@", "http://", "https://", "ssh://", "file://")):
-        return source
+        return _reachable_source(source)
     source_path = Path(source)
     if not source_path.is_absolute():
-        source_path = project_dir / source_path
+        # A bare name such as ``project-template`` names a sibling checkout in the fleet layout.
+        candidates = [project_dir / source_path, project_dir.parent / source_path]
+        source_path = next((path for path in candidates if path.exists()), candidates[0])
     return str(source_path.resolve())
 
 
@@ -318,26 +359,47 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
     return path.removesuffix(".jinja")
 
 
-def _excluded_on_update(config: dict[str, object]) -> set[str]:
-    """Return static paths whose Copier exclusion is guaranteed during updates."""
+def _question_defaults(config: dict[str, object]) -> dict[str, object]:
+    """Literal defaults of the template's questions, so an answer the project never stored still renders."""
+    defaults: dict[str, object] = {}
+    for name, spec in config.items():
+        if name.startswith("_") or not isinstance(spec, dict) or "default" not in spec:
+            continue
+        default = spec["default"]
+        if isinstance(default, str) and ("{{" in default or "{%" in default):
+            continue
+        defaults[name] = default
+    return defaults
+
+
+def _excluded_on_update(config: dict[str, object], answers: dict[str, object] | None = None) -> set[str]:
+    """Return the paths Copier excludes on an update, rendered with the project's answers.
+
+    An exclusion such as ``{% if 'python' not in tech_stack %}pytest_memory_guard.py{% endif %}`` drops
+    the file for a TypeScript project, so a template change to it can never land there. An entry that
+    cannot be rendered (an answer is unknown) or is a glob is left out, so parity stays strict for it.
+    """
     exclusions = config.get("_exclude", [])
     if not isinstance(exclusions, list):
         return set()
+    context = {**_question_defaults(config), **(answers or {}), "_copier_operation": "update"}
+    environment = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
     result = set()
     for exclusion in exclusions:
         if not isinstance(exclusion, str):
             continue
-        if "_copier_operation != 'copy'" not in exclusion and '_copier_operation != "copy"' not in exclusion:
+        try:
+            path = environment.from_string(exclusion).render(**context).strip()
+        except jinja2.TemplateError:
             continue
-        if not (exclusion.startswith("{% if ") and exclusion.endswith("{% endif %}")):
-            continue
-        path = exclusion.split("%}", 1)[1].removesuffix("{% endif %}")
-        if "{{" not in path and "{%" not in path:
+        if path and not any(char in path for char in "*?[!"):
             result.add(path.removesuffix(".jinja"))
     return result
 
 
-def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
+def _template_diff(
+    source: str, previous_commit: str, answers: dict[str, object] | None = None
+) -> TemplateChanges | None:
     """Return the template changes Copier should apply from previous_commit to HEAD."""
     source_path = Path(source)
     with tempfile.TemporaryDirectory(prefix="ai-copier-template-") as temporary_dir:
@@ -370,7 +432,14 @@ def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
             env=_git_env(),
             check=False,
         )
-    if result.returncode != 0 or head_files.returncode != 0:
+        previous_files = subprocess.run(
+            ["git", "-C", str(template_dir), "ls-tree", "-r", "--name-only", previous_commit],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+    if result.returncode != 0 or head_files.returncode != 0 or previous_files.returncode != 0:
         return None
     paths, hunks = _parse_diff_hunks(result.stdout)
     rendered_paths = {
@@ -393,7 +462,19 @@ def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
         for path in (skip_if_exists_raw if isinstance(skip_if_exists_raw, list) else [])
         if isinstance(path, str) and "{{" not in path and "{%" not in path
     }
-    return TemplateChanges(rendered_paths, rendered_hunks, skip_if_exists, deleted_paths, _excluded_on_update(config))
+    previous_paths = {
+        rendered_path
+        for path in previous_files.stdout.splitlines()
+        if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+    }
+    return TemplateChanges(
+        rendered_paths,
+        rendered_hunks,
+        skip_if_exists,
+        deleted_paths,
+        _excluded_on_update(config, answers),
+        previous_paths,
+    )
 
 
 def _verify_update_parity(
@@ -404,6 +485,7 @@ def _verify_update_parity(
     skip_if_exists: set[str] | None = None,
     deleted_template_paths: set[str] | None = None,
     excluded_on_update: set[str] | None = None,
+    previous_template_paths: set[str] | None = None,
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
@@ -425,6 +507,13 @@ def _verify_update_parity(
         if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     )
     ignored_paths.update(excluded_on_update)
+    # A file the old template shipped and the project no longer has was removed on purpose, and
+    # Copier keeps a removed file removed, so a later template change to it is not a missing file.
+    ignored_paths.update(
+        path
+        for path in previous_template_paths or set()
+        if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+    )
     expected_paths = {
         path for path in template_paths if path not in {"copier.yml", "copier.yaml"} and not path.startswith(".copier-")
     }
@@ -489,7 +578,7 @@ def _run_copier_update(
     previous_commit = answers_before.get("_commit")
     if source is None or not isinstance(previous_commit, str) or not previous_commit:
         return "could not resolve Copier source and previous template commit", None, None
-    template_changes = _template_diff(source, previous_commit)
+    template_changes = _template_diff(source, previous_commit, answers_before)
     if template_changes is None:
         return "could not inspect template diff for parity verification", None, None
 
@@ -692,6 +781,16 @@ def _snapshot_staged_files(worktree_dir: Path) -> dict[str, bytes | None] | None
     return changed_files
 
 
+def _hooks_rewrote_files(wt_dir: Path) -> bool:
+    """Whether tracked files differ from the index, which is what a failed formatter hook leaves."""
+    return (
+        subprocess.run(
+            ["git", "-C", str(wt_dir), "diff", "--quiet"], capture_output=True, env=_git_env(), check=False
+        ).returncode
+        == 1
+    )
+
+
 def _do_update_in_worktree(
     wt_dir: Path,
     root: Path,
@@ -746,24 +845,30 @@ def _do_update_in_worktree(
         template_changes.skip_if_exists,
         template_changes.deleted_paths,
         template_changes.excluded_on_update,
+        template_changes.previous_paths,
     )
     if parity_error is not None:
         return "parityfail", parity_error
 
-    subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
-    changed_files = _snapshot_staged_files(wt_dir) if inspect else None
-    if inspect and changed_files is None:
-        return "failed", "could not capture delivered content"
-    commit = subprocess.run(
-        ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-        check=False,
-    )
+    # A pre-commit hook that rewrites files (a formatter) aborts the commit but leaves the fixes in the
+    # tree. That is not a failed update: stage the fixes and commit once more, still through the hooks.
+    for attempt in range(2):
+        subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
+        changed_files = _snapshot_staged_files(wt_dir) if inspect else None
+        if inspect and changed_files is None:
+            return "failed", "could not capture delivered content"
+        commit = subprocess.run(
+            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+        if commit.returncode == 0 or attempt == 1 or not _hooks_rewrote_files(wt_dir):
+            break
     if commit.returncode != 0:
         # A commit failure is retried as transient; the isolated target is discarded.
-        return "failed", (commit.stderr.strip() or "commit failed")
+        return "failed", (commit.stderr.strip() or commit.stdout.strip() or "commit failed")
 
     if inspect:
         commit_hash = subprocess.run(
@@ -1141,6 +1246,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
                 template_changes.skip_if_exists,
                 template_changes.deleted_paths,
                 template_changes.excluded_on_update,
+                template_changes.previous_paths,
             )
             if parity_error is not None:
                 _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
