@@ -28,7 +28,7 @@ delegation_provenance:
 | Authoritative raw entry | Coverage and disposition |
 |---|---|
 | A001 (original ask) | The identity, visibility and renaming questions are answered in [Findings](#findings) sections 1 to 3. The state detection the restart gates need (idle, background work, compaction, context %, the update notice) is in section 4. The probe is in [Recommended probe](#recommended-probe). The restart mechanism, gates, triggers and rollout are planned in the linked plan doc, not here. |
-| A002 (follow-up) | Requests a feedback report, an issue and related-issue comments "for that", plus delegation and goal activation. The launching session read "that" as the mobile Code tab cutting off the original message (A002 opens "this is what i had left to say basically") and owns that delivery. Whether a separate report on the Remote Control discovery defect is also wanted is an open question for the operator, tracked in the linked plan's T-06. This research establishes no delivery. |
+| A002 (follow-up) | Requests and pre-approves a report on the Remote Control discovery defect through the requested reporting workflow and SendFeedback, a public GitHub issue, related-issue searches and appropriate comments linking to that issue, plus delegation and goal activation. The launching session owns delivery, tracked with subject-specific receipts in the linked plan's T-06. Remote Control reporting does not require reconfirmation. Any prompt-cutoff work is separate and cannot substitute for these delivery obligations. This research establishes no delivery. |
 
 **Status:** complete
 

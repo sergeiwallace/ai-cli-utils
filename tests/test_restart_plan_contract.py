@@ -47,6 +47,24 @@ def test_given_restart_plan_when_delivery_contract_checked_then_specific_receipt
     assert "Owned and delivered by the launching session" not in restart_plan
 
 
+@pytest.mark.parametrize("number", ["6.1", "6.2", "6.3", "6.4"])
+def test_given_restart_plan_when_reporting_route_checked_then_remote_control_subject_is_required(restart_plan, number):
+    contract = acceptance_criterion(restart_plan, number)
+    assert "shall" in contract
+    assert "Remote Control discovery defect" in contract
+    assert "operator confirms" not in contract
+    assert "or both" not in contract
+
+
+def test_given_restart_documents_when_reporting_scope_checked_then_cutoff_cannot_replace_requested_delivery(
+    restart_plan,
+):
+    research = Path(__file__).resolve().parents[1] / "docs/research/claude-code-session-identity-and-reachability.md"
+    for document in (restart_plan, research.read_text(encoding="utf-8")):
+        assert "Remote Control reporting does not require reconfirmation" in document
+        assert "prompt-cutoff work is separate and cannot substitute" in document
+
+
 def test_given_restart_plan_when_visibility_contract_checked_then_incomplete_evidence_cannot_pass(restart_plan):
     for number in ("2.8", "5.2"):
         contract = acceptance_criterion(restart_plan, number)

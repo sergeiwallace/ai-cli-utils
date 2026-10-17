@@ -972,21 +972,24 @@ T-04b, private harness repository, its own PR:
 Owner: the launching session, with delivery tracked here even when its report lives elsewhere.
 No receipt is asserted by this plan. This fix pass prepares the specification only; it sends no
 feedback, issues or comments. Execution uses the reporting workflow requested in A002 and records
-route-specific outcomes. The subject of A002's "for that" is ambiguous: the launching session
-read it as the mobile Code tab cutting off the original message (A002 opens "this is what i had
-left to say basically") and owns that delivery; whether the operator also wants a report on the
-Remote Control discovery defect is an open question returned to the operator, not decided here.
+route-specific outcomes for the Remote Control discovery defect: `/rc` can claim connected while
+the mobile Code tab or ListAgents/SendMessage cannot find or reach the session under its expected
+custom title. A002 pre-approves this reporting. Remote Control reporting does not require reconfirmation.
+Any prompt-cutoff work is separate and cannot substitute for these delivery obligations.
 
-- [ ] AC-6.1 When preparing a report, the owner shall describe the defect the operator confirms it
-  is for (the mobile Code tab cutting off a message, the Remote Control discovery defect, or
-  both), record reproduction evidence and probe limits, and link the report from the epic after
-  privacy review.
-- [ ] AC-6.2 When using SendFeedback, the owner shall record its actual submission outcome and
-  receipt; locally queued feedback remains pending until confirmed, not delivered.
-- [ ] AC-6.3 When filing the public issue, the owner shall record the issue URL and confirm that
-  the filed content concerns that same defect; a draft is not delivery.
-- [ ] AC-6.4 When reviewing related issues, the owner shall record related-issue search results
-  and relevance, then link each appropriate comment's URL; if no comment is appropriate, it shall
+- [ ] AC-6.1 When preparing the requested report, the owner shall use the requested reporting
+  workflow to describe the Remote Control discovery defect, including false connected status,
+  mobile Code-tab access, ListAgents/SendMessage visibility and expected-title mismatches, record
+  reproduction evidence and probe limits, and link the report from the epic after privacy review.
+- [ ] AC-6.2 When submitting the Remote Control discovery defect via SendFeedback, the owner shall
+  record its actual submission outcome and receipt; locally queued feedback remains pending until
+  confirmed, not delivered.
+- [ ] AC-6.3 When filing the public GitHub issue for the Remote Control discovery defect, the owner
+  shall record the issue URL and confirm that the filed content concerns that defect; a draft is
+  not delivery.
+- [ ] AC-6.4 When searching for issues related to the Remote Control discovery defect, the owner
+  shall record related-issue search results and relevance, then post appropriate comments linking
+  to the filed issue and record each comment's URL; if no comment is appropriate, it shall
   record the evidence and reason rather than post unrelated comments.
 - [ ] AC-6.5 While any requested delivery route is pending or blocked, epic closure shall remain
   blocked and the owner shall record the blocker and next action. Existing work can satisfy these
