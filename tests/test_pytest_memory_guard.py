@@ -261,3 +261,52 @@ def test_guarded_allocation():
     assert "unconstrained allocation completed: 64 chunks" in output
     assert "guarded allocation completed" not in output
     assert "pytest memory guard" in output
+
+
+def test_given_worker_stderr_is_not_forwarded_then_controller_reports_guard_notices(
+    tmp_path: Path,
+):
+    runaway_test = tmp_path / "test_synthetic_runaway.py"
+    runaway_test.write_text(
+        """
+import time
+
+
+def test_synthetic_runaway_allocation():
+    chunks = [bytearray(8 * 1024 * 1024) for _ in range(64)]
+    print(f"allocation completed: {len(chunks)} chunks")
+    time.sleep(1)
+""",
+        encoding="utf-8",
+    )
+    repository_root = Path(__file__).resolve().parents[1]
+    env, guard_args = _memory_guard_invocation(tmp_path, "watchdog")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:fleet_testkit",
+            *guard_args,
+            "-p",
+            "pytest_memory_guard",
+            *_pytest_config_args(repository_root),
+            "-n",
+            "1",
+            "--max-worker-restart=0",
+            str(runaway_test),
+        ],
+        cwd=repository_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode != 0, "the runaway xdist worker completed despite exceeding its memory ceiling"
+    assert "pytest memory guard: limiting each test process to 384 MiB" in result.stdout
+    assert "pytest memory guard: process exceeded its 384 MiB RSS ceiling" in result.stdout
