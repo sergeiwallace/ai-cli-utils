@@ -26,8 +26,10 @@ does not require a caller-managed cleanup step or leave resources behind.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -197,13 +199,43 @@ def _load_answers(answers_file: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+_SSH_GITHUB_SOURCE = re.compile(r"^(?:git@github\.com:|ssh://git@github\.com/)(?P<path>[^/]+/[^/]+?)(?:\.git)?/?$")
+
+
+@functools.cache
+def _reachable_source(source: str) -> str:
+    """A GitHub SSH template source this host cannot reach is read over HTTPS instead.
+
+    A project stores whichever spelling the machine that generated it used. A host with SSH keys
+    keeps the stored SSH URL; a host that authenticates over HTTPS (framework-fedora) cannot clone
+    it, so every update of such a project failed before Copier ran. The stored answer is untouched:
+    only this run's source changes, and the answers file is restored afterwards.
+    """
+    match = _SSH_GITHUB_SOURCE.match(source)
+    if match is None:
+        return source
+    env = {**_git_env(), "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        probe = subprocess.run(
+            ["git", "ls-remote", "--exit-code", source, "HEAD"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return f"https://github.com/{match['path']}.git"
+    return source if probe.returncode == 0 else f"https://github.com/{match['path']}.git"
+
+
 def _resolve_copier_source(project_dir: Path, answers: dict[str, object]) -> str | None:
     """Resolve a local Copier source before changing the working directory."""
     source = answers.get("_src_path")
     if not isinstance(source, str) or not source:
         return None
     if source.startswith(("git@", "http://", "https://", "ssh://", "file://")):
-        return source
+        return _reachable_source(source)
     source_path = Path(source)
     if not source_path.is_absolute():
         source_path = project_dir / source_path

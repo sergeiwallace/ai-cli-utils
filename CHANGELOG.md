@@ -120,6 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai copier-update` now updates projects whose stored template source is a GitHub SSH URL on a
+  host with no SSH access. The reachability of the SSH source is probed once per run and, when it
+  fails, the same repository is read over HTTPS for that run only; the stored answer is untouched.
+  Before, every such project failed on framework-fedora with \"could not inspect template diff\".
 - `ai copier-update` no longer reports a file Copier added inside a new directory as missing from
   the update. `git status --porcelain` collapsed a wholly new directory to one `?? dir/` entry, so
   the template parity check failed every project the first time a template added a directory

@@ -20,7 +20,9 @@ from ai_cli.copier_update import (
     _conflict_files,
     _do_update_in_worktree,
     _find_copier_projects,
+    _reachable_source,
     _repo_root,
+    _resolve_copier_source,
     _run_copier_update,
     _run_isolated,
     _template_diff,
@@ -820,6 +822,45 @@ def test_given_template_file_in_new_directory_when_verifying_parity_then_update_
         status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
 
     assert (status, detail) == ("ok", "")
+
+
+def _probe_runner(ssh_reachable: bool):
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return MagicMock(returncode=0 if ssh_reachable else 128, stdout="", stderr="Permission denied (publickey).")
+
+    return run, calls
+
+
+def test_given_ssh_template_source_when_host_has_no_ssh_access_then_it_is_read_over_https(tmp_path):
+    """The framework host authenticates over HTTPS; a stored git@github.com source must still resolve."""
+    _reachable_source.cache_clear()
+    run, calls = _probe_runner(ssh_reachable=False)
+    answers = {"_src_path": "git@github.com:sergeiwallace/project-template.git"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        resolved = _resolve_copier_source(tmp_path, answers)
+        again = _resolve_copier_source(tmp_path, answers)
+    assert resolved == again == "https://github.com/sergeiwallace/project-template.git"
+    assert len(calls) == 1, "the reachability probe is cached per source"
+
+
+def test_given_ssh_template_source_when_host_has_ssh_access_then_the_stored_source_is_kept(tmp_path):
+    _reachable_source.cache_clear()
+    run, _ = _probe_runner(ssh_reachable=True)
+    answers = {"_src_path": "ssh://git@github.com/sergeiwallace/project-template"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/sergeiwallace/project-template"
+
+
+def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
+    _reachable_source.cache_clear()
+    run, calls = _probe_runner(ssh_reachable=False)
+    answers = {"_src_path": "https://github.com/sergeiwallace/project-template"}
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        assert _resolve_copier_source(tmp_path, answers) == "https://github.com/sergeiwallace/project-template"
+    assert calls == []
 
 
 def test_do_update_pushfail(tmp_path):
