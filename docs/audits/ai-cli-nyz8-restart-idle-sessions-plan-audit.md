@@ -130,7 +130,7 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: audit-converged; round 4` |
+| Stage cursor | `doc-audit active; round 6` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
