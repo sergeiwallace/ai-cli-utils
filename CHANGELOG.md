@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai iterm2 restore --startup` now opens the default arrangement on a cold start, when no
+  selected session survived the iTerm2 restart, before it fills the arrangement's idle panes.
+  When any session survived, iTerm2's own window restoration already brought the windows back,
+  so the run prints why the arrangement was not opened instead of opening a duplicate set.
+
 - A bare session hosted on the launcher's pty now records when the operator last typed, in
   `<session>.input-at` beside its submission FIFO (one line, epoch seconds), written atomically
   at mode 0600 from launch until exit. A submitter that must not write over a draft can read it
