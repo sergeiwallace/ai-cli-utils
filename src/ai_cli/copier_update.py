@@ -692,6 +692,16 @@ def _snapshot_staged_files(worktree_dir: Path) -> dict[str, bytes | None] | None
     return changed_files
 
 
+def _hooks_rewrote_files(wt_dir: Path) -> bool:
+    """Whether tracked files differ from the index, which is what a failed formatter hook leaves."""
+    return (
+        subprocess.run(
+            ["git", "-C", str(wt_dir), "diff", "--quiet"], capture_output=True, env=_git_env(), check=False
+        ).returncode
+        == 1
+    )
+
+
 def _do_update_in_worktree(
     wt_dir: Path,
     root: Path,
@@ -750,20 +760,25 @@ def _do_update_in_worktree(
     if parity_error is not None:
         return "parityfail", parity_error
 
-    subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
-    changed_files = _snapshot_staged_files(wt_dir) if inspect else None
-    if inspect and changed_files is None:
-        return "failed", "could not capture delivered content"
-    commit = subprocess.run(
-        ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-        check=False,
-    )
+    # A pre-commit hook that rewrites files (a formatter) aborts the commit but leaves the fixes in the
+    # tree. That is not a failed update: stage the fixes and commit once more, still through the hooks.
+    for attempt in range(2):
+        subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
+        changed_files = _snapshot_staged_files(wt_dir) if inspect else None
+        if inspect and changed_files is None:
+            return "failed", "could not capture delivered content"
+        commit = subprocess.run(
+            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+        if commit.returncode == 0 or attempt == 1 or not _hooks_rewrote_files(wt_dir):
+            break
     if commit.returncode != 0:
         # A commit failure is retried as transient; the isolated target is discarded.
-        return "failed", (commit.stderr.strip() or "commit failed")
+        return "failed", (commit.stderr.strip() or commit.stdout.strip() or "commit failed")
 
     if inspect:
         commit_hash = subprocess.run(

@@ -120,6 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai copier-update` no longer fails an update because a project's pre-commit formatter rewrote
+  files. The hook aborts the commit but leaves its fixes in the tree, so the update now stages them
+  and commits once more through the same hooks. A hook that rejects without rewriting, or keeps
+  failing after the retry, still fails the update (anchor and recovery issue as before).
 - `ai copier-update` no longer reports a file Copier added inside a new directory as missing from
   the update. `git status --porcelain` collapsed a wholly new directory to one `?? dir/` entry, so
   the template parity check failed every project the first time a template added a directory
