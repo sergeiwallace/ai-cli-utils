@@ -949,6 +949,21 @@ def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
     assert calls == []
 
 
+def test_given_file_mentioning_conflict_marker_mid_line_when_scanning_then_it_is_not_a_conflict(tmp_path):
+    """A comment that quotes the marker (llm-lab's .markdownlint.yaml) is not a merge conflict."""
+    quoting = tmp_path / "quoting.yaml"
+    quoting.write_text("# audit docs show literal patterns (e.g. git conflict markers `^<<<<<<< `)\nMD038: false\n")
+    assert _conflict_files(tmp_path, [str(quoting)]) == []
+    assert _conflict_files(tmp_path) == []
+
+
+def test_given_file_with_line_start_conflict_marker_when_scanning_then_it_is_a_conflict(tmp_path):
+    conflicted = tmp_path / "conflicted.yaml"
+    conflicted.write_text("a: 1\n<<<<<<< before updating\nb: 2\n=======\nb: 3\n>>>>>>> after updating\n")
+    assert _conflict_files(tmp_path, [str(conflicted)]) == [str(conflicted)]
+    assert _conflict_files(tmp_path) == [str(conflicted)]
+
+
 def test_do_update_pushfail(tmp_path):
     """Push rejected → pushfail with git stderr, worktree/commit preserved by caller."""
     runner = _wt_runner(porcelain=" M file\n", push_rc=1)

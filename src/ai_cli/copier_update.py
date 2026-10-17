@@ -155,20 +155,25 @@ def _changed_paths(porcelain: str, base: Path) -> list[str]:
     return paths
 
 
+_CONFLICT_MARKER = r"^<<<<<<<( |$)"
+
+
 def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[str]:
     """Return files containing git conflict markers.
 
     When `paths` is given, only those files are scanned — this is the correct scope
     after a copier run, because a *real* conflict marker only ever appears in a file
     copier itself modified. Scanning the whole tree (paths=None) also matches files
-    that merely reference `<<<<<<<` as content (test fixtures, conflict-handling code,
-    docs about merges) and reports them as false-positive conflicts.
+    that start a line with `<<<<<<<` as content (test fixtures, conflict-handling code,
+    docs about merges) and reports them as false-positive conflicts. Only a line that
+    *starts* with the marker counts, the shape Git and Copier both write, so a comment that
+    merely mentions it mid-line is not a conflict.
     """
     if paths is not None:
         existing = [p for p in paths if Path(p).exists()]
         if not existing:
             return []
-        cmd = ["grep", "-l", "--binary-files=without-match", "<<<<<<<", *existing]
+        cmd = ["grep", "-lE", "--binary-files=without-match", _CONFLICT_MARKER, *existing]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().splitlines()
@@ -176,9 +181,9 @@ def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[s
 
     cmd = [
         "grep",
-        "-rl",
+        "-rlE",
         "--binary-files=without-match",
-        "<<<<<<<",
+        _CONFLICT_MARKER,
         str(project_dir),
     ]
     for d in _EXCLUDE_DIRS:
