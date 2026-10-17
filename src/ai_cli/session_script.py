@@ -1223,12 +1223,33 @@ with open(path, 'w') as f:
 " 2>/dev/null || true
       fi
 
+    # BEGIN PINNED RESTART resolution
+      _restart_requested=false
+      _restart_request="$_ai_state_dir/restart-session/$tmux_session.request.json"
+      if [[ "$engine" == "c" && -e "$_restart_request" ]]; then
+        matched_file=$(ai internal restart-pin "$tmux_session" "$ai_name")
+        _pin_status=$?
+        if [[ $_pin_status -eq 0 && -n "$matched_file" ]]; then
+          _restart_requested=true
+          resolve_status=0
+        elif [[ $_pin_status -ne 3 ]]; then
+          _ai_emit warning session "Restart request fenced; explicit recovery is required."
+          sleep 1
+          exit 78
+        fi
+      fi
+      if ! $_restart_requested; then
+    # END PINNED RESTART
       # Resolve before every Claude Code launch so its exact transcript UUID can
       # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
         matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
         resolve_status=$?
       fi
+
+    # BEGIN PINNED RESTART resolver-end
+      fi
+    # END PINNED RESTART
 
       if [[ -f "$prompt_file" ]]; then
         resume_msg=$(cat "$prompt_file")
@@ -1283,6 +1304,14 @@ with open(path, 'w') as f:
           fi
         fi
       fi
+
+    # BEGIN PINNED RESTART no-fallback
+      if $_restart_requested; then
+        # A failed resume must never reach the mutable title resolver or a fresh launch.
+        # The durable request and exclusive launch receipt survive this child.
+        exit 78
+      fi
+    # END PINNED RESTART
 
       # Keep final-exit control flow outside the INT trap. In zsh, an exit
       # requested by a trap interrupting `wait` can be deferred indefinitely.

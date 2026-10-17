@@ -165,6 +165,14 @@ def resolve_target(target: str | None) -> tuple[Path, dict]:
             not target and pane == os.environ.get("TMUX_PANE")
         ):
             matches.append((path, record))
+    live = [
+        (path, record)
+        for path, record in matches
+        if isinstance(record.get("pid"), int) and record["pid"] > 1 and not probe_for().has_ended(record["pid"])
+    ]
+    if matches and not live:
+        raise Refusal("identity", "no live target process")
+    matches = live
     if len(matches) != 1:
         candidates = ", ".join(str(record.get("name", path.stem)) for path, record in matches)
         raise Refusal("target", f"{len(matches)} candidates" + (f": {candidates}" if candidates else ""))
@@ -202,6 +210,11 @@ def transcript_tail(path: Path) -> list[dict]:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
         if not rows or not all(isinstance(row, dict) for row in rows):
             raise ValueError("invalid transcript")
+        if any(
+            not isinstance(row.get("message", {}), dict) or not isinstance(row.get("compactMetadata", {}), dict)
+            for row in rows
+        ):
+            raise ValueError("invalid transcript evidence shape")
         return [row for row in rows if not row.get("isSidechain")]
     except (OSError, ValueError) as exc:
         raise Refusal("background-work", "transcript evidence unreadable") from exc
@@ -235,7 +248,7 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
         # Notifications occur as user content in current transcripts, or as structured records.
         content = row.get("message", {}).get("content", [])
         text = content if isinstance(content, str) else json.dumps(content)
-        if "task-notification" in text:
+        if "task-notification" in text and re.search(r"<status>(completed|failed|killed)</status>", text):
             for task_id in re.findall(r"<task-id>([^<]+)</task-id>", text):
                 completed.add(task_id)
         if row.get("type") == "task-notification" and row.get("status") in ("completed", "failed", "killed"):
@@ -272,7 +285,7 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     model = message.get("model", "")
     if not window:
         window = MODEL_WINDOWS.get(model, 0)
-        if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS:
+        if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS and "haiku" not in model:
             window = 1_000_000
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])
 
@@ -288,7 +301,16 @@ def _settings(cwd: Path) -> list[dict]:
         cwd / ".claude" / "settings.json",
         cwd / ".claude" / "settings.local.json",
     ]
-    return [_object(path) for path in paths if path.exists()]
+    settings = []
+    for path in paths:
+        try:
+            path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise Refusal("rc-activation", "settings unreadable") from exc
+        settings.append(_object(path))
+    return settings
 
 
 def activation_gate(cwd: Path) -> None:
@@ -646,6 +668,14 @@ def child_pin(session: str, title: str) -> tuple[int, str]:
     try:
         request = _object(path)
         if request.get("status") == "complete":
+            if (
+                request.get("version") != 1
+                or request.get("result") != "restarted"
+                or request.get("title") != title
+                or _pane({"tmux": request["tmux"]})[0] != session
+                or str(uuid.UUID(request["session_id"])) != request["session_id"]
+            ):
+                raise Refusal("restart-fenced")
             return 3, ""
         _validate_request(request, session, child=True)
         if request["title"] != title:
@@ -656,7 +686,7 @@ def child_pin(session: str, title: str) -> tuple[int, str]:
             output.flush()
             os.fsync(output.fileno())
         return 0, request["transcript"]
-    except (Refusal, OSError):
+    except (Refusal, OSError, KeyError, TypeError, ValueError):
         return 1, ""
 
 
@@ -834,6 +864,31 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                 return _report("resume-mismatch", local="FAILED")
             if row.get("name") == old["name"] and local_verdict(row) == "VERIFIED":
                 peer = observer_verdict(row, commands.get("observer"))
+                session, pane = _pane(old)
+                request = _object(state_paths(session)[2])
+                shown = (
+                    _run(
+                        [
+                            "tmux",
+                            "display-message",
+                            "-p",
+                            "-t",
+                            pane,
+                            "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
+                        ]
+                    )
+                    .strip()
+                    .split("\t")
+                )
+                if (
+                    shown != [session, pane, str(request["supervisor_pid"]), request["generation"]]
+                    or not _same(request["supervisor_pid"], request["supervisor_identity"])
+                    or request["supervisor_pid"] not in [parent.pid for parent in psutil.Process(row["pid"]).parents()]
+                    or local_verdict(row) != "VERIFIED"
+                ):
+                    return _report(
+                        "verification-failed", detail="replacement ownership changed", local="FAILED", peer=peer
+                    )
                 return _report(
                     "restarted"
                     if peer == "VERIFIED"
@@ -904,11 +959,9 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
 
 def _inject_exit(record: dict, commands: dict) -> None:
     try:
-        outcome = json.loads(_run(_argv(commands["inject"], record, "/exit")))
-    except (Refusal, ValueError) as exc:
+        _run(_argv(commands["inject"], record, "/exit"))
+    except Refusal as exc:
         raise Refusal("no-mechanism", "exit injection failed") from exc
-    if not isinstance(outcome, dict) or outcome.get("status") not in ("submitted", "sent", "success"):
-        raise Refusal("no-mechanism", "exit injection was not submitted")
 
 
 def restart(target: str | None, *, check: bool = False, detached: bool = False, automatic: bool = False) -> dict:
@@ -973,6 +1026,8 @@ def restart(target: str | None, *, check: bool = False, detached: bool = False, 
                 report = _verify_replacement(record, settings, commands)
             except Refusal as exc:
                 report = _report(exc.reason, detail=exc.detail)
+            except (OSError, ValueError, KeyError, TypeError, psutil.Error):
+                report = _report("verification-failed", detail="replacement evidence became unavailable")
             result.update(reason=report["reason"], failed=report["reason"] != "restarted")
             _atomic_json(result_path, result)
             request["status"] = "complete" if report["reason"] == "restarted" else "failed"

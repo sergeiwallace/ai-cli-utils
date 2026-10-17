@@ -75,3 +75,20 @@ def test_given_duplicate_adapter_when_loaded_then_config_refuses(tmp_path, monke
         (directory / f"{name}.toml").write_text('[inject]\nargv = ["example_injector"]\n')
     with pytest.raises(restart.Refusal, match="config"):
         restart.load_commands()
+
+
+def test_given_running_notification_when_shell_pending_then_background_refuses():
+    rows = [
+        {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}},
+        {
+            "type": "user",
+            "message": {
+                "content": "<task-notification><task-id>task-1</task-id><status>running</status></task-notification>"
+            },
+        },
+        {"type": "system", "subtype": "turn_duration", "pendingBackgroundAgentCount": 0},
+    ]
+    with pytest.raises(restart.Refusal, match="background-work"):
+        restart.idle_gate(
+            {"status": "idle", "statusUpdatedAt": (time.time() - 1000) * 1000}, rows, config.read_restart_config({})
+        )
