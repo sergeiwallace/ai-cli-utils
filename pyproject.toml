@@ -118,6 +118,7 @@ dev = [
     # terminal renders from CR, LF and erase, not on raw bytes. Adopted elsewhere as a
     # runtime dependency by prompt-toolkit's ptterm and by termtosvg.
     "pyte>=0.8.2",
+    "copier>=9.18",
 ]
 
 [tool.pytest.ini_options]
