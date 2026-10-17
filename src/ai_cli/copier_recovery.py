@@ -88,6 +88,15 @@ def _anchor_failed_update(wt_dir: Path, repo_name: str, source: str) -> tuple[st
     return ref, template_commit
 
 
+def _push_backup_anchor(root: Path, ref: str) -> None:
+    """Push a backup ref without bypassing hooks, then verify its remote value."""
+    local = _git(root, "rev-parse", "--verify", ref)
+    _git(root, "push", "origin", f"{ref}:{ref}")
+    remote = _git(root, "ls-remote", "--refs", "origin", ref).split()
+    if remote != [local, ref]:
+        raise RuntimeError(f"backup anchor remote verification failed: {ref}")
+
+
 def _check_recovery_target(root: Path, wt_dir: Path, branch: str, ref: str) -> None:
     """Confirm the actual linked checkout and its saved HEAD before any cleanup."""
     listing = _git(root, "worktree", "list", "--porcelain", "-z")
@@ -110,7 +119,13 @@ def _clean_anchored_pushfail(root: Path, wt_dir: Path, branch: str, ref: str) ->
         raise RuntimeError(f"backup anchor {ref}: rejected-push worktree is still dirty")
 
 
-def _file_recovery_issue(root: Path, ref: str, conflicts: list[str], template_range: str) -> str:
+def _file_recovery_issue(
+    root: Path,
+    ref: str,
+    conflicts: list[str],
+    template_range: str,
+    failure_output: str | None = None,
+) -> str:
     """Create once per repo/job, then comment on the matching non-closed issue."""
     # Reuse the existing local-store helper: it strips store overrides and uses
     # sandbox mode, leaving store publication to the caller.
@@ -120,9 +135,14 @@ def _file_recovery_issue(root: Path, ref: str, conflicts: list[str], template_ra
 
     marker = f"[copier-update:{root.name}]"
     title = f"{marker} Resolve failed template update"
+    failure_details = (
+        f"Push failure output:\n{failure_output}\n"
+        if failure_output
+        else f"Conflicted paths: {', '.join(conflicts) or '(semantic failure; inspect snapshot)'}\n"
+    )
     body = (
         f"Backup anchor: {ref}\n"
-        f"Conflicted paths: {', '.join(conflicts) or '(semantic failure; inspect snapshot)'}\n"
+        f"{failure_details}"
         f"Template commit range: {template_range}\n"
         "Restore the backup in a separate worktree to resolve and validate the template update."
     )

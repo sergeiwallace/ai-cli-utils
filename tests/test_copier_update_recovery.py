@@ -54,6 +54,10 @@ def recovery_project(tmp_path):
     _git(project, "add", "-A")
     _git(project, "commit", "-qm", "Customize project")
 
+    project_origin = tmp_path / "project-origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(project), str(project_origin))
+    _git(project, "remote", "add", "origin", str(project_origin))
+
     (template / "message.txt").write_text("template update\n")
     (template / "other.txt").write_text("updated\n")
     # Git's apply step, rather than fixture cleanup, exercises a tracked deletion.
@@ -70,11 +74,12 @@ def recovery_project(tmp_path):
 
 def _run(project, current, *, mode="conflict", inject=None, file_issue=None):
     """Substitute Copier with a real merge, retaining actual unmerged index stages."""
-    if mode in ("clean-push", "dirty-push"):
+    if mode in ("clean-push", "dirty-push", "reject-push", "anchor-push-fail"):
         # Push rejection needs an otherwise valid update. Restore the template's
         # old content before the run so the parity check accepts its exact hunk.
         (project / "message.txt").write_text("original\n")
         _git(project, "commit", "-qam", "Use template content before update")
+        _git(project, "push", "-q", "origin", "main")
     real_run = subprocess.run
     observed = {}
 
@@ -105,10 +110,66 @@ def _run(project, current, *, mode="conflict", inject=None, file_issue=None):
             (wt / ".copier-answers.yml").write_text(yaml.safe_dump(answers))
             (wt / "new.txt").write_bytes(b"untracked content\n")
             (wt / "ignored.log").write_text("ignored content\n")
+            if mode in ("reject-push", "anchor-push-fail"):
+                competing = project.parent.parent / "competing"
+                origin = real_run(
+                    ["git", "-C", str(project), "remote", "get-url", "origin"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                ).stdout.strip()
+                real_run(
+                    ["git", "clone", "-q", origin, str(competing)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
+                real_run(
+                    ["git", "-C", str(competing), "config", "user.name", "Test User"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
+                real_run(
+                    ["git", "-C", str(competing), "config", "user.email", "test@example.com"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
+                (competing / "competing.txt").write_text("origin advanced\n")
+                real_run(
+                    ["git", "-C", str(competing), "add", "competing.txt"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
+                real_run(
+                    ["git", "-C", str(competing), "commit", "-qm", "Advance origin"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
+                real_run(
+                    ["git", "-C", str(competing), "push", "-q", "origin", "main"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env=_git_env(),
+                )
             return subprocess.CompletedProcess(command, 0, "", "")
         if "push" in command:
             wt = observed["worktree"]
             observed["commit"] = _git(wt, "rev-parse", "HEAD").stdout.strip()
+            if mode == "anchor-push-fail" and any("refs/backup/" in arg for arg in command):
+                return subprocess.CompletedProcess(command, 1, "", "anchor push rejected")
+            if mode in ("reject-push", "anchor-push-fail"):
+                return real_run(command, **kwargs)
             if mode == "dirty-push":
                 (wt / "other.txt").write_text("post-commit edit\n")
                 (wt / "late.txt").write_bytes(b"post-commit untracked\n")
@@ -217,22 +278,65 @@ def test_given_semantic_failure_when_entry_runs_then_state_is_anchored_and_remov
 
 
 @pytest.mark.parametrize("mode", ["clean-push", "dirty-push"])
-def test_given_rejected_push_when_entry_runs_then_unpushed_commit_stays_clean(recovery_project, mode):
+def test_given_main_and_anchor_pushes_are_rejected_when_entry_runs_then_local_recovery_state_is_kept(
+    recovery_project, mode
+):
     project, _, current = recovery_project
-    code, observed = _run(project, current, mode=mode, file_issue=Mock(return_value="issue-1"))
+    issue = Mock(return_value="issue-1")
+    code, observed = _run(project, current, mode=mode, file_issue=issue)
 
     assert code == copier_update.EX_PARTIAL_MUTATION
     wt = observed["worktree"]
     assert wt.is_dir()
-    assert _git(wt, "status", "--porcelain").stdout == ""
     assert _git(project, "rev-parse", "copier-update-tmp").stdout.strip() == observed["commit"]
     assert _git(wt, "show", "HEAD:message.txt").stdout == "template update\n"
+    (anchor,) = _anchors(project)
     if mode == "dirty-push":
-        (anchor,) = _anchors(project)
+        assert _git(wt, "status", "--porcelain").stdout == " M other.txt\n?? late.txt\n"
         assert _git(project, "show", f"{anchor}:other.txt").stdout == "post-commit edit\n"
         assert _git(project, "show", f"{anchor}:late.txt").stdout == "post-commit untracked\n"
     else:
-        assert _anchors(project) == []
+        assert _git(wt, "status", "--porcelain").stdout == ""
+    issue.assert_not_called()
+
+
+def test_given_origin_rejects_update_when_entry_runs_then_anchor_is_pushed_and_temp_state_is_removed(
+    recovery_project, capsys
+):
+    project, previous, current = recovery_project
+    issue = Mock(return_value="issue-1")
+
+    code, _ = _run(project, current, mode="reject-push", file_issue=issue)
+
+    assert code == copier_update.EX_PARTIAL_MUTATION
+    _assert_removed(project)
+    (anchor,) = _anchors(project)
+    local_tip = _git(project, "rev-parse", anchor).stdout.strip()
+    remote = _git(project, "ls-remote", "--refs", "origin", anchor).stdout.split()
+    assert remote == [local_tip, anchor]
+    assert issue.call_args.args[1] == anchor
+    assert f"{previous}..{current}" in issue.call_args.args
+    assert "rejected" in issue.call_args.args[-1].lower()
+    summary = next(line for line in capsys.readouterr().out.splitlines() if "PUSH FAILED" in line)
+    assert anchor in summary
+
+
+def test_given_anchor_push_fails_when_entry_runs_then_worktree_is_kept_and_recovery_failure_is_reported(
+    recovery_project, capsys
+):
+    project, _, current = recovery_project
+    issue = Mock(return_value="issue-1")
+
+    code, observed = _run(project, current, mode="anchor-push-fail", file_issue=issue)
+
+    assert code == copier_update.EX_PARTIAL_MUTATION
+    wt = observed["worktree"]
+    assert wt.is_dir()
+    assert _git(project, "rev-parse", "copier-update-tmp").stdout.strip() == observed["commit"]
+    (anchor,) = _anchors(project)
+    assert _git(project, "ls-remote", "--refs", "origin", anchor).stdout == ""
+    issue.assert_not_called()
+    assert "RECOVERY FAILED" in capsys.readouterr().out
 
 
 def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented(recovery_project, monkeypatch):
