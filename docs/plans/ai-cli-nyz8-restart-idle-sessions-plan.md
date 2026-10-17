@@ -40,15 +40,15 @@ Coverage index (non-authoritative; the raw record governs):
 | A001: trigger when `/rc` "is no longer de facto connected and visible", for the mobile app or "via ListAgents / SendMessage", "under the expected cc session custom title and not some new random string" | Research doc sections 1 to 3; D-8 (trigger 2), T-04 |
 | A001: "what controls they give us for automatically renaming remote session processes" ("idk if we can automate this") | Research doc section 1: no rename API; the relaunch passes `--name`, and T-02 AC-2.8 verifies the title came back |
 | A001: "tell [the session on the other host] ... they can do the same for themselves" | T-05 AC-5.4 |
-| A001: "merge it in and auto-reap worktree and /sync-git" | T-05 AC-5.6; integration and cleanup remain coordinator-owned |
-| A001/A002: create and assign the epic and sub-tasks, hand off, delegate the run, start the goal | Reported done before this plan; completion evidence remains unverified. T-05 AC-5.6 requires the coordinator to verify it. |
-| A002: `/report-feedback`, SendFeedback, a GitHub issue and related-issue linking comments for Remote Control/mobile discovery failures | T-06 retains all delivery requirements; completion is unverified and blocks epic closure. |
+| A001: "merge it in and auto-reap worktree and /sync-git" | Every task lands by PR; the coordinator then syncs the main tree and reaps the task worktree, and T-05 AC-5.6 records each outcome |
+| A001/A002: create and assign the epic and sub-tasks, hand off, delegate the run, start the goal | Done by the launching sessions before this plan, outside this repository: the epic and its five children exist, assigned and in progress, and the operator's private harness carries the founding-ask record and the run prompt for this delegated run |
+| A002: `/report-feedback`, SendFeedback, a GitHub issue and related-issue comments | Owned and delivered by the launching session, not by this plan: its repository records the report as filed with the vendor and the issue draft that links to it. This plan sends nothing outward |
 
 **Status:** DRAFT
 
 **Created:** 2026-10-17
 
-**Task:** AI-CLI-nyz8 (epic) with children .1 to .5; the coordinator must track the additional T-06 delivery work before closure.
+**Task:** AI-CLI-nyz8 (epic) with children .1 to .5.
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -76,6 +76,8 @@ Coverage index (non-authoritative; the raw record governs):
   - [D-7: What runs the automatic triggers](#d-7)
   - [D-8: Trigger definitions](#d-8)
   - [D-9: Coexisting with the harness's update-restart pass](#d-9)
+  - [D-10: Making sure the relaunch resumes the same conversation](#d-10)
+  - [D-11: Restarting for a failure no probe on the host can see](#d-11)
 - [Open Questions](#open-questions)
 - [Task Breakdown](#task-breakdown)
   - [T-01: Research (AI-CLI-nyz8.1)](#t-01-research-ai-cli-nyz81)
@@ -83,7 +85,6 @@ Coverage index (non-authoritative; the raw record governs):
   - [T-03: The save-state pre-step (AI-CLI-nyz8.3)](#t-03-the-save-state-pre-step-ai-cli-nyz83)
   - [T-04: Automatic triggers (AI-CLI-nyz8.4)](#t-04-automatic-triggers-ai-cli-nyz84)
   - [T-05: Rollout (AI-CLI-nyz8.5)](#t-05-rollout-ai-cli-nyz85)
-  - [T-06: Feedback and issue delivery](#t-06-feedback-and-issue-delivery)
 - [Verification](#verification)
 - [Risks](#risks)
 - [Feedback Rounds](#feedback-rounds)
@@ -102,10 +103,12 @@ context is either just past an auto-compaction or under a configurable threshold
 When the context gate fails, an optional pre-step types `/save-state` into the session through a
 configured injection command and waits for the compaction that follows. The restart itself sends
 `SIGTERM` to the one Claude Code process in the pane; the supervisor that owns the pane relaunches
-it with `--resume <session id> --name <title>` using an acknowledged, generation-fenced UUID
-handoff. Before any action, the command requires verified Remote Control startup activation.
-After relaunch it checks the conversation, title, local socket/listing and remote observer,
-reporting local, peer and mobile verdicts separately. Unverified visibility is never success.
+it with `--resume <session id> --name <title>`. Before acting, the command checks that the
+supervisor's own resolver will pick this same conversation (D-10) and that Remote Control starts
+at launch. After the relaunch it checks the conversation, the title, the messaging socket, the
+local `ListAgents` view, the bridge registration and, where one is configured, a remote
+observer. It reports the local, peer and mobile verdicts separately and never reports a surface
+it could not observe as verified.
 
 An automatic mode runs the same command when a trigger holds: the session is running an older
 Claude Code than the one installed, or the reachability probe positively establishes that it is
@@ -118,7 +121,7 @@ Research behind every decision: [Claude Code session identity and reachability](
 
 | Capability | Where | Reused how |
 |---|---|---|
-| Supervisor relaunches the agent on any child exit except 77 and 79; resolves a transcript by title on each launch and can fall back to a new conversation; stops after a return within 3 s or three short runs under 60 s | `src/ai_cli/session_script.py`, `main.py` resolver | T-02 adds the controlled-restart UUID handoff below. Ordinary launches keep their existing resolution. Minimum uptime must also satisfy the breaker safety floor. |
+| Supervisor relaunches the agent on any child exit except 77 and 79; resolves a transcript by title on each launch and can fall back to a new conversation; stops after a return within 3 s or three short runs under 60 s | `src/ai_cli/session_script.py`, `main.py` (`resolve-continue-target`, `_find_cc_session_candidates_by_title`) | Unchanged. The restart is a `SIGTERM` to the agent; D-10 runs the same resolver before the signal and refuses unless it picks the target's own transcript. `min_uptime_seconds` keeps every restart clear of the short-run breaker. |
 | Live Claude Code registry reader | `session_adopt.live_sessions()` | Target resolution reads the same `~/.claude/sessions/*.json` records, adding the `tmux`, `status`, `version`, `nameSource`, `bridgeSessionId` and `messagingSocketPath` fields. |
 | Launch-convention session naming | `session.build_session_name()`, `_resolve_explicit_tmux_slot()` | `ai c N [-R] -p P --restart-session` resolves the session `ai c` would attach. |
 | Process birth identity | `process_probe.capture_identity()`, `start_time_match()` | The kill is gated on the pid's start time matching the registry's `procStart`. |
@@ -126,11 +129,9 @@ Research behind every decision: [Claude Code session identity and reachability](
 | External commands through drop-in files | `<config dir>/session-migrate.d/*.toml` | New `<config dir>/restart-session.d/*.toml` for the injection command and the optional reachability observer. |
 | Supervisor heartbeat every 30 s through `ai internal publish-heartbeat` | `session_script.py` ticker | Runs the automatic evaluator on its own interval (D-7). |
 
-Parity: ordinary supervisor launches retain their title resolution, prompt-file handling and
-exit/breaker rules. Controlled restarts intentionally replace title resolution and fresh-session
-fallback with the exact UUID handoff (AC-2.15); both launch branches, including the resume-prompt
-branch, must honour it. AC-2.18 tests ordinary-launch parity. Heartbeat scheduling gains the
-evaluator of T-04; existing heartbeat publication is preserved. Registry readers remain reused.
+Parity: nothing existing changes behaviour. The supervisor, its resolver, its relaunch contract
+and the registry readers are used as they are; T-04 adds the evaluator launch to the heartbeat
+handler and keeps the heartbeat publication itself unchanged.
 
 ## Configuration
 
@@ -164,9 +165,10 @@ argv = ["python3", "-m", "example_injector", "inject", "--target", "{tmux_pane}"
 argv = ["ssh", "host-b", "list-sessions-as-seen-from-here"]
 ```
 
-No file means no injection command and no observer. Missing injection can refuse the pre-step
-or exit mechanism. Missing observer leaves peer visibility `UNVERIFIED`; a locally completed
-restart then returns non-zero verification-incomplete, never a reachable-success result.
+No file means no injection command and no observer. Missing injection refuses the pre-step and
+the exit mechanism. Missing observer leaves the cross-host peer verdict `UNVERIFIED`: the restart
+still succeeds on its local and bridge checks, and the report says the cross-host view was not
+observed.
 
 The observer returns structured JSON with `status` (`seen`, `absent`, `unknown`), `complete`,
 `observed_at`, and matching rows carrying `session_id`, `title`, and `bridge_session_id` when
@@ -178,29 +180,13 @@ conversation and expected title, and correlate its current bridge identity where
 a title-only stdout response is insufficient. This is a peer listing check, not a claim that
 SendMessage delivery or the mobile UI was tested.
 
-Remote Control activation prerequisite: before signalling or injecting `/exit`, read the effective
-`remoteControlAtStartup` setting for the actual target launch, including overrides, and require
-it to be true on a CLI version whose support has been verified. Do not change user settings.
-Missing, disabled, unsupported or unreadable activation refuses with `rc-activation`, even when
-a bridge id exists. T-02 must verify the installed CLI/settings interface before implementing
-this path; no unverified launch flag is prescribed. A session without that prerequisite remains
-refused until the operator enables it. A failed reconnection is recorded against the conversation
-and suppresses further automatic attempts until a successful passive probe or an explicit manual
-retry; cooldown alone must not create an unattended failure loop.
-
-Controlled restart handoff: under the shared lock, publish the validated UUID, transcript path,
-expected title, old process birth identity, immutable tmux pane/session IDs, supervisor generation
-and a unique request token. Require an acknowledgement from that same live supervisor generation
-before action. Supervisors without handoff support refuse with `resume-target`; an on-disk request
-alone is not acknowledgement. Revalidate transcript readability, UUID and ownership before action.
-Bind acknowledgement to the old child birth identity: unexpected child exit/replacement before
-the intended action invalidates the request and forbids signalling or injecting into its successor.
-On child exit the supervisor consumes only its matching acknowledged request and uses that exact
-`--resume` UUID in either launch branch. It must not resolve by title, prompt for a different
-transcript or start a fresh conversation. If validation fails after exit, it reports failure and
-launches no replacement. Stale, replayed, expired or generation-mismatched requests cannot control
-a later launch. Finalize the request after verification or failure, retaining a failure result
-so an acknowledged failed restart cannot silently fall through to ordinary title resolution.
+Remote Control activation prerequisite: before signalling or injecting `/exit`, read
+`remoteControlAtStartup` from the user settings file and from any project or local settings file
+for the target's working directory, the last one present winning, and require `true`. Never
+change a settings file. Missing, false or unreadable activation refuses with `rc-activation`,
+even when a bridge id exists. A failed reconnection is recorded against the conversation and
+suppresses further automatic attempts until a passive probe passes or the operator retries by
+hand; cooldown alone never restarts a session whose last restart failed.
 
 ## Decisions
 
@@ -327,9 +313,10 @@ background work.
 - No in-flight turn: registry `status` is `idle` (not `busy`, not `shell`, no `waitingFor`) and has
   been for `settle_seconds`; the transcript's last main-chain record ends a turn.
 - No background work: no background launch in the transcript (a `backgroundTaskId`, an
-  `async_launched` status) without a matching completion, `pendingBackgroundAgentCount` zero or
-  absent in the latest record, and no live descendant of the agent pid other than the MCP servers
-  its process tree started with.
+  `async_launched` status) without a matching completion, the latest main-chain
+  `{"type":"system","subtype":"turn_duration"}` record present with `pendingBackgroundAgentCount`
+  0, and no live descendant of the agent pid other than the MCP servers its process tree started
+  with. A transcript is read from its end in bounded chunks; they reach hundreds of megabytes.
 
 **Pros:**
 
@@ -568,7 +555,8 @@ mobile visibility.
 - `LOCAL_ONLY` and `UNKNOWN` never trigger, regardless of duration. Timers schedule probes and
   enforce cooldown; elapsed time does not establish a connectivity failure.
 - A trigger only proposes a restart. Every prerequisite and gate still applies, including
-  activation, handoff, lock, D-3 and D-4, with the pre-step when the context gate fails.
+  activation, the resolver check of D-10, the lock, D-3 and D-4, with the pre-step when the
+  context gate fails.
 
 **Pros:**
 
@@ -591,13 +579,17 @@ mobile visibility.
 
 ##### Recommendation
 
-> **Decision:** (a) Version comparison and positive reachability failure; corrected in the audit fix pass to preserve the founding ask.
-<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=runtime-not-exposed; ai-effort=runtime-not-exposed; ai-profile=implementation-worker -->
+> **Decision:** ✅ Resolved by Opus orchestrator — (a) Version comparison for trigger 1; positive reachability failure for trigger 2
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
 <!-- decision-lineage: decision-id=AI-CLI-nyz8/D-8; decision-topic=auto-trigger-definitions; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=trigger on positive update or reachability-failure evidence; unknown and local-only verdicts never trigger; applicability=scope:restart-session; outcome-id=positive-evidence-triggers; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-(b) misses remote-only failures. The Con of (a) is addressed by installing and testing the
-remote observer during rollout and reporting missing evidence explicitly. There is no periodic
-healthy-session restart fallback. Any proposal to add one requires owner escalation as a re-scope.
+Round 1 of the doc audit found that the first version's age bound restarted a healthy session
+only because nobody had observed it, which the ask rules out: the automatic restart happens only
+when a trigger is detected. (a) is the corrected definition and keeps that condition. (b) misses
+the failure where `/rc` reports connected while peers miss the session. The Con of (a), that a
+failure only the mobile app shows goes undetected without an observer, is mitigated by the
+observer hook, by naming the unobserved surface in every restart report, and by D-11, which puts
+the remaining gap to the operator.
 
 ---
 
@@ -613,7 +605,7 @@ at the same moment.
 
 Both actors must atomically acquire the same exclusive OS-backed lock at
 `<state dir>/restart-session/<tmux session>.lock` before revalidation, injection or signalling.
-They retain ownership through any pre-step, handoff, action and replacement verification/failure.
+They retain ownership through any pre-step, the action and the replacement verification or failure.
 Checking lock-file existence or observing that it is unlocked does not grant ownership.
 The lock file is stable and is never unlinked/replaced while contenders may use it. Both actors
 read and atomically update a separate durable cooldown/result file under the lock, recording
@@ -647,6 +639,115 @@ the caller's lock must not disappear while its helper acts.
 <!-- decision-lineage: decision-id=AI-CLI-nyz8/D-9; decision-topic=restarter-coexistence; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=the restart command holds a per-session lock and cooldown that the harness update-restart pass honours; applicability=scope:restart-session; outcome-id=shared-lock; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 (a) keeps both. The Con is task T-04b, landed through its own harness PR alongside T-03b.
+
+---
+
+<a id="d-10"></a>
+
+#### D-10: Making sure the relaunch resumes the same conversation — ✅ Resolved by Opus orchestrator
+
+**Context.** The doc audit (findings F-2 and N-1) found that the supervisor resumes the newest
+transcript carrying the session's title, so a kill could in principle resume a different
+same-title conversation or start a fresh one. Every session already running has a supervisor
+that cannot change without its pane being relaunched by other means.
+
+##### (a) Run the supervisor's own resolver before the signal, verify the conversation after
+
+Before the signal, call the same resolution the supervisor runs on relaunch
+(`_find_cc_session_candidates_by_title` for the target's working directory and title, as
+`resolve-continue-target` does) and require exactly one candidate, the target's own transcript.
+Anything else refuses with `resume-target`. After the relaunch, require the replacement's
+`sessionId` to equal the target's; a different one is a failed restart (`resume-mismatch`),
+recorded so the automatic mode stops retrying.
+
+**Pros:**
+
+- Works with every supervisor already running, so the rollout can restart today's sessions.
+- No change to the supervisor or its launch contract.
+
+**Cons:**
+
+- A same-title transcript written in the seconds between the check and the relaunch would still
+  be resumed instead.
+
+##### (b) A supervisor-acknowledged handoff of the exact conversation id
+
+**Pros:**
+
+- Closes the race in the Con of (a).
+
+**Cons:**
+
+- Needs a supervisor change, so every session running today refuses until its pane is relaunched
+  by other means, which defeats the rollout (audit finding N-1).
+
+##### Recommendation
+
+> **Decision:** ✅ Resolved by Opus orchestrator — (a) Run the supervisor's own resolver before the signal, verify the conversation after
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
+<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-10; decision-topic=resume-target-safety; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=the restart refuses unless the supervisor resolver picks the target transcript, and verifies the resumed conversation id; applicability=scope:restart-session; outcome-id=resolver-agreement; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+(b) would block the rollout the ask requests, so (a). Its Con is mitigated twice: only the
+session itself writes transcripts under its title, so the window is narrow, and the
+post-relaunch `sessionId` check turns the rare miss into a reported failure that stops automatic
+retries instead of a silent switch.
+
+---
+
+<a id="d-11"></a>
+
+#### D-11: Restarting for a failure no probe on the host can see — `⏳ PENDING (human)`
+
+**Context.** The ask's second trigger is a session no longer "de facto connected and visible"
+from the mobile app or to other sessions under its expected title. The research found no way for
+a process on the session's host to see what the mobile app lists, and the headless `ListAgents`
+view there shows only local peers. D-8 detects every failure a probe can observe. A failure that
+only the mobile app would show stays undetected unless an observer on another host is configured.
+Leaving that gap open would narrow an explicit trigger, so it goes to the operator.
+
+##### (a) Detect only what a probe observes; the operator restarts by hand when the app shows a problem
+
+**Pros:**
+
+- Never restarts a healthy session, matching "doesn't necessary auto-restart unless it detects".
+- `ai -X <title>` from any shell, or `ai -X` inside the session, covers the case in one command.
+
+**Cons:**
+
+- A session the app cannot see, while every host-side probe passes, stays that way until
+  someone notices.
+
+##### (b) Also restart an idle session whose reachability has gone unobserved for N hours
+
+**Pros:**
+
+- Bounds how long an app-only failure can last, at the price of a resume.
+
+**Cons:**
+
+- Restarts healthy sessions about once per N hours, which the audit read as contrary to the ask.
+
+##### (c) Configure a cross-host observer on each host pair
+
+**Pros:**
+
+- Turns part of the gap into a detected trigger with positive evidence.
+
+**Cons:**
+
+- Needs a command on the other host that lists sessions as that host sees them, which does not
+  exist yet, and it still does not observe the mobile app itself.
+
+##### Recommendation
+
+> **Decision:** `PENDING` — recommendation (a) now, with (c) added once a cross-host listing exists
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-11; decision-topic=undetectable-reachability-gap; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=how to handle a reachability failure that no probe on the host can observe; applicability=scope:restart-session; outcome-id=pending; relation=different-question; related-decision-id=AI-CLI-nyz8/D-8; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+The build ships (a), which D-8 already implements, so nothing waits on this choice. (b) is a
+configuration value T-04 can add later without a design change if the operator prefers it.
+Every restart report names the surfaces it could not observe, so the gap is visible rather than
+silent.
 
 ---
 
@@ -703,16 +804,15 @@ section in `src/ai_cli/config.py`, tests in `tests/test_session_restart.py`, a R
 - [ ] AC-2.7 If the context gate of D-4 fails and the pre-step cannot run or does not complete,
   then the command shall refuse with reason `context` and signal nothing; the threshold shall be
   read from the config file on that call.
-- [ ] AC-2.8 When every prerequisite and gate passes under lock, the command shall re-check them,
-  send `SIGTERM` to the one verified pid (and `SIGKILL` only after `term_grace_seconds` and a fresh
-  birth-identity match), and wait for a replacement in the same pane/generation with the same
-  `sessionId`, expected `name`, `nameSource` `user`, and non-null `bridgeSessionId`. It shall also
-  require that replacement's messaging socket to accept a passive connection and a complete local
-  `claude agents --json` listing to identify that conversation under the expected title. It shall
-  run the configured remote observer against the replacement, not accept an old same-title row,
-  and report local, peer and mobile verdicts separately. Failed checks exit non-zero; missing or
-  unknown peer evidence exits non-zero with `verification-incomplete`. Mobile stays `UNVERIFIED`
-  until separately observed in T-05; local registration alone never claims de facto reachability.
+- [ ] AC-2.8 When every prerequisite and gate passes under the lock, the command shall re-check
+  them, send `SIGTERM` to the one verified pid (and `SIGKILL` to that same pid only after
+  `term_grace_seconds` and a fresh start-time match), and wait for a replacement in the same pane
+  with the same `sessionId`, the expected `name`, `nameSource` `user` and a non-null
+  `bridgeSessionId`, whose messaging socket accepts a passive connection and which a complete
+  `claude agents --json` listing shows under the expected title. Where an observer is configured
+  it shall run it against the replacement. It shall report the local, peer and mobile verdicts
+  separately, with the mobile verdict always `UNVERIFIED`, and exit non-zero when a local or
+  bridge check fails inside `relaunch_timeout_seconds`.
 - [ ] AC-2.9 Where `mechanism = "exit"`, or the platform cannot signal the pid, the command shall
   inject `/exit` through the configured injection command instead of signalling; with no injection
   command it shall refuse with reason `no-mechanism`.
@@ -725,26 +825,20 @@ section in `src/ai_cli/config.py`, tests in `tests/test_session_restart.py`, a R
   process other than one it started itself.
 - [ ] AC-2.13 On Windows the kill path is recorded as unsupported in the code and the README; the
   command uses the injection route there or refuses.
-- [ ] AC-2.14 If effective startup activation is disabled, missing, unsupported or unreadable, then
-  the command shall refuse with `rc-activation` before either restart mechanism, leaving settings
-  unchanged; tests shall cover a disabled startup setting with no recorded bridge and an enabled
-  setting that reconnects. A disposable-session test shall verify both cases on a supported CLI.
-- [ ] AC-2.15 When preparing a controlled restart, the command and supervisor shall complete the
-  generation-fenced UUID handoff in Configuration before any signal or `/exit`; missing exact
-  transcript or acknowledgement, or changed pane/generation/process identity, shall refuse with
-  `resume-target`. The replacement shall use only the selected UUID in both prompt-file branches,
-  with no title selection or fresh-conversation fallback. A post-exit handoff failure shall launch
-  nothing and remain a recorded failure, not silently revert to ordinary launch behaviour.
-- [ ] AC-2.16 When a controlled restart fails reconnection, automatic retries for that conversation
-  shall remain suppressed until a successful passive probe or explicit manual retry; tests shall
-  show that passing cooldown alone cannot cause another restart.
-- [ ] AC-2.17 When two restart actors contend, both shall acquire D-9's same exclusive lock and
-  hold it through verification; tests shall force simultaneous attempts and a contender arriving
-  during pre-step/relaunch, and assert exactly one action and durable cooldown on failure.
-- [ ] AC-2.18 When no controlled handoff exists, ordinary launches shall preserve title resolution,
-  prompt-file handling and supervisor exit/breaker rules; tests shall cover this parity alongside
-  controlled restarts with duplicate historical titles, mismatched titles, missing transcripts,
-  stale/replayed requests and a supervisor generation change.
+- [ ] AC-2.14 If `remoteControlAtStartup` is missing, false or unreadable for the target, then the
+  command shall refuse with `rc-activation` before either mechanism and leave every settings file
+  unchanged; fixture tests cover each case.
+- [ ] AC-2.15 If the supervisor's resolver (`_find_cc_session_candidates_by_title` for the target's
+  working directory and title) returns anything other than exactly the target's own transcript,
+  then the command shall refuse with `resume-target` before acting; if the replacement's
+  `sessionId` differs, the command shall report `resume-mismatch` and record the failure. Tests
+  cover duplicate titles, a mismatched title and a missing transcript.
+- [ ] AC-2.16 When a restart fails its verification, automatic retries for that conversation shall
+  stay suppressed until a passive probe passes or the operator retries by hand; a test shows that
+  cooldown expiry alone causes no second restart.
+- [ ] AC-2.17 When two restart actors contend, both shall acquire D-9's exclusive lock and hold it
+  through verification; tests force simultaneous attempts and a contender arriving during the
+  pre-step and during the relaunch, and assert exactly one action and a durable cooldown record.
 
 ### T-03: The save-state pre-step (AI-CLI-nyz8.3)
 
@@ -810,33 +904,12 @@ T-04b, private harness repository, its own PR:
   `bridgeSessionId`, and its running version.
 - [ ] AC-5.4 The operator's session on `host-b` is sent the instruction to update, install and run
   the same command for its own host's sessions.
-- [ ] AC-5.5 When rollout checks a replacement, it shall record a remote peer's complete ListAgents
-  observation under the expected title and a mobile Code-tab observation of that title and a
-  usable connection, correlated to the same restart. It shall separately test SendMessage delivery
-  after restart verification (which can start a turn). Without that evidence, rollout remains
-  incomplete and records the specific unverified surface; a bridge id never substitutes for it.
-- [ ] AC-5.6 Before epic closure, the coordinator shall verify records for epic/sub-task assignment,
-  handoff, delegated run and goal activation, and record integration, synchronization and cleanup
-  outcomes. Missing records remain unverified work, not an assumed completion.
-
-### T-06: Feedback and issue delivery
-
-Coordinator-owned delivery dependency retained from A002; this plan fix pass sends no reports.
-The coordinator must attach tracked work and a responsible owner before marking the plan complete.
-
-- [ ] AC-6.1 When preparing delivery, the owner shall run `/report-feedback` for the Remote Control
-  failure where local connected status conflicts with mobile/peer discovery or expected naming,
-  verify the report against observed evidence, and record the prepared report reference.
-- [ ] AC-6.2 When submitting that report through SendFeedback, the owner shall record its receipt
-  or exact failure/blocker; drafting alone shall not satisfy delivery.
-- [ ] AC-6.3 When filing the public GitHub issue, the owner shall use a privacy-scoped reproduction
-  of that same failure and record the resulting issue URL or exact blocker.
-- [ ] AC-6.4 When reviewing related GitHub issues, the owner shall record the searched issues and
-  relevance assessment, and add appropriate comments linking to the new issue, recording comment
-  URLs; if none are appropriate, it shall record the evidence and reason rather than claim posting.
-- [ ] AC-6.5 While any required delivery or observation is blocked/unverified, epic closure shall
-  remain blocked with an owner and next action. Dropping or deferring an A001/A002 requirement
-  requires owner escalation; no exclusion is authorized by this plan.
+- [ ] AC-5.5 For each restarted session the rollout records its title in a complete local
+  `ListAgents` listing, its `bridgeSessionId` and running version, and the cross-host observer's
+  verdict where one exists; the mobile app view is listed per session for the operator to check,
+  and never claimed as verified.
+- [ ] AC-5.6 The rollout records, for every task PR, its merge and content proof on the target,
+  the main-tree sync, and the worktree reap verdict verbatim.
 
 ## Verification
 
@@ -851,20 +924,17 @@ The coordinator must attach tracked work and a responsible owner before marking 
 - One live refusal: the same session given a long-running background shell, then `ai -Y` shows
   `background-work`.
 
-The focused implementation regression coverage required by this fix pass is:
+Audit backlog and the AC that covers each finding:
 
-| Backlog | Fixture / controlled scenario | Required assertion |
-|---|---|---|
-| DV-1 | Startup activation disabled and no bridge; unreadable/unsupported setting; enabled startup | No signal/injection/settings edit for refusal; enabled disposable restart reconnects (AC-2.14). |
-| F-1 | Both actors pause before acquisition, then contend; contender during pre-step/relaunch; failed verification | One owner/action only, cooldown/result read and written under ownership, no delayed second injection (AC-2.17, AC-4.6). |
-| F-2 | Two historical same-title transcripts, title mismatch, missing transcript, prompt present/absent, stale token or changed generation | Only the selected UUID resumes; invalid handoff refuses before action or launches nothing after exit; ordinary launch parity remains (AC-2.15, AC-2.18). |
-| JA-1 | Healthy current-version session with old local-only/unknown evidence; observer failure versus complete absence | No restart for unknown/local-only at any age; positive update/absence can propose one subject to gates (AC-4.5). |
-| JA-2 | Prepared report without submission; failed submission; issue filed but related-issue review absent | Delivery remains incomplete until receipts/URLs or assessed no-comment outcome are recorded; blockers prevent closure (AC-6.1–6.5). |
-| JA-3 | Bridge present but socket/listing fails; stale same-title remote row; missing/failed observer; mobile unobserved | No reachable-success result; local/peer/mobile verdicts stay separate; rollout requires independent observations (AC-2.8, AC-5.5). |
-
-These are required implementation/delivery tests, not tests executed by this documentation pass.
-Runtime claims, cross-host/mobile observations and delivery completion remain unverified until
-those tasks produce evidence. No named founding requirement is dropped or newly deferred here.
+| Finding | Covered by |
+|---|---|
+| DV-1 (no Remote Control at startup) | AC-2.14 |
+| F-1 (lock checked, not owned) | D-9, AC-2.17, AC-4.6 |
+| F-2 and N-1 (relaunch picks another conversation; running supervisors) | D-10, AC-2.15 |
+| JA-1 (restart of a healthy unobserved session) | D-8, AC-4.5; the remaining gap is D-11 |
+| JA-2 (feedback and issue delivery) | Coverage index: delivered by the launching session, outside this plan |
+| JA-3 (local registration claimed as reachability) | AC-2.8, AC-5.5 |
+| IC-1 (fresh test session refused by the uptime gate) | Verification above |
 
 ## Risks
 
@@ -875,9 +945,9 @@ those tasks produce evidence. No named founding requirement is dropped or newly 
 | A restart loop trips the supervisor's short-run breaker | `min_uptime_seconds` and `cooldown_seconds` |
 | Two restarters act on one session | Lock and cooldown (D-9) |
 | The pre-step types into a session that just started a turn | The injection library's readiness checks, then every gate again after the compaction |
-| Remote-only failures cannot be observed locally | Install a remote observer; unknown/local-only never trigger, missing verification remains incomplete |
-| The selected conversation changes during relaunch | Acknowledged generation-fenced UUID handoff; no title/fresh fallback for controlled restarts |
-| Startup activation is unavailable | Refuse before action; verify the effective setting and installed CLI support |
+| A failure only the mobile app shows goes undetected | Observer hook, unobserved surfaces named in every report, D-11 |
+| The relaunch resumes another conversation | Resolver agreement before the signal and the `sessionId` check after it (D-10) |
+| Remote Control does not start on relaunch | Refuse unless `remoteControlAtStartup` is true (AC-2.14) |
 
 <!-- /doc:region name="task_breakdown" -->
 
