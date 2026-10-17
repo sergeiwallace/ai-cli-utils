@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from conftest import run_cli
 
 from ai_cli.copier_update import (
@@ -820,6 +822,90 @@ def test_given_template_file_in_new_directory_when_verifying_parity_then_update_
         status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
 
     assert (status, detail) == ("ok", "")
+
+
+def _project_with_added_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """A template that adds skills/lint/SKILL.md and a project one commit behind it."""
+    template = tmp_path / "template"
+    project = tmp_path / "project"
+    for directory in (template, project):
+        directory.mkdir()
+        subprocess.run(["git", "init"], cwd=directory, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=directory, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=directory, check=True)
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "skills" / "lint").mkdir(parents=True)
+    (template / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+    subprocess.run(["git", "add", "skills"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "add a skill"], cwd=template, check=True, capture_output=True)
+    (project / "message.txt").write_text("original\n")
+    (project / ".copier-answers.yml").write_text(
+        f"_src_path: {template}\n_commit: {old_commit}\nfeature_enabled: true\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "initial project"], cwd=project, check=True, capture_output=True)
+    return template, project
+
+
+def _update_with_pre_commit_hook(tmp_path: Path, hook_body: str) -> tuple[str, str, Path]:
+    _, project = _project_with_added_skill(tmp_path)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\n" + hook_body)
+    hook.chmod(0o755)
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "skills" / "lint").mkdir(parents=True)
+            (project / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+    return status, str(detail), project
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_reformats_files_when_committing_update_then_it_retries_and_commits(tmp_path):
+    """A formatter hook aborts the first commit but leaves its fixes; the update commits them."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path,
+        "if [ ! -f .git/hook-ran ]; then touch .git/hook-ran; echo formatted >> skills/lint/SKILL.md; exit 1; fi\n",
+    )
+    assert (status, detail) == ("ok", "")
+    committed = subprocess.run(
+        ["git", "show", "HEAD:skills/lint/SKILL.md"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout
+    assert committed == "skill\nformatted\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_keeps_rewriting_and_failing_when_committing_update_then_it_retries_once(tmp_path):
+    """A hook that rewrites files and fails every time is not looped on: one retry, then the update fails."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path,
+        'echo x >> .git/hook-count; echo y >> skills/lint/SKILL.md; echo "hook says no" >&2; exit 1\n',
+    )
+    assert status == "failed"
+    assert "hook says no" in detail
+    assert (project / ".git" / "hook-count").read_text().count("x") == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pre_commit_hook_that_fails_without_rewriting_when_committing_update_then_it_does_not_retry(tmp_path):
+    """A hook rejecting the content (no rewrite) is a real failure, not an autofix: no second attempt."""
+    status, detail, project = _update_with_pre_commit_hook(
+        tmp_path, 'echo x >> .git/hook-count; echo "hook says no" >&2; exit 1\n'
+    )
+    assert status == "failed"
+    assert "hook says no" in detail
+    assert (project / ".git" / "hook-count").read_text().count("x") == 1
 
 
 def test_do_update_pushfail(tmp_path):
