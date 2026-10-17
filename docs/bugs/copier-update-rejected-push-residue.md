@@ -91,15 +91,17 @@ real integration test, but no redesign.
 Rejected pushes now follow the verified recovery path:
 
 1. Snapshot the failed update under the dated `refs/backup/.../copier-update/...` namespace.
-2. Push that exact backup ref to `origin` without bypassing hooks.
-3. Read the remote ref back and require it to match the local anchor.
-4. File or refresh the repository recovery issue with the anchor, template range, and original push
-   diagnostics.
-5. Confirm the linked worktree and saved `HEAD`, then remove only the temporary worktree and branch.
-6. Include the anchor ref in the project's push-failure summary.
+2. Try to push that exact backup ref to `origin` without bypassing hooks, and read it back.
+   This is best effort: the fleet pre-push test gate runs on every ref, so a project whose gate
+   refused the update normally refuses the anchor too. The verified local ref is the durable copy,
+   as on the conflict path.
+3. File or refresh the repository recovery issue with the anchor, where it lives (local only, or
+   local and origin), the template range, and the original push diagnostics.
+4. Confirm the linked worktree and saved `HEAD`, then remove only the temporary worktree and branch.
+5. Include the anchor ref in the project's push-failure summary.
 
-If local anchor creation, anchor push, or remote verification fails, cleanup is not attempted and
-the result is `recoveryfail`, preserving the temporary worktree and branch.
+If local anchor creation or verification fails, cleanup is not attempted and the result is
+`recoveryfail`, preserving the temporary worktree and branch.
 
 ## Verification
 
@@ -112,8 +114,9 @@ the result is `recoveryfail`, preserving the temporary worktree and branch.
 - [x] The success regression proves the temporary worktree and branch are gone, the local and
   remote anchor values match, the issue filer receives the anchor and push diagnostics, and the
   summary line names the anchor.
-- [x] The failure regression proves an anchor-push refusal retains the worktree and branch, does not
-  file an issue claiming remote recovery, and reports `RECOVERY FAILED`.
+- [x] The anchor-push regressions prove a refused anchor push (alone, or together with the main
+  push) still removes the temporary state behind the verified local anchor and files an issue
+  saying the anchor is local only.
 - [x] `uv run ruff check .` and `uv run ruff format --check .` — clean.
 - [ ] `uv run pytest -q -n 8` cannot complete in the implementation sandbox. The suite's shared
   loopback-server fixture fails before test execution because creating an IPv4 stream socket raises
@@ -123,9 +126,10 @@ the result is `recoveryfail`, preserving the temporary worktree and branch.
 
 ## Lessons Learned
 
-A locally preserved commit is not sufficient recovery for unattended fleet automation. Recovery is
-durable only after an independently named ref is verified on the remote and the failure is filed in
-the repository's normal work queue. Cleanup must remain strictly after that proof, and its failure
+A commit left in a temporary checkout is not sufficient recovery for unattended fleet automation.
+Recovery is durable once an independently named ref is verified and the failure is filed in the
+repository's normal work queue. Requiring the remote copy would have kept the worktree in exactly
+the projects that motivated this fix, because their push gate refuses every ref. Cleanup must remain strictly after that proof, and its failure
 path needs direct coverage so a future simplification cannot trade residue reduction for data loss.
 
 ## Fix Log
@@ -134,5 +138,6 @@ path needs direct coverage so a future simplification cannot trade residue reduc
 |---|---|---|
 | 2026-10-17 | Added real-Git rejected-main-push and failed-anchor-push regressions. | RED on the retained-worktree behavior. |
 | 2026-10-17 | Routed rejected pushes through verified local/remote anchors, issue filing, and guarded cleanup. | Focused and nearby suites pass; full gate is permission-blocked as documented above. |
+| 2026-10-17 | Made the remote anchor push best effort; a verified local anchor permits cleanup. | Review found the pre-push gate refuses the anchor in every gate-refused project. |
 
 <!-- /doc:region name="summary" -->

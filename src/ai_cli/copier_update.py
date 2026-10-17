@@ -8,8 +8,8 @@ Two modes:
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Conflicts and semantic failures are saved under
   verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
-  A rejected push is anchored locally and remotely, filed as a recovery issue, and
-  cleaned up. A later run protects any leftover whose state cannot be proved disposable.
+  A rejected push is anchored (and copied to origin when its gate allows), filed as a
+  recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -1170,14 +1170,15 @@ def _update_one_isolated(
                     filing_error = str(exc)
             elif status == "pushfail":
                 assert isinstance(detail, str)
-                _push_backup_anchor(root, ref)
+                location = _push_backup_anchor(root, ref)
+                _out.emit(Tag.COPIER, "update", f"    {location}")
                 try:
                     _file_recovery_issue(
                         root,
                         ref,
                         [],
                         f"{project_answers.get('_commit')}..{template_commit}",
-                        detail,
+                        f"{location}\n{detail}",
                     )
                 except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                     filing_error = str(exc)

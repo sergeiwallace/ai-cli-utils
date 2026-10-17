@@ -88,13 +88,22 @@ def _anchor_failed_update(wt_dir: Path, repo_name: str, source: str) -> tuple[st
     return ref, template_commit
 
 
-def _push_backup_anchor(root: Path, ref: str) -> None:
-    """Push a backup ref without bypassing hooks, then verify its remote value."""
+def _push_backup_anchor(root: Path, ref: str) -> str:
+    """Copy a verified local backup ref to origin, without bypassing hooks.
+
+    Best effort: the fleet pre-push gate runs on every ref, so a project whose
+    gate refused the update usually refuses the anchor too. The local ref is
+    the durable copy; the returned line says where the anchor lives.
+    """
     local = _git(root, "rev-parse", "--verify", ref)
-    _git(root, "push", "origin", f"{ref}:{ref}")
-    remote = _git(root, "ls-remote", "--refs", "origin", ref).split()
+    try:
+        _git(root, "push", "origin", f"{ref}:{ref}")
+        remote = _git(root, "ls-remote", "--refs", "origin", ref).split()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return "Backup anchor location: local only (push to origin was refused)"
     if remote != [local, ref]:
-        raise RuntimeError(f"backup anchor remote verification failed: {ref}")
+        return "Backup anchor location: local only (origin readback did not match)"
+    return "Backup anchor location: local and origin"
 
 
 def _check_recovery_target(root: Path, wt_dir: Path, branch: str, ref: str) -> None:

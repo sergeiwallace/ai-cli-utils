@@ -278,26 +278,25 @@ def test_given_semantic_failure_when_entry_runs_then_state_is_anchored_and_remov
 
 
 @pytest.mark.parametrize("mode", ["clean-push", "dirty-push"])
-def test_given_main_and_anchor_pushes_are_rejected_when_entry_runs_then_local_recovery_state_is_kept(
+def test_given_main_and_anchor_pushes_are_rejected_when_entry_runs_then_local_anchor_holds_the_update(
     recovery_project, mode
 ):
+    # The fleet pre-push gate runs on every ref, so a gate that refuses the
+    # update refuses the anchor too; the local anchor alone permits cleanup.
     project, _, current = recovery_project
     issue = Mock(return_value="issue-1")
     code, observed = _run(project, current, mode=mode, file_issue=issue)
 
     assert code == copier_update.EX_PARTIAL_MUTATION
-    wt = observed["worktree"]
-    assert wt.is_dir()
-    assert _git(project, "rev-parse", "copier-update-tmp").stdout.strip() == observed["commit"]
-    assert _git(wt, "show", "HEAD:message.txt").stdout == "template update\n"
+    _assert_removed(project)
     (anchor,) = _anchors(project)
+    assert _git(project, "rev-parse", f"{anchor}^1").stdout.strip() == observed["commit"]
+    assert _git(project, "show", f"{anchor}:message.txt").stdout == "template update\n"
     if mode == "dirty-push":
-        assert _git(wt, "status", "--porcelain").stdout == " M other.txt\n?? late.txt\n"
         assert _git(project, "show", f"{anchor}:other.txt").stdout == "post-commit edit\n"
         assert _git(project, "show", f"{anchor}:late.txt").stdout == "post-commit untracked\n"
-    else:
-        assert _git(wt, "status", "--porcelain").stdout == ""
-    issue.assert_not_called()
+    assert issue.call_args.args[1] == anchor
+    assert "local only" in issue.call_args.args[-1]
 
 
 def test_given_origin_rejects_update_when_entry_runs_then_anchor_is_pushed_and_temp_state_is_removed(
@@ -321,7 +320,7 @@ def test_given_origin_rejects_update_when_entry_runs_then_anchor_is_pushed_and_t
     assert anchor in summary
 
 
-def test_given_anchor_push_fails_when_entry_runs_then_worktree_is_kept_and_recovery_failure_is_reported(
+def test_given_anchor_push_fails_when_entry_runs_then_local_anchor_is_kept_and_temp_state_is_removed(
     recovery_project, capsys
 ):
     project, _, current = recovery_project
@@ -330,13 +329,14 @@ def test_given_anchor_push_fails_when_entry_runs_then_worktree_is_kept_and_recov
     code, observed = _run(project, current, mode="anchor-push-fail", file_issue=issue)
 
     assert code == copier_update.EX_PARTIAL_MUTATION
-    wt = observed["worktree"]
-    assert wt.is_dir()
-    assert _git(project, "rev-parse", "copier-update-tmp").stdout.strip() == observed["commit"]
+    _assert_removed(project)
     (anchor,) = _anchors(project)
+    assert _git(project, "rev-parse", f"{anchor}^1").stdout.strip() == observed["commit"]
     assert _git(project, "ls-remote", "--refs", "origin", anchor).stdout == ""
-    issue.assert_not_called()
-    assert "RECOVERY FAILED" in capsys.readouterr().out
+    assert "local only" in issue.call_args.args[-1]
+    out = capsys.readouterr().out
+    assert "RECOVERY FAILED" not in out
+    assert "local only" in out
 
 
 def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented(recovery_project, monkeypatch):
