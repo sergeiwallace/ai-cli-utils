@@ -96,6 +96,16 @@ delegation_provenance:
   - [R4 Recommendations and Sign-Off](#r4-recommendations-and-sign-off)
   - [R4 Appendix: Files Read and Commands](#r4-appendix-files-read-and-commands)
   - [R4 Receipt Payload Projection](#r4-receipt-payload-projection)
+- [Round 6 — Verification](#round-6--verification)
+  - [R6 Summary](#r6-summary)
+  - [R6 Backlog and Regression Verification](#r6-backlog-and-regression-verification)
+  - [R6 Findings](#r6-findings)
+  - [R6 Decision and Ask Alignment Verification](#r6-decision-and-ask-alignment-verification)
+  - [R6 Resolution Pass](#r6-resolution-pass)
+  - [R6 Verification Matrix](#r6-verification-matrix)
+  - [R6 Recommendations and Sign-Off](#r6-recommendations-and-sign-off)
+  - [R6 Appendix: Files Read and Commands](#r6-appendix-files-read-and-commands)
+  - [R6 Receipt Payload Projection](#r6-receipt-payload-projection)
 
 ## Scope
 
@@ -125,11 +135,11 @@ ledger-version: 1
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** audit-converged — NOT promotion ready
+**Loop state:** active — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 4 | sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4 | 0 | 0 | 0 | — | verify | yes |
+| doc-audit | 6 | sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba | 0 | 0 | 0 | round1:JA-2 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -153,6 +163,7 @@ ledger-version: 1
 | 2026-10-17 | 2 | Codex verification: six prior MAJOR and one MINOR fixed in plan; one new MAJOR protocol-deployment gap (N-1); eight reproduced checks; no target edits. |
 | 2026-10-17 | 3 | Codex verification: N-1 fixed; F-2, JA-2 and JA-3 reopened after regressions; seven reproduced checks; no target edits. |
 | 2026-10-17 | 4 | Codex verification: all three backlog findings fixed in the specification; zero new findings; nine contract checks passed. D-11, implementation and delivery evidence remain pending; no target edits. |
+| 2026-10-17 | 6 | Codex verification: post-convergence artifact reviewed; JA-2 reopened as MAJOR ask drift. Eight verification checks reproduced; no new finding IDs or target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -1000,3 +1011,117 @@ No additional specification fix is required by the three supplied backlog findin
 `````json
 {"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"fixed","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"fixed","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"fixed","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["round1:F-2","round1:JA-2","round1:JA-3"],"diff_since":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb","diff_summary":{"changed":true,"from":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb","to":"sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4"},"kind":"verify"},"source_event_id":"round-4-audit"}
 `````
+
+## Round 6 — Verification
+
+**Round 6 auditor:** Codex; concrete runtime model identifier not exposed.
+
+**Date:** 2026-10-17
+
+**Scope:** Verify the driver-reported post-convergence artifact drift, including regressions in the changed decisions and delivery requirements. No target edits.
+
+### R6 Summary
+
+The changed artifact has now been reviewed, resolving the mechanical drift-review backlog item. **JA-2 is reopened as MAJOR / open-blocking:** T-06 makes the requested Remote Control report conditional on renewed operator confirmation and permits substitution of a prompt-cutoff report. No new finding ID is introduced. Plan sign-off remains blocked; this round authorizes no handoff or re-scope.
+
+HEAD is `e59ef470`. The plan SHA-256 is `e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba`, matching the driver. Although this round's supplied diff summary is unchanged relative to the boundary event, the receipt records a change from Round 4's `d2fb4618...95e0a4`. Comparing the actual Round 4 revision with HEAD confirms changes in D-4, D-8, D-10 and T-06. The plan is clean; the audit carrier/receipt are modified and two driver lock files are untracked.
+
+Both complete raw entries were reread from capture commit `e869869b929551fb4faa4e9c0584ac6a0a7803cb`. Blob `bee6d633307dfebd3b496531813afbf335f3f9a3` and SHA-256 `0548b7e69f6e27353a1c56ce9b14c312ed19b3c2a3ddb3689a580640f8d9a9bf` match the supplied carrier and resolved working copy. Local audit STUB/TEMPLATE remain absent; canonical copies under `~/projects/ai-harness/docs/audits/` supplied the format.
+
+### R6 Backlog and Regression Verification
+
+All plan citations refer to `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+| Item | Disposition / verdict | Evidence and verification note |
+|---|---|---|
+| Boundary artifact-drift | fixed / PASS — CONFIRMED | Receipt boundary event 5 identifies the Round 4-to-current digest change. Actual git diff and current bytes were reviewed. This closes the missing-review condition only; JA-2 below prevents treating the reviewed artifact as ready. |
+| JA-2 | open-blocking / FAIL — CONFIRMED | T-06:975-983 and AC-6.3:986-987 replace mandatory Remote Control delivery with a defect to be confirmed. Approval Log:1048-1054 contains no operator re-scope. |
+| F-2 / N-1 | Remain fixed in specification | D-10:661-725 and AC-2.15/2.18/5.7 retain exact-UUID launch, failure fencing, compatibility proof and refusal for unknown versions. Added coordinator provenance does not remove those obligations. |
+| JA-1 / JA-3 | Remain fixed in specification | D-8:557-568 treats truncated remote listings as UNKNOWN and retains positive triggers. AC-2.8/5.2/5.5 and D-11 retain incomplete-peer failure and separate message/mobile evidence gates. |
+| D-4 change | PASS — CONFIRMED | D-4:370-375 limits the compaction arm to auto-compaction, retaining the configurable threshold alternative. This matches A001's stated alternatives; no new ask drift established. |
+
+### R6 Findings
+
+#### JA-2: Requested Remote Control feedback is made optional pending reconfirmation — MAJOR
+
+**Location:** Plan T-06:975-994; linked research, Founding Ask Coverage A002. Stable identity and fingerprint are retained from Round 1 because the same delivery requirement has regressed.
+
+**Evidence — CONFIRMED:** T-06 now states “whether the operator also wants a report on the Remote Control discovery defect is an open question returned to the operator, not decided here.” AC-6.1 requires “the defect the operator confirms it is for (the mobile Code tab cutting off a message, the Remote Control discovery defect, or both)”; AC-6.3 then requires only “that same defect”. The linked research repeats this reinterpretation.
+
+Committed A002 instead says “but also do /report-feedback and use SendFeedback for that”, “also create a github issue as well”, and explicitly connects the reporting surface to “rc / remote-control feature”. It requests related-issue linking comments and says “i pre-approve.” A002's opening completes the truncated delegation instructions; it does not name a prompt-cutoff defect to report. Neither raw entry nor the empty Approval Log authorizes replacing or deferring the Remote Control reporting requirement.
+
+**Reachable consequence:** The owner can deliver only a prompt-cutoff report and matching issue/comments while treating Remote Control reporting as an unanswered question. Alternatively, execution waits for confirmation already supplied by the ask. Route-specific receipts and the closure gate remain useful, but do not require the original subject once AC-6.1 permits substitution. This is a confirmed specification gap; no claim is made about actual submissions elsewhere.
+
+**Verification commands:**
+
+``````bash
+git diff 8b9b5877 HEAD -- docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+sed -n '970,994p;1048,1054p' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+git -C ~/projects/ai-harness show e869869b929551fb4faa4e9c0584ac6a0a7803cb:docs/asks/AI-CLI-restart-idle-cc-sessions-safely-nyz8.md
+``````
+
+**Recommended fix [AUTO-FIX]:** Restore explicit Remote Control/discovery report, SendFeedback, public issue and relevant related-issue review/comment obligations in T-06 and its ACs. Keep any prompt-cutoff work separately tracked. Correct the linked research's coverage summary and strengthen the delivery contract check so mentioning “Remote Control” among optional subjects cannot pass. Retaining the deferral or substitution requires explicit human re-scope; this open-blocking ask-drift finding escalates it and grants no such authority.
+
+### R6 Decision and Ask Alignment Verification
+
+No new AD-N design choice is necessary to restore the requirement. All target decision recommendations were compared with both raw entries; D-10's new AI resolution retains the previously verified safety contract. D-11 remains PENDING and blocks visibility completion, plan sign-off and epic closure. No human decision is inferred from coordinator authorship.
+
+| Raw entry | Coverage and remaining limits |
+|---|---|
+| A001 | Target forms, strict idleness, configurable context gate, shared injection, positive triggers, same-conversation restart, both-host rollout and integration/sync/reap remain specified. Assignment/delegation/goal activation and runtime behavior remain unverified. |
+| A002 | Delegation/goal coverage remains explicitly unverified. Reporting routes remain enumerated, but JA-2 reopens their changed subject and unauthorized deferral. No reporting completion or re-scope is established. |
+
+### R6 Resolution Pass
+
+| Item | Result | Owner / next action |
+|---|---|---|
+| Boundary artifact-drift | Review completed for exact current digest | Driver records the reviewed state; no transition authorized. |
+| JA-2 | Reopened; MUST fix before plan sign-off | Plan author restores mandatory subject and regression coverage, or obtains explicit operator re-scope. |
+
+No inline fixes, major deferrals or external delivery actions were performed. There are zero newly introduced finding identities and one reopened MAJOR finding.
+
+### R6 Verification Matrix
+
+Every method below was executed. PASS means the stated observation reproduced, not that runtime acceptance passed. `P` denotes the plan path. Python checks ran with `python3 -B` in memory; existing contract functions were AST-extracted and called with current plan text, without pytest fixtures.
+
+| Check | Method | Actual output / observation | Result |
+|---|---|---|---|
+| Snapshot and authority | SHA-256, committed ask blob lookup and byte comparison | Plan digest matches driver; ask blob/digest match carrier; `ask_working_copy_matches: True` | PASS |
+| Boundary drift | Receipt read plus `git diff 8b9b5877 HEAD -- P` | Four changed sections: D-4, D-8, D-10, T-06 | PASS |
+| Existing contract checks | Execute all three functions in `tests/test_restart_plan_contract.py` | Resume, delivery and visibility checks all PASS; delivery only checks required words in each AC | PASS with semantic limit |
+| JA-2 regression | Read A002/T-06; assert confirmation/substitution clauses and empty Approval Log | `PASS: feedback-scope-regression`; `PASS: approval-log-has-no-human-rescope` | PASS: gap reproduced |
+| D-4 / D-8 | Assert auto-only arm and truncated-listing UNKNOWN clauses | `PASS: auto-only-compaction`; `PASS: partial-listing-is-unknown` | PASS |
+| F-2 / N-1 | Assert retained pin, durable failure fence and old-supervisor fixture/refusal | `PASS: pin-and-compatibility-retained`; source still opens the stable child path | PASS for specified contract |
+| JA-3 | Assert separate peer failure and message/mobile completion gates | `PASS: peer-and-completion-gates-retained` | PASS |
+| Region validation | `aido validate-doc P`; same for current audit carrier | Both OK, five regions each | PASS for pre-relay files |
+
+All eight checks reproduced; three existing contract functions and six additional text assertions passed. Their success does not refute JA-2: keyword presence permits the optional-subject wording. No pytest suite, live restart, process signal, remote submission or message was executed. Final relayed additions require validation after application.
+
+### R6 Recommendations and Sign-Off
+
+**MUST before plan sign-off:** Resolve JA-2 and independently verify its subject-specific ACs. Owner: plan author/coordinator; target: next revision. D-11 and implementation/delivery evidence remain separate completion gates.
+
+**Already correct:** D-4 preserves auto-compaction or threshold; D-8 preserves positive-evidence triggers and rejects truncated-listing absence; D-10 preserves the exact-conversation pin and compatibility refusal; AC-2.8/5.5 retain peer/message/mobile evidence. These contracts were checked above.
+
+**Anti-pattern:** Reopening an explicit reporting requirement as “ambiguous” can remove it without deleting the route names. Proposed procedure improvement: verify both the delivery route and mandatory report subject against the raw ask; keyword-only regression guards cannot establish that relationship.
+
+- [x] Supplied backlog item reviewed with its current disposition.
+- [x] Both complete committed raw entries and changed decisions compared with current artifact.
+- [x] Verification matrix executed; facts and runtime limits distinguished.
+- [ ] JA-2 fixed or explicitly re-scoped by the operator.
+- [ ] D-11 and implementation/rollout/delivery evidence completed.
+- [ ] Relayed additions validated and owner sign-off recorded.
+
+### R6 Appendix: Files Read and Commands
+
+**Documents:** Current plan, prior audit history and receipt boundary event; complete committed/resolved founding record; linked research, including coverage, limitations, sources and provenance; AGENTS.md, CLAUDE.md and audit README; canonical audit STUB/TEMPLATE and design-doc-workflow. Current Feedback Rounds and Approval Log were read through the end. External research citations and host observations were not independently re-certified.
+
+**Code/tests:** `src/ai_cli/main.py:380-560,1380-1402`; `src/ai_cli/session_script.py:649-745,1145-1180,1215-1386`; full `tests/test_restart_plan_contract.py` and `tests/test_session_script_atomic_write.py`. Inspection grounds stable-child reload, atomic replacement and existing mutable-title launch behavior; it does not certify the proposed implementation. The existing public-package naming violation flagged in Round 2 remains outside this changed scope.
+
+**Commands:** Matrix and finding commands above; `git status --short`; `git log -7 --oneline`; `git show --format=fuller --stat 306a263c`; full/bounded document reads and symbol searches for decisions, resolver and atomic writer. No files were written. Generated Status Summary remains driver-owned; this round's state is projected below.
+
+### R6 Receipt Payload Projection
+
+``````json
+{"findings":[{"cluster":{"invariant_id":null,"spec_version":null,"subsystem":"audit-loop","violation_kind":"artifact-drift"},"disposition":"fixed","finding_key":"boundary:5:artifact-drift","fingerprint":"boundary-artifact-drift:sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4","id":"artifact-drift","reachable_behavior":"The artifact changed after content convergence and cannot be authorized for handoff.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"open-blocking","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["boundary:5:artifact-drift"],"diff_since":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","diff_summary":{"changed":false,"from":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","to":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba"},"kind":"verify"},"source_event_id":"round-6-audit"}
+``````
