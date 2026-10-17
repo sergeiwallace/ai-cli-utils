@@ -19,6 +19,7 @@ from ai_cli.copier_update import (
     EX_TEMPFAIL,
     CopierUpdateInspection,
     DeliveredUpdate,
+    RecoveredPushFailure,
     TemplateChanges,
     _changed_paths,
     _conflict_files,
@@ -1530,7 +1531,7 @@ def test_given_partial_and_clean_failures_when_isolated_updates_run_then_partial
 
     def fake(project_dir, copier_bin, push=True):
         if project_dir.name == "partial":
-            return "pushfail", "push rejected"
+            return "pushfail", RecoveredPushFailure("refs/backup/example", "push rejected")
         return "failed", "worktree add failed: branch already exists"
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):

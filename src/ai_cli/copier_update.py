@@ -8,8 +8,8 @@ Two modes:
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Conflicts and semantic failures are saved under
   verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
-  A rejected push retains a clean checkout holding its unpushed commit. A later
-  run protects any leftover whose state cannot be proved disposable.
+  A rejected push is anchored (and copied to origin when its gate allows), filed as a
+  recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -48,6 +48,7 @@ from .copier_recovery import (
     _check_recovery_target,
     _clean_anchored_pushfail,
     _file_recovery_issue,
+    _push_backup_anchor,
 )
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 from .output import Tag
@@ -101,6 +102,14 @@ class PreparedCopierSource:
     source: str
     commit: str | None = None
     failure: str | None = None
+
+
+@dataclass(frozen=True)
+class RecoveredPushFailure:
+    """A rejected main push preserved under a verified backup ref."""
+
+    anchor_ref: str
+    push_error: str
 
 
 def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
@@ -1058,12 +1067,12 @@ def _update_one_isolated(
     push: bool = True,
     inspect: bool = False,
     resolved_source: str | None = None,
-) -> tuple[str, str | list[str] | DeliveredUpdate]:
+) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
     On ok/nochange/failed the temp worktree is removed. Conflicts and semantic
-    failures are anchored and removed; rejected pushes retain a clean committed
-    checkout. Recovery failures keep the checkout and return ``recoveryfail``. A
+    failures and rejected pushes are anchored and removed. Recovery failures keep
+    the checkout and return ``recoveryfail``. A
     leftover from a prior run that is not provably disposable returns ``kept`` with
     its path and reason, and nothing is removed. When inspect=True, an ok result
     contains copied content before that cleanup.
@@ -1149,9 +1158,6 @@ def _update_one_isolated(
             if ahead is None or not ahead.strip().isdigit():
                 return "recoveryfail", f"{wt_dir}: could not verify unpushed commit; nothing removed"
             keep_commit = int(ahead.strip()) > 0
-            if keep_commit and not dirty.strip():
-                return status, detail
-
         try:
             ref, template_commit = _anchor_failed_update(wt_dir, root.name, resolved_source)
             _out.emit(Tag.COPIER, "update", f"    backup anchor: {ref}")
@@ -1162,31 +1168,46 @@ def _update_one_isolated(
                     _file_recovery_issue(root, ref, conflicts, f"{project_answers.get('_commit')}..{template_commit}")
                 except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                     filing_error = str(exc)
+            elif status == "pushfail":
+                assert isinstance(detail, str)
+                location = _push_backup_anchor(root, ref)
+                _out.emit(Tag.COPIER, "update", f"    {location}")
+                try:
+                    _file_recovery_issue(
+                        root,
+                        ref,
+                        [],
+                        f"{project_answers.get('_commit')}..{template_commit}",
+                        f"{location}\n{detail}",
+                    )
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    filing_error = str(exc)
             if keep_commit:
                 _clean_anchored_pushfail(root, wt_dir, branch, ref)
             else:
                 _check_recovery_target(root, wt_dir, branch, ref)
-                _cleanup_worktree(root, wt_dir, branch)
-                remaining = _git_read(
-                    ["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"]
+            _cleanup_worktree(root, wt_dir, branch)
+            remaining = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
+            listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+            if (
+                os.path.lexists(wt_dir)
+                or remaining is None
+                or remaining.strip()
+                or listing is None
+                or any(
+                    Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
+                    for line in listing.splitlines()
+                    if line.startswith("worktree ")
                 )
-                listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
-                if (
-                    os.path.lexists(wt_dir)
-                    or remaining is None
-                    or remaining.strip()
-                    or listing is None
-                    or any(
-                        Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
-                        for line in listing.splitlines()
-                        if line.startswith("worktree ")
-                    )
-                ):
-                    raise RuntimeError(f"backup anchor {ref}: worktree or branch cleanup failed")
+            ):
+                raise RuntimeError(f"backup anchor {ref}: worktree or branch cleanup failed")
             if filing_error:
                 return "recoveryfail", f"backup anchor {ref}: issue filing failed: {filing_error}"
             if status == "pushfail" and not keep_commit:
                 return "recoveryfail", f"backup anchor {ref}: push failed without an unpushed commit; checkout removed"
+            if status == "pushfail":
+                assert isinstance(detail, str)
+                detail = RecoveredPushFailure(ref, detail)
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             return "recoveryfail", f"{wt_dir}: recovery failed: {exc}"
 
@@ -1338,12 +1359,14 @@ def _run_isolated_prepared(
             failed += 1
             has_partial_mutation = True
         elif status == "pushfail":
+            assert isinstance(detail, RecoveredPushFailure)
             _out.cont(
                 Tag.COPIER,
                 "update",
-                "✗ PUSH FAILED — commit is ready in the temp worktree; push manually" + note,
+                f"✗ PUSH FAILED — saved in backup anchor {detail.anchor_ref}; see recovery issue" + note,
             )
-            _out.emit(Tag.COPIER, "update", f"    {detail}")
+            for line in detail.push_error.splitlines():
+                _out.emit(Tag.COPIER, "update", f"    {line}")
             failed += 1
             has_partial_mutation = True
         elif status == "kept":
