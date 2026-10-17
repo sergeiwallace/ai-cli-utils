@@ -34,6 +34,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -90,6 +92,15 @@ class TemplateChanges:
     deleted_paths: set[str]
     excluded_on_update: set[str] = field(default_factory=set)
     previous_paths: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class PreparedCopierSource:
+    """Run-scoped source used instead of a mutable local template checkout."""
+
+    source: str
+    commit: str | None = None
+    failure: str | None = None
 
 
 def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
@@ -250,6 +261,110 @@ def _resolve_copier_source(project_dir: Path, answers: dict[str, object]) -> str
         candidates = [project_dir / source_path, project_dir.parent / source_path]
         source_path = next((path for path in candidates if path.exists()), candidates[0])
     return str(source_path.resolve())
+
+
+_DEFAULT_BRANCH = re.compile(r"^ref:\s+(?P<ref>refs/heads/.+)\s+HEAD$")
+
+
+def _prepare_local_source(checkout: Path, temporary_root: Path, index: int) -> PreparedCopierSource:
+    """Fetch and snapshot a local checkout's origin default branch without changing its worktree."""
+    fetch = subprocess.run(
+        ["git", "-C", str(checkout), "fetch", "--quiet", "origin"],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    if fetch.returncode != 0:
+        return PreparedCopierSource(str(checkout), failure="local template fetch origin failed")
+
+    remote_head = subprocess.run(
+        ["git", "-C", str(checkout), "ls-remote", "--symref", "origin", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    if remote_head.returncode != 0:
+        return PreparedCopierSource(str(checkout), failure="local template origin default branch could not be resolved")
+    default_ref = next(
+        (match["ref"] for line in remote_head.stdout.splitlines() if (match := _DEFAULT_BRANCH.match(line))),
+        None,
+    )
+    if default_ref is None:
+        return PreparedCopierSource(str(checkout), failure="local template origin has no resolvable default branch")
+
+    remote_ref = f"refs/remotes/origin/{default_ref.removeprefix('refs/heads/')}"
+    resolved = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--verify", f"{remote_ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    commit = resolved.stdout.strip()
+    if resolved.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+        return PreparedCopierSource(
+            str(checkout), failure="local template origin default branch commit was unavailable after fetch"
+        )
+
+    snapshot = temporary_root / f"source-{index}"
+    clone = subprocess.run(
+        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(checkout), str(snapshot)],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    if clone.returncode != 0:
+        return PreparedCopierSource(str(checkout), failure="local template snapshot clone failed")
+    detach = subprocess.run(
+        ["git", "-C", str(snapshot), "checkout", "--quiet", "--detach", commit],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    if detach.returncode != 0:
+        return PreparedCopierSource(str(checkout), failure="local template snapshot checkout failed")
+    return PreparedCopierSource(str(snapshot), commit=commit)
+
+
+@contextmanager
+def _prepared_copier_sources(projects: list[Path]) -> Iterator[dict[Path, PreparedCopierSource]]:
+    """Prepare each distinct local checkout once and clean all snapshots after the run."""
+    with tempfile.TemporaryDirectory(prefix="ai-copier-sources-") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        prepared_by_checkout: dict[Path, PreparedCopierSource] = {}
+        prepared_by_project: dict[Path, PreparedCopierSource] = {}
+        for project_dir in projects:
+            answers = _load_answers(project_dir / ".copier-answers.yml")
+            if answers is None:
+                continue
+            source = _resolve_copier_source(project_dir, answers)
+            if source is None:
+                continue
+            raw_source = answers.get("_src_path")
+            if not isinstance(raw_source, str) or raw_source.startswith(
+                ("git@", "http://", "https://", "ssh://", "file://")
+            ):
+                prepared_by_project[project_dir] = PreparedCopierSource(source)
+                continue
+            checkout = Path(source)
+            # Preserve the existing downstream error for a missing/non-directory path. A real
+            # local checkout is the only source whose origin can be prepared here.
+            if not checkout.is_dir():
+                prepared_by_project[project_dir] = PreparedCopierSource(source)
+                continue
+            checkout = checkout.resolve()
+            prepared = prepared_by_checkout.get(checkout)
+            if prepared is None:
+                prepared = _prepare_local_source(checkout, temporary_root, len(prepared_by_checkout))
+                prepared_by_checkout[checkout] = prepared
+            prepared_by_project[project_dir] = prepared
+        yield prepared_by_project
+
+
+def _template_commit_note(prepared: PreparedCopierSource | None) -> str:
+    """Human-readable commit suffix for a project result."""
+    return f" (template {prepared.commit[:12]})" if prepared is not None and prepared.commit is not None else ""
 
 
 def _restore_answer_source(
@@ -938,7 +1053,11 @@ def _do_update_in_worktree(
 
 
 def _update_one_isolated(
-    project_dir: Path, copier_bin: str, push: bool = True, inspect: bool = False
+    project_dir: Path,
+    copier_bin: str,
+    push: bool = True,
+    inspect: bool = False,
+    resolved_source: str | None = None,
 ) -> tuple[str, str | list[str] | DeliveredUpdate]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
@@ -957,7 +1076,7 @@ def _update_one_isolated(
     project_answers = _load_answers(project_dir / ".copier-answers.yml")
     if project_answers is None:
         return "failed", "could not read .copier-answers.yml"
-    resolved_source = _resolve_copier_source(project_dir, project_answers)
+    resolved_source = resolved_source or _resolve_copier_source(project_dir, project_answers)
     if resolved_source is None:
         return "failed", "could not resolve Copier source before creating worktree"
 
@@ -1150,6 +1269,18 @@ def _run_isolated(
     projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
+    with _prepared_copier_sources(projects) as prepared_sources:
+        return _run_isolated_prepared(projects, copier_bin, push, inspect, prepared_sources)
+
+
+def _run_isolated_prepared(
+    projects: list[Path],
+    copier_bin: str,
+    push: bool,
+    inspect: bool,
+    prepared_sources: dict[Path, PreparedCopierSource],
+) -> int | CopierUpdateInspection:
+    """Run isolated updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
@@ -1159,36 +1290,59 @@ def _run_isolated(
     delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
         _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
-        if inspect:
-            status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
+        prepared = prepared_sources.get(project_dir)
+        note = _template_commit_note(prepared)
+        if prepared is not None and prepared.failure is not None:
+            status, detail = "failed", prepared.failure
+        elif inspect:
+            if prepared is None:
+                status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
+            else:
+                status, detail = _update_one_isolated(
+                    project_dir, copier_bin, push=push, inspect=True, resolved_source=prepared.source
+                )
         else:
-            status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
+            if prepared is None:
+                status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
+            else:
+                status, detail = _update_one_isolated(
+                    project_dir, copier_bin, push=push, resolved_source=prepared.source
+                )
         if status == "ok":
-            _out.cont(Tag.COPIER, "update", "✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
+            result = "✓ updated + pushed" if push else "✓ updated (committed, not pushed)"
+            _out.cont(Tag.COPIER, "update", result + note)
             changed += 1
             if inspect:
                 assert isinstance(detail, DeliveredUpdate)
                 delivered_updates.append(detail)
         elif status == "nochange":
-            _out.cont(Tag.COPIER, "update", "· no changes")
+            _out.cont(Tag.COPIER, "update", "· no changes" + note)
         elif status == "conflict":
             assert isinstance(detail, list)  # conflict status returns list[str] of paths
             _out.cont(
                 Tag.COPIER,
                 "update",
-                f"✗ CONFLICTS ({len(detail)} file(s)) — saved in backup anchor; see recovery issue:",
+                f"✗ CONFLICTS ({len(detail)} file(s)) — saved in backup anchor; see recovery issue{note}:",
             )
             for rel in detail:
                 _out.emit(Tag.COPIER, "update", f"    conflict: {rel}")
             failed += 1
             has_partial_mutation = True
         elif status == "parityfail":
-            _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED — saved in backup anchor; see recovery issue")
+            _out.cont(
+                Tag.COPIER,
+                "update",
+                "✗ TEMPLATE PARITY FAILED — saved in backup anchor; see recovery issue" + note,
+            )
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         elif status == "pushfail":
-            _out.cont(Tag.COPIER, "update", "✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
+            _out.cont(
+                Tag.COPIER,
+                "update",
+                "✗ PUSH FAILED — commit is ready in the temp worktree; push manually" + note,
+            )
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
@@ -1196,18 +1350,20 @@ def _run_isolated(
             _out.cont(
                 Tag.COPIER,
                 "update",
-                "✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:",
+                "✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:" + note,
             )
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         elif status == "recoveryfail":
-            _out.cont(Tag.COPIER, "update", "✗ RECOVERY FAILED — inspect the reported anchor or retained worktree")
+            _out.cont(
+                Tag.COPIER, "update", "✗ RECOVERY FAILED — inspect the reported anchor or retained worktree" + note
+            )
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
         else:  # failed
-            _out.cont(Tag.COPIER, "update", "✗ FAILED")
+            _out.cont(Tag.COPIER, "update", "✗ FAILED" + note)
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             if detail == "not a git repository" or (
@@ -1236,20 +1392,35 @@ def _run_isolated(
 
 def _run_direct(projects: list[Path], copier_bin: str) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
+    with _prepared_copier_sources(projects) as prepared_sources:
+        return _run_direct_prepared(projects, copier_bin, prepared_sources)
+
+
+def _run_direct_prepared(
+    projects: list[Path], copier_bin: str, prepared_sources: dict[Path, PreparedCopierSource]
+) -> int:
+    """Run direct updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [direct — main tree]:\n")
     failed = 0
     has_partial_mutation = False
     has_transient_failure = False
     for project_dir in projects:
         _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
-        update_error, _, template_changes = _run_copier_update(project_dir, copier_bin)
+        prepared = prepared_sources.get(project_dir)
+        note = _template_commit_note(prepared)
+        if prepared is not None and prepared.failure is not None:
+            update_error, template_changes = prepared.failure, None
+        else:
+            update_error, _, template_changes = _run_copier_update(
+                project_dir, copier_bin, prepared.source if prepared is not None else None
+            )
         if update_error is not None:
             semantic_failure = _is_semantic_update_failure(update_error)
             if semantic_failure:
-                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
+                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED" + note)
                 has_partial_mutation = True
             else:
-                _out.cont(Tag.COPIER, "update", "✗ FAILED")
+                _out.cont(Tag.COPIER, "update", "✗ FAILED" + note)
             if update_error:
                 for line in update_error.splitlines():
                     _out.emit(Tag.COPIER, "update", f"    {line}", err=True)
@@ -1268,7 +1439,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
         conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:
             # In --no-isolate mode, unresolved markers mutate the live main tree, not a temp worktree.
-            _out.cont(Tag.COPIER, "update", f"✗ CONFLICTS ({len(conflicts)} file(s))")
+            _out.cont(Tag.COPIER, "update", f"✗ CONFLICTS ({len(conflicts)} file(s))" + note)
             for c in conflicts:
                 _out.emit(Tag.COPIER, "update", f"    conflict: {c}")
             failed += 1
@@ -1286,12 +1457,12 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
                 template_changes.previous_paths,
             )
             if parity_error is not None:
-                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
+                _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED" + note)
                 _out.emit(Tag.COPIER, "update", f"    {parity_error}")
                 failed += 1
                 has_partial_mutation = True
             else:
-                _out.cont(Tag.COPIER, "update", "✓")
+                _out.cont(Tag.COPIER, "update", "✓" + note)
 
     if failed:
         _out.emit(Tag.COPIER, "update", f"{failed} project(s) had errors or conflicts — resolve before continuing.")
