@@ -61,6 +61,29 @@ delegation_provenance:
 - [Sign-Off Checklist](#sign-off-checklist)
 - [Appendix: Files Read](#appendix-files-read)
 - [Appendix: Commands Run](#appendix-commands-run)
+- [Round 2 — Verification](#round-2--verification)
+  - [R2 Summary](#r2-summary)
+  - [R2.1 Round 1 IC/JA/DV verification](#r21-round-1-icjadv-verification)
+  - [R2.2 Round 1 F-N verification](#r22-round-1-f-n-verification)
+  - [R2.3 AD-N decisions verification](#r23-ad-n-decisions-verification)
+  - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
+  - [R2 Resolution Pass](#r2-resolution-pass)
+  - [R2 Verification Matrix](#r2-verification-matrix)
+  - [R2 Recommendations](#r2-recommendations)
+  - [R2 Already-Correct Items](#r2-already-correct-items)
+  - [R2 Anti-Patterns and Sign-Off](#r2-anti-patterns-and-sign-off)
+  - [R2 Appendix: Evidence and Commands](#r2-appendix-evidence-and-commands)
+  - [R2 Receipt Payload Projection](#r2-receipt-payload-projection)
+- [Round 3 — Verification](#round-3--verification)
+  - [R3 Summary](#r3-summary)
+  - [R3 Backlog and Regression Verification](#r3-backlog-and-regression-verification)
+  - [R3 Findings](#r3-findings)
+  - [R3 Decision and Ask Alignment Verification](#r3-decision-and-ask-alignment-verification)
+  - [R3 Resolution Pass](#r3-resolution-pass)
+  - [R3 Verification Matrix](#r3-verification-matrix)
+  - [R3 Recommendations and Sign-Off](#r3-recommendations-and-sign-off)
+  - [R3 Appendix: Files Read and Commands](#r3-appendix-files-read-and-commands)
+  - [R3 Receipt Payload Projection](#r3-receipt-payload-projection)
 
 ## Scope
 
@@ -94,7 +117,7 @@ ledger-version: 1
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 1 | sha256:a7b78d48f05be58cca6c766510999a1740d03f213d1be51509e4f4b69f62ed43 | 0 | 6 | 1 | round1:DV-1, round1:F-1, round1:F-2, round1:JA-1, round1:JA-2, round1:JA-3 | full | no |
+| doc-audit | 3 | sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb | 0 | 0 | 0 | round1:F-2, round1:JA-2, round1:JA-3 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -115,6 +138,8 @@ ledger-version: 1
 | Date | Round | Notes |
 |------|-------|-------|
 | 2026-10-17 | 1 | Independent Codex audit: 0 CRITICAL, 6 MAJOR open-blocking, 1 MINOR deferred until live-test preparation; no target edits. |
+| 2026-10-17 | 2 | Codex verification: six prior MAJOR and one MINOR fixed in plan; one new MAJOR protocol-deployment gap (N-1); eight reproduced checks; no target edits. |
+| 2026-10-17 | 3 | Codex verification: N-1 fixed; F-2, JA-2 and JA-3 reopened after regressions; seven reproduced checks; no target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -580,4 +605,284 @@ aido validate-doc docs/audits/ai-cli-nyz8-restart-idle-sessions-plan-audit.md
 
 ````json
 {"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-broadened"},"disposition":"open-blocking","finding_key":"round1:JA-1","fingerprint":"fp:restart-session:age-only-trigger","id":"JA-1","reachable_behavior":"A healthy current-version session is restarted solely because remote visibility is unobserved.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"open-blocking","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"open-blocking","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"missing-prerequisite"},"disposition":"open-blocking","finding_key":"round1:DV-1","fingerprint":"fp:restart-session:startup-unrequired","id":"DV-1","reachable_behavior":"A session without bridge startup has no specified reconnection action and may repeatedly fail verification.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"open-blocking","finding_key":"round1:F-1","fingerprint":"fp:restart-session:lock-check-only","id":"F-1","reachable_behavior":"Two restarters can act because one checks lock status without acquiring ownership.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"open-blocking","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"contradictory-verification"},"disposition":"deferred","finding_key":"round1:IC-1","fingerprint":"fp:restart-session:test-uptime","id":"IC-1","reachable_behavior":"The prescribed freshly started live test is refused by the default minimum uptime gate.","severity":"minor","submitted_severity":"minor"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":6,"minor":1},"scope":{"backlog":[],"diff_since":null,"diff_summary":{"changed":false,"from":null,"to":"sha256:a7b78d48f05be58cca6c766510999a1740d03f213d1be51509e4f4b69f62ed43"},"kind":"full"},"source_event_id":"round-1-audit"}
+````
+
+## Round 2 — Verification
+
+**Round 2 auditor:** Codex; concrete runtime model identifier not exposed.
+
+**Round 2 date:** 2026-10-17
+
+**Round 2 scope:** Verify the six driver-supplied blocking findings, the deferred uptime check, and the revised plan against both committed raw ask entries. Append-only verification; no target edits or external delivery actions.
+
+### R2 Summary
+
+Six prior MAJOR findings and the prior MINOR finding are fixed **in the specification**. One new MAJOR deployment prerequisite blocks plan sign-off. This does not certify implementation, reconnection, mobile visibility, feedback delivery or orchestration completion.
+
+The target digest is `9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57`, matching the driver's snapshot. HEAD is `7b775650`; the plan revision is in `4331be07`. Only the audit carrier and driver lock files are dirty/untracked at inspection. The linked research is now clean, unlike the Round 1 snapshot. The generated Status Summary remains driver-owned; the receipt below projects this round's findings.
+
+### R2.1 Round 1 IC/JA/DV verification
+
+All plan citations below refer to `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+| ID | Verdict / disposition | Verified evidence |
+|---|---|---|
+| DV-1 | PASS / fixed — CONFIRMED | Configuration:181-189 requires effective startup activation, refuses missing/disabled/unsupported/unreadable settings before action, and suppresses automatic failure loops. AC-2.14/2.16 require disabled/enabled activation and retry tests. This resolves the missing prerequisite contract; the supported CLI interface remains an implementation verification obligation. |
+| JA-1 | PASS / fixed — CONFIRMED | D-8:568 says “`LOCAL_ONLY` and `UNKNOWN` never trigger, regardless of duration.” The age-only key is removed. AC-4.5 requires observer failure and old-unverified non-action tests. |
+| JA-2 | PASS / fixed — CONFIRMED | T-06:827-839 retains report preparation, SendFeedback submission, public issue filing and appropriate related-issue linking comments. “drafting alone shall not satisfy delivery”; blockers prevent epic closure. This restores scope without asserting delivery has happened. |
+| JA-3 | PASS / fixed — CONFIRMED | AC-2.8:710-715 requires passive socket/local listing checks and replacement-specific observer checks; missing peer evidence returns non-zero `verification-incomplete`. AC-5.5:813-817 separately requires peer, mobile and SendMessage observations. |
+| IC-1 | PASS / fixed — CONFIRMED | Verification:845-850 now waits for `min_uptime_seconds` and separately checks refusal below it; “idle and freshly started” is removed. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict / disposition | Verified evidence |
+|---|---|---|
+| F-1 | PASS / fixed — CONFIRMED | D-9:614-623 requires both actors to acquire the same exclusive OS-backed lock, retain it through verification, and update a separate cooldown/result file under ownership. The lock file cannot be replaced/unlinked. AC-2.17 and AC-4.6 require controlled interleavings and block automatic rollout until both actors comply. |
+| F-2 | PASS / fixed — CONFIRMED | Configuration:191-203 requires acknowledged generation/old-child identity fencing and exact UUID resume in both launch branches. AC-2.15 forbids title/fresh fallback; AC-2.18 preserves ordinary launches and tests duplicate titles, stale requests and changed generation. N-1 concerns deployment of this new protocol, not whether exact-UUID behavior is now specified. |
+
+### R2.3 AD-N decisions verification
+
+There were no AD-N decisions to apply. All nine target Decisions, including their option bodies and final recommendations, were compared against A001/A002. D-8 now requires positive evidence; T-06 restores the previously excluded A002 work. No new requirement-dropping decision or transition authorization is emitted.
+
+| Authoritative raw entry | Current coverage / limits |
+|---|---|
+| A001 | Command forms, strict idleness/context checks, shared-library pre-step, positive triggers and visibility checks remain specified. T-05 retains both-host rollout and requires evidence for assignment, handoff, goal activation, integration, synchronization and cleanup. N-1 blocks the newly required protocol's use on existing supervisors. Runtime and coordinator completion remain unverified. |
+| A002 | Delegation/goal evidence is required by AC-5.6; all feedback/issue/comment delivery is retained in AC-6.1–6.5. No delivery receipts or completion are claimed by this audit. |
+
+Both complete raw entries were reread from the capture commit in the existing founding-ask carrier. Blob OID and content SHA-256 were independently recomputed and match that carrier. The research's older A002 description still mentions a mobile prompt box (`docs/research/claude-code-session-identity-and-reachability.md`, Founding Ask Coverage); it is stale context, not authority for overriding the corrected T-06 scope.
+
+### R2.4 NEW issues surfaced
+
+#### N-1: Existing supervisors have no specified path into the new handoff protocol — MAJOR
+
+**Location:** Plan Configuration:191-203, AC-2.15:732-737, T-05:803-812; `src/ai_cli/main.py:1389`, `src/ai_cli/main.py:1502`; `src/ai_cli/session_script.py:649`, `src/ai_cli/session_script.py:1157`.
+
+**What the revision specifies:** “Require an acknowledgement from that same live supervisor generation before action. Supervisors without handoff support refuse with `resume-target`”. Rollout AC-5.1 installs the new package/harness, then AC-5.2 runs `ai -X` against existing live sessions. Its live test instead starts a new disposable session (Verification:845).
+
+**Actual state — CONFIRMED specification/deployment gap:** The existing update path atomically replaces the script on disk: `temporary.replace(script_path)` (`main.py:1397`). The running shell remains on the old inode; `_refresh_live_session_scripts` refreshes artifacts for the “next restart” (`main.py:1506`). The persistent supervisor waits for its child and launches replaceable child bodies (`session_script.py:649-740`); child template reload is reached after the current Claude process exits (`session_script.py:1157-1172`). No existing supervisor acknowledgement implementation was found in that loop. The full revised plan specifies refusal for old supervisors but no compatibility adapter, supervisor upgrade procedure, or pre-feature-supervisor deployment test. Updating artifacts does not itself equip the running supervisor to acknowledge the request.
+
+**Reachable consequence — PLAUSIBLE, not a live incident:** An otherwise eligible long-running session created before this feature refuses `resume-target` after installation. The restart needed to load new child behavior is gated by acknowledgement that its existing supervisor cannot provide under the specified protocol. Newly created disposable sessions can pass while the sessions that motivated rollout remain unrestarted. A runtime-loaded compatibility adapter could resolve this, but the plan does not specify one or its safety proof.
+
+**Verification command:**
+
+````bash
+rg -n 'old inode|temporary.replace|next restart' src/ai_cli/main.py
+rg -n 'Require an acknowledgement|without handoff|AC-5.1|AC-5.2' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+sed -n '649,740p' src/ai_cli/session_script.py
+sed -n '1157,1172p' src/ai_cli/session_script.py
+````
+
+**Actual output:** `main.py:1392` says “running shell on the old inode; the next exec opens the new one”; line 1397 replaces the file; line 1506 defers hot reload until the next restart. Plan lines 193-194 require acknowledgement/refusal, while lines 803-805 install and immediately invoke the command. The inspected loop contains child launch/wait/reload handling, with no acknowledgement route.
+
+**Recommended fix [AUTO-FIX]:** Specify how an existing supervisor gains verified protocol support before its first controlled restart. Identify the executing component that acknowledges the request and prove the next child will consume only its pinned UUID; keep refusal when that cannot be established. Add a rollout prerequisite and regression test that starts the pre-feature supervisor, updates package/scripts while its Claude child remains live, then completes a safe pinned-UUID restart in the same pane. Do not waive the handshake or substitute an unverified exit to bootstrap it.
+
+### R2 Resolution Pass
+
+| Item | Status | Required action |
+|---|---|---|
+| Prior six blocking findings | Fixed in plan | Implementation must satisfy the new ACs and negative-path tests. |
+| Prior uptime inconsistency | Fixed in plan | Execute the corrected live setup during implementation verification. |
+| N-1 | OPEN — MUST fix before plan sign-off | Plan author specifies and tests the existing-supervisor upgrade path. |
+
+No target or source changes were made by this audit. No AD-N team decision is necessary to state the missing deployment contract.
+
+### R2 Verification Matrix
+
+Each listed command was actually run against the matched target digest. PASS means the quoted contract is present, or that the N-1 gap is reproduced; it does not mean runtime acceptance passed. In this table, `P` abbreviates `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+| Finding | Command | Expected | Actual | Result |
+|---|---|---|---|---|
+| DV-1 | `sed -n '181,189p' P` | Activation refusal and failure suppression | `rc-activation` before action; automatic attempts suppressed until probe/manual retry | PASS |
+| F-1 | `sed -n '614,623p' P` | Ownership by both actors | Exclusive OS-backed lock, stable lock file and separate durable cooldown under ownership | PASS |
+| F-2 | `sed -n '191,203p' P` | Pinned exact conversation | Same-generation acknowledgement, old-child fencing, exact UUID in either branch; no fallback | PASS |
+| JA-1 | `sed -n '561,571p' P` | Positive triggers only | Unknown versions/access remain unknown; local-only/unknown never trigger at any age | PASS |
+| JA-2 | `sed -n '822,839p' P` | Retained delivery | All report/submission/issue/comment ACs and closure blocker present | PASS |
+| JA-3 | `sed -n '706,715p' P` | Independent observer verification | Local socket/listing and remote observer; missing peer evidence is non-zero incomplete | PASS |
+| IC-1 | `sed -n '845,850p' P` | Safe live-test uptime | Wait for minimum, test refusal below it, then cooldown refusal | PASS |
+| N-1 | N-1 commands above | Artifact refresh is insufficient for live acknowledgement | Atomic replacement/next-restart reload versus mandatory pre-action acknowledgement; no migration specified | PASS for gap; runtime untested |
+
+**8/8 checks reproduced.** A separate in-memory assertion pass reported seven PASS results for the prior findings. `aido validate-doc` passes for the current plan and existing audit carrier, each with five regions. The relayed additions still require validation after application. No pytest suite or live restart test ran; those would not establish a documentation-only contract's implementation here.
+
+### R2 Recommendations
+
+**MUST be fixed before plan sign-off:** N-1; owner: plan author; target: next plan revision. The six prior MAJOR findings do not remain open merely because implementation has not begun.
+
+**SHOULD be fixed before delivery preparation:** Correct the linked research's stale A002 summary so report preparation uses the Remote Control discovery failure specified by T-06.
+
+**Outstanding implementation/delivery gates:** Activation interface verification, controlled concurrency, pinned-UUID resume, peer/mobile observations, SendMessage delivery and feedback receipts remain required by the plan. They are not completion claims of this doc-audit round.
+
+### R2 Already-Correct Items
+
+- Positive evidence replaces the unverified-age restart trigger (D-8:561-571).
+- Both restarters acquire ownership through completion/failure (D-9:614-623).
+- Exact UUID resume covers prompt-present and prompt-absent launches (Configuration:198-200; AC-2.15).
+- Local, peer and mobile verification are separate, with incomplete peer evidence failing verification (AC-2.8; AC-5.5).
+- Feedback drafting cannot substitute for delivery; related-issue review and closure blockers are explicit (AC-6.1–6.5).
+- Minimum uptime now has both a valid live setup and a negative check (Verification:845-850).
+
+### R2 Anti-Patterns and Sign-Off
+
+Do not infer that replacing a script upgrades a shell already executing its old inode. A fresh disposable session tests the new protocol but cannot prove migration from deployed supervisors. Preserve the distinction between fixed specification gaps and unexecuted implementation obligations.
+
+- [x] All six blocking backlog items and the deferred minor checked against the current plan.
+- [x] Both complete raw ask entries reread; revised Decisions compared against them.
+- [x] Eight verification checks executed; schema validation limits recorded.
+- [ ] N-1 fixed and independently reverified.
+- [ ] Relayed audit additions validated after application.
+- [ ] Owner sign-off recorded.
+
+### R2 Appendix: Evidence and Commands
+
+**Read:** Full revised plan including empty Feedback Rounds/Approval Log, full audit history, both committed raw ask entries, linked research, AGENTS.md, CLAUDE.md and audit README. Canonical audit STUB/TEMPLATE were read from `~/projects/ai-harness/docs/audits/` because local copies remain absent; design-doc-workflow guidance was consulted.
+
+**Source/test inspection:** `src/ai_cli/session_script.py` heartbeat, persistent supervisor, child reload, both launch branches and breakers; `src/ai_cli/main.py` atomic script writer, script refresh/update, title resolver and heartbeat handler; registry reader in `session_adopt.py`, birth-identity methods in `process_probe.py`, config/path setup in `config.py`, naming/slot functions in `session.py`, and `session_migrate_hooks.py`. Read `tests/test_session_script_atomic_write.py`, whose old-program-versus-refreshed-script regression confirms the relevant intended behavior; the test was not executed. This is source inspection, not exhaustive implementation coverage.
+
+**Existing out-of-scope standards issue:** `src/ai_cli/config.py:119` hardcodes a private harness name in the machine-marker path, conflicting with the repository's public-package naming rule. Flagged during inspection; it is not introduced by this plan revision and is not a new blocking finding in this verification scope.
+
+Additional commands actually run: `git status --short`; `git log -4 --oneline`; `git diff 2737748b HEAD -- docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`; `sha256sum docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`; committed founding-record `git show`, `git rev-parse` and SHA-256 commands from Round 1; both `aido validate-doc` commands. Symbol searches and subsequent line reads checked supervisor handoff, heartbeat, registry, naming and configuration claims. No processes were signalled, messages sent or files written.
+
+### R2 Receipt Payload Projection
+
+````json
+{"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-broadened"},"disposition":"fixed","finding_key":"round1:JA-1","fingerprint":"fp:restart-session:age-only-trigger","id":"JA-1","reachable_behavior":"A healthy current-version session is restarted solely because remote visibility is unobserved.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"fixed","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"fixed","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"missing-prerequisite"},"disposition":"fixed","finding_key":"round1:DV-1","fingerprint":"fp:restart-session:startup-unrequired","id":"DV-1","reachable_behavior":"A session without bridge startup has no specified reconnection action and may repeatedly fail verification.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"fixed","finding_key":"round1:F-1","fingerprint":"fp:restart-session:lock-check-only","id":"F-1","reachable_behavior":"Two restarters can act because one checks lock status without acquiring ownership.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"fixed","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"contradictory-verification"},"disposition":"fixed","finding_key":"round1:IC-1","fingerprint":"fp:restart-session:test-uptime","id":"IC-1","reachable_behavior":"The prescribed freshly started live test is refused by the default minimum uptime gate.","severity":"minor","submitted_severity":"minor"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@4331be07","subsystem":"session-restart","violation_kind":"missing-prerequisite"},"disposition":"open-blocking","finding_key":"round2:N-1","fingerprint":"fp:restart-session:existing-supervisor-bootstrap","id":"N-1","reachable_behavior":"A live session running the pre-feature supervisor refuses the newly mandatory acknowledgement after package installation because no compatible upgrade path is specified.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":1,"minor":0},"scope":{"backlog":["round1:DV-1","round1:F-1","round1:F-2","round1:JA-1","round1:JA-2","round1:JA-3"],"diff_since":"sha256:a7b78d48f05be58cca6c766510999a1740d03f213d1be51509e4f4b69f62ed43","diff_summary":{"changed":true,"from":"sha256:a7b78d48f05be58cca6c766510999a1740d03f213d1be51509e4f4b69f62ed43","to":"sha256:9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57"},"kind":"verify"},"source_event_id":"round-2-audit"}
+````
+
+## Round 3 — Verification
+
+**Round 3 auditor:** Codex; concrete runtime model identifier not exposed.
+
+**Date:** 2026-10-17
+
+**Scope:** Verify the supplied N-1 backlog and changes since Round 2, including regressions in previously fixed findings. No target edits.
+
+### R3 Summary
+
+N-1 is fixed by removing the acknowledgement prerequisite. Three earlier MAJOR findings regress: F-2, JA-2 and JA-3 are reopened under their original IDs and fingerprints. No new finding IDs are needed. Plan sign-off remains blocked.
+
+HEAD is `8c536da8`. The target SHA-256 is `bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb`, matching the driver. The plan is clean; the audit carrier, receipt and driver locks are modified/untracked. Both committed raw ask entries were reread; their blob OID and content digest match the supplied carrier. Local audit STUB/TEMPLATE files remain absent; canonical copies in `~/projects/ai-harness/docs/audits/` supplied the format. This verifies a plan, not implemented or live behavior.
+
+### R3 Backlog and Regression Verification
+
+All plan citations refer to `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+| ID | Disposition / verdict | Evidence |
+|---|---|---|
+| N-1 | fixed / PASS | D-10:654-666 and AC-2.15 replace mandatory supervisor acknowledgement with a pre-action candidate check. Old supervisors need no new acknowledgement implementation. This removes the specific bootstrap dependency; F-2 below identifies the replacement's safety regression. |
+| F-2 | open-blocking / FAIL | D-10:670-671 explicitly permits a different same-title transcript to win between check and relaunch. |
+| JA-2 | open-blocking / FAIL | Coverage:45 replaces T-06 with an unsupported delivery claim; the complete task breakdown contains no feedback-delivery ACs. |
+| JA-3 | open-blocking / FAIL | Configuration:168-171 allows local success without an observer; AC-2.8 omits the previous incomplete-peer exit contract, contrary to AC-5.2:902. D-11:747 ships the fallback despite its pending human decision. |
+
+### R3 Findings
+
+#### F-2: The replacement for the handoff reintroduces wrong-conversation resume — MAJOR
+
+**Evidence — CONFIRMED:** D-10:670-671 states, verbatim, “A same-title transcript written in the seconds between the check and the relaunch would still be resumed instead.” D-10:690-693 relies on “only the session itself writes transcripts under its title” and detection after relaunch. Source `src/ai_cli/main.py:408-436` searches mutable transcript titles and sorts by mtime; `main.py:1804` selects `candidates[0]`. Both launch branches in `src/ai_cli/session_script.py:1235-1271` resolve again and retain a fresh-conversation fallback. The resolver docstring itself documents inherited titles on forked transcripts, so title ownership is not an established exclusivity guarantee.
+
+**Impact:** A pre-check of one candidate does not bind the later launch to that UUID. Another interactive conversation created or renamed to the same title during the interval can replace it; reporting `resume-mismatch` afterwards does not prevent running the wrong conversation. This is a reachable interleaving demonstrated with the actual resolver function and mocked transcript inputs, not a claimed live incident.
+
+**Verification:**
+
+````bash
+sed -n '654,693p' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+sed -n '408,436p' src/ai_cli/main.py
+sed -n '1797,1818p' src/ai_cli/main.py
+sed -n '1230,1273p' src/ai_cli/session_script.py
+````
+
+**Recommended fix [AUTO-FIX]:** Preserve exact-conversation selection through launch, with refusal rather than title/fresh fallback when that cannot be guaranteed. Specify and test a compatible path for existing supervisors instead of resolving N-1 by removing this protection. Add an interleaving test that introduces a newer same-title transcript after the final pre-check and proves it cannot become the replacement.
+
+#### JA-2: Requested feedback delivery is removed again without matching completion evidence — MAJOR
+
+**Evidence — CONFIRMED:** A002 explicitly requests “use SendFeedback”, “create a github issue” and “add comments linking to our own github issue as appropriate”. Coverage:45 now says “Owned and delivered by the launching session, not by this plan” and cites no receipt or report path. The revision deletes T-06 and its delivery/closure ACs. The discoverable current report, `~/projects/ai-harness/docs/feedback/claude-ios-code-tab-long-prompt-unnavigable.md:31-34`, concerns prompt-box scrolling and text truncation. Its Submission Tracking:128 records locally queued SendFeedback and issue #103074 for that different defect. The research coverage table also describes A002 as prompt-box work; that summary cannot override the raw ask's Remote Control context. An older reachability report was found too; neither its existence nor the unrelated current report proves this ask's delivery.
+
+**Impact:** The plan can close while the requested Remote Control/discovery report, issue and related-issue review remain unaccounted for. Moving work to another owner is acceptable when the exact work and completion evidence remain traceable; the current completion assertion does not supply that evidence. This finding does not assert that no report exists anywhere.
+
+**Verification:**
+
+````bash
+rg -n 'Owned and delivered|T-06|AC-6\.' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+sed -n '29,35p;123,132p' ~/projects/ai-harness/docs/feedback/claude-ios-code-tab-long-prompt-unnavigable.md
+rg -n 'reachability|Submission Tracking|submitted' ~/projects/ai-harness/docs/feedback/remote-control-stale-pairings-truncate-reachability.md
+````
+
+**Recommended fix [AUTO-FIX]:** Restore tracked delivery and an epic-closure gate, or link the actual Remote Control report, SendFeedback outcome, filed issue and related-issue review/comments from the launching session. Keep incomplete routes pending and distinguish queued feedback from confirmed submission. Any exclusion of A002 requires human re-scope; no such authorization appears in the committed record or empty Approval Log.
+
+#### JA-3: Peer verification and the unresolved visibility requirement become optional again — MAJOR
+
+**Evidence — CONFIRMED:** A001 requires checks that the session is “truly” connected and “visible and identifiable via ListAgents tooling under the expected cc session custom title”. Configuration:169-171 says that without an observer the restart “still succeeds on its local and bridge checks”. AC-2.8:812-815 requires an observer only where configured and explicitly fails only local/bridge checks. AC-5.2:902 still requires “Unverified peer evidence is a non-zero incomplete result, not reachable success.” AC-5.5 no longer requires the prior independent SendMessage observation. D-11 is marked pending human at line 699, but line 747 says “The build ships (a), which D-8 already implements, so nothing waits on this choice.”
+
+**Impact:** An implementation can report success while the original peer-discovery failure remains unobserved, and rollout has a contradictory exit contract. Naming a blind spot is honest reporting but does not authorize shipping a narrowed requirement while its human escalation is unresolved. A configured cross-host listing also cannot by itself establish mobile visibility or message delivery.
+
+**Verification:**
+
+````bash
+sed -n '168,181p;699,750p;807,815p;899,912p' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+rg -n 'SendMessage|observer|UNVERIFIED' docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md
+````
+
+**Recommended fix [AUTO-FIX]:** Restore a single incomplete-peer/non-zero contract for the command and rollout, and retain independent peer/message observations. Keep mobile evidence separate. Make the unresolved D-11 narrowing block completion of that requirement until the owner explicitly re-scopes it or evidence satisfies it; do not replace unknown status with an age-only restart trigger.
+
+### R3 Decision and Ask Alignment Verification
+
+No audit AD-N decision was previously selected. Target D-10(a) removes the deployment dependency but regresses F-2. Target D-11 is a human escalation whose proposed fallback must remain pending; its shipment clause is covered by JA-3. Restoring requirements requires no new audit decision, and this round authorizes no transition.
+
+| Raw entry | Current coverage and limits |
+|---|---|
+| A001 | Command forms, idle/context gates, injection pre-step, positive triggers and both-host rollout remain specified. F-2 and JA-3 identify reopened safety/visibility gaps. Coverage:44 asserts task assignment and goal activation without attached execution proof; those orchestration claims remain UNVERIFIED. The linked run prompt is a brief, not proof of execution. |
+| A002 | Full follow-up reread. JA-2 identifies removed delivery tracking. No report, issue, message, merge, goal activation or cleanup was performed by this audit. |
+
+### R3 Resolution Pass
+
+| Item | Result | Owner / next action |
+|---|---|---|
+| N-1 | Fixed in specification | Preserve compatibility while addressing F-2. |
+| F-2 | Reopened; MUST fix | Plan author: bind the launch to the selected conversation and test the interleaving. |
+| JA-2 | Reopened; MUST fix | Plan author/coordinator: restore tracked delivery or attach matching receipts. |
+| JA-3 | Reopened; MUST fix | Plan author: restore incomplete verification semantics and retain the pending human escalation as a completion gate. |
+
+No inline fixes or major deferrals were applied. The original finding IDs and fingerprints are retained because these are regressions of the same invariants, not independent new findings.
+
+### R3 Verification Matrix
+
+Every command below was run. PASS means the stated observation reproduced, not that runtime acceptance passed. `P` denotes the plan path above.
+
+| Check | Command / method | Actual output or observation | Result |
+|---|---|---|---|
+| Snapshot | `sha256sum P`; committed ask `git rev-parse` and `git show ... \| sha256sum` | Plan `bf41ec9c...b252fb`; ask blob `bee6d633...`; ask SHA-256 `0548b7e6...8d9a9bf`, all matching | PASS |
+| N-1 | `rg -n 'supervisor-acknowledged\|require exactly one' P` plus D-10 read | Candidate check at 658; acknowledgement only in unchosen option (b), 673 | PASS: old prerequisite removed |
+| F-2 contract | `sed -n '654,693p' P`; resolver/launch reads above | Check/relaunch gap expressly accepted at 670; second resolver still selects newest candidate | PASS: regression reproduced |
+| F-2 interleaving | In-memory AST extraction of repository `_find_cc_session_candidates_by_title`, with mocked project/transcript objects | `precheck: ['original']`; after adding a newer same-title interactive transcript, `relaunch: ['replacement', 'original']` | PASS: actual resolver behavior, simulated inputs |
+| JA-2 | `rg -n 'Owned and delivered\|T-06\|AC-6\.' P`; report reads above | Only coverage line 45 matches; current report describes prompt scrolling and records queued feedback at 128 | PASS: tracking removal reproduced |
+| JA-3 | `rg -n 'nothing waits\|still succeeds\|Unverified peer evidence' P` plus AC-2.8/5.5 reads | Success at 170; ships pending choice at 747; non-zero incomplete at 902 | PASS: contradictory/narrowed contract reproduced |
+| Retained lock fix | `rg -n 'OS-backed lock\|retain ownership\|until both actors' P` | Ownership at 606/608; rollout blocked until both actors comply at 893 | PASS |
+
+**7/7 checks reproduced.** The interleaving check executed the repository function with fake metadata and made no filesystem changes. No live restart, process signal, network delivery or pytest suite ran. `aido validate-doc` passed for both the current plan and current carrier, each with five regions; the final relayed additions still require validation after application. Region validation does not establish semantic correctness.
+
+### R3 Recommendations and Sign-Off
+
+**MUST before plan sign-off:** Resolve F-2, JA-2 and JA-3. Owner: plan author/coordinator; target: next plan revision. No additional implementation work is authorized by this review.
+
+**Already correct:** The default 20% configurable context gate remains (D-4); the strict background-work gate now requires an explicit zero pending-agent count (D-3); unknown/local-only evidence never triggers by age (D-8); shared lock ownership remains required (D-9); the live test still waits for minimum uptime (Verification).
+
+**Anti-pattern:** Closing a deployment finding by deleting its safety prerequisite can reopen an earlier finding. Likewise, an outside owner's completion assertion and an unrelated submitted issue cannot replace requirement-specific receipts. Proposed procedure improvement: require a regression check of every previously fixed invariant touched by a compatibility fix.
+
+- [x] Supplied backlog item independently checked and disposition recorded.
+- [x] Both raw ask entries and changed Decisions compared with current plan.
+- [x] Verification commands executed; observed facts separated from live-system limits.
+- [ ] Three reopened MAJOR findings resolved and independently reverified.
+- [ ] Pending human re-scope resolved before claiming the affected requirement complete.
+- [ ] Relayed additions validated and owner sign-off recorded.
+
+### R3 Appendix: Files Read and Commands
+
+**Documents:** Entire current plan and prior audit history; both complete raw entries from capture commit `e869869b929551fb4faa4e9c0584ac6a0a7803cb`; local AGENTS.md, CLAUDE.md and audit README; canonical audit STUB/TEMPLATE; linked research. Read the current prompt-box feedback report in full and the older reachability report's matching sections. Inspected the linked coordinator prompt's founding carrier and task/output guidance; it is not an execution receipt. Plan Feedback Rounds and Approval Log are empty.
+
+**Code/tests:** `src/ai_cli/main.py:408-560,1380-1400,1797-1818`; `src/ai_cli/session_script.py:649-740,1148-1176,1220-1295`; full `tests/test_session_script_atomic_write.py`. These reads verify resolver, live-owner, reload and launch semantics; they do not constitute an implementation audit.
+
+**Commands:** Matrix and finding commands above; `git status --short`; `git log -5 --oneline`; `git diff 4331be07 8c536da8 -- docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`; full document reads; feedback-directory symbol searches and filename searches across the harness docs; `aido validate-doc` for the plan and audit carrier. The resolver experiment used `python3 -B`, AST extraction and an in-memory `Project` with two fake `Transcript` records; no scratch files were created. The existing public-package naming violation recorded in Round 2 remains outside this diff's scope.
+
+### R3 Receipt Payload Projection
+
+````json
+{"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@4331be07","subsystem":"session-restart","violation_kind":"missing-prerequisite"},"disposition":"fixed","finding_key":"round2:N-1","fingerprint":"fp:restart-session:existing-supervisor-bootstrap","id":"N-1","reachable_behavior":"A live session running the pre-feature supervisor refuses the newly mandatory acknowledgement after package installation because no compatible upgrade path is specified.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"open-blocking","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"open-blocking","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"open-blocking","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["round2:N-1"],"diff_since":"sha256:9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57","diff_summary":{"changed":true,"from":"sha256:9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57","to":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb"},"kind":"verify"},"source_event_id":"round-3-audit"}
 ````
