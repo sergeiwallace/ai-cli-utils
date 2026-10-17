@@ -120,6 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai copier-update` no longer reports a conflict for a changed file that merely mentions the
+  conflict marker inside a line (a comment quoting `<<<<<<<`). Only a line that starts with the
+  marker counts, the shape Git and Copier write.
 - `ai copier-update` no longer reports a file Copier added inside a new directory as missing from
   the update. `git status --porcelain` collapsed a wholly new directory to one `?? dir/` entry, so
   the template parity check failed every project the first time a template added a directory
