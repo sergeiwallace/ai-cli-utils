@@ -638,19 +638,29 @@ def test_given_last_check_when_gate_changes_then_no_action(world, monkeypatch, f
     assert not world.signals
 
 
-def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monkeypatch):
+@pytest.mark.parametrize("json_output", [True, False])
+@pytest.mark.parametrize("flag", ["-X", "-Y"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monkeypatch, json_output, flag, exit_code):
     calls = []
     monkeypatch.setattr(main._config, "get_remote_machine", lambda *a: {"host": "example.com", "user": "user"})
     monkeypatch.setattr(main, "_resolve_remote_shell", lambda ssh: "bash")
 
     def run(argv, **kwargs):
         calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"reason": "restarted"}))
+        return SimpleNamespace(returncode=exit_code, stdout=json.dumps({"reason": "ready"}))
 
     monkeypatch.setattr(main.subprocess, "run", run)
-    code, report, _ = world.cli("c", "1", "-R", "-p", "myproject", "-X")
-    assert code == 0 and report["reason"] == "restarted"
-    assert calls[0][-1] == "bash -l -c 'ai c 1 -p myproject --is-remote -X -j'"
+    args = ["ai", "c", "1", "-R", "-p", "myproject", flag]
+    if json_output:
+        args.append("-j")
+    code, out, _ = run_cli(args, config=world.settings)
+    assert code == exit_code
+    if json_output:
+        assert json.loads(out)["reason"] == "ready"
+    else:
+        assert "reason=ready" in out and not out.lstrip().startswith("{")
+    assert calls[0][-1] == f"bash -l -c 'ai c 1 -p myproject --is-remote {flag} -j'"
     assert not world.signals
 
 

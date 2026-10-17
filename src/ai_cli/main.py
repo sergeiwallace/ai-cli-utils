@@ -4607,7 +4607,7 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None):
     check = restart_check is not None
     try:
         if options:
-            target = _restart_launch_target(target, check, options)
+            target = _restart_launch_target(target, check, options, json_output=restart_json)
         report = restart.restart(target or None, check=check)
     except (
         restart.Refusal,
@@ -4625,7 +4625,7 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None):
     raise SystemExit(0 if report["reason"] in ("restarted", "ready", "detached") else 1)
 
 
-def _restart_launch_target(target, check, options):
+def _restart_launch_target(target, check, options, *, json_output=False):
     """Resolve only. Never enter launch, update, allocation or cleanup paths."""
     from .session_restart import Refusal
 
@@ -4659,7 +4659,12 @@ def _restart_launch_target(target, check, options):
                 raise ValueError
         except ValueError:
             raise Refusal("unavailable", "remote restart returned no structured result") from None
-        _out.raw(Untagged.JSON, json.dumps(report))
+        if json_output:
+            _out.raw(Untagged.JSON, json.dumps(report))
+        else:
+            _out.emit(
+                Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items())
+            )
         raise SystemExit(result.returncode)
     if target:
         return target
