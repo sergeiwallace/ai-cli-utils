@@ -30,9 +30,13 @@ def _memory_limit_bytes() -> int:
     try:
         limit_mb = int(raw_limit)
     except ValueError as exc:
-        raise pytest.UsageError(f"{_MEMORY_LIMIT_ENV} must be an integer number of MiB") from exc
+        raise pytest.UsageError(
+            f"{_MEMORY_LIMIT_ENV} must be an integer number of MiB",
+        ) from exc
     if limit_mb < _MINIMUM_MEMORY_LIMIT_MB:
-        raise pytest.UsageError(f"{_MEMORY_LIMIT_ENV} must be at least {_MINIMUM_MEMORY_LIMIT_MB} MiB")
+        raise pytest.UsageError(
+            f"{_MEMORY_LIMIT_ENV} must be at least {_MINIMUM_MEMORY_LIMIT_MB} MiB",
+        )
     return limit_mb * 1024 * 1024
 
 
@@ -68,7 +72,10 @@ def _cleanup_controller_notice_file(config: Any) -> None:
     notice_directory.rmdir()
     setattr(config, _NOTICE_DIRECTORY_ATTRIBUTE, None)
 
-    had_previous_value, previous_value = getattr(config, _PREVIOUS_NOTICE_FILE_ATTRIBUTE)
+    had_previous_value, previous_value = getattr(
+        config,
+        _PREVIOUS_NOTICE_FILE_ATTRIBUTE,
+    )
     if had_previous_value:
         os.environ[_NOTICE_FILE_ENV] = previous_value
     else:
@@ -145,7 +152,9 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     terminal_reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     if terminal_reporter is not None:
         limit_mb = limit_bytes // 1024 // 1024
-        terminal_reporter.write_line(f"pytest memory guard: limiting each test process to {limit_mb} MiB")
+        terminal_reporter.write_line(
+            f"pytest memory guard: limiting each test process to {limit_mb} MiB",
+        )
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -202,7 +211,11 @@ def pytest_unconfigure(config: Any) -> None:
 
 
 def pytest_terminal_summary(terminalreporter: Any) -> None:
-    notice_directory = getattr(terminalreporter.config, _NOTICE_DIRECTORY_ATTRIBUTE, None)
+    notice_directory = getattr(
+        terminalreporter.config,
+        _NOTICE_DIRECTORY_ATTRIBUTE,
+        None,
+    )
     if notice_directory is None:
         return
 
@@ -246,12 +259,9 @@ def _watch_parent(parent_pid: int, limit_bytes: int) -> int:
         if rss_bytes >= limit_bytes:
             limit_mb = limit_bytes // 1024 // 1024
             rss_mb = rss_bytes // 1024 // 1024
-            _write_termination_notice(
-                (
-                    f"pytest memory guard: process exceeded its {limit_mb} MiB RSS ceiling "
-                    f"({rss_mb} MiB); terminating it\n"
-                ).encode(),
-            )
+            ceiling = f"process exceeded its {limit_mb} MiB RSS ceiling"
+            notice = f"pytest memory guard: {ceiling} ({rss_mb} MiB); terminating it\n"
+            _write_termination_notice(notice.encode())
             parent.kill()
             return 0
         time.sleep(0.05)

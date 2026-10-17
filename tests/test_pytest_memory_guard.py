@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -8,15 +9,30 @@ from pathlib import Path
 import pytest
 
 _FORCE_WATCHDOG_PLUGIN = "force_pytest_memory_guard_watchdog"
+_RUNAWAY_COMPLETED = "the runaway xdist worker completed past its memory ceiling"
+_KILL_NOTICE = "pytest memory guard: process exceeded its 384 MiB RSS ceiling"
+_HAS_PSUTIL = importlib.util.find_spec("psutil") is not None
+_NO_PSUTIL = "psutil is not installed, so the portable watchdog cannot run here"
+_requires_xdist = pytest.mark.skipif(
+    importlib.util.find_spec("xdist") is None,
+    reason="pytest-xdist is not installed, so there are no xdist workers to guard",
+)
 
 
-@pytest.fixture(params=("native", "watchdog") if sys.platform.startswith("linux") else ("native",))
+@pytest.fixture(
+    params=("native", "watchdog") if sys.platform.startswith("linux") else ("native",),
+)
 def memory_guard_mode(request: pytest.FixtureRequest) -> str:
     """Exercise Linux's native guard plus the portable guard on Linux."""
+    if request.param == "watchdog" and not _HAS_PSUTIL:
+        pytest.skip(_NO_PSUTIL)
     return str(request.param)
 
 
-def _memory_guard_invocation(tmp_path: Path, memory_guard_mode: str) -> tuple[dict[str, str], list[str]]:
+def _memory_guard_invocation(
+    tmp_path: Path,
+    memory_guard_mode: str,
+) -> tuple[dict[str, str], list[str]]:
     env = os.environ.copy()
     env["PYTEST_WORKER_MEMORY_LIMIT_MB"] = "384"
     if memory_guard_mode != "watchdog":
@@ -97,6 +113,7 @@ import pytest_memory_guard
     assert result.returncode == 0, result.stderr
 
 
+@_requires_xdist
 def test_given_runaway_xdist_worker_when_memory_limit_is_reached_then_worker_is_stopped(
     tmp_path: Path,
     memory_guard_mode: str,
@@ -142,11 +159,12 @@ def test_synthetic_runaway_allocation():
     )
 
     output = result.stdout + result.stderr
-    assert result.returncode != 0, "the runaway xdist worker completed despite exceeding its memory ceiling"
+    assert result.returncode != 0, _RUNAWAY_COMPLETED
     assert "allocation completed" not in output
     assert "pytest memory guard" in output
 
 
+@_requires_xdist
 def test_given_unconstrained_memory_marker_when_limit_is_reached_then_allocation_completes(
     tmp_path: Path,
     memory_guard_mode: str,
@@ -201,6 +219,7 @@ def test_synthetic_unconstrained_allocation():
     assert "pytest memory guard" in output
 
 
+@_requires_xdist
 def test_given_unconstrained_memory_marker_when_next_test_runs_then_guard_is_restored(
     tmp_path: Path,
     memory_guard_mode: str,
@@ -263,9 +282,12 @@ def test_guarded_allocation():
     assert "pytest memory guard" in output
 
 
+@_requires_xdist
 def test_given_worker_stderr_is_not_forwarded_then_controller_reports_guard_notices(
     tmp_path: Path,
 ):
+    if not _HAS_PSUTIL:
+        pytest.skip(_NO_PSUTIL)
     runaway_test = tmp_path / "test_synthetic_runaway.py"
     runaway_test.write_text(
         """
@@ -307,6 +329,6 @@ def test_synthetic_runaway_allocation():
         check=False,
     )
 
-    assert result.returncode != 0, "the runaway xdist worker completed despite exceeding its memory ceiling"
+    assert result.returncode != 0, _RUNAWAY_COMPLETED
     assert "pytest memory guard: limiting each test process to 384 MiB" in result.stdout
-    assert "pytest memory guard: process exceeded its 384 MiB RSS ceiling" in result.stdout
+    assert _KILL_NOTICE in result.stdout
