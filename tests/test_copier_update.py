@@ -1356,6 +1356,9 @@ def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writ
     ).stdout.strip()
     (template / "message.txt").write_text("updated\n")
     subprocess.run(["git", "commit", "-am", "update"], cwd=template, check=True, capture_output=True)
+    template_origin = tmp_path / "template-origin.git"
+    subprocess.run(["git", "clone", "--bare", str(template), str(template_origin)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(template_origin)], cwd=template, check=True)
 
     (project / "message.txt").write_text("original\n")
     (project / ".copier-answers.yml").write_text(f"_src_path: {template}\n_commit: {previous_commit}\n")
