@@ -393,6 +393,53 @@ def test_run_copier_update_uses_vcs_ref_head(tmp_path):
     assert cmd[idx + 1] == "HEAD"
 
 
+def _copier_sees_status(project: Path, answers_source: str, resolved: str) -> tuple[str, str, str]:
+    """Run ``_run_copier_update`` with a stand-in copier; return the status copier saw and the file before and after."""
+    _make_answers(project, answers_source)
+    _init_git_repo(project)
+    real_run = subprocess.run
+    seen: dict[str, str] = {}
+
+    def run(command, **kwargs):
+        if command[0] == "fake-copier":
+            seen["status"] = real_run(
+                ["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True, check=True
+            ).stdout
+            seen["answers"] = (project / ".copier-answers.yml").read_text()
+            return MagicMock(returncode=0, stderr="")
+        return real_run(command, **kwargs)
+
+    changes = TemplateChanges(paths=set(), hunks=set(), skip_if_exists=set(), deleted_paths=set())
+    with patch("ai_cli.copier_update._template_diff", return_value=changes):
+        with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+            failure, _, _ = _run_copier_update(project, "fake-copier", resolved)
+    assert failure is None
+    return seen["status"], seen["answers"], (project / ".copier-answers.yml").read_text()
+
+
+def test_given_resolved_source_differs_from_stored_then_copier_sees_a_clean_checkout_on_the_resolved_source(tmp_path):
+    """A rewritten source must not make the destination dirty: copier refuses to update a dirty one."""
+    status, during, after = _copier_sees_status(
+        tmp_path,
+        "git@github.com:example-org/example-template.git",
+        "https://github.com/example-org/example-template.git",
+    )
+    assert status == ""
+    assert "https://github.com/example-org/example-template.git" in during
+    assert "git@github.com:example-org/example-template.git" in after
+
+
+def test_given_resolved_source_differs_from_stored_then_the_hidden_flag_is_cleared_afterwards(tmp_path):
+    _copier_sees_status(
+        tmp_path,
+        "git@github.com:example-org/example-template.git",
+        "https://github.com/example-org/example-template.git",
+    )
+    listing = subprocess.run(["git", "ls-files", "-v"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout
+    assert ".copier-answers.yml" in listing
+    assert not any(line.startswith("S ") for line in listing.splitlines())
+
+
 def test_run_copier_update_copier_failure(tmp_path, capsys):
     """Returns EX_TEMPFAIL when copier exits non-zero."""
     d = tmp_path / "myproj"

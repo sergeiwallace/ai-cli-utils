@@ -564,6 +564,18 @@ def _verify_update_parity(
     return None
 
 
+def _hide_answers_change(project_dir: Path, answers_file: Path, hide: bool = True) -> bool:
+    """Set or clear skip-worktree on the answers file; return whether the flag change took."""
+    flag = "--skip-worktree" if hide else "--no-skip-worktree"
+    result = subprocess.run(
+        ["git", "-C", str(project_dir), "update-index", flag, "--", str(answers_file)],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _run_copier_update(
     project_dir: Path, copier_bin: str, resolved_source: str | None = None
 ) -> tuple[str | None, dict[str, object] | None, TemplateChanges | None]:
@@ -585,11 +597,15 @@ def _run_copier_update(
     original_source = original_answers["_src_path"]
     update_answers = original_answers.copy()
     update_answers["_src_path"] = source
-    if update_answers == original_answers:
-        answers_file.write_text(original_text)
-    else:
+    source_rewritten = update_answers != original_answers
+    if source_rewritten:
         answers_file.write_text(yaml.safe_dump(update_answers, sort_keys=False, allow_unicode=True))
+    else:
+        answers_file.write_text(original_text)
     failure: str | None = None
+    # Copier refuses to update a dirty destination, and the source rewrite above is a change in
+    # the checkout, so hide it from ``git status`` for the length of the run.
+    hidden = source_rewritten and _hide_answers_change(project_dir, answers_file)
     try:
         result = subprocess.run(
             [
@@ -614,6 +630,8 @@ def _run_copier_update(
             if answers_after is None or not _answer_values_preserved(original_answers, answers_after):
                 failure = "stored Copier answers were not preserved"
     finally:
+        if hidden:
+            _hide_answers_change(project_dir, answers_file, hide=False)
         if not _restore_answer_source(answers_file, original_source, original_answers, original_text):
             failure = "could not restore stored Copier source"
     if failure is not None:

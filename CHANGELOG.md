@@ -124,6 +124,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files. The hook aborts the commit but leaves its fixes in the tree, so the update now stages them
   and commits once more through the same hooks. A hook that rejects without rewriting, or keeps
   failing after the retry, still fails the update (anchor and recovery issue as before).
+- `ai copier-update` no longer fails with "Destination repository is dirty" for a project whose
+  stored template source is spelled differently from the one it resolves to (an SSH URL read over
+  HTTPS, or a bare or relative name read from the sibling checkout). The source rewrite is now
+  hidden from `git status` for the length of the Copier run and the stored spelling is restored.
 - `ai copier-update` now finds a template stored as a bare name such as `project-template`. The
   name was only looked up inside the project, so a project that records the sibling checkout this
   way failed with "could not inspect template diff". A copy inside the project still wins; otherwise
