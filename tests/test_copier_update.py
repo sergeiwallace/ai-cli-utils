@@ -19,6 +19,7 @@ from ai_cli.copier_update import (
     _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
+    _excluded_on_update,
     _find_copier_projects,
     _repo_root,
     _run_copier_update,
@@ -820,6 +821,71 @@ def test_given_template_file_in_new_directory_when_verifying_parity_then_update_
         status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
 
     assert (status, detail) == ("ok", "")
+
+
+_PYTHON_ONLY_EXCLUDES = {
+    "_exclude": [
+        "docs/static-excluded.md",
+        "{% if 'python' not in tech_stack %}pytest_memory_guard.py{% endif %}",
+        "{% if not include_ci %}.github/workflows/ci.yml{% endif %}",
+        "{% if not use_jira %}docs/jira.md{% endif %}",
+        "*.pyc",
+    ],
+    "include_ci": {"type": "bool", "default": True},
+}
+
+
+def test_given_non_python_stack_when_listing_exclusions_then_python_only_files_are_excluded():
+    """personal-site (typescript) never receives pytest_memory_guard.py, so it is not a missing file."""
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "typescript", "use_jira": False})
+    assert excluded == {"docs/static-excluded.md", "pytest_memory_guard.py", "docs/jira.md"}
+
+
+def test_given_python_stack_when_listing_exclusions_then_the_python_file_is_expected():
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "python", "use_jira": True})
+    assert excluded == {"docs/static-excluded.md"}
+
+
+def test_given_unknown_answer_when_listing_exclusions_then_that_entry_stays_strict():
+    """No answer and no default for use_jira: leave docs/jira.md expected rather than guess."""
+    excluded = _excluded_on_update(_PYTHON_ONLY_EXCLUDES, {"tech_stack": "typescript"})
+    assert "docs/jira.md" not in excluded
+    assert "pytest_memory_guard.py" in excluded
+
+
+def test_given_file_project_removed_when_verifying_parity_then_it_is_not_missing(tmp_path):
+    """The old template shipped install.sh, the project has no copy, and Copier keeps it removed."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "kept.txt").write_text("changed\n")
+    porcelain = " M kept.txt\n"
+    template_paths = {"kept.txt", ".githooks/install.sh"}
+    error = _verify_update_parity(tmp_path, porcelain, template_paths, set())
+    assert error is not None and ".githooks/install.sh" in error
+    assert (
+        _verify_update_parity(
+            tmp_path,
+            porcelain,
+            template_paths,
+            set(),
+            previous_template_paths={"kept.txt", ".githooks/install.sh"},
+        )
+        is None
+    )
+
+
+def test_given_file_project_still_has_when_copier_leaves_it_unchanged_then_parity_still_fails(tmp_path):
+    """Only a file the project removed is forgiven; one it has but Copier skipped is still missing."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "kept.txt").write_text("changed\n")
+    (tmp_path / "other.txt").write_text("not touched\n")
+    error = _verify_update_parity(
+        tmp_path,
+        " M kept.txt\n",
+        {"kept.txt", "other.txt"},
+        set(),
+        previous_template_paths={"kept.txt", "other.txt"},
+    )
+    assert error is not None and "other.txt" in error
 
 
 def test_do_update_pushfail(tmp_path):

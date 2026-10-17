@@ -120,6 +120,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai copier-update` parity no longer reports a file as missing when Copier legitimately leaves it
+  out: a path the template excludes for the project's answers (the python-only `pytest_memory_guard.py`
+  for a TypeScript project, now rendered with the answers and the question defaults), or a file the old
+  template shipped that the project has removed. A file Copier skipped that the project still has keeps
+  failing. Adds the `jinja2` dependency for the exclusion rendering.
 - `ai copier-update` no longer reports a file Copier added inside a new directory as missing from
   the update. `git status --porcelain` collapsed a wholly new directory to one `?? dir/` entry, so
   the template parity check failed every project the first time a template added a directory
