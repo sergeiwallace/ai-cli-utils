@@ -942,20 +942,30 @@ def test_given_inspection_when_written_then_json_represents_text_binary_and_dele
     }
 
 
-def test_update_one_isolated_leaves_worktree_on_conflict(tmp_path):
-    """On conflict, the temp worktree is left in place (only the stale-clear cleanup runs)."""
+def test_given_verified_conflict_anchor_when_isolated_update_ends_then_cleanup_runs(tmp_path):
+    """A current-run conflict is cleaned up only after its recovery anchor exists."""
     _make_answers(tmp_path)
     ok = MagicMock(returncode=0, stdout="", stderr="")
-    with patch("ai_cli.copier_update._repo_root", return_value=tmp_path):
-        with patch("ai_cli.copier_update.subprocess.run", return_value=ok):
-            with patch("ai_cli.copier_update._cleanup_worktree") as mclean:
-                with patch(
-                    "ai_cli.copier_update._do_update_in_worktree",
-                    return_value=("conflict", ["a.py"]),
-                ):
-                    status, _ = _update_one_isolated(tmp_path, "/usr/bin/copier")
+    events = []
+    ref = "refs/backup/2026-01-01/copier-update/myproject-abcdef0"
+
+    def anchor(*args):
+        events.append("anchor verified")
+        return ref, "abcdef0"
+
+    with (
+        patch("ai_cli.copier_update._repo_root", return_value=tmp_path),
+        patch("ai_cli.copier_update.subprocess.run", return_value=ok),
+        patch("ai_cli.copier_update._cleanup_worktree", side_effect=lambda *args: events.append("cleanup")),
+        patch("ai_cli.copier_update._anchor_failed_update", side_effect=anchor),
+        patch("ai_cli.copier_update._check_recovery_target"),
+        patch("ai_cli.copier_update._file_recovery_issue") as issue,
+        patch("ai_cli.copier_update._do_update_in_worktree", return_value=("conflict", ["a.py"])),
+    ):
+        status, _ = _update_one_isolated(tmp_path, "/usr/bin/copier")
     assert status == "conflict"
-    assert mclean.call_count == 1
+    assert events == ["cleanup", "anchor verified", "cleanup"]
+    issue.assert_called_once_with(tmp_path, ref, ["a.py"], "previous..abcdef0")
 
 
 def test_run_isolated_mixed_results(tmp_path, capsys):
