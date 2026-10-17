@@ -28,7 +28,7 @@ delegation_provenance:
 | Authoritative raw entry | Coverage and disposition |
 |---|---|
 | A001 (original ask) | The identity, visibility and renaming questions are answered in [Findings](#findings) sections 1 to 3. The state detection the restart gates need (idle, background work, compaction, context %, the update notice) is in section 4. The probe is in [Recommended probe](#recommended-probe). The restart mechanism, gates, triggers and rollout are planned in the linked plan doc, not here. |
-| A002 (follow-up) | Out of scope for this doc. Its feedback report, issue filing and issue comments concern the mobile app prompt box, and its delegation instructions concern how the work was handed off. |
+| A002 (follow-up) | Requests feedback, issue filing and appropriate related-issue comments for the Remote Control/discovery defect described in A001, plus delegation and goal activation. Delivery receipts are tracked in the linked plan's T-06; they are not established by this research. |
 
 **Status:** complete
 
