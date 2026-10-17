@@ -36,6 +36,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import jinja2
 import yaml
 
 from . import output as _out
@@ -87,6 +88,7 @@ class TemplateChanges:
     skip_if_exists: set[str]
     deleted_paths: set[str]
     excluded_on_update: set[str] = field(default_factory=set)
+    previous_paths: set[str] = field(default_factory=set)
 
 
 def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
@@ -355,26 +357,47 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
     return path.removesuffix(".jinja")
 
 
-def _excluded_on_update(config: dict[str, object]) -> set[str]:
-    """Return static paths whose Copier exclusion is guaranteed during updates."""
+def _question_defaults(config: dict[str, object]) -> dict[str, object]:
+    """Literal defaults of the template's questions, so an answer the project never stored still renders."""
+    defaults: dict[str, object] = {}
+    for name, spec in config.items():
+        if name.startswith("_") or not isinstance(spec, dict) or "default" not in spec:
+            continue
+        default = spec["default"]
+        if isinstance(default, str) and ("{{" in default or "{%" in default):
+            continue
+        defaults[name] = default
+    return defaults
+
+
+def _excluded_on_update(config: dict[str, object], answers: dict[str, object] | None = None) -> set[str]:
+    """Return the paths Copier excludes on an update, rendered with the project's answers.
+
+    An exclusion such as ``{% if 'python' not in tech_stack %}pytest_memory_guard.py{% endif %}`` drops
+    the file for a TypeScript project, so a template change to it can never land there. An entry that
+    cannot be rendered (an answer is unknown) or is a glob is left out, so parity stays strict for it.
+    """
     exclusions = config.get("_exclude", [])
     if not isinstance(exclusions, list):
         return set()
+    context = {**_question_defaults(config), **(answers or {}), "_copier_operation": "update"}
+    environment = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
     result = set()
     for exclusion in exclusions:
         if not isinstance(exclusion, str):
             continue
-        if "_copier_operation != 'copy'" not in exclusion and '_copier_operation != "copy"' not in exclusion:
+        try:
+            path = environment.from_string(exclusion).render(**context).strip()
+        except jinja2.TemplateError:
             continue
-        if not (exclusion.startswith("{% if ") and exclusion.endswith("{% endif %}")):
-            continue
-        path = exclusion.split("%}", 1)[1].removesuffix("{% endif %}")
-        if "{{" not in path and "{%" not in path:
+        if path and not any(char in path for char in "*?[!"):
             result.add(path.removesuffix(".jinja"))
     return result
 
 
-def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
+def _template_diff(
+    source: str, previous_commit: str, answers: dict[str, object] | None = None
+) -> TemplateChanges | None:
     """Return the template changes Copier should apply from previous_commit to HEAD."""
     source_path = Path(source)
     with tempfile.TemporaryDirectory(prefix="ai-copier-template-") as temporary_dir:
@@ -407,7 +430,14 @@ def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
             env=_git_env(),
             check=False,
         )
-    if result.returncode != 0 or head_files.returncode != 0:
+        previous_files = subprocess.run(
+            ["git", "-C", str(template_dir), "ls-tree", "-r", "--name-only", previous_commit],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+    if result.returncode != 0 or head_files.returncode != 0 or previous_files.returncode != 0:
         return None
     paths, hunks = _parse_diff_hunks(result.stdout)
     rendered_paths = {
@@ -430,7 +460,19 @@ def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
         for path in (skip_if_exists_raw if isinstance(skip_if_exists_raw, list) else [])
         if isinstance(path, str) and "{{" not in path and "{%" not in path
     }
-    return TemplateChanges(rendered_paths, rendered_hunks, skip_if_exists, deleted_paths, _excluded_on_update(config))
+    previous_paths = {
+        rendered_path
+        for path in previous_files.stdout.splitlines()
+        if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+    }
+    return TemplateChanges(
+        rendered_paths,
+        rendered_hunks,
+        skip_if_exists,
+        deleted_paths,
+        _excluded_on_update(config, answers),
+        previous_paths,
+    )
 
 
 def _verify_update_parity(
@@ -441,6 +483,7 @@ def _verify_update_parity(
     skip_if_exists: set[str] | None = None,
     deleted_template_paths: set[str] | None = None,
     excluded_on_update: set[str] | None = None,
+    previous_template_paths: set[str] | None = None,
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
@@ -462,6 +505,13 @@ def _verify_update_parity(
         if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     )
     ignored_paths.update(excluded_on_update)
+    # A file the old template shipped and the project no longer has was removed on purpose, and
+    # Copier keeps a removed file removed, so a later template change to it is not a missing file.
+    ignored_paths.update(
+        path
+        for path in previous_template_paths or set()
+        if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+    )
     expected_paths = {
         path for path in template_paths if path not in {"copier.yml", "copier.yaml"} and not path.startswith(".copier-")
     }
@@ -526,7 +576,7 @@ def _run_copier_update(
     previous_commit = answers_before.get("_commit")
     if source is None or not isinstance(previous_commit, str) or not previous_commit:
         return "could not resolve Copier source and previous template commit", None, None
-    template_changes = _template_diff(source, previous_commit)
+    template_changes = _template_diff(source, previous_commit, answers_before)
     if template_changes is None:
         return "could not inspect template diff for parity verification", None, None
 
@@ -793,6 +843,7 @@ def _do_update_in_worktree(
         template_changes.skip_if_exists,
         template_changes.deleted_paths,
         template_changes.excluded_on_update,
+        template_changes.previous_paths,
     )
     if parity_error is not None:
         return "parityfail", parity_error
@@ -1193,6 +1244,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
                 template_changes.skip_if_exists,
                 template_changes.deleted_paths,
                 template_changes.excluded_on_update,
+                template_changes.previous_paths,
             )
             if parity_error is not None:
                 _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED")
