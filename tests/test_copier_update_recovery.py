@@ -60,6 +60,9 @@ def recovery_project(tmp_path):
     _git(template, "rm", "removed.txt")
     _git(template, "commit", "-qam", "Update template")
     current = _git(template, "rev-parse", "HEAD").stdout.strip()
+    template_origin = tmp_path / "template-origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(template), str(template_origin))
+    _git(template, "remote", "add", "origin", str(template_origin))
     # Copy only local Git objects; the entry point never needs a network remote.
     _git(project, "fetch", "-q", str(template), current)
     return project, previous, current
