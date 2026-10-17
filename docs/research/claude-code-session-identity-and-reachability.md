@@ -28,7 +28,7 @@ delegation_provenance:
 | Authoritative raw entry | Coverage and disposition |
 |---|---|
 | A001 (original ask) | The identity, visibility and renaming questions are answered in [Findings](#findings) sections 1 to 3. The state detection the restart gates need (idle, background work, compaction, context %, the update notice) is in section 4. The probe is in [Recommended probe](#recommended-probe). The restart mechanism, gates, triggers and rollout are planned in the linked plan doc, not here. |
-| A002 (follow-up) | Requests feedback, issue filing and appropriate related-issue comments for the Remote Control/discovery defect described in A001, plus delegation and goal activation. Delivery receipts are tracked in the linked plan's T-06; they are not established by this research. |
+| A002 (follow-up) | Requests a feedback report, an issue and related-issue comments "for that", plus delegation and goal activation. The launching session read "that" as the mobile Code tab cutting off the original message (A002 opens "this is what i had left to say basically") and owns that delivery. Whether a separate report on the Remote Control discovery defect is also wanted is an open question for the operator, tracked in the linked plan's T-06. This research establishes no delivery. |
 
 **Status:** complete
 
@@ -204,6 +204,25 @@ That belief can be true while peers still miss the session, for reasons the evid
   row. [VERIFIABLE][^7]
 - A connected session can stop receiving mobile messages without any status change; one report
   says "no turn ever starts". [VERIFIABLE][^6]
+
+The pagination limit is not hypothetical. The bundle defines the notice
+`(session list too long to fetch completely — sessions beyond the first pages are missing from
+this listing)` beside the peer-listing function. On the same host on 2026-10-17, another session
+whose Remote Control was connected ran `ListAgents` and got 999 rows plus "885 more not shown",
+followed by that notice. Nearly all rows were offline Remote Control registrations under
+generated names of the form `<host>-<adjective>-<noun>`; the live sessions appeared near the top
+under their own titles. A `SendMessage` reply in the same session warned that a same-named
+session beyond the searched pages would not be found. [VERIFIABLE][^9] (bundle string, local
+observation) [HEURISTIC] (the row counts were relayed from that session and not re-measured
+here, because a headless `ListAgents` on this host lists only local socket peers and a fresh
+Remote Control registration to reproduce it would add one more stale row)
+
+Two consequences follow. A peer can miss a live session only because hundreds of stale rows
+push it past the pages fetched, so a remote listing that carries the truncation notice proves
+nothing about absence and must count as `UNKNOWN`. The local view (`claude agents --json`, the
+socket peers) is not paginated this way and stays exact. Pruning or renaming the stale rows is
+outside this research; the related open issue that wires orphaned-bridge cleanup into the
+launcher is the place for it. [INFERENCE]
 
 The `/rc` status screen therefore cannot be the reachability test. It reports the local side of
 a connection whose failure modes are on the server side. [INFERENCE] (from the four causes
