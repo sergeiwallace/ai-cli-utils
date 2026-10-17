@@ -426,6 +426,16 @@ def test_given_check_when_cli_then_no_action(world, flag):
     assert not restart.state_paths(world.session)[2].exists()
 
 
+def test_given_locked_session_when_checked_then_all_gate_verdicts_reported(world):
+    with restart.session_lock(world.session):
+        code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 1 and report["reason"] == "refused"
+    assert report["gates"]["lock"] == "locked"
+    assert report["gates"]["cooldown"] == "UNKNOWN"
+    assert report["gates"]["failure-fence"] == "UNKNOWN"
+    assert not world.signals and not world.injected
+
+
 def test_given_cooldown_when_second_restart_then_refusal(world):
     world.settings["restart_session"]["cooldown_seconds"] = 3600
     outcome = world.cli("-X", SESSION_ID)

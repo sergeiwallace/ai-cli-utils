@@ -819,6 +819,7 @@ def _check(record: dict, settings: dict, commands: dict) -> dict:
         gates["context"] = exc.reason
     session, _ = _pane(record)
     _, result_path, request_path = state_paths(session)
+    gates.update({"lock": "UNKNOWN", "cooldown": "UNKNOWN", "failure-fence": "UNKNOWN"})
     try:
         with session_lock(session):
             gates["lock"] = "PASS"
