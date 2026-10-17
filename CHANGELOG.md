@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Validated `[restart_session]` settings for safe session restarts, with a default
   context threshold of 20 percent and configurable idle, uptime and cooldown gates.
+- A guarded restart engine validates process identity, background work and Remote
+  Control activation, owns a per-session OS lock, and records durable restart pins
+  and verification results. Unknown evidence refuses an action.
 
 - `ai iterm2 restore --startup` now opens the default arrangement on a cold start, when no
   selected session survived the iTerm2 restart, before it fills the arrangement's idle panes.
