@@ -26,6 +26,7 @@ does not require a caller-managed cleanup step or leave resources behind.
 from __future__ import annotations
 
 import base64
+import fnmatch
 import functools
 import json
 import os
@@ -34,7 +35,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import jinja2
 import yaml
@@ -477,6 +478,23 @@ def _template_diff(
     )
 
 
+def _matches_skip_pattern(path: str, patterns: set[str]) -> bool:
+    """Whether a template path is covered by a ``_skip_if_exists`` entry, the way Copier reads it.
+
+    Entries are gitignore-style: one without a slash matches a name at any depth (``README.md``
+    covers ``docs/audits/README.md``), one with a slash matches the whole path.
+    """
+    parts = PurePosixPath(path).parts
+    for pattern in patterns:
+        anchored = pattern.strip("/")
+        if "/" in anchored:
+            if fnmatch.fnmatchcase(path, anchored):
+                return True
+        elif any(fnmatch.fnmatchcase(part, anchored) for part in parts):
+            return True
+    return False
+
+
 def _verify_update_parity(
     project_dir: Path,
     porcelain: str,
@@ -498,8 +516,9 @@ def _verify_update_parity(
     excluded_on_update = excluded_on_update or set()
     ignored_paths = {
         path
-        for path in skip_if_exists
-        if any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+        for path in {*skip_if_exists, *template_paths}
+        if _matches_skip_pattern(path, skip_if_exists)
+        and any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     }
     ignored_paths.update(
         path

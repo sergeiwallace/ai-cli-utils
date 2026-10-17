@@ -203,6 +203,56 @@ def test_given_existing_skip_if_exists_path_when_verifying_parity_then_accepts_c
     )
 
 
+def test_given_nameless_skip_entry_when_a_nested_file_exists_then_parity_accepts_copier_omission(tmp_path):
+    """``README.md`` in _skip_if_exists covers a README at any depth, as Copier reads it."""
+    (tmp_path / "docs" / "audits").mkdir(parents=True)
+    (tmp_path / "docs" / "audits" / "README.md").write_text("project text\n")
+    _init_git_repo(tmp_path)
+
+    assert (
+        _verify_update_parity(
+            tmp_path,
+            "",
+            {"docs/audits/README.md"},
+            {("docs/audits/README.md", ("old",), ("new",))},
+            skip_if_exists={"README.md"},
+        )
+        is None
+    )
+
+
+def test_given_nameless_skip_entry_when_the_nested_file_is_absent_then_parity_still_reports_it(tmp_path):
+    (tmp_path / ".keep").write_text("keep\n")
+    _init_git_repo(tmp_path)
+
+    error = _verify_update_parity(
+        tmp_path,
+        "",
+        {"docs/audits/README.md"},
+        {("docs/audits/README.md", ("old",), ("new",))},
+        skip_if_exists={"README.md"},
+    )
+    assert error is not None and "docs/audits/README.md" in error
+
+
+def test_given_slash_skip_entry_then_it_matches_the_whole_path_only(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text("project text\n")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "notes.md").write_text("project text\n")
+    _init_git_repo(tmp_path)
+
+    error = _verify_update_parity(
+        tmp_path,
+        "",
+        {"docs/notes.md", "other/notes.md"},
+        set(),
+        skip_if_exists={"docs/*.md"},
+    )
+    assert error is not None
+    assert "other/notes.md" in error and "docs/notes.md" not in error
+
+
 def test_given_already_absent_template_deletion_when_verifying_parity_then_accepts_convergence(tmp_path):
     """A deletion already reflected downstream is not an omitted update."""
     (tmp_path / ".keep").write_text("keep\n")
