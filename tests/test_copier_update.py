@@ -925,28 +925,28 @@ def test_given_ssh_template_source_when_host_has_no_ssh_access_then_it_is_read_o
     """The framework host authenticates over HTTPS; a stored git@github.com source must still resolve."""
     _reachable_source.cache_clear()
     run, calls = _probe_runner(ssh_reachable=False)
-    answers = {"_src_path": "git@github.com:sergeiwallace/project-template.git"}
+    answers = {"_src_path": "git@github.com:example-org/example-template.git"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
         resolved = _resolve_copier_source(tmp_path, answers)
         again = _resolve_copier_source(tmp_path, answers)
-    assert resolved == again == "https://github.com/sergeiwallace/project-template.git"
+    assert resolved == again == "https://github.com/example-org/example-template.git"
     assert len(calls) == 1, "the reachability probe is cached per source"
 
 
 def test_given_ssh_template_source_when_host_has_ssh_access_then_the_stored_source_is_kept(tmp_path):
     _reachable_source.cache_clear()
     run, _ = _probe_runner(ssh_reachable=True)
-    answers = {"_src_path": "ssh://git@github.com/sergeiwallace/project-template"}
+    answers = {"_src_path": "ssh://git@github.com/example-org/example-template"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-        assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/sergeiwallace/project-template"
+        assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/example-org/example-template"
 
 
 def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
     _reachable_source.cache_clear()
     run, calls = _probe_runner(ssh_reachable=False)
-    answers = {"_src_path": "https://github.com/sergeiwallace/project-template"}
+    answers = {"_src_path": "https://github.com/example-org/example-template"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-        assert _resolve_copier_source(tmp_path, answers) == "https://github.com/sergeiwallace/project-template"
+        assert _resolve_copier_source(tmp_path, answers) == "https://github.com/example-org/example-template"
     assert calls == []
 
 
@@ -961,8 +961,8 @@ def test_given_file_mentioning_conflict_marker_mid_line_when_scanning_then_it_is
 def test_given_file_with_line_start_conflict_marker_when_scanning_then_it_is_a_conflict(tmp_path):
     conflicted = tmp_path / "conflicted.yaml"
     conflicted.write_text("a: 1\n<<<<<<< before updating\nb: 2\n=======\nb: 3\n>>>>>>> after updating\n")
-    assert _conflict_files(tmp_path, [str(conflicted)]) == [str(conflicted)]
-    assert _conflict_files(tmp_path) == [str(conflicted)]
+    assert [Path(p) for p in _conflict_files(tmp_path, [str(conflicted)])] == [conflicted]
+    assert [Path(p) for p in _conflict_files(tmp_path)] == [conflicted]
 
 
 _PYTHON_ONLY_EXCLUDES = {
