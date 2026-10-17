@@ -365,9 +365,14 @@ def _restore_arrangement(name: str, use_it2: bool) -> str:
     return f"arrangement: restored {name!r} with it2"
 
 
-def _arrangement_plan(name: str, settings: dict, startup: bool) -> str:
-    if startup:
-        return f"arrangement: {name!r} is opened by iTerm2 itself at startup; filling its panes"
+def _not_reopened(name: str, survivors: int) -> str:
+    sessions = f"{survivors} session{'s' if survivors != 1 else ''}"
+    return f"arrangement: {name!r} not opened: {sessions} survived the restart, so iTerm2 restored its windows"
+
+
+def _arrangement_plan(name: str, settings: dict, survivors: int) -> str:
+    if survivors:
+        return _not_reopened(name, survivors)
     if settings["use_it2"]:
         return f"arrangement: would restore {name!r} with it2"
     return f"arrangement: open it via {MENU_PATH} > {name}"
@@ -463,6 +468,10 @@ def restore(
     live = [r for r in snapshot if r.get("id") not in dead_ids]
     relaunchable = live + [r for r, _ in dead if r.get("id") in causes]
     selected, skipped = _select(relaunchable, settings, only)
+    # D-12 (c): at --startup the default arrangement opens only on a cold start. A session
+    # that survived means iTerm2's own restoration brought its windows back, and opening
+    # the arrangement on top would duplicate them.
+    survivors = sum(1 for e in selected if _session_registry._current_tty(e.record)) if startup else 0
     if settings["mode"] == "arrangement":
         skipped += [_Entry(e.record, "skipped", 'mode="arrangement"') for e in selected]
         selected = []
@@ -472,7 +481,7 @@ def restore(
     if previewing:
         entries, already_open = _placed(selected, settings, startup, echo)
         if wants_arrangement:
-            echo(_arrangement_plan(name, settings, startup))
+            echo(_arrangement_plan(name, settings, survivors))
         for entry in entries:
             command = _shell_command(entry.record, causes.get(entry.record.get("id")))
             echo(f"{entry.name}: would restore ({entry.detail}): {command}")
@@ -486,7 +495,9 @@ def restore(
         commit_sweep()
     _session_registry.remove(e.record.get("id") for e in filtered)
 
-    if wants_arrangement and not startup:
+    if wants_arrangement and survivors:
+        echo(_not_reopened(name, survivors))
+    elif wants_arrangement:
         echo(_restore_arrangement(name, settings["use_it2"]))
     entries, not_placed = _placed(selected, settings, startup, echo)
     for index, entry in enumerate(entries):

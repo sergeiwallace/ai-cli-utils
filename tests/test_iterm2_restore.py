@@ -443,7 +443,10 @@ def test_given_the_arrangement_flag_when_restoring_then_it_overrides_default_arr
     assert ("it2", "window arrange restore layout-a") not in machine.system.calls
 
 
-def test_given_startup_when_restoring_then_the_arrangement_is_not_reopened_and_its_idle_pane_is_filled(machine):
+def test_given_no_session_survived_when_restoring_at_startup_then_the_default_arrangement_opens_before_its_pane_is_filled(
+    machine,
+):
+    """D-12 (c): a cold start (nothing iTerm2 kept) gets the default arrangement's shape."""
     machine.config('on_startup = true\ndefault_arrangement = "layout-a"')
     machine.system.panes = {_IDLE: _pane(0, 3, 0, "U-NEW")}
     machine.sessions(_record("c-myproject-1", position=_pane(0, 3, 0, "U-GONE")))
@@ -451,11 +454,42 @@ def test_given_startup_when_restoring_then_the_arrangement_is_not_reopened_and_i
     code, out, _ = _restore("--startup")
 
     assert code == 0
-    assert "it2" not in machine.system.kinds()
+    assert "arrangement: restored 'layout-a' with it2" in out
+    kinds = machine.system.kinds()
+    assert kinds.index("it2") < kinds.index("write-pane")
+    assert ("it2", "window arrange restore layout-a") in machine.system.calls
     assert "c-myproject-1: restored (window 0 tab 3 pane 0)" in out
     ((where, script),) = machine.system.typed()
     assert where == _IDLE
     assert 'write text "cd /work/myproject && ai c 1"' in script
+
+
+def test_given_a_session_survived_when_restoring_at_startup_then_the_default_arrangement_is_not_opened(machine):
+    """D-12 (c): a warm restart keeps iTerm2's own restoration; the arrangement would duplicate it."""
+    machine.config('on_startup = true\ndefault_arrangement = "layout-a"')
+    machine.system.panes = {_LIVE_A: _pane(0, 0, 0, "U-LOCAL")}
+    machine.system.attached = {"c-myproject-1": _LIVE_A}
+    machine.sessions(_record("c-myproject-1", position=_pane(0, 0, 0, "U-LOCAL")))
+
+    code, out, _ = _restore("--startup")
+
+    assert code == 0
+    assert "it2" not in machine.system.kinds()
+    assert ("arrangement: 'layout-a' not opened: 1 session survived the restart, so iTerm2 restored its windows") in out
+    assert machine.system.typed() == []
+
+
+def test_given_no_session_survived_when_previewing_a_startup_restore_then_it_says_the_arrangement_would_open(machine):
+    machine.config('on_startup = true\ndefault_arrangement = "layout-a"')
+    machine.system.panes = {_IDLE: _pane(0, 3, 0, "U-NEW")}
+    machine.sessions(_record("c-myproject-1", position=_pane(0, 3, 0, "U-GONE")))
+
+    code, out, _ = _restore("--startup", "--dry-run")
+
+    assert code == 0
+    assert "arrangement: would restore 'layout-a' with it2" in out
+    assert "it2" not in machine.system.kinds()
+    assert machine.system.typed() == []
 
 
 def test_given_startup_when_iterm2_has_no_window_yet_then_it_waits_for_the_arrangement_then_fills(machine):

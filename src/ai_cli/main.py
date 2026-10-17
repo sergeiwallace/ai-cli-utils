@@ -5697,7 +5697,7 @@ def cmd_iterm2_sessions(prune, probe_remote, refresh, as_json, adopt, dry_run, r
     "-s",
     "--startup",
     is_flag=True,
-    help="Run as iTerm2's startup hook: honour on_startup, never open the arrangement, never ask",
+    help="Run as iTerm2's startup hook: honour on_startup, open the arrangement only if no session survived, never ask",
 )
 @click.option("-d", "--dry-run", is_flag=True, help="Print the plan; change neither iTerm2 nor the registry")
 @click.option("-o", "--only", type=click.Choice(["local", "remote"]), default=None, help="Restore one kind only")
