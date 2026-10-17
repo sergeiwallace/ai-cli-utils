@@ -677,7 +677,7 @@ def test_given_drifted_template_hunk_when_copier_exits_cleanly_then_update_fails
         calls.append(command)
         if command[0] == "/usr/bin/copier":
             return MagicMock(returncode=0, stdout="", stderr="")
-        if command[-1:] == ["--porcelain"]:
+        if "status" in command and "--porcelain" in command:
             return MagicMock(returncode=0, stdout=" M .copier-answers.yml\n", stderr="")
         if "commit" in command:
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -765,6 +765,54 @@ def test_given_applied_template_hunk_when_verifying_parity_then_update_commits(t
     def run(command, **kwargs):
         if command[0] == "/usr/bin/copier":
             (project / "message.txt").write_text("updated\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+
+    assert (status, detail) == ("ok", "")
+
+
+def test_given_template_file_in_new_directory_when_verifying_parity_then_update_commits(tmp_path):
+    """A file Copier adds inside a directory the project lacks counts as changed.
+
+    `git status --porcelain` collapses a wholly new directory to one `?? dir/` entry, which
+    made the parity check report the file missing for every project the first time a template
+    added a directory (`.claude/skills/lint-md/SKILL.md`, fleet-wide).
+    """
+    template = tmp_path / "template"
+    project = tmp_path / "project"
+    for directory in (template, project):
+        directory.mkdir()
+        subprocess.run(["git", "init"], cwd=directory, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=directory, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=directory, check=True)
+
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "skills" / "lint").mkdir(parents=True)
+    (template / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+    subprocess.run(["git", "add", "skills"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "add a skill"], cwd=template, check=True, capture_output=True)
+
+    (project / "message.txt").write_text("original\n")
+    (project / ".copier-answers.yml").write_text(
+        f"_src_path: {template}\n_commit: {old_commit}\nfeature_enabled: true\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "initial project"], cwd=project, check=True, capture_output=True)
+
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "skills" / "lint").mkdir(parents=True)
+            (project / "skills" / "lint" / "SKILL.md").write_text("skill\n")
             return MagicMock(returncode=0, stdout="", stderr="")
         return real_run(command, **kwargs)
 

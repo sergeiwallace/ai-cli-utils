@@ -407,7 +407,7 @@ def _verify_update_parity(
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
-        str(Path(path).relative_to(project_dir))
+        Path(path).relative_to(project_dir).as_posix()
         for path in _changed_paths(porcelain, project_dir)
         if Path(path).is_relative_to(project_dir)
     }
@@ -718,8 +718,10 @@ def _do_update_in_worktree(
         # A copier invocation failure is retried as transient; the isolated target is discarded.
         return "failed", update_error
 
+    # --untracked-files=all: a wholly new directory otherwise collapses to one `?? dir/` entry and the
+    # parity check reports every file Copier added inside it as missing.
     status = subprocess.run(
-        ["git", "-C", str(wt_dir), "status", "--porcelain"],
+        ["git", "-C", str(wt_dir), "status", "--porcelain", "--untracked-files=all"],
         capture_output=True,
         text=True,
         env=_git_env(),
@@ -1115,7 +1117,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             continue
 
         porcelain = subprocess.run(
-            ["git", "-C", str(project_dir), "status", "--porcelain"],
+            ["git", "-C", str(project_dir), "status", "--porcelain", "--untracked-files=all"],
             capture_output=True,
             text=True,
             env=_git_env(),
