@@ -221,6 +221,15 @@ The restart gates need five observations. Each has a primary signal and a corrob
 | Compaction | Latest transcript `{"type":"system","subtype":"compact_boundary"}` with `compactMetadata.trigger` and `postTokens` | `isCompactSummary:true` record; `PostCompact` and `SessionStart` (`source: "compact"`) hooks | treat as not compacted |
 | Context % | Latest main-chain `usage`: `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` over the model's window | A statusline cache for that `session_id`, if fresh | treat as over threshold |
 
+Each finished main-chain turn ends with a record
+`{"type":"system","subtype":"turn_duration","pendingBackgroundAgentCount":N,...}`. On the test
+host a session that was between turns, with a background subagent still running, wrote
+`pendingBackgroundAgentCount: 1` on three consecutive turn ends, so a registry `idle` does not
+exclude a running subagent. A background shell shows up as a tool result carrying
+`backgroundTaskId`, and its completion as a later `task-notification` record. Transcripts reach
+hundreds of megabytes (780 MB on one test-host session), so a gate reads them from the end, never
+from the start. [VERIFIABLE][^9] (local observation, a test-host transcript)
+
 Evidence for the table: the registry statuses and transcript records are local observations on
 the test host [VERIFIABLE]; hook payloads are in the hooks reference [VERIFIABLE][^3]; the
 context formula is in the statusline reference, which also warns that usage can be null right
@@ -237,9 +246,16 @@ observation) `tmux capture-pane -p` of the pane footer corroborates it when the 
 rendered. [HEURISTIC]
 
 The footer of an idle pane on the test host showed no Remote Control indicator at all and ended
-with `← 1 agent`. Footer text is a rendering, clipped by width, and its meaning is not documented,
-so it is corroboration only and never a gate on its own. [VERIFIABLE][^9] (local observation)
+with `← 1 agent`. A session started fresh for this research showed the same `← 1 agent` with
+nothing running, so that text is a navigation hint, not a count of running agents. The welcome
+header of the fresh session ended with `· /rc` while its registry carried a `bridgeSessionId`.
+Footer text is a rendering, clipped by width, and its meaning is not documented, so it is
+corroboration only and never a gate on its own. [VERIFIABLE][^9] (local observation)
 [INFERENCE]
+
+A freshly launched session read `status: "busy"` for its first minute because the launcher
+submitted a startup prompt and the session started working it. "Freshly started" therefore does
+not mean idle. [VERIFIABLE][^9] (local observation, the disposable test session)
 
 Process inspection has a namespace trap. A sandboxed observer saw the registry PIDs as dead
 because its `/proc` was a different PID namespace, which the registry's `pidDomain` field
@@ -256,6 +272,13 @@ The custom title survives because the transcript keeps `customTitle` and the sup
 `--name` again. Whether the remote title follows depends on the bridge registration that resume
 gets back, which nobody observed here because nothing was restarted. [VERIFIABLE][^5]
 [NO SOURCE] (post-restart remote title on 2.1.302 not observed)
+
+On the test host the user setting `remoteControlAtStartup` is `true`, so every relaunch starts
+Remote Control without a typed `/rc`. [VERIFIABLE][^9] (local observation, key name and boolean
+value from `~/.claude/settings.json`) The operator's private harness also runs a SessionStart
+hook that, after a relaunch, types one resume line into the session naming the classified exit
+cause. A restart therefore ends with the session taking a turn, so "idle after the restart" is
+not a verification step. [VERIFIABLE][^9] (local observation, harness launch-resume source)
 
 So a restart command must verify after the fact: the new process is in the same pane, has the
 same `sessionId`, has `name` equal to the expected title with `nameSource: "user"`, and has a
