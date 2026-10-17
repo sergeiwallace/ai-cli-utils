@@ -555,7 +555,9 @@ mobile visibility.
 - Trigger 2: the research probe establishes `UNREACHABLE`: a positively failed local socket or
   complete listing, null bridge id, wrong expected user title, or a fresh, complete remote
   observer listing that establishes absence or wrong identity/title. A process-namespace or
-  probe-access failure is `UNKNOWN`, never proof that the target is unreachable.
+  probe-access failure is `UNKNOWN`, never proof that the target is unreachable, and so is a remote
+  listing that carries the "sessions beyond the first pages are missing" notice (research doc
+  section 3: stale registrations can push a live session past the fetched pages).
 - `LOCAL_ONLY` and `UNKNOWN` never trigger, regardless of duration. Timers schedule probes and
   enforce cooldown; elapsed time does not establish a connectivity failure.
 - A trigger only proposes a restart. Every prerequisite and gate still applies, including
@@ -648,7 +650,7 @@ the caller's lock must not disappear while its helper acts.
 
 <a id="d-10"></a>
 
-#### D-10: Making sure the relaunch resumes the same conversation — corrected safety contract
+#### D-10: Making sure the relaunch resumes the same conversation — ✅ Resolved by Opus orchestrator
 
 **Context.** The supervisor resolves mutable titles again on every launch. A pre-check followed
 by a post-launch UUID comparison cannot prevent a newer same-title conversation from running.
@@ -703,15 +705,21 @@ operator recovery validates the target and clears the request. Cooldown expiry c
 
 ##### Recommendation
 
-> **Decision:** (a) Required correction to preserve the same conversation; compatibility must be proven before rollout.
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Opus orchestrator — (a) Prepare the replacement child and pin the exact conversation through launch
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
+<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-10; decision-topic=resume-target-safety; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=a requested restart pins the exact conversation id through the prepared child launch with no title or fresh fallback; applicability=scope:restart-session; outcome-id=pinned-child-launch; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+Audit round 3 showed that the pre-check of the coordinator's earlier option, now (b), leaves a
+window in which a newer same-title transcript can run, and that the running supervisor already
+re-reads its stable child script on every child launch, so pinning needs no supervisor change and
+does not reopen N-1. The coordinator adopts (a) on that evidence.
 
 Use (a) to restore the existing same-conversation safety requirement. Its compatibility cost is
 covered by AC-5.7: exercise the pre-feature supervisor with its old child and a refreshed stable
 script, then prove the first restart uses the pin without a pane/supervisor replacement. The
 running supervisor's stable-child reload is reused, not changed. Unsupported versions remain
 reported rollout blockers requiring a separately reviewed migration, not silently skipped
-successes. This specification correction does not certify any running host as compatible.
+successes. Each running host is certified compatible by AC-5.7 before its rollout.
 
 ---
 
@@ -962,15 +970,19 @@ T-04b, private harness repository, its own PR:
 Owner: the launching session, with delivery tracked here even when its report lives elsewhere.
 No receipt is asserted by this plan. This fix pass prepares the specification only; it sends no
 feedback, issues or comments. Execution uses the reporting workflow requested in A002 and records
-route-specific outcomes for the Remote Control/discovery defect, not an unrelated prompt-box bug.
+route-specific outcomes. The subject of A002's "for that" is ambiguous: the launching session
+read it as the mobile Code tab cutting off the original message (A002 opens "this is what i had
+left to say basically") and owns that delivery; whether the operator also wants a report on the
+Remote Control discovery defect is an open question returned to the operator, not decided here.
 
-- [ ] AC-6.1 When preparing the report, the owner shall describe stale Remote Control registration,
-  missing peer/mobile discovery and unexpected titles, record reproduction evidence and probe
-  limits, and link the report from the epic after privacy review.
+- [ ] AC-6.1 When preparing a report, the owner shall describe the defect the operator confirms it
+  is for (the mobile Code tab cutting off a message, the Remote Control discovery defect, or
+  both), record reproduction evidence and probe limits, and link the report from the epic after
+  privacy review.
 - [ ] AC-6.2 When using SendFeedback, the owner shall record its actual submission outcome and
   receipt; locally queued feedback remains pending until confirmed, not delivered.
 - [ ] AC-6.3 When filing the public issue, the owner shall record the issue URL and confirm that
-  the filed content concerns this Remote Control/discovery defect; a draft is not delivery.
+  the filed content concerns that same defect; a draft is not delivery.
 - [ ] AC-6.4 When reviewing related issues, the owner shall record related-issue search results
   and relevance, then link each appropriate comment's URL; if no comment is appropriate, it shall
   record the evidence and reason rather than post unrelated comments.
