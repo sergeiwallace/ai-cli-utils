@@ -67,6 +67,11 @@ def recovery_project(tmp_path):
 
 def _run(project, current, *, mode="conflict", inject=None, file_issue=None):
     """Substitute Copier with a real merge, retaining actual unmerged index stages."""
+    if mode in ("clean-push", "dirty-push"):
+        # Push rejection needs an otherwise valid update. Restore the template's
+        # old content before the run so the parity check accepts its exact hunk.
+        (project / "message.txt").write_text("original\n")
+        _git(project, "commit", "-qam", "Use template content before update")
     real_run = subprocess.run
     observed = {}
 
