@@ -85,6 +85,18 @@ delegation_provenance:
   - [R3 Appendix: Files Read and Commands](#r3-appendix-files-read-and-commands)
   - [R3 Receipt Payload Projection](#r3-receipt-payload-projection)
 
+- [Round 4 — Verification](#round-4--verification)
+  - [R4 Summary](#r4-summary)
+  - [R4.1 Round 1 IC/JA/DV verification](#r41-round-1-icjadv-verification)
+  - [R4.2 Round 1 F-N verification](#r42-round-1-f-n-verification)
+  - [R4.3 AD-N decisions verification](#r43-ad-n-decisions-verification)
+  - [R4.4 NEW issues surfaced](#r44-new-issues-surfaced)
+  - [R4 Resolution Pass](#r4-resolution-pass)
+  - [R4 Verification Matrix](#r4-verification-matrix)
+  - [R4 Recommendations and Sign-Off](#r4-recommendations-and-sign-off)
+  - [R4 Appendix: Files Read and Commands](#r4-appendix-files-read-and-commands)
+  - [R4 Receipt Payload Projection](#r4-receipt-payload-projection)
+
 ## Scope
 
 ### Founding ask and alignment
@@ -108,16 +120,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 3` |
+| Stage cursor | `doc-audit done: audit-converged; round 4` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** audit-converged — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 3 | sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb | 0 | 0 | 0 | round1:F-2, round1:JA-2, round1:JA-3 | verify | no |
+| doc-audit | 4 | sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4 | 0 | 0 | 0 | — | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -140,6 +152,7 @@ ledger-version: 1
 | 2026-10-17 | 1 | Independent Codex audit: 0 CRITICAL, 6 MAJOR open-blocking, 1 MINOR deferred until live-test preparation; no target edits. |
 | 2026-10-17 | 2 | Codex verification: six prior MAJOR and one MINOR fixed in plan; one new MAJOR protocol-deployment gap (N-1); eight reproduced checks; no target edits. |
 | 2026-10-17 | 3 | Codex verification: N-1 fixed; F-2, JA-2 and JA-3 reopened after regressions; seven reproduced checks; no target edits. |
+| 2026-10-17 | 4 | Codex verification: all three backlog findings fixed in the specification; zero new findings; nine contract checks passed. D-11, implementation and delivery evidence remain pending; no target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -886,3 +899,104 @@ Every command below was run. PASS means the stated observation reproduced, not t
 ````json
 {"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@4331be07","subsystem":"session-restart","violation_kind":"missing-prerequisite"},"disposition":"fixed","finding_key":"round2:N-1","fingerprint":"fp:restart-session:existing-supervisor-bootstrap","id":"N-1","reachable_behavior":"A live session running the pre-feature supervisor refuses the newly mandatory acknowledgement after package installation because no compatible upgrade path is specified.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"open-blocking","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"open-blocking","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"open-blocking","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["round2:N-1"],"diff_since":"sha256:9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57","diff_summary":{"changed":true,"from":"sha256:9eaff989d3edb98845a1388575ff7a03c9555cd9b579276fe62a2002d5d34f57","to":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb"},"kind":"verify"},"source_event_id":"round-3-audit"}
 ````
+
+## Round 4 — Verification
+
+**Round 4 auditor:** Codex; concrete runtime model identifier not exposed.
+
+**Date:** 2026-10-17
+
+**Scope:** Verify the three supplied backlog findings and regressions introduced by their fixes. Append-only verification; the plan and source remain unchanged.
+
+### R4 Summary
+
+All three backlog findings are **fixed in the specification**. No new CRITICAL, MAJOR or MINOR findings were established. This does not certify implementation, host compatibility, feedback delivery or reachability. D-11 remains pending and explicitly blocks visibility completion, plan sign-off and epic closure.
+
+HEAD is `8b9b5877`. The plan SHA-256 is `d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4`, matching the driver. The plan is clean; the audit carrier is modified and two driver lock files are untracked. Both complete raw entries were reread and checked against capture commit `e869869b929551fb4faa4e9c0584ac6a0a7803cb`: blob `bee6d633307dfebd3b496531813afbf335f3f9a3`, SHA-256 `0548b7e69f6e27353a1c56ce9b14c312ed19b3c2a3ddb3689a580640f8d9a9bf`; the resolved working copy matches those committed bytes. Local audit STUB/TEMPLATE remain absent; canonical copies under `~/projects/ai-harness/docs/audits/` supplied the format.
+
+All plan citations below refer to `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+### R4.1 Round 1 IC/JA/DV verification
+
+| ID | Disposition / verdict | Evidence and verification note |
+|---|---|---|
+| JA-2 | fixed / PASS — CONFIRMED | T-06:960-980 restores the correct Remote Control report, SendFeedback submission, filed issue and related-issue review/comment receipts. AC-6.2 says “locally queued feedback remains pending until confirmed, not delivered”; AC-6.5 blocks epic closure and requires explicit operator re-scope to drop a route. Coverage:45 no longer asserts outside-owner delivery. The delivery-contract assertion function passed. Actual submissions remain unverified, as the plan now states. |
+| JA-3 | fixed / PASS — CONFIRMED | Configuration:170-174 and AC-2.8:838-844 require non-zero `verification-incomplete` for missing/unknown peer evidence. AC-5.2:938 repeats that result; AC-5.5:943-950 requires independent SendMessage receipt/reply and mobile title/connection observations. D-11:768-774 says “D-11 blocks completion of the visibility requirement, plan sign-off and epic closure”. The visibility-contract function and peer/escalation assertions passed; local registration no longer substitutes for the missing surfaces. |
+
+### R4.2 Round 1 F-N verification
+
+| ID | Disposition / verdict | Evidence and verification note |
+|---|---|---|
+| F-2 | fixed / PASS — CONFIRMED | D-10:661-680 requires compatible-child preparation before action and a durable exact-UUID request checked before title resolution or prompt consumption. It states “No title lookup or fresh-conversation fallback is permitted for a requested restart” and “Cooldown expiry cannot clear it.” AC-2.15:860-866 and AC-2.18:874-878 require both launch branches, failure fencing and a newer same-title competitor test. AC-5.7:953-958 requires the first restart from a pre-feature supervisor without replacing the pane/supervisor. Resume-contract and pin/compatibility assertions passed. |
+
+The compatibility route is grounded in existing source: `src/ai_cli/session_script.py:649-661` opens the stable child path on each supervisor iteration; lines 1162-1169 detect a replaced script and request child reload; lines 1379-1381 return to the persistent supervisor after the agent exits. `src/ai_cli/main.py:1389-1397` uses atomic replacement, preserving the executing inode. These facts support the proposed route, but do not prove compatibility for any running version. The plan now requires that proof and refuses unknown versions. Current title-based launches at `session_script.py:1235-1271` still need the specified implementation change; their present behavior is not evidence that the revised plan is implemented.
+
+### R4.3 AD-N decisions verification
+
+No audit AD-N choice was selected or resolved in this round. Target D-10 specifies the safety correction and compatibility refusal; D-11 remains an operator decision. Its recommendation is explicitly not permission to ship narrowed visibility. No transition or re-scope is authorized by this audit.
+
+| Authoritative raw entry | Coverage and remaining limits |
+|---|---|
+| A001 | Command forms, strict idleness, configurable context gate, shared injection, positive triggers, both-host rollout and merge/sync/reap evidence remain specified. The exact-conversation contract is restored. Coverage:44 now labels assignment/handoff/delegation/goal execution unverified pending receipts. Peer/mobile completion remains gated by D-11; no execution or live visibility is inferred. |
+| A002 | T-06 retains all requested reporting routes and appropriate related-issue comments with route-specific receipts and a closure gate. Delegation and goal activation remain explicitly unverified. No delivery completion is claimed by this audit. |
+
+### R4.4 NEW issues surfaced
+
+None established in this verification scope. The unresolved D-11 choice and unexecuted implementation/delivery ACs remain explicit gates rather than newly discovered omissions.
+
+### R4 Resolution Pass
+
+| Item | Result | Remaining obligation |
+|---|---|---|
+| F-2 | Fixed in plan | Implement the pin and failure fence; execute AC-2.18 and the pre-feature compatibility test AC-5.7. |
+| JA-2 | Fixed in plan | Launching owner supplies the matching report, submission, issue and related-issue receipts before closure. |
+| JA-3 | Fixed in plan | Implement incomplete-peer results; obtain peer/message/mobile evidence and resolve D-11 before claiming completion. |
+
+No inline fixes, new audit decisions or major deferrals were applied. Stable original IDs and fingerprints are retained in the projection.
+
+### R4 Verification Matrix
+
+Commands were executed against the matched plan digest. PASS here verifies specification content, not runtime behavior. `P` denotes the plan path above. The Python check used `python3 -B`, parsed `tests/test_restart_plan_contract.py` with `ast`, compiled its undecorated assertion functions in memory, and called each with the current plan text; it did not run pytest or its fixtures.
+
+| Check | Command / method | Actual output / observation | Result |
+|---|---|---|---|
+| F-2 regression guard | Execute the existing resume-contract assertion function in memory | `PASS: test_given_restart_plan_when_resume_contract_checked_then_pin_and_existing_session_upgrade_are_required` | PASS |
+| JA-2 regression guard | Execute the existing delivery-contract assertion function in memory | `PASS: test_given_restart_plan_when_delivery_contract_checked_then_specific_receipts_gate_closure` | PASS |
+| JA-3 regression guard | Execute the existing visibility-contract assertion function in memory | `PASS: test_given_restart_plan_when_visibility_contract_checked_then_incomplete_evidence_cannot_pass` | PASS |
+| Pin and deployment details | Assert no fallback, retained fence, old-child identity, pre-feature supervisor and unknown-version refusal in P; read D-10/source paths above | `PASS: pin-failure-fence`; `PASS: compatible-upgrade`; supervisor opens stable child and old child returns to it | PASS |
+| Peer results and delivery details | Assert non-zero incomplete result, correlated evidence, queued-feedback pending and epic-closure gate in P | `PASS: peer-result`; `PASS: delivery-closure` | PASS |
+| Escalation and retained safety | Assert D-11 blocker, no age-only restart, message reply, shared lock, two-actor rollout blocker and activation refusal in P | `PASS: visibility-escalation`; `PASS: lock-and-activation-regression` | PASS |
+| Mechanical fidelity floor | `python3 -B ~/projects/ai-harness/scripts/far_fidelity.py check --doc P` | `0 finding(s)`; tool also says `founding ask: not read (no AI-resolved decision states a negation)` | PASS for mechanical check only; raw-ask comparison performed separately |
+| Region validation | `aido validate-doc P`; same command for the current audit carrier | Both `OK`, correct template versions, five regions each | PASS for pre-relay files only |
+
+**9/9 contract checks passed**, covering all three backlog findings plus six detailed/regression assertions. Snapshot hashes also matched. The assertions establish text coverage; they do not exercise a signal, lock race, supervisor migration or peer observer. Region validation does not check semantic completeness. The relayed additions require validation after application.
+
+### R4 Recommendations and Sign-Off
+
+No additional specification fix is required by the three supplied backlog findings. Keep the implementation and rollout gates intact. D-11 still blocks plan sign-off until supporting evidence or an explicit operator re-scope is recorded; a clear doc-audit backlog alone does not close it.
+
+**Already correct:** Exact-UUID selection covers prompt and no-prompt branches with retained failure fencing; feedback receipts are tracked for the correct defect; incomplete peer checks cannot report reachable success; independent message/mobile observations and D-11 remain required. Each is cited and reproduced above.
+
+**Anti-pattern:** A text regression test can pass without any runtime feature implementation. Likewise, an atomic script writer supports a migration design but does not certify deployed supervisors. Keep specification resolution separate from implementation acceptance and delivery receipts.
+
+- [x] Every supplied backlog finding verified with its stable identity and current disposition.
+- [x] Both committed raw ask entries compared with changed decisions and coverage rows.
+- [x] Nine contract checks and the mechanical/region checks executed; limits recorded.
+- [ ] Exact-UUID interleaving and pre-feature supervisor tests executed against the implementation.
+- [ ] D-11 resolved and required peer/message/mobile evidence recorded.
+- [ ] Feedback, orchestration and delivery receipts verified.
+- [ ] Relayed audit additions validated and owner sign-off recorded.
+
+### R4 Appendix: Files Read and Commands
+
+**Documents:** Full current plan, complete prior audit history, full linked research, both complete committed raw ask entries and their resolved working copy, AGENTS.md, CLAUDE.md and audit README. Canonical audit STUB/TEMPLATE and the design-doc workflow were read under `~/projects/ai-harness/docs/`. Research's A002 coverage now identifies Remote Control/discovery and T-06 correctly. External citations and host observations were not independently re-certified.
+
+**Code/tests:** `src/ai_cli/main.py:380-440,1380-1405,1790-1825`; `src/ai_cli/session_script.py:649-745,1145-1180,1215-1386`; full `tests/test_session_script_atomic_write.py` and `tests/test_restart_plan_contract.py`. Source inspection checked mutable title selection, both launch branches, atomic replacement, reload and return-to-supervisor behavior. The existing public-package naming issue already recorded in Round 2 is outside this revision's scope.
+
+**Commands:** `git status --short`; `git log -5 --oneline`; `git show --stat 7bbc0c11`; `git diff 8c536da8 HEAD -- P`; capture-commit `git show`/`git rev-parse` and in-memory SHA-256 checks; full document reads; `sed`/`rg` source and contract checks; the in-memory Python assertion pass; fidelity and validation commands in the matrix. No files were written, processes signalled, messages sent or remote state changed. No pytest suite or live restart ran.
+
+### R4 Receipt Payload Projection
+
+`````json
+{"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"incorrect-behavior"},"disposition":"fixed","finding_key":"round1:F-2","fingerprint":"fp:restart-session:uuid-unpinned","id":"F-2","reachable_behavior":"The supervisor can resume another same-title transcript or create a fresh conversation before verification fails.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"fixed","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-narrowed"},"disposition":"fixed","finding_key":"round1:JA-3","fingerprint":"fp:restart-session:observer-omitted","id":"JA-3","reachable_behavior":"A restart reports success while requested peer visibility can remain broken.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["round1:F-2","round1:JA-2","round1:JA-3"],"diff_since":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb","diff_summary":{"changed":true,"from":"sha256:bf41ec9c54129e10a069565e468702b4046ca89e558bea023bf0b5dbe1b252fb","to":"sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4"},"kind":"verify"},"source_event_id":"round-4-audit"}
+`````
