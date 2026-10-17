@@ -120,6 +120,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Isolated `ai copier-update` conflicts and semantic failures now save tracked,
+  conflicted and non-ignored untracked files in a verified
+  `refs/backup/<UTC date>/copier-update/<repo>-<template sha>` commit before removing
+  the temporary checkout and branch. Repeated failures comment on the repository's
+  existing recovery issue through Beads; new issues use `~/.claude/bin/bd-new`.
+  Failed backup verification keeps the checkout untouched and reports an error.
+  Rejected pushes retain their committed update in a clean checkout, backing up
+  any additional dirty content first. Start-of-run leftover protection is unchanged.
+
 - Remote mosh sessions share a VPN-state cache for the configured `vpn_poll_interval`,
   so concurrent tabs run one detection command per interval. Detection and cache locking
   run in worker threads to keep the transport event loop responsive.

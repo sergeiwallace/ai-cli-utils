@@ -6,9 +6,10 @@ Two modes:
   worktree off fresh ``origin/main``, run ``copier update`` there, commit, push
   ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
-  are actively working in a repo. The temp worktree is left in place only when there
-  are merge conflicts or the push fails (never clobbering a session's main tree), and
-  a later run keeps such a leftover rather than removing it.
+  are actively working in a repo. Conflicts and semantic failures are saved under
+  verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
+  A rejected push retains a clean checkout holding its unpushed commit. A later
+  run protects any leftover whose state cannot be proved disposable.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -36,6 +37,12 @@ from pathlib import Path
 import yaml
 
 from . import output as _out
+from .copier_recovery import (
+    _anchor_failed_update,
+    _check_recovery_target,
+    _clean_anchored_pushfail,
+    _file_recovery_issue,
+)
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 from .output import Tag
 
@@ -791,8 +798,9 @@ def _update_one_isolated(
 ) -> tuple[str, str | list[str] | DeliveredUpdate]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
-    On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is
-    left in place (detail carries the info needed to resolve it manually). A
+    On ok/nochange/failed the temp worktree is removed. Conflicts and semantic
+    failures are anchored and removed; rejected pushes retain a clean committed
+    checkout. Recovery failures keep the checkout and return ``recoveryfail``. A
     leftover from a prior run that is not provably disposable returns ``kept`` with
     its path and reason, and nothing is removed. When inspect=True, an ok result
     contains copied content before that cleanup.
@@ -863,7 +871,63 @@ def _update_one_isolated(
         assert isinstance(detail, DeliveredUpdate)
         detail = DeliveredUpdate(project_dir, detail.commit_hash, detail.changed_files)
 
-    # Only tear down the temp worktree when there is nothing left to hand off.
+    if status in ("conflict", "parityfail", "pushfail"):
+        dirty = _git_read(["-C", str(wt_dir), "status", "--porcelain"])
+        if dirty is None:
+            return "recoveryfail", f"{wt_dir}: backup anchor: could not inspect failed update; nothing removed"
+        # A rejected push may retain only an actual committed update ahead of the
+        # original base. Resolve HEAD in root, not in the linked checkout.
+        keep_commit = False
+        if status == "pushfail":
+            base_tip = _git_read(["-C", str(root), "rev-parse", base])
+            ahead = (
+                _git_read(["-C", str(wt_dir), "rev-list", "--count", f"{base_tip.strip()}..HEAD"]) if base_tip else None
+            )
+            if ahead is None or not ahead.strip().isdigit():
+                return "recoveryfail", f"{wt_dir}: could not verify unpushed commit; nothing removed"
+            keep_commit = int(ahead.strip()) > 0
+            if keep_commit and not dirty.strip():
+                return status, detail
+
+        try:
+            ref, template_commit = _anchor_failed_update(wt_dir, root.name, resolved_source)
+            _out.emit(Tag.COPIER, "update", f"    backup anchor: {ref}")
+            filing_error = None
+            if status in ("conflict", "parityfail"):
+                conflicts = detail if isinstance(detail, list) else []
+                try:
+                    _file_recovery_issue(root, ref, conflicts, f"{project_answers.get('_commit')}..{template_commit}")
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    filing_error = str(exc)
+            if keep_commit:
+                _clean_anchored_pushfail(root, wt_dir, branch, ref)
+            else:
+                _check_recovery_target(root, wt_dir, branch, ref)
+                _cleanup_worktree(root, wt_dir, branch)
+                remaining = _git_read(
+                    ["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"]
+                )
+                listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+                if (
+                    os.path.lexists(wt_dir)
+                    or remaining is None
+                    or remaining.strip()
+                    or listing is None
+                    or any(
+                        Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
+                        for line in listing.splitlines()
+                        if line.startswith("worktree ")
+                    )
+                ):
+                    raise RuntimeError(f"backup anchor {ref}: worktree or branch cleanup failed")
+            if filing_error:
+                return "recoveryfail", f"backup anchor {ref}: issue filing failed: {filing_error}"
+            if status == "pushfail" and not keep_commit:
+                return "recoveryfail", f"backup anchor {ref}: push failed without an unpushed commit; checkout removed"
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            return "recoveryfail", f"{wt_dir}: recovery failed: {exc}"
+
+    # Clean updates and transient failures retain their existing cleanup policy.
     if status in ("ok", "nochange", "failed"):
         _cleanup_worktree(root, wt_dir, branch)
 
@@ -966,14 +1030,16 @@ def _run_isolated(
         elif status == "conflict":
             assert isinstance(detail, list)  # conflict status returns list[str] of paths
             _out.cont(
-                Tag.COPIER, "update", f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:"
+                Tag.COPIER,
+                "update",
+                f"✗ CONFLICTS ({len(detail)} file(s)) — saved in backup anchor; see recovery issue:",
             )
             for rel in detail:
                 _out.emit(Tag.COPIER, "update", f"    conflict: {rel}")
             failed += 1
             has_partial_mutation = True
         elif status == "parityfail":
-            _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED — inspect the temp worktree before continuing")
+            _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED — saved in backup anchor; see recovery issue")
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
@@ -988,6 +1054,11 @@ def _run_isolated(
                 "update",
                 "✗ LEFTOVER KEPT — a prior run's temp worktree holds state; resolve or remove it, then re-run:",
             )
+            _out.emit(Tag.COPIER, "update", f"    {detail}")
+            failed += 1
+            has_partial_mutation = True
+        elif status == "recoveryfail":
+            _out.cont(Tag.COPIER, "update", "✗ RECOVERY FAILED — inspect the reported anchor or retained worktree")
             _out.emit(Tag.COPIER, "update", f"    {detail}")
             failed += 1
             has_partial_mutation = True
