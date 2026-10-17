@@ -116,8 +116,9 @@ also reports the selected template commit.
 - [x] `uv run pytest -q tests/test_copier_update.py tests/test_copier_update_recovery.py
   tests/test_copier_update_memory.py` — 93 passed.
 - [x] `uv run ruff check .` and `uv run ruff format --check .` — clean after the implementation.
-- [ ] The full repository suite was attempted but exceeded five minutes at 98% with failures spread
-  across unrelated session and process tests; it was interrupted at the task's requested time bound.
+- [ ] A full repository run attempted before the final fixture updates exceeded five minutes at 98%
+  and was interrupted at the task's requested time bound. It included local-source contract fixture
+  failures that were corrected afterward; the final complete full run was not repeated.
 
 ## Lessons Learned
 
