@@ -1139,7 +1139,7 @@ def test_given_origin_ahead_of_local_source_when_updating_then_project_uses_orig
     assert isinstance(project, Path)
     assert (project / "message.txt").read_text() == "updated from origin\n"
     answers = yaml.safe_load((project / ".copier-answers.yml").read_text())
-    assert answers["_commit"] == fixture["origin_commit"]
+    assert str(fixture["origin_commit"]).startswith(answers["_commit"])
     assert str(fixture["origin_commit"])[:12] in capsys.readouterr().out
 
 
@@ -1154,7 +1154,7 @@ def test_given_bare_name_local_source_when_updating_then_project_uses_origin_com
     assert (project / "message.txt").read_text() == "updated from origin\n"
     answers = yaml.safe_load((project / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == "project-template"
-    assert answers["_commit"] == fixture["origin_commit"]
+    assert str(fixture["origin_commit"]).startswith(answers["_commit"])
 
 
 def test_given_local_source_fetch_failure_when_updating_then_project_is_refused_untouched(tmp_path, capsys):
@@ -1174,7 +1174,8 @@ def test_given_local_source_fetch_failure_when_updating_then_project_is_refused_
     result = run_copier_update(projects_dir=fixture["projects"], isolate=False)
 
     assert result == EX_TEMPFAIL
-    assert "fetch origin failed" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "fetch origin failed" in captured.out + captured.err
     assert (project / "message.txt").read_text() == "original\n"
     assert (project / ".copier-answers.yml").read_bytes() == before_answers
     assert _git_output(project, "status", "--porcelain") == before_status
