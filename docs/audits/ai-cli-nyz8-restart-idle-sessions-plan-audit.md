@@ -106,6 +106,16 @@ delegation_provenance:
   - [R6 Recommendations and Sign-Off](#r6-recommendations-and-sign-off)
   - [R6 Appendix: Files Read and Commands](#r6-appendix-files-read-and-commands)
   - [R6 Receipt Payload Projection](#r6-receipt-payload-projection)
+- [Round 7 — Verification](#round-7--verification)
+  - [R7 Summary](#r7-summary)
+  - [R7 Backlog Verification](#r7-backlog-verification)
+  - [R7 AD-N and Ask Alignment Verification](#r7-ad-n-and-ask-alignment-verification)
+  - [R7 NEW Issues](#r7-new-issues)
+  - [R7 Resolution Pass](#r7-resolution-pass)
+  - [R7 Verification Matrix](#r7-verification-matrix)
+  - [R7 Recommendations and Sign-Off](#r7-recommendations-and-sign-off)
+  - [R7 Appendix: Files Read and Commands](#r7-appendix-files-read-and-commands)
+  - [R7 Receipt Payload Projection](#r7-receipt-payload-projection)
 
 ## Scope
 
@@ -130,16 +140,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 6` |
+| Stage cursor | `doc-audit done: audit-converged; round 7` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** audit-converged — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 6 | sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba | 0 | 0 | 0 | round1:JA-2 | verify | no |
+| doc-audit | 7 | sha256:11ceb2837e79a4d6caf05b7d2123a7efdc544a0c6752b5b4e4f2ccdcd3392743 | 0 | 0 | 0 | — | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -164,6 +174,7 @@ ledger-version: 1
 | 2026-10-17 | 3 | Codex verification: N-1 fixed; F-2, JA-2 and JA-3 reopened after regressions; seven reproduced checks; no target edits. |
 | 2026-10-17 | 4 | Codex verification: all three backlog findings fixed in the specification; zero new findings; nine contract checks passed. D-11, implementation and delivery evidence remain pending; no target edits. |
 | 2026-10-17 | 6 | Codex verification: post-convergence artifact reviewed; JA-2 reopened as MAJOR ask drift. Eight verification checks reproduced; no new finding IDs or target edits. |
+| 2026-10-17 | 7 | Codex verification: JA-2 fixed in specification; zero new findings. Eight contract cases passed and four negative controls rejected the prior wording. D-11 and implementation/delivery evidence remain pending; no target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -1125,3 +1136,94 @@ All eight checks reproduced; three existing contract functions and six additiona
 ``````json
 {"findings":[{"cluster":{"invariant_id":null,"spec_version":null,"subsystem":"audit-loop","violation_kind":"artifact-drift"},"disposition":"fixed","finding_key":"boundary:5:artifact-drift","fingerprint":"boundary-artifact-drift:sha256:d2fb461881b4268c963dafb0d170131d464169f35ef0b0e7562b77297795e0a4","id":"artifact-drift","reachable_behavior":"The artifact changed after content convergence and cannot be authorized for handoff.","severity":"major","submitted_severity":"major"},{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"open-blocking","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["boundary:5:artifact-drift"],"diff_since":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","diff_summary":{"changed":false,"from":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","to":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba"},"kind":"verify"},"source_event_id":"round-6-audit"}
 ``````
+
+## Round 7 — Verification
+
+**Round 7 auditor:** Codex; concrete runtime model identifier not exposed.
+
+**Date:** 2026-10-17
+
+**Scope:** Verify JA-2 and the subject-specific reporting revision; check for regressions introduced by that revision. No target edits.
+
+### R7 Summary
+
+JA-2 is **fixed in the specification — CONFIRMED**. No new CRITICAL, MAJOR or MINOR finding was established. Required Remote Control reporting is restored without renewed confirmation or substitution by prompt-cutoff work. Actual delivery remains unverified. D-11 still blocks visibility completion, plan sign-off and epic closure; this round authorizes no transition or re-scope.
+
+HEAD is `c62a2fd7`. Plan SHA-256 `11ceb2837e79a4d6caf05b7d2123a7efdc544a0c6752b5b4e4f2ccdcd3392743` matches the driver. The plan is clean; the audit carrier is modified and two driver lock files are untracked. Both complete raw entries were read from capture commit `e869869b929551fb4faa4e9c0584ac6a0a7803cb`: blob `bee6d633307dfebd3b496531813afbf335f3f9a3`, SHA-256 `0548b7e69f6e27353a1c56ce9b14c312ed19b3c2a3ddb3689a580640f8d9a9bf`; resolved working-copy bytes match. Local audit STUB/TEMPLATE remain absent; canonical copies under `~/projects/ai-harness/docs/audits/` supplied the format.
+
+### R7 Backlog Verification
+
+All plan citations refer to `docs/plans/ai-cli-nyz8-restart-idle-sessions-plan.md`.
+
+| ID | Disposition / verdict | Evidence and verification note |
+|---|---|---|
+| JA-2 | fixed / PASS — CONFIRMED | T-06:975-978 says “A002 pre-approves this reporting. Remote Control reporting does not require reconfirmation.” AC-6.1–6.4:980-993 each require the “Remote Control discovery defect”; AC-6.4 expressly requires posting appropriate comments linking to the filed issue. AC-6.5:994-997 retains the closure gate and explicit operator re-scope requirement. Research Founding Ask Coverage:31 agrees. Four strengthened subject checks pass against this revision and fail against the previous text. |
+
+The actual diff from `e59ef470` changes only T-06 in the plan, the linked research's A002 coverage row and the contract tests. No previously resolved safety contract is removed by that diff. Earlier specification dispositions remain unchanged; missing runtime or delivery receipts are not proof of a new specification omission.
+
+### R7 AD-N and Ask Alignment Verification
+
+No audit AD-N choice was selected or resolved. Restoring the explicit reporting requirement needs no new design decision. Target D-11 remains PENDING; its completion gate is retained at plan:778-784. No operator re-scope appears in the empty Approval Log:1052-1057.
+
+| Authoritative raw entry | Coverage and limits |
+|---|---|
+| A001 | Command forms, verified idleness, configurable context gate, shared injection, positive triggers, exact-conversation restart and both-host rollout remain specified. Assignment/delegation/goal execution and live behavior remain unverified. D-11 retains the visibility escalation. |
+| A002 | T-06 restores the requested reporting workflow, SendFeedback, public GitHub issue and related-issue searches/appropriate linking comments for the Remote Control defect. Plan:977-978 excludes reconfirmation and substitution. Coverage:44 and T-06 retain unverified orchestration/delivery status rather than asserting completion. |
+
+### R7 NEW Issues
+
+None established in the changed scope. No findings are invented to fill the verification matrix.
+
+### R7 Resolution Pass
+
+| Item | Result | Remaining obligation |
+|---|---|---|
+| JA-2 | Fixed in plan and linked coverage | Launching owner records subject-matching report, submission, issue and related-issue outcomes before epic closure. |
+
+No inline fixes, major deferrals or external delivery actions were performed.
+
+### R7 Verification Matrix
+
+Commands were executed against the matched digest. `P` denotes the plan path above. Contract checks used `python3 -B`, AST-extracted undecorated functions from `tests/test_restart_plan_contract.py`, and in-memory calls with current plan text; parameter cases were supplied explicitly. This does not run pytest, fixtures or runtime implementation.
+
+| Check | Executed method | Actual output / observation | Result |
+|---|---|---|---|
+| Snapshot and authority | In-memory SHA-256; capture-commit `git show`/`rev-parse`; compare resolved bytes | Plan and ask digests/blob match; `ask_working_copy_matches: True` | PASS |
+| Existing safety/delivery guards | Execute resume, delivery and visibility assertion functions | Three named `PASS` results | PASS for text contracts |
+| JA-2 subject per route | Execute strengthened reporting-route function for AC-6.1, 6.2, 6.3 and 6.4 | Four named `PASS` results | PASS |
+| JA-2 substitution guard | Execute reporting-scope function against plan and linked research | One named `PASS` result | PASS |
+| Negative control | Invoke the four route checks against plan bytes from `e59ef470` | `NEGATIVE CONTROL rejected old AC-6.1` through `AC-6.4` | PASS: prior regression detected |
+| Delivery details | Additional explicit subject, closure, no-confirmation and linking-comment assertions | `PASS: feedback-explicit-subject`; `delivery-closure-retained`; `no-renewed-confirmation`; `linking-comments-required` | PASS |
+| Visibility completion gate | Assert D-11's explicit completion blocker | `PASS: visibility-escalation-retained` | PASS |
+| Mechanical fidelity | `python3 -B ~/projects/ai-harness/scripts/far_fidelity.py check --doc P` | `0 finding(s)`; `founding ask: canonical_root_json` | PASS for mechanical check |
+| Region validation | `aido validate-doc P`; same command for current audit carrier | Both `OK`, five regions each | PASS for pre-relay files |
+
+Eight contract cases, four negative controls and five additional assertions behaved as expected. These checks verify one backlog finding and related regressions, not five distinct findings. No live restart, process signal, message, submission or pytest suite ran. External research claims and deployed systems were not independently re-certified. Relayed audit additions require validation after application.
+
+### R7 Recommendations and Sign-Off
+
+No further specification correction is required for JA-2. Preserve D-11 and the implementation/rollout/delivery gates. A fixed doc-audit finding does not establish delivery or approve plan sign-off.
+
+**Already correct:** Every reporting route names the Remote Control discovery defect (AC-6.1–6.4); linking comments are an explicit action (AC-6.4); queued feedback and drafts remain pending (AC-6.2/6.3); missing route receipts block closure (AC-6.5). Each was read and checked above.
+
+**Anti-pattern:** Merely mentioning the expected subject can let an optional-subject requirement pass. Negative controls against the actual regressed revision demonstrate that the strengthened checks catch this instance; text checks still cannot certify real delivery.
+
+- [x] Supplied backlog finding verified with stable identity and disposition.
+- [x] Both complete committed raw entries compared with the revised requirement.
+- [x] Verification matrix and negative controls executed; limits recorded.
+- [ ] D-11 resolved and required implementation/rollout/delivery evidence verified.
+- [ ] Relayed additions validated and owner sign-off recorded.
+
+### R7 Appendix: Files Read and Commands
+
+**Documents:** Current plan including Decisions, Feedback Rounds and Approval Log; audit scope and prior findings/resolution history, especially Rounds 4 and 6; both complete committed raw entries; linked research's identity/probe findings and revised coverage; AGENTS.md, CLAUDE.md and audit README; canonical audit STUB/TEMPLATE and design-doc workflow under `~/projects/ai-harness/docs/`.
+
+**Tests/history:** Full `tests/test_restart_plan_contract.py`; `git diff e59ef470 HEAD --` the plan, research and contract-test paths. No production implementation changed in this revision; this pass does not re-certify the source baseline inspected in earlier rounds.
+
+**Commands:** `git status --short`; `git log -5 --oneline`; bounded/full `cat`, `sed`, `nl` and `rg` document reads; committed-ask lookup and the in-memory Python checks described above; fidelity and validation commands in the matrix. No files were written. Generated Status Summary remains driver-owned; current state is projected below.
+
+### R7 Receipt Payload Projection
+
+```````json
+{"findings":[{"cluster":{"invariant_id":null,"spec_version":"restart-session-plan@2737748b","subsystem":"session-restart","violation_kind":"ask-drift-dropped"},"disposition":"fixed","finding_key":"round1:JA-2","fingerprint":"fp:restart-session:feedback-excluded","id":"JA-2","reachable_behavior":"Completing the plan leaves requested follow-up feedback and issue delivery unaccounted for.","severity":"major","submitted_severity":"major"}],"major_nonblocking_justifications":{},"new_by_severity":{"critical":0,"major":0,"minor":0},"scope":{"backlog":["round1:JA-2"],"diff_since":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","diff_summary":{"changed":true,"from":"sha256:e38ae35b826dde1c16ac772a2eee55e9418c1e85c9968ee20da6d3d11b320eba","to":"sha256:11ceb2837e79a4d6caf05b7d2123a7efdc544a0c6752b5b4e4f2ccdcd3392743"},"kind":"verify"},"source_event_id":"round-7-audit"}
+```````
