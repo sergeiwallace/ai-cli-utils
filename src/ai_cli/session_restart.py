@@ -450,7 +450,7 @@ def _compatible(source: str, expected: str) -> bool:
     return normalize(source) == normalize(expected)
 
 
-def managed_gate(record: dict, settings: dict) -> Managed:
+def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = None) -> Managed:
     from .main import _engine_script_from_meta
 
     try:
@@ -500,10 +500,21 @@ def managed_gate(record: dict, settings: dict) -> Managed:
             raise Refusal("supervisor-upgrade-required", "metadata identity differs")
         expected = _engine_script_from_meta(metadata)
         source = script.read_text(encoding="utf-8")  # inspect the target before replacement
-        if not all(
-            _compatible(text, expected)
-            for text in (source, _script_source(supervisor, script), _script_source(child.pid, script))
-        ):
+        if prepared is not None and sys.platform == "darwin":
+            # Atomic replacement preserves the old executing inode. macOS cannot
+            # reread it through procfs, so retain this lock owner's pre-refresh
+            # program proof only while both loaded processes have the same births.
+            if (supervisor, child.pid, _identity(supervisor), _identity(child.pid)) != (
+                prepared.supervisor_pid,
+                prepared.child_pid,
+                prepared.supervisor_identity,
+                prepared.child_identity,
+            ):
+                raise Refusal("identity", "prepared program ownership changed")
+            running_sources = [prepared.source]
+        else:
+            running_sources = [_script_source(supervisor, script), _script_source(child.pid, script)]
+        if not all(_compatible(text, expected) for text in (source, *running_sources)):
             raise Refusal("supervisor-upgrade-required", "unknown running supervisor or child program")
         return Managed(
             session,
@@ -524,8 +535,10 @@ def managed_gate(record: dict, settings: dict) -> Managed:
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 
-def assess(record: dict, settings: dict, commands: dict, *, pre_step: bool = False) -> Managed:
-    managed = managed_gate(record, settings)
+def assess(
+    record: dict, settings: dict, commands: dict, *, pre_step: bool = False, prepared: Managed | None = None
+) -> Managed:
+    managed = managed_gate(record, settings, prepared=prepared)
     cwd = Path(record.get("cwd", "")).resolve()
     if not record.get("cwd") or not cwd.is_dir():
         raise Refusal("not-managed", "working directory unavailable")
@@ -914,7 +927,7 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
     _atomic_json(request_path, request)
     # Every dangerous action is below the same final guards, under the lock.
     current = _fresh(record_path, record)
-    latest = assess(current, settings, commands)
+    latest = assess(current, settings, commands, prepared=managed)
     if (latest.supervisor_identity, latest.child_identity, latest.agent_identity, latest.generation) != (
         managed.supervisor_identity,
         managed.child_identity,
@@ -938,7 +951,7 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
     except OSError:
         # Failed signal access is the fallback, never a group/tree signal.
         current = _fresh(record_path, record)
-        assess(current, settings, commands)
+        assess(current, settings, commands, prepared=managed)
         _validate_request(request, session, child=False)
         if not commands.get("inject"):
             raise Refusal("no-mechanism") from None
@@ -951,7 +964,7 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
     if not probe.has_ended(record["pid"]):
         # Escalate only to that same birth identity, after all gates still pass.
         current = _fresh(record_path, record)
-        assess(current, settings, commands)
+        assess(current, settings, commands, prepared=managed)
         _validate_request(request, session, child=False)
         if probe.start_time_match(record["pid"], record.get("procStart")) is not StartTimeMatch.MATCH:
             raise Refusal("identity")

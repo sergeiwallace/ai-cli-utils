@@ -664,6 +664,34 @@ def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monke
     assert not world.signals
 
 
+@pytest.mark.parametrize("changed_birth", [False, True])
+def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fenced(world, monkeypatch, changed_birth):
+    monkeypatch.setattr(restart.sys, "platform", "darwin")
+    world.script.write_text(world.script.read_text() + "\n")
+    reads = []
+
+    def running_source(pid, path):
+        reads.append(pid)
+        if len(reads) > 2:
+            raise restart.Refusal("supervisor-upgrade-required", "old inode unavailable after refresh")
+        return path.read_text()
+
+    monkeypatch.setattr(restart, "_script_source", running_source)
+    original = main._write_launch_script_if_changed
+
+    def refresh(path, text):
+        original(path, text)
+        if changed_birth:
+            world.identities[102] = ProcessIdentity("fake", 999)
+
+    monkeypatch.setattr(main, "_write_launch_script_if_changed", refresh)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert reads == [103, 102]
+    assert code == (1 if changed_birth else 0)
+    assert report["reason"] == ("identity" if changed_birth else "restarted")
+    assert bool(world.signals) is not changed_birth
+
+
 @pytest.mark.parametrize("kind", ["unknown", "override", "auto", "manual", "old-auto", "null", "cached", "extended"])
 def test_given_context_evidence_when_checked_then_conservative_window(world, kind):
     if kind in ("unknown", "override"):
