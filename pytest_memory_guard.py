@@ -17,6 +17,7 @@ _MEMORY_LIMIT_ENV = "PYTEST_WORKER_MEMORY_LIMIT_MB"
 _UNCONSTRAINED_MEMORY_MARKER = "unconstrained_memory"
 _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE = "_pytest_memory_guard_linux_address_space_limit"
 _WATCHDOG_ATTRIBUTE = "_pytest_memory_guard_watchdog"
+_WATCHDOG_LIMIT_ATTRIBUTE = "_pytest_memory_guard_watchdog_limit"
 
 
 def _memory_limit_bytes() -> int:
@@ -70,7 +71,7 @@ def _start_rss_watchdog(limit_bytes: int) -> subprocess.Popen[bytes]:
 def pytest_configure(config: Any) -> None:
     config.addinivalue_line(
         "markers",
-        f"{_UNCONSTRAINED_MEMORY_MARKER}: run this test without the Linux RLIMIT_AS guard",
+        f"{_UNCONSTRAINED_MEMORY_MARKER}: run this test without the memory guard",
     )
     if not _is_test_process(config):
         return
@@ -94,14 +95,32 @@ def pytest_configure(config: Any) -> None:
     # macOS processes map a very large shared address space, making RLIMIT_AS
     # unusable as an RSS ceiling. Windows has no resource module. A separate
     # psutil process remains schedulable if a runaway test monopolizes the GIL.
+    setattr(config, _WATCHDOG_LIMIT_ATTRIBUTE, limit_bytes)
     setattr(config, _WATCHDOG_ATTRIBUTE, _start_rss_watchdog(limit_bytes))
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
-    """Lift the Linux soft limit only while a marked test executes."""
+    """Lift this process's memory limit only while a marked test executes."""
+    if item.get_closest_marker(_UNCONSTRAINED_MEMORY_MARKER) is None:
+        yield
+        return
+
+    watchdog_limit = getattr(item.config, _WATCHDOG_LIMIT_ATTRIBUTE, None)
+    if watchdog_limit is not None:
+        _stop_rss_watchdog(item.config)
+        try:
+            yield
+        finally:
+            setattr(
+                item.config,
+                _WATCHDOG_ATTRIBUTE,
+                _start_rss_watchdog(watchdog_limit),
+            )
+        return
+
     limit_bytes = getattr(item.config, _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE, None)
-    if limit_bytes is None or item.get_closest_marker(_UNCONSTRAINED_MEMORY_MARKER) is None:
+    if limit_bytes is None:
         yield
         return
 
@@ -115,8 +134,9 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
         resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, hard_limit))
 
 
-def pytest_unconfigure(config: Any) -> None:
+def _stop_rss_watchdog(config: Any) -> None:
     watchdog = getattr(config, _WATCHDOG_ATTRIBUTE, None)
+    setattr(config, _WATCHDOG_ATTRIBUTE, None)
     if watchdog is None or watchdog.poll() is not None:
         return
     watchdog.terminate()
@@ -125,6 +145,10 @@ def pytest_unconfigure(config: Any) -> None:
     except subprocess.TimeoutExpired:
         watchdog.kill()
         watchdog.wait(timeout=2)
+
+
+def pytest_unconfigure(config: Any) -> None:
+    _stop_rss_watchdog(config)
 
 
 def _watch_parent(parent_pid: int, limit_bytes: int) -> int:
