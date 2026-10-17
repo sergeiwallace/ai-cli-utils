@@ -26,6 +26,7 @@ does not require a caller-managed cleanup step or leave resources behind.
 from __future__ import annotations
 
 import base64
+import fnmatch
 import functools
 import json
 import os
@@ -34,7 +35,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import jinja2
 import yaml
@@ -477,6 +478,23 @@ def _template_diff(
     )
 
 
+def _matches_skip_pattern(path: str, patterns: set[str]) -> bool:
+    """Whether a template path is covered by a ``_skip_if_exists`` entry, the way Copier reads it.
+
+    Entries are gitignore-style: one without a slash matches a name at any depth (``README.md``
+    covers ``docs/audits/README.md``), one with a slash matches the whole path.
+    """
+    parts = PurePosixPath(path).parts
+    for pattern in patterns:
+        anchored = pattern.strip("/")
+        if "/" in anchored:
+            if fnmatch.fnmatchcase(path, anchored):
+                return True
+        elif any(fnmatch.fnmatchcase(part, anchored) for part in parts):
+            return True
+    return False
+
+
 def _verify_update_parity(
     project_dir: Path,
     porcelain: str,
@@ -498,8 +516,9 @@ def _verify_update_parity(
     excluded_on_update = excluded_on_update or set()
     ignored_paths = {
         path
-        for path in skip_if_exists
-        if any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+        for path in {*skip_if_exists, *template_paths}
+        if _matches_skip_pattern(path, skip_if_exists)
+        and any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     }
     ignored_paths.update(
         path
@@ -564,6 +583,18 @@ def _verify_update_parity(
     return None
 
 
+def _hide_answers_change(project_dir: Path, answers_file: Path, hide: bool = True) -> bool:
+    """Set or clear skip-worktree on the answers file; return whether the flag change took."""
+    flag = "--skip-worktree" if hide else "--no-skip-worktree"
+    result = subprocess.run(
+        ["git", "-C", str(project_dir), "update-index", flag, "--", str(answers_file)],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _run_copier_update(
     project_dir: Path, copier_bin: str, resolved_source: str | None = None
 ) -> tuple[str | None, dict[str, object] | None, TemplateChanges | None]:
@@ -585,11 +616,15 @@ def _run_copier_update(
     original_source = original_answers["_src_path"]
     update_answers = original_answers.copy()
     update_answers["_src_path"] = source
-    if update_answers == original_answers:
-        answers_file.write_text(original_text)
-    else:
+    source_rewritten = update_answers != original_answers
+    if source_rewritten:
         answers_file.write_text(yaml.safe_dump(update_answers, sort_keys=False, allow_unicode=True))
+    else:
+        answers_file.write_text(original_text)
     failure: str | None = None
+    # Copier refuses to update a dirty destination, and the source rewrite above is a change in
+    # the checkout, so hide it from ``git status`` for the length of the run.
+    hidden = source_rewritten and _hide_answers_change(project_dir, answers_file)
     try:
         result = subprocess.run(
             [
@@ -614,6 +649,8 @@ def _run_copier_update(
             if answers_after is None or not _answer_values_preserved(original_answers, answers_after):
                 failure = "stored Copier answers were not preserved"
     finally:
+        if hidden:
+            _hide_answers_change(project_dir, answers_file, hide=False)
         if not _restore_answer_source(answers_file, original_source, original_answers, original_text):
             failure = "could not restore stored Copier source"
     if failure is not None:
