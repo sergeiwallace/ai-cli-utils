@@ -407,7 +407,7 @@ def _verify_update_parity(
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
-        str(Path(path).relative_to(project_dir))
+        Path(path).relative_to(project_dir).as_posix()
         for path in _changed_paths(porcelain, project_dir)
         if Path(path).is_relative_to(project_dir)
     }

@@ -124,7 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the update. `git status --porcelain` collapsed a wholly new directory to one `?? dir/` entry, so
   the template parity check failed every project the first time a template added a directory
   (all eight fleet projects on `.claude/skills/lint-md/SKILL.md`). Status is now read with
-  `--untracked-files=all` on both the isolated and the `--no-isolate` path.
+  `--untracked-files=all` on both the isolated and the `--no-isolate` path. Changed paths are
+  compared as POSIX paths, so a file in a subdirectory also matches on Windows.
 
 - Isolated `ai copier-update` conflicts and semantic failures now save tracked,
   conflicted and non-ignored untracked files in a verified
