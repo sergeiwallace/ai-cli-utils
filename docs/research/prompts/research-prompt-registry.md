@@ -129,8 +129,9 @@ Rationale → evidence check → tag.
 Hard constraint (overrides all formatting preferences): never invent a citation
 to satisfy a formatting instruction. Accuracy > completeness.
 
-Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
-NEVER generate binary images.
+For primary/showcase diagrams, use the `archify` skill by default
+(`docs/research/<slug>.html`); a lightweight inline diagram may still use Mermaid.js syntax
+(```mermaid blocks). Format math using LaTeX. No ASCII art diagrams or binary images.
 </grounding_instructions>
 ```
 
