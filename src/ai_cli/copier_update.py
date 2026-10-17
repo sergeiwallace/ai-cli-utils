@@ -245,7 +245,9 @@ def _resolve_copier_source(project_dir: Path, answers: dict[str, object]) -> str
         return _reachable_source(source)
     source_path = Path(source)
     if not source_path.is_absolute():
-        source_path = project_dir / source_path
+        # A bare name such as ``project-template`` names a sibling checkout in the fleet layout.
+        candidates = [project_dir / source_path, project_dir.parent / source_path]
+        source_path = next((path for path in candidates if path.exists()), candidates[0])
     return str(source_path.resolve())
 
 

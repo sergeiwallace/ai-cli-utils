@@ -941,6 +941,22 @@ def test_given_ssh_template_source_when_host_has_ssh_access_then_the_stored_sour
         assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/example-org/example-template"
 
 
+def test_given_bare_template_name_when_only_a_sibling_checkout_exists_then_the_sibling_is_used(tmp_path):
+    project = tmp_path / "app"
+    project.mkdir()
+    sibling = tmp_path / "project-template"
+    sibling.mkdir()
+    assert _resolve_copier_source(project, {"_src_path": "project-template"}) == str(sibling.resolve())
+
+
+def test_given_bare_template_name_when_a_nested_copy_exists_then_the_nested_copy_wins(tmp_path):
+    project = tmp_path / "app"
+    nested = project / "project-template"
+    nested.mkdir(parents=True)
+    (tmp_path / "project-template").mkdir()
+    assert _resolve_copier_source(project, {"_src_path": "project-template"}) == str(nested.resolve())
+
+
 def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
     _reachable_source.cache_clear()
     run, calls = _probe_runner(ssh_reachable=False)
