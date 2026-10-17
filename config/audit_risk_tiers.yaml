@@ -1,4 +1,6 @@
 # Policy, not code: values are calibrated from fleet receipt telemetry.
+research:
+  research_refine_cap: 3
 low:
   audit_budget: 4
   cluster_recurrence_limit: 2
