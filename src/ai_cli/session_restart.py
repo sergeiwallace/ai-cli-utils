@@ -49,8 +49,12 @@ MODEL_WINDOWS = {
     "claude-opus-4-7": 200_000,
     "claude-opus-4-8": 200_000,
     "claude-sonnet-4-6": 200_000,
+    "claude-opus-5-5": 200_000,
+    "claude-fable-5-1": 200_000,
     "claude-sonnet-5": 200_000,
+    "claude-sonnet-5-5": 200_000,
     "claude-haiku-4-5": 200_000,
+    "claude-haiku-5-5": 200_000,
 }
 
 

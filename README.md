@@ -206,8 +206,12 @@ no history size limit. Temporary ledger files are removed after the scan.
 
 Context must be at or below 20 percent, or within one assistant turn of an automatic
 compaction. Missing usage and unknown model windows do not count as zero. Configure
-`context_window_tokens` for an unrecognised or extended model window. A manual
-compaction passes only through the percentage gate.
+`context_window_tokens` for an unrecognised or extended model window. Known
+models use a 200,000-token base window and a `[1m]` model tag selects 1,000,000;
+a session running the larger window without the tag therefore reads as fuller
+than it is, which can only make the gate refuse or compact sooner. The status
+line assumes 1,000,000 for the Claude 5 family, so its percentage can differ
+from this gate's. A manual compaction passes only through the percentage gate.
 
 When context fails and `pre_step = true`, the configured injection adapter submits
 `/save-state` once to the target pane. The command waits up to
