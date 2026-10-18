@@ -1363,6 +1363,11 @@ def local_verdict(record: dict, *, details: list[str] | None = None) -> str:
             if isinstance(row, dict)
             and (row.get("sessionId") == record["sessionId"] or row.get("name") == record["name"])
         ]
+        if not matches and any(
+            not any(isinstance(row.get(key), str) and row[key] for key in ("sessionId", "name")) for row in rows
+        ):
+            # A row with neither identity field could be the target's own row, so absence is not proved.
+            return "UNKNOWN"
         for row in matches:
             invalid = [key for key in ("sessionId", "name") if not isinstance(row.get(key), str) or not row[key]]
             if type(row.get("pid")) is not int or row["pid"] <= 1:

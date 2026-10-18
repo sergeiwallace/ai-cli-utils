@@ -497,7 +497,9 @@ def test_given_ac_4_5_malformed_observer_rows_when_absent_then_unknown(monkeypat
     ("rows", "expected"),
     [
         ([None], "UNKNOWN"),
-        ([{}], "FAILED"),
+        # A row with neither a session ID nor a title cannot be shown to be someone
+        # else's, so it must not turn "target absent" into positive failure evidence.
+        ([{}], "UNKNOWN"),
         ([{"name": "session-2"}], "FAILED"),
         ([{"sessionId": "id-2", "name": "session-2"}], "FAILED"),
     ],
