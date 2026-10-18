@@ -16,11 +16,15 @@ from . import session_registry as registry
 from . import session_run_state as state
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
+from .session_enrol import enrol
 
 
 @click.group("sessions", help="Session run state and publication")
 def sessions():
     pass
+
+
+sessions.add_command(enrol)
 
 
 @sessions.command("mark")

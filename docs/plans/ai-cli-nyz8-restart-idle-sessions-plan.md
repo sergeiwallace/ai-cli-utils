@@ -945,6 +945,19 @@ section in `src/ai_cli/config.py`, the pinned-restart child path in
   failed resume and a crash before verification, proving zero title/fresh fallback and retained
   failure fencing. Ordinary launches without a request shall preserve existing resolver behaviour.
 
+- [ ] AC-2.19 When `ai sessions enrol <name>` targets an existing session without a valid
+  recipe, it shall prefer a local registry record's launch argv and cwd and the launcher's
+  owning-host identity; absent a record, it shall require the pane leader's exact generated
+  `c-r-*` script invocation and derive engine, name and flags from that script, cwd from the
+  live pane and host from `AI_HOST`. It shall validate with `valid_boot_recipe`, refuse a
+  live-pane cwd mismatch or unproven script with the failed check named, print the recipe,
+  and persist through registry mutation helpers with `relaunch = "never"`, preserving other
+  record fields. An already valid recipe shall be unchanged; `-d/--dry-run` shall print without
+  writes. Enrolment shall never signal or send tmux input. Fixture tests shall prove byte-level
+  idempotence, refusals, dry runs and an enrolled remote-control session restarting through the
+  unchanged activation gate with restored remote control. This criterion adds enrolment only;
+  existing restart, save-state and launch behavior is preserved.
+
 ### T-03: The save-state pre-step (AI-CLI-nyz8.3)
 
 Implements D-5.
