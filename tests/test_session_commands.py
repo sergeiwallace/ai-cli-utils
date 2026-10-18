@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -171,3 +172,10 @@ def test_given_foreign_record_when_policy_requested_then_refuses_without_registr
     assert result.exit_code != 0
     assert "not owned by this host" in result.output
     assert registry.registry_path().read_bytes() == before
+
+
+def test_given_readme_when_sessions_documented_then_ac_p_4_both_commands_share_one_paragraph():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Session boot relaunch\n", 1)[1].split("\n### ", 1)[0]
+    paragraph = next(text for text in section.split("\n\n") if "`ai sessions relaunch <slug>`" in text)
+    assert "`ai sessions policy <slug> <auto|never|always>`" in paragraph

@@ -565,6 +565,13 @@ disabled causes and policy `never`. Each boot attempt is durably reserved before
 never repeated in the same boot, even after launch failure. Decisions are logged and stored in
 the registry; configured publication uses the existing publisher. Dry runs write and launch nothing.
 
+Use `ai sessions relaunch <slug>` to explicitly restart one stopped session owned by this host,
+detached through its recorded recipe, even if boot relaunch is disabled or its policy is `never`.
+Live, unknown, foreign and incomplete records are refused; `-d/--dry-run` previews without changes,
+and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <auto|never|always>`
+to change a local session's boot policy and queue publication through the existing background timer.
+Every boot policy still leaves manually exited sessions down.
+
 ### Cross-machine sync
 
 ```bash
