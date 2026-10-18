@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
@@ -69,7 +69,6 @@ def supervisor_fixture(tmp_path_factory, monkeypatch):
             return guarded_run([sys.executable, str(binaries / "claude"), *argv[1:]], **kwargs)
         return guarded_run(argv, **kwargs)
 
-    monkeypatch.setattr(session_restart.subprocess, "run", fixture_run)
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: shutil.which("bash"))
     (home / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":true}')
     transcript_dir = home / ".claude" / "projects" / "myproject"
@@ -192,7 +191,9 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
     )
     (root / "supervisor-pid").write_text(str(process.pid))
     try:
-        yield root, script, process
+        # This shared-module patch must unwind before the conftest spawn guard.
+        with patch.object(session_restart.subprocess, "run", fixture_run):
+            yield root, script, process
     finally:
         # Only test-owned PIDs are eligible. Capture births before signalling;
         # never use a group or a pattern, even for fixture cleanup.

@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from conftest import run_cli
@@ -170,7 +170,6 @@ def world(tmp_path, monkeypatch):
             return SimpleNamespace(returncode=0, stdout='{"status":"submitted"}')
         raise AssertionError(f"unexpected subprocess: {argv}")
 
-    monkeypatch.setattr(restart.subprocess, "run", subprocess_run)
     state_obj.subprocess_run = subprocess_run
     connection = MagicMock()
     monkeypatch.setattr(restart.socket, "socket", lambda *a: connection)
@@ -196,7 +195,10 @@ def world(tmp_path, monkeypatch):
         return code, json.loads(out), err
 
     state_obj.cli = cli
-    return state_obj
+    # Restore the shared subprocess module before the conftest spawn guard exits.
+    # monkeypatch is finalized later and would resurrect that expired guard.
+    with patch.object(restart.subprocess, "run", subprocess_run):
+        yield state_obj
 
 
 @pytest.mark.parametrize("target", [SESSION_ID, "myproject-box-1", "c-myproject-box-1"])
@@ -230,8 +232,8 @@ def test_given_slot_when_restart_then_no_launch(world, monkeypatch):
 def test_given_self_when_restart_then_detached(world, monkeypatch):
     monkeypatch.setenv("TMUX_PANE", "%1")
     spawn = Mock()
-    monkeypatch.setattr(restart.subprocess, "Popen", spawn)
-    code, report, _ = world.cli("-X")
+    with patch.object(restart.subprocess, "Popen", spawn):
+        code, report, _ = world.cli("-X")
     assert code == 0 and report["reason"] == "detached"
     assert spawn.call_args.args[0][-2:] == ["restart-detached", SESSION_ID]
     assert spawn.call_args.kwargs["start_new_session"] is True
@@ -650,11 +652,11 @@ def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monke
         calls.append(argv)
         return SimpleNamespace(returncode=exit_code, stdout=json.dumps({"reason": "ready"}))
 
-    monkeypatch.setattr(main.subprocess, "run", run)
     args = ["ai", "c", "1", "-R", "-p", "myproject", flag]
     if json_output:
         args.append("-j")
-    code, out, _ = run_cli(args, config=world.settings)
+    with patch.object(main.subprocess, "run", run):
+        code, out, _ = run_cli(args, config=world.settings)
     assert code == exit_code
     if json_output:
         assert json.loads(out)["reason"] == "ready"
