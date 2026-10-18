@@ -8,6 +8,7 @@ refuses an action. Windows uses injection because POSIX signals are unsupported.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import math
@@ -944,7 +945,10 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         return "UNVERIFIED"
     started = time.time()
     try:
-        data = json.loads(_run(_argv(command, record)))
+        raw = _run(_argv(command, record))
+        if "sessions beyond the first pages are missing" in raw:
+            return "UNKNOWN"
+        data = json.loads(raw)
         observed = data.get("observed_at")
         moment = _timestamp(observed) if isinstance(observed, str) else observed
         if not _number(moment) or not started <= moment <= time.time() or data.get("complete") is not True:
@@ -952,7 +956,15 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         if any(data.get(key) for key in ("truncated", "listTruncated", "bridgeWalkFailed", "localListFailed")):
             return "UNKNOWN"
         rows = data.get("rows")
-        if not isinstance(rows, list) or data.get("status") not in ("seen", "absent", "unknown"):
+        if (
+            not isinstance(rows, list)
+            or any(
+                not isinstance(row, dict)
+                or any(not isinstance(row.get(key), str) or not row[key] for key in ("session_id", "title"))
+                for row in rows
+            )
+            or data.get("status") not in ("seen", "absent", "unknown")
+        ):
             return "UNKNOWN"
         if data["status"] == "unknown":
             return "UNKNOWN"
@@ -989,7 +1001,14 @@ def local_verdict(record: dict) -> str:
             return "FAILED"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(2)
-            connection.connect(record["messagingSocketPath"])
+            try:
+                connection.connect(record["messagingSocketPath"])
+            except OSError as exc:
+                # A refused connection is positive failure evidence. Missing or
+                # inaccessible paths can be namespace/access problems: unknown.
+                if exc.errno == errno.ECONNREFUSED:
+                    return "FAILED"
+                raise
         data = json.loads(_run(["claude", "agents", "--json"]))
         if isinstance(data, dict):
             if data.get("complete") is not True or any(
@@ -999,7 +1018,13 @@ def local_verdict(record: dict) -> str:
             rows = data.get("sessions")
         else:
             rows = data
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or any(not isinstance(row.get(key), str) or not row[key] for key in ("sessionId", "name"))
+            or type(row.get("pid")) is not int
+            or row["pid"] <= 1
+            for row in rows
+        ):
             return "UNKNOWN"
         matches = [
             row
@@ -1015,7 +1040,7 @@ def local_verdict(record: dict) -> str:
 
 
 def trigger_verdicts(record: dict, commands: dict) -> dict:
-    # Passive evidence for check mode; scheduling and automatic actions are separate.
+    # Passive evidence is shared by check mode and the automatic evaluator.
     installed = Path.home() / ".local" / "bin" / "claude"
     update = "UNKNOWN"
     try:
@@ -1030,13 +1055,101 @@ def trigger_verdicts(record: dict, commands: dict) -> dict:
             update = "YES" if tuple(map(int, target.name.split("."))) > tuple(map(int, current.split("."))) else "NO"
     except (OSError, ValueError, TypeError):
         pass
+    if update != "YES":
+        try:
+            _, pane = _pane(record)
+            footer = _run(["tmux", "capture-pane", "-p", "-t", pane, "-S", "-12"])
+            if "Update installed · Restart to apply" in footer:
+                update = "YES"
+        except Refusal:
+            pass
     local = local_verdict(record)
     peer = observer_verdict(record, commands.get("observer"))
     unreachable = local == "FAILED" or peer == "FAILED"
+    # A registry and a peer can agree on a generated/renamed title while
+    # disagreeing with the supervisor's configured custom title.
+    try:
+        session, _ = _pane(record)
+        metadata = _object(config.get_xdg_state_home() / f"session-meta-{session}.json")
+        expected = metadata.get("ai_name")
+        if (
+            metadata.get("engine") == "c"
+            and metadata.get("session") == session
+            and isinstance(expected, str)
+            and expected
+            and record.get("name") != expected
+        ):
+            unreachable = True
+    except Refusal:
+        pass  # Unreadable metadata cannot establish a title mismatch.
     return {
         "update": update,
         "unreachable": "YES" if unreachable else "UNKNOWN" if local == "UNKNOWN" or peer != "VERIFIED" else "NO",
     }
+
+
+def schedule_auto(session: str, configuration: dict) -> None:
+    """Reserve one interval under the shared lock, then spawn without waiting."""
+    try:
+        settings = config.read_restart_config(configuration)
+        if not settings["auto"]:
+            return
+        lock_path, _, _ = state_paths(session)
+        path = lock_path.with_suffix(".auto.json")
+        with session_lock(session):
+            previous = _object(path) if path.exists() else {}
+            last = previous.get("last_evaluation", 0)
+            if not _number(last) or time.time() - last < settings["auto_interval_seconds"]:
+                return
+            # Reserve before releasing ownership so concurrent heartbeats cannot
+            # spawn duplicate evaluators. A failed spawn retries next interval.
+            _atomic_json(path, {"last_evaluation": time.time()})
+        subprocess.Popen(
+            [sys.executable, "-m", "ai_cli.main", "internal", "restart-auto", session],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (Refusal, OSError, ValueError, TypeError, subprocess.SubprocessError):
+        # Automatic scheduling must never suppress heartbeat publication.
+        return
+
+
+def restart_auto(session: str) -> dict:
+    """Evaluate just this pane; only positive evidence enters the guarded path."""
+    triggers = {"update": "UNKNOWN", "unreachable": "UNKNOWN"}
+    report = _report("unavailable")
+    try:
+        settings = config.read_restart_config(config.load_config())
+        if not settings["auto"]:
+            report = _report("disabled")
+        else:
+            lock_path, _, _ = state_paths(session)
+            with session_lock(session):
+                _atomic_json(lock_path.with_suffix(".auto.json"), {"last_evaluation": time.time()})
+            _, record = resolve_target(session)
+            if _pane(record)[0] != session:
+                raise Refusal("target")
+            triggers = trigger_verdicts(record, load_commands())
+            report = (
+                restart(record["sessionId"], detached=True, automatic=True, expected_tmux_session=session)
+                if any(triggers.get(key) == "YES" for key in ("update", "unreachable"))
+                else _report("no-trigger")
+            )
+    except Refusal as exc:
+        report = _report(exc.reason)
+    except (OSError, ValueError, TypeError, KeyError):
+        report = _report("unavailable")
+    # Only protocol verdicts are logged, never adapter output or diagnostics.
+    root = config.get_xdg_state_home() / "restart-session"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(root / "auto.log", mode="a", encoding="utf-8", timeout=5) as output:
+            output.write(json.dumps({"session": session, "triggers": triggers, "outcome": report["reason"]}) + "\n")
+    except (OSError, portalocker.LockException):
+        return _report("auto-log-unavailable")
+    return report
 
 
 def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: str = "UNVERIFIED", **extra) -> dict:
@@ -1260,13 +1373,22 @@ def _inject_save_state(record: dict, commands: dict) -> str:
     return outcome
 
 
-def restart(target: str | None, *, check: bool = False, detached: bool = False, automatic: bool = False) -> dict:
+def restart(
+    target: str | None,
+    *,
+    check: bool = False,
+    detached: bool = False,
+    automatic: bool = False,
+    expected_tmux_session: str | None = None,
+) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
     try:
         settings = config.read_restart_config(config.load_config())
         commands = load_commands()
         record_path, record = resolve_target(target)
         session, pane = _pane(record)
+        if expected_tmux_session is not None and session != expected_tmux_session:
+            raise Refusal("target", "automatic target moved to another tmux session")
         if check:
             return _check(record, settings, commands)
         if not detached and pane == os.environ.get("TMUX_PANE"):

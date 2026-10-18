@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compaction record and a fresh idle interval, then rechecks every gate before restarting.
   Adapter failures, a held or queued submission, a lost lock or a changed process refuse
   without retrying or signalling. `-Y` never runs it.
+- Automatic restart evaluation: with `[restart_session] auto = true` (off by default), each
+  supervisor heartbeat starts a detached evaluator once the session's `auto_interval_seconds`
+  have elapsed. It restarts only for a verified newer native install, the update-installed
+  notice, or a positively observed reachability failure, through the same gates, lock and
+  cooldown as `-X`. Unknown or unobserved results never trigger a restart.
 - Local tmux launches now open a detached `wake-watch` window when the effective
   sidecar mode is `session` or `both`. The watcher retries every exit after two seconds.
 - Every launch now records durable session run state (`running` or `exited`, with a cause and

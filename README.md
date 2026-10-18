@@ -214,8 +214,7 @@ budget allows that additional idle interval. A busy registry, changed process or
 supervisor generation, or lost lock aborts the wait. Background work after
 compaction refuses with `background-work`; adapter failures and timeouts refuse
 with `context`. With `pre_step = false` or no adapter, failing context refuses
-without injection. Check mode never runs the pre-step. Automatic scheduling is a
-separate integration.
+without injection. Check mode never runs the pre-step.
 
 The restart pins the exact conversation before signalling, atomically prepares a
 compatible replacement child, and sends SIGTERM only to the verified agent PID.
@@ -242,9 +241,32 @@ relaunch_timeout_seconds = 180
 mechanism = "kill"                 # "exit" uses the injection adapter
 pre_step = true
 compaction_wait_seconds = 1800
-auto = true                        # Default for the separate automatic evaluator
+auto = false                       # Opt in to automatic restart evaluation
 auto_interval_seconds = 600
 ```
+
+With `auto = true`, each supervisor heartbeat starts a detached
+`ai internal restart-auto <tmux session>` evaluator when that session's
+`auto_interval_seconds` have elapsed (600 seconds by default). The heartbeat does
+not wait for evaluation or restart. Interval reservations and evaluation times
+are stored in `<state dir>/restart-session/<tmux session>.auto.json`; scheduling
+failures retry on a later interval and do not interrupt heartbeat publication.
+
+The evaluator restarts only for a verified newer native installation or the
+rendered `Update installed · Restart to apply` notice, or a positively observed
+reachability failure: refused socket connection, missing bridge registration,
+wrong user title, or a complete local/remote listing proving absence or wrong
+identity. Unknown and unobserved results never become restart triggers with age.
+Observer timeouts, failed commands and malformed, stale or truncated listings
+remain unknown. A mobile-only failure cannot be detected without independent
+observation. Each evaluation appends one JSON line containing the tmux session,
+trigger verdicts and outcome to `<state dir>/restart-session/auto.log`.
+
+Automatic restarts use the same pre-step, idle/background/context gates, shared
+lock, conversation pin and cooldown as `-X`. Failed replacement verification
+suppresses automatic retries until passive verification succeeds or the operator
+retries manually. Enable automation only after every external restart actor uses
+the shared lock and cooldown protocol below.
 
 External commands are argv arrays in `restart-session.d/*.toml` beside the config
 file. Duplicate adapters refuse. Placeholders are expanded as individual arguments,
