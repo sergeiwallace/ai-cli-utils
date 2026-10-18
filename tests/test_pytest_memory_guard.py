@@ -35,6 +35,10 @@ def _memory_guard_invocation(
 ) -> tuple[dict[str, str], list[str]]:
     env = os.environ.copy()
     env["PYTEST_WORKER_MEMORY_LIMIT_MB"] = "384"
+    # A host's locale archive can occupy hundreds of MiB of virtual address
+    # space without resident pages. Keep that unrelated mapping out of the
+    # native address-space probes without raising their allocation ceiling.
+    env["LC_ALL"] = "C"
     # These small synthetic suites need only xdist and the guard. Unrelated
     # plugins can exhaust the address-space budget during collection, before
     # an unconstrained test's marker can lift it.
@@ -110,6 +114,38 @@ def test_given_unrelated_installed_plugin_when_memory_probe_runs_then_it_is_not_
             *_pytest_config_args(repository_root),
             "-n",
             "1",
+            str(probe),
+        ],
+        cwd=repository_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_given_host_locale_when_guarded_probe_allocates_below_ceiling_then_allocation_completes(tmp_path):
+    probe = tmp_path / "test_probe.py"
+    probe.write_text(
+        "def test_given_small_allocation_when_guarded_then_it_completes():\n"
+        "    chunks = [bytearray(8 * 1024 * 1024) for _ in range(16)]\n"
+        "    assert len(chunks) == 16\n"
+    )
+    repository_root = Path(__file__).resolve().parents[1]
+    env, guard_args = _memory_guard_invocation(tmp_path, "native")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            *guard_args,
+            "-p",
+            "pytest_memory_guard",
+            *_pytest_config_args(repository_root),
+            "-n",
+            "0",
             str(probe),
         ],
         cwd=repository_root,
