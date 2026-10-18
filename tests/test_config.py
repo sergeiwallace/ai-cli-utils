@@ -32,7 +32,7 @@ def test_given_default_config_when_read_then_sidecar_is_off():
 
 @pytest.mark.parametrize(
     ("key", "value"),
-    [("enabled", "yes"), ("mode", "both"), ("boot", 1)],
+    [("enabled", "yes"), ("mode", "invalid"), ("boot", 1)],
 )
 def test_given_malformed_sidecar_value_when_read_then_warns_and_disables(key, value):
     with patch("ai_cli.config._out.warning") as warning:

@@ -602,9 +602,9 @@ nats_servers = ["nats://localhost:4222"]
 # os_type = ""
 
 [sidecar]
-## Start the optional machine-wide wake sidecar during a local session launch.
+## Start the optional wake sidecar during a local session launch.
 enabled = false
-## Use one machine sidecar or a future watcher scoped to each session.
+## Use "machine", "session" (a detached tmux watcher per session), or "both".
 mode = "machine"
 ## Declare that the operating system starts the sidecar instead of the launcher.
 boot = false
@@ -669,7 +669,7 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
 
     validators = {
         "enabled": lambda value: type(value) is bool,
-        "mode": lambda value: isinstance(value, str) and value in {"machine", "session"},
+        "mode": lambda value: isinstance(value, str) and value in {"machine", "session", "both"},
         "boot": lambda value: type(value) is bool,
     }
     for key, validator in validators.items():
