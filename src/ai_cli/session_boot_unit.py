@@ -90,7 +90,9 @@ def manage(action: str, *, on_boot: bool | None = None, dry_run: bool = False, r
 
     result = run_manager(probe, runner=runner, check=False)
     absent_codes = (1, 3, 113) if mac else (1, 4)
-    if result.returncode and (result.returncode not in absent_codes or (not mac and result.stderr)):
+    if result.returncode and (
+        result.returncode not in absent_codes or (not mac and result.returncode == 1 and result.stderr)
+    ):
         raise RuntimeError("cannot determine boot-unit state from service manager")
     enabled = result.returncode == 0
     if action == "status":

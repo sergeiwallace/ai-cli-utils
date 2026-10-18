@@ -1,6 +1,7 @@
 """Boot unit management uses a fake service manager on every platform."""
 
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,7 +126,10 @@ def test_given_supported_platform_when_rendered_then_ac_b_3_absolute_entry_point
         assert doc["AbandonProcessGroup"] is True
         assert "KeepAlive" not in doc
     else:
-        assert f'ExecStart="{unit.executable}" sessions relaunch --boot' in content.decode()
+        command = next(
+            line.removeprefix("ExecStart=") for line in content.decode().splitlines() if line.startswith("ExecStart=")
+        )
+        assert shlex.split(command) == [str(unit.executable), "sessions", "relaunch", "--boot"]
         assert b"Type=oneshot" in content and b"RemainAfterExit" not in content
         assert b"KillMode=process" in content and b"TimeoutStartSec=infinity" in content
 
@@ -216,11 +220,33 @@ def test_given_xdg_overrides_when_rendered_then_service_uses_the_same_config_and
         assert environment["XDG_STATE_HOME"] == str(state_home)
         assert "XDG_CACHE_HOME" not in environment
     else:
-        assert f'"XDG_CONFIG_HOME={unit.home / "config"}"' in content.decode()
-        assert f'"XDG_STATE_HOME={state_home}"' in content.decode()
+        assignment = next(
+            line.removeprefix("Environment=")
+            for line in content.decode().splitlines()
+            if line.startswith("Environment=")
+        )
+        environment = shlex.split(assignment)
+        assert f"XDG_CONFIG_HOME={unit.home / 'config'}" in environment
+        assert f"XDG_STATE_HOME={state_home}" in environment
         assert b"XDG_CACHE_HOME" not in content
 
 
 def test_given_relative_entry_point_when_rendered_then_invalid_boot_unit_is_refused(unit):
     with pytest.raises(ValueError, match="absolute ai"):
         boot.render(platform=unit.platform, home=unit.home, path="", executable="ai")
+
+
+def test_given_absent_unit_when_manager_reports_not_found_then_disabled_profile_is_noop(unit, monkeypatch):
+    unit.cfg["session_relaunch"]["on_boot"] = False
+    calls = []
+
+    def missing(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 113 if unit.platform == "darwin" else 4, "", "unit not found")
+
+    monkeypatch.setattr(boot.subprocess, "run", missing)
+    result = unit.invoke("install")
+    assert result.exit_code == 0, result.output
+    assert "0 mutations" in result.output
+    assert len(calls) == 1
+    assert not any(p.exists() for p in unit.files())
