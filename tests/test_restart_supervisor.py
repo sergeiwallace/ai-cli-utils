@@ -43,7 +43,7 @@ def _wait_for(check, process, timeout=60):
 
 
 @pytest.fixture
-def supervisor_fixture(tmp_path_factory, monkeypatch):
+def supervisor_fixture(tmp_path_factory, monkeypatch, request):
     root = tmp_path_factory.mktemp("restart")
     home = root / "home"
     cwd = root / "myproject"
@@ -140,6 +140,7 @@ elif args[:2] == ['internal', 'restart-pin']:
     status, transcript = child_pin(args[2], args[3])
     if transcript: print(transcript)
     sys.exit(status)
+elif args[:2] in (['sessions', '_begin'], ['sessions', '_sequence']): print('1')
 """,
         encoding="utf-8",
     )
@@ -207,7 +208,32 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
         .read_text(encoding="utf-8")
         .replace("__PROJECT_DIR__", str(cwd))
     )
-    main._write_launch_script_if_changed(script, legacy)
+    if getattr(request, "param", None) == "fenced":
+        shell = binaries / "session-shell"
+        shell.write_text(
+            preamble
+            + f"""if '--ai-cli-child-body' in sys.argv:
+    with (root / 'child-launches').open('a', encoding='utf-8') as out: out.write(str(os.getpid()) + '\\n')
+os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
+""",
+            encoding="utf-8",
+        )
+        shell.chmod(0o700)
+        monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: str(shell))
+        source = main._engine_script_from_meta(
+            {
+                "engine": "c",
+                "ai_name": TITLE,
+                "session": SESSION,
+                "prefix": "c-myproject-box-",
+                "project_prefix": "myproject-box",
+                "worktree_dir": str(cwd),
+            }
+        )
+        session_restart._atomic_json(session_restart.state_paths(SESSION)[2], {"status": "failed"})
+    else:
+        source = legacy
+    main._write_launch_script_if_changed(script, source)
     # Freeze the old child's shell selection independently of the current preference.
     # The fixture uses bash, so the refreshed program must use the same shell here.
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
@@ -249,6 +275,67 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
                     os.kill(pid, signal.SIGKILL)
         process.wait(timeout=5)
         diagnostics.close()
+
+
+@pytest.fixture
+def fenced_supervisor(supervisor_fixture):
+    root, script, supervisor = supervisor_fixture
+    log = root / "supervisor.log"
+    _wait_for(lambda: "Restart request fenced;" in log.read_text(encoding="utf-8"), supervisor)
+    return root, supervisor
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["fenced"], indirect=True)
+def test_given_failed_request_when_waiting_then_ac_a_1_no_child_relaunch(fenced_supervisor):
+    root, supervisor = fenced_supervisor
+    observed = time.monotonic()
+    _wait_for(lambda: time.monotonic() - observed >= 7, supervisor)
+    assert len((root / "child-launches").read_text(encoding="utf-8").splitlines()) == 1
+    assert (root / "supervisor.log").read_text(encoding="utf-8").count("Restart request fenced;") == 1
+    assert not (root / "launches").exists()
+    assert not (root / "resolver-calls").exists()
+    assert session_restart._object(session_restart.state_paths(SESSION)[2]) == {"status": "failed"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["fenced"], indirect=True)
+def test_given_failed_request_when_warned_then_ac_a_2_exact_recovery_command(fenced_supervisor):
+    root, supervisor = fenced_supervisor
+    assert f"ai --restart-session {SESSION}" in (root / "supervisor.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["fenced"], indirect=True)
+@pytest.mark.parametrize("recovery", ["cleared", "complete"])
+def test_given_failed_request_when_recovered_then_ac_a_3_same_child_resumes(fenced_supervisor, recovery):
+    root, supervisor = fenced_supervisor
+    children = (root / "child-launches").read_text(encoding="utf-8")
+    request_path = session_restart.state_paths(SESSION)[2]
+    assert session_restart._object(request_path) == {"status": "failed"}
+    if recovery == "cleared":
+        request_path.unlink()
+    else:
+        session_restart._atomic_json(
+            request_path,
+            {
+                "version": 1,
+                "status": "complete",
+                "result": "restarted",
+                "title": TITLE,
+                "tmux": f"{SESSION}:@1.%1",
+                "session_id": SESSION_ID,
+            },
+        )
+    launches = root / "launches"
+    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    assert (root / "child-launches").read_text(encoding="utf-8") == children
+    replacement = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])
+    assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
+    assert supervisor.poll() is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")

@@ -1269,19 +1269,26 @@ with open(path, 'w') as f:
 
     # BEGIN PINNED RESTART resolution
       _restart_requested=false
+      _restart_fenced=false
       _restart_request="$_ai_state_dir/restart-session/$tmux_session.request.json"
-      if [[ "$engine" == "c" && -e "$_restart_request" ]]; then
+      while [[ "$engine" == "c" && -e "$_restart_request" ]]; do
         matched_file=$(ai internal restart-pin "$tmux_session" "$ai_name")
         _pin_status=$?
         if [[ $_pin_status -eq 0 && -n "$matched_file" ]]; then
           _restart_requested=true
           resolve_status=0
-        elif [[ $_pin_status -ne 3 ]]; then
-          _ai_emit warning session "Restart request fenced; explicit recovery is required."
-          sleep 1
-          exit 78
+          break
+        elif [[ $_pin_status -eq 3 ]]; then
+          break
         fi
-      fi
+        if ! $_restart_fenced; then
+          _ai_emit warning session "Restart request fenced; after validating the pinned session, retry with: ai --restart-session $tmux_session"
+          _restart_fenced=true
+        fi
+        # Keep this child parked instead of asking the supervisor to relaunch it.
+        # Recovery must change the durable request; elapsed time never clears it.
+        sleep 5
+      done
       if ! $_restart_requested; then
     # END PINNED RESTART
       # Resolve before every Claude Code launch so its exact transcript UUID can
