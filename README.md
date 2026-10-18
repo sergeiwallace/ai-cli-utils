@@ -196,9 +196,13 @@ supervisor, an idle registry and completed transcript turn, no pending backgroun
 agents or shells, and no unexplained descendant processes. Configured MCP server
 trees are allowed. It requires `remoteControlAtStartup = true` in the effective
 user, project and local Claude Code settings, without changing those files.
-Unknown evidence refuses. Transcript evidence is read backwards in bounded chunks;
-histories larger than 8 MiB currently refuse with `background-work` because older
-background launches cannot be excluded within that bound.
+Unknown evidence refuses. Every transcript record is scanned in 64 KiB chunks;
+a temporary disk-backed ledger matches background launches and completions across
+the entire history. Only the last 8 MiB of complete main-chain records are retained
+for turn, compaction and context checks. Missing tail evidence still refuses.
+An individual record over 8 MiB, an incomplete or malformed record, a read failure,
+a changing file, or an unmatched launch refuses with `background-work`. There is
+no history size limit. Temporary ledger files are removed after the scan.
 
 Context must be at or below 20 percent, or within one assistant turn of an automatic
 compaction. Missing usage and unknown model windows do not count as zero. Configure

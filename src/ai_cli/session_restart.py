@@ -18,14 +18,15 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
 import uuid
-from collections import Counter
-from collections.abc import Callable
+from collections import Counter, deque
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -206,33 +207,96 @@ def transcript_path(record: dict) -> Path:
     return matches[0].resolve()
 
 
+def _background_events(row: dict) -> Iterator[tuple[str, bool]]:
+    result = row.get("toolUseResult")
+    if isinstance(result, dict):
+        if result.get("backgroundTaskId"):
+            yield str(result["backgroundTaskId"]), False
+        if result.get("status") == "async_launched":
+            if not result.get("agentId"):
+                raise Refusal("background-work", "agent launch has no identity")
+            yield str(result["agentId"]), False
+    content = (
+        row.get("content", [])
+        if row.get("type") == "queue-operation" and row.get("operation") == "enqueue"
+        else row.get("message", {}).get("content", [])
+    )
+    text = content if isinstance(content, str) else json.dumps(content)
+    if "task-notification" in text and re.search(r"<status>(completed|failed|killed)</status>", text):
+        for task_id in re.findall(r"<task-id>([^<]+)</task-id>", text):
+            yield task_id, True
+    if row.get("type") == "task-notification" and row.get("status") in ("completed", "failed", "killed"):
+        yield str(row.get("taskId", "")), True
+
+
+class _TranscriptTail(list[dict]):
+    """Rows whose full history has already passed background verification."""
+
+
 def transcript_tail(path: Path) -> list[dict]:
-    """Read backwards in bounded chunks. A truncated history cannot exclude old shells."""
+    """Scan every record, with a bounded tail and a disk-backed background ledger."""
+    tail: deque[tuple[dict, int]] = deque()
+    tail_size = 0
+    seen = False
     try:
-        with path.open("rb") as source:
-            size = source.seek(0, os.SEEK_END)
-            if size > TAIL_LIMIT:
-                raise Refusal("background-work", "background history exceeds bounded evidence window")
-            chunks = []
-            offset = size
-            while offset:
-                length = min(offset, CHUNK_SIZE)
-                offset -= length
-                source.seek(offset)
-                chunks.append(source.read(length))
-            raw = b"".join(reversed(chunks))
-        if not raw.endswith(b"\n"):
-            raise ValueError("incomplete record")
-        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
-        if not rows or not all(isinstance(row, dict) for row in rows):
-            raise ValueError("invalid transcript")
-        if any(
-            not isinstance(row.get("message", {}), dict) or not isinstance(row.get("compactMetadata", {}), dict)
-            for row in rows
-        ):
-            raise ValueError("invalid transcript evidence shape")
-        return [row for row in rows if not row.get("isSidechain")]
-    except (OSError, ValueError) as exc:
+        # An on-disk ledger bounds memory even when the history contains many tasks,
+        # including notifications recorded before their corresponding launch rows.
+        with tempfile.TemporaryDirectory(prefix="restart-evidence-") as directory:
+            with contextlib.closing(sqlite3.connect(str(Path(directory) / "tasks.sqlite"))) as tasks:
+                tasks.execute("PRAGMA cache_size = -1024")
+                tasks.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, launched INTEGER, completed INTEGER)")
+                with path.open("rb") as source:
+                    before = os.fstat(source.fileno())
+                    remaining = before.st_size
+                    pending = b""
+                    while remaining:
+                        chunk = source.read(min(CHUNK_SIZE, remaining))
+                        if not chunk:
+                            raise ValueError("short transcript read")
+                        remaining -= len(chunk)
+                        lines = (pending + chunk).split(b"\n")
+                        pending = lines.pop()
+                        if len(pending) > TAIL_LIMIT:
+                            raise ValueError("record exceeds evidence buffer")
+                        for line in lines:
+                            if len(line) > TAIL_LIMIT:
+                                raise ValueError("record exceeds evidence buffer")
+                            if not line.strip():
+                                continue
+                            row = json.loads(line)
+                            if (
+                                not isinstance(row, dict)
+                                or not isinstance(row.get("message", {}), dict)
+                                or not isinstance(row.get("compactMetadata", {}), dict)
+                            ):
+                                raise ValueError("invalid transcript evidence shape")
+                            seen = True
+                            # Sidechains cannot establish a main turn boundary, but
+                            # their task launches still count as background evidence.
+                            for task_id, completed in _background_events(row):
+                                tasks.execute(
+                                    "INSERT INTO tasks VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                                    "launched = MAX(launched, excluded.launched), "
+                                    "completed = MAX(completed, excluded.completed)",
+                                    (task_id, int(not completed), int(completed)),
+                                )
+                            if not row.get("isSidechain"):
+                                length = len(line) + 1
+                                tail.append((row, length))
+                                tail_size += length
+                                while tail_size > TAIL_LIMIT and tail:
+                                    tail_size -= tail.popleft()[1]
+                    after = os.fstat(source.fileno())
+                    if (
+                        pending
+                        or not seen
+                        or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                    ):
+                        raise ValueError("incomplete or changing transcript")
+                if tasks.execute("SELECT 1 FROM tasks WHERE launched = 1 AND completed = 0 LIMIT 1").fetchone():
+                    raise Refusal("background-work", "unfinished background launch")
+        return _TranscriptTail(row for row, _ in tail)
+    except (OSError, ValueError, sqlite3.Error) as exc:
         raise Refusal("background-work", "transcript evidence unreadable") from exc
 
 
@@ -278,27 +342,9 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
     launched: set[str] = set()
     completed: set[str] = set()
     for row in rows:
-        result = row.get("toolUseResult")
-        if isinstance(result, dict):
-            if result.get("backgroundTaskId"):
-                launched.add(str(result["backgroundTaskId"]))
-            if result.get("status") == "async_launched":
-                if not result.get("agentId"):
-                    raise Refusal("background-work", "agent launch has no identity")
-                launched.add(str(result["agentId"]))
-        # Queue notifications are completions too, never background launches.
-        content = (
-            row.get("content", [])
-            if row.get("type") == "queue-operation" and row.get("operation") == "enqueue"
-            else row.get("message", {}).get("content", [])
-        )
-        text = content if isinstance(content, str) else json.dumps(content)
-        if "task-notification" in text and re.search(r"<status>(completed|failed|killed)</status>", text):
-            for task_id in re.findall(r"<task-id>([^<]+)</task-id>", text):
-                completed.add(task_id)
-        if row.get("type") == "task-notification" and row.get("status") in ("completed", "failed", "killed"):
-            completed.add(str(row.get("taskId", "")))
-    if launched - completed:
+        for task_id, done in _background_events(row):
+            (completed if done else launched).add(task_id)
+    if not isinstance(rows, _TranscriptTail) and launched - completed:
         raise Refusal("background-work", "unfinished background launch")
 
 
