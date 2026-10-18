@@ -1,6 +1,8 @@
 """Exercise session commands through the public Click group."""
 
 import json
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +14,7 @@ from test_session_registry import state_home as state_home
 from test_session_state_publish import publishing as publishing
 from test_session_state_publish import snapshot
 
+from ai_cli import session_commands
 from ai_cli import session_registry as registry
 from ai_cli.main import _cli_group
 
@@ -110,3 +113,69 @@ def test_given_child_output_when_single_run_finishes_then_output_is_tagged(publi
     )
     assert result.exit_code == 0, result.output
     assert "[session] session: child-message" in result.output
+
+
+@pytest.mark.parametrize("policy", ["auto", "never", "always"])
+def test_given_local_record_when_policy_changes_then_ac_4_1_only_policy_and_time_change_and_publish(
+    publishing, runner, monkeypatch, policy
+):
+    _, remote, _, _ = publishing
+    registry._mutate(lambda doc: doc["sessions"].append({"kind": "remote", "name": "other-session"}) or True)
+    before = registry.load_registry()
+    monkeypatch.setattr(registry, "_now", lambda: "2026-01-02T03:04:05Z")
+    result = runner.invoke(_cli_group, ["sessions", "policy", "c-session-1", policy])
+    assert result.exit_code == 0, result.output
+    after = registry.load_registry()
+    expected = deepcopy(before["sessions"])
+    expected[0].update(relaunch=policy, changed_at="2026-01-02T03:04:05Z")
+    assert after["sessions"] == expected
+    assert after["dirty_revision"] == before["dirty_revision"] + 1
+    assert runner.invoke(_cli_group, ["sessions", "publish", "--tick"]).exit_code == 0
+    published = snapshot(remote)["sessions"]["c-session-1"]
+    assert published["relaunch"] == policy
+    assert published["changed_at"] == "2026-01-02T03:04:05Z"
+
+
+@pytest.mark.parametrize("slug", ["", "bad.name", "bad/name", "bad name", "bad;name", "bad\n", "é"])
+def test_given_invalid_slug_when_policy_requested_then_ac_4_3_refuses_before_registry_read(runner, monkeypatch, slug):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid input reached registry or launcher")
+
+    monkeypatch.setattr(registry, "load_registry", forbidden)
+    monkeypatch.setattr(session_commands, "_launch_recipe", forbidden)
+    result = runner.invoke(_cli_group, ["sessions", "policy", slug, "auto"])
+    assert result.exit_code != 0
+    assert "session name" in result.output
+
+
+@pytest.mark.parametrize("policy", ["sometimes", "AUTO", "", "auto;command"])
+def test_given_invalid_policy_when_requested_then_ac_4_3_refuses_before_registry_read(runner, monkeypatch, policy):
+    monkeypatch.setattr(registry, "load_registry", lambda: pytest.fail("invalid policy read registry"))
+    result = runner.invoke(_cli_group, ["sessions", "policy", "c-session-1", policy])
+    assert result.exit_code != 0
+    assert "Invalid value" in result.output
+
+
+def test_given_unknown_slug_when_policy_requested_then_refuses_without_registry_change(publishing, runner):
+    before = registry.registry_path().read_bytes()
+    result = runner.invoke(_cli_group, ["sessions", "policy", "missing-session", "never"])
+    assert result.exit_code != 0
+    assert "unknown session" in result.output
+    assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("change", [{"kind": "remote"}, {"owning_host": "host-b"}])
+def test_given_foreign_record_when_policy_requested_then_refuses_without_registry_change(publishing, runner, change):
+    registry._mutate(lambda doc: doc["sessions"][0].update(change) or True)
+    before = registry.registry_path().read_bytes()
+    result = runner.invoke(_cli_group, ["sessions", "policy", "c-session-1", "never"])
+    assert result.exit_code != 0
+    assert "not owned by this host" in result.output
+    assert registry.registry_path().read_bytes() == before
+
+
+def test_given_readme_when_sessions_documented_then_ac_p_4_both_commands_share_one_paragraph():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Session boot relaunch\n", 1)[1].split("\n### ", 1)[0]
+    paragraph = next(text for text in section.split("\n\n") if "`ai sessions relaunch <slug>`" in text)
+    assert "`ai sessions policy <slug> <auto|never|always>`" in paragraph

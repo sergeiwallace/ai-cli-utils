@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -86,7 +87,39 @@ def list_sessions(as_json):
             output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
 
 
-def _launch_recipe(record: dict) -> None:
+def _session_slug(_ctx, _param, value):
+    if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise click.BadParameter("invalid session name; use only letters, digits, underscores and hyphens")
+    return value
+
+
+def _owned_record(doc: dict, slug: str) -> dict:
+    matches = [record for record in doc["sessions"] if record.get("name") == slug]
+    if not matches:
+        raise click.ClickException(f"unknown session: {slug}")
+    host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
+    for record in matches:
+        if record.get("kind") == "local" and record.get("owning_host") == host:
+            return record
+    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host")
+
+
+@sessions.command("policy")
+@click.argument("slug", callback=_session_slug)
+@click.argument("policy", type=click.Choice(["auto", "never", "always"]))
+def policy(slug, policy):
+    """Set a local session's boot relaunch policy and queue publication."""
+
+    def change(doc):
+        record = _owned_record(doc, slug)
+        record.update(relaunch=policy, changed_at=registry._now())
+        return True
+
+    registry._mutate(change, timeout=2)
+    output.emit(output.Tag.SESSIONS, "session", f"{slug}: relaunch policy {policy}")
+
+
+def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
     from .main import _do_session_launch
 
     recipe = record["boot_recipe"]
@@ -97,8 +130,8 @@ def _launch_recipe(record: dict) -> None:
     previous_reason = os.environ.get(LAUNCH_REASON_VAR)
     try:
         os.chdir(recipe["cwd"])
-        os.environ[LAUNCH_REASON_VAR] = record.get("boot_decision", {}).get("cause") or state.cause(
-            record, registry.current_boot_id()
+        os.environ[LAUNCH_REASON_VAR] = (
+            cause or record.get("boot_decision", {}).get("cause") or state.cause(record, registry.current_boot_id())
         )
         _do_session_launch(
             engine=recipe["engine"],
@@ -162,13 +195,66 @@ def _wait_for_boot_recipe(recipe: dict, cfg: dict) -> str | None:
         time.sleep(min(1, remaining))
 
 
+def _relaunch_named(slug: str, *, dry_run: bool) -> None:
+    selected = {}
+
+    def select(doc):
+        record = _owned_record(doc, slug)
+        alive = registry._local_session_alive(slug)
+        if alive is not False:
+            reason = "tmux session already exists" if alive else "tmux liveness could not be established"
+            raise click.ClickException(f"{slug}: {reason}")
+        if not state.valid_boot_recipe(record):
+            raise click.ClickException(f"{slug}: unsupported or incomplete boot recipe")
+        if not dry_run:
+            now = registry._now()
+            record.update(
+                changed_at=now,
+                relaunch_decision={"cause": "remote_request", "reason": "relaunch requested", "at": now},
+            )
+        selected.update(deepcopy(record))
+        return True
+
+    if dry_run:
+        select(registry.load_registry())
+        output.emit(output.Tag.SESSIONS, "session", f"{slug}: would relaunch detached: remote_request")
+        return
+    registry._mutate(select, timeout=2)
+    failed = False
+    try:
+        _launch_recipe(selected, cause="remote_request")
+        reason = "relaunched detached"
+    except (Exception, SystemExit) as exc:
+        reason = f"launch failed ({type(exc).__name__})"
+        failed = True
+
+    def finish(doc):
+        record = _owned_record(doc, slug)
+        if record.get("relaunch_decision") != selected["relaunch_decision"]:
+            return False
+        record["relaunch_decision"]["reason"] = reason
+        return True
+
+    registry._mutate(finish, timeout=2)
+    state.LOGGER.info("%s: %s", slug, reason)
+    if failed:
+        raise click.ClickException(f"{slug}: {reason}")
+    output.emit(output.Tag.SESSIONS, "session", f"{slug}: {reason}")
+
+
 @sessions.command("relaunch")
-@click.option("-b", "--boot", is_flag=True, required=True, help="Replay eligible owning-host sessions after boot")
+@click.argument("slug", required=False, callback=_session_slug)
+@click.option("-b", "--boot", is_flag=True, help="Replay eligible owning-host sessions after boot")
 @click.option("-d", "--dry-run", is_flag=True, help="Print decisions without writing or launching")
-def relaunch(boot, dry_run):
+def relaunch(slug, boot, dry_run):
     """Relaunch recorded sessions detached, without a terminal application."""
+    if boot == (slug is not None):
+        raise click.UsageError("provide either a session name or --boot, never both")
     if sys.platform == "win32":
         raise click.ClickException("boot relaunch is supported on macOS and Linux")
+    if slug is not None:
+        _relaunch_named(slug, dry_run=dry_run)
+        return
     cfg = state.settings()
     doc = registry.load_registry()
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
