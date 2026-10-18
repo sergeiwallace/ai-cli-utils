@@ -258,3 +258,12 @@ def test_given_ac_4_2_target_moved_after_probe_when_restarting_then_no_other_ses
     assert evaluate(auto_world)[0] == 1
     assert log_rows()[0]["outcome"] == "target"
     assert not auto_world.signals and not auto_world.injected
+
+
+def test_given_ac_4_2_configured_title_drift_when_evaluated_then_restart_identity_gate_is_preserved(auto_world):
+    auto_world.record["name"] = "generated-title"
+    auto_world.write()
+    assert evaluate(auto_world)[0] == 1
+    assert log_rows()[0]["triggers"]["unreachable"] == "YES"
+    assert log_rows()[0]["outcome"] == "supervisor-upgrade-required"
+    assert not auto_world.signals and not auto_world.injected
