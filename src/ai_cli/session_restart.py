@@ -1076,6 +1076,8 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
     if mechanism == "exit" or not _signal_supported():
         if not commands.get("inject"):
             raise Refusal("no-mechanism")
+        rows = transcript_tail(transcript_path(current))
+        idle_gate(_fresh(record_path, record), rows, settings)
         _inject_exit(record, commands)
         return
     try:
@@ -1084,6 +1086,8 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
             is not StartTimeMatch.MATCH
         ):
             raise Refusal("identity", "agent birth changed before signal")
+        rows = transcript_tail(transcript_path(current))
+        idle_gate(_fresh(record_path, record), rows, settings)
         os.kill(record["pid"], signal.SIGTERM)
     except ProcessLookupError:
         raise Refusal("identity", "agent exited before signal") from None
@@ -1094,6 +1098,8 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
         _validate_request(request, session, child=False)
         if not commands.get("inject"):
             raise Refusal("no-mechanism") from None
+        rows = transcript_tail(transcript_path(current))
+        idle_gate(_fresh(record_path, record), rows, settings)
         _inject_exit(record, commands)
         return
     deadline = time.monotonic() + settings["term_grace_seconds"]
@@ -1110,6 +1116,8 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
             is not StartTimeMatch.MATCH
         ):
             raise Refusal("identity")
+        rows = transcript_tail(transcript_path(current))
+        idle_gate(_fresh(record_path, record), rows, settings)
         os.kill(record["pid"], signal.SIGKILL)
 
 

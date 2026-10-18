@@ -831,6 +831,36 @@ def test_given_last_check_when_gate_changes_then_no_action(world, monkeypatch, f
     assert not world.signals
 
 
+@pytest.mark.parametrize("phase", ["term", "exit", "fallback", "kill"])
+def test_given_ac_f1_busy_during_helper_probe_when_acting_then_no_further_action(world, monkeypatch, phase):
+    world.commands({"inject": ["inject"], "observer": ["observer"]})
+    if phase == "exit":
+        world.settings["restart_session"]["mechanism"] = "exit"
+    attempts = []
+
+    def kill(pid, sig):
+        attempts.append((pid, sig))
+        if phase == "fallback":
+            raise PermissionError("signal access denied")
+
+    monkeypatch.setattr(restart.os, "kill", kill)
+
+    def run(argv, **kwargs):
+        if argv == [str(world.pane_ai), "internal", "restart-pin", "--probe"]:
+            request_path = restart.state_paths(world.session)[2]
+            acting = request_path.exists() and restart._object(request_path).get("status") == "acting"
+            if acting and (phase in ("term", "exit") or attempts):
+                world.record["status"] = "busy"
+                world.registry.write_text(json.dumps(world.record), encoding="utf-8")
+        return world.subprocess_run(argv, **kwargs)
+
+    with patch.object(restart.subprocess, "run", run):
+        code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "busy"
+    assert attempts == ([(101, signal.SIGTERM)] if phase in ("fallback", "kill") else [])
+    assert not world.injected
+
+
 @pytest.mark.parametrize("json_output", [True, False])
 @pytest.mark.parametrize("flag", ["-X", "-Y"])
 @pytest.mark.parametrize("exit_code", [0, 1])
