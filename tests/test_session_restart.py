@@ -1155,6 +1155,160 @@ def test_given_context_evidence_when_checked_then_conservative_window(world, kin
         assert not world.signals and not world.injected
 
 
+@pytest.fixture
+def context_row():
+    return {
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-5-5",
+            "usage": {"input_tokens": 17_600, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 100_000},
+        },
+    }
+
+
+@pytest.fixture
+def context_settings():
+    return config.read_restart_config({})
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]"])
+@pytest.mark.parametrize(("requested", "allowed"), [("claude-opus-5-5[1m]", True), ("claude-opus-5-5", False)])
+def test_given_matching_requested_model_when_context_checked_then_requested_window_wins(
+    context_row, context_settings, model, requested, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = requested
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize("extended", [False, True])
+@pytest.mark.parametrize(
+    "requested",
+    [
+        None,
+        False,
+        1,
+        [],
+        {},
+        "",
+        " ",
+        "claude-opus-5-5[1m]\n",
+        " claude-opus-5-5[1m]",
+        "claude-opus-5-5[1M]",
+        "claude-opus-5-5[2m]",
+        "claude-opus-5-5[1m][1m]",
+        "claude-opus-5-5[1m]/extra",
+        "claude-sonnet-5-5[1m]",
+        "claude-sonnet-5-5",
+    ],
+)
+def test_given_untrusted_requested_model_when_context_checked_then_message_window_applies(
+    context_row, context_settings, requested, extended
+):
+    context_row["requestedModel"] = requested
+    if extended:
+        context_row["message"]["model"] += "[1m]"
+    assert restart.context_gate([context_row], context_settings) is extended
+
+
+@pytest.mark.parametrize(
+    ("requested", "window", "allowed"),
+    [("claude-opus-5-5[1m]", 200_000, False), ("claude-opus-5-5", 1_000_000, True)],
+)
+def test_given_window_override_when_requested_model_disagrees_then_override_wins(
+    context_row, context_settings, requested, window, allowed
+):
+    context_row["requestedModel"] = requested
+    context_settings["context_window_tokens"] = window
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize(
+    ("model", "requested", "allowed"),
+    [
+        ("claude-opus-5-5", "us.anthropic.claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5-5-v12:34[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0[1m]", "claude-opus-5-5", False),
+        ("us.anthropic.eu.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0[1m]", None, True),
+        ("us.anthropic.claude-opus-5-5-v1:0", None, False),
+    ],
+)
+def test_given_provider_model_ids_when_context_checked_then_stripped_bases_match(
+    context_row, context_settings, model, requested, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = requested
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "us.anthropic.claude-haiku-5-5-v1:0"])
+@pytest.mark.parametrize(("tokens", "allowed"), [(117_600, False), (10_000, True)])
+def test_given_haiku_requested_extension_when_context_checked_then_base_window_applies(
+    context_row, context_settings, model, tokens, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = "claude-haiku-5-5[1m]"
+    context_row["message"]["usage"] = {
+        "input_tokens": tokens,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+def test_given_unknown_requested_model_when_context_checked_then_unknown_window_refuses(context_row, context_settings):
+    context_row["message"]["model"] = "unknown-model"
+    context_row["requestedModel"] = "unknown-model[1m]"
+    context_row["message"]["usage"]["cache_read_input_tokens"] = 0
+    assert not restart.context_gate([context_row], context_settings)
+
+
+def test_given_provider_base_model_when_usage_is_low_then_normalized_table_window_passes(context_row, context_settings):
+    context_row["message"]["model"] = "us.anthropic.claude-opus-5-5-v1:0"
+    context_row["message"]["usage"]["cache_read_input_tokens"] = 0
+    assert restart.context_gate([context_row], context_settings)
+
+
+def test_given_model_switch_when_latest_main_usage_selected_then_older_and_sidechain_windows_are_ignored(
+    context_row, context_settings, tmp_path
+):
+    older = {**context_row, "message": {**context_row["message"]}, "requestedModel": "claude-opus-5-5[1m]"}
+    context_row["requestedModel"] = "claude-sonnet-5-5"
+    context_row["message"]["model"] = "claude-sonnet-5-5"
+    sidechain = {**context_row, "requestedModel": "claude-sonnet-5-5[1m]", "isSidechain": True}
+    rows = [
+        older,
+        context_row,
+        {"type": "assistant", "requestedModel": "claude-sonnet-5-5[1m]", "message": {"usage": None}},
+        sidechain,
+    ]
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert not restart.context_gate(restart.transcript_tail(transcript), context_settings)
+
+
+def test_given_context_docs_when_window_precedence_described_then_contract_is_explicit():
+    root = Path(__file__).resolve().parents[1]
+    plan = next((root / "docs" / "plans").glob("*restart-idle-sessions-plan.md"))
+    for path in (root / "README.md", plan):
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "`context_window_tokens` wins",
+            "matching `requestedModel`",
+            "even when `message.model` has `[1m]`",
+            "known non-haiku models",
+            "1,000,000",
+            "200,000",
+            "malformed",
+            "mismatched request",
+            "last `anthropic.`",
+            "`-v<digits>:<digits>`",
+        ):
+            assert required in text, (path.name, required)
+
+
 @pytest.mark.parametrize("key", ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
 @pytest.mark.parametrize("value", [None, True, "0", -1, float("nan"), float("inf")])
 def test_given_invalid_token_count_when_restart_then_context_refuses(world, key, value):

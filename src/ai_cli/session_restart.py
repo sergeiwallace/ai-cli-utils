@@ -361,6 +361,11 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
         raise Refusal("background-work", "unfinished background launch")
 
 
+def _base_model(model: str) -> str:
+    model = model.split("[", 1)[0].rsplit("anthropic.", 1)[-1]
+    return re.sub(r"-v\d+:\d+$", "", model)
+
+
 def context_gate(rows: list[dict], settings: dict) -> bool:
     boundary = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("subtype") == "compact_boundary"), None)
     if boundary is not None:
@@ -404,8 +409,16 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:
-        window = MODEL_WINDOWS.get(model)
-        if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS and "haiku" not in model:
+        base = _base_model(model) if isinstance(model, str) else ""
+        requested = latest.get("requestedModel")
+        if (
+            isinstance(requested, str)
+            and re.fullmatch(r"[A-Za-z0-9._:/@-]+(\[1m\])?", requested)
+            and _base_model(requested) == base
+        ):
+            model = requested
+        window = MODEL_WINDOWS.get(model, MODEL_WINDOWS.get(base)) if isinstance(model, str) else None
+        if isinstance(model, str) and model.endswith("[1m]") and base in MODEL_WINDOWS and "haiku" not in base:
             window = 1_000_000
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])
 

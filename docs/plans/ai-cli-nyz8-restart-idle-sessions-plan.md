@@ -886,7 +886,18 @@ section in `src/ai_cli/config.py`, the pinned-restart child path in
   shall refuse with reason `background-work` and signal nothing.
 - [ ] AC-2.7 If the context gate of D-4 fails and the pre-step cannot run or does not complete,
   then the command shall refuse with reason `context` and signal nothing; the threshold shall be
-  read from the config file on that call.
+  read from the config file on that call. For window selection, `context_window_tokens` wins;
+  otherwise the latest main-chain assistant usage row's matching `requestedModel` shall take
+  precedence: `[1m]` selects 1,000,000 for known non-haiku models, and an untagged request selects
+  the base table window (200,000 for known models), even when `message.model` has `[1m]`.
+  Bases shall strip everything from the first `[` onward, everything through the last
+  `anthropic.` prefix, then a trailing Bedrock `-v<digits>:<digits>` version; table lookups shall
+  use the stripped base while preserving existing raw-id lookups. A malformed request (not a
+  string matching `^[A-Za-z0-9._:/@-]+(\[1m\])?$`) or mismatched request shall be ignored: fall
+  back to a `[1m]` suffix on `message.model` (known non-haiku models only), then the model table.
+  Unknown windows shall still refuse without an override; no settings file shall be read to
+  infer the window. Tests shall cover both override directions, matching and untagged requests,
+  malformed and mismatched requests, provider and Bedrock ids, haiku and model switches.
 - [ ] AC-2.8 When every prerequisite and gate passes under the lock, the command shall re-check
   them, send `SIGTERM` to the one verified pid (and `SIGKILL` to that same pid only after
   `term_grace_seconds` and a fresh start-time match), and wait for a replacement in the same pane

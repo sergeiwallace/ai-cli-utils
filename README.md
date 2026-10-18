@@ -217,13 +217,18 @@ Uncertified installations, unrelated executables and unreadable processes refuse
 with `background-work`; non-npx entries retain their existing behavior.
 
 Context must be at or below 20 percent, or within one assistant turn of an automatic
-compaction. Missing usage and unknown model windows do not count as zero. Configure
-`context_window_tokens` for an unrecognised or extended model window. Known
-models use a 200,000-token base window and a `[1m]` model tag selects 1,000,000;
-a session running the larger window without the tag therefore reads as fuller
-than it is, which can only make the gate refuse or compact sooner. The status
-line assumes 1,000,000 for the Claude 5 family, so its percentage can differ
-from this gate's. A manual compaction passes only through the percentage gate.
+compaction. Missing usage and unknown model windows do not count as zero.
+`context_window_tokens` wins over transcript window evidence. Otherwise, the latest
+main-chain assistant usage row's matching `requestedModel` takes precedence: `[1m]`
+selects 1,000,000 for known non-haiku models; an untagged request selects the base
+table window (200,000 for known models), even when `message.model` has `[1m]`.
+Provider prefixes through the last `anthropic.` and trailing Bedrock `-v<digits>:<digits>`
+versions are stripped when comparing bases and looking up windows. A malformed or
+mismatched request is ignored: fall back to a `[1m]` suffix on `message.model`
+(known non-haiku models only), then the model table. Unknown windows require an
+explicit override. The status line assumes 1,000,000 for the Claude 5 family, so
+its percentage can differ from this gate's. A manual compaction passes only
+through the percentage gate.
 
 When context fails and `pre_step = true`, the configured injection adapter submits
 `/save-state` once to the target pane. The command waits up to
