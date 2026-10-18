@@ -51,7 +51,7 @@ def begin(name):
     try:
         output.raw(Untagged.INTERNAL_REPLY, state.begin(name))
     except Exception as exc:
-        raise click.ClickException("cannot acquire a durable supervisor generation") from exc
+        raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
 
 
 @sessions.command("_sequence", hidden=True)

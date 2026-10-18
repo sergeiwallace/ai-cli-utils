@@ -248,6 +248,16 @@ Missing records, missing or invalid recipes, and unavailable generation storage
 refuse with `no-boot-recipe`, leaving the agent alive without injection or signals.
 The check neither adopts legacy sessions nor writes a generation.
 
+For a refreshed child under a pre-feature supervisor, failed generation acquisition
+is counted in `<state dir>/session-begin-failures-<tmux session>`. The child waits
+1, 2, 4, 8, 16, then 30 seconds before exit 76; later delays stay at 30 seconds.
+A successful acquisition resets the counter. On failure 20 it prints one session
+warning and parks in one-second waits without retrying or starting an agent.
+SIGTERM exits the parked child with status 143; Ctrl+C (SIGINT) exits it with
+status 130, within one wait interval. If the old supervisor relaunches that child,
+the retained counter makes another failed acquisition park again. Supervisors
+that already pass `AI_CLI_RUN_GENERATION` bypass this compatibility path.
+
 The restart pins the exact conversation before signalling, atomically prepares a
 compatible replacement child, and sends SIGTERM only to the verified agent PID.
 If necessary, SIGKILL follows after the grace period and another identity and gate

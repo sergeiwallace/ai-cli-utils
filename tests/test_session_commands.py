@@ -179,3 +179,34 @@ def test_given_readme_when_sessions_documented_then_ac_p_4_both_commands_share_o
     section = readme.split("### Session boot relaunch\n", 1)[1].split("\n### ", 1)[0]
     paragraph = next(text for text in section.split("\n\n") if "`ai sessions relaunch <slug>`" in text)
     assert "`ai sessions policy <slug> <auto|never|always>`" in paragraph
+
+
+@pytest.mark.parametrize("missing", ["record", "recipe", "invalid"])
+def test_given_begin_failure_when_cli_invoked_then_cause_and_exit_status_are_preserved(runner, missing):
+    if missing != "record":
+        registry._mutate(
+            lambda doc: (
+                doc["sessions"].append(
+                    {
+                        "kind": "local",
+                        "name": "c-session-1",
+                        "boot_recipe": {} if missing == "recipe" else {"engine": "unknown"},
+                    }
+                )
+                or True
+            )
+        )
+    result = runner.invoke(_cli_group, ["sessions", "_begin", "c-session-1"])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "cannot acquire a durable supervisor generation:" in result.stderr
+    assert ("not registered" if missing == "record" else "boot recipe") in result.stderr
+
+
+def test_given_valid_begin_when_cli_invoked_then_stdout_is_only_generation(publishing, runner):
+    import uuid
+
+    result = runner.invoke(_cli_group, ["sessions", "_begin", "c-session-1"])
+    assert result.exit_code == 0
+    assert str(uuid.UUID(result.stdout.strip())) == result.stdout.strip()
+    assert result.stderr == ""
