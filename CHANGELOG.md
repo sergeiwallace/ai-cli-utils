@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `terminal_quit_or_crash`) are validated on every config load. The optional
   `[session_relaunch.publish]` settings publish a debounced registry snapshot to a Git ref with
   plumbing commands, never touching a checkout. Boot relaunch itself ships separately.
+- `ai sessions relaunch --boot` relaunches, detached in tmux and without a terminal application, the
+  sessions that were running when the host shut down. It follows the `[session_relaunch]` switch
+  (off by default), applies the ordered vetoes (a session exited by hand or with an unknown cause never
+  relaunches), refuses a second copy, reserves each attempt per boot so a retry cannot spawn twice, and
+  `--dry-run` prints every decision with the winning veto.
 - Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and
