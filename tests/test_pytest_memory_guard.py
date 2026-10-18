@@ -35,8 +35,13 @@ def _memory_guard_invocation(
 ) -> tuple[dict[str, str], list[str]]:
     env = os.environ.copy()
     env["PYTEST_WORKER_MEMORY_LIMIT_MB"] = "384"
+    # These small synthetic suites need only xdist and the guard. Unrelated
+    # plugins can exhaust the address-space budget during collection, before
+    # an unconstrained test's marker can lift it.
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    plugin_args = ["-p", "xdist.plugin"]
     if memory_guard_mode != "watchdog":
-        return env, []
+        return env, plugin_args
 
     # Keep the host platform intact and override only this plugin's platform
     # decision. The helper is loaded in the controller and every xdist worker.
@@ -63,7 +68,7 @@ def pytest_load_initial_conftests():
     if existing_pythonpath:
         pythonpath_parts.append(existing_pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
-    return env, ["-p", _FORCE_WATCHDOG_PLUGIN]
+    return env, [*plugin_args, "-p", _FORCE_WATCHDOG_PLUGIN]
 
 
 def _pytest_config_args(repository_root: Path) -> list[str]:
@@ -81,6 +86,40 @@ def _pytest_config_args(repository_root: Path) -> list[str]:
         if candidate.exists():
             return ["-c", str(candidate)]
     return []
+
+
+def test_given_unrelated_installed_plugin_when_memory_probe_runs_then_it_is_not_loaded(tmp_path, monkeypatch):
+    metadata = tmp_path / "unrelated_probe-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: unrelated-probe\nVersion: 1.0\n")
+    (metadata / "entry_points.txt").write_text("[pytest11]\nunrelated_probe = unrelated_probe\n")
+    (tmp_path / "unrelated_probe.py").write_text('raise RuntimeError("unrelated plugin loaded by memory probe")\n')
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(tmp_path), os.environ.get("PYTHONPATH", ""))))
+    probe = tmp_path / "test_probe.py"
+    probe.write_text("def test_given_probe_when_run_then_it_completes():\n    pass\n")
+    repository_root = Path(__file__).resolve().parents[1]
+    env, guard_args = _memory_guard_invocation(tmp_path, "native")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            *guard_args,
+            "-p",
+            "pytest_memory_guard",
+            *_pytest_config_args(repository_root),
+            "-n",
+            "1",
+            str(probe),
+        ],
+        cwd=repository_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_plugin_import_does_not_require_portable_watchdog_dependency():
