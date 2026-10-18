@@ -1509,6 +1509,171 @@ def test_given_ac_q_3_queued_save_state_when_no_compaction_then_context_timeout_
     assert not restart.state_paths(world.session)[2].exists()
 
 
+@pytest.fixture
+def transcript_race(pre_step_world, monkeypatch):
+    world = pre_step_world
+    race = SimpleNamespace(reads=0, changed=[], when=lambda: bool(world.injected), failure="changing")
+    fstat = restart.os.fstat
+    target = world.transcript.stat()
+    before = True
+
+    def stat(fd):
+        nonlocal before
+        result = fstat(fd)
+        if (result.st_dev, result.st_ino) != (target.st_dev, target.st_ino):
+            return result
+        first = before
+        before = not before
+        if first:
+            race.reads += 1
+        elif race.when():
+            assert not world.signals and not restart.state_paths(world.session)[2].exists()
+            race.changed.append(world.ticks[0])
+            if race.failure == "unreadable":
+                raise OSError("transcript read unavailable")
+            # Append real bytes between the reader's size/mtime checks.
+            with world.transcript.open("ab") as output:
+                output.write(b'{"type":"progress"}\n')
+            result = fstat(fd)
+        return result
+
+    monkeypatch.setattr(restart.os, "fstat", stat)
+    return race
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("failure", ["changing", "unreadable"])
+def test_given_ac_k_1_ac_k_2_transcript_races_when_waiting_then_recovers_and_restarts(
+    pre_step_world, transcript_race, queued, failure
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    if queued:
+        world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+        world.inject_code = 2
+    transcript_race.failure = failure
+    transcript_race.when = lambda: bool(world.injected) and world.ticks[0] < 0.6
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert transcript_race.changed == pytest.approx([0, 0.2, 0.4])
+    assert world.ticks[0] >= 1.6 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_given_ac_k_3_compacted_transcript_when_read_skipped_then_settle_interval_restarts(
+    pre_step_world, transcript_race, recovers
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    transcript_race.when = lambda: world.ticks[0] >= 0.8 and (not recovers or world.ticks[0] < 1.2)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert transcript_race.changed
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    if recovers:
+        assert code == 0 and report["reason"] == "restarted"
+        assert world.ticks[0] >= 2.2 - 1e-6 and world.signals == [(101, signal.SIGTERM)]
+    else:
+        assert code == 1 and report["reason"] == "context"
+        assert world.ticks[0] == 4 and not world.signals
+        assert "transcript was unreadable on the last pass" in report["detail"]
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_given_ac_k_4_unreadable_transcript_when_deadline_passes_then_timeout_names_last_pass(
+    pre_step_world, transcript_race, queued
+):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    state, exit_code = ("QUEUED", 2) if queued else ("STARTED", 0)
+    world.outcome = {"state": state, "submitted": True, "landing": "queued"}
+    world.inject_code = exit_code
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = f"injection outcome: {state} (exit {exit_code}); compaction wait timed out"
+    if queued:
+        detail += "; save-state was queued and never observed to compact"
+    assert report["detail"] == detail + "; transcript was unreadable on the last pass"
+    assert transcript_race.changed and world.ticks[0] == 3
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_ac_k_4_skipped_read_when_last_pass_readable_then_timeout_omits_unreadable_detail(
+    pre_step_world, transcript_race
+):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    transcript_race.when = lambda: bool(world.injected) and world.ticks[0] < 0.4
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert report["detail"] == "injection outcome: STARTED (exit 0); compaction wait timed out"
+    assert transcript_race.changed and world.ticks[0] == 3 and not world.signals
+
+
+@pytest.mark.parametrize("read_number", [1, 2, 3])
+def test_given_ac_k_5_transcript_races_when_read_before_injection_then_refuses_immediately(
+    pre_step_world, transcript_race, read_number
+):
+    world = pre_step_world
+    transcript_race.when = lambda: transcript_race.reads == read_number
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "transcript evidence unreadable"
+    assert transcript_race.reads == read_number and transcript_race.changed == [0]
+    assert not world.injected and not world.signals and world.ticks[0] == 0
+
+
+def test_given_ac_k_5_transcript_races_when_final_assessment_reads_then_refuses_immediately(
+    pre_step_world, transcript_race, monkeypatch
+):
+    world = pre_step_world
+    transcript_race.when = lambda: False
+    assess = restart.assess
+
+    def assess_with_race(*args, **kwargs):
+        if world.injected:
+            transcript_race.when = lambda: True
+        return assess(*args, **kwargs)
+
+    monkeypatch.setattr(restart, "assess", assess_with_race)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "transcript evidence unreadable"
+    assert transcript_race.changed == [0.2] and world.ticks[0] == 0.2
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+
+
+@pytest.mark.parametrize("compacted", [False, True])
+def test_given_ac_k_5_unfinished_background_launch_when_waiting_then_refuses_immediately(pre_step_world, compacted):
+    world = pre_step_world
+
+    def tick():
+        if compacted:
+            world.compact()
+        world.rows.append({"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+        world.write()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "unfinished background launch"
+    assert world.ticks[0] == 0.2
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+
+
+def test_given_ac_k_6_restart_documents_when_wait_contract_checked_then_unreadable_passes_are_bounded():
+    root = Path(__file__).resolve().parents[1]
+    plan = next((root / "docs" / "plans").glob("*restart-idle-sessions-plan.md")).read_text(encoding="utf-8")
+    criterion = plan.split("- [ ] AC-3.5 When", 1)[1].split("\n\n", 1)[0]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for document in (criterion, readme):
+        assert "unreadable or changing transcript" in document
+        assert "existing compaction deadline" in document
+        assert "settle interval" in document
+        assert "last pass" in document
+
+
 @pytest.mark.parametrize(
     "evidence",
     [

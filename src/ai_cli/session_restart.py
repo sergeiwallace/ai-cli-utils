@@ -238,6 +238,10 @@ class _TranscriptTail(list[dict]):
     """Rows whose full history has already passed background verification."""
 
 
+class _UnreadableTranscript(Refusal):
+    """Transcript evidence is unavailable, rather than positive background work."""
+
+
 def transcript_tail(path: Path) -> list[dict]:
     """Scan every record, with a bounded tail and a disk-backed background ledger."""
     tail: deque[tuple[dict, int]] = deque()
@@ -302,7 +306,7 @@ def transcript_tail(path: Path) -> list[dict]:
                     raise Refusal("background-work", "unfinished background launch")
         return _TranscriptTail(row for row, _ in tail)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        raise Refusal("background-work", "transcript evidence unreadable") from exc
+        raise _UnreadableTranscript("background-work", "transcript evidence unreadable") from exc
 
 
 def _completed_compaction(chain: list[dict]) -> bool:
@@ -448,13 +452,17 @@ def context_pre_step(
         # the lock are still checked each pass; idleness is required only once new compaction
         # evidence exists (the compacted branch below) and again before the final assessment.
         current = fresh(require_idle=False)
-        rows = transcript_tail(path)
+        try:
+            rows = transcript_tail(path)
+        except _UnreadableTranscript:
+            rows = None
+            idle_since = None
         now = time.monotonic()
-        if not compacted and boundaries(rows) - before:
+        if rows is not None and not compacted and boundaries(rows) - before:
             compacted = True
             # Allow the full idle interval even if compaction used its wait budget.
             deadline += settings["settle_seconds"]
-        if compacted:
+        if rows is not None and compacted:
             descendants_gate(current["pid"], Path(current["cwd"]))
             try:
                 idle_gate(current, rows, {**settings, "settle_seconds": 0})
@@ -471,9 +479,12 @@ def context_pre_step(
                     check_lock()
                     return ""
         if now >= deadline:
+            detail = f"{outcome}; compaction wait timed out"
             if queued and not compacted:
-                return f"{outcome}; compaction wait timed out; save-state was queued and never observed to compact"
-            return f"{outcome}; compaction wait timed out"
+                detail += "; save-state was queued and never observed to compact"
+            if rows is None:
+                detail += "; transcript was unreadable on the last pass"
+            return detail
         time.sleep(min(POLL_SECONDS, deadline - now))
 
 
