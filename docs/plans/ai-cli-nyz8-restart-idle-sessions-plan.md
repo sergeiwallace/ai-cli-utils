@@ -318,9 +318,12 @@ background work.
   been for `settle_seconds`; the transcript's last main-chain record ends a turn.
 - No background work: no background launch in the transcript (a `backgroundTaskId`, an
   `async_launched` status) without a matching completion, the latest main-chain
-  `{"type":"system","subtype":"turn_duration"}` record present with `pendingBackgroundAgentCount`
-  0, and no live descendant of the agent pid other than the MCP servers its process tree started
-  with. A transcript is read from its end in bounded chunks; they reach hundreds of megabytes.
+  `{"type":"system","subtype":"turn_duration"}` record present, with `pendingBackgroundAgentCount`
+  absent or 0, and no live descendant of the agent pid other than the MCP servers its process tree
+  started with. Claude Code writes that field only when it is non-zero: of 103 main-chain turn-end
+  records in one session, 82 carried no field, 21 carried 1 or 2, and none carried 0. A missing
+  turn-end record, not a missing field, is the unknown that refuses. A transcript is read from
+  its end in bounded chunks; they reach hundreds of megabytes.
 
 **Pros:**
 
@@ -352,8 +355,12 @@ background work.
 
 The ask makes idleness absolute, so the strict reading wins. The first Con is accepted, since a
 refused restart costs only a later retry and the triggers retry on their interval. The second
-is mitigated by classifying descendants by their command line against the MCP server commands in
-the session's configuration, and treating any unclassified descendant as background work.
+is mitigated by classifying descendants against the MCP servers in the session's configuration,
+and treating any unclassified descendant as background work. A configured server often starts
+through a wrapper that execs a different program (measured: a configured `<bin>/notifier
+mcp-adapter` runs as `python ... notifier.py mcp-adapter`), so a direct child counts as that
+server when its argv ends with the server's configured args, or its argv[0] resolves to the
+configured command, and it started within a minute of the agent itself.
 
 ---
 
@@ -401,9 +408,13 @@ compaction.
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
 <!-- decision-lineage: decision-id=AI-CLI-nyz8/D-4; decision-topic=restart-context-gate; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=the context gate passes just after an auto-compaction or at or below a configurable percentage, default 20; applicability=scope:restart-session; outcome-id=compaction-or-threshold; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-(a) keeps both arms and the default. The Con is mitigated by failing the gate (not passing it)
-when the window is unknown and unconfigured, which routes the session to the pre-step rather than
-restarting it on a guess.
+(a) keeps both arms and the default. The Con is mitigated by assuming the smallest window in the
+table for a model the table does not know and `context_window_tokens` does not set. That
+overstates the percentage, so the gate can only become stricter, never looser, and a session the
+pre-step has just compacted still passes. The first version failed the gate outright for an
+unknown model; a live check on a session running a model the table lacked showed that this
+refuses every such session even after its compaction, because a manual compaction passes only
+through the threshold arm.
 
 ---
 
