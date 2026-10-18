@@ -1508,6 +1508,91 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
     }
 
 
+def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> bool:
+    """Under the session lock, retire a failed fence only on positive local proof."""
+    try:
+        session, pane = _pane(record)
+        _, result_path, request_path = state_paths(session)
+        try:
+            request_path.stat()
+        except FileNotFoundError:
+            return True
+        request = _object(request_path)
+        if request.get("status") != "failed":
+            return True
+        result = _object(result_path)
+        pid = record["pid"]
+        supervisor = request["supervisor_pid"]
+        probe = probe_for()
+        if (
+            any(type(value) is not int or value <= 1 for value in (pid, supervisor, request["old_agent_pid"]))
+            or record.get("tmux") != request["tmux"]
+            or record.get("sessionId") != request["session_id"]
+            or result.get("session_id") != request["session_id"]
+            or not _number(result.get("last_restart"))
+            or pid == request["old_agent_pid"]
+            or probe.has_ended(pid)
+            or probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH
+        ):
+            return False
+        shown = (
+            _run(
+                [
+                    "tmux",
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
+                ]
+            )
+            .strip()
+            .split("\t")
+        )
+        if (
+            shown != [session, pane, str(supervisor), request["generation"]]
+            or not _same(supervisor, request["supervisor_identity"])
+            or supervisor not in [parent.pid for parent in psutil.Process(pid).parents()]
+            or local_verdict(record) != "VERIFIED"
+        ):
+            return False
+        check_lock()
+        if _object(request_path) != request or _object(result_path) != result:
+            return False
+    except Exception:
+        # Probe failures, including unexpected ones, cannot authorize recovery.
+        return False
+    reconciled = {
+        **request,
+        "status": "complete",
+        "reconciliation": {
+            "time": time.time(),
+            "replacement_pid": pid,
+            "evidence": [
+                "pane",
+                "session-id",
+                "replacement-pid",
+                "process-start",
+                "supervisor-identity",
+                "supervisor-ancestry",
+                "local-verdict",
+            ],
+        },
+    }
+    # Publish the result first: an interrupted update must retain the request fence.
+    try:
+        _atomic_json(result_path, {**result, "failed": False, "reason": "reconciled"})
+        _atomic_json(request_path, reconciled)
+    except Exception as exc:
+        # A rename can succeed before fsync raises; restore either changed document.
+        if _object(request_path) != request:
+            _atomic_json(request_path, request)
+        if _object(result_path) != result:
+            _atomic_json(result_path, result)
+        raise Refusal("restart-fenced", "reconciliation could not be persisted") from exc
+    return True
+
+
 def _check(record: dict, settings: dict, commands: dict) -> dict:
     gates = {}
     cwd = Path(record.get("cwd") or Path.cwd())
@@ -1531,15 +1616,16 @@ def _check(record: dict, settings: dict, commands: dict) -> dict:
     _, result_path, request_path = state_paths(session)
     gates.update({"lock": "UNKNOWN", "cooldown": "UNKNOWN", "failure-fence": "UNKNOWN"})
     try:
-        with session_lock(session):
+        with session_lock(session) as check_lock:
             gates["lock"] = "PASS"
+            reconciled = _reconcile_failed_request(record, check_lock)
             result = _object(result_path) if result_path.exists() else {}
             gates["cooldown"] = (
                 "cooldown" if time.time() - result.get("last_restart", 0) < settings["cooldown_seconds"] else "PASS"
             )
             gates["failure-fence"] = (
                 "restart-fenced"
-                if request_path.exists() and _object(request_path).get("status") != "complete"
+                if not reconciled or (request_path.exists() and _object(request_path).get("status") != "complete")
                 else "PASS"
             )
     except Refusal as exc:
@@ -1753,6 +1839,7 @@ def restart(
             return _report("detached")
         with session_lock(session) as check_lock:
             _, result_path, request_path = state_paths(session)
+            reconciled = _reconcile_failed_request(record, check_lock)
             previous = _object(result_path) if result_path.exists() else {}
             if time.time() - previous.get("last_restart", 0) < settings["cooldown_seconds"]:
                 raise Refusal("cooldown")
@@ -1766,6 +1853,8 @@ def restart(
                 )
             ):
                 raise Refusal("previous-verification-failed")
+            if not reconciled:
+                raise Refusal("restart-fenced", "replacement recovery is unproven")
             if detached:
                 deadline = time.monotonic() + settings["compaction_wait_seconds"]
                 while True:

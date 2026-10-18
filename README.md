@@ -276,6 +276,17 @@ the reason, actor and proof of target absence or PID reuse in the supervisor's
 launch log, then removes only that request file so the waiting loop can continue.
 If the log cannot be written, the request remains fenced.
 
+On the next check or restart attempt, a failed request is reconciled to `complete`
+under the session lock if a live replacement has the pinned conversation UUID
+in the same tmux pane, a different PID from the old agent, a matching
+recorded process start time, and `VERIFIED` local evidence. The pane must still
+belong to the recorded supervisor generation and birth identity, and that
+supervisor must be an ancestor of the replacement. The request records the
+reconciliation time, replacement PID and evidence kinds; the result records
+`failed: false` with reason `reconciled`. Missing, unreadable, unknown or conflicting
+evidence keeps the fence and leaves both files unchanged. Reconciliation preserves
+`last_restart`, so the existing cooldown is unchanged and can still refuse a retry.
+
 Restart settings are read on every call from `config.toml`:
 
 ```toml
@@ -420,8 +431,8 @@ action and verification. Never unlink or replace that lock file. A separate atom
 failed attempts. Cooldown expiry does not authorize automatic retry after failed
 verification. The durable `.request.json` and per-request `.launched` receipt fence
 an interrupted or failed resume; no title lookup or fresh-conversation fallback is
-allowed. A manual retry validates the same live conversation before replacing its
-failed request. An incompatible or no-longer-live target needs operator recovery;
+allowed. A manual retry requires proof of a verified replacement before replacing
+a failed request. An incompatible or no-longer-live target needs operator recovery;
 do not remove a request merely to bypass its refusal.
 
 #### Session names
