@@ -110,6 +110,33 @@ def _env_launched_under(tmux_tmpdir: Path) -> dict[str, str]:
     return env
 
 
+@pytest.mark.parametrize("boundary", ["run", "Popen"])
+def test_given_monkeypatched_process_boundary_when_next_test_runs_then_guard_allowance_is_current(tmp_path, boundary):
+    body = f"""
+        import subprocess
+        from unittest.mock import Mock
+
+        import pytest
+
+        def test_patch_boundary(monkeypatch):
+            monkeypatch.setattr(subprocess, {boundary!r}, Mock())
+
+        @pytest.mark.real_tmux
+        def test_allow_private_tmux(tmp_path):
+            result = subprocess.run(
+                ["tmux", "-S", str(tmp_path / "absent"), "kill-server"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+
+        def test_refuse_unmocked_launch():
+            with pytest.raises(RuntimeError, match="attempted to spawn a real `tmux` process"):
+                subprocess.run(["tmux", "new-session", "-d", "-s", "session-1"])
+        """
+    result = _run_inner_suite(tmp_path, body, dict(os.environ))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_given_a_run_started_under_a_live_tmux_server_when_a_test_makes_a_bare_tmux_call_then_it_does_not_reach_that_server(
     tmp_path: Path, stand_in_server: Path
 ):
