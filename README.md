@@ -614,6 +614,11 @@ mode = "observe"
 # Set `mode = "reap"` only after reviewing observe-mode logs.
 stale_after_seconds = 600
 
+[sidecar]
+enabled = false                # opt in to the optional machine wake sidecar
+mode = "machine"              # "machine" or "session"
+boot = false                   # true when the operating system starts it
+
 [sync]
 remote_host = "user@host"      # for cross-machine sync
 
@@ -623,6 +628,12 @@ notify_on_exit = true          # desktop notifications on task completion
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
 ```
+
+On a local session launch, `ai` asks a discovered ai-harness checkout to ensure its
+machine wake sidecar is running. That checkout's machine profile is authoritative when
+present, so the local `[sidecar]` values are ignored. The check is bounded, never runs
+for remote launches, and never blocks a session after a sidecar failure. Without a
+sidecar implementation, setting `enabled = true` prints one notice and continues.
 
 To add another machine, give it a short alias and select it for one launch with
 `ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses

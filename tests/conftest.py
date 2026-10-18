@@ -1652,6 +1652,22 @@ def _refuse_the_hosts_dolt_supervisor(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _refuse_the_hosts_wake_sidecar(monkeypatch):
+    """Never let a session-launch test discover the host's wake sidecar CLI."""
+    import ai_cli.main as _main_module
+
+    real = _main_module._wake_sidecar_script
+
+    def hermetic():
+        script = real()
+        if script is not None and dolt_supervisor_is_the_hosts(script):
+            return None
+        return script
+
+    monkeypatch.setattr(_main_module, "_wake_sidecar_script", hermetic)
+
+
+@pytest.fixture(autouse=True)
 def _reset_registry_cache():
     """Reset the project registry cache before each test."""
     _config_module._registry_cache = None
