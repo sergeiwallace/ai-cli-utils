@@ -26,7 +26,7 @@ from ai_cli.session_script import get_engine_script
 @pytest.fixture
 def programs(tmp_path, monkeypatch):
     legacy = (Path(__file__).parent / "fixtures/session_restart_legacy.txt").read_text(encoding="utf-8")
-    legacy = legacy.replace("__PROJECT_DIR__", str(tmp_path))
+    legacy = legacy.replace("__PROJECT_DIR__", tmp_path.as_posix())
     metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     metadata = json.loads(shlex.split(metadata_line)[2])
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
@@ -159,6 +159,7 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
     assert not any("respawn-pane" in call for call in calls)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
 @pytest.mark.parametrize("fault", ["none", "registry", "both"])
 def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_first(promotion_environment, fault):
     shell, env, name, tmp_path = promotion_environment

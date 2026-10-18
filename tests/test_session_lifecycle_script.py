@@ -46,7 +46,10 @@ def test_status_77_when_supervisor_returns_then_manual_exit_is_persisted(shell_e
     child.parent.mkdir(parents=True)
     child.write_text("#!/bin/sh\nexit 77\n")
     script = tmp_path / "supervisor.sh"
-    script.write_text(get_engine_script("c", "session-1", name, "c-session-", "myproject", worktree_dir=str(tmp_path)))
+    script.write_text(
+        get_engine_script("c", "session-1", name, "c-session-", "myproject", worktree_dir=str(tmp_path)),
+        encoding="utf-8",
+    )
     completed = subprocess.run([shell, str(script)], env=env, capture_output=True, text=True, check=False, timeout=20)
     assert completed.returncode == 0, completed.stderr
     record = registry.load_registry()["sessions"][0]
