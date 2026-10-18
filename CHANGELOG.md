@@ -170,6 +170,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai cos` now takes the exclusive advisory lock on `<home>/registry.json.lock` across its
+  whole load-change-save of `registry.json`, so a change another locked writer saves while a
+  chief starts is no longer overwritten. The save is fsynced before the rename. There is no
+  lock where `fcntl` is unavailable (Windows).
 - `ai copier-update` no longer fails an update because a project's pre-commit formatter rewrote
   files. The hook aborts the commit but leaves its fixes in the tree, so the update now stages them
   and commits once more through the same hooks. A hook that rejects without rewriting, or keeps

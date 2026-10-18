@@ -9,6 +9,7 @@ role exported and worktree isolation off. A dry run must write nothing.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -1275,3 +1276,70 @@ class TestRemoteRelaunchOfAChief:
             launch.assert_not_called()
         assert code == 1
         assert "no machine key" in err
+
+
+@pytest.mark.skipif(importlib.util.find_spec("fcntl") is None, reason="POSIX-only: fcntl advisory locks")
+class TestRegistryLock:
+    """``ai cos`` holds the registry lock across its whole load-change-save.
+
+    The other writer of ``registry.json`` takes ``fcntl.flock(LOCK_EX)`` on
+    ``<home>/registry.json.lock`` around each load-change-save and replaces the file whole.
+    """
+
+    def test_given_a_locked_writer_mid_change_when_chief_launched_then_it_waits_and_the_writer_change_survives(
+        self, seeded_home
+    ):
+        import fcntl
+        import threading
+
+        registry = cos.registry_path(seeded_home)
+        registry.write_text(json.dumps({"schema_version": 2, "vp_sessions": [{"vp_id": "vp/myproject/old"}]}))
+        writer_has_lock = threading.Event()
+        cos_loaded = threading.Event()
+        writer_saved = threading.Event()
+        order: list[str] = []
+
+        def locked_writer():
+            fd = os.open(seeded_home / "registry.json.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                data = json.loads(registry.read_text())
+                data["vp_sessions"] = [{"vp_id": "vp/myproject/rekeyed"}]
+                writer_has_lock.set()
+                # An unlocked launcher loads mid-change; a locked one cannot load until release.
+                cos_loaded.wait(timeout=1.0)
+                tmp = registry.with_name("registry.json.writer-tmp")
+                tmp.write_text(json.dumps(data))
+                tmp.replace(registry)
+                writer_saved.set()
+                order.append("writer released")
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+        real_read = cos._read_json_object
+
+        def observed_read(path, what):
+            data = real_read(path, what)
+            if path == registry:
+                order.append("cos loaded")
+                cos_loaded.set()
+                writer_saved.wait(timeout=5.0)
+            return data
+
+        writer = threading.Thread(target=locked_writer)
+        writer.start()
+        assert writer_has_lock.wait(timeout=5.0)
+        try:
+            with ExitStack() as stack:
+                _launch_patches(stack, live=False)
+                stack.enter_context(patch("ai_cli.chief_of_staff._read_json_object", side_effect=observed_read))
+                code, _out, err = run_cli(["ai", "cos"])
+        finally:
+            writer.join(timeout=10.0)
+        assert code == 0, err
+        assert order[:2] == ["writer released", "cos loaded"]
+        final = json.loads(registry.read_text())
+        assert final["vp_sessions"] == [{"vp_id": "vp/myproject/rekeyed"}]
+        assert final["chief_routes"]["native_agent_name"] == "aih-firstmate-1"
+        assert final["chief_generation"] == 1
