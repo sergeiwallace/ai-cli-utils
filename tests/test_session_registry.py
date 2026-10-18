@@ -94,7 +94,7 @@ def _launch_local(state_home, *, argv, name="1", is_remote=False):
     (`attach-session -d`). Returns ``(exec_argv, registry_at_exec)``: the registry as it
     stood at the moment the launcher handed off.
     """
-    seen: dict = {}
+    seen: dict = {"exec": None, "registry": None}
 
     def fake_run(cmd, *args, **kwargs):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
