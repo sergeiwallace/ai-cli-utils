@@ -31,7 +31,7 @@ SESSION = "c-myproject-box-1"
 TITLE = "myproject-box-1"
 
 
-def _wait_for(check, process, timeout=30):
+def _wait_for(check, process, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = check()
@@ -50,10 +50,31 @@ def supervisor_fixture(tmp_path_factory, monkeypatch):
     binaries = root / "bin"
     for directory in (home / ".claude", cwd / ".claude", binaries):
         directory.mkdir(parents=True)
+    # Expose only checked OS utilities and the fixture service programs below.
+    # Optional host tools such as direnv must not change the child environment.
+    for name in (
+        "bash",
+        "base64",
+        "cat",
+        "date",
+        "id",
+        "mkdir",
+        "mktemp",
+        "ps",
+        "rm",
+        "sed",
+        "sleep",
+        "stat",
+        "tr",
+        "wc",
+    ):
+        executable = shutil.which(name)
+        assert executable is not None, f"supervisor fixture requires {name}"
+        (binaries / name).symlink_to(executable)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
-    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("PATH", str(binaries))
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
     monkeypatch.setenv("RESTART_FIXTURE_ROOT", str(root))
     monkeypatch.delenv("TMUX", raising=False)
@@ -70,12 +91,12 @@ def supervisor_fixture(tmp_path_factory, monkeypatch):
         return guarded_run(argv, **kwargs)
 
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: shutil.which("bash"))
-    (home / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":true}')
+    (home / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":true}', encoding="utf-8")
     transcript_dir = home / ".claude" / "projects" / "myproject"
     transcript_dir.mkdir(parents=True)
     transcript = transcript_dir / f"{SESSION_ID}.jsonl"
-    transcript.write_text(json.dumps({"type": "custom-title", "customTitle": TITLE}) + "\n")
-    (root / "target").write_text(str(transcript))
+    transcript.write_text(json.dumps({"type": "custom-title", "customTitle": TITLE}) + "\n", encoding="utf-8")
+    (root / "target").write_text(str(transcript), encoding="utf-8")
     preamble = (
         f"#!{sys.executable}\n"
         + """import json, os, sys, time
@@ -86,19 +107,20 @@ root = Path(os.environ['RESTART_FIXTURE_ROOT'])
     (binaries / "tmux").write_text(
         preamble
         + """args = sys.argv[1:]
-with (root / 'tmux-calls').open('a') as out: out.write(json.dumps(args) + '\\n')
+with (root / 'tmux-calls').open('a', encoding='utf-8') as out: out.write(json.dumps(args) + '\\n')
 if args[0] == 'set-option' and '@ai_cli_session_generation' in args:
-    (root / 'generation').write_text(args[-1])
+    (root / 'generation').write_text(args[-1], encoding='utf-8')
 elif args[0] == 'display-message':
     if args[-1] == '#{session_id}': print('$1')
     elif 'pane_pid' in args[-1]:
-        fields = ['c-myproject-box-1', '%1', (root / 'supervisor-pid').read_text(), (root / 'generation').read_text()]
+        fields = ['c-myproject-box-1', '%1', (root / 'supervisor-pid').read_text(encoding="utf-8"), (root / 'generation').read_text(encoding="utf-8")]
         if 'pane_start_command' in args[-1]:
             fields.append('bash ' + str(root / 'state/ai-cli-utils/sessions/c-myproject-box-1.sh'))
         print('\\t'.join(fields))
 elif args[0] == 'show-environment':
     print('AI_SESSION_STARTED=1')
-"""
+""",
+        encoding="utf-8",
     )
     (binaries / "ai").write_text(
         preamble
@@ -106,14 +128,17 @@ elif args[0] == 'show-environment':
 if args[:2] == ['internal', 'get-version']: print('unknown')
 elif args[:2] == ['internal', 'acquire-generation-lease']: sys.exit(1)
 elif args[:2] == ['internal', 'resolve-continue-target']:
-    with (root / 'resolver-calls').open('a') as out: out.write('query\\n')
-    print((root / 'target').read_text())
+    with (root / 'resolver-calls').open('a', encoding='utf-8') as out: out.write('query\\n')
+    print((root / 'target').read_text(encoding="utf-8"))
 elif args[:2] == ['internal', 'restart-pin']:
     from ai_cli.session_restart import child_pin
+    # Model cold helper startup beyond the former two-second verification budget.
+    time.sleep(3)
     status, transcript = child_pin(args[2], args[3])
     if transcript: print(transcript)
     sys.exit(status)
-"""
+""",
+        encoding="utf-8",
     )
     (binaries / "claude").write_text(
         preamble
@@ -122,10 +147,10 @@ from ai_cli.process_probe import probe_for
 sessions = Path.home() / '.claude/sessions'
 sessions.mkdir(parents=True, exist_ok=True)
 if sys.argv[1:] == ['agents', '--json']:
-    print(json.dumps([json.loads(p.read_text()) for p in sessions.glob('*.json')]))
+    print(json.dumps([json.loads(p.read_text(encoding="utf-8")) for p in sessions.glob('*.json')]))
     sys.exit(0)
 pid = os.getpid()
-with (root / 'launches').open('a') as out:
+with (root / 'launches').open('a', encoding='utf-8') as out:
     out.write(json.dumps({'pid': pid, 'ppid': os.getppid(), 'argv': sys.argv[1:]}) + '\\n')
 if (root / 'fail-resume').exists(): sys.exit(1)
 sid = sys.argv[sys.argv.index('--resume') + 1]
@@ -136,9 +161,9 @@ record = {'pid': pid, 'procStart': probe_for().capture_identity(pid).marker, 'se
           'tmux': 'c-myproject-box-1:@1.%1', 'bridgeSessionId': 'bridge-1',
           'messagingSocketPath': sockpath, 'version': '2.1.1'}
 registry = sessions / f'{pid}.json'
-registry.write_text(json.dumps(record))
+registry.write_text(json.dumps(record), encoding='utf-8')
 transcript = Path.home() / '.claude/projects/myproject' / f'{sid}.jsonl'
-with transcript.open('a') as out:
+with transcript.open('a', encoding='utf-8') as out:
     out.write(json.dumps({'type': 'assistant', 'message': {'model': 'claude-sonnet-4-6', 'usage': {
         'input_tokens': 1000, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}}}) + '\\n')
     out.write(json.dumps({'type': 'system', 'subtype': 'turn_duration', 'pendingBackgroundAgentCount': 0}) + '\\n')
@@ -153,15 +178,17 @@ try:
 finally:
     registry.unlink(missing_ok=True)
     Path(sockpath).unlink(missing_ok=True)
-"""
+""",
+        encoding="utf-8",
     )
     (binaries / "observer").write_text(
         preamble
         + """sessions = Path.home() / '.claude/sessions'
-rows = [json.loads(p.read_text()) for p in sessions.glob('*.json')]
+rows = [json.loads(p.read_text(encoding="utf-8")) for p in sessions.glob('*.json')]
 print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time(), 'rows': [
     {'session_id': r['sessionId'], 'title': r['name'], 'bridge_session_id': r['bridgeSessionId']} for r in rows]}))
-"""
+""",
+        encoding="utf-8",
     )
     (binaries / "python3").symlink_to(sys.executable)
     for program in binaries.iterdir():
@@ -169,19 +196,19 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
             program.chmod(0o700)
     commands = config.get_xdg_config_home() / "restart-session.d"
     commands.mkdir(parents=True)
-    (commands / "observer.toml").write_text('[observer]\nargv = ["observer"]\n')
+    (commands / "observer.toml").write_text('[observer]\nargv = ["observer"]\n', encoding="utf-8")
     state = config.get_xdg_state_home()
     script = state / "sessions" / f"{SESSION}.sh"
     legacy = (
         (Path(__file__).parent / "fixtures" / "session_restart_legacy.txt")
-        .read_text()
+        .read_text(encoding="utf-8")
         .replace("__PROJECT_DIR__", str(cwd))
     )
     main._write_launch_script_if_changed(script, legacy)
     # Freeze the old child's shell selection independently of the current preference.
     # The fixture uses bash, so the refreshed program must use the same shell here.
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
-    diagnostics = (root / "supervisor.log").open("w")
+    diagnostics = (root / "supervisor.log").open("w", encoding="utf-8")
     process = subprocess.Popen(
         ["bash", str(script)],
         stdin=subprocess.DEVNULL,
@@ -189,7 +216,7 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
         stderr=diagnostics,
         start_new_session=True,
     )
-    (root / "supervisor-pid").write_text(str(process.pid))
+    (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
     try:
         # This shared-module patch must unwind before the conftest spawn guard.
         with patch.object(session_restart.subprocess, "run", fixture_run):
@@ -234,7 +261,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     def launches():
         if not launches_path.exists():
             return []
-        return [json.loads(line) for line in launches_path.read_text().splitlines()]
+        return [json.loads(line) for line in launches_path.read_text(encoding="utf-8").splitlines()]
 
     initial = _wait_for(launches, supervisor)[0]
     old_child = initial["ppid"]
@@ -249,8 +276,8 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
         sent.append((pid, sig))
         # Introduce the same-title competitor after the act path's last check.
         competitor = root / "home/.claude/projects/myproject" / f"{OTHER_ID}.jsonl"
-        competitor.write_text(json.dumps({"type": "custom-title", "customTitle": TITLE}) + "\n")
-        (root / "target").write_text(str(competitor))
+        competitor.write_text(json.dumps({"type": "custom-title", "customTitle": TITLE}) + "\n", encoding="utf-8")
+        (root / "target").write_text(str(competitor), encoding="utf-8")
         if failed_resume:
             (root / "fail-resume").touch()
         original_kill(pid, sig)
@@ -260,12 +287,14 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
             "min_uptime_seconds": 0,
             "settle_seconds": 0,
             "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 2 if failed_resume else 20,
+            "relaunch_timeout_seconds": 60,
             "cooldown_seconds": 0,
         }
     }
     if prompt:
-        (config.get_xdg_state_home() / f"cc-resume-prompt-{SESSION}").write_text("Continue the saved work.")
+        (config.get_xdg_state_home() / f"cc-resume-prompt-{SESSION}").write_text(
+            "Continue the saved work.", encoding="utf-8"
+        )
     with monkeypatch.context() as patcher:
         patcher.setattr(session_restart.os, "kill", signal_owned)
         code, out, err = run_cli(["ai", "-X", SESSION_ID, "-j"], config=settings)
@@ -273,6 +302,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     assert (code, report["reason"]) == ((1, "verification-failed") if failed_resume else (0, "restarted")), (
         report,
         err,
+        (root / "supervisor.log").read_text(encoding="utf-8"),
     )
     replacement = _wait_for(lambda: launches() if len(launches()) == 2 else None, supervisor)[1]
     assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
@@ -288,6 +318,6 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     assert replacement["ppid"] != old_child
     assert script.stat().st_ino != old_script
     assert sent == [(initial["pid"], signal.SIGTERM)]
-    assert (root / "resolver-calls").read_text().splitlines() == ["query"]
-    calls = [json.loads(line) for line in (root / "tmux-calls").read_text().splitlines()]
+    assert (root / "resolver-calls").read_text(encoding="utf-8").splitlines() == ["query"]
+    calls = [json.loads(line) for line in (root / "tmux-calls").read_text(encoding="utf-8").splitlines()]
     assert not any("respawn-pane" in call for call in calls)
