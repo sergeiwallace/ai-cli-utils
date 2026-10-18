@@ -1500,7 +1500,9 @@ def pre_step_world(world, monkeypatch):
                 {"type": "user", "isCompactSummary": True, "message": {"content": "Session summary"}},
             ]
         )
-        world.record["statusUpdatedAt"] = time.time() * 1000
+        # One millisecond back: the gate reads this as time.time() - ms / 1000, and writing "now" exactly
+        # lets float rounding return a tiny negative quiet time (about 1 in 90 epochs), which reads as busy.
+        world.record["statusUpdatedAt"] = (time.time() - 0.001) * 1000
         world.write()
 
     world.compact = compact
