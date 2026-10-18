@@ -30,7 +30,8 @@ def test_given_restart_mocks_when_tests_finish_then_spawn_functions_are_restored
         "    result = yield\n"
         "    assert subprocess.run is original_run, 'subprocess.run leaked across tests'\n"
         "    assert subprocess.Popen is original_popen, 'subprocess.Popen leaked across tests'\n"
-        "    return result\n"
+        "    return result\n",
+        encoding="utf-8",
     )
     tests = Path(__file__).resolve().parent
     result = subprocess.run(
@@ -53,6 +54,7 @@ def test_given_restart_mocks_when_tests_finish_then_spawn_functions_are_restored
         env={**os.environ, "PYTHONPATH": os.pathsep.join((str(tmp_path), os.environ.get("PYTHONPATH", "")))},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=300,
         check=False,
     )

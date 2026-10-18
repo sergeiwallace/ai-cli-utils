@@ -267,7 +267,10 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     old_child = initial["ppid"]
     old_script = script.stat().st_ino
     # The real pre-feature child has the existing three-second quick-exit gate.
-    _wait_for(lambda: time.time() - psutil.Process(initial["pid"]).create_time() >= 3.1, supervisor)
+    # Process birth can precede the launch timer (for example, during exec
+    # startup). Measure a full window after observing the running agent instead.
+    observed = time.monotonic()
+    _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     original_kill = os.kill
     sent = []
 
@@ -284,7 +287,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
 
     settings = {
         "restart_session": {
-            "min_uptime_seconds": 0,
+            "min_uptime_seconds": 4,
             "settle_seconds": 0,
             "term_grace_seconds": 5,
             "relaunch_timeout_seconds": 60,
