@@ -407,6 +407,20 @@ def _case_insensitive_filesystem_impl(path: Path):
 
 
 @pytest.fixture
+def interactive_terminal(monkeypatch):
+    """Launches attach only with a terminal on stdin; the suite's stdin is never one."""
+
+    class _Terminal:
+        def isatty(self) -> bool:
+            return True
+
+        def __getattr__(self, name):
+            return getattr(sys.__stdin__, name)
+
+    monkeypatch.setattr(sys, "stdin", _Terminal())
+
+
+@pytest.fixture
 def case_insensitive_filesystem(tmp_path: Path):
     """Skip at SETUP unless this filesystem aliases case, so nothing gets built.
 
