@@ -89,7 +89,9 @@ def test_single_run_when_agent_finishes_then_original_status_and_manual_exit_are
     from ai_cli import session_commands
 
     monkeypatch.setattr(
-        session_commands.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, status)
+        session_commands.output,
+        "run_relayed",
+        lambda tag, op, argv, **kwargs: subprocess.CompletedProcess(argv, status),
     )
     result = runner.invoke(_cli_group, ["sessions", "_run", "c-session-1", "--", "example-command", "--argument"])
     assert result.exit_code == status
@@ -97,3 +99,14 @@ def test_single_run_when_agent_finishes_then_original_status_and_manual_exit_are
     assert record["supervisor_exit"]["cause"] == "manual_exit"
     assert record["run_state"] == "exited"
     assert record["boot_recipe"]["command"] == ["example-command", "--argument"]
+
+
+def test_given_child_output_when_single_run_finishes_then_output_is_tagged(publishing, runner):
+    import sys
+
+    result = runner.invoke(
+        _cli_group,
+        ["sessions", "_run", "c-session-1", "--", sys.executable, "-c", "print('child-message')"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "[session] session: child-message" in result.output

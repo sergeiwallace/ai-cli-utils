@@ -1,15 +1,15 @@
 """Session lifecycle and publication commands."""
 
 import json
-import subprocess
 import sys
 import time
 
 import click
 
-from . import session_publish_timer, session_state_publish
+from . import output, session_publish_timer, session_state_publish
 from . import session_registry as registry
 from . import session_run_state as state
+from .output import Untagged
 
 
 @click.group("sessions", help="Session run state and publication")
@@ -43,7 +43,7 @@ def mark(name, status, cause, evidence, generation, sequence):
 @click.argument("name")
 def begin(name):
     try:
-        click.echo(state.begin(name))
+        output.raw(Untagged.INTERNAL_REPLY, state.begin(name))
     except Exception as exc:
         raise click.ClickException("cannot acquire a durable supervisor generation") from exc
 
@@ -53,7 +53,7 @@ def begin(name):
 @click.option("-t", "--tick", is_flag=True, help="Run one publication timer tick")
 def publish(now, tick):
     result = session_state_publish.publish(now=now, tick=tick)
-    click.echo(result.reason)
+    output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
 @sessions.command("list")
@@ -70,10 +70,10 @@ def list_sessions(as_json):
         for r in registry.load_registry()["sessions"]
     ]
     if as_json:
-        click.echo(json.dumps(records))
+        output.raw(Untagged.JSON, json.dumps(records))
     else:
         for record in records:
-            click.echo("\t".join(record.values()))
+            output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
 
 
 @sessions.group("publish-timer", help="Manage the background publication timer")
@@ -84,7 +84,7 @@ def publish_timer():
 def _timer_command(action):
     @click.command(action)
     def command():
-        click.echo(session_publish_timer.manage(action))
+        output.emit(output.Tag.SESSIONS, "configure", session_publish_timer.manage(action))
 
     return command
 
@@ -104,7 +104,7 @@ def run_once(name, command):
         raise click.ClickException("startup persistence failed; agent was not started")
     cause = "manual_exit"
     try:
-        result = subprocess.run(list(command), check=False)
+        result = output.run_relayed(output.Tag.SESSION, "session", list(command), check=False)
         status = result.returncode
     except OSError:
         cause, status = "unknown", 1
@@ -113,6 +113,6 @@ def run_once(name, command):
     while not state.mark_exited(
         name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=time.monotonic_ns()
     ):
-        click.echo("session exit persistence failed; retrying local safety write", err=True)
+        output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
     sys.exit(status)
