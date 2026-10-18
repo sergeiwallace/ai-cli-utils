@@ -5,12 +5,45 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import session_run_state as state
 
 LABEL = "org.ai-cli-utils.session-publish"
 UNIT = "ai-session-publish"
+
+
+def quote_systemd(value: str) -> str:
+    """Quote one systemd value, including literal specifier characters."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
+
+
+def write_unit(path: Path, content: bytes) -> None:
+    """Read the previous unit, then atomically replace it only when bytes differ."""
+    if path.exists() and path.read_bytes() == content:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.read_bytes()
+            temporary.unlink()
+
+
+def run_manager(argv: list[str], *, runner=None, check: bool = True):
+    """Keep service-manager execution injectable and diagnostics out of exceptions."""
+    result = (runner or subprocess.run)(argv, capture_output=True, text=True, check=False, timeout=10)
+    if check and result.returncode:
+        raise RuntimeError("service manager refused unit operation")
+    return result
 
 
 def render(cfg: dict, *, platform: str, home: Path, path: str, executable: str) -> dict[Path, bytes]:
@@ -33,13 +66,10 @@ def render(cfg: dict, *, platform: str, home: Path, path: str, executable: str) 
     if platform.startswith("linux"):
         root = state.config.resolve_base_dir("XDG_CONFIG_HOME", home / ".config") / "systemd/user"
 
-        def quote(value):
-            return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
-
         service = (
             f"[Unit]\nDescription=Publish session run state\n[Service]\nType=oneshot\n"
-            f"Environment={quote('PATH=' + path)} {quote('HOME=' + str(home))}\n"
-            f"ExecStart={quote(executable)} sessions publish --tick\n"
+            f"Environment={quote_systemd('PATH=' + path)} {quote_systemd('HOME=' + str(home))}\n"
+            f"ExecStart={quote_systemd(executable)} sessions publish --tick\n"
         )
         timer = (
             f"[Unit]\nDescription=Publish dirty session state periodically\n[Timer]\n"
@@ -70,9 +100,7 @@ def manage(action: str, *, runner=None) -> str:
             return "absent"
 
         def run(argv):
-            result = runner(argv, capture_output=True, text=True, check=False, timeout=10)
-            if result.returncode:
-                raise RuntimeError("service manager refused publication timer operation")
+            run_manager(argv, runner=runner)
 
         domain = f"gui/{os.getuid()}" if sys.platform == "darwin" else ""
 
@@ -99,8 +127,7 @@ def manage(action: str, *, runner=None) -> str:
             for path, content in files.items():
                 if path.exists() and path.read_bytes() == content:
                     continue
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
+                write_unit(path, content)
             if sys.platform == "darwin":
                 if not installed or not loaded:
                     run(["launchctl", "bootstrap", domain, str(next(iter(files)))])
