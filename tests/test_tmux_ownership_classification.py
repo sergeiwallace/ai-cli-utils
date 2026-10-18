@@ -22,6 +22,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from process_ownership import watch_tmux_directory
 
 from ai_cli.tmux_ownership import capture_tmux_session_identity, classify_new_session_output, kill_owned_tmux_session
 
@@ -111,68 +112,66 @@ def test_given_term_resistant_pane_tree_when_owned_session_is_killed_then_no_pan
         "time.sleep(30)"
     )
     tmux_command = ("tmux", "-S", socket)
-    child_pid = 0
-    pane_pid = 0
-    try:
-        created = subprocess.run(
-            [
-                *tmux_command,
-                "new-session",
-                "-d",
-                "-P",
-                "-F",
-                "#{session_id}",
-                "-s",
-                "test-quota-cleanup",
-                sys.executable,
-                "-c",
-                pane_code,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert created.returncode == 0, created.stderr
-        session_id = created.stdout.strip()
-        marked = subprocess.run(
-            [*tmux_command, "set-option", "-t", session_id, "@ai_cli_session_generation", "test-generation"],
-            capture_output=True,
-            check=False,
-        )
-        assert marked.returncode == 0
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not child_pid_file.exists():
-            time.sleep(0.05)
-        assert child_pid_file.exists(), "pane process did not start its child"
-        child_pid = int(child_pid_file.read_text())
-        pane = subprocess.run(
-            [*tmux_command, "display-message", "-p", "-t", session_id, "#{pane_pid}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        pane_pid = int(pane.stdout.strip())
-        identity = capture_tmux_session_identity(session_id, tmux_command=tmux_command)
-        assert identity is not None
-        assert psutil.pid_exists(pane_pid) and psutil.pid_exists(child_pid)
+    with watch_tmux_directory(socket_dir):
+        child_pid = 0
+        pane_pid = 0
+        try:
+            created = subprocess.run(
+                [
+                    *tmux_command,
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{session_id}",
+                    "-s",
+                    "test-quota-cleanup",
+                    sys.executable,
+                    "-c",
+                    pane_code,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert created.returncode == 0, created.stderr
+            session_id = created.stdout.strip()
+            marked = subprocess.run(
+                [*tmux_command, "set-option", "-t", session_id, "@ai_cli_session_generation", "test-generation"],
+                capture_output=True,
+                check=False,
+            )
+            assert marked.returncode == 0
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not child_pid_file.exists():
+                time.sleep(0.05)
+            assert child_pid_file.exists(), "pane process did not start its child"
+            child_pid = int(child_pid_file.read_text())
+            pane = subprocess.run(
+                [*tmux_command, "display-message", "-p", "-t", session_id, "#{pane_pid}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pane_pid = int(pane.stdout.strip())
+            identity = capture_tmux_session_identity(session_id, tmux_command=tmux_command)
+            assert identity is not None
+            assert psutil.pid_exists(pane_pid) and psutil.pid_exists(child_pid)
 
-        assert kill_owned_tmux_session(
-            identity,
-            tmux_command=tmux_command,
-            terminate_pane_processes=True,
-            process_timeout=0.2,
-        )
+            assert kill_owned_tmux_session(
+                identity,
+                tmux_command=tmux_command,
+                terminate_pane_processes=True,
+                process_timeout=0.2,
+            )
 
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and not (_process_has_ended(pane_pid) and _process_has_ended(child_pid)):
-            time.sleep(0.05)
-        assert _process_has_ended(pane_pid)
-        assert _process_has_ended(child_pid)
-    finally:
-        for pid in (child_pid, pane_pid):
-            if pid > 0 and not _process_has_ended(pid):
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGKILL)
-        subprocess.run([*tmux_command, "kill-server"], capture_output=True, check=False)
-        with contextlib.suppress(OSError):
-            socket_dir.rmdir()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not (_process_has_ended(pane_pid) and _process_has_ended(child_pid)):
+                time.sleep(0.05)
+            assert _process_has_ended(pane_pid)
+            assert _process_has_ended(child_pid)
+        finally:
+            for pid in (child_pid, pane_pid):
+                if pid > 0 and not _process_has_ended(pid):
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.kill(pid, signal.SIGKILL)

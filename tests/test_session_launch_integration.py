@@ -13,16 +13,17 @@ import dataclasses
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import libtmux
 import pytest
 from conftest import tmux_runnable
+from process_ownership import watch_tmux_directory
 
 from ai_cli import launch_reporter, tmux_ownership, tmux_setup
 from ai_cli.canonical_worktrees import register_canonical_worktree
@@ -74,22 +75,8 @@ def tmux_server():
         pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-test-")
     sock = f"{sock_dir}/tmux.sock"
-    server = libtmux.Server(socket_path=sock)
-    yield server
-    try:
-        for s in list(server.sessions):
-            try:
-                s.kill_session()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # Final cleanup: kill the server process if still alive
-    try:
-        subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-    except Exception:
-        pass
-    shutil.rmtree(sock_dir, ignore_errors=True)
+    with watch_tmux_directory(Path(sock_dir)):
+        yield libtmux.Server(socket_path=sock)
 
 
 @pytest.fixture

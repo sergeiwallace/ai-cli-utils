@@ -33,6 +33,7 @@ from pathlib import Path
 import psutil
 import pytest
 from conftest import tmux_runnable
+from process_ownership import watch_tmux_directory
 
 from ai_cli.session_script import get_engine_script
 
@@ -81,9 +82,8 @@ def tmux_socket():
         pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-ctrlz-")
     sock = f"{sock_dir}/tmux.sock"
-    yield sock
-    subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-    shutil.rmtree(sock_dir, ignore_errors=True)
+    with watch_tmux_directory(Path(sock_dir)):
+        yield sock
 
 
 def _fake_claude(started: Path, resumed: Path) -> str:
@@ -253,25 +253,24 @@ def test_given_session_whose_pane_foreground_is_stopped_when_ai_c_reattaches_the
     )
     (tmp_path / "promoter.py").write_text(promoter)
     body = f"{sys.executable} {tmp_path / 'promoter.py'} {agent_pid_file} {resumed}\nsleep 60\n"
-    agent_pid = 0
-    try:
-        _drive_launch_against_real_tmux(sock, tmp_path, name="1", script_body=body)
-        assert _wait_for(lambda: bool(_lines(agent_pid_file))), "the pane's agent never started"
-        agent_pid = int(_lines(agent_pid_file)[0])
-        assert _wait_for(lambda: _state(agent_pid) == "T"), f"the agent never stopped: {_state(agent_pid)!r}"
-        time.sleep(1)
-        assert _state(agent_pid) == "T" and not resumed.exists(), "something other than ai c resumed it"
+    with watch_tmux_directory(Path(sock_dir)):
+        agent_pid = 0
+        try:
+            _drive_launch_against_real_tmux(sock, tmp_path, name="1", script_body=body)
+            assert _wait_for(lambda: bool(_lines(agent_pid_file))), "the pane's agent never started"
+            agent_pid = int(_lines(agent_pid_file)[0])
+            assert _wait_for(lambda: _state(agent_pid) == "T"), f"the agent never stopped: {_state(agent_pid)!r}"
+            time.sleep(1)
+            assert _state(agent_pid) == "T" and not resumed.exists(), "something other than ai c resumed it"
 
-        _drive_launch_against_real_tmux(sock, tmp_path, name="1", script_body=body)
+            _drive_launch_against_real_tmux(sock, tmp_path, name="1", script_body=body)
 
-        assert _wait_for(resumed.exists, timeout=_RESUME_BOUND_SECONDS), (
-            f"ai c re-attached to a stopped session without resuming it (state {_state(agent_pid)!r})"
-        )
-    finally:
-        if agent_pid:
-            _release([agent_pid])
-        subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-        shutil.rmtree(sock_dir, ignore_errors=True)
+            assert _wait_for(resumed.exists, timeout=_RESUME_BOUND_SECONDS), (
+                f"ai c re-attached to a stopped session without resuming it (state {_state(agent_pid)!r})"
+            )
+        finally:
+            if agent_pid:
+                _release([agent_pid])
 
 
 # --- AC-3 reconciled with AI-CLI-2139: resume what is suspended, reclaim what is orphaned ---

@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 from conftest import tmux_runnable
+from process_ownership import watch_tmux_directory
 
 from ai_cli.session_script import get_engine_script
 
@@ -73,9 +74,8 @@ def tmux_socket():
         pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-recovery-")
     sock = f"{sock_dir}/tmux.sock"
-    yield sock
-    subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-    shutil.rmtree(sock_dir, ignore_errors=True)
+    with watch_tmux_directory(Path(sock_dir)):
+        yield sock
 
 
 class _RemoteSession:

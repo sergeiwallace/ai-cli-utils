@@ -34,9 +34,9 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
-import libtmux
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
+from process_ownership import watch_tmux_directory
 
 from ai_cli.main import _do_session_launch
 from ai_cli.session_script import SESSION_SHELL_PREFERENCE, get_engine_script
@@ -107,18 +107,8 @@ def real_tmux_socket():
         pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-shellres-")
     sock = f"{sock_dir}/tmux.sock"
-    yield sock
-    try:
-        server = libtmux.Server(socket_path=sock)
-        for session in list(server.sessions):
-            try:
-                session.kill_session()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-    shutil.rmtree(sock_dir, ignore_errors=True)
+    with watch_tmux_directory(Path(sock_dir)):
+        yield sock
 
 
 def _launch_kwargs(name: str) -> dict:
