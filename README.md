@@ -402,6 +402,13 @@ timeouts, malformed, stale or partial listings remain unknown.
 The report separates `local`, `peer`, `message_delivery` and `mobile` verdicts.
 Local verification requires the replacement's exact UUID, user title, bridge
 registration, passive messaging socket connection and complete local agent listing.
+Only agent rows matching the target UUID or title participate in identity checks;
+unrelated rows with a missing PID or incomplete identity do not block verification.
+A matching row must have a non-empty UUID and title and an integer PID greater
+than 1. Malformed matching rows remain unknown, and a replacement-verification
+timeout names their invalid fields in the report detail. Duplicate matches and
+PID, UUID or title mismatches still fail; incomplete or truncated listings remain
+unknown.
 Without verified peer evidence the result is non-zero `verification-incomplete`,
 even after a local restart. Message delivery and mobile visibility remain
 `UNVERIFIED` until independently observed.

@@ -1325,7 +1325,7 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         return "UNKNOWN"
 
 
-def local_verdict(record: dict) -> str:
+def local_verdict(record: dict, *, details: list[str] | None = None) -> str:
     try:
         pid = record["pid"]
         probe = probe_for()
@@ -1355,13 +1355,7 @@ def local_verdict(record: dict) -> str:
             rows = data.get("sessions")
         else:
             rows = data
-        if not isinstance(rows, list) or any(
-            not isinstance(row, dict)
-            or any(not isinstance(row.get(key), str) or not row[key] for key in ("sessionId", "name"))
-            or type(row.get("pid")) is not int
-            or row["pid"] <= 1
-            for row in rows
-        ):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             return "UNKNOWN"
         matches = [
             row
@@ -1369,6 +1363,19 @@ def local_verdict(record: dict) -> str:
             if isinstance(row, dict)
             and (row.get("sessionId") == record["sessionId"] or row.get("name") == record["name"])
         ]
+        if not matches and any(
+            not any(isinstance(row.get(key), str) and row[key] for key in ("sessionId", "name")) for row in rows
+        ):
+            # A row with neither identity field could be the target's own row, so absence is not proved.
+            return "UNKNOWN"
+        for row in matches:
+            invalid = [key for key in ("sessionId", "name") if not isinstance(row.get(key), str) or not row[key]]
+            if type(row.get("pid")) is not int or row["pid"] <= 1:
+                invalid.append("pid")
+            if invalid:
+                if details is not None:
+                    details.append("matching local agent row has invalid " + ", ".join(invalid))
+                return "UNKNOWN"
         if len(matches) != 1 or any(matches[0].get(key) != record[key] for key in ("pid", "sessionId", "name")):
             return "FAILED"
         return "VERIFIED"
@@ -1557,6 +1564,7 @@ def _fresh(record_path: Path, original: dict) -> dict:
 def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
     deadline = time.monotonic() + settings["relaunch_timeout_seconds"]
     while True:
+        local_details: list[str] = []
         candidates = [row for _, row in records() if row.get("tmux") == old["tmux"] and row.get("pid") != old["pid"]]
         for row in candidates:
             probe = probe_for()
@@ -1569,7 +1577,7 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                 continue
             if row.get("sessionId") != old["sessionId"]:
                 return _report("resume-mismatch", local="FAILED")
-            if row.get("name") == old["name"] and local_verdict(row) == "VERIFIED":
+            if row.get("name") == old["name"] and local_verdict(row, details=local_details) == "VERIFIED":
                 peer = observer_verdict(row, commands.get("observer"))
                 session, pane = _pane(old)
                 request = _object(state_paths(session)[2])
@@ -1607,9 +1615,10 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                     replacement_pid=row["pid"],
                 )
         if time.monotonic() >= deadline:
-            return _report(
-                "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
-            )
+            detail = "replacement or local bridge verification timed out"
+            if local_details:
+                detail += "; " + "; ".join(local_details)
+            return _report("verification-failed", detail=detail, local="FAILED")
         time.sleep(POLL_SECONDS)
 
 
