@@ -1,6 +1,7 @@
 """Shell helpers shared by the persistent supervisor and its replaceable child."""
 
 SESSION_STATE_FUNCTIONS = r"""
+    # BEGIN RUN STATE helpers
     _ai_mark_running() {
       _run_sequence=$(ai sessions _sequence) || return 1
       ai sessions mark "$tmux_session" running \
@@ -23,4 +24,10 @@ SESSION_STATE_FUNCTIONS = r"""
         _ai_persist_exit manual_exit '{}'
       fi
     }
+    _ai_child_final_exit() {
+      if (( $1 == 77 || $1 == 79 )) || [[ -f "$_child_int_exit_file" ]]; then
+        _ai_final_manual_exit
+      fi
+    }
+    # END RUN STATE
 """

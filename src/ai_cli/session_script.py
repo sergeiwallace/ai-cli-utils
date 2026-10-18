@@ -413,8 +413,10 @@ def get_engine_script(
         "$_ai_state_dir/session-int-exit-$tmux_session" \
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
+    # BEGIN RUN STATE supervisor-generation
       AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session") || exit 1
       export AI_CLI_RUN_GENERATION
+    # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
@@ -654,7 +656,9 @@ def get_engine_script(
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
+    # BEGIN RUN STATE final-exit-reset
         rm -f "$_ai_state_dir/session-final-exit-$tmux_session"
+    # END RUN STATE
         _supervisor_child_ready_path=$(mktemp "$_ai_state_dir/child-ready.XXXXXX") || exit 1
         export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
         # With job control disabled, Bash backgrounds a command with SIGINT and
@@ -705,10 +709,10 @@ def get_engine_script(
           # `exit 1` here skipped the fenced teardown below, and the window's
           # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
           # A real promotion failure still exits 1 and leaves its error on screen.
-          if (( _promotion_status == 2 )); then
-            _ai_final_manual_exit
-            break
-          fi
+    # BEGIN RUN STATE promotion-interrupt
+          (( _promotion_status == 2 )) && _ai_final_manual_exit
+    # END RUN STATE
+          (( _promotion_status == 2 )) && break
           exit 1
         fi
         _supervisor_wait_for_child
@@ -717,19 +721,25 @@ def get_engine_script(
         _supervisor_foreground=$?
         rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
+    # BEGIN RUN STATE supervisor-interrupt
           _ai_final_manual_exit
+    # END RUN STATE
           break
         fi
         # 78 requests a refreshed child after a stable-script/self-update check;
         # 77 is clean local final exit and 79 is remote recovery-shell completion.
         if (( _child_status == 77 || _child_status == 79 )); then
+    # BEGIN RUN STATE supervisor-final-exit
           _ai_final_manual_exit
+    # END RUN STATE
           break
         fi
+    # BEGIN RUN STATE startup-failure
         if (( _child_status == 76 )); then
           _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
           break
         fi
+    # END RUN STATE
         # A reload names its reason in the state file, and the file, not the exit
         # status, is the signal: a child that exits at once can still lose its status
         # to the stop its promotion left pending. An exit without a reason (the remote
@@ -770,6 +780,14 @@ def get_engine_script(
     tmux_session={shell["session"]}
     _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
+    # BEGIN RUN STATE legacy-child-generation
+    # A supported pre-feature supervisor cannot pass a run-state generation.
+    # Its refreshed child acquires one before any agent or final-exit path runs.
+    if [[ -z "${{AI_CLI_RUN_GENERATION:-}}" ]]; then
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session") || exit 76
+      export AI_CLI_RUN_GENERATION
+    fi
+    # END RUN STATE
     _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"
     _ai_reload_reason_file="$_ai_state_dir/session-reload-reason-$tmux_session"
     _ai_reload_run_file="$_ai_state_dir/session-reload-run-$tmux_session"
@@ -1145,6 +1163,11 @@ def get_engine_script(
     # watcher starts and after the branch above stops one and resets it.
     _suspend_watchdog_pid=""
     trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    # BEGIN RUN STATE child-final-exit
+    # The old supervisor does not persist final exits; complete that write here
+    # before its existing cleanup and status-77/79 handling can return the pane.
+    trap '_ai_child_final_exit "$?"; [[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    # END RUN STATE
     # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
     # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
     # reload carries it into a running session at its next agent restart.
@@ -1204,7 +1227,9 @@ def get_engine_script(
       _iterm2_fleet_setup "$tmux_session"
       _iterm2_status "running" "$_session_type" "$tmux_session"
 
+    # BEGIN RUN STATE running
       _ai_mark_running || exit 76
+    # END RUN STATE
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
@@ -1354,7 +1379,9 @@ with open(path, 'w') as f:
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then
           _ai_emit info exit "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+    # BEGIN RUN STATE consecutive-failures
           _ai_persist_exit unknown '{{"reason":"three consecutive agent exits"}}'
+    # END RUN STATE
           break
         fi
       fi
@@ -1385,7 +1412,9 @@ with open(path, 'w') as f:
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
         _ai_emit info exit "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+    # BEGIN RUN STATE quick-failure
         _ai_persist_exit unknown '{{"reason":"agent exited too quickly"}}'
+    # END RUN STATE
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
