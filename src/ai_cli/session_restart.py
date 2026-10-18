@@ -415,6 +415,31 @@ def _command_path(command: str, cwd: Path) -> Path | None:
         return None
 
 
+def _mcp_matches(argv: list[str], command: str, args: list[str], cwd: Path) -> bool:
+    configured = _command_path(command, cwd)
+    if not argv or configured is None:
+        return False
+    executable = _command_path(argv[0], cwd)
+    if executable == configured:
+        return not args or argv[1:] == args
+    # A shebang script appears after its interpreter in the process command line.
+    # Verify both identities rather than trusting an argument suffix alone.
+    with configured.open("rb") as source:
+        header = source.readline(256)
+    if not header.startswith(b"#!"):
+        return False
+    interpreter = shlex.split(header[2:].decode("utf-8"))
+    index = len(interpreter)
+    return bool(
+        interpreter
+        and len(argv) > index
+        and executable == _command_path(interpreter[0], cwd)
+        and argv[1:index] == interpreter[1:]
+        and _command_path(argv[index], cwd) == configured
+        and (not args or argv[index + 1 :] == args)
+    )
+
+
 def descendants_gate(pid: int, cwd: Path) -> None:
     """Allow only configured MCP server roots and their own descendants."""
     try:
@@ -434,11 +459,7 @@ def descendants_gate(pid: int, cwd: Path) -> None:
                     if _number(started) and _number(born) and 0 <= born - started <= 60:
                         argv = child.cmdline()
                         for command, args in commands:
-                            if args and len(argv) >= len(args) and argv[-len(args) :] == args:
-                                server = True
-                                break
-                            configured = _command_path(command, cwd)
-                            if argv and configured is not None and _command_path(argv[0], cwd) == configured:
+                            if _mcp_matches(argv, command, args, cwd):
                                 server = True
                                 break
                 if parent in allowed or server:

@@ -145,7 +145,10 @@ def mcp_tree(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(restart.Path, "home", lambda: home)
-    child = SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: ["python", "notifier.py", "mcp-adapter"])
+    command = home / ".claude" / "bin" / "notifier"
+    command.parent.mkdir(parents=True)
+    command.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    child = SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: [sys.executable, str(command), "mcp-adapter"])
     child.create_time = lambda: 1001
     children = [child, SimpleNamespace(pid=3, ppid=lambda: 2, cmdline=lambda: ["worker"])]
     monkeypatch.setattr(
@@ -156,12 +159,56 @@ def mcp_tree(tmp_path, monkeypatch):
     return SimpleNamespace(home=home, cwd=tmp_path, child=child, children=children)
 
 
+@pytest.mark.parametrize(
+    ("argv", "allowed"),
+    [
+        (["python3", "server.py"], True),
+        (["python3", "worker.py"], False),
+        (["other", "server.py"], False),
+        (["python3", "worker.py", "server.py"], False),
+    ],
+)
+def test_given_ac_f2_mcp_command_when_identity_checked_then_executable_and_args_must_match(
+    mcp_tree, monkeypatch, argv, allowed
+):
+    for name in ("python3", "other"):
+        (mcp_tree.cwd / name).touch()
+    monkeypatch.setattr(restart.shutil, "which", lambda name: str(mcp_tree.cwd / name))
+    (mcp_tree.cwd / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"example": {"command": "python3", "args": ["server.py"]}}}), encoding="utf-8"
+    )
+    mcp_tree.child.cmdline = lambda: argv
+    if allowed:
+        restart.descendants_gate(1, mcp_tree.cwd)
+    else:
+        with pytest.raises(restart.Refusal, match="background-work"):
+            restart.descendants_gate(1, mcp_tree.cwd)
+
+
+@pytest.mark.parametrize("mismatch", ["interpreter", "script", "arguments", "shebang"])
+def test_given_ac_f2_wrapped_server_when_identity_differs_then_background_refuses(mcp_tree, mismatch):
+    command = mcp_tree.home / ".claude" / "bin" / "notifier"
+    (mcp_tree.cwd / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"example": {"command": str(command), "args": ["mcp-adapter"]}}}),
+        encoding="utf-8",
+    )
+    argv = mcp_tree.child.cmdline()
+    if mismatch == "shebang":
+        command.write_text("print('server')\n", encoding="utf-8")
+    else:
+        argv[{"interpreter": 0, "script": 1, "arguments": 2}[mismatch]] = "unrelated"
+    mcp_tree.child.cmdline = lambda: argv
+    with pytest.raises(restart.Refusal, match="background-work"):
+        restart.descendants_gate(1, mcp_tree.cwd)
+
+
 @pytest.mark.parametrize("location", ["user", "user-project", "project"])
 @pytest.mark.parametrize(("delay", "allowed"), [(0, True), (60, True), (61, False), (-1, False), (None, False)])
 def test_given_wrapped_mcp_when_birth_and_config_checked_then_only_startup_server_allowed(
     mcp_tree, location, delay, allowed
 ):
-    servers = {"mcpServers": {"notifier": {"command": "~/.claude/bin/notifier", "args": ["mcp-adapter"]}}}
+    command = mcp_tree.home / ".claude" / "bin" / "notifier"
+    servers = {"mcpServers": {"notifier": {"command": str(command), "args": ["mcp-adapter"]}}}
     path = mcp_tree.cwd / ".mcp.json" if location == "project" else mcp_tree.home / ".claude.json"
     data = {"projects": {str(mcp_tree.cwd): servers}} if location == "user-project" else servers
     path.write_text(json.dumps(data), encoding="utf-8")
