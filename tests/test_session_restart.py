@@ -1120,6 +1120,59 @@ def test_given_ac_3_1_ac_3_6_high_context_when_pre_step_then_new_compaction_prec
     assert request["session_id"] == SESSION_ID and request["transcript"] == str(world.transcript)
 
 
+def _busy_after_save_state(world, monkeypatch, *, compacts: bool):
+    """The registry reads busy from the moment /save-state is submitted, as a real session does."""
+    original = restart._inject_save_state
+
+    def inject(*args):
+        outcome = original(*args)
+        world.record["status"] = "busy"
+        world.write()
+        return outcome
+
+    monkeypatch.setattr(restart, "_inject_save_state", inject)
+
+    def tick():
+        if compacts and len(world.rows) == 2:
+            world.record["status"] = "idle"
+            world.compact()
+
+    world.on_tick = tick
+
+
+def test_given_ac_3_7_save_state_makes_session_busy_when_waiting_then_busy_is_not_a_refusal(
+    pre_step_world, monkeypatch
+):
+    world = pre_step_world
+    _busy_after_save_state(world, monkeypatch, compacts=True)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+def test_given_ac_3_7_session_stays_busy_without_compaction_when_waiting_then_bounded_timeout_not_restart(
+    pre_step_world, monkeypatch
+):
+    world = pre_step_world
+    _busy_after_save_state(world, monkeypatch, compacts=False)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context" and "timed out" in report["detail"]
+    assert world.ticks[0] >= 3 and not world.signals
+
+
+def test_given_ac_3_7_busy_after_save_state_when_identity_changes_then_still_refuses(pre_step_world, monkeypatch):
+    world = pre_step_world
+    _busy_after_save_state(world, monkeypatch, compacts=False)
+
+    def tick():
+        world.record["sessionId"] = OTHER_ID
+        world.write()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "identity" and not world.signals
+
+
 @pytest.mark.parametrize("boundary", ["old", "sidechain", "none"])
 def test_given_ac_3_1_old_boundary_when_waiting_then_only_new_main_chain_compaction_counts(pre_step_world, boundary):
     world = pre_step_world
@@ -1221,7 +1274,6 @@ def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_
 @pytest.mark.parametrize(
     ("fault", "reason"),
     [
-        ("busy", "busy"),
         ("generation", "identity"),
         pytest.param(
             "lock",
@@ -1239,10 +1291,7 @@ def test_given_ac_3_5_wait_guard_lost_when_polling_then_aborts_without_retry(pre
     def tick():
         if compacted:
             world.compact()
-        if fault == "busy":
-            world.record["status"] = "busy"
-            world.write()
-        elif fault == "generation":
+        if fault == "generation":
             world.generation = "generation-2"
         else:
             # Simulate an actor violating the stable-lock-inode protocol.

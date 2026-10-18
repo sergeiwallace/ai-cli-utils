@@ -419,13 +419,13 @@ def context_pre_step(
     def boundaries(rows: list[dict]) -> Counter[str]:
         return Counter(json.dumps(row, sort_keys=True) for row in rows if row.get("subtype") == "compact_boundary")
 
-    def fresh() -> dict:
+    def fresh(*, require_idle: bool = True) -> dict:
         check_lock()
         current = _fresh(record_path, record)
         if managed_gate(current, settings, prepared=managed) != managed:
             raise Refusal("identity", "process ownership changed during pre-step")
         current = _fresh(record_path, record)
-        if current.get("status") != "idle" or current.get("waitingFor"):
+        if require_idle and (current.get("status") != "idle" or current.get("waitingFor")):
             raise Refusal("busy", "registry became busy during pre-step")
         check_lock()
         return current
@@ -443,7 +443,10 @@ def context_pre_step(
     compacted = False
     idle_since = None
     while True:
-        current = fresh()
+        # The injected /save-state and the compaction it triggers keep the session busy. Identity and
+        # the lock are still checked each pass; idleness is required only once new compaction
+        # evidence exists (the compacted branch below) and again before the final assessment.
+        current = fresh(require_idle=False)
         rows = transcript_tail(path)
         now = time.monotonic()
         if not compacted and boundaries(rows) - before:
