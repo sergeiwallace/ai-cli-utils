@@ -1,8 +1,10 @@
 """Launch exit status across real process and isolated tmux boundaries."""
 
 import os
+import select
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -187,6 +189,21 @@ def test_given_terminal_when_session_launches_then_attach_and_detach_keep_zero_s
     if mode in ("existing", "resume"):
         subprocess.run(["tmux", "new-session", "-d", "-s", "c-myproject-tst-1", "sleep 60"], check=True)
     master, slave = os.openpty()
+    # Nothing else reads the master, and the tmux client redraws a full screen into it
+    # on attach. A pty buffer is small on macOS, so an unread master blocks the client
+    # on write: it never handles the detach and the launcher never exits.
+    stop_draining = threading.Event()
+
+    def drain_terminal():
+        while not stop_draining.is_set():
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    os.read(master, 65536)
+                except OSError:
+                    return
+
+    drainer = threading.Thread(target=drain_terminal, daemon=True)
+    drainer.start()
     process = None
     try:
         process = spawn_owned(
@@ -216,5 +233,7 @@ def test_given_terminal_when_session_launches_then_attach_and_detach_keep_zero_s
     finally:
         if process is not None:
             reap(process)
+        stop_draining.set()
+        drainer.join(timeout=5)
         os.close(slave)
         os.close(master)
