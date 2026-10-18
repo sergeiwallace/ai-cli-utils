@@ -209,7 +209,7 @@ def _call_name(node: ast.Call) -> str | None:
 
 
 def _spans_with_guaranteed_cleanup(fn: ast.AST) -> list[tuple[int, int]]:
-    """Line spans of ``try`` bodies whose ``finally`` always runs.
+    """Line spans protected by ``finally`` or the private tmux cleanup context.
 
     A skip raised inside one of these is fine however much was built first: the
     ``finally`` executes as the ``Skipped`` exception propagates, so the cleanup
@@ -223,7 +223,12 @@ def _spans_with_guaranteed_cleanup(fn: ast.AST) -> list[tuple[int, int]]:
     """
     spans: list[tuple[int, int]] = []
     for node in ast.walk(fn):
-        if isinstance(node, ast.Try) and node.finalbody and node.body:
+        guarded_try = isinstance(node, ast.Try) and bool(node.finalbody)
+        guarded_with = isinstance(node, ast.With) and any(
+            isinstance(item.context_expr, ast.Call) and _call_name(item.context_expr) == "watch_tmux_directory"
+            for item in node.items
+        )
+        if (guarded_try or guarded_with) and isinstance(node, (ast.Try, ast.With)) and node.body:
             start = min(stmt.lineno for stmt in node.body)
             end = max(getattr(inner, "lineno", start) for stmt in node.body for inner in ast.walk(stmt))
             spans.append((start, end))
@@ -353,6 +358,19 @@ def test_given_a_try_with_no_finally_when_scanned_then_it_is_still_flagged(tmp_p
     found = _skip_after_setup_sites(tmp_path)
 
     assert any(fn == "test_planted_unguarded" for _m, fn, _line, _calls in found), found
+
+
+@pytest.mark.parametrize("context", ["watch_tmux_directory", "unrelated_context"])
+def test_given_a_context_manager_when_scanned_then_only_the_tmux_cleanup_contract_is_recognised(tmp_path, context):
+    (tmp_path / "test_context.py").write_text(
+        "import pytest, tempfile\n"
+        "def test_context():\n"
+        "    directory = tempfile.mkdtemp()\n"
+        f"    with {context}(directory):\n"
+        "        pytest.skip('unavailable')\n",
+        encoding="utf-8",
+    )
+    assert bool(_skip_after_setup_sites(tmp_path)) == (context == "unrelated_context")
 
 
 def test_shutil_which_is_the_cheap_probe_for_a_missing_binary():

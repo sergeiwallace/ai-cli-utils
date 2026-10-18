@@ -27,16 +27,17 @@ import json
 import os
 import select
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import tmux_runnable
+from process_ownership import watch_tmux_directory
 
 from ai_cli import session_naming as _session_naming
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, cli
@@ -161,9 +162,8 @@ def tmux_socket():
         pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-title-")
     sock = f"{sock_dir}/tmux.sock"
-    yield sock
-    subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
-    shutil.rmtree(sock_dir, ignore_errors=True)
+    with watch_tmux_directory(Path(sock_dir)):
+        yield sock
 
 
 class _AttachedClient:

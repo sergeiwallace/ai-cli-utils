@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
+from process_ownership import watch_tmux_directory
 
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
@@ -925,7 +926,7 @@ def _reap_tmux_isolation_dirs_of_killed_runs():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_tmux_default_server(monkeypatch):
+def _isolate_tmux_default_server(request, monkeypatch):
     """Point tmux's default server at a private, per-test directory (AI-CLI-9h1c).
 
     ``TMUX`` is removed as well as ``TMUX_TMPDIR`` redirected, because a run started
@@ -937,10 +938,14 @@ def _isolate_tmux_default_server(monkeypatch):
     monkeypatch.setenv("TMUX_TMPDIR", str(tmux_tmpdir))
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
-    try:
-        yield tmux_tmpdir
-    finally:
-        _retire_tmux_isolation_dir(tmux_tmpdir)
+    if request.node.get_closest_marker("real_tmux") and os.name == "posix":
+        with watch_tmux_directory(tmux_tmpdir):
+            yield tmux_tmpdir
+    else:
+        try:
+            yield tmux_tmpdir
+        finally:
+            _retire_tmux_isolation_dir(tmux_tmpdir)
 
 
 @pytest.fixture(autouse=True)

@@ -26,7 +26,7 @@ import portalocker
 import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
-from process_ownership import reap, spawn_owned_sleeper
+from process_ownership import reap, spawn_owned_sleeper, watch_tmux_directory
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
@@ -178,7 +178,7 @@ def isolated_tmux_socket() -> Iterator[str]:
         pytest.skip(tmux_unusable_skip_reason("tmux binary not available on PATH"))
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
-    try:
+    with watch_tmux_directory(socket_dir):
         probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
         if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
             # Marked as a tmux-provisioning skip, unlike the POSIX check above: tmux is
@@ -189,9 +189,6 @@ def isolated_tmux_socket() -> Iterator[str]:
                 tmux_unusable_skip_reason(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
             )
         yield socket
-    finally:
-        _tmux_run(socket, "kill-server")
-        shutil.rmtree(socket_dir, ignore_errors=True)
 
 
 @pytest.fixture

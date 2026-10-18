@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from conftest import TMUX_ISOLATION_PARENT, TMUX_ISOLATION_PREFIX
+from process_ownership import watch_tmux_directory
 
 pytestmark = [
     pytest.mark.real_tmux,
@@ -96,12 +97,9 @@ def stand_in_server() -> Iterator[Path]:
         pytest.fail("tmux is a hard requirement of this suite")
     tmux_tmpdir = Path(tempfile.mkdtemp(prefix="ai-cli-standin-", dir=TMUX_ISOLATION_PARENT))
     socket = _default_socket(tmux_tmpdir)
-    try:
+    with watch_tmux_directory(tmux_tmpdir):
         _start_server(socket)
         yield tmux_tmpdir
-    finally:
-        _tmux(socket, "kill-server")
-        shutil.rmtree(tmux_tmpdir, ignore_errors=True)
 
 
 def _env_launched_under(tmux_tmpdir: Path) -> dict[str, str]:
@@ -232,7 +230,7 @@ def test_given_a_killed_run_left_a_server_in_its_isolation_dir_when_the_next_run
     """A killed run skips every teardown, so the next run reaps what it left behind."""
     orphan_dir = Path(tempfile.mkdtemp(prefix=f"{TMUX_ISOLATION_PREFIX}{_dead_pid()}-", dir=TMUX_ISOLATION_PARENT))
     live_dir = Path(tempfile.mkdtemp(prefix=f"{TMUX_ISOLATION_PREFIX}{os.getpid()}-", dir=TMUX_ISOLATION_PARENT))
-    try:
+    with watch_tmux_directory(orphan_dir), watch_tmux_directory(live_dir):
         _start_server(_default_socket(orphan_dir))
         _start_server(_default_socket(live_dir))
         body = """
@@ -249,7 +247,3 @@ def test_given_a_killed_run_left_a_server_in_its_isolation_dir_when_the_next_run
         assert not _server_alive(_default_socket(orphan_dir))
         assert not orphan_dir.exists()
         assert _server_alive(_default_socket(live_dir)), "a live run's private server must be left alone"
-    finally:
-        for leftover in (orphan_dir, live_dir):
-            _tmux(_default_socket(leftover), "kill-server")
-            shutil.rmtree(leftover, ignore_errors=True)

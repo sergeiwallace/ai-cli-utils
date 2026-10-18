@@ -37,14 +37,21 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
+import shutil
 import signal
 import subprocess
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
 import psutil
+
+# Teardown must survive test-level subprocess mocks.
+_REAL_POPEN = subprocess.Popen
+_TMUX_BINARY = shutil.which("tmux")
 
 #: Seconds a disposable spawned child sleeps for before exiting by itself.
 #: Long enough to outlive any assertion that needs it alive, short enough that a
@@ -187,3 +194,110 @@ def owned_sleeper(seconds: int = OWNED_PROCESS_LIFETIME, *extra_argv: str) -> It
         yield proc
     finally:
         reap(proc)
+
+
+@contextlib.contextmanager
+def watch_tmux_directory(directory: Path) -> Iterator[None]:
+    """Own servers in a freshly created private socket directory, even after SIGKILL.
+
+    The detached watcher sees EOF when this worker exits or closes its pipe. It
+    remembers descendants while the server runs, including setsid heartbeat
+    tickers which a process-group reap cannot reach. Never use a shared directory.
+    """
+    assert directory.is_dir() and not directory.is_symlink() and not list(directory.iterdir()), (
+        "watch only a new, empty private directory"
+    )
+    if os.name != "posix":
+        # Native Windows cannot host these POSIX tmux trees.
+        try:
+            yield
+        finally:
+            shutil.rmtree(directory)
+        return
+    watcher = _REAL_POPEN(
+        [sys.executable, str(Path(__file__).resolve()), str(directory), _TMUX_BINARY or "tmux"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        cwd=directory,
+    )
+    assert watcher.stdin is not None and watcher.stdout is not None
+    try:
+        assert watcher.stdout.readline() == b"ready\n", "tmux cleanup watcher did not start"
+        yield
+    finally:
+        watcher.stdin.close()
+        watcher.stdout.close()
+        assert watcher.wait(timeout=30) == 0, "tmux cleanup watcher failed"
+        assert not directory.exists(), "tmux cleanup left its socket directory behind"
+
+
+def _watch_tmux_directory(directory: Path, tmux: str) -> None:
+    """The watcher owns only servers reached through sockets in its private dir."""
+    servers: dict[Path, psutil.Process] = {}
+    owned: set[psutil.Process] = set()
+
+    def snapshot() -> None:
+        for socket in directory.rglob("*"):
+            server = servers.get(socket)
+            if server is not None:
+                with contextlib.suppress(psutil.NoSuchProcess):
+                    if server.is_running() and server.status() != psutil.STATUS_ZOMBIE:
+                        continue
+                del servers[socket]
+            if socket.is_socket() and not socket.is_symlink() and socket not in servers:
+                probe = subprocess.run(
+                    [tmux, "-S", str(socket), "display-message", "-p", "#{pid}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if probe.returncode == 0 and probe.stdout.strip().isdigit():
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        server = psutil.Process(int(probe.stdout))
+                        assert server.name().startswith("tmux"), "socket did not identify a tmux server"
+                        servers[socket] = server
+        for server in servers.values():
+            with contextlib.suppress(psutil.NoSuchProcess):
+                owned.update([server, *server.children(recursive=True)])
+
+    print("ready", flush=True)
+    while not select.select([sys.stdin], [], [], 0.05)[0]:
+        snapshot()
+    snapshot()
+    # Stop parents before taking a final descendant snapshot so none can spawn
+    # another child during cleanup. psutil pins identity with PID + creation time.
+    pending = list(owned)
+    while pending:
+        process = pending.pop()
+        with contextlib.suppress(psutil.NoSuchProcess):
+            process.ppid()
+            process.cwd()
+            process.suspend()
+            for child in process.children(recursive=True):
+                if child not in owned:
+                    owned.add(child)
+                    pending.append(child)
+    for process in owned:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            process.kill()
+    deadline = monotonic() + _REAP_TIMEOUT
+    while True:
+        alive = []
+        for process in owned:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    alive.append(process)
+        if not alive:
+            break
+        assert monotonic() < deadline, "tmux descendants survived cleanup"
+        sleep(0.01)
+    # This exact directory was created empty by the caller and checked before use.
+    if directory.exists():
+        assert directory.is_dir() and not directory.is_symlink()
+        shutil.rmtree(directory)
+
+
+if __name__ == "__main__":
+    _watch_tmux_directory(Path(sys.argv[1]), sys.argv[2])
