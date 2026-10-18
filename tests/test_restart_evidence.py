@@ -1,6 +1,7 @@
 """Passive restart evidence rejects unknown or contradictory state."""
 
 import json
+import shlex
 import sys
 import time
 from types import SimpleNamespace
@@ -166,8 +167,10 @@ def mcp_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(restart.Path, "home", lambda: home)
     command = home / ".claude" / "bin" / "notifier"
     command.parent.mkdir(parents=True)
-    command.write_text(f"#!{sys.executable}\n", encoding="utf-8")
-    child = SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: [sys.executable, str(command), "mcp-adapter"])
+    interpreter = home / "interpreter"
+    interpreter.touch()
+    command.write_text(f"#!{shlex.quote(interpreter.as_posix())}\n", encoding="utf-8")
+    child = SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: [str(interpreter), str(command), "mcp-adapter"])
     child.create_time = lambda: 1001
     children = [child, SimpleNamespace(pid=3, ppid=lambda: 2, cmdline=lambda: ["worker"])]
     monkeypatch.setattr(
