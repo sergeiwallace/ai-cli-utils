@@ -130,6 +130,9 @@ elif args[:2] == ['internal', 'acquire-generation-lease']: sys.exit(1)
 elif args[:2] == ['internal', 'resolve-continue-target']:
     with (root / 'resolver-calls').open('a', encoding='utf-8') as out: out.write('query\\n')
     print((root / 'target').read_text(encoding="utf-8"))
+elif args[:2] == ['internal', 'restart-remedy']:
+    from ai_cli.session_restart import fenced_remedy
+    print(fenced_remedy(args[2]))
 elif args[:2] == ['internal', 'restart-pin']:
     if args[2:] == ['--probe']:
         print('restart-pin-v1')
@@ -208,7 +211,7 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
         .read_text(encoding="utf-8")
         .replace("__PROJECT_DIR__", str(cwd))
     )
-    if getattr(request, "param", None) == "fenced":
+    if getattr(request, "param", None) in ("fenced", "dead-fenced"):
         shell = binaries / "session-shell"
         shell.write_text(
             preamble
@@ -220,6 +223,7 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
         )
         shell.chmod(0o700)
         monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: str(shell))
+        launch_log = root / "launch.log"
         source = main._engine_script_from_meta(
             {
                 "engine": "c",
@@ -228,9 +232,22 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
                 "prefix": "c-myproject-box-",
                 "project_prefix": "myproject-box",
                 "worktree_dir": str(cwd),
+                "launch_log_path": str(launch_log),
             }
         )
-        session_restart._atomic_json(session_restart.state_paths(SESSION)[2], {"status": "failed"})
+        fenced: dict = {"status": "failed"}
+        if request.param == "dead-fenced":
+            target = subprocess.Popen([sys.executable, "-c", "pass"])
+            target.wait(timeout=5)
+            fenced.update(
+                version=1,
+                request_id=OTHER_ID,
+                tmux=f"{SESSION}:@1.%1",
+                old_agent_pid=target.pid,
+                old_agent_identity={"backend": "procfs", "marker": 1},
+                launch_log_path=str(launch_log),
+            )
+        session_restart._atomic_json(session_restart.state_paths(SESSION)[2], fenced)
     else:
         source = legacy
     main._write_launch_script_if_changed(script, source)
@@ -335,6 +352,29 @@ def test_given_failed_request_when_recovered_then_ac_a_3_same_child_resumes(fenc
     assert (root / "child-launches").read_text(encoding="utf-8") == children
     replacement = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])
     assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
+    assert supervisor.poll() is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["dead-fenced"], indirect=True)
+def test_given_dead_fenced_target_when_command_clears_then_remedy_named_and_same_child_resumes(fenced_supervisor):
+    root, supervisor = fenced_supervisor
+    children = (root / "child-launches").read_text(encoding="utf-8")
+    log = (root / "supervisor.log").read_text(encoding="utf-8")
+    assert f"ai clear-restart-request {OTHER_ID} --reason 'explain recovery'" in log
+    assert f"ai --restart-session {SESSION}" not in log
+    code, out, err = run_cli(["ai", "clear-restart-request", OTHER_ID, "--reason", "target exited"])
+    assert code == 0, (out, err)
+    assert not session_restart.state_paths(SESSION)[2].exists()
+    audit = json.loads((root / "launch.log").read_text(encoding="utf-8").splitlines()[-1])
+    assert audit["request_id"] == OTHER_ID
+    assert audit["reason"] == "target exited"
+    assert audit["actor"]["pid"] == os.getpid()
+    assert audit["proof"]["state"] == "gone"
+    launches = root / "launches"
+    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    assert (root / "child-launches").read_text(encoding="utf-8") == children
     assert supervisor.poll() is None
 
 

@@ -234,6 +234,14 @@ readable running-program evidence can require a separately reviewed migration.
 Windows process signalling is unsupported: use the configured injection route,
 or the command refuses with `no-mechanism`.
 
+If a restart request is fenced after its target exits, the supervisor prints
+`ai clear-restart-request REQUEST_ID --reason 'explain recovery'` (`-r` for short).
+This command requires a nonempty reason and refuses while the recorded target PID
+still has the same birth identity, or its identity cannot be proved. It records
+the reason, actor and proof of target absence or PID reuse in the supervisor's
+launch log, then removes only that request file so the waiting loop can continue.
+If the log cannot be written, the request remains fenced.
+
 Restart settings are read on every call from `config.toml`:
 
 ```toml
