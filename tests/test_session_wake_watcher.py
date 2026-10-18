@@ -16,6 +16,17 @@ from ai_cli import main
 @pytest.fixture
 def launch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+
+    class LaunchSys:
+        platform = "linux"
+
+        def __getattr__(self, name):
+            return getattr(sys, name)
+
+    # Model a tmux-capable host even when the test runner is on Windows.
+    monkeypatch.setattr(main, "sys", LaunchSys())
+    which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name: "tmux" if name == "tmux" else which(name))
     script = tmp_path / "watcher tools" / "wake_sidecar_cli.py"
     script.parent.mkdir()
     script.write_text("", encoding="utf-8")
@@ -79,6 +90,7 @@ def launch(tmp_path, monkeypatch):
             patch("ai_cli.main.subprocess.run", side_effect=fake_run),
             patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
             patch("ai_cli.main._pty_handoff", return_value=main._exec_handoff),
+            patch("ai_cli.main._session_shell_or_exit", return_value="sh"),
             patch("ai_cli.main._wake_sidecar_script", return_value=state.script),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
