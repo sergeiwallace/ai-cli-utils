@@ -370,6 +370,29 @@ first wording accepted either one, which a cross-family review of the command's 
 rated a blocker: with the server configured as `python3 server.py`, an unrelated `python3
 worker.py` child, and its descendants, passed as the server while doing work.
 
+**Follow-up ruling (2026-10-18, after the command shipped).** A live check of every other session
+on the host refused all of them as running background work. Two causes were measured. The two MCP
+servers every session registers do not start in the configured form: the Agent Mail notifier is a
+bash wrapper whose live process is its exec target, and `npx -y gemini-mcp-tool` runs with a
+rewritten process title and a `node` child. And the transcript reader refuses any transcript over
+8 MiB, while long-lived sessions have transcripts of hundreds of megabytes, so no old session can
+be proved free of background launches. The host's chief-of-staff session (an AI decider, not the
+operator) ruled for the MCP half: an install-generated allowlist of exact verified runtime shapes.
+The install writes the entries from the verified installed server configuration plus the measured
+runtime forms. A child counts as a server only when its executable or script identity and its
+complete argument shape match an entry together, it is a direct child of the agent, and it started
+within 60 seconds of it. A version change or an unreadable identity refuses with a specific
+diagnostic until the entries are regenerated. There are no hand-kept host lists, and a child is
+never learned from the live process table. Counting direct children by birth time alone was
+rejected: it cannot show server identity, and the transcript gate only sees launches that carry
+task identifiers, so an unrecorded or shell-detached worker would pass. The transcript half needs
+no ruling, because the plan already requires reading from the end in bounded chunks; the
+implementation must scan the whole history in a stream instead of refusing on size, without
+weakening the gate. Regressions accept both measured forms and their subtrees, and reject an
+early unrelated `python3 worker.py`, a suffix lookalike, late or unknown roots, probe failures and
+unfinished transcript tasks. D-11's completion gate still stands, and no live proof or rollout
+runs until every gate passes.
+
 ---
 
 <a id="d-4"></a>
@@ -1079,5 +1102,6 @@ Audit backlog and the AC that covers each finding:
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-10-18 | D-11: option (a) for implementation and rollout | Ruled by the host's chief-of-staff session (an AI decider, not the operator): restart by hand now, and a cross-host observer follow-up is filed. The completion gate in D-11 still stands. Full reachability is not claimed, and plan sign-off and epic closure wait for evidence or for the operator's own approval of the re-scope. |
+| 2026-10-18 | D-3: install-generated allowlist of exact verified MCP server runtime shapes | Ruled by the host's chief-of-staff session (an AI decider, not the operator) after a live check refused every other session. A birth-time-only rule was rejected because it cannot show server identity. The transcript reader must stream the whole history instead of refusing over 8 MiB. D-11's completion gate still stands, and no live proof or rollout runs until every gate passes. |
 
 <!-- /doc:region name="approval_log" -->
