@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have elapsed. It restarts only for a verified newer native install, the update-installed
   notice, or a positively observed reachability failure, through the same gates, lock and
   cooldown as `-X`. Unknown or unobserved results never trigger a restart.
+- The restart gates now certify long-lived sessions: the whole transcript history is scanned in
+  bounded memory (no 8 MiB limit; unreadable, malformed or unmatched evidence still refuses), and an
+  installer-generated `restart-session.d/mcp-servers.toml` lets servers started through a wrapper or a
+  title-rewriting launcher count as MCP roots when their exact argv, executable and file stamps match.
+  Stale stamps refuse and ask for regeneration; a missing file keeps the strict behaviour.
 - Local tmux launches now open a detached `wake-watch` window when the effective
   sidecar mode is `session` or `both`. The watcher retries every exit after two seconds.
 - Every launch now records durable session run state (`running` or `exited`, with a cause and
