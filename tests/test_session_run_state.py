@@ -186,6 +186,8 @@ def test_given_unusable_registry_when_can_begin_then_refused_without_writes(regi
         assert lock.read_bytes() == b""
         lock.unlink()
     elif missing == "permissions":
+        if state.os.name == "nt":
+            pytest.skip("os.access is not a write test on Windows; the lock open and registry read decide there")
         monkeypatch.setattr(state.os, "access", lambda *args: False)
     elif missing == "locked":
 

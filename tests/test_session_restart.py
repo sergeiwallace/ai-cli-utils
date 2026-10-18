@@ -1162,6 +1162,10 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     world = request.getfixturevalue("world")
     # Executable discovery stays native while this test simulates macOS provenance.
     monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))
+    from ai_cli import session_registry
+
+    # The registry resolves its state directory per platform; keep it where the fixture registered.
+    monkeypatch.setattr(session_registry, "get_xdg_state_home", config.get_xdg_state_home)
     monkeypatch.setattr(restart.sys, "platform", "darwin")
     world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []
