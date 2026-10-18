@@ -957,13 +957,20 @@ T-03a, this repo:
   Any other wait timeout shall also refuse with reason `context` and signal nothing.
 - [ ] AC-3.4 If background work appears after the compaction, then the command shall refuse with
   reason `background-work`.
+- [ ] AC-3.5 When a wait-loop read encounters an unreadable or changing transcript or an unfinished
+  background launch, the command shall skip that pass within the existing compaction deadline and
+  settle extension, reset the settle interval to require readable evidence with every launch
+  finished, and name an unreadable transcript or unfinished background launch on the last pass
+  in the existing timeout detail (including the queued variant), without retrying injection or
+  signalling; pre-injection reads, the final assessment and every other gate shall retain their
+  immediate refusals.
 
 T-03b, private harness repository, its own PR:
 
-- [ ] AC-3.5 The harness install writes `<ai-cli-utils config dir>/restart-session.d/inject.toml`
+- [ ] AC-3.6 The harness install writes `<ai-cli-utils config dir>/restart-session.d/inject.toml`
   naming its prompt-injection CLI with an argv that types the given slash command into the given
   pane and returns its outcome, and a second install leaves the file unchanged.
-- [ ] AC-3.6 The injection library accepts `/save-state` and `/exit` for this use case, and its
+- [ ] AC-3.7 The injection library accepts `/save-state` and `/exit` for this use case, and its
   `/exit` route keeps the session when Claude Code reports background work.
 
 ### T-04: Automatic triggers (AI-CLI-nyz8.4)

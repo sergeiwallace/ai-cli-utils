@@ -1509,6 +1509,315 @@ def test_given_ac_q_3_queued_save_state_when_no_compaction_then_context_timeout_
     assert not restart.state_paths(world.session)[2].exists()
 
 
+@pytest.fixture
+def transcript_race(pre_step_world, monkeypatch):
+    world = pre_step_world
+    race = SimpleNamespace(reads=0, changed=[], when=lambda: bool(world.injected), failure="changing")
+    fstat = restart.os.fstat
+    target = world.transcript.stat()
+    before = True
+
+    def stat(fd):
+        nonlocal before
+        result = fstat(fd)
+        if (result.st_dev, result.st_ino) != (target.st_dev, target.st_ino):
+            return result
+        first = before
+        before = not before
+        if first:
+            race.reads += 1
+        elif race.when():
+            assert not world.signals and not restart.state_paths(world.session)[2].exists()
+            race.changed.append(world.ticks[0])
+            if race.failure == "unreadable":
+                raise OSError("transcript read unavailable")
+            # Append real bytes between the reader's size/mtime checks.
+            with world.transcript.open("ab") as output:
+                output.write(b'{"type":"progress"}\n')
+            result = fstat(fd)
+        return result
+
+    monkeypatch.setattr(restart.os, "fstat", stat)
+    return race
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("failure", ["changing", "unreadable"])
+def test_given_ac_k_1_ac_k_2_transcript_races_when_waiting_then_recovers_and_restarts(
+    pre_step_world, transcript_race, queued, failure
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    if queued:
+        world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+        world.inject_code = 2
+    transcript_race.failure = failure
+    transcript_race.when = lambda: bool(world.injected) and world.ticks[0] < 0.6
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert transcript_race.changed == pytest.approx([0, 0.2, 0.4])
+    assert world.ticks[0] >= 1.6 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_given_ac_k_3_compacted_transcript_when_read_skipped_then_settle_interval_restarts(
+    pre_step_world, transcript_race, recovers
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    transcript_race.when = lambda: world.ticks[0] >= 0.8 and (not recovers or world.ticks[0] < 1.2)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert transcript_race.changed
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    if recovers:
+        assert code == 0 and report["reason"] == "restarted"
+        assert world.ticks[0] >= 2.2 - 1e-6 and world.signals == [(101, signal.SIGTERM)]
+    else:
+        assert code == 1 and report["reason"] == "context"
+        assert world.ticks[0] == 4 and not world.signals
+        assert "transcript was unreadable on the last pass" in report["detail"]
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_given_ac_k_4_unreadable_transcript_when_deadline_passes_then_timeout_names_last_pass(
+    pre_step_world, transcript_race, queued
+):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    state, exit_code = ("QUEUED", 2) if queued else ("STARTED", 0)
+    world.outcome = {"state": state, "submitted": True, "landing": "queued"}
+    world.inject_code = exit_code
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = f"injection outcome: {state} (exit {exit_code}); compaction wait timed out"
+    if queued:
+        detail += "; save-state was queued and never observed to compact"
+    assert report["detail"] == detail + "; transcript was unreadable on the last pass"
+    assert transcript_race.changed and world.ticks[0] == 3
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_ac_k_4_skipped_read_when_last_pass_readable_then_timeout_omits_unreadable_detail(
+    pre_step_world, transcript_race
+):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    transcript_race.when = lambda: bool(world.injected) and world.ticks[0] < 0.4
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert report["detail"] == "injection outcome: STARTED (exit 0); compaction wait timed out"
+    assert transcript_race.changed and world.ticks[0] == 3 and not world.signals
+
+
+@pytest.mark.parametrize("read_number", [1, 2, 3])
+def test_given_ac_k_5_transcript_races_when_read_before_injection_then_refuses_immediately(
+    pre_step_world, transcript_race, read_number
+):
+    world = pre_step_world
+    transcript_race.when = lambda: transcript_race.reads == read_number
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "transcript evidence unreadable"
+    assert transcript_race.reads == read_number and transcript_race.changed == [0]
+    assert not world.injected and not world.signals and world.ticks[0] == 0
+
+
+def test_given_ac_k_5_transcript_races_when_final_assessment_reads_then_refuses_immediately(
+    pre_step_world, transcript_race, monkeypatch
+):
+    world = pre_step_world
+    transcript_race.when = lambda: False
+    assess = restart.assess
+
+    def assess_with_race(*args, **kwargs):
+        if world.injected:
+            transcript_race.when = lambda: True
+        return assess(*args, **kwargs)
+
+    monkeypatch.setattr(restart, "assess", assess_with_race)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "transcript evidence unreadable"
+    assert transcript_race.changed == [0.2] and world.ticks[0] == 0.2
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+
+
+@pytest.fixture
+def background_launch(pre_step_world):
+    world = pre_step_world
+
+    def start():
+        world.rows.insert(0, {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+        world.write()
+
+    def finish():
+        world.rows.append({"type": "task-notification", "taskId": "task-1", "status": "completed"})
+        world.write()
+
+    return SimpleNamespace(start=start, finish=finish)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("compacted", [False, True])
+def test_given_ac_l_1_ac_l_4_unfinished_launch_when_deadline_passes_then_timeout_names_last_pass(
+    pre_step_world, background_launch, compacted, queued
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    state, exit_code = ("QUEUED", 2) if queued else ("STARTED", 0)
+    world.outcome = {"state": state, "submitted": True, "landing": "queued"}
+    world.inject_code = exit_code
+
+    def tick():
+        assert not world.signals and not restart.state_paths(world.session)[2].exists()
+        if compacted and len(world.rows) == 2:
+            world.compact()
+        if world.ticks[0] >= (0.8 if compacted else 0.2) and len(world.rows) == (4 if compacted else 2):
+            background_launch.start()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = f"injection outcome: {state} (exit {exit_code}); compaction wait timed out"
+    if queued and not compacted:
+        detail += "; save-state was queued and never observed to compact"
+    assert report["detail"] == detail + "; an unfinished background launch was seen on the last pass"
+    assert world.ticks[0] == (4 if compacted else 3)
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_given_ac_l_1_ac_l_2_launch_finishes_when_compaction_and_idle_observed_then_restarts(
+    pre_step_world, background_launch, queued
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    if queued:
+        world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+        world.inject_code = 2
+
+    def tick():
+        if world.ticks[0] < 0.6:
+            assert not world.signals and not restart.state_paths(world.session)[2].exists()
+            if len(world.rows) == 2:
+                background_launch.start()
+        elif len(world.rows) == 3:
+            background_launch.finish()
+            world.compact()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.ticks[0] >= 1.6 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+def test_given_ac_l_3_compaction_seen_when_launch_pass_skipped_then_settle_interval_restarts(
+    pre_step_world, background_launch
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+
+    def tick():
+        if len(world.rows) == 2:
+            world.compact()
+        elif world.ticks[0] >= 0.8 and len(world.rows) == 4:
+            background_launch.start()
+        elif world.ticks[0] >= 1.2 and len(world.rows) == 5:
+            background_launch.finish()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.ticks[0] >= 2.2 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_given_ac_l_4_finished_launch_when_no_compaction_then_timeout_describes_only_last_pass(
+    pre_step_world, background_launch, transcript_race, unreadable
+):
+    world = pre_step_world
+    transcript_race.when = lambda: unreadable and world.ticks[0] >= 0.6
+
+    def tick():
+        if len(world.rows) == 2:
+            background_launch.start()
+        elif world.ticks[0] >= 0.6 and len(world.rows) == 3:
+            background_launch.finish()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = "injection outcome: STARTED (exit 0); compaction wait timed out"
+    if unreadable:
+        detail += "; transcript was unreadable on the last pass"
+    assert report["detail"] == detail
+    assert world.ticks[0] == 3 and not world.signals
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize("read_number", [1, 2, 3])
+def test_given_ac_l_5_unfinished_launch_when_read_before_injection_then_refuses_immediately(
+    pre_step_world, background_launch, monkeypatch, read_number
+):
+    world = pre_step_world
+    transcript_tail = restart.transcript_tail
+    reads = 0
+
+    def read(path):
+        nonlocal reads
+        reads += 1
+        if reads == read_number:
+            background_launch.start()
+        return transcript_tail(path)
+
+    monkeypatch.setattr(restart, "transcript_tail", read)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "unfinished background launch"
+    assert reads == read_number and world.ticks[0] == 0
+    assert not world.injected and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_ac_l_5_unfinished_launch_when_final_assessment_reads_then_refuses_immediately(
+    pre_step_world, background_launch, monkeypatch
+):
+    world = pre_step_world
+    assess = restart.assess
+
+    def assess_with_launch(*args, **kwargs):
+        if world.injected:
+            background_launch.start()
+        return assess(*args, **kwargs)
+
+    monkeypatch.setattr(restart, "assess", assess_with_launch)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "unfinished background launch"
+    assert world.ticks[0] == 0.2
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_ac_k_6_ac_l_6_restart_documents_when_wait_contract_checked_then_skipped_passes_are_bounded():
+    root = Path(__file__).resolve().parents[1]
+    plan = next((root / "docs" / "plans").glob("*restart-idle-sessions-plan.md")).read_text(encoding="utf-8")
+    criterion = plan.split("- [ ] AC-3.5 When", 1)[1].split("\n\n", 1)[0]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for document in (criterion, readme):
+        assert "unreadable or changing transcript" in document
+        assert "existing compaction deadline" in document
+        assert "settle interval" in document
+        assert "last pass" in document
+        assert "unfinished background launch" in document
+
+
 @pytest.mark.parametrize(
     "evidence",
     [
@@ -1536,7 +1845,7 @@ def test_given_ac_q_4_queued_without_enqueue_evidence_when_injected_then_refuses
     assert not restart.state_paths(world.session)[2].exists()
 
 
-@pytest.mark.parametrize("kind", ["agent", "shell", "descendant"])
+@pytest.mark.parametrize("kind", ["agent", "shell", "anonymous-agent", "descendant"])
 def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_step_world, kind):
     world = pre_step_world
 
@@ -1546,13 +1855,20 @@ def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_
             world.rows[1]["pendingBackgroundAgentCount"] = 1
         elif kind == "shell":
             world.rows.insert(0, {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+        elif kind == "anonymous-agent":
+            world.rows.insert(0, {"type": "user", "toolUseResult": {"status": "async_launched"}})
         else:
             world.children.append(SimpleNamespace(pid=501, ppid=lambda: 101, cmdline=lambda: ["sleep", "300"]))
         world.write()
 
     world.on_tick = tick
     code, report, _ = world.cli("-X", SESSION_ID)
-    assert code == 1 and report["reason"] == "background-work"
+    assert code == 1 and report["reason"] == ("context" if kind == "shell" else "background-work")
+    if kind == "shell":
+        assert world.ticks[0] == 3
+        assert "an unfinished background launch was seen on the last pass" in report["detail"]
+    else:
+        assert world.ticks[0] == 0.2
     assert len(world.injected) == 1 and not world.signals
 
 
