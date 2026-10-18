@@ -135,54 +135,62 @@ def _record_recipe(record: dict, engine: str, host: str) -> dict:
 
 
 def enrol_session(name: str, *, dry_run: bool = False) -> None:
-    """Validate and persist bookkeeping under the registry's existing mutation lock."""
+    """Inspect without the registry lock, then recheck and persist bookkeeping."""
     if not re.fullmatch(r"(?:cx|c|g|p)-[A-Za-z0-9_-]+", name):
         raise ValueError("session name check failed: expected a c-, g-, p- or cx- session name")
     engine = name.split("-", 1)[0]
 
+    snapshot = registry.load_registry()
+    matches = [r for r in snapshot["sessions"] if r.get("name") == name]
+    if len(matches) > 1 or (matches and matches[0].get("kind") != "local"):
+        raise ValueError("registry record check failed: expected one local record")
+    record = matches[0] if matches else None
+    if record is not None and state.valid_boot_recipe(record):
+        output.emit(output.Tag.SESSIONS, "session", f"{name}: already has a valid recipe; unchanged")
+        return
+    cwd, leader_argv = inspect_pane(name)
+    if record is not None:
+        host = config.load_config().get("machine", {}).get("host_id") or snapshot["machine"]
+        if record.get("owning_host", host) != host:
+            raise ValueError("owning host check failed: registry record belongs to another host")
+        recipe = _record_recipe(record, engine, host)
+    else:
+        script = config.get_xdg_state_home() / "sessions" / f"{name}.sh"
+        recipe = _script_recipe(name, engine, cwd, leader_argv, script)
+    candidate = {"name": name, "owning_host": recipe["owning_host"], "boot_recipe": recipe}
+    if not state.valid_boot_recipe(candidate):
+        raise ValueError("valid_boot_recipe check failed: unsupported or incomplete recipe")
+    if Path(recipe["cwd"]).resolve() != Path(cwd).resolve():
+        raise ValueError("working directory check failed: recipe cwd differs from live pane cwd")
+    output.raw(Untagged.JSON, json.dumps(recipe, indent=2))
+    if dry_run:
+        return
+    # Boot identity lookup during record creation can invoke a subprocess on macOS.
+    prepared_record = (
+        record
+        if record is not None
+        else registry._new_record(
+            kind="local",
+            name=name,
+            relaunch_argv=recipe["argv"],
+            cwd=cwd,
+            remote=None,
+            iterm2=None,
+            launcher_pid=None,
+        )
+    )
+
     def change(doc: dict) -> bool:
-        matches = [r for r in doc["sessions"] if r.get("name") == name]
-        if len(matches) > 1 or (matches and matches[0].get("kind") != "local"):
-            raise ValueError("registry record check failed: expected one local record")
-        record = matches[0] if matches else None
-        if record is not None and state.valid_boot_recipe(record):
-            output.emit(output.Tag.SESSIONS, "session", f"{name}: already has a valid recipe; unchanged")
-            return False
-        cwd, leader_argv = inspect_pane(name)
-        if record is not None:
-            host = config.load_config().get("machine", {}).get("host_id") or doc["machine"]
-            if record.get("owning_host", host) != host:
-                raise ValueError("owning host check failed: registry record belongs to another host")
-            recipe = _record_recipe(record, engine, host)
-        else:
-            script = config.get_xdg_state_home() / "sessions" / f"{name}.sh"
-            recipe = _script_recipe(name, engine, cwd, leader_argv, script)
-        candidate = {"name": name, "owning_host": recipe["owning_host"], "boot_recipe": recipe}
-        if not state.valid_boot_recipe(candidate):
-            raise ValueError("valid_boot_recipe check failed: unsupported or incomplete recipe")
-        if Path(recipe["cwd"]).resolve() != Path(cwd).resolve():
-            raise ValueError("working directory check failed: recipe cwd differs from live pane cwd")
-        output.raw(Untagged.JSON, json.dumps(recipe, indent=2))
-        if dry_run:
-            return False
-        if record is None:
-            record = registry._new_record(
-                kind="local",
-                name=name,
-                relaunch_argv=recipe["argv"],
-                cwd=cwd,
-                remote=None,
-                iterm2=None,
-                launcher_pid=None,
-            )
-            doc["sessions"].append(record)
-        record.update(boot_recipe=recipe, owning_host=recipe["owning_host"], relaunch="never")
+        current_matches = [r for r in doc["sessions"] if r.get("name") == name]
+        if current_matches != matches or (current_matches and state.valid_boot_recipe(current_matches[0])):
+            raise ValueError("registry record check failed: record changed during enrolment; retry")
+        current_record = current_matches[0] if current_matches else prepared_record
+        if not current_matches:
+            doc["sessions"].append(current_record)
+        current_record.update(boot_recipe=recipe, owning_host=recipe["owning_host"], relaunch="never")
         return True
 
-    if dry_run:
-        change(registry.load_registry())
-    else:
-        registry._mutate(change, timeout=2)
+    registry._mutate(change, timeout=2)
 
 
 @click.command("enrol")

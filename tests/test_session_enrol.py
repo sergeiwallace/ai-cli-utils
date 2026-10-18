@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -115,6 +116,82 @@ def test_given_generated_script_when_enrolled_then_ac_e_2_record_and_recipe_pres
     assert recipe["options"]["is_remote"] and recipe["options"]["sandbox"]
     assert "--is-remote" in recipe["argv"] and "--sandbox" in recipe["argv"]
     assert state.valid_boot_recipe(record)
+    w.signal.assert_not_called()
+    w.command.assert_not_called()
+
+
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_given_registry_lock_when_enrolled_then_pane_inspection_runs_outside_lock(
+    enrolled_world, monkeypatch, registered, dry_run
+):
+    w = enrolled_world
+    if registered:
+        add_record(w)
+    locked = registry._locked
+    lock_held = False
+    lock_entries = []
+
+    @contextmanager
+    def track_lock(timeout=None):
+        nonlocal lock_held
+        with locked(timeout) as path:
+            lock_held = True
+            lock_entries.append(timeout)
+            try:
+                yield path
+            finally:
+                lock_held = False
+
+    def inspect(name):
+        assert not lock_held, "pane inspection must run outside the registry lock"
+        return str(w.cwd), ["bash", str(w.script)]
+
+    monkeypatch.setattr(registry, "_locked", track_lock)
+    w.pane.side_effect = inspect
+    result = invoke(w, *(["--dry-run"] if dry_run else []))
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["session_name"] == w.name
+    w.pane.assert_called_once_with(w.name)
+    assert lock_entries == ([] if dry_run else [2])
+
+
+@pytest.mark.parametrize("change", ["added", "removed", "valid", "arguments", "kind", "duplicate"])
+def test_given_record_changed_when_enrol_locks_then_refuses_without_writing(enrolled_world, monkeypatch, change):
+    w = enrolled_world
+    if change != "added":
+        add_record(w)
+    mutate = registry._mutate
+    concurrent_bytes = []
+
+    def mutate_after_change(callback, **kwargs):
+        def concurrent_change(doc):
+            if change == "added":
+                doc["sessions"].append({"name": w.name, "kind": "local"})
+            elif change == "removed":
+                doc["sessions"].clear()
+            elif change == "valid":
+                record = doc["sessions"][0]
+                record["boot_recipe"] = session_enrol._record_recipe(record, "c", "host-a")
+                assert state.valid_boot_recipe(record)
+            elif change == "arguments":
+                doc["sessions"][0]["relaunch_argv"].append("--once")
+            elif change == "kind":
+                doc["sessions"][0]["kind"] = "remote"
+            else:
+                doc["sessions"].append(doc["sessions"][0].copy())
+            return True
+
+        mutate(concurrent_change)
+        concurrent_bytes.append(w.path.read_bytes())
+        return mutate(callback, **kwargs)
+
+    monkeypatch.setattr(registry, "_mutate", mutate_after_change)
+    result = invoke(w)
+    assert result.exit_code != 0, result.output
+    assert "registry record check failed" in result.output and "changed" in result.output
+    assert len(concurrent_bytes) == 1 and w.path.read_bytes() == concurrent_bytes[0]
+    w.pane.assert_called_once_with(w.name)
     w.signal.assert_not_called()
     w.command.assert_not_called()
 
