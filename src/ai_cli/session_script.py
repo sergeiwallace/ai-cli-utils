@@ -1282,7 +1282,9 @@ with open(path, 'w') as f:
           break
         fi
         if ! $_restart_fenced; then
-          _ai_emit warning session "Restart request fenced; after validating the pinned session, retry with: ai --restart-session $tmux_session"
+          _restart_remedy=$(ai internal restart-remedy "$tmux_session")
+          [[ -n "$_restart_remedy" ]] || _restart_remedy="after validating the pinned session, retry with: ai --restart-session $tmux_session"
+          _ai_emit warning session "Restart request fenced; $_restart_remedy"
           _restart_fenced=true
         fi
         # Keep this child parked instead of asking the supervisor to relaunch it.

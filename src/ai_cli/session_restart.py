@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import getpass
 import hashlib
 import json
 import math
@@ -967,6 +968,7 @@ def prepare_request(record: dict, managed: Managed, settings: dict) -> dict:
         "old_child_identity": asdict(managed.child_identity),
         "old_agent_pid": record["pid"],
         "old_agent_identity": asdict(managed.agent_identity),
+        "launch_log_path": managed.metadata.get("launch_log_path"),
         "owner_pid": os.getpid(),
         "owner_identity": asdict(_identity(os.getpid())),
         "script_digest": _digest(managed.script),
@@ -979,6 +981,97 @@ def prepare_request(record: dict, managed: Managed, settings: dict) -> dict:
 def _same(pid: int, identity: dict) -> bool:
     current = probe_for().capture_identity(pid)
     return current is not None and asdict(current) == identity
+
+
+def _clear_proof(request: dict) -> dict:
+    """Prove absence or a different birth; unreadable evidence never permits clearing."""
+    pid = request.get("old_agent_pid")
+    recorded = request.get("old_agent_identity")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        raise Refusal("identity", "recorded target pid unavailable")
+    probe = probe_for()
+    if not probe.is_present(pid):
+        return {"pid": pid, "state": "gone", "recorded": recorded}
+    current = probe.capture_identity(pid)
+    if (
+        current is None
+        or not isinstance(recorded, dict)
+        or recorded.get("backend") != current.backend
+        or not _number(recorded.get("marker"))
+    ):
+        raise Refusal("identity", "target birth identity unproven")
+    if current.marker == recorded["marker"]:
+        raise Refusal("target-live", "recorded target is still alive")
+    return {"pid": pid, "state": "reused", "recorded": recorded, "current": asdict(current)}
+
+
+def clear_request(request_id: str, reason: str) -> None:
+    """Audit recovery under the restart actor lock, then unlink only the named request."""
+    if not reason.strip():
+        raise Refusal("reason", "a nonempty reason is required")
+    try:
+        request_id = str(uuid.UUID(request_id))
+    except ValueError as exc:
+        raise Refusal("target", "invalid request id") from exc
+    root = config.get_xdg_state_home()
+    matches = []
+    for path in (root / "restart-session").glob("*.request.json"):
+        try:
+            if _object(path).get("request_id") == request_id:
+                matches.append(path)
+        except Refusal:
+            continue
+    if len(matches) != 1:
+        raise Refusal("target", "request id unavailable or ambiguous")
+    path = matches[0]
+    session = path.name.removesuffix(".request.json")
+    with session_lock(session) as check_lock:
+        request = _object(path)
+        if (
+            path.is_symlink()
+            or request.get("request_id") != request_id
+            or request.get("version") != 1
+            or request.get("status") not in ("prepared", "acting", "failed")
+            or _pane(request)[0] != session
+        ):
+            raise Refusal("restart-fenced", "request changed or invalid")
+        proof = _clear_proof(request)
+        log_path = request.get("launch_log_path")
+        if not log_path:
+            # Requests written before recovery support use the supervisor metadata.
+            log_path = _object(root / f"session-meta-{session}.json").get("launch_log_path")
+        if not isinstance(log_path, str) or not log_path:
+            raise Refusal("unavailable", "supervisor log unavailable")
+        audit = {
+            "event": "restart-request-clear",
+            "request_id": request_id,
+            "reason": reason,
+            "actor": {"user": getpass.getuser(), "pid": os.getpid()},
+            "proof": proof,
+            "time": time.time(),
+        }
+        check_lock()
+        if _object(path) != request:
+            raise Refusal("restart-fenced", "request changed")
+        with Path(log_path).open("a", encoding="utf-8") as output:
+            output.write(json.dumps(audit, sort_keys=True) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        check_lock()
+        if _object(path) != request:
+            raise Refusal("restart-fenced", "request changed after audit")
+        path.unlink()
+
+
+def fenced_remedy(session: str) -> str:
+    retry = f"after validating the pinned session, retry with: ai --restart-session {session}"
+    try:
+        request = _object(state_paths(session)[2])
+        request_id = str(uuid.UUID(request["request_id"]))
+        _clear_proof(request)
+    except (Refusal, OSError, KeyError, TypeError, ValueError, psutil.Error):
+        return retry
+    return f"target gone or pid reused; clear with: ai clear-restart-request {request_id} --reason 'explain recovery'"
 
 
 def _validate_request(request: dict, session: str, *, child: bool) -> None:

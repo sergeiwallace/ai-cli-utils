@@ -1899,9 +1899,12 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
-    if action in ("restart-pin", "restart-detached", "restart-auto"):
+    if action in ("restart-pin", "restart-detached", "restart-auto", "restart-remedy"):
         from . import session_restart
 
+        if action == "restart-remedy" and len(argv) == 2:
+            _out.raw(Untagged.INTERNAL_REPLY, session_restart.fenced_remedy(argv[1]))
+            sys.exit(0)
         if action == "restart-pin" and argv[1:] == ["--probe"]:
             _out.raw(Untagged.INTERNAL_REPLY, session_restart.RESTART_PIN_PROTOCOL)
             sys.exit(0)
@@ -4906,6 +4909,21 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json):
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
+
+
+@_cli_group.command("clear-restart-request", help="Clear a fenced restart request after its recorded target has exited")
+@click.argument("request_id")
+@click.option("-r", "--reason", required=True, help="Record why this request is being cleared")
+def cmd_clear_restart_request(request_id, reason):
+    from . import session_restart
+
+    try:
+        session_restart.clear_request(request_id, reason)
+    except session_restart.Refusal as exc:
+        raise click.ClickException(f"{exc.reason}: {exc.detail}") from exc
+    except (OSError, ValueError, session_restart.psutil.Error):
+        raise click.ClickException("request or supervisor log unavailable; request was not cleared") from None
+    _out.emit(Tag.SESSION, "session", f"Cleared restart request {request_id}")
 
 
 def _session_options(func):
