@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -22,6 +23,194 @@ from ai_cli.process_probe import ProcessIdentity, StartTimeMatch
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
+
+
+@pytest.fixture
+def npx_tree(tmp_path, monkeypatch):
+    home = tmp_path.resolve()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(config, "get_xdg_config_home", lambda: home / "config")
+    node = home / "bin" / "node"
+    launcher = home / "lib" / "npm" / "bin" / "npx-cli.js"
+    script = home / ".npm" / "_npx" / "certified" / "node_modules" / "example-tool" / "tool.js"
+    manifest = script.with_name("package.json")
+    for path in (node, launcher, script, manifest):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    argv = ["npm exec example-tool@latest", "", ""]
+    root = SimpleNamespace(
+        pid=11, ppid=lambda: 1, create_time=lambda: 1001, exe=lambda: str(node), cmdline=lambda: argv
+    )
+    helper = SimpleNamespace(
+        pid=12, ppid=lambda: 11, exe=lambda: str(node), cmdline=lambda: [str(node), str(script)], cwd=lambda: str(home)
+    )
+    children = [root, helper]
+    monkeypatch.setattr(
+        restart.psutil,
+        "Process",
+        lambda pid: SimpleNamespace(children=lambda **kwargs: children, create_time=lambda: 1000),
+    )
+    allowlist = home / "config" / "restart-session.d" / "mcp-servers.toml"
+    allowlist.parent.mkdir(parents=True)
+
+    def write_entries(installations):
+        lines = ["version = 1"]
+        for index, installed in enumerate(installations):
+            lines.extend(
+                [
+                    "[[servers]]",
+                    f'name = "example-{index}"',
+                    f"executable = {json.dumps(str(node))}",
+                    f"argv = {json.dumps(argv)}",
+                ]
+            )
+            for path in (node, launcher, installed, installed.with_name("package.json")):
+                lines.extend(
+                    [
+                        "[[servers.identities]]",
+                        f"path = {json.dumps(str(path))}",
+                        f"size = {path.stat().st_size}",
+                        f"sha256 = {json.dumps(hashlib.sha256(path.read_bytes()).hexdigest())}",
+                    ]
+                )
+        allowlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    write_entries([script])
+    return SimpleNamespace(
+        home=home,
+        node=node,
+        launcher=launcher,
+        script=script,
+        root=root,
+        helper=helper,
+        children=children,
+        allowlist=allowlist,
+        write_entries=write_entries,
+    )
+
+
+@pytest.mark.parametrize("argument", ["absolute", "relative", "basename", "shell-command", "option"])
+def test_given_npx_root_when_descendant_uses_unstamped_installation_then_background_refuses(npx_tree, argument):
+    tree = npx_tree
+    restart.descendants_gate(1, tree.home)
+    newer = tree.home / ".npm" / "_npx" / "newer" / "node_modules" / "example-tool" / "tool.js"
+    newer.parent.mkdir(parents=True)
+    newer.write_text("new version", encoding="utf-8")
+    arg = {
+        "absolute": str(newer),
+        "relative": str(newer.relative_to(tree.home)),
+        "basename": newer.name,
+        "shell-command": f"exec {shlex.quote(str(newer))}",
+        "option": f"--script={newer}",
+    }[argument]
+    tree.helper.cmdline = lambda: [str(tree.node), "-c", arg] if argument == "shell-command" else [str(tree.node), arg]
+    if argument == "basename":
+        tree.helper.cwd = lambda: str(newer.parent)
+    assert tree.script.is_file() and tree.launcher.is_file()
+    with pytest.raises(restart.Refusal, match="background-work") as caught:
+        restart.descendants_gate(1, tree.home)
+    assert "uncertified npx installation" in caught.value.detail
+    assert "ai-harness apply --only restart-mcp" in caught.value.detail
+
+
+def test_given_certified_npx_root_when_node_and_shell_helpers_idle_then_passes(npx_tree, monkeypatch):
+    tree = npx_tree
+    shell = tree.home / "bin" / "sh"
+    shell.touch()
+    resolve = restart._command_path
+    monkeypatch.setattr(
+        restart, "_command_path", lambda command, cwd: shell if command == "/bin/sh" else resolve(command, cwd)
+    )
+    tree.children.insert(
+        0,
+        SimpleNamespace(
+            pid=13,
+            ppid=lambda: 12,
+            exe=lambda: str(shell),
+            cmdline=lambda: ["sh", "-c", shlex.quote(str(tree.script))],
+            cwd=lambda: str(tree.home),
+        ),
+    )
+    restart.descendants_gate(1, tree.home)
+
+
+@pytest.mark.parametrize("program", ["curl", "git", "other-node"])
+def test_given_npx_root_when_unrelated_child_running_then_exe_and_argv_refuse(npx_tree, program):
+    tree = npx_tree
+    executable = tree.home / "bin" / program
+    executable.touch()
+    argv = [str(executable), "--version"]
+    tree.helper.exe = lambda: str(executable)
+    tree.helper.cmdline = lambda: argv
+    with pytest.raises(restart.Refusal, match="background-work") as caught:
+        restart.descendants_gate(1, tree.home)
+    assert repr(str(executable)) in caught.value.detail
+    assert repr(argv) in caught.value.detail
+
+
+@pytest.mark.parametrize("failure", ["vanished", "denied", "proc", "relative", "empty-argv"])
+def test_given_npx_root_when_descendant_unresolvable_then_background_refuses(npx_tree, failure):
+    tree = npx_tree
+
+    def unavailable():
+        if failure == "vanished":
+            raise restart.psutil.NoSuchProcess(12)
+        if failure == "denied":
+            raise restart.psutil.AccessDenied(12)
+        if failure == "proc":
+            raise OSError("process entry unreadable")
+        return "unresolved-node"
+
+    if failure == "empty-argv":
+        tree.helper.cmdline = list
+    else:
+        tree.helper.exe = unavailable
+    with pytest.raises(restart.Refusal, match="background-work"):
+        restart.descendants_gate(1, tree.home)
+
+
+def test_given_non_npx_root_when_descendant_unclassified_then_legacy_behavior_passes(npx_tree):
+    tree = npx_tree
+    contents = tree.allowlist.read_text(encoding="utf-8")
+    for original, name in (
+        (tree.launcher, "server.js"),
+        (tree.script, "tool.js"),
+        (tree.script.with_name("package.json"), "package.json"),
+    ):
+        replacement = tree.home / name
+        replacement.write_bytes(original.read_bytes())
+        contents = contents.replace(json.dumps(str(original)), json.dumps(str(replacement)))
+    tree.allowlist.write_text(contents, encoding="utf-8")
+    tree.children[1] = SimpleNamespace(pid=12, ppid=lambda: 11)
+    restart.descendants_gate(1, tree.home)
+
+
+@pytest.mark.parametrize("selected", ["first", "second", "mixed"])
+def test_given_multiple_npx_entries_when_descendants_checked_then_one_entry_must_cover_tree(npx_tree, selected):
+    tree = npx_tree
+    second = tree.home / ".npm" / "_npx" / "second" / "node_modules" / "example-tool" / "tool.js"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(tree.script.read_bytes())
+    second.with_name("package.json").write_bytes(tree.script.with_name("package.json").read_bytes())
+    tree.write_entries([tree.script, second])
+    if selected == "second":
+        tree.helper.cmdline = lambda: [str(tree.node), str(second)]
+    elif selected == "mixed":
+        tree.children.append(
+            SimpleNamespace(
+                pid=13,
+                ppid=lambda: 11,
+                exe=lambda: str(tree.node),
+                cmdline=lambda: [str(tree.node), str(second)],
+                cwd=lambda: str(tree.home),
+            )
+        )
+    if selected == "mixed":
+        with pytest.raises(restart.Refusal, match="background-work") as caught:
+            restart.descendants_gate(1, tree.home)
+        assert "uncertified npx installation" in caught.value.detail
+    else:
+        restart.descendants_gate(1, tree.home)
 
 
 def _is_restart_probe(argv, pane_ai):

@@ -204,6 +204,13 @@ An individual record over 8 MiB, an incomplete or malformed record, a read failu
 a changing file, or an unmatched launch refuses with `background-work`. There is
 no history size limit. Temporary ledger files are removed after the scan.
 
+For an allowlisted npx root, helpers must resolve to the root's recorded Node
+interpreter (including npm/npx scripts) or a system shell (`/bin/sh`,
+`/usr/bin/bash`, `/usr/bin/sh`). Every file named under `~/.npm/_npx` in helper
+arguments must have a verified identity stamp in the same allowlist entry.
+Uncertified installations, unrelated executables and unreadable processes refuse
+with `background-work`; non-npx entries retain their existing behavior.
+
 Context must be at or below 20 percent, or within one assistant turn of an automatic
 compaction. Missing usage and unknown model windows do not count as zero. Configure
 `context_window_tokens` for an unrecognised or extended model window. Known

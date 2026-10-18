@@ -653,6 +653,60 @@ def _mcp_runtime_matches(child: psutil.Process, argv: list[str], entries: list[d
     return False
 
 
+def _mcp_npx_descendants(children: list[psutil.Process], entries: list[dict], cwd: Path) -> None:
+    """Require one certified installation to account for the entire helper tree."""
+    cache = Path.home() / ".npm" / "_npx"
+    entries = [
+        entry
+        for entry in entries
+        if any(
+            Path(stamp["path"]).name in {"npx", "npx-cli.js", "npx-cli"} or Path(stamp["path"]).is_relative_to(cache)
+            for stamp in entry["identities"]
+        )
+    ]
+    if not entries:
+        return
+    # These POSIX helper shells are permitted only by their resolved system paths.
+    shells = {_command_path(shell, cwd) for shell in ("/bin/sh", "/usr/bin/bash", "/usr/bin/sh")}
+    for child in children:
+        executable = Path(child.exe())
+        argv = child.cmdline()
+        if not executable.is_absolute() or not argv:
+            raise Refusal("background-work", f"unresolvable npx descendant: exe={str(executable)!r} argv={argv!r}")
+        executable = executable.resolve(strict=True)
+        entries = [entry for entry in entries if executable in shells or executable == Path(entry["executable"])]
+        if not entries:
+            raise Refusal("background-work", f"unclassified npx descendant: exe={str(executable)!r} argv={argv!r}")
+        paths = set()
+        for index, argument in enumerate(argv):
+            # npm's shell command is one argv item; inspect its individual words too.
+            words = (
+                shlex.split(argument)
+                if index and re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", argv[index - 1])
+                else [argument]
+            )
+            for word in words:
+                word = word.split("=", 1)[-1] if word.startswith("-") and "=" in word else word
+                if not word or word.startswith("-"):
+                    continue
+                path = Path(word).expanduser()
+                if not path.is_absolute():
+                    # A bare argv[0] is resolved via PATH, rather than the process cwd.
+                    if index == 0 and "/" not in word and "\\" not in word:
+                        continue
+                    path = Path(child.cwd()) / path
+                    if "/" not in word and "\\" not in word and not path.is_file():
+                        continue
+                resolved = path.resolve()
+                if path.is_relative_to(cache) or resolved.is_relative_to(cache.resolve()):
+                    paths.add(resolved)
+        entries = [entry for entry in entries if paths <= {Path(stamp["path"]) for stamp in entry["identities"]}]
+        if not entries:
+            raise Refusal(
+                "background-work", "uncertified npx installation; regenerate with ai-harness apply --only restart-mcp"
+            )
+
+
 def descendants_gate(pid: int, cwd: Path) -> None:
     """Allow only configured MCP server roots and their own descendants."""
     try:
@@ -661,7 +715,9 @@ def descendants_gate(pid: int, cwd: Path) -> None:
         agent = psutil.Process(pid)
         children = agent.children(recursive=True)
         started = agent.create_time()
-        allowed = set()
+        allowed: dict[int, int] = {}
+        runtimes: dict[int, list[dict]] = {}
+        helpers: dict[int, list[psutil.Process]] = {}
         pending = {child.pid: child for child in children}
         while pending:
             progress = False
@@ -672,18 +728,26 @@ def descendants_gate(pid: int, cwd: Path) -> None:
                     born = child.create_time()
                     if _number(started) and _number(born) and 0 <= born - started <= 60:
                         argv = child.cmdline()
-                        server = _mcp_runtime_matches(child, argv, entries)
+                        matching = [entry for entry in entries if _mcp_runtime_matches(child, argv, [entry])]
+                        server = bool(matching)
+                        if server:
+                            runtimes[child_id] = matching
                         if not server:
                             for command, args in commands:
                                 if _mcp_matches(argv, command, args, cwd):
                                     server = True
                                     break
                 if parent in allowed or server:
-                    allowed.add(child_id)
+                    root = allowed.get(parent, child_id)
+                    allowed[child_id] = root
+                    if parent in allowed:
+                        helpers.setdefault(root, []).append(child)
                     del pending[child_id]
                     progress = True
             if not progress:
                 raise Refusal("background-work", "unclassified live descendant")
+        for root, matching in runtimes.items():
+            _mcp_npx_descendants(helpers.get(root, []), matching, cwd)
     except (OSError, psutil.Error, TypeError, ValueError) as exc:
         raise Refusal("background-work", "process tree unavailable") from exc
 
