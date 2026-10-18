@@ -80,9 +80,49 @@ def single_run_shell(name: str, command: list[str]) -> str:
 
 
 def handoff(name: str, delegate):
-    def wrapped(_file, args):
-        command = single_run_command(name, args)
-        return delegate(command[0], command)
+    def wrapped(file, args):
+        import psutil
+
+        generation = state.begin(name, command=list(args))
+        if not state.mark_running(name, generation=generation):
+            raise RuntimeError("startup persistence failed; agent was not started")
+        try:
+            owner = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "ai_cli.session_bare_owner",
+                    str(os.getpid()),
+                    str(psutil.Process().create_time()),
+                    name,
+                    generation,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            from .session_bare_owner import settle
+
+            settle(name, generation, "unknown")
+            raise
+        cause = "manual_exit"
+        try:
+            return delegate(file, args)
+        except OSError:
+            cause = "unknown"
+            raise
+        finally:
+            try:
+                owner.stdin.write(b"cancel")
+                owner.stdin.close()
+            except BrokenPipeError:
+                pass
+            owner.wait()
+            from .session_bare_owner import settle
+
+            settle(name, generation, cause)
 
     return wrapped
 
