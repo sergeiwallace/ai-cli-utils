@@ -213,7 +213,8 @@ prompt injection in play. The supervisor already relaunches on any exit but 77 a
 **Cons:**
 
 - Claude Code gets no chance to show its own "background work is running" dialog.
-- Needs a supervisor in the pane; a bare `claude` in tmux would just exit.
+- Needs a supervisor in the pane.
+- A bare `claude` in tmux would just exit.
 
 ##### (b) Inject `/exit` only
 
@@ -637,7 +638,7 @@ mobile visibility.
 
 > **Decision:** ✅ Resolved by Opus orchestrator — (a) Version comparison for trigger 1; positive reachability failure for trigger 2
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
-<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-8; decision-topic=auto-trigger-definitions; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=trigger on positive update or reachability-failure evidence; unknown and local-only verdicts never trigger; applicability=scope:restart-session; outcome-id=positive-evidence-triggers; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-8; decision-topic=auto-trigger-definitions; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=trigger on positive update or reachability-failure evidence, and never on unknown or local-only verdicts; applicability=scope:restart-session; outcome-id=positive-evidence-triggers; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Round 1 of the doc audit found that the first version's age bound restarted a healthy session
 only because nobody had observed it, which the ask rules out: the automatic restart happens only
