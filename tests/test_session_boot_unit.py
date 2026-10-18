@@ -180,7 +180,7 @@ def test_given_service_manager_failure_when_disabling_then_unit_is_retained_and_
 def test_given_existing_unit_when_updated_then_replace_is_atomic_and_only_changed_bytes_are_written(unit, monkeypatch):
     assert unit.invoke("install").exit_code == 0
     target = next(iter(unit.files()))
-    target.write_text("previous unit\n", encoding="utf-8")
+    target.write_bytes(b"previous unit\n")
     original = Path.replace
     replacements = []
 
