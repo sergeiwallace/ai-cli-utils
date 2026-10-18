@@ -146,6 +146,7 @@ class Untagged(StrEnum):
     STATUSLINE = "a statusline segment Claude Code renders verbatim"
     VERSION = "the `--version` string scripts compare"
     HELP = "Click-rendered help text, the CLI's reference documentation"
+    SERVICE_UNIT = "exact service-unit text and installation plan for inspection"
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
 
 

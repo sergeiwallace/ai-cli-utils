@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from . import output, session_publish_timer, session_state_publish
+from . import output, session_boot_unit, session_publish_timer, session_state_publish
 from . import session_registry as registry
 from . import session_run_state as state
 from .iterm2_restore import LAUNCH_REASON_VAR
@@ -260,6 +260,40 @@ def _timer_command(action):
 
 for _action in ("install", "uninstall", "status"):
     publish_timer.add_command(_timer_command(_action))
+
+
+@sessions.group("boot-unit", help="Manage the one-shot boot relaunch service (macOS and Linux)")
+def boot_unit():
+    pass
+
+
+def _boot_unit_command(action):
+    @click.command(action)
+    @click.option("-d", "--dry-run", is_flag=True, help="Print the unit, path and actions without making changes")
+    def command(dry_run, on_boot=None):
+        try:
+            result = session_boot_unit.manage(action, on_boot=on_boot, dry_run=dry_run)
+        except (OSError, RuntimeError, ValueError) as exc:
+            message = str(exc) if isinstance(exc, (RuntimeError, ValueError)) else type(exc).__name__
+            raise click.ClickException(f"boot unit failed: {message}") from exc
+        if dry_run:
+            output.raw(Untagged.SERVICE_UNIT, result)
+        else:
+            output.emit(output.Tag.SESSIONS, "configure", result)
+
+    if action == "install":
+        command = click.option(
+            "-b",
+            "--on-boot",
+            type=bool,
+            default=None,
+            help="Desired profile state; defaults to session_relaunch.on_boot",
+        )(command)
+    return command
+
+
+for _action in ("install", "uninstall", "status"):
+    boot_unit.add_command(_boot_unit_command(_action))
 
 
 @sessions.command("_run", hidden=True, context_settings={"ignore_unknown_options": True})
