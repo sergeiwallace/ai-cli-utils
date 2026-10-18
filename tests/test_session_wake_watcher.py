@@ -25,6 +25,8 @@ def launch(tmp_path, monkeypatch):
 
     # Model a tmux-capable host even when the test runner is on Windows.
     monkeypatch.setattr(main, "sys", LaunchSys())
+    # Privilege detection must match the modeled host, not the runner's OS APIs.
+    monkeypatch.setattr(main, "_is_root", lambda: False)
     which = shutil.which
     monkeypatch.setattr(shutil, "which", lambda name: "tmux" if name == "tmux" else which(name))
     script = tmp_path / "watcher tools" / "wake_sidecar_cli.py"
@@ -192,6 +194,13 @@ def test_given_once_launch_when_starting_then_watcher_precedes_attach(launch):
     )
     assert launch.execs == [["tmux", "attach-session", "-t", "=c-myproject-tst-1"]]
     assert sum("show" in argv for argv, _ in launch.calls) == 1
+
+
+@pytest.mark.parametrize("options", [{"once": True}, {"bare": True}])
+def test_given_host_without_getuid_when_launching_then_fixture_models_unprivileged_host(launch, monkeypatch, options):
+    monkeypatch.delattr(main.os, "getuid", raising=False)
+    windows = launch.invoke(**options)
+    assert len(windows) == (0 if options.get("bare") else 1)
 
 
 @pytest.mark.parametrize("mode", ["machine", "session"])
