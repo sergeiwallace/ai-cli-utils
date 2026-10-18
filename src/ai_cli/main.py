@@ -3175,6 +3175,14 @@ def _tmux_session_has_live_pane(session_name: str) -> bool:
     return result.returncode == 0 and "0" in (result.stdout or "").split()
 
 
+def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None:
+    """Report success only after tmux confirms a live pane, without attaching."""
+    if not _tmux_session_has_live_pane(session_name):
+        reporter.error("tmux", f"session '{session_name}' has no live pane after launch")
+        sys.exit(1)
+    reporter.phase("session").outcome(f"{session_name} running detached")
+
+
 def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
     """Run ``session-migrate --finish`` for each migration to ``ai_name`` this host recorded unfinished.
 
@@ -3226,6 +3234,7 @@ def _do_session_launch(
     remote_args: "list[str] | None" = None,
     detached: bool = False,
     replay_recipe: dict | None = None,
+    attach: bool = True,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -4021,6 +4030,9 @@ def _do_session_launch(
             _track_launch(reporter, kind="local", name=name, session_name=session)
         reporter.handoff(engine=_engine_display_name(engine), session=session)
         _resume_suspended_panes(session)
+        if not attach:
+            _report_detached_launch(session, reporter)
+            return
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
@@ -4416,7 +4428,7 @@ def _do_session_launch(
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-        if loop is None:
+        if loop is None and attach:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_handoff("tmux", once_argv)
         result = subprocess.run(
@@ -4428,6 +4440,9 @@ def _do_session_launch(
             reporter.error("tmux", "could not create one-shot session")
             sys.exit(1)
         _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
+        if not attach:
+            _report_detached_launch(session_id, reporter)
+            return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
 
@@ -4540,6 +4555,9 @@ def _do_session_launch(
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
+        if not attach:
+            _report_detached_launch(session_id, reporter)
+            return
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -4666,6 +4684,9 @@ def _do_session_launch(
             _start_session_wake_watcher(config, identity.session_id, ai_name)
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
+        if not attach:
+            _report_detached_launch(session_id, reporter)
+            return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
 
@@ -4775,6 +4796,7 @@ def _session_command(engine: str):
                 launch_log_path=str(launch_log.path) if launch_log.path is not None else None,
                 dry_run=dry_run,
                 remote_args=list(remote_args),
+                attach=sys.stdin.isatty(),
             )
         finally:
             _launch_reporter.activate(previous_reporter)

@@ -1561,6 +1561,7 @@ class TestDoSessionLaunchRegistryDiscovery:
 
         with (
             patch("sys.argv", ["ai", "c", "--once", "2"]),
+            patch("sys.stdin.isatty", return_value=True),
             patch("ai_cli.config.load_config", return_value={"worktree": {"enabled": False}}),
             patch("ai_cli.config._get_project_registry_path", return_value=registry_path),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
