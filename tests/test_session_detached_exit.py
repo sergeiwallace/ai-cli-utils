@@ -13,6 +13,8 @@ from process_ownership import reap, spawn_owned
 pytestmark = [
     pytest.mark.real_tmux,
     pytest.mark.skipif(sys.platform == "win32", reason="detached POSIX launch contract"),
+    # A hang in a real tmux or pty step must fail with a traceback, not run to the job cap.
+    pytest.mark.timeout(120),
 ]
 
 # Run the real Click command and handoff in a new session with no controlling TTY.
