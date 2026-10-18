@@ -625,6 +625,21 @@ and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
 
+### Enrol an existing session
+
+Use `ai sessions enrol <name>` to give an existing live tmux session a validated restart
+recipe. It prints the recipe and sets boot relaunch policy to `never`. Preview with
+`-d/--dry-run`; an already valid recipe is left unchanged. Enrolment only updates registry
+bookkeeping: it never signals, restarts or types into the session.
+
+The command first uses the local registry record's launch argv and working directory,
+with the launcher's configured host identity. Without a record, a `c-r-*` session must have
+a pane leader running its exact generated `<state dir>/sessions/<name>.sh` script; engine,
+name and flags come from that script, the directory from the live pane and the host from
+`AI_HOST`. Missing or unparseable script data, invalid recipes and a directory mismatch
+are refused without changing the registry. Restart still requires every existing gate,
+including `remoteControlAtStartup = true`; enrolment does not enable Remote Control.
+
 ### Cross-machine sync
 
 ```bash

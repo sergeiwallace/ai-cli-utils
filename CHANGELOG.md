@@ -155,6 +155,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[output.elements.operation]` config table; a user table may add operations but not
   remove the shipped ones. `ai internal emit` takes the operation after the level:
   `ai internal emit <tag> <level> <operation> <terminal|plain> <text>`.
+- `ai sessions enrol <name>` gives a session that predates launch recipes a boot recipe,
+  so `ai -X` can restart it. It reads the session's registry record, or, for a remote
+  session with no record, its generated session script when the live pane is running
+  exactly that script. It validates the recipe, checks the working directory against
+  the live pane, prints the recipe, turns boot relaunch off, changes nothing on a second
+  run, and never touches the running process. `--dry-run` writes nothing.
 
 ### Changed
 
