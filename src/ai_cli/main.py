@@ -272,10 +272,10 @@ def _ensure_wake_sidecar(config: dict) -> None:
         _out.emit(Tag.DAEMON, "ensure", "wake sidecar started", err=True)
 
 
-def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str) -> None:
-    """Run the optional session watcher under tmux, independent of the agent."""
+def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
+    """Resolve the optional watcher command using the effective sidecar mode."""
     if sys.platform == "win32":
-        return
+        return None
     script = _wake_sidecar_script()
     try:
         if script is None:
@@ -289,20 +289,31 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str) -> N
                 check=False,
             )
             if completed.returncode != 0:
-                return
+                return None
             result = json.loads(completed.stdout)
         if (
             not isinstance(result, dict)
             or result.get("enabled") is not True
             or result.get("mode") not in {"session", "both"}
         ):
-            return
+            return None
         if script is None:
             # Local settings cannot supply the optional watcher implementation.
-            return
+            return None
         command = shlex.join([sys.executable, str(script), "watch", "--session", slug])
         # POSIX-only: the shell belongs to the tmux window and retries every exit.
-        loop = f"while :; do {command}; sleep 2; done"
+        return f"while :; do {command}; sleep 2; done"
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
+        return None
+
+
+def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, loop: str | None = None) -> None:
+    """Run the optional session watcher under tmux, independent of the agent."""
+    loop = loop or _session_wake_watch_loop(config, slug)
+    if loop is None:
+        return
+    try:
         created = subprocess.run(
             ["tmux", "new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop],
             capture_output=True,
@@ -311,7 +322,7 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str) -> N
         )
         if created.returncode != 0:
             _out.warning(Tag.DAEMON, "watch", "could not create wake watcher window; launch continues")
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+    except (OSError, subprocess.TimeoutExpired):
         _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
 
 
@@ -4282,27 +4293,31 @@ def _do_session_launch(
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
+        once_argv = [
+            "tmux",
+            "new-session",
+            "-s",
+            session_id,
+            *_tmux_env_flags,
+            "--",
+            _session_shell,
+            "-c",
+            cd_prefix + shlex.join([*_direnv, *command]),
+        ]
+        # Preserve the attached one-shot path when no extra window is needed.
+        loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
+        if loop is None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            _exec_handoff("tmux", once_argv)
         result = subprocess.run(
-            [
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                session_id,
-                *_tmux_env_flags,
-                "--",
-                _session_shell,
-                "-c",
-                cd_prefix + shlex.join([*_direnv, *command]),
-            ],
+            [*once_argv[:2], "-d", *once_argv[2:]],
             capture_output=True,
             check=False,
         )
         if result.returncode != 0:
             reporter.error("tmux", "could not create one-shot session")
             sys.exit(1)
-        if not is_remote:
-            _start_session_wake_watcher(config, f"={session_id}", ai_name)
+        _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
 

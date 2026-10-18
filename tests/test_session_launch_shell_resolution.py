@@ -925,7 +925,7 @@ def _once_exec_diagnosis(file: str) -> str:
 
 
 def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
-    """Return the argv used to create the detached one-shot tmux session."""
+    """Return the argv used to create the one-shot tmux session."""
     captured: list = []
     run = subprocess.run
 
@@ -937,6 +937,8 @@ def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
 
     def fake_execvp(file, argv):
         assert file == "tmux", _once_exec_diagnosis(file)
+        if argv[:2] == ["tmux", "new-session"]:
+            captured.append((file, argv))
         raise SystemExit(0)
 
     kwargs = _launch_kwargs(name="1")

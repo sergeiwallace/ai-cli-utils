@@ -20,7 +20,7 @@ def launch(tmp_path, monkeypatch):
     script.parent.mkdir()
     script.write_text("", encoding="utf-8")
     state = SimpleNamespace(
-        mode="session", enabled=True, existing=False, failure=None, calls=[], script=script, generation=""
+        mode="session", enabled=True, existing=False, failure=None, calls=[], execs=[], script=script, generation=""
     )
 
     def fake_run(argv, **kwargs):
@@ -53,6 +53,10 @@ def launch(tmp_path, monkeypatch):
                     stdout = f"$1\tc-myproject-tst-1\t{state.generation}"
         return subprocess.CompletedProcess(argv, code, stdout, "")
 
+    def fake_execvp(file, argv):
+        state.execs.append(argv)
+        raise SystemExit(0)
+
     def invoke(**overrides):
         options = {
             "engine": "c",
@@ -73,7 +77,7 @@ def launch(tmp_path, monkeypatch):
         options.update(overrides)
         with (
             patch("ai_cli.main.subprocess.run", side_effect=fake_run),
-            patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+            patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
             patch("ai_cli.main._pty_handoff", return_value=main._exec_handoff),
             patch("ai_cli.main._wake_sidecar_script", return_value=state.script),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
@@ -133,10 +137,16 @@ def test_given_existing_session_when_reattaching_then_no_watcher_query(launch):
     assert not any("show" in argv for argv, _ in launch.calls)
 
 
-def test_given_windows_when_starting_watcher_then_no_subprocess(launch):
-    with patch.object(main.sys, "platform", "win32"), patch.object(main.subprocess, "run") as run:
-        main._start_session_wake_watcher({}, "$1", "session-1")
-    run.assert_not_called()
+def test_given_windows_when_launching_then_no_watcher_query(launch):
+    class WindowsSys:
+        platform = "win32"
+
+        def __getattr__(self, name):
+            return getattr(sys, name)
+
+    with patch.object(main, "sys", WindowsSys()):
+        assert launch.invoke() == []
+    assert not any("show" in argv for argv, _ in launch.calls)
 
 
 def test_given_once_launch_when_starting_then_watcher_precedes_attach(launch):
@@ -148,6 +158,25 @@ def test_given_once_launch_when_starting_then_watcher_precedes_attach(launch):
     assert launch.calls.index(next(call for call in launch.calls if call[0] == creation)) < launch.calls.index(
         next(call for call in launch.calls if call[0] == windows[0])
     )
+    assert launch.execs == [["tmux", "attach-session", "-t", "=c-myproject-tst-1"]]
+    assert sum("show" in argv for argv, _ in launch.calls) == 1
+
+
+@pytest.mark.parametrize("mode", ["machine", "session"])
+def test_given_no_session_watcher_when_once_launching_then_preserves_attached_creation(launch, mode):
+    launch.mode = mode
+    launch.enabled = mode == "machine"
+    assert launch.invoke(once=True) == []
+    assert launch.execs[0][:2] == ["tmux", "new-session"]
+    assert "-d" not in launch.execs[0]
+    assert not any(argv[:2] == ["tmux", "new-session"] for argv, _ in launch.calls)
+
+
+@pytest.mark.parametrize(("mode", "enabled"), [("session", True), ("both", True), ("session", False)])
+def test_given_local_mode_without_implementation_when_launching_then_skips_watcher(launch, mode, enabled):
+    launch.script = None
+    assert launch.invoke(config={"sidecar": {"mode": mode, "enabled": enabled}}) == []
+    assert not any("show" in argv for argv, _ in launch.calls)
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="requires a POSIX shell")
