@@ -4414,7 +4414,14 @@ def _do_session_launch(
         # live client tty inside the session script, so there is no GUID to
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
-        _iterm2._rename_tmux_window(session_id, ai_name)
+        active_window = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"={session_id}", "#{window_name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if (active_window.stdout or "").strip() != "wake-watch":
+            _iterm2._rename_tmux_window(session_id, ai_name)
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)

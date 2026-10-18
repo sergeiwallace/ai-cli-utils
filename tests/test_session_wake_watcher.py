@@ -31,7 +31,16 @@ def launch(tmp_path, monkeypatch):
     script.parent.mkdir()
     script.write_text("", encoding="utf-8")
     state = SimpleNamespace(
-        mode="session", enabled=True, existing=False, failure=None, calls=[], execs=[], script=script, generation=""
+        mode="session",
+        enabled=True,
+        existing=False,
+        failure=None,
+        calls=[],
+        execs=[],
+        script=script,
+        generation="",
+        active_window="main",
+        renames=[],
     )
 
     def fake_run(argv, **kwargs):
@@ -60,6 +69,8 @@ def launch(tmp_path, monkeypatch):
                     stdout = "3.7c"
                 elif argv[-1] == "#{session_id}":
                     stdout = "$1"
+                elif argv[-1] == "#{window_name}":
+                    stdout = state.active_window
                 elif "@ai_cli_session_generation" in argv[-1]:
                     stdout = f"$1\tc-myproject-tst-1\t{state.generation}"
         return subprocess.CompletedProcess(argv, code, stdout, "")
@@ -101,7 +112,7 @@ def launch(tmp_path, monkeypatch):
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
             patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-            patch("ai_cli.iterm2._rename_tmux_window"),
+            patch("ai_cli.iterm2._rename_tmux_window", side_effect=lambda *args: state.renames.append(args)),
         ):
             with pytest.raises(SystemExit) as exited:
                 main._do_session_launch(**options)
@@ -146,6 +157,15 @@ def test_given_excluded_launch_when_launching_then_no_watcher_query(launch, opti
 def test_given_existing_session_when_reattaching_then_no_watcher_query(launch):
     launch.existing = True
     assert launch.invoke() == []
+    assert not any("show" in argv for argv, _ in launch.calls)
+    assert launch.renames == [("c-myproject-tst-1", "myproject-tst-1")]
+
+
+def test_given_selected_watcher_when_reattaching_then_keeps_window_name(launch):
+    launch.existing = True
+    launch.active_window = "wake-watch"
+    assert launch.invoke() == []
+    assert launch.renames == []
     assert not any("show" in argv for argv, _ in launch.calls)
 
 
