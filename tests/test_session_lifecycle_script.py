@@ -40,6 +40,7 @@ def shell_environment(tmp_path):
     return shell, env, name, tmp_path
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
 def test_status_77_when_supervisor_returns_then_manual_exit_is_persisted(shell_environment):
     shell, env, name, tmp_path = shell_environment
     child = registry.registry_path().parent / "sessions" / f"{name}.sh"
