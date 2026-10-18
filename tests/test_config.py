@@ -2,16 +2,19 @@
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from ai_cli.config import (
+    DEFAULT_CONFIG,
     ProjectPrefixError,
     _pid_alive,
     detect_machine_profile,
     ensure_machine_profile_registered,
+    get_sidecar_config,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
@@ -19,6 +22,24 @@ from ai_cli.config import (
     register_project,
     resolve_project_prefix,
 )
+
+
+def test_given_default_config_when_read_then_sidecar_is_off():
+    sidecar = tomllib.loads(DEFAULT_CONFIG)["sidecar"]
+
+    assert sidecar == {"enabled": False, "mode": "machine", "boot": False}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("enabled", "yes"), ("mode", "both"), ("boot", 1)],
+)
+def test_given_malformed_sidecar_value_when_read_then_warns_and_disables(key, value):
+    with patch("ai_cli.config._out.warning") as warning:
+        sidecar = get_sidecar_config({"sidecar": {"enabled": True, key: value}})
+
+    assert sidecar["enabled"] is False
+    assert f"sidecar.{key}" in warning.call_args.args[2]
 
 
 @pytest.mark.skipif(

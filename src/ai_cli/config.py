@@ -541,6 +541,15 @@ nats_servers = ["nats://localhost:4222"]
 ## Values: "windows", "macos", "linux"
 # os_type = ""
 
+[sidecar]
+## Start the optional machine-wide wake sidecar during a local session launch.
+enabled = false
+## Use one machine sidecar or a future watcher scoped to each session.
+mode = "machine"
+## Declare that the operating system starts the sidecar instead of the launcher.
+boot = false
+## When an ai-harness checkout is present, its machine profile is authoritative and these values are ignored.
+
 [update]
 ## Additional venv paths to install ai-cli-utils into after 'ai update'
 ## Useful if you have tools or virtual environments that depend on ai-cli-utils
@@ -588,6 +597,28 @@ nats_servers = ["nats://localhost:4222"]
 """
 
 
+def get_sidecar_config(config: dict) -> dict[str, bool | str]:
+    """Return validated local sidecar settings, disabled on any malformed value."""
+    defaults: dict[str, bool | str] = {"enabled": False, "mode": "machine", "boot": False}
+    sidecar = config.get("sidecar")
+    if sidecar is None:
+        return defaults
+    if not isinstance(sidecar, dict):
+        _out.warning(Tag.CONFIG, "load", "sidecar must be a table; sidecar.enabled was disabled")
+        return defaults
+
+    validators = {
+        "enabled": lambda value: type(value) is bool,
+        "mode": lambda value: isinstance(value, str) and value in {"machine", "session"},
+        "boot": lambda value: type(value) is bool,
+    }
+    for key, validator in validators.items():
+        if key in sidecar and not validator(sidecar[key]):
+            _out.warning(Tag.CONFIG, "load", f"sidecar.{key} has an invalid value; sidecar.enabled was disabled")
+            return defaults
+    return {key: sidecar.get(key, value) for key, value in defaults.items()}
+
+
 def load_config():
     config_dir = get_xdg_config_home()
     config_path = config_dir / "config.toml"
@@ -606,6 +637,8 @@ def load_config():
                 cfg = tomllib.load(f)
         except Exception:
             pass
+
+    cfg["sidecar"] = get_sidecar_config(cfg)
 
     return cfg
 

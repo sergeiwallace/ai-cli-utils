@@ -210,6 +210,68 @@ def _ensure_dolt_server() -> None:
     )
 
 
+_WAKE_SIDECAR_TIMEOUT_SECONDS = 3
+
+
+def _wake_sidecar_script() -> Path | None:
+    """Locate the optional wake-sidecar CLI in a discovered ai-harness checkout."""
+    for root in (_find_project_dir("ai-harness"), Path.cwd()):
+        script = root / "scripts" / "wake_sidecar_cli.py"
+        if script.is_file():
+            return script
+    return None
+
+
+def _sidecar_unit_manager_available() -> bool:
+    """Return whether this platform can host the supported machine sidecar unit."""
+    if sys.platform == "win32":
+        return False
+    if sys.platform == "darwin":
+        return shutil.which("launchctl") is not None
+    if sys.platform.startswith("linux"):
+        return shutil.which("systemctl") is not None
+    return False
+
+
+def _ensure_wake_sidecar(config: dict) -> None:
+    """Ask the optional sidecar CLI to idempotently ensure its machine unit."""
+    if not _sidecar_unit_manager_available():
+        return
+    script = _wake_sidecar_script()
+    if script is None:
+        if _config.get_sidecar_config(config)["enabled"]:
+            _out.warning(Tag.DAEMON, "ensure", "no wake sidecar implementation was found; launch continues")
+        return
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script), "ensure", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _out.error(Tag.DAEMON, "ensure", "wake sidecar failed: ensure timed out; launch continues")
+        return
+    except OSError as exc:
+        _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {exc}; launch continues")
+        return
+
+    try:
+        result = json.loads(completed.stdout)
+        action = result["action"]
+        reason = result["reason"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        _out.error(Tag.DAEMON, "ensure", "wake sidecar failed: invalid ensure response; launch continues")
+        return
+
+    if completed.returncode != 0 or action == "failed":
+        _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {reason}; launch continues")
+    elif action == "started":
+        _out.emit(Tag.DAEMON, "ensure", "wake sidecar started", err=True)
+
+
 def _exec_handoff(file: str, args: list[str]) -> NoReturn:
     """Replace this process with ``file``; the one exec in the package (AI-CLI-8h3u).
 
@@ -4520,6 +4582,8 @@ def _session_command(engine: str):
             # itself before printing a plan that claimed nothing had happened.
             if not dry_run:
                 _ensure_dolt_server()
+                if not remote:
+                    _ensure_wake_sidecar(config)
                 trigger_background_update()
                 with reporter.phase("install", "checking installed version") as install_phase:
                     origin = _launch_install_origin()
