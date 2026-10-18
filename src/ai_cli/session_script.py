@@ -897,6 +897,9 @@ def get_engine_script(
         fi
       fi
       if [[ -f "$_child_int_exit_file" ]]; then
+    # BEGIN RUN STATE child-preflight-exit
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 77
       fi
       # Non-interactive shells redirect a background job's stdin from /dev/null.
@@ -921,6 +924,9 @@ def get_engine_script(
       active_agent_pid=""
       _reset_agent_terminal
       if [[ -f "$_child_int_exit_file" ]]; then
+    # BEGIN RUN STATE child-agent-exit
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 77
       fi
       _child_int_now=$(date +%s)
@@ -1163,11 +1169,6 @@ def get_engine_script(
     # watcher starts and after the branch above stops one and resets it.
     _suspend_watchdog_pid=""
     trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
-    # BEGIN RUN STATE child-final-exit
-    # The old supervisor does not persist final exits; complete that write here
-    # before its existing cleanup and status-77/79 handling can return the pane.
-    trap '_ai_child_final_exit "$?"; [[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; [[ -n "$_suspend_watchdog_pid" ]] && kill "$_suspend_watchdog_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
-    # END RUN STATE
     # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
     # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
     # reload carries it into a running session at its next agent restart.
@@ -1181,6 +1182,9 @@ def get_engine_script(
       # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
       # before any per-launch preflight, especially direnv initialization.
       if [[ -f "$_child_int_exit_file" ]]; then
+    # BEGIN RUN STATE child-inherited-exit
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 77
       fi
       _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
@@ -1356,6 +1360,9 @@ with open(path, 'w') as f:
       # Keep final-exit control flow outside the INT trap. In zsh, an exit
       # requested by a trap interrupting `wait` can be deferred indefinitely.
       if [[ -f "$_child_int_exit_file" ]]; then
+    # BEGIN RUN STATE child-loop-exit
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 77
       fi
 
@@ -1456,5 +1463,10 @@ with open(path, 'w') as f:
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
+    # BEGIN RUN STATE child-final-exit
+    # The old supervisor does not persist final exits. Failed-start paths have
+    # already recorded their cause, which the final-exit marker preserves here.
+    _ai_final_manual_exit
+    # END RUN STATE
     {_stop_epilogue(is_remote)}
     """

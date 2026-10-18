@@ -24,10 +24,5 @@ SESSION_STATE_FUNCTIONS = r"""
         _ai_persist_exit manual_exit '{}'
       fi
     }
-    _ai_child_final_exit() {
-      if (( $1 == 77 || $1 == 79 )) || [[ -f "$_child_int_exit_file" ]]; then
-        _ai_final_manual_exit
-      fi
-    }
     # END RUN STATE
 """
