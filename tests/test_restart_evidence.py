@@ -493,8 +493,16 @@ def test_given_ac_4_5_malformed_observer_rows_when_absent_then_unknown(monkeypat
     )
 
 
-@pytest.mark.parametrize("rows", [[None], [{}], [{"name": "session-2"}], [{"sessionId": "id-2", "name": "session-2"}]])
-def test_given_ac_4_5_malformed_local_rows_when_listed_then_unknown(monkeypatch, rows):
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([None], "UNKNOWN"),
+        ([{}], "FAILED"),
+        ([{"name": "session-2"}], "FAILED"),
+        ([{"sessionId": "id-2", "name": "session-2"}], "FAILED"),
+    ],
+)
+def test_given_unrelated_local_rows_when_target_absent_then_listing_shape_decides_verdict(monkeypatch, rows, expected):
     monkeypatch.setattr(
         restart,
         "probe_for",
@@ -512,7 +520,7 @@ def test_given_ac_4_5_malformed_local_rows_when_listed_then_unknown(monkeypatch,
         "bridgeSessionId": "bridge-1",
         "messagingSocketPath": "socket",
     }
-    assert restart.local_verdict(record) == "UNKNOWN"
+    assert restart.local_verdict(record) == expected
 
 
 def test_given_ac_4_5_pagination_notice_when_observer_absent_then_unknown(monkeypatch):

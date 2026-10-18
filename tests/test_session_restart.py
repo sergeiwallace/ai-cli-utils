@@ -1001,6 +1001,106 @@ def test_given_unavailable_socket_family_when_passively_probed_then_local_unknow
     assert not world.signals and not world.injected
 
 
+@pytest.fixture
+def replacement_listing(world, monkeypatch):
+    settings = config.read_restart_config(world.settings)
+    restart.prepare_request(world.record, restart.managed_gate(world.record, settings), settings)
+    world.replace()
+    replacement = restart._object(world.registry.parent / "201.json")
+    listing = SimpleNamespace(rows=[replacement.copy()], flags=None, delay=0, elapsed=0)
+    monkeypatch.setattr(restart.time, "monotonic", lambda: listing.elapsed)
+    monkeypatch.setattr(restart.time, "sleep", lambda seconds: setattr(listing, "elapsed", listing.elapsed + seconds))
+
+    def run(argv, **kwargs):
+        if argv == ["claude", "agents", "--json"]:
+            listing.elapsed += listing.delay
+            data = listing.rows if listing.flags is None else {"sessions": listing.rows, **listing.flags}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(data))
+        return world.subprocess_run(argv, **kwargs)
+
+    monkeypatch.setattr(restart.subprocess, "run", run)
+    return replacement, listing, settings
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("unrelated", [{"pid": None}, {"sessionId": ""}, {"name": ""}])
+def test_given_unrelated_malformed_agent_when_local_checked_then_replacement_verified(
+    replacement_listing, wrapped, unrelated
+):
+    replacement, listing, _ = replacement_listing
+    listing.rows.insert(0, {"sessionId": OTHER_ID, "name": "other-session", "pid": 301, **unrelated})
+    if wrapped:
+        listing.flags = {"complete": True}
+    assert restart.local_verdict(replacement) == "VERIFIED"
+    assert restart.trigger_verdicts(replacement, {"observer": ["observer"]})["unreachable"] == "NO"
+
+
+@pytest.mark.parametrize("peer", [False, True])
+@pytest.mark.parametrize("delay", [0, 15])
+def test_given_unrelated_pidless_agent_when_replacement_verified_then_restart_succeeds(
+    world, replacement_listing, peer, delay
+):
+    _, listing, settings = replacement_listing
+    listing.rows.append({"sessionId": OTHER_ID, "name": "other-session", "pid": None})
+    listing.delay = delay
+    settings["relaunch_timeout_seconds"] = 180
+    report = restart._verify_replacement(world.record, settings, {"observer": ["observer"]} if peer else {})
+    assert report["reason"] == ("restarted" if peer else "verification-incomplete"), report
+    assert report["local"] == "VERIFIED"
+    assert listing.elapsed == 2 * delay
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("pid", None), ("pid", "201"), ("pid", True), ("pid", 1), ("sessionId", ""), ("name", "")],
+)
+@pytest.mark.parametrize("missing", [False, True])
+def test_given_malformed_target_agent_when_replacement_verified_then_refusal_names_field(
+    world, replacement_listing, field, value, missing
+):
+    replacement, listing, settings = replacement_listing
+    if missing:
+        listing.rows[0].pop(field)
+    else:
+        listing.rows[0][field] = value
+    assert restart.local_verdict(replacement) == "UNKNOWN"
+    report = restart._verify_replacement(world.record, settings, {})
+    assert report["reason"] == "verification-failed" and report["local"] == "FAILED"
+    assert "matching local agent row" in report["detail"] and field in report["detail"], report
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        ("absent", "FAILED"),
+        ("duplicate", "FAILED"),
+        ("pid", "FAILED"),
+        ("sessionId", "FAILED"),
+        ("name", "FAILED"),
+        ("complete", "UNKNOWN"),
+        ("listTruncated", "UNKNOWN"),
+        ("localListFailed", "UNKNOWN"),
+        ("bridgeWalkFailed", "UNKNOWN"),
+        ("truncated", "UNKNOWN"),
+    ],
+)
+def test_given_agent_listing_fault_when_local_checked_then_existing_verdict_preserved(
+    replacement_listing, fault, expected
+):
+    replacement, listing, _ = replacement_listing
+    if fault == "absent":
+        listing.rows.clear()
+    elif fault == "duplicate":
+        listing.rows *= 2
+    elif fault in ("pid", "sessionId", "name"):
+        listing.rows[0][fault] = {"pid": 301, "sessionId": OTHER_ID, "name": "other-session"}[fault]
+    else:
+        listing.flags = {"complete": fault != "complete", **({fault: True} if fault != "complete" else {})}
+    assert restart.local_verdict(replacement) == expected
+
+
 @pytest.mark.parametrize(
     "fault", ["none", "missing-transcript", "expired", "generation", "old-child", "script", "malformed", "crash"]
 )
