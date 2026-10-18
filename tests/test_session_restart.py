@@ -1110,7 +1110,7 @@ def pre_step_world(world, monkeypatch):
         yield world
 
 
-def test_given_ac_3_1_high_context_when_pre_step_then_new_compaction_precedes_restart(pre_step_world):
+def test_given_ac_3_1_ac_3_6_high_context_when_pre_step_then_new_compaction_precedes_restart(pre_step_world):
     world = pre_step_world
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 0 and report["reason"] == "restarted"
@@ -1245,3 +1245,101 @@ def test_given_ac_3_5_high_context_when_checking_then_never_injects(pre_step_wor
     code, report, _ = pre_step_world.cli("-Y", SESSION_ID)
     assert code == 1 and report["gates"]["context"] == "context"
     assert not pre_step_world.injected and not pre_step_world.signals
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_given_ac_3_1_pre_step_disabled_or_unneeded_when_restarting_then_no_save_state(pre_step_world, enabled):
+    world = pre_step_world
+    world.settings["restart_session"]["pre_step"] = enabled
+    if enabled:
+        world.rows[0]["message"]["usage"]["input_tokens"] = 10_000
+        world.write()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == (0 if enabled else 1)
+    assert report["reason"] == ("restarted" if enabled else "context")
+    assert not world.injected
+
+
+@pytest.mark.parametrize("outcome", [None, [], {"state": "STARTED", "submitted": False}, {"state": "untrusted-value"}])
+def test_given_ac_3_3_invalid_adapter_outcome_when_injected_then_context_refuses(pre_step_world, outcome):
+    world = pre_step_world
+    world.outcome = outcome
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert "untrusted-value" not in json.dumps(report)
+    assert len(world.injected) == 1 and not world.signals
+
+
+def test_given_ac_3_5_busy_during_injection_probe_when_revalidated_then_never_injects(pre_step_world, monkeypatch):
+    world = pre_step_world
+    original = restart._restart_pin_gate
+    calls = []
+
+    def probe(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            world.record["status"] = "busy"
+            world.write()
+        return original(*args)
+
+    monkeypatch.setattr(restart, "_restart_pin_gate", probe)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "busy"
+    assert not world.injected and not world.signals
+
+
+def test_given_ac_3_1_compaction_during_probe_when_injecting_then_snapshot_includes_it(pre_step_world, monkeypatch):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    original = restart._restart_pin_gate
+    calls = []
+
+    def probe(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            world.compact()
+        return original(*args)
+
+    monkeypatch.setattr(restart, "_restart_pin_gate", probe)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context" and "timed out" in report["detail"]
+    assert len(world.injected) == 1 and not world.signals
+
+
+@pytest.mark.parametrize("failure", ["timeout", "encoding", "malformed"])
+def test_given_ac_3_3_adapter_error_when_injected_then_context_refuses(pre_step_world, failure):
+    world = pre_step_world
+
+    def run(argv, **kwargs):
+        if argv == ["inject", "%1", "/save-state"]:
+            world.injected.append(argv)
+            if failure == "timeout":
+                raise restart.subprocess.TimeoutExpired(argv, 15)
+            if failure == "encoding":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+            return SimpleNamespace(returncode=0, stdout="{")
+        return world.subprocess_run(argv, **kwargs)
+
+    with patch.object(restart.subprocess, "run", run):
+        code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert len(world.injected) == 1 and not world.signals
+
+
+@pytest.mark.parametrize(("tokens", "allowed"), [(40_000, True), (40_001, False)])
+def test_given_ac_3_2_manual_compaction_when_rechecking_then_post_tokens_threshold_applies(
+    pre_step_world, tokens, allowed
+):
+    world = pre_step_world
+    world.settings["restart_session"]["context_window_tokens"] = 200_000
+
+    def compact():
+        world.compact()
+        world.rows[-2]["compactMetadata"].update(trigger="manual", postTokens=tokens)
+        world.write()
+
+    world.on_tick = compact
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == (0 if allowed else 1)
+    assert report["reason"] == ("restarted" if allowed else "context")
+    assert len(world.injected) == 1 and bool(world.signals) is allowed
