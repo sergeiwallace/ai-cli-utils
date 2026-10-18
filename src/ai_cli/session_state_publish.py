@@ -81,8 +81,8 @@ class Publisher:
         listed = self.git("ls-remote", "--", self.remote, self.ref)
         if not listed:
             return ""
-        self.git("fetch", "--quiet", "--no-tags", "--", self.remote, self.ref)
-        return self.git("rev-parse", "FETCH_HEAD")
+        self.git("fetch", "--quiet", "--no-tags", "--", self.remote, f"+{self.ref}:{self.read_ref}")
+        return self.git("rev-parse", self.read_ref)
 
     def tree(self, blobs: dict[str, str]) -> str:
         entries = []

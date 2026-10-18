@@ -107,6 +107,7 @@ def test_empty_repo_when_publishing_then_no_git_operations(monkeypatch):
 def test_boot_relaunch_off_when_timer_installed_then_trailing_worker_is_enabled(publishing, monkeypatch, platform):
     _, _, _, _ = publishing
     monkeypatch.setattr(timer.sys, "platform", platform)
+    monkeypatch.setattr(timer.os, "getuid", lambda: 1000, raising=False)
     calls = []
 
     def runner(argv, **kwargs):
@@ -186,3 +187,25 @@ def test_publisher_lock_held_when_tick_runs_then_returns_without_waiting(publish
     with portalocker.Lock(path, mode="a", timeout=0):
         assert not publish.publish(tick=True).published
     assert registry.load_registry().get("published_revision", 0) == 0
+
+
+def test_publication_deadline_missed_when_push_returns_then_snapshot_is_not_acknowledged(publishing, monkeypatch):
+    _, remote, _, clock = publishing
+    moment = [1000.0]
+    monkeypatch.setattr(publish.time, "monotonic", lambda: moment[0])
+    original = publish.Publisher.git
+
+    def slow_push(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        if args[0] == "push":
+            moment[0] += 16
+        return result
+
+    monkeypatch.setattr(publish.Publisher, "git", slow_push)
+    assert not publish.publish(tick=True).published
+    doc = registry.load_registry()
+    assert doc["dirty_revision"] > doc.get("published_revision", 0)
+    clock[0] += 90
+    monkeypatch.setattr(publish.Publisher, "git", original)
+    assert publish.publish(tick=True).published
+    assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"

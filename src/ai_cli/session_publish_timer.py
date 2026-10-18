@@ -14,7 +14,9 @@ UNIT = "ai-session-publish"
 
 
 def render(cfg: dict, *, platform: str, home: Path, path: str, executable: str) -> dict[Path, bytes]:
-    interval = max(0.1, float(cfg["debounce_seconds"]) / 2)
+    interval = float(cfg["debounce_seconds"]) / 2
+    if interval <= 0 or (platform == "darwin" and interval < 1):
+        raise ValueError("debounce interval is too short for the publication timer")
     if platform == "darwin":
         # LaunchAgents are a macOS-specific login service.
         return {
@@ -29,7 +31,7 @@ def render(cfg: dict, *, platform: str, home: Path, path: str, executable: str) 
             )
         }
     if platform.startswith("linux"):
-        root = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config"))) / "systemd/user"
+        root = state.config.resolve_base_dir("XDG_CONFIG_HOME", home / ".config") / "systemd/user"
 
         def quote(value):
             return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
@@ -62,8 +64,6 @@ def manage(action: str, *, runner=None) -> str:
             executable=shutil.which("ai") or str(Path(sys.executable).with_name("ai")),
         )
         installed = all(path.is_file() and path.read_bytes() == content for path, content in files.items())
-        if action == "status":
-            return "installed" if installed else "absent or outdated"
         if action == "install" and not cfg["repo"]:
             action = "uninstall"
         if action == "uninstall" and not any(path.exists() for path in files):
@@ -75,10 +75,26 @@ def manage(action: str, *, runner=None) -> str:
                 raise RuntimeError("service manager refused publication timer operation")
 
         domain = f"gui/{os.getuid()}" if sys.platform == "darwin" else ""
+
+        def active():
+            commands = (
+                [["launchctl", "print", f"{domain}/{LABEL}"]]
+                if sys.platform == "darwin"
+                else [
+                    ["systemctl", "--user", "is-enabled", "--quiet", f"{UNIT}.timer"],
+                    ["systemctl", "--user", "is-active", "--quiet", f"{UNIT}.timer"],
+                ]
+            )
+            return all(
+                runner(argv, capture_output=True, text=True, check=False, timeout=10).returncode == 0
+                for argv in commands
+            )
+
+        if action == "status":
+            return "installed" if installed and active() else "absent, disabled or outdated"
         if action == "install":
-            if installed:
-                return "installed"
-            if sys.platform == "darwin" and any(path.exists() for path in files):
+            loaded = active() if sys.platform == "darwin" else False
+            if sys.platform == "darwin" and not installed and loaded:
                 run(["launchctl", "bootout", f"{domain}/{LABEL}"])
             for path, content in files.items():
                 if path.exists() and path.read_bytes() == content:
@@ -86,7 +102,8 @@ def manage(action: str, *, runner=None) -> str:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
             if sys.platform == "darwin":
-                run(["launchctl", "bootstrap", domain, str(next(iter(files)))])
+                if not installed or not loaded:
+                    run(["launchctl", "bootstrap", domain, str(next(iter(files)))])
             else:
                 run(["systemctl", "--user", "daemon-reload"])
                 run(["systemctl", "--user", "enable", "--now", f"{UNIT}.timer"])
