@@ -315,12 +315,18 @@ background work.
 - Live: a registry record whose pid is alive with a matching start time, whose `tmux` field names
   a pane whose start command is the `ai c` session script.
 - No in-flight turn: registry `status` is `idle` (not `busy`, not `shell`, no `waitingFor`) and has
-  been for `settle_seconds`; the transcript's last main-chain record ends a turn.
+  been for `settle_seconds`; the transcript's last main-chain record ends a turn. A completed
+  compaction also ends one: a `compact_boundary` followed only by its compaction summary and the
+  local-command records of the `/compact` that ran it (measured on a session compacted at the
+  prompt, which writes no `turn_duration` afterwards).
 - No background work: no background launch in the transcript (a `backgroundTaskId`, an
   `async_launched` status) without a matching completion, the latest main-chain
-  `{"type":"system","subtype":"turn_duration"}` record present with `pendingBackgroundAgentCount`
-  0, and no live descendant of the agent pid other than the MCP servers its process tree started
-  with. A transcript is read from its end in bounded chunks; they reach hundreds of megabytes.
+  `{"type":"system","subtype":"turn_duration"}` record present, with `pendingBackgroundAgentCount`
+  absent or 0, and no live descendant of the agent pid other than the MCP servers its process tree
+  started with. Claude Code writes that field only when it is non-zero: of 103 main-chain turn-end
+  records in one session, 82 carried no field, 21 carried 1 or 2, and none carried 0. A missing
+  turn-end record, not a missing field, is the unknown that refuses. A transcript is read from
+  its end in bounded chunks; they reach hundreds of megabytes.
 
 **Pros:**
 
@@ -352,8 +358,17 @@ background work.
 
 The ask makes idleness absolute, so the strict reading wins. The first Con is accepted, since a
 refused restart costs only a later retry and the triggers retry on their interval. The second
-is mitigated by classifying descendants by their command line against the MCP server commands in
-the session's configuration, and treating any unclassified descendant as background work.
+is mitigated by classifying descendants against the MCP servers in the session's configuration,
+and treating any unclassified descendant as background work. A configured server often starts
+through a wrapper that execs a different program (measured: a configured `<bin>/notifier
+mcp-adapter` runs as `python ... notifier.py mcp-adapter`). A direct child counts as that server
+only when both identities verify: its executable is the configured command and the configured
+args follow it, or the configured command is a shebang script and the child runs that script's
+interpreter, then the script, then the configured args, and it started within a minute of the
+agent itself. An argument suffix alone, or a matching executable alone, does not qualify. The
+first wording accepted either one, which a cross-family review of the command's pull request
+rated a blocker: with the server configured as `python3 server.py`, an unrelated `python3
+worker.py` child, and its descendants, passed as the server while doing work.
 
 ---
 
@@ -374,7 +389,10 @@ compaction.
 - Under threshold: the latest main-chain `usage` gives
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, divided by the model's
   window (from the model id, or `context_window_tokens`), is at or below `context_threshold_pct`.
-- Null usage right after a compaction counts as just compacted, never as zero percent.
+- When no usage record follows the latest `compact_boundary`, the threshold arm uses that
+  boundary's `compactMetadata.postTokens` as the current context, never zero percent. Measured: a
+  session compacted at the prompt recorded `postTokens: 15397` and no usage afterwards. This is
+  how a session the pre-step compacted passes, since its compaction is manual.
 
 **Pros:**
 
@@ -401,9 +419,16 @@ compaction.
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
 <!-- decision-lineage: decision-id=AI-CLI-nyz8/D-4; decision-topic=restart-context-gate; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=the context gate passes just after an auto-compaction or at or below a configurable percentage, default 20; applicability=scope:restart-session; outcome-id=compaction-or-threshold; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-(a) keeps both arms and the default. The Con is mitigated by failing the gate (not passing it)
-when the window is unknown and unconfigured, which routes the session to the pre-step rather than
-restarting it on a guess.
+(a) keeps both arms and the default. The Con is mitigated by failing the gate, not passing it,
+when the model is not in the table and `context_window_tokens` is not set in the restart
+settings, which routes the session to the pre-step rather than restarting it on a guess. The
+operator sets `context_window_tokens` to the model's window, or the package's model table is
+extended, before such a session can restart. A live check showed the consequence: because a
+manual compaction passes only through the threshold arm, a session on a model the table lacks
+stays refused even after the pre-step compacts it, until the override is set. An earlier draft
+assumed the smallest table window instead. A review of the command's pull request rejected that
+guess, since a model with a smaller real window would pass on it, and a refused restart costs
+only a later retry.
 
 ---
 
@@ -1053,5 +1078,6 @@ Audit backlog and the AC that covers each finding:
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-10-18 | D-11: option (a) for implementation and rollout | Ruled by the host's chief-of-staff session (an AI decider, not the operator): restart by hand now, and a cross-host observer follow-up is filed. The completion gate in D-11 still stands. Full reachability is not claimed, and plan sign-off and epic closure wait for evidence or for the operator's own approval of the re-scope. |
 
 <!-- /doc:region name="approval_log" -->

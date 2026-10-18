@@ -173,6 +173,125 @@ ai c -q/--quiet        # Suppress launch progress (warnings and errors still pri
 ai c -v/--verbose      # Add skipped steps, resolved paths and timings to the launch progress
 ```
 
+#### Restarting an idle Claude Code session
+
+```bash
+ai -Y session-1                    # Check every restart gate and passive trigger
+ai --restart-check session-1 -j     # The same report as JSON
+ai -X session-1                    # Restart by custom title
+ai --restart-session <session-uuid> # Or by conversation UUID or tmux session name
+ai c 1 -p myproject -X             # Resolve the existing launch slot; create nothing
+ai c 1 -R -p myproject -X          # Resolve and restart on the configured remote host
+ai -X                              # Inside the target pane: detach, then wait for idle
+```
+
+`-X/--restart-session [TARGET]` and `-Y/--restart-check [TARGET]` work at the top
+level and on `ai c`. `-j/--json` selects structured output. An absent or ambiguous
+target refuses. A self-restart returns immediately after starting a detached helper;
+the helper owns the lock and applies the same gates after the current turn ends.
+Check mode never signals, injects, refreshes a script or publishes a restart request.
+
+The command requires a live Claude Code process inside a compatible `ai c`
+supervisor, an idle registry and completed transcript turn, no pending background
+agents or shells, and no unexplained descendant processes. Configured MCP server
+trees are allowed. It requires `remoteControlAtStartup = true` in the effective
+user, project and local Claude Code settings, without changing those files.
+Unknown evidence refuses. Transcript evidence is read backwards in bounded chunks;
+histories larger than 8 MiB currently refuse with `background-work` because older
+background launches cannot be excluded within that bound.
+
+Context must be at or below 20 percent, or within one assistant turn of an automatic
+compaction. Missing usage and unknown model windows do not count as zero. Configure
+`context_window_tokens` for an unrecognised or extended model window. A manual
+compaction passes only through the percentage gate.
+
+When context fails and `pre_step = true`, the configured injection adapter submits
+`/save-state` once to the target pane. The command waits up to
+`compaction_wait_seconds` for a new main-chain `compact_boundary` record; an older
+boundary does not qualify. It then requires `settle_seconds` of idle after the
+compaction, and rechecks every gate before preparing the pinned restart. The wait
+budget allows that additional idle interval. A busy registry, changed process or
+supervisor generation, or lost lock aborts the wait. Background work after
+compaction refuses with `background-work`; adapter failures and timeouts refuse
+with `context`. With `pre_step = false` or no adapter, failing context refuses
+without injection. Check mode never runs the pre-step. Automatic scheduling is a
+separate integration.
+
+The restart pins the exact conversation before signalling, atomically prepares a
+compatible replacement child, and sends SIGTERM only to the verified agent PID.
+If necessary, SIGKILL follows after the grace period and another identity and gate
+check. The pane and supervisor survive. Unsupported running programs refuse with
+`supervisor-upgrade-required`. On macOS, compatibility requires proof that the
+running shell loaded the inspected script; an already-refreshed script without
+readable running-program evidence can require a separately reviewed migration.
+Windows process signalling is unsupported: use the configured injection route,
+or the command refuses with `no-mechanism`.
+
+Restart settings are read on every call from `config.toml`:
+
+```toml
+[restart_session]
+context_threshold_pct = 20
+compaction_fresh_turns = 1
+context_window_tokens = 0
+settle_seconds = 60
+min_uptime_seconds = 1800
+cooldown_seconds = 3600
+term_grace_seconds = 20
+relaunch_timeout_seconds = 180
+mechanism = "kill"                 # "exit" uses the injection adapter
+pre_step = true
+compaction_wait_seconds = 1800
+auto = true                        # Default for the separate automatic evaluator
+auto_interval_seconds = 600
+```
+
+External commands are argv arrays in `restart-session.d/*.toml` beside the config
+file. Duplicate adapters refuse. Placeholders are expanded as individual arguments,
+without a shell: `{tmux_pane}`, `{tmux_session}`, `{session_id}`, `{title}`, `{command}`.
+
+```toml
+[inject]
+argv = ["python3", "-m", "example_injector", "--pane", "{tmux_pane}", "--command", "{command}"]
+
+[observer]
+argv = ["ssh", "host-b", "list-sessions-as-seen-from-here"]
+```
+
+The injection adapter submits `/exit` for `mechanism = "exit"` or unavailable
+signal access. It must preserve the session when background work is reported.
+A non-zero exit refuses; a zero exit still requires replacement verification.
+For `/save-state`, the adapter must return JSON with `state` set to `SENT`,
+`STARTED` or `COMPLETED`, `submitted` set to `true`, and exit zero. `HELD`, `QUEUED`
+and other outcomes refuse without retrying injection or signalling. The report
+includes the adapter's protocol state and exit code; arbitrary diagnostic output
+is omitted. A successful submission still requires new compaction evidence and
+all restart gates to pass.
+The observer returns JSON with `status` (`seen`, `absent`, `unknown`), `complete`,
+`observed_at` (epoch seconds or an ISO timestamp with a timezone) and `rows` carrying
+`session_id`, `title` and, where available, `bridge_session_id`. Evidence must be
+observed during the current invocation and identify the replacement conversation
+and expected title. Duplicate or mismatched identities fail. Failed commands,
+timeouts, malformed, stale or partial listings remain unknown.
+
+The report separates `local`, `peer`, `message_delivery` and `mobile` verdicts.
+Local verification requires the replacement's exact UUID, user title, bridge
+registration, passive messaging socket connection and complete local agent listing.
+Without verified peer evidence the result is non-zero `verification-incomplete`,
+even after a local restart. Message delivery and mobile visibility remain
+`UNVERIFIED` until independently observed.
+
+All restart actors must hold the same exclusive OS lock at
+`<state dir>/restart-session/<tmux session>.lock` through revalidation, any pre-step,
+action and verification. Never unlink or replace that lock file. A separate atomic
+`<tmux session>.json` records `last_restart`, conversation and outcome, including
+failed attempts. Cooldown expiry does not authorize automatic retry after failed
+verification. The durable `.request.json` and per-request `.launched` receipt fence
+an interrupted or failed resume; no title lookup or fresh-conversation fallback is
+allowed. A manual retry validates the same live conversation before replacing its
+failed request. An incompatible or no-longer-live target needs operator recovery;
+do not remove a request merely to bypass its refusal.
+
 #### Session names
 
 Every session is named `{repo-alias}-{host-alias}-{optional-slug}-{N}`, and that
