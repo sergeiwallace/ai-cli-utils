@@ -952,7 +952,15 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         if any(data.get(key) for key in ("truncated", "listTruncated", "bridgeWalkFailed", "localListFailed")):
             return "UNKNOWN"
         rows = data.get("rows")
-        if not isinstance(rows, list) or data.get("status") not in ("seen", "absent", "unknown"):
+        if (
+            not isinstance(rows, list)
+            or any(
+                not isinstance(row, dict)
+                or any(not isinstance(row.get(key), str) or not row[key] for key in ("session_id", "title"))
+                for row in rows
+            )
+            or data.get("status") not in ("seen", "absent", "unknown")
+        ):
             return "UNKNOWN"
         if data["status"] == "unknown":
             return "UNKNOWN"
@@ -999,7 +1007,13 @@ def local_verdict(record: dict) -> str:
             rows = data.get("sessions")
         else:
             rows = data
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or any(not isinstance(row.get(key), str) or not row[key] for key in ("sessionId", "name"))
+            or type(row.get("pid")) is not int
+            or row["pid"] <= 1
+            for row in rows
+        ):
             return "UNKNOWN"
         matches = [
             row

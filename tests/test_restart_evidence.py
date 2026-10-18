@@ -5,6 +5,7 @@ import shlex
 import sys
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -448,3 +449,39 @@ def test_given_post_tokens_when_context_configured_then_window_and_threshold_app
 def test_given_high_post_tokens_when_compaction_checked_then_only_auto_uses_fresh_arm(compacted_rows, trigger):
     compacted_rows[2]["compactMetadata"].update(trigger=trigger, postTokens=100000)
     assert restart.context_gate(compacted_rows, config.read_restart_config({})) is (trigger == "auto")
+
+
+@pytest.mark.parametrize("rows", [[None], [{}], [{"title": "session-2"}], [{"session_id": "id-2"}]])
+def test_given_ac_4_5_malformed_observer_rows_when_absent_then_unknown(monkeypatch, rows):
+    monkeypatch.setattr(restart.time, "time", lambda: 1000)
+    monkeypatch.setattr(
+        restart,
+        "_run",
+        lambda argv: json.dumps({"observed_at": 1000, "complete": True, "status": "absent", "rows": rows}),
+    )
+    assert (
+        restart.observer_verdict({"sessionId": "id-1", "name": "session-1", "tmux": "session-1:@1.%1"}, ["observer"])
+        == "UNKNOWN"
+    )
+
+
+@pytest.mark.parametrize("rows", [[None], [{}], [{"name": "session-2"}], [{"sessionId": "id-2", "name": "session-2"}]])
+def test_given_ac_4_5_malformed_local_rows_when_listed_then_unknown(monkeypatch, rows):
+    monkeypatch.setattr(
+        restart,
+        "probe_for",
+        lambda: SimpleNamespace(has_ended=lambda pid: False, start_time_match=lambda *args: StartTimeMatch.MATCH),
+    )
+    monkeypatch.setattr(restart.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(restart.socket, "socket", lambda *args: MagicMock())
+    monkeypatch.setattr(restart, "_run", lambda argv: json.dumps(rows))
+    record = {
+        "pid": 101,
+        "procStart": 101,
+        "sessionId": "id-1",
+        "name": "session-1",
+        "nameSource": "user",
+        "bridgeSessionId": "bridge-1",
+        "messagingSocketPath": "socket",
+    }
+    assert restart.local_verdict(record) == "UNKNOWN"
