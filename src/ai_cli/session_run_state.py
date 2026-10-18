@@ -195,11 +195,33 @@ def can_begin(name: str) -> None:
             raise ValueError("session has an invalid boot recipe; refusing an untracked start")
 
 
-def begin(name: str, *, command: list[str] | None = None) -> str:
+def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict | None = None) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
 
     def change(doc):
+        if recovery_recipe is not None:
+            host = recovery_recipe["owning_host"]
+            matches = [r for r in doc["sessions"] if r.get("name") == name]
+            if any(r.get("kind") != "local" or r.get("owning_host", host) != host for r in matches):
+                raise ValueError("session belongs to another host or remote connection; recovery refused")
+            if not matches:
+                record = registry._new_record(
+                    kind="local",
+                    name=name,
+                    relaunch_argv=recovery_recipe["argv"],
+                    cwd=recovery_recipe["cwd"],
+                    remote=None,
+                    iterm2=None,
+                    launcher_pid=None,
+                )
+                doc["sessions"].append(record)
+            else:
+                record = matches[0]
+            if not record.get("boot_recipe"):
+                record.update(boot_recipe=recovery_recipe, owning_host=host)
+                # Recover tracking without opting a pre-feature session into boot replay.
+                record.setdefault("relaunch", "never")
         record = _find(doc, name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")

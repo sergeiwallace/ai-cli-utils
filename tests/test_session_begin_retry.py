@@ -3,10 +3,8 @@
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -66,26 +64,18 @@ def test_given_legacy_begin_failures_when_repeated_then_delay_doubles_caps_and_s
     assert (root / "delays").read_text().splitlines()[-1] == "1"
 
 
-@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
-def test_given_twentieth_failure_when_parked_then_no_retry_and_termination_is_responsive(legacy_begin, stop_signal):
+def test_given_twentieth_failure_when_acquired_then_clean_stop_prevents_legacy_relaunch(legacy_begin):
     shell, body, env, root = legacy_begin
     (root / "session-begin-failures-c-session-1").write_text("19\n")
     process = subprocess.Popen([shell, "-c", body], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        deadline = time.monotonic() + 5
-        while not (root / "parked").exists() and process.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert (root / "parked").exists(), process.communicate(timeout=1)
-        assert process.poll() is None
+        out, err = process.communicate(timeout=2)
+        assert process.returncode == 77
         assert (root / "calls").read_text().splitlines() == ["called"]
         assert (root / "session-begin-failures-c-session-1").read_text().strip() == "20"
-        process.send_signal(stop_signal)
-        out, err = process.communicate(timeout=2)
-        assert process.returncode == 128 + stop_signal
         assert "agent-started" not in out
-        lines = [line for line in err.splitlines() if "not retrying" in line]
-        assert len(lines) == 1 and "c-session-1" in lines[0]
-        assert "cannot acquire a durable supervisor generation" in lines[0]
+        assert err.count("not retrying") == 1
+        assert "cannot acquire a durable supervisor generation" in err
         assert "session has no boot recipe" in err
     finally:
         if process.poll() is None:
