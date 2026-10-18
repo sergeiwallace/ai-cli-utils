@@ -564,10 +564,92 @@ def _mcp_matches(argv: list[str], command: str, args: list[str], cwd: Path) -> b
     )
 
 
+def _mcp_allowlist() -> list[dict]:
+    """Consume installer-verified shapes; never derive trust from live children."""
+    path = config.get_xdg_config_home() / "restart-session.d" / "mcp-servers.toml"
+    try:
+        with path.open("rb") as source:
+            data = tomllib.load(source)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        raise Refusal("background-work", "MCP allowlist unreadable; regenerate the allowlist") from exc
+    name = "mcp-servers.toml"
+    try:
+        if type(data.get("version")) is not int or data["version"] != 1 or not isinstance(data.get("servers"), list):
+            raise ValueError("invalid schema")
+        names = set()
+        for entry in data["servers"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not entry["name"]:
+                raise ValueError("missing entry name")
+            name = entry["name"]
+            if name in names:
+                raise ValueError("duplicate entry name")
+            names.add(name)
+            argv = entry.get("argv")
+            executable = entry.get("executable")
+            stamps = entry.get("identities")
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(isinstance(arg, str) for arg in argv)
+                or not argv[0]
+                or not isinstance(executable, str)
+                or not Path(executable).is_absolute()
+                or not isinstance(stamps, list)
+                or not stamps
+            ):
+                raise ValueError("invalid runtime shape")
+            paths = set()
+            for stamp in stamps:
+                if (
+                    not isinstance(stamp, dict)
+                    or not isinstance(stamp.get("path"), str)
+                    or not Path(stamp["path"]).is_absolute()
+                    or type(stamp.get("size")) is not int
+                    or stamp["size"] < 0
+                    or not isinstance(stamp.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", stamp["sha256"])
+                ):
+                    raise ValueError("invalid identity stamp")
+                identity = Path(stamp["path"])
+                # Canonical paths prevent silently accepting a retargeted symlink.
+                if identity.resolve(strict=True) != identity or identity in paths:
+                    raise ValueError("noncanonical or duplicate identity")
+                paths.add(identity)
+                with identity.open("rb") as source:
+                    before = os.fstat(source.fileno())
+                    digest = hashlib.file_digest(source, "sha256").hexdigest()
+                    after = os.fstat(source.fileno())
+                if (
+                    before.st_size != stamp["size"]
+                    or digest != stamp["sha256"]
+                    or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                ):
+                    raise ValueError("stale identity stamp")
+            if Path(executable) not in paths:
+                raise ValueError("executable stamp missing")
+        return data["servers"]
+    except (OSError, ValueError, TypeError) as exc:
+        raise Refusal(
+            "background-work", f"MCP entry {name}: identity invalid or unreadable; regenerate the allowlist"
+        ) from exc
+
+
+def _mcp_runtime_matches(child: psutil.Process, argv: list[str], entries: list[dict]) -> bool:
+    for entry in entries:
+        if argv == entry["argv"]:
+            executable = Path(child.exe())
+            if executable.is_absolute() and executable.resolve(strict=True) == Path(entry["executable"]):
+                return True
+    return False
+
+
 def descendants_gate(pid: int, cwd: Path) -> None:
     """Allow only configured MCP server roots and their own descendants."""
     try:
         commands = _mcp_commands(cwd)
+        entries = _mcp_allowlist()
         agent = psutil.Process(pid)
         children = agent.children(recursive=True)
         started = agent.create_time()
@@ -578,14 +660,16 @@ def descendants_gate(pid: int, cwd: Path) -> None:
             for child_id, child in list(pending.items()):
                 parent = child.ppid()
                 server = False
-                if parent == pid and commands:
+                if parent == pid and (commands or entries):
                     born = child.create_time()
                     if _number(started) and _number(born) and 0 <= born - started <= 60:
                         argv = child.cmdline()
-                        for command, args in commands:
-                            if _mcp_matches(argv, command, args, cwd):
-                                server = True
-                                break
+                        server = _mcp_runtime_matches(child, argv, entries)
+                        if not server:
+                            for command, args in commands:
+                                if _mcp_matches(argv, command, args, cwd):
+                                    server = True
+                                    break
                 if parent in allowed or server:
                     allowed.add(child_id)
                     del pending[child_id]

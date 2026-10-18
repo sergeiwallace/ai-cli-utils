@@ -284,6 +284,50 @@ argv = ["python3", "-m", "example_injector", "--pane", "{tmux_pane}", "--command
 argv = ["ssh", "host-b", "list-sessions-as-seen-from-here"]
 ```
 
+An installer can additionally write `restart-session.d/mcp-servers.toml` to
+recognize configured servers whose wrappers exec another program or rewrite the
+process title. The file is a trust artifact: generate it from verified installed
+server configuration and verified runtime forms, never from arbitrary live
+children. The consumer does not generate or learn entries. Missing files preserve
+the configured-command/shebang checks. Invalid files or stale/unreadable stamps
+refuse with `background-work` and a diagnostic naming the entry and requesting
+that the allowlist be regenerated. All entries are validated on every check,
+even if a matching process is absent; there is no fallback around stale stamps.
+
+Version 1 has integer `version = 1` and a `servers` array (empty is valid).
+Each server requires a unique nonempty string `name`, an absolute canonical
+`executable` path, a nonempty string array `argv`, and a nonempty `identities`
+array. `argv` must equal the entire process command line returned by
+`psutil.Process.cmdline()`, including argv[0] and any blank arguments left by a
+rewritten title. argv[0] must be nonempty. There are no wildcards, prefixes,
+placeholder expansion, shell parsing or optional arguments. The executable
+reported by `psutil.Process.exe()` must resolve to `executable`; trusting argv[0]
+alone is insufficient.
+
+Each identity requires an absolute canonical `path` (resolve symlinks before
+generating), integer nonnegative byte `size`, and lowercase 64-digit `sha256` of
+the file's complete bytes. Paths must be unique within an entry, and the
+executable must have a stamp. The installer must also stamp the server's script
+and any tool implementation whose upgrade should invalidate the entry, including
+scripts hidden by a rewritten title. Their paths in argv, when visible, must be
+recorded exactly. Stamp failures require regeneration after verifying the new
+installation; never refresh stamps merely to make a live child pass.
+
+For example, an exec-wrapped notifier has argv
+`["/opt/example/python", "-P", "/opt/example/notifier.py", "mcp-adapter"]`, executable
+`/opt/example/python`, and stamps for both files. A title-rewritten tool can have
+argv `["npm exec example-tool", "", ""]`, executable `/opt/example/node`, and stamps
+for both node and the installed tool script. Record the actual verified number of
+blank arguments; it is not inferred. Use native absolute paths on Windows. A
+complete TOML contract example is in
+[tests/fixtures/restart_mcp_servers.toml](tests/fixtures/restart_mcp_servers.toml);
+its empty-file stamps are placeholders to replace with installation measurements.
+
+Only a matching direct child born from 0 through 60 seconds after the agent is
+allowed as a server root; its own subtree is then allowed. Unknown, late or
+unreadable roots still refuse, as do unfinished transcript tasks. Installing this
+file does not relax registry, background task, turn, context or supervisor gates.
+
 The injection adapter submits `/exit` for `mechanism = "exit"` or unavailable
 signal access. It must preserve the session when background work is reported.
 A non-zero exit refuses; a zero exit still requires replacement verification.
