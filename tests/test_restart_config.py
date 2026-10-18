@@ -7,10 +7,10 @@ import pytest
 from ai_cli.config import DEFAULT_CONFIG, RESTART_SESSION_DEFAULTS, read_restart_config
 
 
-def test_given_default_config_when_read_then_restart_is_enabled_with_safe_defaults():
+def test_given_ac_4_3_default_config_when_read_then_automatic_restart_is_disabled():
     assert read_restart_config(tomllib.loads(DEFAULT_CONFIG)) == RESTART_SESSION_DEFAULTS
     assert read_restart_config({})["context_threshold_pct"] == 20
-    assert read_restart_config({})["auto"] is True
+    assert read_restart_config({})["auto"] is False
 
 
 @pytest.mark.parametrize(

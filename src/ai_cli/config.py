@@ -360,7 +360,7 @@ RESTART_SESSION_DEFAULTS = {
     "mechanism": "kill",
     "pre_step": True,
     "compaction_wait_seconds": 1800,
-    "auto": True,
+    "auto": False,
     "auto_interval_seconds": 600,
 }
 
@@ -406,7 +406,7 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # mechanism = "kill"
 # pre_step = true
 # compaction_wait_seconds = 1800
-# auto = true
+# auto = false
 # auto_interval_seconds = 600
 
 [gemini]
