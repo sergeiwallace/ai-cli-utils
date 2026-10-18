@@ -351,8 +351,12 @@ The injection adapter submits `/exit` for `mechanism = "exit"` or unavailable
 signal access. It must preserve the session when background work is reported.
 A non-zero exit refuses; a zero exit still requires replacement verification.
 For `/save-state`, the adapter must return JSON with `state` set to `SENT`,
-`STARTED` or `COMPLETED`, `submitted` set to `true`, and exit zero. `HELD`, `QUEUED`
-and other outcomes refuse without retrying injection or signalling. The report
+`STARTED` or `COMPLETED`, `submitted` set to `true`, and exit zero. `QUEUED` with
+exit 2, `submitted` set to `true`, and `landing` set to `queued` waits within the
+same compaction deadline; without new compaction evidence it refuses with reason
+`context`, reporting that save-state was queued and never observed to compact.
+`HELD`, invalid queued results and other outcomes refuse immediately without
+retrying injection or signalling. The report
 includes the adapter's protocol state and exit code; arbitrary diagnostic output
 is omitted. A successful submission still requires new compaction evidence and
 all restart gates to pass.

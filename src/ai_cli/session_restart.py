@@ -439,7 +439,7 @@ def context_pre_step(
     idle_gate(_fresh(record_path, record), rows, settings)
     check_lock()
     before = boundaries(rows)
-    outcome = _inject_save_state(current, commands)
+    outcome, queued = _inject_save_state(current, commands)
     deadline = time.monotonic() + settings["compaction_wait_seconds"]
     compacted = False
     idle_since = None
@@ -471,6 +471,8 @@ def context_pre_step(
                     check_lock()
                     return ""
         if now >= deadline:
+            if queued and not compacted:
+                return f"{outcome}; compaction wait timed out; save-state was queued and never observed to compact"
             return f"{outcome}; compaction wait timed out"
         time.sleep(min(POLL_SECONDS, deadline - now))
 
@@ -1641,7 +1643,7 @@ def _inject_exit(record: dict, commands: dict) -> None:
         raise Refusal("no-mechanism", "exit injection failed") from exc
 
 
-def _inject_save_state(record: dict, commands: dict) -> str:
+def _inject_save_state(record: dict, commands: dict) -> tuple[str, bool]:
     try:
         result = subprocess.run(
             _argv(commands["inject"], record, "/save-state"),
@@ -1662,9 +1664,12 @@ def _inject_save_state(record: dict, commands: dict) -> str:
     accepted = ("SENT", "STARTED", "COMPLETED")
     known = (*accepted, "QUEUED", "HELD", "REFUSED", "AMBIGUOUS", "BOUND", "CORRUPTED", "DROPPED")
     outcome = f"injection outcome: {state if state in known else 'UNKNOWN'} (exit {result.returncode})"
-    if result.returncode or state not in accepted or data.get("submitted") is not True:
+    # The queued landing certifies a matching transcript enqueue; an attempt id alone does not.
+    queued = state == "QUEUED" and result.returncode == 2 and data.get("landing") == "queued"
+    delivered = state in accepted and result.returncode == 0
+    if not (delivered or queued) or data.get("submitted") is not True:
         raise Refusal("context", outcome)
-    return outcome
+    return outcome, queued
 
 
 def restart(

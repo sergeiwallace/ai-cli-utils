@@ -1428,16 +1428,112 @@ def test_given_ac_3_2_changed_gate_when_compacted_then_restart_refuses(pre_step_
     assert not restart.state_paths(world.session)[2].exists()
 
 
-@pytest.mark.parametrize(("state", "exit_code"), [("HELD", 0), ("QUEUED", 0), ("REFUSED", 3), ("SENT", 1)])
+@pytest.mark.parametrize(
+    ("state", "exit_code"),
+    [
+        ("HELD", 0),
+        ("HELD", 6),
+        ("QUEUED", 0),
+        ("QUEUED", 1),
+        ("QUEUED", 3),
+        ("REFUSED", 3),
+        ("AMBIGUOUS", 4),
+        ("BOUND", 4),
+        ("CORRUPTED", 4),
+        ("DROPPED", 0),
+        ("SENT", 1),
+        ("untrusted-value", 0),
+    ],
+)
 def test_given_ac_3_3_adapter_refusal_when_injected_then_own_outcome_and_no_signal(pre_step_world, state, exit_code):
     world = pre_step_world
-    world.outcome = {"state": state, "submitted": True, "reason": "private-value-must-not-appear"}
+    world.outcome = {
+        "state": state,
+        "submitted": True,
+        "landing": "queued",
+        "reason": "private-value-must-not-appear",
+    }
     world.inject_code = exit_code
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] == "context"
-    assert state in report["detail"] and f"exit {exit_code}" in report["detail"]
+    expected_state = "UNKNOWN" if state == "untrusted-value" else state
+    assert report["detail"] == f"injection outcome: {expected_state} (exit {exit_code})"
+    assert "untrusted-value" not in json.dumps(report)
     assert "private-value" not in json.dumps(report)
     assert len(world.injected) == 1 and not world.signals and world.ticks[0] == 0
+
+
+@pytest.mark.parametrize("compaction_at", [0.2, 2.8])
+def test_given_ac_q_1_ac_q_2_queued_save_state_when_compacted_and_settled_then_restarts(
+    pre_step_world, monkeypatch, compaction_at
+):
+    world = pre_step_world
+    world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+    world.inject_code = 2
+    world.settings["restart_session"]["settle_seconds"] = 1
+    _busy_after_save_state(world, monkeypatch, compacts=True)
+    tick = world.on_tick
+
+    def waiting():
+        assert not world.signals and not restart.state_paths(world.session)[2].exists()
+        if world.ticks[0] >= compaction_at:
+            tick()
+
+    world.on_tick = waiting
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.ticks[0] >= compaction_at + 1 and world.signals == [(101, signal.SIGTERM)]
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    assert restart._object(restart.state_paths(world.session)[2])["session_id"] == SESSION_ID
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_given_ac_q_3_queued_save_state_when_no_compaction_then_context_timeout_without_restart(
+    pre_step_world, monkeypatch, busy
+):
+    world = pre_step_world
+    world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+    world.inject_code = 2
+    world.settings["restart_session"]["settle_seconds"] = 1
+    world.on_tick = lambda: None
+    if busy:
+        _busy_after_save_state(world, monkeypatch, compacts=False)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert report["detail"] == (
+        "injection outcome: QUEUED (exit 2); compaction wait timed out; "
+        "save-state was queued and never observed to compact"
+    )
+    assert world.ticks[0] == world.settings["restart_session"]["compaction_wait_seconds"]
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {},
+        {"submitted": True},
+        {"landing": "queued"},
+        {"submitted": False, "landing": "queued"},
+        {"submitted": 1, "landing": "queued"},
+        {"submitted": "true", "landing": "queued"},
+        {"submitted": True, "landing": None},
+        {"submitted": True, "landing": "command-record"},
+        {"submitted": True, "attempt_id": "attempt-1"},
+    ],
+)
+def test_given_ac_q_4_queued_without_enqueue_evidence_when_injected_then_refuses_immediately(pre_step_world, evidence):
+    world = pre_step_world
+    world.outcome = {"state": "QUEUED", "reason": "private-value-must-not-appear", **evidence}
+    world.inject_code = 2
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert report["detail"] == "injection outcome: QUEUED (exit 2)"
+    assert "private-value" not in json.dumps(report)
+    assert world.ticks[0] == 0 and not world.signals
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    assert not restart.state_paths(world.session)[2].exists()
 
 
 @pytest.mark.parametrize("kind", ["agent", "shell", "descendant"])
