@@ -34,7 +34,7 @@ def render(doc: dict, host: str) -> str:
         f"published_at = {quote(registry._now())}",
     ]
     for record in sorted(doc["sessions"], key=lambda r: r["name"]):
-        if record.get("kind") != "local" or record.get("owning_host", host) != host:
+        if record.get("kind") != "local":
             continue
         fields = {
             "launch": record.get("boot_recipe", {}).get("argv", record.get("relaunch_argv", [])),

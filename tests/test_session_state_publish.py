@@ -209,3 +209,11 @@ def test_publication_deadline_missed_when_push_returns_then_snapshot_is_not_ackn
     monkeypatch.setattr(publish.Publisher, "git", original)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"
+
+
+def test_publish_host_override_when_rendering_then_local_records_remain_visible(publishing):
+    doc = registry.load_registry()
+    doc["sessions"].append({"name": "c-remote-1", "kind": "remote"})
+    rendered = tomllib.loads(publish.render(doc, "host-alias"))
+    assert rendered["host"] == "host-alias"
+    assert set(rendered["sessions"]) == {"c-session-1"}
