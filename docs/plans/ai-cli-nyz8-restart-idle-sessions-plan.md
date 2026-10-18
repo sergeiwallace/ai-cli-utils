@@ -1039,6 +1039,14 @@ T-04b, private harness repository, its own PR:
   same-title competitor after pre-check and assert that only the original UUID reaches the fake
   agent, in both launch branches. Unknown running versions shall refuse before action and be
   recorded as migration blockers; tests shall prove no supervisor signal or pane respawn occurs.
+  Before any pre-step injection and again in the final assessment before signalling, the
+  restart shall check read-only that the local registry record exists, its boot recipe passes
+  `valid_boot_recipe`, and the registry file, directory and existing lock are usable for a
+  supervisor generation. Missing records, missing or invalid recipes, and unavailable
+  generation storage shall refuse with `no-boot-recipe`, inject and signal nothing, and leave
+  the old agent alive. The check shall leave registry bytes unchanged and write no generation;
+  it shall never adopt or synthesize records. Valid recipes shall retain the existing restart
+  behaviour. Tests shall also remove a recipe after pre-check and prove final refusal.
 
 ### T-06: Feedback delivery
 

@@ -9,6 +9,8 @@ import time
 import uuid
 from pathlib import Path
 
+import portalocker
+
 from . import config
 from . import session_registry as registry
 
@@ -165,6 +167,35 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
     return result
 
 
+def _begin_record(doc: dict, name: str) -> dict:
+    record = _find(doc, name)
+    if not record.get("boot_recipe"):
+        raise ValueError("session has no boot recipe; refusing an untracked start")
+    if not valid_boot_recipe(record):
+        raise ValueError("session has an invalid boot recipe; refusing an untracked start")
+    return record
+
+
+def can_begin(name: str) -> None:
+    """Check generation prerequisites without creating a file or changing a record.
+
+    This is a snapshot, not a reservation: callers must repeat it before action.
+    The existing lock is opened read-only; a missing lock refuses rather than
+    creating it through the registry's mutating lock context manager.
+    """
+    path = registry.registry_path()
+    lock_path = path.with_name(f"{path.name}.lock")
+    for target, mode in (
+        (path.parent, os.W_OK | os.X_OK),
+        (path, os.R_OK | os.W_OK),
+        (lock_path, os.R_OK | os.W_OK),
+    ):
+        if not os.access(target, mode):
+            raise OSError(f"registry generation storage unavailable: {target}")
+    with portalocker.Lock(lock_path, mode="r", timeout=2):
+        _begin_record(registry.load_registry(), name)
+
+
 def begin(name: str, *, command: list[str] | None = None) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
@@ -175,6 +206,7 @@ def begin(name: str, *, command: list[str] | None = None) -> str:
             raise ValueError("session has no boot recipe; refusing an untracked start")
         if command is not None:
             record["boot_recipe"]["command"] = command
+        _begin_record(doc, name)
         record.update(generation=generation, transition_seq=0)
         return True
 

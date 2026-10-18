@@ -241,6 +241,13 @@ compaction refuses with `background-work`; adapter failures and timeouts refuse
 with `context`. With `pre_step = false` or no adapter, failing context refuses
 without injection. Check mode never runs the pre-step.
 
+Before the `/save-state` pre-step and again in the final assessment, the restart
+checks read-only that the local registry record has a valid boot recipe and that
+the registry file, directory and existing lock permit acquiring a generation.
+Missing records, missing or invalid recipes, and unavailable generation storage
+refuse with `no-boot-recipe`, leaving the agent alive without injection or signals.
+The check neither adopts legacy sessions nor writes a generation.
+
 The restart pins the exact conversation before signalling, atomically prepares a
 compatible replacement child, and sends SIGTERM only to the verified agent PID.
 If necessary, SIGKILL follows after the grace period and another identity and gate

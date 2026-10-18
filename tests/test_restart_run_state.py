@@ -109,7 +109,20 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
     # The legacy quick-exit guard must see a healthy initial agent.
     observed = time.monotonic()
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
-    state.register(SESSION, recipe={"argv": ["ai", "c", "1"], "cwd": str(root / "myproject")}, host="host-a")
+    state.register(
+        SESSION,
+        recipe={
+            "engine": "c",
+            "session_name": SESSION,
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(root / "myproject"),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     _install_real_lifecycle(root / "bin/ai", root)
     metadata = session_restart._object(config.get_xdg_state_home() / f"session-meta-{SESSION}.json")
     old_inode = script.stat().st_ino

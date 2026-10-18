@@ -22,7 +22,7 @@ import psutil
 import pytest
 from conftest import run_cli
 
-from ai_cli import config, main, session_restart
+from ai_cli import config, main, session_restart, session_run_state
 from ai_cli.process_probe import probe_for
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
@@ -82,6 +82,20 @@ def supervisor_fixture(tmp_path_factory, monkeypatch, request):
     monkeypatch.delenv("BASH_ENV", raising=False)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(session_restart.socket, "socket", lambda *args: MagicMock())
+    session_run_state.register(
+        SESSION,
+        recipe={
+            "engine": "c",
+            "session_name": SESSION,
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(cwd),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     guarded_run = subprocess.run
 
     def fixture_run(argv, **kwargs):

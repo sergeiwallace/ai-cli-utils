@@ -31,7 +31,20 @@ def publishing(tmp_path, monkeypatch):
     monkeypatch.setattr(state.config, "load_config", lambda: cfg)
     clock = [1000.0]
     monkeypatch.setattr(publish.time, "time", lambda: clock[0])
-    state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": "/work/myproject"}, host="host-a")
+    state.register(
+        "c-session-1",
+        recipe={
+            "engine": "c",
+            "session_name": "c-session-1",
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(tmp_path / "myproject"),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     state.begin("c-session-1")
     assert state.mark_running("c-session-1")
     return repo, remote, cfg, clock

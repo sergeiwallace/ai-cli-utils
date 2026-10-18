@@ -19,6 +19,7 @@ from conftest import run_cli
 
 from ai_cli import config, main
 from ai_cli import session_restart as restart
+from ai_cli import session_run_state as run_state
 from ai_cli.process_probe import ProcessIdentity, StartTimeMatch
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
@@ -280,6 +281,20 @@ def world(tmp_path, monkeypatch):
     config_home = config.get_xdg_config_home()
     monkeypatch.setattr(config, "get_xdg_state_home", lambda: state)
     monkeypatch.setattr(config, "get_xdg_config_home", lambda: config_home)
+    run_state.register(
+        session,
+        recipe={
+            "engine": "c",
+            "session_name": session,
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(cwd),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     meta = {
         "engine": "c",
         "ai_name": record["name"],
@@ -426,6 +441,58 @@ def world(tmp_path, monkeypatch):
     # monkeypatch is finalized later and would resurrect that expired guard.
     with patch.object(restart.subprocess, "run", subprocess_run):
         yield state_obj
+
+
+@pytest.mark.parametrize("missing", ["record", "recipe", "invalid"])
+@pytest.mark.parametrize("mechanism", ["kill", "exit", "fallback"])
+def test_given_unrelaunchable_session_when_restart_then_no_boot_recipe_before_any_action(
+    world, monkeypatch, missing, mechanism
+):
+    from ai_cli import session_registry
+
+    def remove(doc):
+        if missing == "record":
+            doc["sessions"].clear()
+        else:
+            doc["sessions"][0]["boot_recipe"] = {} if missing == "recipe" else {"engine": "unknown"}
+        return True
+
+    session_registry._mutate(remove)
+    world.settings["restart_session"].update(mechanism="exit" if mechanism == "exit" else "kill", pre_step=True)
+    monkeypatch.setattr(restart, "_signal_supported", lambda: mechanism != "fallback")
+    monkeypatch.setattr(restart, "context_gate", lambda *args: False)
+    world.commands({"inject": ["inject"]})
+    before = session_registry.registry_path().read_bytes()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "no-boot-recipe"
+    assert ("not registered" if missing == "record" else "boot recipe") in report["detail"]
+    assert not world.injected and not world.signals and not world.ended
+    assert session_registry.registry_path().read_bytes() == before
+
+
+def test_given_recipe_removed_after_precheck_when_final_assessment_then_no_signal(world, monkeypatch):
+    from ai_cli import session_registry
+
+    prepare = restart.prepare_request
+
+    def remove_after_prepare(*args):
+        result = prepare(*args)
+        session_registry._mutate(lambda doc: doc["sessions"][0].pop("boot_recipe") is not None)
+        return result
+
+    monkeypatch.setattr(restart, "prepare_request", remove_after_prepare)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "no-boot-recipe"
+    assert not world.injected and not world.signals and not world.ended
+
+
+def test_given_missing_recipe_when_checking_then_boot_gate_refuses_without_action(world):
+    from ai_cli import session_registry
+
+    session_registry._mutate(lambda doc: doc["sessions"].clear() or True)
+    code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 1 and report["gates"]["boot-recipe"] == "no-boot-recipe"
+    assert not world.injected and not world.signals
 
 
 @pytest.mark.parametrize("mechanism", ["kill", "exit", "fallback"])
