@@ -3224,6 +3224,8 @@ def _do_session_launch(
     launch_log_path: str | None = None,
     dry_run: bool = False,
     remote_args: "list[str] | None" = None,
+    detached: bool = False,
+    replay_recipe: dict | None = None,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -3257,7 +3259,7 @@ def _do_session_launch(
     tmux_degraded = False
     if bare:
         tmux_reason = "--bare requested"
-    if _tmux_setup.config_opts_out(config):
+    if not detached and _tmux_setup.config_opts_out(config):
         bare = True
         tmux_reason = "[session] use_tmux = false in config.toml"
 
@@ -3296,7 +3298,8 @@ def _do_session_launch(
 
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
-    is_remote = _session._resolve_is_remote(is_remote)
+    if replay_recipe is None:
+        is_remote = _session._resolve_is_remote(is_remote)
 
     remote_cfg: dict | None = None
     remote_alias = ""
@@ -3372,6 +3375,8 @@ def _do_session_launch(
     # local binary's health says nothing about whether this launch can work, and
     # degrading to bare over it would be a decision about the wrong machine.
     if not bare and not remote and not _tmux_setup.tmux_runs():
+        if detached:
+            raise RuntimeError("detached replay requires a working tmux executable")
         # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
         # so fall straight through to bare without a notice; every other platform
         # gets a repair-then-install attempt and then the same fallback, loudly.
@@ -3429,6 +3434,8 @@ def _do_session_launch(
     # `#session_id`, `#version`, `#pid` and `#session_name` while a plain literal
     # came back verbatim.
     if not bare and not remote and _tmux_setup.formats_expand() is False:
+        if detached:
+            raise RuntimeError("detached replay requires tmux format support")
         bare = True
         tmux_degraded = True
         tmux_reason = (
@@ -3820,7 +3827,9 @@ def _do_session_launch(
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
-    if is_remote:
+    if replay_recipe is not None:
+        os.chdir(replay_recipe["cwd"])
+    elif is_remote:
         # Resolve the same target used below before requiring the project selected
         # for a fresh launch. Reattach must use the existing session's checkout.
         remote_session_exists = False
@@ -3932,8 +3941,12 @@ def _do_session_launch(
     # registry names, a terminal is asked for the alias; a dry run asks and plans with
     # the answer but writes no registry, which keeps it above every write.
     try:
-        naming_prefix = _session_naming.naming_prefix(
-            project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
+        naming_prefix = (
+            project_prefix
+            if replay_recipe is not None
+            else _session_naming.naming_prefix(
+                project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
+            )
         )
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))
@@ -4013,22 +4026,33 @@ def _do_session_launch(
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
     # the sweep and let build_session_name fall back to its non-tmux path.
-    if not bare:
+    if not bare and replay_recipe is None:
         _session.cleanup_stale_sessions(config)
-    current_project_name = _config.get_current_project_name()
+    current_project_name = replay_recipe["project"] if replay_recipe is not None else _config.get_current_project_name()
     try:
-        session_id, ai_name = _session.build_session_name(
-            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=project_prefix
-        )
+        if replay_recipe is not None:
+            session_id = replay_recipe["session_name"]
+            ai_name = session_id.removeprefix(f"{engine}-").removeprefix("r-")
+        else:
+            session_id, ai_name = _session.build_session_name(
+                engine,
+                naming_prefix,
+                name,
+                config,
+                is_remote=is_remote,
+                use_tmux=not bare,
+                legacy_prefix=project_prefix,
+            )
     except _session.SessionSlotAmbiguityError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
     reporter.phase("session").outcome(f"resolved {ai_name}")
-    _finish_recorded_migrations(ai_name, reporter)
+    if replay_recipe is None:
+        _finish_recorded_migrations(ai_name, reporter)
 
     # Worktree setup
-    worktree_path = None
-    if config.get("worktree", {}).get("enabled", True) and not no_worktree:
+    worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
+    if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
         # core.bare=true / carry a stale core.worktree, regardless of source
@@ -4233,6 +4257,9 @@ def _do_session_launch(
 
     def _register_run_state(*, new_start):
         try:
+            if replay_recipe is not None:
+                _session_launch_state.reattach(session_id)
+                return
             _session_launch_state.register_launch(
                 session_id,
                 new_start=new_start,
@@ -4322,18 +4349,34 @@ def _do_session_launch(
     # excluded.
     _tmux_env_flags = build_tmux_env_flags(os.environ)
 
-    if once:
+    replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
+    if once or replay_bare:
         _register_run_state(new_start=True)
         target_root = worktree_path or Path.cwd()
         cd_prefix = f"cd {shlex.quote(str(target_root))} && "
         # Resolved once for the whole --once branch: the pane interpreter must
         # exist (an absent one dies on exec and shows only `[exited]`), and direnv
         # must be optional (an absent one made `direnv exec` fail closed at 127).
-        _session_shell = _session_shell_or_exit()
+        _session_shell = (
+            replay_recipe["shell"] if replay_recipe is not None and replay_bare else _session_shell_or_exit()
+        )
         _direnv = _direnv_prefix(target_root)
-        if not is_remote:
+        if not is_remote and not detached:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
-        if engine == "c":
+        if replay_bare and replay_recipe is not None:
+            command = replay_recipe["command"]
+        elif replay_recipe is not None:
+            command = _bare_engine_command(
+                engine,
+                ai_name,
+                target_root,
+                uuid,
+                gemini_cmd,
+                sandbox_flag,
+                extra_args,
+                pi_provider=pi_provider,
+            )
+        elif engine == "c":
             command = ["claude"]
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
@@ -4357,8 +4400,20 @@ def _do_session_launch(
             "--",
             _session_shell,
             "-c",
-            cd_prefix + _session_launch_state.single_run_shell(session_id, [*_direnv, *command]),
+            cd_prefix
+            + _session_launch_state.single_run_shell(session_id, command if replay_bare else [*_direnv, *command]),
         ]
+        if detached:
+            if _session_registry._local_session_alive(session_id) is not False:
+                raise RuntimeError("session already exists or tmux could not be checked")
+            result = subprocess.run(
+                [*once_argv[:2], "-d", *once_argv[2:]],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError("could not create detached one-shot session")
+            return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
         if loop is None:
@@ -4411,9 +4466,10 @@ def _do_session_launch(
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
     # for new tabs, split panes, and re-attaches alike.
-    _iterm2._emit_iterm2_profile_setup(
-        ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name
-    )
+    if not detached:
+        _iterm2._emit_iterm2_profile_setup(
+            ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name
+        )
 
     # Check if session already exists (e.g., re-attaching after disconnect). Every
     # probe of THIS session's existence or identity uses the exact `=NAME` target: a
@@ -4421,6 +4477,8 @@ def _do_session_launch(
     # `-t c-x-1` answers for c-x-10 -- which attached to slot 10, and under --sandbox
     # killed it as the session "to replace" (AI-CLI-gqb3).
     existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
+    if detached and existing.returncode == 0:
+        raise RuntimeError("session already exists; detached replay refuses a duplicate")
     if existing.returncode == 0 and sandbox:
         identity = _tmux_ownership.capture_tmux_session_identity(f"={session_id}:")
         if identity is None:
@@ -4599,6 +4657,9 @@ def _do_session_launch(
                 Path(_script_path).unlink(missing_ok=True)
                 reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
                 sys.exit(1)
+        if detached:
+            reporter.phase("session").outcome(f"{session_id} running detached")
+            return
         _iterm2._configure_tmux_for_iterm2(identity.session_id)
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
         if not is_remote:

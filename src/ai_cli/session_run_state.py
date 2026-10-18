@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -50,6 +51,74 @@ def cause(record: dict, boot_id: str | None = None) -> str:
     if not stored or not boot_id:
         return "unknown"
     return "host_reboot" if stored != boot_id else "terminal_quit_or_crash"
+
+
+def valid_boot_recipe(record: dict) -> bool:
+    """Accept structured owning-host recipes, never terminal history or shell text."""
+    recipe = record.get("boot_recipe")
+    if not isinstance(recipe, dict):
+        return False
+    engine = recipe.get("engine")
+    name = recipe.get("session_name")
+    options = recipe.get("options")
+    if (
+        engine not in ("c", "g", "p", "cx")
+        or not isinstance(name, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", name)
+        or name != record.get("name")
+        or not name.startswith(f"{engine}-")
+        or recipe.get("owning_host") != record.get("owning_host")
+        or not recipe.get("owning_host")
+        or not isinstance(recipe.get("cwd"), str)
+        or not Path(recipe["cwd"]).is_absolute()
+        or not isinstance(recipe.get("project"), str)
+        or not isinstance(options, dict)
+        or options.get("remote")
+    ):
+        return False
+    for key in ("argv", "extra_args"):
+        value = recipe.get(key)
+        if not isinstance(value, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in value):
+            return False
+    if recipe["argv"][:2] != ["ai", engine]:
+        return False
+    if options.get("bare"):
+        command = recipe.get("command")
+        return (
+            isinstance(recipe.get("shell"), str)
+            and bool(recipe["shell"])
+            and isinstance(command, list)
+            and bool(command)
+            and all(isinstance(arg, str) and "\0" not in arg for arg in command)
+        )
+    return True
+
+
+def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive: bool | None) -> str | None:
+    """Return the first winning boot veto; every policy obeys the same safety order."""
+    if not cfg["on_boot"]:
+        return "session_relaunch.on_boot is off"
+    if record.get("kind") != "local" or record.get("owning_host") != host:
+        return "foreign or remote session"
+    if tombstone_path(record["name"], host).exists():
+        return "deny-boot safety file exists"
+    if alive is True:
+        return "tmux session already exists"
+    if alive is None:
+        return "tmux liveness could not be established"
+    if boot_id and record.get("relaunched_boot_id") == boot_id:
+        return "already attempted in this boot"
+    settled = cause(record, boot_id)
+    if settled not in DEFAULTS["causes"]:
+        return f"cause {settled} forbids boot relaunch"
+    policy = record.get("relaunch", "auto")
+    if policy not in ("auto", "always"):
+        return f"policy {policy} forbids boot relaunch"
+    if settled not in cfg["causes"]:
+        return f"cause {settled} is disabled by profile"
+    if not valid_boot_recipe(record):
+        return "unsupported or incomplete boot recipe"
+    return None
 
 
 def tombstone_path(name: str, host: str) -> Path:
