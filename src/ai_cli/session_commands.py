@@ -48,6 +48,11 @@ def begin(name):
         raise click.ClickException("cannot acquire a durable supervisor generation") from exc
 
 
+@sessions.command("_sequence", hidden=True)
+def sequence():
+    output.raw(Untagged.INTERNAL_REPLY, str(time.monotonic_ns()))
+
+
 @sessions.command("publish")
 @click.option("-n", "--now", is_flag=True, help="Ignore the debounce window")
 @click.option("-t", "--tick", is_flag=True, help="Run one publication timer tick")

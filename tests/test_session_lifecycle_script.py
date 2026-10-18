@@ -59,7 +59,9 @@ def test_persistence_fails_when_final_exit_retries_then_no_agent_is_started(shel
     ai = tmp_path / "bin/ai"
     count = tmp_path / "attempts"
     ai.write_text(
-        "#!/bin/sh\n"
+        '#!/bin/sh\nif [ "$2" != mark ]; then exec '
+        + shlex.quote(sys.executable)
+        + ' -m ai_cli.main "$@"; fi\n'
         + f'n=$(cat {shlex.quote(str(count))} 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf "%s" "$n" > {shlex.quote(str(count))}\n'
         + f'if [ "$n" -lt 3 ]; then exit 1; fi\nexec {shlex.quote(sys.executable)} -m ai_cli.main "$@"\n'
     )
@@ -88,3 +90,20 @@ def test_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_writ
     for reason in ("three consecutive agent exits", "agent exited too quickly"):
         assert f'_ai_persist_exit unknown \'{{"reason":"{reason}"}}\'' in script
     assert script.index("_ai_mark_running || exit 76") < script.index('publish-session-event "$tmux_session" "started"')
+
+
+@pytest.mark.parametrize("status", ["running", "exited"])
+def test_given_no_python_on_path_when_lifecycle_marks_then_state_is_persisted(shell_environment, status):
+    shell, env, name, tmp_path = shell_environment
+    env["PATH"] = str(tmp_path / "bin")
+    body = (
+        SESSION_STATE_FUNCTIONS
+        + f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
+        + ("_ai_mark_running" if status == "running" else "_ai_persist_exit manual_exit '{}' ")
+    )
+    result = subprocess.run([shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=20)
+    assert result.returncode == 0, result.stderr
+    record = registry.load_registry()["sessions"][0]
+    assert record["run_state"] == status
+    if status == "exited":
+        assert record["supervisor_exit"]["cause"] == "manual_exit"
