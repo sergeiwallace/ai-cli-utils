@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local tmux launches now open a detached `wake-watch` window when the effective
+  sidecar mode is `session` or `both`. The watcher retries every exit after two seconds.
+
 - Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and

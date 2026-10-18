@@ -609,7 +609,7 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
 
     validators = {
         "enabled": lambda value: type(value) is bool,
-        "mode": lambda value: isinstance(value, str) and value in {"machine", "session"},
+        "mode": lambda value: isinstance(value, str) and value in {"machine", "session", "both"},
         "boot": lambda value: type(value) is bool,
     }
     for key, validator in validators.items():

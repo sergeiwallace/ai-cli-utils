@@ -272,6 +272,49 @@ def _ensure_wake_sidecar(config: dict) -> None:
         _out.emit(Tag.DAEMON, "ensure", "wake sidecar started", err=True)
 
 
+def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str) -> None:
+    """Run the optional session watcher under tmux, independent of the agent."""
+    if sys.platform == "win32":
+        return
+    script = _wake_sidecar_script()
+    try:
+        if script is None:
+            result = _config.get_sidecar_config(config)
+        else:
+            completed = subprocess.run(
+                [sys.executable, str(script), "show", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return
+            result = json.loads(completed.stdout)
+        if (
+            not isinstance(result, dict)
+            or result.get("enabled") is not True
+            or result.get("mode") not in {"session", "both"}
+        ):
+            return
+        if script is None:
+            # Local settings cannot supply the optional watcher implementation.
+            return
+        command = shlex.join([sys.executable, str(script), "watch", "--session", slug])
+        # POSIX-only: the shell belongs to the tmux window and retries every exit.
+        loop = f"while :; do {command}; sleep 2; done"
+        created = subprocess.run(
+            ["tmux", "new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop],
+            capture_output=True,
+            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if created.returncode != 0:
+            _out.warning(Tag.DAEMON, "watch", "could not create wake watcher window; launch continues")
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
+
+
 def _exec_handoff(file: str, args: list[str]) -> NoReturn:
     """Replace this process with ``file``; the one exec in the package (AI-CLI-8h3u).
 
@@ -4517,6 +4560,8 @@ def _do_session_launch(
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(identity.session_id)
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
+        if not is_remote:
+            _start_session_wake_watcher(config, identity.session_id, ai_name)
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)

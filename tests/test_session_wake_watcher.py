@@ -1,0 +1,137 @@
+"""Per-session wake windows are detached from the agent and retry every exit."""
+
+import json
+import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from ai_cli import main
+
+
+@pytest.fixture
+def launch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "watcher tools" / "wake_sidecar_cli.py"
+    script.parent.mkdir()
+    script.write_text("", encoding="utf-8")
+    state = SimpleNamespace(
+        mode="session", enabled=True, existing=False, failure=None, calls=[], script=script, generation=""
+    )
+
+    def fake_run(argv, **kwargs):
+        state.calls.append((argv, kwargs))
+        stdout = ""
+        code = 0
+        if argv[:2] == [sys.executable, str(script)]:
+            assert argv[2:] == ["show", "--json"]
+            if isinstance(state.failure, Exception):
+                raise state.failure
+            code = 1 if state.failure == "exit" else 0
+            stdout = (
+                "invalid" if state.failure == "json" else json.dumps({"enabled": state.enabled, "mode": state.mode})
+            )
+        elif argv[0] == "tmux":
+            if argv[1] == "-V":
+                stdout = "tmux 3.7c"
+            elif argv[1] == "has-session":
+                code = 0 if state.existing else 1
+            elif argv[1] == "new-session":
+                stdout = "$1\n"
+            elif argv[1] == "set-option" and "@ai_cli_session_generation" in argv:
+                state.generation = argv[-1]
+            elif argv[1] == "display-message":
+                if argv[-1] == "#{version}":
+                    stdout = "3.7c"
+                elif argv[-1] == "#{session_id}":
+                    stdout = "$1"
+                elif "@ai_cli_session_generation" in argv[-1]:
+                    stdout = f"$1\tc-myproject-tst-1\t{state.generation}"
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    def invoke(**overrides):
+        options = {
+            "engine": "c",
+            "name": "1",
+            "resume": False,
+            "once": False,
+            "bare": False,
+            "notify": False,
+            "sandbox": False,
+            "no_worktree": True,
+            "remote": False,
+            "project": "",
+            "is_remote": False,
+            "project_prefix_override": "myproject",
+            "extra_args": [],
+            "config": {"worktree": {"enabled": False}},
+        }
+        options.update(overrides)
+        with (
+            patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+            patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+            patch("ai_cli.main._pty_handoff", return_value=main._exec_handoff),
+            patch("ai_cli.main._wake_sidecar_script", return_value=state.script),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.trust.ensure_workspace_trusted"),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+            patch("ai_cli.iterm2._rename_tmux_window"),
+        ):
+            with pytest.raises(SystemExit) as exited:
+                main._do_session_launch(**options)
+        assert exited.value.code == 0
+        return [argv for argv, _ in state.calls if argv[:2] == ["tmux", "new-window"]]
+
+    state.invoke = invoke
+    return state
+
+
+@pytest.mark.parametrize("mode", ["session", "both"])
+def test_given_session_mode_when_launching_then_one_detached_watcher_targets_slug(launch, mode):
+    launch.mode = mode
+    windows = launch.invoke()
+    assert len(windows) == 1
+    assert windows[0][:10] == ["tmux", "new-window", "-d", "-t", "$1:", "-n", "wake-watch", "sh", "-c", windows[0][-1]]
+    assert "watch --session myproject-tst-1" in windows[0][-1]
+    shows = [(argv, kw) for argv, kw in launch.calls if "show" in argv]
+    assert len(shows) == 1
+    assert shows[0][1]["timeout"] == 3
+    assert shows[0][0][:2] == [sys.executable, str(launch.script)]
+
+
+@pytest.mark.parametrize(("mode", "enabled"), [("machine", True), ("session", False), ("invalid", True)])
+def test_given_inactive_session_mode_when_launching_then_no_watcher_window(launch, mode, enabled):
+    launch.mode, launch.enabled = mode, enabled
+    assert launch.invoke() == []
+
+
+@pytest.mark.parametrize("failure", ["exit", "json", OSError(), subprocess.TimeoutExpired("show", 3)])
+def test_given_failed_show_when_launching_then_no_watcher_window(launch, failure):
+    launch.failure = failure
+    assert launch.invoke() == []
+
+
+@pytest.mark.parametrize("options", [{"is_remote": True}, {"bare": True}])
+def test_given_excluded_launch_when_launching_then_no_watcher_query(launch, options):
+    assert launch.invoke(**options) == []
+    assert not any("show" in argv for argv, _ in launch.calls)
+
+
+def test_given_existing_session_when_reattaching_then_no_watcher_query(launch):
+    launch.existing = True
+    assert launch.invoke() == []
+    assert not any("show" in argv for argv, _ in launch.calls)
+
+
+def test_given_windows_when_starting_watcher_then_no_subprocess(launch):
+    with patch.object(main.sys, "platform", "win32"), patch.object(main.subprocess, "run") as run:
+        main._start_session_wake_watcher({}, "$1", "session-1")
+    run.assert_not_called()
