@@ -23,6 +23,8 @@ import tempfile
 import time
 import tomllib
 import uuid
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -104,8 +106,18 @@ def session_lock(session: str):
             portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
         except portalocker.LockException as exc:
             raise Refusal("locked") from exc
+
+        def check() -> None:
+            try:
+                opened = os.fstat(handle.fileno())
+                named = path.stat()
+                if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+                    raise Refusal("locked", "session lock changed")
+            except (OSError, ValueError) as exc:
+                raise Refusal("locked", "session lock unavailable") from exc
+
         try:
-            yield
+            yield check
         finally:
             portalocker.unlock(handle)
 
@@ -338,9 +350,74 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])
 
 
-def context_pre_step(record: dict, settings: dict, commands: dict) -> str:
-    """Integration seam for the separately implemented save-state pre-step."""
-    return "pre-step unavailable"
+def context_pre_step(
+    record: dict,
+    settings: dict,
+    commands: dict,
+    record_path: Path | None,
+    managed: Managed,
+    check_lock: Callable[[], None] | None,
+) -> str:
+    """Submit once, then require new compaction evidence and a fresh idle interval."""
+    if not commands.get("inject"):
+        return "pre-step unavailable"
+    if record_path is None or check_lock is None:
+        raise Refusal("locked", "pre-step requires lock ownership")
+    path = transcript_path(record)
+
+    def boundaries(rows: list[dict]) -> Counter[str]:
+        return Counter(json.dumps(row, sort_keys=True) for row in rows if row.get("subtype") == "compact_boundary")
+
+    def fresh() -> dict:
+        check_lock()
+        current = _fresh(record_path, record)
+        if managed_gate(current, settings, prepared=managed) != managed:
+            raise Refusal("identity", "process ownership changed during pre-step")
+        current = _fresh(record_path, record)
+        if current.get("status") != "idle" or current.get("waitingFor"):
+            raise Refusal("busy", "registry became busy during pre-step")
+        check_lock()
+        return current
+
+    # Capability probes can take time; repeat the idle/background checks after them.
+    current = fresh()
+    idle_gate(current, transcript_tail(path), settings)
+    descendants_gate(current["pid"], Path(current["cwd"]))
+    rows = transcript_tail(path)
+    idle_gate(_fresh(record_path, record), rows, settings)
+    check_lock()
+    before = boundaries(rows)
+    outcome = _inject_save_state(current, commands)
+    deadline = time.monotonic() + settings["compaction_wait_seconds"]
+    compacted = False
+    idle_since = None
+    while True:
+        current = fresh()
+        rows = transcript_tail(path)
+        now = time.monotonic()
+        if not compacted and boundaries(rows) - before:
+            compacted = True
+            # Allow the full idle interval even if compaction used its wait budget.
+            deadline += settings["settle_seconds"]
+        if compacted:
+            descendants_gate(current["pid"], Path(current["cwd"]))
+            try:
+                idle_gate(current, rows, {**settings, "settle_seconds": 0})
+            except Refusal as exc:
+                if exc.reason != "busy":
+                    raise
+                idle_since = None
+            else:
+                if idle_since is None:
+                    idle_since = now
+                if now - idle_since >= settings["settle_seconds"]:
+                    # No recursive pre-step: context or any other failing gate now refuses.
+                    assess(fresh(), settings, commands, prepared=managed)
+                    check_lock()
+                    return ""
+        if now >= deadline:
+            return f"{outcome}; compaction wait timed out"
+        time.sleep(min(POLL_SECONDS, deadline - now))
 
 
 def _settings(cwd: Path) -> list[dict]:
@@ -687,7 +764,14 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
 
 
 def assess(
-    record: dict, settings: dict, commands: dict, *, pre_step: bool = False, prepared: Managed | None = None
+    record: dict,
+    settings: dict,
+    commands: dict,
+    *,
+    pre_step: bool = False,
+    prepared: Managed | None = None,
+    record_path: Path | None = None,
+    check_lock: Callable[[], None] | None = None,
 ) -> Managed:
     managed = managed_gate(record, settings, prepared=prepared)
     cwd = Path(record.get("cwd", "")).resolve()
@@ -699,11 +783,12 @@ def assess(
     descendants_gate(record["pid"], cwd)
     if not context_gate(rows, settings):
         detail = (
-            context_pre_step(record, settings, commands)
+            context_pre_step(record, settings, commands, record_path, managed, check_lock)
             if pre_step and settings["pre_step"]
             else "pre-step unavailable"
         )
-        raise Refusal("context", detail)
+        if detail:
+            raise Refusal("context", detail)
     return managed
 
 
@@ -1149,6 +1234,32 @@ def _inject_exit(record: dict, commands: dict) -> None:
         raise Refusal("no-mechanism", "exit injection failed") from exc
 
 
+def _inject_save_state(record: dict, commands: dict) -> str:
+    try:
+        result = subprocess.run(
+            _argv(commands["inject"], record, "/save-state"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise Refusal("context", "save-state injection unavailable or timed out") from exc
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        data = {}
+    # Only protocol enums are printable. Adapter diagnostics/evidence may contain secrets.
+    state = data.get("state") if isinstance(data, dict) else None
+    accepted = ("SENT", "STARTED", "COMPLETED")
+    known = (*accepted, "QUEUED", "HELD", "REFUSED", "AMBIGUOUS", "BOUND", "CORRUPTED", "DROPPED")
+    outcome = f"injection outcome: {state if state in known else 'UNKNOWN'} (exit {result.returncode})"
+    if result.returncode or state not in accepted or data.get("submitted") is not True:
+        raise Refusal("context", outcome)
+    return outcome
+
+
 def restart(target: str | None, *, check: bool = False, detached: bool = False, automatic: bool = False) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
     try:
@@ -1168,7 +1279,7 @@ def restart(target: str | None, *, check: bool = False, detached: bool = False, 
                 start_new_session=True,
             )
             return _report("detached")
-        with session_lock(session):
+        with session_lock(session) as check_lock:
             _, result_path, request_path = state_paths(session)
             previous = _object(result_path) if result_path.exists() else {}
             if time.time() - previous.get("last_restart", 0) < settings["cooldown_seconds"]:
@@ -1194,7 +1305,7 @@ def restart(target: str | None, *, check: bool = False, detached: bool = False, 
                         if exc.reason != "busy" or time.monotonic() >= deadline:
                             raise
                     time.sleep(POLL_SECONDS)
-            managed = assess(record, settings, commands, pre_step=True)
+            managed = assess(record, settings, commands, pre_step=True, record_path=record_path, check_lock=check_lock)
             if (settings["mechanism"] == "exit" or not _signal_supported()) and not commands.get("inject"):
                 raise Refusal("no-mechanism")
             request = prepare_request(record, managed, settings)
