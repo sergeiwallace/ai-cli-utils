@@ -203,9 +203,19 @@ background launches cannot be excluded within that bound.
 Context must be at or below 20 percent, or within one assistant turn of an automatic
 compaction. Missing usage and unknown model windows do not count as zero. Configure
 `context_window_tokens` for an unrecognised or extended model window. A manual
-compaction passes only through the percentage gate. The save-state pre-step and
-automatic scheduling are separate integrations; a required pre-step currently
-refuses with `context` and `pre-step unavailable`.
+compaction passes only through the percentage gate.
+
+When context fails and `pre_step = true`, the configured injection adapter submits
+`/save-state` once to the target pane. The command waits up to
+`compaction_wait_seconds` for a new main-chain `compact_boundary` record; an older
+boundary does not qualify. It then requires `settle_seconds` of idle after the
+compaction, and rechecks every gate before preparing the pinned restart. The wait
+budget allows that additional idle interval. A busy registry, changed process or
+supervisor generation, or lost lock aborts the wait. Background work after
+compaction refuses with `background-work`; adapter failures and timeouts refuse
+with `context`. With `pre_step = false` or no adapter, failing context refuses
+without injection. Check mode never runs the pre-step. Automatic scheduling is a
+separate integration.
 
 The restart pins the exact conversation before signalling, atomically prepares a
 compatible replacement child, and sends SIGTERM only to the verified agent PID.
@@ -251,6 +261,12 @@ argv = ["ssh", "host-b", "list-sessions-as-seen-from-here"]
 The injection adapter submits `/exit` for `mechanism = "exit"` or unavailable
 signal access. It must preserve the session when background work is reported.
 A non-zero exit refuses; a zero exit still requires replacement verification.
+For `/save-state`, the adapter must return JSON with `state` set to `SENT`,
+`STARTED` or `COMPLETED`, `submitted` set to `true`, and exit zero. `HELD`, `QUEUED`
+and other outcomes refuse without retrying injection or signalling. The report
+includes the adapter's protocol state and exit code; arbitrary diagnostic output
+is omitted. A successful submission still requires new compaction evidence and
+all restart gates to pass.
 The observer returns JSON with `status` (`seen`, `absent`, `unknown`), `complete`,
 `observed_at` (epoch seconds or an ISO timestamp with a timezone) and `rows` carrying
 `session_id`, `title` and, where available, `bridge_session_id`. Evidence must be
