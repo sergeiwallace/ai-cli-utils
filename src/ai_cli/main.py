@@ -115,7 +115,7 @@ from .process_manager import (  # noqa: F401
     _cmd_quota_watch_stop,
     _ensure_circusd,
 )
-from .process_probe import StartTimeMatch, probe_for
+from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
     _checkpoint_to_chat_uuid,
@@ -575,7 +575,7 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     # the record carries enough to identify it.
     if probe.is_abandoned(pid):
         return "abandoned"
-    match = probe.start_time_match(pid, record.get("procStart"))
+    match = probe.start_time_match(pid, normalize_proc_start(record.get("procStart")))
     if match is StartTimeMatch.UNRECORDED:
         # The pid runs and nothing refutes its identity; keep the historical refusal.
         return "live"
@@ -622,7 +622,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     state = probe.state(pid) or "?"
     name = str(record.get("name") or "")
     label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
-    identified = probe.start_time_match(pid, record.get("procStart")) is StartTimeMatch.MATCH
+    identified = probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is StartTimeMatch.MATCH
     if not identified:
         _out.emit(
             Tag.LAUNCH,
@@ -633,7 +633,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
             err=True,
         )
         return False
-    if probe.end_process(pid, record.get("procStart")):
+    if probe.end_process(pid, normalize_proc_start(record.get("procStart"))):
         _prune_dead_cc_session_record(entry)
         _out.emit(
             Tag.LAUNCH,
@@ -676,7 +676,7 @@ def _settle_stopped_cc_session(entry: Path, record: dict) -> bool:
     except (TypeError, ValueError):
         return False
     probe = probe_for()
-    if probe.start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+    if probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH:
         # Unidentified: reclamation reports that and leaves the process alone.
         _reclaim_abandoned_cc_session(entry, record)
         return False

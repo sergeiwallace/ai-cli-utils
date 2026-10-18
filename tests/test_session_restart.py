@@ -227,6 +227,26 @@ def test_given_alias_when_restart_then_one_pid(world, target, flag):
     assert restart._object(restart.state_paths(world.session)[2])["status"] == "complete"
 
 
+@pytest.mark.parametrize("check", [False, True])
+def test_given_string_birth_markers_when_cli_runs_then_every_identity_check_matches(world, monkeypatch, check):
+    world.record["procStart"] = "101"
+    del world.rows[-1]["pendingBackgroundAgentCount"]
+    world.write()
+    kill = restart.os.kill
+
+    def replace_with_string_marker(pid, sig):
+        kill(pid, sig)
+        path = world.registry.parent / "201.json"
+        record = restart._object(path)
+        path.write_text(json.dumps({**record, "procStart": "201"}), encoding="utf-8")
+
+    monkeypatch.setattr(restart.os, "kill", replace_with_string_marker)
+    code, report, _ = world.cli("-Y" if check else "-X", SESSION_ID)
+    assert code == 0, report
+    assert report["reason"] == ("ready" if check else "restarted")
+    assert world.signals == ([] if check else [(101, signal.SIGTERM)])
+
+
 def test_given_slot_when_restart_then_no_launch(world, monkeypatch):
     monkeypatch.setattr(main._config, "resolve_project_prefix_by_name", lambda name: "myproject")
     monkeypatch.setattr(main._session_naming, "resolve_host_alias", lambda: "box")
@@ -287,13 +307,13 @@ def test_given_busy_when_restart_then_refusal(world, kind):
 
 
 @pytest.mark.parametrize(
-    "kind", ["agent-count", "counter-missing", "shell", "agent", "descendant", "unreadable", "truncated"]
+    "kind", ["agent-count", "counter-invalid", "shell", "agent", "descendant", "unreadable", "truncated"]
 )
 def test_given_work_when_restart_then_refusal(world, monkeypatch, kind):
     if kind == "agent-count":
         world.rows[-1]["pendingBackgroundAgentCount"] = 1
-    elif kind == "counter-missing":
-        del world.rows[-1]["pendingBackgroundAgentCount"]
+    elif kind == "counter-invalid":
+        world.rows[-1]["pendingBackgroundAgentCount"] = None
     elif kind in ("shell", "agent"):
         result = (
             {"backgroundTaskId": "task-1"} if kind == "shell" else {"status": "async_launched", "agentId": "agent-1"}
@@ -536,7 +556,10 @@ def test_given_revalidation_when_busy_then_signal_unreachable(world, monkeypatch
 
 
 @pytest.mark.parametrize("signal_supported", [False, True])
-def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatch, signal_supported):
+@pytest.mark.parametrize("birth_type", [int, str])
+def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatch, signal_supported, birth_type):
+    world.record["procStart"] = birth_type(101)
+    world.write()
     monkeypatch.setattr(restart, "_signal_supported", lambda: signal_supported)
     # The signal and process are simulated; Windows must use injection instead.
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
@@ -768,7 +791,7 @@ def test_given_context_evidence_when_checked_then_conservative_window(world, kin
         world.rows[0]["message"]["usage"]["input_tokens"] = 150_000
     world.write()
     code, report, _ = world.cli("-X", SESSION_ID)
-    expected = kind in ("override", "auto", "extended")
+    expected = kind in ("unknown", "override", "auto", "extended")
     assert code == (0 if expected else 1)
     assert report["reason"] == ("restarted" if expected else "context")
 

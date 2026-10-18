@@ -14,6 +14,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -31,13 +32,13 @@ import portalocker
 import psutil
 
 from . import config
-from .process_probe import ProcessIdentity, StartTimeMatch, probe_for
+from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
 POLL_SECONDS = 0.2
-# Keep unknown models unknown. These base windows match the existing statusline
-# model table; extended windows require an explicit tag or configured size.
+# These base windows match the existing statusline model table. Unknown models
+# use the smallest known window; extended windows need a known tag or override.
 MODEL_WINDOWS = {
     "claude-opus-4-6": 200_000,
     "claude-opus-4-7": 200_000,
@@ -232,7 +233,8 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
     chain = [row for row in rows if row.get("type") in ("user", "assistant", "system")]
     if not chain or chain[-1].get("subtype") != "turn_duration":
         raise Refusal("busy", "transcript has no final turn boundary")
-    pending_agents = chain[-1].get("pendingBackgroundAgentCount")
+    # Claude Code omits this counter when it is zero, but the boundary is required.
+    pending_agents = chain[-1].get("pendingBackgroundAgentCount", 0)
     if type(pending_agents) is not int or pending_agents != 0:
         raise Refusal("background-work", "pending agent counter is positive or unavailable")
     launched: set[str] = set()
@@ -246,8 +248,12 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
                 if not result.get("agentId"):
                     raise Refusal("background-work", "agent launch has no identity")
                 launched.add(str(result["agentId"]))
-        # Notifications occur as user content in current transcripts, or as structured records.
-        content = row.get("message", {}).get("content", [])
+        # Queue notifications are completions too, never background launches.
+        content = (
+            row.get("content", [])
+            if row.get("type") == "queue-operation" and row.get("operation") == "enqueue"
+            else row.get("message", {}).get("content", [])
+        )
         text = content if isinstance(content, str) else json.dumps(content)
         if "task-notification" in text and re.search(r"<status>(completed|failed|killed)</status>", text):
             for task_id in re.findall(r"<task-id>([^<]+)</task-id>", text):
@@ -288,7 +294,7 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:
-        window = MODEL_WINDOWS.get(model, 0)
+        window = MODEL_WINDOWS.get(model, min(MODEL_WINDOWS.values()))
         if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS and "haiku" not in model:
             window = 1_000_000
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])
@@ -329,27 +335,75 @@ def activation_gate(cwd: Path) -> None:
         raise Refusal("rc-activation", "remoteControlAtStartup must be true")
 
 
+def _mcp_commands(cwd: Path) -> list[tuple[str, list[str]]]:
+    commands = []
+    for path in (Path.home() / ".claude.json", cwd / ".mcp.json"):
+        try:
+            path.stat()
+        except FileNotFoundError:
+            continue
+        data = _object(path)
+        scopes = [data]
+        if path.name == ".claude.json":
+            projects = data.get("projects", {})
+            if not isinstance(projects, dict):
+                raise Refusal("background-work", "MCP configuration unreadable")
+            scopes.append(projects.get(str(cwd), {}))
+        for scope in scopes:
+            if not isinstance(scope, dict) or not isinstance(scope.get("mcpServers", {}), dict):
+                raise Refusal("background-work", "MCP configuration unreadable")
+            for server in scope.get("mcpServers", {}).values():
+                if isinstance(server, dict) and isinstance(server.get("command"), str):
+                    args = server.get("args", [])
+                    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                        raise Refusal("background-work", "MCP arguments unreadable")
+                    commands.append((server["command"], args))
+    return commands
+
+
+def _command_path(command: str, cwd: Path) -> Path | None:
+    path = Path(command).expanduser()
+    if not path.is_absolute():
+        if path.parent == Path():
+            found = shutil.which(command)
+            if not found:
+                return None
+            path = Path(found)
+        else:
+            path = cwd / path
+    try:
+        return path.resolve(strict=True)
+    except OSError:
+        return None
+
+
 def descendants_gate(pid: int, cwd: Path) -> None:
     """Allow only configured MCP server roots and their own descendants."""
     try:
-        commands = []
-        paths = [Path.home() / ".claude.json", cwd / ".mcp.json"]
-        for path in paths:
-            if path.exists():
-                data = _object(path)
-                servers = data.get("mcpServers", {})
-                if not isinstance(servers, dict):
-                    raise Refusal("background-work", "MCP configuration unreadable")
-                for server in servers.values():
-                    if isinstance(server, dict) and isinstance(server.get("command"), str):
-                        commands.append([server["command"], *server.get("args", [])])
-        children = psutil.Process(pid).children(recursive=True)
+        commands = _mcp_commands(cwd)
+        agent = psutil.Process(pid)
+        children = agent.children(recursive=True)
+        started = agent.create_time()
         allowed = set()
         pending = {child.pid: child for child in children}
         while pending:
             progress = False
             for child_id, child in list(pending.items()):
-                if child.ppid() in allowed or child.cmdline() in commands:
+                parent = child.ppid()
+                server = False
+                if parent == pid and commands:
+                    born = child.create_time()
+                    if _number(started) and _number(born) and 0 <= born - started <= 60:
+                        argv = child.cmdline()
+                        for command, args in commands:
+                            if args and len(argv) >= len(args) and argv[-len(args) :] == args:
+                                server = True
+                                break
+                            configured = _command_path(command, cwd)
+                            if argv and configured is not None and _command_path(argv[0], cwd) == configured:
+                                server = True
+                                break
+                if parent in allowed or server:
                     allowed.add(child_id)
                     del pending[child_id]
                     progress = True
@@ -463,7 +517,10 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
             raise Refusal("identity")
         probe = probe_for()
-        if probe.has_ended(pid) or probe.start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+        if (
+            probe.has_ended(pid)
+            or probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH
+        ):
             raise Refusal("identity", "dead, reused or unproven agent pid")
         agent = psutil.Process(pid)
         if time.time() - agent.create_time() < settings["min_uptime_seconds"]:
@@ -748,7 +805,10 @@ def local_verdict(record: dict) -> str:
     try:
         pid = record["pid"]
         probe = probe_for()
-        if probe.has_ended(pid) or probe.start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+        if (
+            probe.has_ended(pid)
+            or probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH
+        ):
             return "UNKNOWN"
         if record.get("nameSource") != "user" or not record.get("bridgeSessionId"):
             return "FAILED"
@@ -876,7 +936,10 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
             probe = probe_for()
             if not isinstance(row.get("pid"), int) or probe.has_ended(row["pid"]):
                 continue
-            if probe.start_time_match(row["pid"], row.get("procStart")) is not StartTimeMatch.MATCH:
+            if (
+                probe.start_time_match(row["pid"], normalize_proc_start(row.get("procStart")))
+                is not StartTimeMatch.MATCH
+            ):
                 continue
             if row.get("sessionId") != old["sessionId"]:
                 return _report("resume-mismatch", local="FAILED")
@@ -947,7 +1010,10 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
         _inject_exit(record, commands)
         return
     try:
-        if probe_for().start_time_match(record["pid"], current.get("procStart")) is not StartTimeMatch.MATCH:
+        if (
+            probe_for().start_time_match(record["pid"], normalize_proc_start(current.get("procStart")))
+            is not StartTimeMatch.MATCH
+        ):
             raise Refusal("identity", "agent birth changed before signal")
         os.kill(record["pid"], signal.SIGTERM)
     except ProcessLookupError:
@@ -970,7 +1036,10 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
         current = _fresh(record_path, record)
         assess(current, settings, commands, prepared=managed)
         _validate_request(request, session, child=False)
-        if probe.start_time_match(record["pid"], record.get("procStart")) is not StartTimeMatch.MATCH:
+        if (
+            probe.start_time_match(record["pid"], normalize_proc_start(record.get("procStart")))
+            is not StartTimeMatch.MATCH
+        ):
             raise Refusal("identity")
         os.kill(record["pid"], signal.SIGKILL)
 
