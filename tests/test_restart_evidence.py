@@ -60,8 +60,8 @@ def test_given_mcp_tree_when_classified_then_only_configured_servers_allowed(tmp
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-99", "claude-opus-5-5"])
-@pytest.mark.parametrize(("tokens", "allowed"), [(40_000, True), (40_001, False)])
-def test_given_unknown_model_when_window_unconfigured_then_smallest_window_applies(model, tokens, allowed):
+@pytest.mark.parametrize("tokens", [40_000, 40_001])
+def test_given_ac_f3_unknown_model_when_window_unconfigured_then_context_refuses(model, tokens):
     rows = [
         {
             "type": "assistant",
@@ -71,7 +71,26 @@ def test_given_unknown_model_when_window_unconfigured_then_smallest_window_appli
             },
         }
     ]
-    assert restart.context_gate(rows, config.read_restart_config({})) is allowed
+    assert not restart.context_gate(rows, config.read_restart_config({}))
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "unknown-model", "claude-sonnet-4-6[1m]"])
+@pytest.mark.parametrize("override", [0, 100_000])
+@pytest.mark.parametrize("tokens", [20_000, 20_001, 40_000, 40_001, 200_000, 200_001])
+def test_given_ac_f3_model_window_when_context_checked_then_known_or_configured_window_applies(model, override, tokens):
+    rows = [
+        {
+            "type": "assistant",
+            "message": {
+                "model": model,
+                "usage": {"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        }
+    ]
+    settings = config.read_restart_config({})
+    settings["context_window_tokens"] = override
+    limit = 20_000 if override else {"claude-sonnet-4-6": 40_000, "claude-sonnet-4-6[1m]": 200_000}.get(model)
+    assert restart.context_gate(rows, settings) is (limit is not None and tokens <= limit)
 
 
 def test_given_oversized_history_when_tail_read_then_no_unbounded_read(tmp_path, monkeypatch):
@@ -372,12 +391,15 @@ def test_given_pending_agents_before_compaction_when_idle_checked_then_backgroun
 
 
 @pytest.mark.parametrize("tokens", [15397, 40000, 40001, None, "15397", True, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("window", [0, 200_000])
 def test_given_manual_compaction_without_usage_when_context_checked_then_post_tokens_threshold_applies(
-    compacted_rows, tokens
+    compacted_rows, tokens, window
 ):
     compacted_rows[2]["compactMetadata"]["postTokens"] = tokens
-    assert restart.context_gate(compacted_rows, config.read_restart_config({})) is (
-        type(tokens) is int and 0 <= tokens <= 40000
+    settings = config.read_restart_config({})
+    settings["context_window_tokens"] = window
+    assert restart.context_gate(compacted_rows, settings) is (
+        bool(window) and type(tokens) is int and 0 <= tokens <= 40000
     )
 
 

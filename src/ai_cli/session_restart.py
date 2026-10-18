@@ -39,7 +39,7 @@ CHUNK_SIZE = 64 * 1024
 POLL_SECONDS = 0.2
 RESTART_PIN_PROTOCOL = "restart-pin-v1"
 # These base windows match the existing statusline model table. Unknown models
-# use the smallest known window; extended windows need a known tag or override.
+# require an explicit window; extended windows need a known tag or override.
 MODEL_WINDOWS = {
     "claude-opus-4-6": 200_000,
     "claude-opus-4-7": 200_000,
@@ -332,7 +332,7 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:
-        window = MODEL_WINDOWS.get(model, min(MODEL_WINDOWS.values()))
+        window = MODEL_WINDOWS.get(model)
         if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS and "haiku" not in model:
             window = 1_000_000
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])

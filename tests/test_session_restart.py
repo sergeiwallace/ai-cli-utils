@@ -949,9 +949,11 @@ def test_given_context_evidence_when_checked_then_conservative_window(world, kin
         world.rows[0]["message"]["usage"]["input_tokens"] = 150_000
     world.write()
     code, report, _ = world.cli("-X", SESSION_ID)
-    expected = kind in ("unknown", "override", "auto", "extended")
+    expected = kind in ("override", "auto", "extended")
     assert code == (0 if expected else 1)
     assert report["reason"] == ("restarted" if expected else "context")
+    if not expected:
+        assert not world.signals and not world.injected
 
 
 @pytest.mark.parametrize("key", ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
