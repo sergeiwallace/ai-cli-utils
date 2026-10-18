@@ -144,7 +144,7 @@ def test_given_npx_root_when_unrelated_child_running_then_exe_and_argv_refuse(np
     tree.helper.cmdline = lambda: argv
     with pytest.raises(restart.Refusal, match="background-work") as caught:
         restart.descendants_gate(1, tree.home)
-    assert str(executable) in caught.value.detail
+    assert repr(str(executable)) in caught.value.detail
     assert repr(argv) in caught.value.detail
 
 
