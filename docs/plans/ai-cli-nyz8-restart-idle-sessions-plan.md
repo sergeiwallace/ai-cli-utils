@@ -1078,5 +1078,6 @@ Audit backlog and the AC that covers each finding:
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-10-18 | D-11: option (a) for implementation and rollout | Ruled by the host's chief-of-staff session (an AI decider, not the operator): restart by hand now, and a cross-host observer follow-up is filed. The completion gate in D-11 still stands. Full reachability is not claimed, and plan sign-off and epic closure wait for evidence or for the operator's own approval of the re-scope. |
 
 <!-- /doc:region name="approval_log" -->
