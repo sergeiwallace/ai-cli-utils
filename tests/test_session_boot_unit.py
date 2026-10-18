@@ -1,5 +1,6 @@
 """Boot unit management uses a fake service manager on every platform."""
 
+import os
 import plistlib
 import shlex
 import subprocess
@@ -250,3 +251,79 @@ def test_given_absent_unit_when_manager_reports_not_found_then_disabled_profile_
     assert "0 mutations" in result.output
     assert len(calls) == 1
     assert not any(p.exists() for p in unit.files())
+
+
+def _rendered_path(content, platform):
+    if platform == "darwin":
+        return plistlib.loads(content)["EnvironmentVariables"]["PATH"]
+    assignment = next(
+        line.removeprefix("Environment=") for line in content.decode().splitlines() if line.startswith("Environment=")
+    )
+    return next(value.removeprefix("PATH=") for value in shlex.split(assignment) if value.startswith("PATH="))
+
+
+def test_given_mixed_path_when_rendered_then_transient_missing_and_duplicate_entries_are_removed(unit, tmp_path):
+    directories = [
+        tmp_path / "myproject/.worktrees/session-1/.direnv/bin",
+        tmp_path / "myproject/.worktrees/session-1/bin",
+        tmp_path / "myproject/.direnv",
+        tmp_path / "myproject/.direnv/bin",
+        tmp_path / "usr/bin",
+        tmp_path / "home/.local/bin",
+        tmp_path / "my.worktrees-notes",
+        tmp_path / "direnv-tools",
+    ]
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+    ordinary_file = tmp_path / "file"
+    ordinary_file.write_text("not a directory", encoding="utf-8")
+    entries = [*directories, directories[4], tmp_path / "missing", ordinary_file, unit.executable.parent]
+    path = os.pathsep.join(["", *(str(entry) for entry in entries), ""])
+    content = next(
+        iter(boot.render(platform=unit.platform, home=unit.home, path=path, executable=str(unit.executable)).values())
+    )
+    assert _rendered_path(content, unit.platform).split(os.pathsep) == [
+        *(str(directory) for directory in directories[4:]),
+        str(unit.executable.parent),
+    ]
+    assert content == next(
+        iter(
+            boot.render(
+                platform=unit.platform,
+                home=unit.home,
+                path=os.pathsep.join(str(directory) for directory in [*directories[4:], unit.executable.parent]),
+                executable=str(unit.executable),
+            ).values()
+        )
+    )
+
+
+@pytest.mark.parametrize("directory", ["tools", ".worktrees/session-1/bin", ".direnv/bin"])
+@pytest.mark.parametrize("present", [False, True])
+def test_given_entry_point_directory_when_rendered_then_path_retains_it(unit, tmp_path, directory, present):
+    executable = tmp_path / directory / "ai"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("entry point", encoding="utf-8")
+    entries = [str(executable.parent), str(unit.executable.parent)] if present else [str(unit.executable.parent)]
+    content = next(
+        iter(
+            boot.render(
+                platform=unit.platform, home=unit.home, path=os.pathsep.join(entries), executable=str(executable)
+            ).values()
+        )
+    )
+    expected = entries if present else [*entries, str(executable.parent)]
+    assert _rendered_path(content, unit.platform).split(os.pathsep) == expected
+
+
+def test_given_transient_path_when_dry_run_then_filtered_path_is_shown_without_mutations(unit, tmp_path, monkeypatch):
+    transient = tmp_path / ".worktrees/session-1/.direnv/bin"
+    transient.mkdir(parents=True)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(transient), str(unit.executable.parent)]))
+    result = unit.invoke("install", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert next(iter(unit.files().values())).decode("utf-8") in result.output
+    assert str(transient) not in result.output
+    assert "dry-run: 0 mutations" in result.output
+    assert not unit.calls
+    assert not any(path.exists() for path in unit.files())
