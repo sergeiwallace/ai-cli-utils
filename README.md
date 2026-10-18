@@ -286,6 +286,9 @@ reconciliation time, replacement PID and evidence kinds; the result records
 `failed: false` with reason `reconciled`. Missing, unreadable, unknown or conflicting
 evidence keeps the fence and leaves both files unchanged. Reconciliation preserves
 `last_restart`, so the existing cooldown is unchanged and can still refuse a retry.
+The cooldown always counts from `last_restart`, which is written before the action,
+and applies to every outcome: a verified restart, a failed one and a reconciled one.
+No command clears it early.
 
 Restart settings are read on every call from `config.toml`:
 
@@ -431,8 +434,8 @@ action and verification. Never unlink or replace that lock file. A separate atom
 failed attempts. Cooldown expiry does not authorize automatic retry after failed
 verification. The durable `.request.json` and per-request `.launched` receipt fence
 an interrupted or failed resume; no title lookup or fresh-conversation fallback is
-allowed. A manual retry requires proof of a verified replacement before replacing
-a failed request. An incompatible or no-longer-live target needs operator recovery;
+allowed. A manual retry validates the same live conversation before replacing its
+failed request. An incompatible or no-longer-live target needs operator recovery;
 do not remove a request merely to bypass its refusal.
 
 #### Session names

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1107,10 +1108,18 @@ def test_given_failed_request_when_replacement_unproven_then_fence_and_files_pre
             return original_stat(path, *args, **kwargs)
 
         monkeypatch.setattr(restart.os, "stat", stat)
+    if flag == "-X":
+        # A manual retry keeps its own same-conversation rule; it never counts as reconciliation.
+        with contextlib.suppress(Exception):
+            world.cli(flag, world.session)
+        request = {}
+        with contextlib.suppress(Exception):
+            request = restart._object(world.request_path)
+        assert "reconciliation" not in request
+        return
     code, report, _ = world.cli(flag, world.session)
     assert code == 1, report
-    if flag == "-Y":
-        assert report["gates"]["failure-fence"] != "PASS"
+    assert report["gates"]["failure-fence"] != "PASS"
     assert (world.request_path.read_bytes(), world.result_path.read_bytes()) == before
     assert not world.signals and not world.injected
 

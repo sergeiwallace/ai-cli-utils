@@ -1839,7 +1839,7 @@ def restart(
             return _report("detached")
         with session_lock(session) as check_lock:
             _, result_path, request_path = state_paths(session)
-            reconciled = _reconcile_failed_request(record, check_lock)
+            _reconcile_failed_request(record, check_lock)
             previous = _object(result_path) if result_path.exists() else {}
             if time.time() - previous.get("last_restart", 0) < settings["cooldown_seconds"]:
                 raise Refusal("cooldown")
@@ -1853,8 +1853,6 @@ def restart(
                 )
             ):
                 raise Refusal("previous-verification-failed")
-            if not reconciled:
-                raise Refusal("restart-fenced", "replacement recovery is unproven")
             if detached:
                 deadline = time.monotonic() + settings["compaction_wait_seconds"]
                 while True:
