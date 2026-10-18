@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -84,6 +85,38 @@ def list_sessions(as_json):
     else:
         for record in records:
             output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
+
+
+def _session_slug(_ctx, _param, value):
+    if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise click.BadParameter("invalid session name; use only letters, digits, underscores and hyphens")
+    return value
+
+
+def _owned_record(doc: dict, slug: str) -> dict:
+    matches = [record for record in doc["sessions"] if record.get("name") == slug]
+    if not matches:
+        raise click.ClickException(f"unknown session: {slug}")
+    host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
+    for record in matches:
+        if record.get("kind") == "local" and record.get("owning_host") == host:
+            return record
+    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host")
+
+
+@sessions.command("policy")
+@click.argument("slug", callback=_session_slug)
+@click.argument("policy", type=click.Choice(["auto", "never", "always"]))
+def policy(slug, policy):
+    """Set a local session's boot relaunch policy and queue publication."""
+
+    def change(doc):
+        record = _owned_record(doc, slug)
+        record.update(relaunch=policy, changed_at=registry._now())
+        return True
+
+    registry._mutate(change, timeout=2)
+    output.emit(output.Tag.SESSIONS, "session", f"{slug}: relaunch policy {policy}")
 
 
 def _launch_recipe(record: dict) -> None:
