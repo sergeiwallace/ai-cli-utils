@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import signal
 import sys
@@ -21,6 +22,15 @@ from ai_cli.process_probe import ProcessIdentity, StartTimeMatch
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _is_restart_probe(argv, pane_ai):
+    """Match the helper probe; Windows `which` may return the executable in a different case."""
+    return (
+        len(argv) == 4
+        and os.path.normcase(str(argv[0])) == os.path.normcase(str(pane_ai))
+        and argv[1:] == ["internal", "restart-pin", "--probe"]
+    )
 
 
 @pytest.fixture
@@ -170,7 +180,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(restart, "_script_source", lambda pid, path: path.read_text(encoding="utf-8"))
 
     def subprocess_run(argv, **kwargs):
-        if argv == [str(pane_ai), "internal", "restart-pin", "--probe"]:
+        if _is_restart_probe(argv, pane_ai):
             assert kwargs["env"] == state_obj.pane_env
             assert kwargs["cwd"] == cwd
             return SimpleNamespace(returncode=0, stdout="restart-pin-v1\n")
@@ -251,7 +261,7 @@ def test_given_supervisor_ai_without_restart_pin_when_restarting_then_refuses_be
     monkeypatch.setattr(restart, "prepare_request", prepare_and_downgrade)
 
     def run(argv, **kwargs):
-        if argv == [str(world.pane_ai), "internal", "restart-pin", "--probe"]:
+        if _is_restart_probe(argv, world.pane_ai):
             probes.append((argv, kwargs))
             if not after_prepare or prepared:
                 return SimpleNamespace(returncode=1, stdout="", stderr="unknown action: restart-pin")
@@ -846,7 +856,7 @@ def test_given_ac_f1_busy_during_helper_probe_when_acting_then_no_further_action
     monkeypatch.setattr(restart.os, "kill", kill)
 
     def run(argv, **kwargs):
-        if argv == [str(world.pane_ai), "internal", "restart-pin", "--probe"]:
+        if _is_restart_probe(argv, world.pane_ai):
             request_path = restart.state_paths(world.session)[2]
             acting = request_path.exists() and restart._object(request_path).get("status") == "acting"
             if acting and (phase in ("term", "exit") or attempts):
