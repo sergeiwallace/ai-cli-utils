@@ -562,7 +562,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "direnv"
+        assert executable == sys.executable
+        command = command[command.index("--") + 1 :]
         assert command[:3] == ["direnv", "exec", str(tmp_path)]
         assert command[3] == "claude"
 
@@ -594,7 +595,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "gemini"
+        assert executable == sys.executable
+        command = command[command.index("--") + 1 :]
         assert command[0] == "gemini"
 
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self, tmp_path, monkeypatch):

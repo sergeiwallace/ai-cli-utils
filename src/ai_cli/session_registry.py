@@ -330,7 +330,9 @@ def mark_ended(record_id: str) -> None:
     _mutate(mark)
 
 
-def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None = None) -> list[dict]:
+def record_exit(
+    name_or_id: str, *, cause: str, evidence: dict, at: str | None = None, _document: dict | None = None
+) -> list[dict]:
     """Set the ``exit`` of every record whose id or name is ``name_or_id``; return those records.
 
     Also sets ``ended_at`` when it is unset. An empty list means nothing matched and
@@ -338,7 +340,7 @@ def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None =
     """
     if cause not in EXIT_CAUSES:
         raise ValueError(f"cause must be one of {', '.join(EXIT_CAUSES)}, got {cause!r}")
-    if not registry_path().exists():
+    if _document is None and not registry_path().exists():
         return []
     stamp = at or _now()
     marked: list[dict] = []
@@ -352,7 +354,10 @@ def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None =
                 marked.append(record)
         return bool(marked)
 
-    _mutate(mark)
+    if _document is None:
+        _mutate(mark)
+    else:
+        mark(_document)
     return marked
 
 

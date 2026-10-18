@@ -3997,6 +3997,7 @@ def _do_session_launch(
                 "is not a tmux session on this host; drop -r/--resume to start it",
             )
             sys.exit(1)
+        _session_launch_state.reattach(session)
         if not is_remote:
             _track_launch(reporter, kind="local", name=name, session_name=session)
         reporter.handoff(engine=_engine_display_name(engine), session=session)
@@ -4224,24 +4225,28 @@ def _do_session_launch(
             d[ai_name] = uuid
             _config.save_session_map(d, engine)
 
-    try:
-        _session_launch_state.register_launch(
-            session_id,
-            engine=engine,
-            cwd=Path(worktree_path or Path.cwd()),
-            project=current_project_name,
-            options={
-                "once": once,
-                "bare": bare,
-                "sandbox": sandbox,
-                "no_worktree": no_worktree,
-                "no_direnv": no_direnv,
-            },
-            extra_args=list(extra_args),
-        )
-    except Exception as exc:
-        reporter.error("session", f"cannot persist session launch state: {type(exc).__name__}; launch refused")
-        sys.exit(1)
+    def _register_run_state(*, new_start):
+        try:
+            _session_launch_state.register_launch(
+                session_id,
+                new_start=new_start,
+                engine=engine,
+                cwd=Path(worktree_path or Path.cwd()),
+                project=current_project_name,
+                project_prefix=project_prefix,
+                options={
+                    "once": once,
+                    "bare": bare,
+                    "sandbox": sandbox,
+                    "no_worktree": no_worktree,
+                    "no_direnv": no_direnv,
+                    "is_remote": is_remote,
+                },
+                extra_args=list(extra_args),
+            )
+        except Exception as exc:
+            reporter.error("session", f"cannot persist session launch state: {type(exc).__name__}; launch refused")
+            sys.exit(1)
 
     if bare:
         # Bare launch: no tmux, but everything else the tmux path sets up has now
@@ -4293,6 +4298,7 @@ def _do_session_launch(
                 )
                 sys.exit(1)
         else:
+            _register_run_state(new_start=True)
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
             _exec_with_direnv(
@@ -4311,6 +4317,7 @@ def _do_session_launch(
     _tmux_env_flags = build_tmux_env_flags(os.environ)
 
     if once:
+        _register_run_state(new_start=True)
         target_root = worktree_path or Path.cwd()
         cd_prefix = f"cd {shlex.quote(str(target_root))} && "
         # Resolved once for the whole --once branch: the pane interpreter must
@@ -4446,6 +4453,7 @@ def _do_session_launch(
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
     # the mtime and make the running wrapper exec a pointless reload (AI-CLI-129).
+    _register_run_state(new_start=existing.returncode != 0)
     _sessions_dir = _config.get_xdg_state_home() / "sessions"
     _script_path = str(_sessions_dir / f"{session_id}.sh")
     _write_launch_script_if_changed(Path(_script_path), script)

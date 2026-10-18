@@ -6,12 +6,14 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 from test_session_registry import _launch_local
+from test_session_registry import iterm2_toml as iterm2_toml
+from test_session_registry import outside_iterm2 as outside_iterm2
+from test_session_registry import state_home as state_home
+from test_session_state_publish import publishing as publishing
 from test_session_state_publish import snapshot
 
 from ai_cli import session_registry as registry
 from ai_cli.main import _cli_group
-
-pytest_plugins = ["test_session_registry", "test_session_state_publish"]
 
 
 @pytest.fixture
@@ -76,3 +78,22 @@ def test_forbidden_cause_when_config_loaded_then_loader_refuses_it(tmp_path, mon
     monkeypatch.setattr(config, "get_xdg_config_home", lambda: root)
     with pytest.raises(ValueError, match="permits only"):
         config.load_config()
+
+
+@pytest.mark.parametrize("status", [0, 7])
+def test_single_run_when_agent_finishes_then_original_status_and_manual_exit_are_preserved(
+    publishing, runner, monkeypatch, status
+):
+    import subprocess
+
+    from ai_cli import session_commands
+
+    monkeypatch.setattr(
+        session_commands.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, status)
+    )
+    result = runner.invoke(_cli_group, ["sessions", "_run", "c-session-1", "--", "example-command", "--argument"])
+    assert result.exit_code == status
+    record = registry.load_registry()["sessions"][0]
+    assert record["supervisor_exit"]["cause"] == "manual_exit"
+    assert record["run_state"] == "exited"
+    assert record["boot_recipe"]["command"] == ["example-command", "--argument"]

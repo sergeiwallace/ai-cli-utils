@@ -64,7 +64,7 @@ def _find(doc: dict, name: str) -> dict:
     raise ValueError(f"session {name!r} is not registered; refusing an untracked transition")
 
 
-def register(name: str, *, recipe: dict, host: str) -> dict:
+def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> dict:
     """Upsert the owning-host recipe, preserving lifecycle and policy on reattach."""
     result = {}
 
@@ -81,7 +81,12 @@ def register(name: str, *, recipe: dict, host: str) -> dict:
                 launcher_pid=os.getpid(),
             )
             doc["sessions"].append(existing)
-        existing.setdefault("boot_recipe", recipe)
+        if new_start:
+            existing["boot_recipe"] = recipe
+            existing["cwd"] = recipe["cwd"]
+            existing["relaunch_argv"] = recipe["argv"]
+        else:
+            existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
         existing.setdefault("relaunch", "auto")
         result.update(existing)
@@ -91,7 +96,7 @@ def register(name: str, *, recipe: dict, host: str) -> dict:
     return result
 
 
-def begin(name: str) -> str:
+def begin(name: str, *, command: list[str] | None = None) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
 
@@ -99,6 +104,8 @@ def begin(name: str) -> str:
         record = _find(doc, name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")
+        if command is not None:
+            record["boot_recipe"]["command"] = command
         record.update(generation=generation, transition_seq=0)
         return True
 
@@ -140,7 +147,7 @@ def mark(
         if state == "running":
             record.update(exit=None, ended_at=None, supervisor_exit=None, boot_id=registry.current_boot_id())
         else:
-            record["exit"] = {"cause": cause, "at": now, "evidence": evidence or {}}
+            registry.record_exit(record["id"], cause=cause, evidence=evidence or {}, at=now, _document=doc)
             record["supervisor_exit"] = dict(record["exit"])
             record["ended_at"] = now
         accepted.update(record)

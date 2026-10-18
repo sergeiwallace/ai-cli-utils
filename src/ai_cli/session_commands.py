@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 import time
 
 import click
@@ -97,7 +98,7 @@ for _action in ("install", "uninstall", "status"):
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
 def run_once(name, command):
     """Keep a local lifecycle owner around bare and once-only agent processes."""
-    generation = state.begin(name)
+    generation = state.begin(name, command=list(command))
     sequence = time.monotonic_ns()
     if not state.mark_running(name, generation=generation, sequence=sequence):
         raise click.ClickException("startup persistence failed; agent was not started")
@@ -110,8 +111,8 @@ def run_once(name, command):
     except KeyboardInterrupt:
         status = 130
     while not state.mark_exited(
-        name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=sequence + 1
+        name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=time.monotonic_ns()
     ):
         click.echo("session exit persistence failed; retrying local safety write", err=True)
         time.sleep(1)
-    raise click.exceptions.Exit(status)
+    sys.exit(status)

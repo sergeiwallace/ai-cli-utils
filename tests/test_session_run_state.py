@@ -131,3 +131,14 @@ def test_transition_when_written_then_file_and_directory_are_synced(registered, 
     monkeypatch.setattr(registry.os, "fsync", capture)
     assert state.mark_exited("c-session-1", "manual_exit", {}, generation=registered, sequence=2)
     assert synced == ([False] if os.name == "nt" else [False, True])
+
+
+def test_reattach_then_new_start_when_recipe_changes_then_only_new_start_replaces_recipe(registered):
+    original = record()["boot_recipe"]
+    replacement = {"argv": ["ai", "c", "1", "--once"], "cwd": "/work/other"}
+    state.register("c-session-1", recipe=replacement, host="host-a")
+    assert record()["boot_recipe"] == original
+    assert record()["generation"] == registered
+    state.register("c-session-1", recipe=replacement, host="host-a", new_start=True)
+    assert record()["boot_recipe"] == replacement
+    assert record()["generation"] == registered

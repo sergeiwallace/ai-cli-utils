@@ -17,6 +17,7 @@ P1 ``AI-CLI-vs8``.
 import ast
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -156,7 +157,9 @@ def test_given_a_pty_is_available_when_ai_c_launches_bare_then_it_proceeds(real_
 
     assert code == 0
     assert len(execs) == 1, "with a usable transport the launch must reach the engine"
-    assert execs[0][0] == "claude"
+    assert execs[0][0] == sys.executable
+    command = execs[0][1]
+    assert command[command.index("--") + 1] == "claude"
 
 
 def test_given_a_pty_is_available_when_the_transport_resolves_then_it_is_the_pty(real_repo, tmp_path, monkeypatch):
