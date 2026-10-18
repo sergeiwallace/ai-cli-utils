@@ -211,6 +211,7 @@ def _wait(seconds: float) -> None:
 @posix_pty
 def test_given_a_raw_mode_pty_when_ai_c_r_reattaches_then_every_transport_line_starts_at_column_0(terminal, tmp_path):
     def ssh(_args, stderr=None, **_kwargs):
+        assert stderr is not None
         terminal.clear_output_flags(termios.OPOST)
         os.write(terminal.slave, b"remote output, no newline yet")
         stderr.write(b"client_loop: send disconnect: Broken pipe\n")
@@ -440,6 +441,8 @@ def test_given_concurrent_producers_when_records_are_written_then_no_line_interl
     relayed = "ssh stderr " + "s" * 300
 
     def ssh(_args, stderr=None, **_kwargs):
+        assert stderr is not None
+
         def beat():
             for _ in range(200):
                 _out.emit(Tag.LAUNCH, "connect", heartbeat, err=True)
@@ -475,6 +478,7 @@ def test_given_concurrent_producers_when_records_are_written_then_no_line_interl
 
 def test_given_redirected_stderr_when_ai_c_runs_then_no_carriage_return_or_escape_is_written(tmp_path, capsys):
     def ssh(_args, stderr=None, **_kwargs):
+        assert stderr is not None
         stderr.write(b"Warning: \x1b[1mbold\x1b[0m\r\nprogress 1\rprogress 2\n")
         return 255
 

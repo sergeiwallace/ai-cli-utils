@@ -531,6 +531,7 @@ def _tmux_report_phases() -> list[str]:
         and _dotted(call.func) == "lines.append"
         and isinstance(call.args[0], ast.Tuple)
         and isinstance(call.args[0].elts[0], ast.Constant)
+        and isinstance(call.args[0].elts[0].value, str)
     ]
 
 

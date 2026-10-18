@@ -301,6 +301,7 @@ def test_given_another_slots_stale_registration_when_ai_c_launches_then_it_survi
 
     slot = create_worktree("session-1")
 
+    assert slot is not None
     assert slot == repo / ".worktrees" / "session-1"
     assert _is_registered(repo, other), "another slot's registration must not be pruned"
 
@@ -312,6 +313,7 @@ def test_given_this_slots_stale_registration_when_ai_c_launches_then_only_it_is_
 
     slot = create_worktree("session-1")
 
+    assert slot is not None
     assert slot == repo / ".worktrees" / "session-1"
     assert slot.is_dir()
     assert _is_registered(repo, slot)
@@ -325,6 +327,7 @@ def test_given_this_slots_branch_held_by_stale_registration_elsewhere_when_ai_c_
 
     slot = create_worktree("session-1")
 
+    assert slot is not None
     assert slot == repo / ".worktrees" / "session-1"
     assert not _is_registered(repo, stale)
     assert _is_registered(repo, other)

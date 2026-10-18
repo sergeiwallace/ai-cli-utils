@@ -18,7 +18,7 @@ from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch, cli
 
 # Taken at import, before conftest's autouse fixture pins the reader for every test.
-_REAL_CURRENT_BOOT_ID = getattr(session_registry, "current_boot_id", None)
+_REAL_CURRENT_BOOT_ID = session_registry.current_boot_id
 
 _ITERM_SESSION_ID = "w0t3p1:ABCDEF01-2345-6789-ABCD-EF0123456789"
 _PANE_TTY = "/dev/ttys042"
@@ -144,7 +144,7 @@ def _launch_local(state_home, *, argv, name="1", is_remote=False):
                 extra_args=[],
                 config={"worktree": {"enabled": False}},
             )
-    return seen.get("exec"), seen.get("registry")
+    return seen["exec"], seen["registry"]
 
 
 def _remote_preflight(command, **_kwargs):
@@ -563,7 +563,7 @@ def test_given_a_clean_remote_exit_when_sessions_are_pruned_then_that_record_is_
 
 
 def _seed(name, *, kind="local", remote=None, tty="", iterm_session_id=None, launcher_pid=0):
-    return session_registry.record_launch(
+    record = session_registry.record_launch(
         kind=kind,
         name=name,
         relaunch_argv=["ai", "c", name],
@@ -574,6 +574,9 @@ def _seed(name, *, kind="local", remote=None, tty="", iterm_session_id=None, lau
         launcher_pid=launcher_pid,
         config=_PERSISTENCE_DEFAULTS,
     )
+
+    assert record is not None
+    return record
 
 
 def _fake_tmux_and_ssh(*, live_local=(), clients=None, remote_answers=None):
@@ -738,7 +741,7 @@ def test_given_iterm2_does_not_answer_when_refreshed_then_skip_is_reported_exit_
 
     def run(cmd, *args, **kwargs):
         if cmd[0] == "osascript":
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         return tmux(cmd, *args, **kwargs)
 
     with patch("ai_cli.iterm2.subprocess.run", side_effect=run):

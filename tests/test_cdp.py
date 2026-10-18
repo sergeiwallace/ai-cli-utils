@@ -927,6 +927,7 @@ class TestCmdCdpStop:
             else:
                 pytest.fail("the sleeper's reported identity never stabilised, so no pid file could match it")
 
+            assert previous is not None
             create_time, executable, command = previous
             pid_file = tmp_path / "cdp-9222.pid"
             # Hand-built on purpose, and NOT through `tunnel._write_process_identity`: this module's

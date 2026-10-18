@@ -78,6 +78,7 @@ def _dry_run(capsys) -> tuple[int, str, str]:
         with pytest.raises(SystemExit) as exc_info:
             cli()
     captured = capsys.readouterr()
+    assert isinstance(exc_info.value.code, int)
     return exc_info.value.code, captured.out, captured.err
 
 

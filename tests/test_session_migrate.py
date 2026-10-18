@@ -137,7 +137,7 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
 
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
-    trees = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
     trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")
     return trees

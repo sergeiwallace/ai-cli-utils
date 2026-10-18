@@ -73,6 +73,7 @@ def test_given_git_refuses_the_rename_when_renamed_then_stderr_is_quoted_and_the
 def test_given_an_anchor_at_another_commit_when_renamed_then_it_is_kept_and_the_rename_refused(repo):
     _git("commit", "-q", "--allow-empty", "-m", "later", cwd=repo)
     later = _ref(repo, "HEAD")
+    assert later is not None
     _git("update-ref", ANCHOR, later, cwd=repo)
     result = rename_branch_anchored(repo, "wt-session-1", "wt-session-2")
     assert result.error is not None and "already points at" in result.error

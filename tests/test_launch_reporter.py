@@ -393,6 +393,7 @@ def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applie
     assert launch_reporter.active() is quiet
     assert capsys.readouterr().err == ""
 
+    assert previous is not None
     previous.activate()
     assert launch_reporter.active() is default
 

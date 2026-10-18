@@ -1620,9 +1620,10 @@ class TestCreateWorktreeSymlink:
         def mock_symlink_to(self, target, *args, **kwargs):
             # Simulate WinError 1314: A required privilege is not held by the client
             # On Windows, OSError from symlink operations has winerror attribute
-            err = OSError(1314, "A required privilege is not held by the client")
-            err.winerror = 1314
-            raise err
+            class WindowsPermissionError(OSError):
+                winerror = 1314
+
+            raise WindowsPermissionError(1314, "A required privilege is not held by the client")
 
         with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
             with patch("ai_cli.session.get_project_prefix", return_value="session"):

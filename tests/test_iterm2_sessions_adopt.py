@@ -351,7 +351,7 @@ def test_given_iterm2_does_not_answer_when_adopting_then_sessions_are_adopted_wi
 
         def timeout_osascript(cmd, *args, **kwargs):
             if cmd[0] == "osascript":
-                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
             return real_run(cmd, *args, **kwargs)
 
         with patch("ai_cli.session_registry.subprocess.run", side_effect=timeout_osascript):

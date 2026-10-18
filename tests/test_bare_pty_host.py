@@ -220,6 +220,7 @@ def _launch(terminal: OperatorTerminal, tmp_path: Path, config: dict) -> int:
         stack.enter_context(patch("subprocess.Popen", side_effect=_stub_only_popen(tmp_path / "bin")))
         with pytest.raises(SystemExit) as exc_info:
             cli()
+    assert isinstance(exc_info.value.code, int)
     return exc_info.value.code
 
 
@@ -335,6 +336,11 @@ def test_given_a_bare_pty_session_when_the_operator_types_then_the_input_sidecar
     session = session_factory(drive)
     session.run()
 
+    assert isinstance(seen["mode"], int)
+    assert isinstance(seen["after_typing"], float)
+    assert isinstance(seen["before_typing"], float)
+    assert isinstance(seen["at_launch"], float)
+    assert isinstance(seen["path"], Path)
     assert seen["mode"] == 0o600, f"the sidecar must be private to the operator, got {oct(seen['mode'])}"
     assert seen["after_typing"] >= seen["before_typing"] > seen["at_launch"], (
         "typing must move the recorded time past the moment the keys were sent"
