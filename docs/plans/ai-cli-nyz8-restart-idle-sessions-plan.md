@@ -361,9 +361,14 @@ refused restart costs only a later retry and the triggers retry on their interva
 is mitigated by classifying descendants against the MCP servers in the session's configuration,
 and treating any unclassified descendant as background work. A configured server often starts
 through a wrapper that execs a different program (measured: a configured `<bin>/notifier
-mcp-adapter` runs as `python ... notifier.py mcp-adapter`), so a direct child counts as that
-server when its argv ends with the server's configured args, or its argv[0] resolves to the
-configured command, and it started within a minute of the agent itself.
+mcp-adapter` runs as `python ... notifier.py mcp-adapter`). A direct child counts as that server
+only when both identities verify: its executable is the configured command and the configured
+args follow it, or the configured command is a shebang script and the child runs that script's
+interpreter, then the script, then the configured args, and it started within a minute of the
+agent itself. An argument suffix alone, or a matching executable alone, does not qualify. The
+first wording accepted either one, which a cross-family review of the command's pull request
+rated a blocker: with the server configured as `python3 server.py`, an unrelated `python3
+worker.py` child, and its descendants, passed as the server while doing work.
 
 ---
 
@@ -414,13 +419,16 @@ compaction.
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
 <!-- decision-lineage: decision-id=AI-CLI-nyz8/D-4; decision-topic=restart-context-gate; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=the context gate passes just after an auto-compaction or at or below a configurable percentage, default 20; applicability=scope:restart-session; outcome-id=compaction-or-threshold; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-(a) keeps both arms and the default. The Con is mitigated by assuming the smallest window in the
-table for a model the table does not know and `context_window_tokens` does not set. That
-overstates the percentage, so the gate can only become stricter, never looser, and a session the
-pre-step has just compacted still passes. The first version failed the gate outright for an
-unknown model; a live check on a session running a model the table lacked showed that this
-refuses every such session even after its compaction, because a manual compaction passes only
-through the threshold arm.
+(a) keeps both arms and the default. The Con is mitigated by failing the gate, not passing it,
+when the model is not in the table and `context_window_tokens` is not set in the restart
+settings, which routes the session to the pre-step rather than restarting it on a guess. The
+operator sets `context_window_tokens` to the model's window, or the package's model table is
+extended, before such a session can restart. A live check showed the consequence: because a
+manual compaction passes only through the threshold arm, a session on a model the table lacks
+stays refused even after the pre-step compacts it, until the override is set. An earlier draft
+assumed the smallest table window instead. A review of the command's pull request rejected that
+guess, since a model with a smaller real window would pass on it, and a refused restart costs
+only a later retry.
 
 ---
 

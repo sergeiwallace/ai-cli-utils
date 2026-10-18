@@ -283,7 +283,9 @@ before comparison. It writes `pendingBackgroundAgentCount` on a turn-end record 
 count is non-zero: of 103 main-chain turn-end records in one session, 82 had no such field, 21
 had 1 or 2, and none had 0. And a configured MCP server can start through a wrapper that execs
 another program, so the child's command line differs from the configured `command` while its
-configured `args` still end the command line. [VERIFIABLE][^9] (local observation, the
+configured `args` still end the command line. Arguments alone match unrelated programs, so a
+gate must verify the executable, or the interpreter and script for a shebang wrapper, together
+with the args. [VERIFIABLE][^9] (local observation, the
 disposable test session and the launching session's transcript)
 
 Process inspection has a namespace trap. A sandboxed observer saw the registry PIDs as dead
