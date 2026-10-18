@@ -521,7 +521,7 @@ def scan_operations(source: str, file: str) -> list[Violation]:
     return found
 
 
-def _tmux_report_phases() -> list[str]:
+def _tmux_report_phases() -> list[object]:
     tree = ast.parse((PACKAGE / "tmux_setup.py").read_text(encoding="utf-8"))
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "report_lines")
     return [
@@ -531,7 +531,6 @@ def _tmux_report_phases() -> list[str]:
         and _dotted(call.func) == "lines.append"
         and isinstance(call.args[0], ast.Tuple)
         and isinstance(call.args[0].elts[0], ast.Constant)
-        and isinstance(call.args[0].elts[0].value, str)
     ]
 
 
