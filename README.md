@@ -515,7 +515,7 @@ ai ssh [alias]                     # Open an interactive shell on that machine
 
 On macOS and Linux, a boot or login job can run `ai sessions relaunch -b/--boot`
 to recreate eligible sessions in detached tmux sessions without opening a terminal application.
-Boot-job installation is separate from this command. Relaunch is off by default; configure
+Relaunch is off by default; configure
 `config.toml` under your ai-cli-utils configuration directory:
 
 ```toml
@@ -527,11 +527,29 @@ network_probe = "api.anthropic.com:443" # Empty disables the network wait
 ```
 
 ```bash
+ai sessions boot-unit install -d       # --dry-run: inspect exact unit, path and enable/disable plan
+ai sessions boot-unit install          # Apply session_relaunch.on_boot from config.toml
+ai sessions boot-unit status           # Check installed bytes and service-manager state
+ai sessions boot-unit uninstall        # Disable and remove the unit; leave config.toml intact
 ai sessions relaunch -b -d             # --boot --dry-run: print each decision and winning veto
 ai sessions relaunch --boot            # Recreate eligible owning-host sessions detached
 ai sessions list -j                    # --json: inspect recorded run state
 ai attach c-myproject-host-1           # Attach later from a terminal
 ```
+
+`boot-unit install` writes only changed bytes with atomic replacement and reports the number
+of mutations. Setting `on_boot = false` and running it again disables and removes the unit;
+an unchanged installation reports `0 mutations`. Profile installers can pass
+`-b/--on-boot true|false` as the desired state; this does not edit the configuration, which
+`relaunch --boot` still reads at run time. Both install and uninstall accept `-d/--dry-run`
+without changing files or invoking a service manager.
+
+Linux uses a one-shot systemd user service in the XDG configuration directory. It runs when
+the user manager starts; boot before login requires user lingering to be provisioned separately.
+macOS uses a `RunAtLoad` LaunchAgent in `~/Library/LaunchAgents` at login, with no `KeepAlive`.
+Neither unit opens a terminal application. Both capture the absolute installed `ai` entry point,
+`PATH`, `HOME`, and absolute XDG directory overrides at installation; reinstall after moving
+the executable or changing that environment. Windows refuses boot-unit management.
 
 The command waits for each eligible session's recorded directory and configured TCP endpoint,
 up to the timeout. It replays the exact stored session name and local launch recipe, including
