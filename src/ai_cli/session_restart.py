@@ -222,6 +222,27 @@ def transcript_tail(path: Path) -> list[dict]:
         raise Refusal("background-work", "transcript evidence unreadable") from exc
 
 
+def _completed_compaction(chain: list[dict]) -> bool:
+    boundary = next((i for i in range(len(chain) - 1, -1, -1) if chain[i].get("subtype") == "compact_boundary"), None)
+    if boundary is None:
+        return False
+    following = chain[boundary + 1 :]
+    if not following or following[0].get("isCompactSummary") is not True:
+        return False
+    for row in following:
+        if row.get("type") != "user" or "toolUseResult" in row:
+            return False
+        if row.get("isCompactSummary") is True:
+            continue
+        content = row.get("message", {}).get("content", "")
+        if not isinstance(content, str) or not (
+            (row.get("isMeta") is True and content.startswith("<local-command-caveat>"))
+            or content.startswith(("<command-name>/compact</command-name>", "<local-command-stdout>"))
+        ):
+            return False
+    return True
+
+
 def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
     try:
         quiet = time.time() - _timestamp(record.get("statusUpdatedAt"))
@@ -230,11 +251,14 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
     if record.get("status") != "idle" or record.get("waitingFor") or quiet < settings["settle_seconds"]:
         raise Refusal("busy", "registry is not settled idle")
     # Metadata/notifications can follow a completed turn; user/assistant/tool records cannot.
-    chain = [row for row in rows if row.get("type") in ("user", "assistant", "system")]
-    if not chain or chain[-1].get("subtype") != "turn_duration":
+    chain = [row for row in rows if row.get("type") in ("user", "assistant", "system", "tool")]
+    if not chain or (chain[-1].get("subtype") != "turn_duration" and not _completed_compaction(chain)):
         raise Refusal("busy", "transcript has no final turn boundary")
+    turn_end = next((row for row in reversed(chain) if row.get("subtype") == "turn_duration"), None)
+    if turn_end is None:
+        raise Refusal("background-work", "pending agent counter boundary unavailable")
     # Claude Code omits this counter when it is zero, but the boundary is required.
-    pending_agents = chain[-1].get("pendingBackgroundAgentCount", 0)
+    pending_agents = turn_end.get("pendingBackgroundAgentCount", 0)
     if type(pending_agents) is not int or pending_agents != 0:
         raise Refusal("background-work", "pending agent counter is positive or unavailable")
     launched: set[str] = set()
@@ -280,17 +304,30 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
             return True
     else:
         following = rows
-    latest = next((row for row in reversed(following) if row.get("type") == "assistant"), {})
+    latest = next(
+        (
+            row
+            for row in reversed(following)
+            if row.get("type") == "assistant" and row.get("message", {}).get("usage") is not None
+        ),
+        {},
+    )
     message = latest.get("message", {})
     usage = message.get("usage")
-    if not isinstance(usage, dict):
-        return False
     tokens: list[int | float] = []
-    for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
-        token = usage.get(key)
+    if not latest and boundary is not None:
+        token = rows[boundary].get("compactMetadata", {}).get("postTokens")
         if not _number(token) or token < 0:
             return False
         tokens.append(token)
+    else:
+        if not isinstance(usage, dict):
+            return False
+        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            token = usage.get(key)
+            if not _number(token) or token < 0:
+                return False
+            tokens.append(token)
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:

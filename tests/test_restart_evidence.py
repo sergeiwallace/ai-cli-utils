@@ -245,3 +245,116 @@ def test_given_nested_matching_process_when_parent_unclassified_then_background_
     )
     with pytest.raises(restart.Refusal, match="background-work"):
         restart.descendants_gate(1, mcp_tree.cwd)
+
+
+@pytest.fixture
+def compacted_rows():
+    return [
+        {"type": "system", "subtype": "turn_duration"},
+        {"type": "user", "message": {"content": "/compact"}},
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compactMetadata": {"trigger": "manual", "preTokens": 157274, "postTokens": 15397},
+        },
+        {"type": "user", "isCompactSummary": True, "message": {"content": "Session summary"}},
+        {
+            "type": "user",
+            "isMeta": True,
+            "message": {"content": "<local-command-caveat>Local command</local-command-caveat>"},
+        },
+        {"type": "user", "message": {"content": "<command-name>/compact</command-name>"}},
+        {"type": "user", "message": {"content": "<local-command-stdout>Compacted</local-command-stdout>"}},
+    ]
+
+
+def test_given_completed_compaction_when_idle_checked_then_turn_is_finished(compacted_rows):
+    restart.idle_gate(
+        {"status": "idle", "statusUpdatedAt": (time.time() - 1000) * 1000},
+        compacted_rows,
+        config.read_restart_config({}),
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"type": "assistant", "message": {"content": "Working"}},
+        {"type": "user", "message": {"content": "Continue"}},
+        {"type": "tool", "content": "Tool result"},
+        {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}},
+        {"type": "user", "message": {"content": "<command-name>/help</command-name>"}},
+    ],
+)
+def test_given_work_after_compaction_when_idle_checked_then_busy_refuses(compacted_rows, extra):
+    with pytest.raises(restart.Refusal, match="busy"):
+        restart.idle_gate(
+            {"status": "idle", "statusUpdatedAt": (time.time() - 1000) * 1000},
+            [*compacted_rows, extra],
+            config.read_restart_config({}),
+        )
+
+
+@pytest.mark.parametrize("counter", [1, None, False])
+def test_given_pending_agents_before_compaction_when_idle_checked_then_background_refuses(compacted_rows, counter):
+    compacted_rows[0]["pendingBackgroundAgentCount"] = counter
+    with pytest.raises(restart.Refusal, match="background-work"):
+        restart.idle_gate(
+            {"status": "idle", "statusUpdatedAt": (time.time() - 1000) * 1000},
+            compacted_rows,
+            config.read_restart_config({}),
+        )
+
+
+@pytest.mark.parametrize("tokens", [15397, 40000, 40001, None, "15397", True, -1, float("nan"), float("inf")])
+def test_given_manual_compaction_without_usage_when_context_checked_then_post_tokens_threshold_applies(
+    compacted_rows, tokens
+):
+    compacted_rows[2]["compactMetadata"]["postTokens"] = tokens
+    assert restart.context_gate(compacted_rows, config.read_restart_config({})) is (
+        type(tokens) is int and 0 <= tokens <= 40000
+    )
+
+
+def test_given_missing_post_tokens_when_manual_compaction_checked_then_context_refuses(compacted_rows):
+    del compacted_rows[2]["compactMetadata"]["postTokens"]
+    assert not restart.context_gate(compacted_rows, config.read_restart_config({}))
+
+
+def test_given_usage_after_compaction_when_context_checked_then_usage_overrides_post_tokens(compacted_rows):
+    compacted_rows.append(
+        {
+            "type": "assistant",
+            "message": {
+                "model": "unknown-model",
+                "usage": {"input_tokens": 40001, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        }
+    )
+    assert not restart.context_gate(compacted_rows, config.read_restart_config({}))
+
+
+@pytest.mark.parametrize("missing", ["turn-end", "summary"])
+def test_given_incomplete_compaction_evidence_when_idle_checked_then_refuses(compacted_rows, missing):
+    del compacted_rows[0 if missing == "turn-end" else 3]
+    with pytest.raises(restart.Refusal, match="background-work" if missing == "turn-end" else "busy"):
+        restart.idle_gate(
+            {"status": "idle", "statusUpdatedAt": (time.time() - 1000) * 1000},
+            compacted_rows,
+            config.read_restart_config({}),
+        )
+
+
+@pytest.mark.parametrize(("window", "threshold", "allowed"), [(100000, 10, False), (100000, 16, True)])
+def test_given_post_tokens_when_context_configured_then_window_and_threshold_apply(
+    compacted_rows, window, threshold, allowed
+):
+    settings = config.read_restart_config({})
+    settings.update(context_window_tokens=window, context_threshold_pct=threshold)
+    assert restart.context_gate(compacted_rows, settings) is allowed
+
+
+@pytest.mark.parametrize("trigger", ["manual", "auto"])
+def test_given_high_post_tokens_when_compaction_checked_then_only_auto_uses_fresh_arm(compacted_rows, trigger):
+    compacted_rows[2]["compactMetadata"].update(trigger=trigger, postTokens=100000)
+    assert restart.context_gate(compacted_rows, config.read_restart_config({})) is (trigger == "auto")
