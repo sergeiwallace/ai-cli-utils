@@ -184,7 +184,7 @@ def relaunch(boot, dry_run):
         readiness = _wait_for_boot_recipe(snapshot["boot_recipe"], cfg) if veto is None else None
         selected = {}
 
-        def reserve(current, snapshot=snapshot, readiness=readiness, selected=selected):
+        def reserve(current, snapshot=snapshot, readiness=readiness, selected=selected, initial_veto=veto):
             for record in current["sessions"]:
                 if (record.get("kind"), record.get("owning_host"), record.get("name")) != (
                     snapshot.get("kind"),
@@ -192,7 +192,7 @@ def relaunch(boot, dry_run):
                     snapshot.get("name"),
                 ):
                     continue
-                reason = _boot_check(record, cfg, host, boot_id) or readiness
+                reason = _boot_check(record, cfg, host, boot_id) or initial_veto or readiness
                 # A concurrent explicit launch can change the recipe during the wait.
                 if reason is None and record.get("boot_recipe") != snapshot.get("boot_recipe"):
                     reason = "boot recipe changed during readiness wait"

@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -419,3 +420,40 @@ def test_given_publish_target_when_boot_finishes_then_existing_publisher_is_tick
     boot_cli.cfg["session_relaunch"]["publish"] = {"repo": "example-repo"}
     assert boot_cli.invoke().exit_code == 0
     boot_cli.publish.assert_called_once_with(tick=True)
+
+
+def test_given_initial_duplicate_veto_when_session_disappears_then_no_launch_skips_readiness(boot_cli, monkeypatch):
+    answers = iter([True, False])
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: next(answers))
+    result = boot_cli.invoke()
+    assert result.exit_code == 0, result.output
+    assert "tmux session already exists" in result.output
+    assert not boot_cli.launches
+
+
+def test_given_directory_and_network_recovery_when_waiting_then_launch_can_proceed_within_deadline(
+    boot_record, monkeypatch, tmp_path
+):
+    recipe = boot_record["boot_recipe"]
+    directory = tmp_path / "later"
+    recipe["cwd"] = directory.as_posix()
+    clock = [0.0]
+    probes = []
+
+    def sleep(seconds):
+        clock[0] += seconds
+        directory.mkdir(exist_ok=True)
+
+    def connect(endpoint, *, timeout):
+        probes.append((endpoint, timeout))
+        if len(probes) == 1:
+            raise OSError("offline")
+        return nullcontext()
+
+    monkeypatch.setattr(session_commands, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(session_commands.socket, "create_connection", connect)
+    cfg = state.DEFAULTS | {"network_wait_seconds": 3, "network_probe": "example.com:443"}
+    assert session_commands._wait_for_boot_recipe(recipe, cfg) is None
+    assert clock[0] == 2
+    assert len(probes) == 2
+    assert all(endpoint == ("example.com", 443) and 0 < timeout <= 2 for endpoint, timeout in probes)
