@@ -386,10 +386,7 @@ def test_given_no_pty_api_when_a_bare_launch_runs_then_no_submission_fifo_exists
             cli()
 
     assert hosted == [], "with no pty transport the session must not be hosted on a pty"
-    assert [file for file, _ in execs] == [sys.executable]
-    command = execs[0][1]
-    assert command[1:5] == ["-m", "ai_cli.main", "sessions", "_run"]
-    assert command[command.index("--") + 1] == "claude", "the lifecycle owner must run the original agent"
+    assert [file for file, _ in execs] == ["claude"], "the bare launch must keep replacing itself with the agent"
     fifos = list((tmp_path / "state").rglob("*.in"))
     assert fifos == [], f"no submission FIFO may exist without a pty to carry it: {fifos}"
 
