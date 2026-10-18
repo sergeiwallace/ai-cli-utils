@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Validated `[restart_session]` settings for safe session restarts, with a default
+  context threshold of 20 percent and configurable idle, uptime and cooldown gates.
+- A guarded restart engine validates process identity, background work and Remote
+  Control activation, owns a per-session OS lock, and records durable restart pins
+  and verification results. Unknown evidence refuses an action.
+- `ai -X/--restart-session [TARGET]` and `-Y/--restart-check [TARGET]`, also on
+  `ai c`, resolve titles, conversation IDs or managed sessions. Requested restarts
+  resume the pinned conversation through the existing supervisor without replacing
+  its pane, with configured `/exit` injection as a fallback.
 - Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and

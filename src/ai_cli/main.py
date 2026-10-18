@@ -115,7 +115,7 @@ from .process_manager import (  # noqa: F401
     _cmd_quota_watch_stop,
     _ensure_circusd,
 )
-from .process_probe import StartTimeMatch, probe_for
+from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
     _checkpoint_to_chat_uuid,
@@ -575,7 +575,7 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     # the record carries enough to identify it.
     if probe.is_abandoned(pid):
         return "abandoned"
-    match = probe.start_time_match(pid, record.get("procStart"))
+    match = probe.start_time_match(pid, normalize_proc_start(record.get("procStart")))
     if match is StartTimeMatch.UNRECORDED:
         # The pid runs and nothing refutes its identity; keep the historical refusal.
         return "live"
@@ -622,7 +622,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     state = probe.state(pid) or "?"
     name = str(record.get("name") or "")
     label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
-    identified = probe.start_time_match(pid, record.get("procStart")) is StartTimeMatch.MATCH
+    identified = probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is StartTimeMatch.MATCH
     if not identified:
         _out.emit(
             Tag.LAUNCH,
@@ -633,7 +633,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
             err=True,
         )
         return False
-    if probe.end_process(pid, record.get("procStart")):
+    if probe.end_process(pid, normalize_proc_start(record.get("procStart"))):
         _prune_dead_cc_session_record(entry)
         _out.emit(
             Tag.LAUNCH,
@@ -676,7 +676,7 @@ def _settle_stopped_cc_session(entry: Path, record: dict) -> bool:
     except (TypeError, ValueError):
         return False
     probe = probe_for()
-    if probe.start_time_match(pid, record.get("procStart")) is not StartTimeMatch.MATCH:
+    if probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH:
         # Unidentified: reclamation reports that and leaves the process alone.
         _reclaim_abandoned_cc_session(entry, record)
         return False
@@ -1843,6 +1843,21 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
+    if action in ("restart-pin", "restart-detached"):
+        from . import session_restart
+
+        if action == "restart-pin" and argv[1:] == ["--probe"]:
+            _out.raw(Untagged.INTERNAL_REPLY, session_restart.RESTART_PIN_PROTOCOL)
+            sys.exit(0)
+        if action == "restart-pin" and len(argv) == 3:
+            status, transcript = session_restart.child_pin(argv[1], argv[2])
+            if transcript:
+                _out.raw(Untagged.INTERNAL_REPLY, transcript)
+            sys.exit(status)
+        if action == "restart-detached" and len(argv) == 2:
+            report = session_restart.restart(argv[1], detached=True)
+            sys.exit(0 if report["reason"] == "restarted" else 1)
+        sys.exit(1)
     if action == "emit":
         # Before the config load: the session script runs this once per message.
         sys.exit(_internal_emit(argv[1:]))
@@ -4641,18 +4656,121 @@ def _session_command(engine: str):
     return _impl
 
 
+def _restart_options(func):
+    for short, long, help_text in (
+        ("-X", "--restart-session", "Restart one idle managed session; optional title, UUID or tmux name"),
+        ("-Y", "--restart-check", "Check restart gates without acting; optional target"),
+    ):
+        func = click.option(short, long, is_flag=False, flag_value="", default=None, help=help_text)(func)
+    return click.option("-j", "--json", "restart_json", is_flag=True, help="Print restart results as JSON")(func)
+
+
+def _restart_cli(restart_session, restart_check, restart_json, options=None):
+    from . import session_restart as restart
+
+    if restart_session is not None and restart_check is not None:
+        raise click.UsageError("choose --restart-session or --restart-check")
+    target = restart_check if restart_check is not None else restart_session
+    check = restart_check is not None
+    try:
+        if options:
+            target = _restart_launch_target(target, check, options, json_output=restart_json)
+        report = restart.restart(target or None, check=check)
+    except (
+        restart.Refusal,
+        _config.ProjectPrefixError,
+        _session_naming.HostAliasError,
+        _session.SessionSlotAmbiguityError,
+    ) as exc:
+        report = restart._report(getattr(exc, "reason", "target"), detail=str(exc))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        report = restart._report("unavailable", detail="restart target or remote route unavailable")
+    if restart_json:
+        _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
+    else:
+        _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
+    raise SystemExit(0 if report["reason"] in ("restarted", "ready", "detached") else 1)
+
+
+def _restart_launch_target(target, check, options, *, json_output=False):
+    """Resolve only. Never enter launch, update, allocation or cleanup paths."""
+    from .session_restart import Refusal
+
+    if options.get("remote"):
+        # Resolve the convention on the host that owns the session. No mosh or
+        # remote allocator: a restart must never create or attach to a session.
+        remote = _config.get_remote_machine(_config.load_config(), options.get("remote_machine", ""))
+        if not remote.get("host"):
+            raise Refusal("target", "remote host is not configured")
+        argv = ["ai", "c"]
+        if options.get("name"):
+            argv.append(options["name"])
+        if options.get("project"):
+            argv += ["-p", options["project"]]
+        argv += ["--is-remote", "-Y" if check else "-X"]
+        if target:
+            argv.append(target)
+        argv += ["-j"]
+        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
+        if remote.get("identity_file"):
+            ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
+        ssh += [f"{remote.get('user', 'user')}@{remote['host']}"]
+        shell = _resolve_remote_shell(ssh)
+        result = subprocess.run(
+            [*ssh, f"{shell} -l -c {shlex.quote(shlex.join(argv))}"], capture_output=True, text=True, check=False
+        )
+        # Pass through only structured results, never remote diagnostics.
+        try:
+            report = json.loads(result.stdout)
+            if not isinstance(report, dict) or "reason" not in report:
+                raise ValueError
+        except ValueError:
+            raise Refusal("unavailable", "remote restart returned no structured result") from None
+        if json_output:
+            _out.raw(Untagged.JSON, json.dumps(report))
+        else:
+            _out.emit(
+                Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items())
+            )
+        raise SystemExit(result.returncode)
+    if target:
+        return target
+    name = options.get("name", "")
+    if not name:
+        raise Refusal("target", "an existing session slot is required")
+    override = options.get("project_prefix")
+    project = options.get("project")
+    prefix = (
+        _config.validate_task_prefix(override)
+        if override
+        else (
+            _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+            if project
+            else _session.get_project_prefix()
+        )
+    )
+    naming = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
+    session, _ = _session.build_session_name(
+        "c", naming, name, _config.load_config(), is_remote=options.get("is_remote", False), legacy_prefix=prefix
+    )
+    return session
+
+
 @click.group(
     name="ai",
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
+@_restart_options
 @click.pass_context
-def _cli_group(ctx, version):
+def _cli_group(ctx, version, restart_session, restart_check, restart_json):
     """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
         ctx.exit(0)
+    if restart_session is not None or restart_check is not None:
+        _restart_cli(restart_session, restart_check, restart_json)
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
@@ -5070,11 +5188,17 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     ),
 )
 @_session_options
+@_restart_options
 def cmd_c(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
     # parameter list out four times meant a new option had to be threaded
     # through eight places, and missing one is silent -- click accepts the
     # option, the wrapper drops it.
+    restart_session = options.pop("restart_session")
+    restart_check = options.pop("restart_check")
+    restart_json = options.pop("restart_json")
+    if restart_session is not None or restart_check is not None:
+        _restart_cli(restart_session, restart_check, restart_json, options)
     _dispatch_session("c", ctx, options)
 
 

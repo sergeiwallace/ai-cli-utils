@@ -559,6 +559,19 @@ def _recorded_lstart_epoch_seconds(recorded: object) -> float | None:
     return moment.timestamp()
 
 
+def normalize_proc_start(recorded: object) -> object:
+    """Convert decimal registry strings to ticks; preserve macOS lstart text.
+
+    Backends still validate the value in their own units and refuse unknown forms.
+    """
+    if isinstance(recorded, str) and recorded.isascii() and recorded.isdecimal():
+        try:
+            return int(recorded)
+        except ValueError:
+            return None
+    return recorded
+
+
 def probe_for(proc_dir: Path | None = None) -> ProcessProbe:
     """Return the process probe for this platform, resolved once for every caller.
 

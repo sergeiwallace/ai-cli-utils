@@ -6,6 +6,7 @@ All other modules depend on this one.
 
 import contextlib
 import json
+import math
 import os
 import re
 import socket
@@ -347,7 +348,66 @@ def get_xdg_data_home() -> Path:
 
 # --- Configuration Management ---
 
+RESTART_SESSION_DEFAULTS = {
+    "context_threshold_pct": 20,
+    "compaction_fresh_turns": 1,
+    "context_window_tokens": 0,
+    "settle_seconds": 60,
+    "min_uptime_seconds": 1800,
+    "cooldown_seconds": 3600,
+    "term_grace_seconds": 20,
+    "relaunch_timeout_seconds": 180,
+    "mechanism": "kill",
+    "pre_step": True,
+    "compaction_wait_seconds": 1800,
+    "auto": True,
+    "auto_interval_seconds": 600,
+}
+
+
+def read_restart_config(config: dict) -> dict:
+    """Validate a fresh restart section; invalid settings never enable an action."""
+    section = config.get("restart_session", {})
+    if not isinstance(section, dict):
+        raise ValueError("restart_session must be a table")
+    result = RESTART_SESSION_DEFAULTS | section
+    for key, default in RESTART_SESSION_DEFAULTS.items():
+        value = result[key]
+        if isinstance(default, bool):
+            valid = isinstance(value, bool)
+        elif isinstance(default, str):
+            valid = value in ("kill", "exit")
+        else:
+            valid = (
+                isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+            )
+            if key in ("compaction_fresh_turns", "context_window_tokens"):
+                valid = valid and isinstance(value, int)
+            if key == "context_threshold_pct":
+                valid = valid and value <= 100
+        if not valid:
+            raise ValueError(f"invalid restart_session.{key}")
+    return result
+
+
 DEFAULT_CONFIG = """## ai-cli-utils configuration
+
+[restart_session]
+## Safe restart defaults, read on every call. External commands belong in
+## restart-session.d/*.toml beside this file.
+# context_threshold_pct = 20
+# compaction_fresh_turns = 1
+# context_window_tokens = 0
+# settle_seconds = 60
+# min_uptime_seconds = 1800
+# cooldown_seconds = 3600
+# term_grace_seconds = 20
+# relaunch_timeout_seconds = 180
+# mechanism = "kill"
+# pre_step = true
+# compaction_wait_seconds = 1800
+# auto = true
+# auto_interval_seconds = 600
 
 [gemini]
 ## Projects that should NOT be sandboxed by default
