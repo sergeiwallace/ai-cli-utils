@@ -61,7 +61,7 @@ def test_given_mcp_tree_when_classified_then_only_configured_servers_allowed(tmp
         restart.descendants_gate(1, tmp_path)
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-99", "claude-opus-5-5"])
+@pytest.mark.parametrize("model", ["claude-sonnet-99", "claude-unreleased-9"])
 @pytest.mark.parametrize("tokens", [40_000, 40_001])
 def test_given_ac_f3_unknown_model_when_window_unconfigured_then_context_refuses(model, tokens):
     rows = [
@@ -93,6 +93,34 @@ def test_given_ac_f3_model_window_when_context_checked_then_known_or_configured_
     settings["context_window_tokens"] = override
     limit = 20_000 if override else {"claude-sonnet-4-6": 40_000, "claude-sonnet-4-6[1m]": 200_000}.get(model)
     assert restart.context_gate(rows, settings) is (limit is not None and tokens <= limit)
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+@pytest.mark.parametrize(("tokens", "allowed"), [(40_000, True), (40_001, False)])
+def test_given_ac_f3_claude_5_model_when_context_checked_then_base_window_is_200k(model, tokens, allowed):
+    rows = [
+        {
+            "type": "assistant",
+            "message": {
+                "model": model,
+                "usage": {"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        }
+    ]
+    assert restart.context_gate(rows, config.read_restart_config({})) is allowed
+
+
+def test_given_ac_f3_claude_5_model_with_1m_tag_when_context_checked_then_window_is_1m():
+    rows = [
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-5-5[1m]",
+                "usage": {"input_tokens": 200_000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        }
+    ]
+    assert restart.context_gate(rows, config.read_restart_config({}))
 
 
 def test_given_oversized_history_when_tail_read_then_no_unbounded_read(tmp_path, monkeypatch):
