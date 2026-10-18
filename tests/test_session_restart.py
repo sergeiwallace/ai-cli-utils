@@ -1064,3 +1064,295 @@ def test_given_observer_race_when_generation_changes_then_verification_fails(wor
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] == "verification-failed"
     assert restart._object(restart.state_paths(world.session)[2])["status"] == "failed"
+
+
+@pytest.fixture
+def pre_step_world(world, monkeypatch):
+    clock = [0.0]
+    epoch = time.time()
+    monkeypatch.setattr(restart.time, "time", lambda: epoch + clock[0])
+    monkeypatch.setattr(restart.time, "monotonic", lambda: clock[0])
+    world.settings["restart_session"]["compaction_wait_seconds"] = 3
+    world.rows[0]["message"]["usage"]["input_tokens"] = 100_000
+    world.commands({"inject": ["inject", "{tmux_pane}", "{command}"], "observer": ["observer"]})
+    world.outcome = {"state": "STARTED", "submitted": True}
+    world.inject_code = 0
+    world.ticks = clock
+
+    def compact():
+        world.rows.extend(
+            [
+                {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "auto"}},
+                {"type": "user", "isCompactSummary": True, "message": {"content": "Session summary"}},
+            ]
+        )
+        world.record["statusUpdatedAt"] = time.time() * 1000
+        world.write()
+
+    world.compact = compact
+    world.on_tick = lambda: compact() if len(world.rows) == 2 else None
+
+    def sleep(seconds):
+        clock[0] += seconds
+        world.on_tick()
+
+    monkeypatch.setattr(restart.time, "sleep", sleep)
+
+    def run(argv, **kwargs):
+        if argv == ["inject", "%1", "/save-state"]:
+            world.injected.append(argv)
+            assert kwargs["timeout"] > 0
+            return SimpleNamespace(returncode=world.inject_code, stdout=json.dumps(world.outcome))
+        return world.subprocess_run(argv, **kwargs)
+
+    world.write()
+    with patch.object(restart.subprocess, "run", run):
+        yield world
+
+
+def test_given_ac_3_1_ac_3_6_high_context_when_pre_step_then_new_compaction_precedes_restart(pre_step_world):
+    world = pre_step_world
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    assert world.ticks[0] > 0 and world.signals == [(101, signal.SIGTERM)]
+    request = restart._object(restart.state_paths(world.session)[2])
+    assert request["session_id"] == SESSION_ID and request["transcript"] == str(world.transcript)
+
+
+@pytest.mark.parametrize("boundary", ["old", "sidechain", "none"])
+def test_given_ac_3_1_old_boundary_when_waiting_then_only_new_main_chain_compaction_counts(pre_step_world, boundary):
+    world = pre_step_world
+    if boundary == "old":
+        world.rows.insert(
+            0, {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "manual"}}
+        )
+    world.on_tick = lambda: None
+    if boundary == "sidechain":
+        world.rows.append({"type": "system", "subtype": "compact_boundary", "isSidechain": True})
+    world.write()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert "timed out" in report["detail"] and "STARTED" in report["detail"]
+    assert world.ticks[0] >= 3 and len(world.injected) == 1 and not world.signals
+
+
+def test_given_ac_3_2_compaction_when_idle_settles_then_all_gates_and_pin_run(pre_step_world, monkeypatch):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    original = restart.prepare_request
+
+    def prepare(*args):
+        assert world.ticks[0] >= 1.2
+        assert restart.context_gate(
+            restart.transcript_tail(world.transcript), config.read_restart_config(world.settings)
+        )
+        return original(*args)
+
+    monkeypatch.setattr(restart, "prepare_request", prepare)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+
+
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("context", "context"),
+        ("activation", "rc-activation"),
+        ("identity", "identity"),
+        ("pin", "supervisor-upgrade-required"),
+    ],
+)
+def test_given_ac_3_2_changed_gate_when_compacted_then_restart_refuses(pre_step_world, monkeypatch, fault, reason):
+    world = pre_step_world
+
+    def tick():
+        world.compact()
+        if fault == "context":
+            world.rows[-2]["compactMetadata"]["trigger"] = "manual"
+            world.write()
+        elif fault == "activation":
+            (world.root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":false}', encoding="utf-8")
+        elif fault == "identity":
+            world.record["sessionId"] = OTHER_ID
+            world.write()
+        else:
+            monkeypatch.setattr(restart, "_restart_pin_gate", Mock(side_effect=restart.Refusal(reason)))
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == reason
+    assert len(world.injected) == 1 and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize(("state", "exit_code"), [("HELD", 0), ("QUEUED", 0), ("REFUSED", 3), ("SENT", 1)])
+def test_given_ac_3_3_adapter_refusal_when_injected_then_own_outcome_and_no_signal(pre_step_world, state, exit_code):
+    world = pre_step_world
+    world.outcome = {"state": state, "submitted": True, "reason": "private-value-must-not-appear"}
+    world.inject_code = exit_code
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert state in report["detail"] and f"exit {exit_code}" in report["detail"]
+    assert "private-value" not in json.dumps(report)
+    assert len(world.injected) == 1 and not world.signals and world.ticks[0] == 0
+
+
+@pytest.mark.parametrize("kind", ["agent", "shell", "descendant"])
+def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_step_world, kind):
+    world = pre_step_world
+
+    def tick():
+        world.compact()
+        if kind == "agent":
+            world.rows[1]["pendingBackgroundAgentCount"] = 1
+        elif kind == "shell":
+            world.rows.insert(0, {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+        else:
+            world.children.append(SimpleNamespace(pid=501, ppid=lambda: 101, cmdline=lambda: ["sleep", "300"]))
+        world.write()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert len(world.injected) == 1 and not world.signals
+
+
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("busy", "busy"),
+        ("generation", "identity"),
+        pytest.param(
+            "lock",
+            "locked",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows refuses to replace a lock file that is held open"
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("compacted", [False, True])
+def test_given_ac_3_5_wait_guard_lost_when_polling_then_aborts_without_retry(pre_step_world, fault, reason, compacted):
+    world = pre_step_world
+
+    def tick():
+        if compacted:
+            world.compact()
+        if fault == "busy":
+            world.record["status"] = "busy"
+            world.write()
+        elif fault == "generation":
+            world.generation = "generation-2"
+        else:
+            # Simulate an actor violating the stable-lock-inode protocol.
+            restart._atomic_json(restart.state_paths(world.session)[0], {})
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == reason
+    assert len(world.injected) == 1 and not world.signals
+
+
+def test_given_ac_3_5_high_context_when_checking_then_never_injects(pre_step_world):
+    code, report, _ = pre_step_world.cli("-Y", SESSION_ID)
+    assert code == 1 and report["gates"]["context"] == "context"
+    assert not pre_step_world.injected and not pre_step_world.signals
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_given_ac_3_1_pre_step_disabled_or_unneeded_when_restarting_then_no_save_state(pre_step_world, enabled):
+    world = pre_step_world
+    world.settings["restart_session"]["pre_step"] = enabled
+    if enabled:
+        world.rows[0]["message"]["usage"]["input_tokens"] = 10_000
+        world.write()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == (0 if enabled else 1)
+    assert report["reason"] == ("restarted" if enabled else "context")
+    assert not world.injected
+
+
+@pytest.mark.parametrize("outcome", [None, [], {"state": "STARTED", "submitted": False}, {"state": "untrusted-value"}])
+def test_given_ac_3_3_invalid_adapter_outcome_when_injected_then_context_refuses(pre_step_world, outcome):
+    world = pre_step_world
+    world.outcome = outcome
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert "untrusted-value" not in json.dumps(report)
+    assert len(world.injected) == 1 and not world.signals
+
+
+def test_given_ac_3_5_busy_during_injection_probe_when_revalidated_then_never_injects(pre_step_world, monkeypatch):
+    world = pre_step_world
+    original = restart._restart_pin_gate
+    calls = []
+
+    def probe(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            world.record["status"] = "busy"
+            world.write()
+        return original(*args)
+
+    monkeypatch.setattr(restart, "_restart_pin_gate", probe)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "busy"
+    assert not world.injected and not world.signals
+
+
+def test_given_ac_3_1_compaction_during_probe_when_injecting_then_snapshot_includes_it(pre_step_world, monkeypatch):
+    world = pre_step_world
+    world.on_tick = lambda: None
+    original = restart._restart_pin_gate
+    calls = []
+
+    def probe(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            world.compact()
+        return original(*args)
+
+    monkeypatch.setattr(restart, "_restart_pin_gate", probe)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context" and "timed out" in report["detail"]
+    assert len(world.injected) == 1 and not world.signals
+
+
+@pytest.mark.parametrize("failure", ["timeout", "encoding", "malformed"])
+def test_given_ac_3_3_adapter_error_when_injected_then_context_refuses(pre_step_world, failure):
+    world = pre_step_world
+
+    def run(argv, **kwargs):
+        if argv == ["inject", "%1", "/save-state"]:
+            world.injected.append(argv)
+            if failure == "timeout":
+                raise restart.subprocess.TimeoutExpired(argv, 15)
+            if failure == "encoding":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+            return SimpleNamespace(returncode=0, stdout="{")
+        return world.subprocess_run(argv, **kwargs)
+
+    with patch.object(restart.subprocess, "run", run):
+        code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert len(world.injected) == 1 and not world.signals
+
+
+@pytest.mark.parametrize(("tokens", "allowed"), [(40_000, True), (40_001, False)])
+def test_given_ac_3_2_manual_compaction_when_rechecking_then_post_tokens_threshold_applies(
+    pre_step_world, tokens, allowed
+):
+    world = pre_step_world
+    world.settings["restart_session"]["context_window_tokens"] = 200_000
+
+    def compact():
+        world.compact()
+        world.rows[-2]["compactMetadata"].update(trigger="manual", postTokens=tokens)
+        world.write()
+
+    world.on_tick = compact
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == (0 if allowed else 1)
+    assert report["reason"] == ("restarted" if allowed else "context")
+    assert len(world.injected) == 1 and bool(world.signals) is allowed
