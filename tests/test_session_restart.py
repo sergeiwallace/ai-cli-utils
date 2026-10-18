@@ -1644,25 +1644,168 @@ def test_given_ac_k_5_transcript_races_when_final_assessment_reads_then_refuses_
     assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
 
 
-@pytest.mark.parametrize("compacted", [False, True])
-def test_given_ac_k_5_unfinished_background_launch_when_waiting_then_refuses_immediately(pre_step_world, compacted):
+@pytest.fixture
+def background_launch(pre_step_world):
     world = pre_step_world
 
-    def tick():
-        if compacted:
-            world.compact()
-        world.rows.append({"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+    def start():
+        world.rows.insert(0, {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
         world.write()
 
+    def finish():
+        world.rows.append({"type": "task-notification", "taskId": "task-1", "status": "completed"})
+        world.write()
+
+    return SimpleNamespace(start=start, finish=finish)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("compacted", [False, True])
+def test_given_ac_l_1_ac_l_4_unfinished_launch_when_deadline_passes_then_timeout_names_last_pass(
+    pre_step_world, background_launch, compacted, queued
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    state, exit_code = ("QUEUED", 2) if queued else ("STARTED", 0)
+    world.outcome = {"state": state, "submitted": True, "landing": "queued"}
+    world.inject_code = exit_code
+
+    def tick():
+        assert not world.signals and not restart.state_paths(world.session)[2].exists()
+        if compacted and len(world.rows) == 2:
+            world.compact()
+        if world.ticks[0] >= (0.8 if compacted else 0.2) and len(world.rows) == (4 if compacted else 2):
+            background_launch.start()
+
     world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = f"injection outcome: {state} (exit {exit_code}); compaction wait timed out"
+    if queued and not compacted:
+        detail += "; save-state was queued and never observed to compact"
+    assert report["detail"] == detail + "; an unfinished background launch was seen on the last pass"
+    assert world.ticks[0] == (4 if compacted else 3)
+    assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_given_ac_l_1_ac_l_2_launch_finishes_when_compaction_and_idle_observed_then_restarts(
+    pre_step_world, background_launch, queued
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+    if queued:
+        world.outcome = {"state": "QUEUED", "submitted": True, "landing": "queued"}
+        world.inject_code = 2
+
+    def tick():
+        if world.ticks[0] < 0.6:
+            assert not world.signals and not restart.state_paths(world.session)[2].exists()
+            if len(world.rows) == 2:
+                background_launch.start()
+        elif len(world.rows) == 3:
+            background_launch.finish()
+            world.compact()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.ticks[0] >= 1.6 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+def test_given_ac_l_3_compaction_seen_when_launch_pass_skipped_then_settle_interval_restarts(
+    pre_step_world, background_launch
+):
+    world = pre_step_world
+    world.settings["restart_session"]["settle_seconds"] = 1
+
+    def tick():
+        if len(world.rows) == 2:
+            world.compact()
+        elif world.ticks[0] >= 0.8 and len(world.rows) == 4:
+            background_launch.start()
+        elif world.ticks[0] >= 1.2 and len(world.rows) == 5:
+            background_launch.finish()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0 and report["reason"] == "restarted"
+    assert world.ticks[0] >= 2.2 - 1e-6
+    assert world.injected == [["inject", "%1", "/save-state"]] and world.signals == [(101, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_given_ac_l_4_finished_launch_when_no_compaction_then_timeout_describes_only_last_pass(
+    pre_step_world, background_launch, transcript_race, unreadable
+):
+    world = pre_step_world
+    transcript_race.when = lambda: unreadable and world.ticks[0] >= 0.6
+
+    def tick():
+        if len(world.rows) == 2:
+            background_launch.start()
+        elif world.ticks[0] >= 0.6 and len(world.rows) == 3:
+            background_launch.finish()
+
+    world.on_tick = tick
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    detail = "injection outcome: STARTED (exit 0); compaction wait timed out"
+    if unreadable:
+        detail += "; transcript was unreadable on the last pass"
+    assert report["detail"] == detail
+    assert world.ticks[0] == 3 and not world.signals
+    assert world.injected == [["inject", "%1", "/save-state"]]
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+@pytest.mark.parametrize("read_number", [1, 2, 3])
+def test_given_ac_l_5_unfinished_launch_when_read_before_injection_then_refuses_immediately(
+    pre_step_world, background_launch, monkeypatch, read_number
+):
+    world = pre_step_world
+    transcript_tail = restart.transcript_tail
+    reads = 0
+
+    def read(path):
+        nonlocal reads
+        reads += 1
+        if reads == read_number:
+            background_launch.start()
+        return transcript_tail(path)
+
+    monkeypatch.setattr(restart, "transcript_tail", read)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "background-work"
+    assert report["detail"] == "unfinished background launch"
+    assert reads == read_number and world.ticks[0] == 0
+    assert not world.injected and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_ac_l_5_unfinished_launch_when_final_assessment_reads_then_refuses_immediately(
+    pre_step_world, background_launch, monkeypatch
+):
+    world = pre_step_world
+    assess = restart.assess
+
+    def assess_with_launch(*args, **kwargs):
+        if world.injected:
+            background_launch.start()
+        return assess(*args, **kwargs)
+
+    monkeypatch.setattr(restart, "assess", assess_with_launch)
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] == "background-work"
     assert report["detail"] == "unfinished background launch"
     assert world.ticks[0] == 0.2
     assert world.injected == [["inject", "%1", "/save-state"]] and not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
 
 
-def test_given_ac_k_6_restart_documents_when_wait_contract_checked_then_unreadable_passes_are_bounded():
+def test_given_ac_k_6_ac_l_6_restart_documents_when_wait_contract_checked_then_skipped_passes_are_bounded():
     root = Path(__file__).resolve().parents[1]
     plan = next((root / "docs" / "plans").glob("*restart-idle-sessions-plan.md")).read_text(encoding="utf-8")
     criterion = plan.split("- [ ] AC-3.5 When", 1)[1].split("\n\n", 1)[0]
@@ -1672,6 +1815,7 @@ def test_given_ac_k_6_restart_documents_when_wait_contract_checked_then_unreadab
         assert "existing compaction deadline" in document
         assert "settle interval" in document
         assert "last pass" in document
+        assert "unfinished background launch" in document
 
 
 @pytest.mark.parametrize(
@@ -1701,7 +1845,7 @@ def test_given_ac_q_4_queued_without_enqueue_evidence_when_injected_then_refuses
     assert not restart.state_paths(world.session)[2].exists()
 
 
-@pytest.mark.parametrize("kind", ["agent", "shell", "descendant"])
+@pytest.mark.parametrize("kind", ["agent", "shell", "anonymous-agent", "descendant"])
 def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_step_world, kind):
     world = pre_step_world
 
@@ -1711,13 +1855,20 @@ def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_
             world.rows[1]["pendingBackgroundAgentCount"] = 1
         elif kind == "shell":
             world.rows.insert(0, {"type": "user", "toolUseResult": {"backgroundTaskId": "task-1"}})
+        elif kind == "anonymous-agent":
+            world.rows.insert(0, {"type": "user", "toolUseResult": {"status": "async_launched"}})
         else:
             world.children.append(SimpleNamespace(pid=501, ppid=lambda: 101, cmdline=lambda: ["sleep", "300"]))
         world.write()
 
     world.on_tick = tick
     code, report, _ = world.cli("-X", SESSION_ID)
-    assert code == 1 and report["reason"] == "background-work"
+    assert code == 1 and report["reason"] == ("context" if kind == "shell" else "background-work")
+    if kind == "shell":
+        assert world.ticks[0] == 3
+        assert "an unfinished background launch was seen on the last pass" in report["detail"]
+    else:
+        assert world.ticks[0] == 0.2
     assert len(world.injected) == 1 and not world.signals
 
 

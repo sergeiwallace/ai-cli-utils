@@ -957,12 +957,13 @@ T-03a, this repo:
   Any other wait timeout shall also refuse with reason `context` and signal nothing.
 - [ ] AC-3.4 If background work appears after the compaction, then the command shall refuse with
   reason `background-work`.
-- [ ] AC-3.5 When a wait-loop read encounters an unreadable or changing transcript, the command
-  shall skip that pass within the existing compaction deadline and settle extension, reset the
-  settle interval to require readable evidence, and name an unreadable last pass in the existing
-  timeout detail (including the queued variant), without retrying injection or signalling;
-  pre-injection reads, the final assessment, unfinished background launches and every other gate
-  shall retain their immediate refusals.
+- [ ] AC-3.5 When a wait-loop read encounters an unreadable or changing transcript or an unfinished
+  background launch, the command shall skip that pass within the existing compaction deadline and
+  settle extension, reset the settle interval to require readable evidence with every launch
+  finished, and name an unreadable transcript or unfinished background launch on the last pass
+  in the existing timeout detail (including the queued variant), without retrying injection or
+  signalling; pre-injection reads, the final assessment and every other gate shall retain their
+  immediate refusals.
 
 T-03b, private harness repository, its own PR:
 

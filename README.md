@@ -365,9 +365,11 @@ retrying injection or signalling. The report
 includes the adapter's protocol state and exit code; arbitrary diagnostic output
 is omitted. A successful submission still requires new compaction evidence and
 all restart gates to pass.
-During the wait only, an unreadable or changing transcript skips that pass within the
-existing compaction deadline and settle extension, resets the settle interval to require
-readable evidence, and is named in the timeout detail if it affected the last pass.
+During the wait only, an unreadable or changing transcript or an unfinished background launch
+skips that pass within the existing compaction deadline and settle extension, resets the
+settle interval to require readable evidence with every launch finished, and is named in the timeout
+detail if it affected the last pass; pre-injection reads, the final assessment and every other
+gate retain their immediate refusals.
 The observer returns JSON with `status` (`seen`, `absent`, `unknown`), `complete`,
 `observed_at` (epoch seconds or an ISO timestamp with a timezone) and `rows` carrying
 `session_id`, `title` and, where available, `bridge_session_id`. Evidence must be
