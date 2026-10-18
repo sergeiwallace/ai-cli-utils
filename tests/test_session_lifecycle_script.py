@@ -20,20 +20,7 @@ def shell_environment(tmp_path):
     if shell is None:
         pytest.skip("bash is unavailable")
     name = "c-session-1"
-    state.register(
-        name,
-        recipe={
-            "engine": "c",
-            "session_name": name,
-            "owning_host": "host-a",
-            "argv": ["ai", "c", "1"],
-            "extra_args": [],
-            "options": {},
-            "cwd": str(tmp_path),
-            "project": "myproject",
-        },
-        host="host-a",
-    )
+    state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
     generation = state.begin(name)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

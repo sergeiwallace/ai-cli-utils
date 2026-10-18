@@ -181,7 +181,7 @@ def test_given_readme_when_sessions_documented_then_ac_p_4_both_commands_share_o
     assert "`ai sessions policy <slug> <auto|never|always>`" in paragraph
 
 
-@pytest.mark.parametrize("missing", ["record", "recipe", "invalid"])
+@pytest.mark.parametrize("missing", ["record", "recipe"])
 def test_given_begin_failure_when_cli_invoked_then_cause_and_exit_status_are_preserved(runner, missing):
     if missing != "record":
         registry._mutate(
@@ -190,7 +190,7 @@ def test_given_begin_failure_when_cli_invoked_then_cause_and_exit_status_are_pre
                     {
                         "kind": "local",
                         "name": "c-session-1",
-                        "boot_recipe": {} if missing == "recipe" else {"engine": "unknown"},
+                        "boot_recipe": {},
                     }
                 )
                 or True

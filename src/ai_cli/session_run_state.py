@@ -167,15 +167,6 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
     return result
 
 
-def _begin_record(doc: dict, name: str) -> dict:
-    record = _find(doc, name)
-    if not record.get("boot_recipe"):
-        raise ValueError("session has no boot recipe; refusing an untracked start")
-    if not valid_boot_recipe(record):
-        raise ValueError("session has an invalid boot recipe; refusing an untracked start")
-    return record
-
-
 def can_begin(name: str) -> None:
     """Check generation prerequisites without creating a file or changing a record.
 
@@ -193,7 +184,11 @@ def can_begin(name: str) -> None:
         if not os.access(target, mode):
             raise OSError(f"registry generation storage unavailable: {target}")
     with portalocker.Lock(lock_path, mode="r", timeout=2):
-        _begin_record(registry.load_registry(), name)
+        record = _find(registry.load_registry(), name)
+        if not record.get("boot_recipe"):
+            raise ValueError("session has no boot recipe; refusing an untracked start")
+        if not valid_boot_recipe(record):
+            raise ValueError("session has an invalid boot recipe; refusing an untracked start")
 
 
 def begin(name: str, *, command: list[str] | None = None) -> str:
@@ -206,7 +201,6 @@ def begin(name: str, *, command: list[str] | None = None) -> str:
             raise ValueError("session has no boot recipe; refusing an untracked start")
         if command is not None:
             record["boot_recipe"]["command"] = command
-        _begin_record(doc, name)
         record.update(generation=generation, transition_seq=0)
         return True
 

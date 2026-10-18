@@ -16,20 +16,7 @@ from ai_cli import session_run_state as state
 
 @pytest.fixture
 def generation(tmp_path):
-    state.register(
-        "c-session-1",
-        recipe={
-            "engine": "c",
-            "session_name": "c-session-1",
-            "owning_host": "host-a",
-            "argv": ["ai", "c", "1"],
-            "extra_args": [],
-            "options": {},
-            "cwd": str(tmp_path),
-            "project": "myproject",
-        },
-        host="host-a",
-    )
+    state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
     generation = state.begin("c-session-1")
     assert state.mark_running("c-session-1", generation=generation)
     return generation

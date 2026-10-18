@@ -210,3 +210,13 @@ def test_given_absent_registry_when_can_begin_then_no_file_or_lock_created():
         state.can_begin("c-session-1")
     assert not path.exists()
     assert not path.with_name(f"{path.name}.lock").exists()
+
+
+def test_given_legacy_recipe_when_begin_then_launch_is_preserved_but_restart_probe_refuses(tmp_path):
+    state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
+    generation = state.begin("c-session-1")
+    assert record()["generation"] == generation
+    before = registry.registry_path().read_bytes()
+    with pytest.raises(ValueError, match="invalid boot recipe"):
+        state.can_begin("c-session-1")
+    assert registry.registry_path().read_bytes() == before
