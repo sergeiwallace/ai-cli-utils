@@ -37,6 +37,7 @@ from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start
 TAIL_LIMIT = 8 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
 POLL_SECONDS = 0.2
+RESTART_PIN_PROTOCOL = "restart-pin-v1"
 # These base windows match the existing statusline model table. Unknown models
 # use the smallest known window; extended windows need a known tag or override.
 MODEL_WINDOWS = {
@@ -545,6 +546,35 @@ def _compatible(source: str, expected: str) -> bool:
     return normalize(source) == normalize(expected)
 
 
+def _restart_pin_gate(supervisor: int, cwd: Path) -> None:
+    """Probe the helper the replacement child inherits, not the caller's install."""
+    try:
+        environment = psutil.Process(supervisor).environ()
+        if "PATH" not in environment:
+            raise Refusal("supervisor-upgrade-required", "supervisor PATH unavailable")
+        # The child changes to its working directory before resolving `ai`.
+        # Empty and relative PATH entries must therefore be anchored there too.
+        search = os.pathsep.join(str(cwd / entry) for entry in environment["PATH"].split(os.pathsep))
+        executable = shutil.which("ai", path=search)
+        if executable is None:
+            raise Refusal("supervisor-upgrade-required", "supervisor ai executable unavailable")
+        result = subprocess.run(
+            [executable, "internal", "restart-pin", "--probe"],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=15,
+        )
+        if result.returncode or result.stdout.strip() != RESTART_PIN_PROTOCOL:
+            raise Refusal("supervisor-upgrade-required", "supervisor ai lacks restart-pin support")
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+        # Neither the pane environment nor executable output is safe to echo.
+        raise Refusal("supervisor-upgrade-required", "restart-pin compatibility cannot be established") from exc
+
+
 def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = None) -> Managed:
     from .main import _engine_script_from_meta
 
@@ -614,6 +644,8 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
             running_sources = [_script_source(supervisor, script), _script_source(child.pid, script)]
         if not all(_compatible(text, expected) for text in (source, *running_sources)):
             raise Refusal("supervisor-upgrade-required", "unknown running supervisor or child program")
+        child_cwd = (Path(psutil.Process(supervisor).cwd()) / (metadata.get("worktree_dir") or "")).resolve()
+        _restart_pin_gate(supervisor, child_cwd)
         return Managed(
             session,
             pane,

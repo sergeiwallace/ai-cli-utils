@@ -1846,6 +1846,9 @@ def _handle_internal(argv: list[str]) -> None:
     if action in ("restart-pin", "restart-detached"):
         from . import session_restart
 
+        if action == "restart-pin" and argv[1:] == ["--probe"]:
+            _out.raw(Untagged.INTERNAL_REPLY, session_restart.RESTART_PIN_PROTOCOL)
+            sys.exit(0)
         if action == "restart-pin" and len(argv) == 3:
             status, transcript = session_restart.child_pin(argv[1], argv[2])
             if transcript:

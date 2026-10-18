@@ -131,6 +131,9 @@ elif args[:2] == ['internal', 'resolve-continue-target']:
     with (root / 'resolver-calls').open('a', encoding='utf-8') as out: out.write('query\\n')
     print((root / 'target').read_text(encoding="utf-8"))
 elif args[:2] == ['internal', 'restart-pin']:
+    if args[2:] == ['--probe']:
+        print('restart-pin-v1')
+        sys.exit(0)
     from ai_cli.session_restart import child_pin
     # Model cold helper startup beyond the former two-second verification budget.
     time.sleep(3)

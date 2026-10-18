@@ -35,6 +35,11 @@ def world(tmp_path, monkeypatch):
     monkeypatch.delenv("TMUX_PANE", raising=False)
     root = tmp_path / "home"
     root.mkdir()
+    binaries = root / "pane bin"
+    binaries.mkdir()
+    pane_ai = binaries / ("ai.exe" if sys.platform == "win32" else "ai")
+    pane_ai.touch()
+    pane_ai.chmod(0o755)
     monkeypatch.setattr(Path, "home", lambda: root)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state with spaces"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -106,6 +111,8 @@ def world(tmp_path, monkeypatch):
         injected=[],
         after_prepare=None,
         processes={},
+        pane_ai=pane_ai,
+        pane_env={"PATH": str(binaries)},
     )
     settings = {
         "restart_session": {
@@ -151,10 +158,22 @@ def world(tmp_path, monkeypatch):
         def children(self, recursive=False):
             return state_obj.children
 
+        def environ(self):
+            assert self.pid == 103
+            return state_obj.pane_env.copy()
+
+        def cwd(self):
+            assert self.pid == 103
+            return str(cwd)
+
     monkeypatch.setattr(restart.psutil, "Process", Process)
     monkeypatch.setattr(restart, "_script_source", lambda pid, path: path.read_text(encoding="utf-8"))
 
     def subprocess_run(argv, **kwargs):
+        if argv == [str(pane_ai), "internal", "restart-pin", "--probe"]:
+            assert kwargs["env"] == state_obj.pane_env
+            assert kwargs["cwd"] == cwd
+            return SimpleNamespace(returncode=0, stdout="restart-pin-v1\n")
         if argv[0] == "tmux":
             fields = [session, "%1", "103", state_obj.generation]
             if "pane_start_command" in argv[-1]:
@@ -208,6 +227,113 @@ def world(tmp_path, monkeypatch):
     # monkeypatch is finalized later and would resurrect that expired guard.
     with patch.object(restart.subprocess, "run", subprocess_run):
         yield state_obj
+
+
+@pytest.mark.parametrize("mechanism", ["kill", "exit", "fallback"])
+@pytest.mark.parametrize("after_prepare", [False, True])
+def test_given_supervisor_ai_without_restart_pin_when_restarting_then_refuses_before_action(
+    world, monkeypatch, mechanism, after_prepare
+):
+    world.settings["restart_session"]["mechanism"] = "exit" if mechanism == "exit" else "kill"
+    monkeypatch.setattr(restart, "_signal_supported", lambda: mechanism != "fallback")
+    world.commands({"inject": ["inject"]})
+    original_script = world.script.read_bytes()
+    probes = []
+    prepared = False
+    prepare = restart.prepare_request
+
+    def prepare_and_downgrade(*args):
+        nonlocal prepared
+        result = prepare(*args)
+        prepared = True
+        return result
+
+    monkeypatch.setattr(restart, "prepare_request", prepare_and_downgrade)
+
+    def run(argv, **kwargs):
+        if argv == [str(world.pane_ai), "internal", "restart-pin", "--probe"]:
+            probes.append((argv, kwargs))
+            if not after_prepare or prepared:
+                return SimpleNamespace(returncode=1, stdout="", stderr="unknown action: restart-pin")
+        return world.subprocess_run(argv, **kwargs)
+
+    with patch.object(restart.subprocess, "run", run):
+        code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "supervisor-upgrade-required"
+    assert not world.signals and not world.injected
+    assert probes and probes[-1][1]["env"] == world.pane_env
+    assert probes[-1][1]["cwd"] == world.cwd
+    if not after_prepare:
+        assert world.script.read_bytes() == original_script
+        assert not restart.state_paths(world.session)[2].exists()
+
+
+def test_given_restart_pin_probe_when_dispatched_then_no_config_or_request_is_read(monkeypatch, capsys):
+    def unexpected(*args):
+        pytest.fail("capability probe must not read configuration or restart state")
+
+    monkeypatch.setattr(config, "load_config", unexpected)
+    monkeypatch.setattr(restart, "child_pin", unexpected)
+    with pytest.raises(SystemExit) as exited:
+        main._handle_internal(["restart-pin", "--probe"])
+    assert exited.value.code == 0 and capsys.readouterr().out.strip() == "restart-pin-v1"
+
+
+@pytest.mark.parametrize("failure", ["missing-path", "missing-executable", "unreadable", "timeout", "wrong-reply"])
+def test_given_unproven_restart_pin_when_checked_then_upgrade_is_required(world, monkeypatch, failure):
+    if failure == "missing-path":
+        world.pane_env.clear()
+    elif failure == "missing-executable":
+        world.pane_env["PATH"] = str(world.cwd / "missing")
+    elif failure == "unreadable":
+
+        def unreadable(process):
+            raise restart.psutil.AccessDenied(process.pid)
+
+        monkeypatch.setattr(restart.psutil.Process, "environ", unreadable)
+
+    def run(argv, **kwargs):
+        if failure == "timeout":
+            raise restart.subprocess.TimeoutExpired(argv, 15)
+        return SimpleNamespace(returncode=0, stdout="unrelated response")
+
+    with patch.object(restart.subprocess, "run", run):
+        with pytest.raises(restart.Refusal, match="supervisor-upgrade-required"):
+            restart._restart_pin_gate(103, world.cwd)
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize("entry", ["", ".", "../home/pane bin"])
+def test_given_relative_supervisor_path_when_probed_then_child_directory_is_used(world, entry):
+    world.pane_env["PATH"] = entry
+    executable = world.pane_ai if entry.startswith("..") else world.cwd / world.pane_ai.name
+    if executable != world.pane_ai:
+        executable.touch()
+        executable.chmod(0o755)
+    probes = []
+
+    def run(argv, **kwargs):
+        probes.append(argv)
+        assert Path(argv[0]).resolve() == executable.resolve()
+        assert argv[1:] == ["internal", "restart-pin", "--probe"]
+        assert kwargs["cwd"] == world.cwd and kwargs["env"] == world.pane_env
+        return SimpleNamespace(returncode=0, stdout="restart-pin-v1\n")
+
+    with patch.object(restart.subprocess, "run", run):
+        restart._restart_pin_gate(103, world.cwd)
+    assert len(probes) == 1
+
+
+@pytest.mark.parametrize("worktree_dir", [".", ""])
+def test_given_unpinned_working_directory_when_checked_then_supervisor_cwd_is_used(world, worktree_dir):
+    world.meta["worktree_dir"] = worktree_dir
+    meta_path = config.get_xdg_state_home() / f"session-meta-{world.session}.json"
+    assert restart._object(meta_path)["worktree_dir"] == str(world.cwd)
+    meta_path.write_text(json.dumps(world.meta), encoding="utf-8")
+    main._write_launch_script_if_changed(world.script, main._engine_script_from_meta(world.meta))
+    code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 0 and report["gates"]["live-supervisor-uptime"] == "PASS"
+    assert not world.signals and not world.injected
 
 
 @pytest.mark.parametrize("target", [SESSION_ID, "myproject-box-1", "c-myproject-box-1"])
@@ -738,6 +864,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
         main._session_script, "resolve_session_shell", lambda: "bash" if sys.platform == "darwin" else "bash.exe"
     )
     world = request.getfixturevalue("world")
+    # Executable discovery stays native while this test simulates macOS provenance.
+    monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))
     monkeypatch.setattr(restart.sys, "platform", "darwin")
     world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []
