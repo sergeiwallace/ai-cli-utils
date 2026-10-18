@@ -294,6 +294,10 @@ def _start_real_tmux_supervisor(
     )
     state_root = tmp_path / "state"
     state_home = state_root / "ai-cli-utils"
+    from ai_cli import session_registry, session_run_state
+
+    with patch.object(session_registry, "registry_path", return_value=state_home / session_registry.REGISTRY_FILENAME):
+        session_run_state.register(session_id, recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
     if child_body is not None:
         sessions_dir = state_home / "sessions"
         sessions_dir.mkdir(parents=True)

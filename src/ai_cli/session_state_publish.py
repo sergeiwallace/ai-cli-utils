@@ -26,7 +26,7 @@ def render(doc: dict, host: str) -> str:
     """Render TOML using JSON-compatible quoted strings, including quoted table keys."""
 
     def quote(value):
-        return json.dumps(value, ensure_ascii=True)
+        return json.dumps(value, ensure_ascii=False)
 
     lines = [
         f"host = {quote(host)}",
@@ -141,6 +141,7 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
         path = registry.registry_path().with_name("session-publish.lock")
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with portalocker.Lock(path, mode="a", timeout=0):
+            state.reconcile_safety()
             doc = registry.load_registry()
             revision = doc.get("dirty_revision", 0)
             if revision <= doc.get("published_revision", 0):

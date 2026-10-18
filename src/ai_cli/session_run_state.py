@@ -129,7 +129,11 @@ def mark(
         if seq <= record.get("transition_seq", 0):
             raise ValueError("stale supervisor transition sequence")
         safety = tombstone_path(name, record.get("owning_host", ""))
-        if safety.exists() and json.loads(safety.read_text()).get("generation") == record.get("generation"):
+        if (
+            state == "running"
+            and safety.exists()
+            and json.loads(safety.read_text()).get("generation") == record.get("generation")
+        ):
             raise ValueError("final exit safety veto requires a new explicit launch")
         now = registry._now()
         record.update(run_state=state, changed_at=now, transition_seq=seq)
@@ -145,7 +149,9 @@ def mark(
     def fallback(_doc):
         path = tombstone_path(name, accepted.get("owning_host", ""))
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        registry._write(path, {"name": name, "generation": accepted.get("generation"), "deny_boot": True})
+        registry._write(
+            path, {"name": name, "generation": accepted.get("generation"), "deny_boot": True, "record": accepted}
+        )
         LOGGER.error("session exit stored in deny-boot safety file after registry persistence failed")
 
     def clear_safety():
@@ -178,3 +184,25 @@ def mark_running(name: str, **kwargs) -> bool:
 
 def mark_exited(name: str, cause: str, evidence: dict, **kwargs) -> bool:
     return mark(name, "exited", cause=cause, evidence=evidence, **kwargs)
+
+
+def reconcile_safety() -> None:
+    """Recover final exits from the safety store once registry persistence works again."""
+
+    def recover(doc):
+        changed = False
+        for record in doc["sessions"]:
+            if record.get("kind") != "local":
+                continue
+            path = tombstone_path(record["name"], record.get("owning_host", ""))
+            if not path.exists():
+                continue
+            saved = json.loads(path.read_text()).get("record", {})
+            if saved.get("generation") == record.get("generation") and saved.get("transition_seq", 0) > record.get(
+                "transition_seq", 0
+            ):
+                record.update(saved)
+                changed = True
+        return changed
+
+    registry._mutate(recover, timeout=2)

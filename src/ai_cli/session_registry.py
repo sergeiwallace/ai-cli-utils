@@ -363,7 +363,7 @@ def remove(record_ids: Iterable[str]) -> None:
         return
 
     def drop(doc: dict) -> bool:
-        kept = [r for r in doc["sessions"] if r.get("id") not in ids or r.get("generation")]
+        kept = [r for r in doc["sessions"] if r.get("id") not in ids or r.get("boot_recipe")]
         changed = len(kept) != len(doc["sessions"])
         doc["sessions"] = kept
         return changed
@@ -488,7 +488,7 @@ def prune(
     def drop(doc: dict) -> bool:
         kept = []
         for record in doc["sessions"]:
-            if record.get("id") in verdicts and not record.get("generation"):
+            if record.get("id") in verdicts and not record.get("boot_recipe"):
                 removed.append((record, verdicts[record.get("id")]))
             else:
                 kept.append(record)

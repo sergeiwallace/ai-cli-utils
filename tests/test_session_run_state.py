@@ -98,3 +98,36 @@ def test_replaced_record_when_reattached_then_policy_and_generation_survive(regi
     assert record()["relaunch"] == "never"
     assert record()["relaunched_boot_id"] == "boot-1"
     assert record()["boot_recipe"] == previous["boot_recipe"]
+
+
+def test_final_exit_when_registry_recovers_then_safety_state_becomes_publishable(registered, monkeypatch):
+    original = registry._write
+
+    def fail_registry(path, doc):
+        if path == registry.registry_path():
+            raise OSError("disk unavailable")
+        original(path, doc)
+
+    monkeypatch.setattr(registry, "_write", fail_registry)
+    assert state.mark_exited("c-session-1", "manual_exit", {}, generation=registered, sequence=2)
+    revision = registry.load_registry()["dirty_revision"]
+    monkeypatch.setattr(registry, "_write", original)
+    state.reconcile_safety()
+    assert state.cause(record(), "next-boot") == "manual_exit"
+    assert registry.load_registry()["dirty_revision"] > revision
+
+
+def test_transition_when_written_then_file_and_directory_are_synced(registered, monkeypatch):
+    import os
+    import stat
+
+    sync = registry.os.fsync
+    synced = []
+
+    def capture(fd):
+        synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        sync(fd)
+
+    monkeypatch.setattr(registry.os, "fsync", capture)
+    assert state.mark_exited("c-session-1", "manual_exit", {}, generation=registered, sequence=2)
+    assert synced == ([False] if os.name == "nt" else [False, True])

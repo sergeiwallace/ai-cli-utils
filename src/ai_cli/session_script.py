@@ -10,6 +10,7 @@ import shutil
 
 from . import config as _config
 from .launch_logging import LAUNCH_LOG_ENV
+from .session_lifecycle_script import SESSION_STATE_FUNCTIONS
 
 # Interpreters that can run the generated session template, most preferred first.
 # zsh stays first because that is what every host has used to date; the ordering,
@@ -374,6 +375,7 @@ def get_engine_script(
         printf '\\r\\n' >&2
       fi
     }}
+    {SESSION_STATE_FUNCTIONS}
     if ! $_ai_cli_child_mode; then
       # Preserve interactive stderr while recording supervisor-only diagnostics.
       # Child bodies restore fd 2 below so normal agent output does not grow this log.
@@ -411,6 +413,8 @@ def get_engine_script(
         "$_ai_state_dir/session-int-exit-$tmux_session" \
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session") || exit 1
+      export AI_CLI_RUN_GENERATION
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
@@ -650,6 +654,7 @@ def get_engine_script(
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
+        rm -f "$_ai_state_dir/session-final-exit-$tmux_session"
         _supervisor_child_ready_path=$(mktemp "$_ai_state_dir/child-ready.XXXXXX") || exit 1
         export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
         # With job control disabled, Bash backgrounds a command with SIGINT and
@@ -700,7 +705,10 @@ def get_engine_script(
           # `exit 1` here skipped the fenced teardown below, and the window's
           # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
           # A real promotion failure still exits 1 and leaves its error on screen.
-          (( _promotion_status == 2 )) && break
+          if (( _promotion_status == 2 )); then
+            _ai_final_manual_exit
+            break
+          fi
           exit 1
         fi
         _supervisor_wait_for_child
@@ -709,11 +717,17 @@ def get_engine_script(
         _supervisor_foreground=$?
         rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
+          _ai_final_manual_exit
           break
         fi
         # 78 requests a refreshed child after a stable-script/self-update check;
         # 77 is clean local final exit and 79 is remote recovery-shell completion.
         if (( _child_status == 77 || _child_status == 79 )); then
+          _ai_final_manual_exit
+          break
+        fi
+        if (( _child_status == 76 )); then
+          _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
           break
         fi
         # A reload names its reason in the state file, and the file, not the exit
@@ -1190,6 +1204,7 @@ def get_engine_script(
       _iterm2_fleet_setup "$tmux_session"
       _iterm2_status "running" "$_session_type" "$tmux_session"
 
+      _ai_mark_running || exit 76
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
@@ -1339,6 +1354,7 @@ with open(path, 'w') as f:
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then
           _ai_emit info exit "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+          _ai_persist_exit unknown '{{"reason":"three consecutive agent exits"}}'
           break
         fi
       fi
@@ -1369,6 +1385,7 @@ with open(path, 'w') as f:
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
         _ai_emit info exit "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+        _ai_persist_exit unknown '{{"reason":"agent exited too quickly"}}'
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
