@@ -1218,7 +1218,20 @@ def test_given_ac_3_4_background_after_compaction_when_waiting_then_refuses(pre_
     assert len(world.injected) == 1 and not world.signals
 
 
-@pytest.mark.parametrize(("fault", "reason"), [("busy", "busy"), ("generation", "identity"), ("lock", "locked")])
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("busy", "busy"),
+        ("generation", "identity"),
+        pytest.param(
+            "lock",
+            "locked",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows refuses to replace a lock file that is held open"
+            ),
+        ),
+    ],
+)
 @pytest.mark.parametrize("compacted", [False, True])
 def test_given_ac_3_5_wait_guard_lost_when_polling_then_aborts_without_retry(pre_step_world, fault, reason, compacted):
     world = pre_step_world
