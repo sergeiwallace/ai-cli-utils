@@ -615,8 +615,8 @@ mode = "observe"
 stale_after_seconds = 600
 
 [sidecar]
-enabled = false                # opt in to the optional machine wake sidecar
-mode = "machine"              # "machine" or "session"
+enabled = false                # opt in to the optional wake sidecar
+mode = "machine"              # "machine", "session", or "both"
 boot = false                   # true when the operating system starts it
 
 [sync]
@@ -634,6 +634,13 @@ machine wake sidecar is running. That checkout's machine profile is authoritativ
 present, so the local `[sidecar]` values are ignored. The check is bounded, never runs
 for remote launches, and never blocks a session after a sidecar failure. Without a
 sidecar implementation, setting `enabled = true` prints one notice and continues.
+
+With `mode = "session"`, each new local tmux session gets a detached `wake-watch`
+window running the watcher for that session's name. The window keeps the main window
+selected and restarts the watcher two seconds after any exit. `mode = "both"` also
+starts the session watcher alongside the machine sidecar. Reattaching leaves existing
+windows alone. Bare launches, remote launches, and Windows do not create watcher windows.
+The optional sidecar CLI must be installed for either watcher mode to run.
 
 To add another machine, give it a short alias and select it for one launch with
 `ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses
