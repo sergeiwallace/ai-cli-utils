@@ -315,7 +315,10 @@ background work.
 - Live: a registry record whose pid is alive with a matching start time, whose `tmux` field names
   a pane whose start command is the `ai c` session script.
 - No in-flight turn: registry `status` is `idle` (not `busy`, not `shell`, no `waitingFor`) and has
-  been for `settle_seconds`; the transcript's last main-chain record ends a turn.
+  been for `settle_seconds`; the transcript's last main-chain record ends a turn. A completed
+  compaction also ends one: a `compact_boundary` followed only by its compaction summary and the
+  local-command records of the `/compact` that ran it (measured on a session compacted at the
+  prompt, which writes no `turn_duration` afterwards).
 - No background work: no background launch in the transcript (a `backgroundTaskId`, an
   `async_launched` status) without a matching completion, the latest main-chain
   `{"type":"system","subtype":"turn_duration"}` record present, with `pendingBackgroundAgentCount`
@@ -381,7 +384,10 @@ compaction.
 - Under threshold: the latest main-chain `usage` gives
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, divided by the model's
   window (from the model id, or `context_window_tokens`), is at or below `context_threshold_pct`.
-- Null usage right after a compaction counts as just compacted, never as zero percent.
+- When no usage record follows the latest `compact_boundary`, the threshold arm uses that
+  boundary's `compactMetadata.postTokens` as the current context, never zero percent. Measured: a
+  session compacted at the prompt recorded `postTokens: 15397` and no usage afterwards. This is
+  how a session the pre-step compacted passes, since its compaction is manual.
 
 **Pros:**
 
