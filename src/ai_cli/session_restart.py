@@ -36,7 +36,7 @@ from typing import TypeGuard
 import portalocker
 import psutil
 
-from . import config
+from . import config, session_run_state
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
@@ -1000,6 +1000,14 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 
+def boot_recipe_gate(record: dict) -> None:
+    session, _ = _pane(record)
+    try:
+        session_run_state.can_begin(session)
+    except (OSError, ValueError, RuntimeError, portalocker.exceptions.LockException) as exc:
+        raise Refusal("no-boot-recipe", str(exc)) from exc
+
+
 def assess(
     record: dict,
     settings: dict,
@@ -1011,6 +1019,7 @@ def assess(
     check_lock: Callable[[], None] | None = None,
 ) -> Managed:
     managed = managed_gate(record, settings, prepared=prepared)
+    boot_recipe_gate(record)
     cwd = Path(record.get("cwd", "")).resolve()
     if not record.get("cwd") or not cwd.is_dir():
         raise Refusal("not-managed", "working directory unavailable")
@@ -1497,6 +1506,7 @@ def _check(record: dict, settings: dict, commands: dict) -> dict:
     cwd = Path(record.get("cwd") or Path.cwd())
     for name, check in (
         ("live-supervisor-uptime", lambda: managed_gate(record, settings)),
+        ("boot-recipe", lambda: boot_recipe_gate(record)),
         ("rc-activation", lambda: activation_gate(cwd)),
         ("idle-background-transcript", lambda: idle_gate(record, transcript_tail(transcript_path(record)), settings)),
         ("background-descendants", lambda: descendants_gate(record["pid"], cwd)),
