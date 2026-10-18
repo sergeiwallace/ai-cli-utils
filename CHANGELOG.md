@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
+  checkout to idempotently ensure its machine wake sidecar is running. The bounded check
+  never blocks the session after a failure and is skipped for remote launches and
+  unsupported platforms. The new `[sidecar]` configuration defaults to disabled.
+
 - `ai iterm2 restore --startup` now opens the default arrangement on a cold start, when no
   selected session survived the iTerm2 restart, before it fills the arrangement's idle panes.
   When any session survived, iTerm2's own window restoration already brought the windows back,
