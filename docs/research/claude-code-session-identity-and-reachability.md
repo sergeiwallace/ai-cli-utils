@@ -276,6 +276,18 @@ A freshly launched session read `status: "busy"` for its first minute because th
 submitted a startup prompt and the session started working it. "Freshly started" therefore does
 not mean idle. [VERIFIABLE][^9] (local observation, the disposable test session)
 
+A live check of the restart command against a real idle session, after this research, showed
+three formats a gate must read exactly. Claude Code writes the registry's `procStart` as a
+string of the same clock-tick number the process probe reads from procfs, so it must be parsed
+before comparison. It writes `pendingBackgroundAgentCount` on a turn-end record only when the
+count is non-zero: of 103 main-chain turn-end records in one session, 82 had no such field, 21
+had 1 or 2, and none had 0. And a configured MCP server can start through a wrapper that execs
+another program, so the child's command line differs from the configured `command` while its
+configured `args` still end the command line. Arguments alone match unrelated programs, so a
+gate must verify the executable, or the interpreter and script for a shebang wrapper, together
+with the args. [VERIFIABLE][^9] (local observation, the
+disposable test session and the launching session's transcript)
+
 Process inspection has a namespace trap. A sandboxed observer saw the registry PIDs as dead
 because its `/proc` was a different PID namespace, which the registry's `pidDomain` field
 records. A probe must treat "cannot see the process" as unknown, never as dead. [VERIFIABLE][^9]
