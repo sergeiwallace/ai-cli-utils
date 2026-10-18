@@ -178,12 +178,14 @@ def can_begin(name: str) -> None:
     """
     path = registry.registry_path()
     lock_path = path.with_name(f"{path.name}.lock")
+    # os.access is not a reliable write test on Windows (it ignores ACLs and refuses
+    # some writable directories); there the lock open and the registry read decide.
     for target, mode in (
         (path.parent, os.W_OK | os.X_OK),
         (path, os.R_OK | os.W_OK),
         (lock_path, os.R_OK | os.W_OK),
     ):
-        if not os.access(target, mode):
+        if os.name != "nt" and not os.access(target, mode):
             raise OSError(f"registry generation storage unavailable: {target}")
     with portalocker.Lock(lock_path, mode="r+", timeout=2):
         record = _find(registry.load_registry(), name)
