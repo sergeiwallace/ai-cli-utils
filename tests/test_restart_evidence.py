@@ -173,15 +173,33 @@ def test_given_wrapped_mcp_when_birth_and_config_checked_then_only_startup_serve
             restart.descendants_gate(1, mcp_tree.cwd)
 
 
+def _symlinks_available(directory):
+    probe = directory / "symlink-probe"
+    try:
+        probe.symlink_to(directory / "probe-target")
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def symlink_mcp_tree(tmp_path, request):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("symlink creation unavailable")
+    return request.getfixturevalue("mcp_tree")
+
+
 @pytest.mark.parametrize("matching", [True, False])
-def test_given_empty_mcp_args_when_command_resolved_then_only_same_executable_allowed(mcp_tree, matching, monkeypatch):
+def test_given_empty_mcp_args_when_command_resolved_then_only_same_executable_allowed(
+    symlink_mcp_tree, matching, monkeypatch
+):
+    mcp_tree = symlink_mcp_tree
     command = mcp_tree.home / "notifier"
     command.touch()
     alias = mcp_tree.home / "notifier-alias"
-    try:
-        alias.symlink_to(command)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
+    alias.symlink_to(command)
     (mcp_tree.cwd / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"notifier": {"command": str(alias), "args": []}}}), encoding="utf-8"
     )
