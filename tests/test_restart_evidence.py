@@ -1,6 +1,7 @@
 """Passive restart evidence rejects unknown or contradictory state."""
 
 import json
+import sys
 import time
 from types import SimpleNamespace
 
@@ -8,6 +9,12 @@ import pytest
 
 from ai_cli import config
 from ai_cli import session_restart as restart
+
+
+def test_given_non_utf8_locale_when_adapter_outputs_utf8_then_text_is_preserved(monkeypatch):
+    monkeypatch.setattr(restart.subprocess, "_text_encoding", lambda: "cp1252")
+    output = restart._run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes.fromhex('636166c3a9'))"])
+    assert output == "café"
 
 
 @pytest.mark.parametrize("kind", ["shell", "agent"])
@@ -33,7 +40,7 @@ def test_given_mcp_tree_when_classified_then_only_configured_servers_allowed(tmp
     home.mkdir()
     monkeypatch.setattr(restart.Path, "home", lambda: home)
     (tmp_path / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {"example": {"command": "python3", "args": ["server.py"]}}})
+        json.dumps({"mcpServers": {"example": {"command": "python3", "args": ["server.py"]}}}), encoding="utf-8"
     )
     children = [
         SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: ["python3", "server.py"]),
@@ -72,7 +79,7 @@ def test_given_duplicate_adapter_when_loaded_then_config_refuses(tmp_path, monke
     directory = tmp_path / "restart-session.d"
     directory.mkdir()
     for name in ("one", "two"):
-        (directory / f"{name}.toml").write_text('[inject]\nargv = ["example_injector"]\n')
+        (directory / f"{name}.toml").write_text('[inject]\nargv = ["example_injector"]\n', encoding="utf-8")
     with pytest.raises(restart.Refusal, match="config"):
         restart.load_commands()
 

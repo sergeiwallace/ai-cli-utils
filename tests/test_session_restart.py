@@ -28,6 +28,10 @@ def world(tmp_path, monkeypatch):
     # Process probes and signals below simulate POSIX independently of the host.
     # Platform routing is exercised separately, including Windows injection.
     monkeypatch.setattr(restart, "_signal_supported", lambda: True)
+    # These are simulated POSIX capabilities, including on hosts whose Python
+    # has no Unix socket family or discovers shells with a .exe suffix.
+    monkeypatch.setattr(restart.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
     monkeypatch.delenv("TMUX_PANE", raising=False)
     root = tmp_path / "home"
     root.mkdir()
@@ -531,8 +535,13 @@ def test_given_revalidation_when_busy_then_signal_unreachable(world, monkeypatch
     assert restart._object(restart.state_paths(world.session)[2])["status"] == "failed"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="AC-2.13: POSIX SIGKILL escalation is unsupported on Windows")
-def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatch):
+@pytest.mark.parametrize("signal_supported", [False, True])
+def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatch, signal_supported):
+    monkeypatch.setattr(restart, "_signal_supported", lambda: signal_supported)
+    # The signal and process are simulated; Windows must use injection instead.
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    world.commands({"inject": ["inject", "{tmux_pane}", "{command}"], "observer": ["observer"]})
+
     def kill(pid, sig):
         world.signals.append((pid, sig))
         if sig == signal.SIGKILL:
@@ -540,7 +549,12 @@ def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatc
 
     monkeypatch.setattr(restart.os, "kill", kill)
     assert world.cli("-X", SESSION_ID)[0] == 0
-    assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
+    if signal_supported:
+        assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
+        assert not world.injected
+    else:
+        assert not world.signals
+        assert world.injected == [["inject", "%1", "/exit"]]
 
 
 def test_given_reused_pid_when_escalating_then_no_kill(world, monkeypatch):
@@ -554,10 +568,22 @@ def test_given_reused_pid_when_escalating_then_no_kill(world, monkeypatch):
     assert world.signals == [(101, signal.SIGTERM)]
 
 
-def test_given_fixture_when_passively_probed_then_local_verified(world):
+@pytest.mark.parametrize("unix_family_available", [False, True])
+def test_given_fixture_when_passively_probed_then_local_verified(request, monkeypatch, unix_family_available):
+    if not unix_family_available:
+        monkeypatch.delattr(restart.socket, "AF_UNIX", raising=False)
+    world = request.getfixturevalue("world")
     world.replace()
     row = restart._object(world.registry.parent / "201.json")
     assert restart.local_verdict(row) == "VERIFIED", (row, restart._run(["claude", "agents", "--json"]))
+
+
+def test_given_unavailable_socket_family_when_passively_probed_then_local_unknown(world, monkeypatch):
+    world.replace()
+    row = restart._object(world.registry.parent / "201.json")
+    monkeypatch.delattr(restart.socket, "AF_UNIX")
+    assert restart.local_verdict(row) == "UNKNOWN"
+    assert not world.signals and not world.injected
 
 
 @pytest.mark.parametrize(
@@ -683,7 +709,12 @@ def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monke
 
 
 @pytest.mark.parametrize("changed_birth", [False, True])
-def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fenced(world, monkeypatch, changed_birth):
+def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fenced(request, monkeypatch, changed_birth):
+    # Model native Windows discovery before the fixture switches to macOS.
+    monkeypatch.setattr(
+        main._session_script, "resolve_session_shell", lambda: "bash" if sys.platform == "darwin" else "bash.exe"
+    )
+    world = request.getfixturevalue("world")
     monkeypatch.setattr(restart.sys, "platform", "darwin")
     world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []

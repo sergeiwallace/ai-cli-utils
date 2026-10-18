@@ -136,7 +136,7 @@ def _pane(record: dict) -> tuple[str, str]:
 
 def _run(argv: list[str], timeout: float = 15) -> str:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout)
+        result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal("probe-unavailable") from exc
     if result.returncode:
