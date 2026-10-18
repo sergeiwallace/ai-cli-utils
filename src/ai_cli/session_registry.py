@@ -255,6 +255,7 @@ DURABLE_FIELDS = (
     "relaunch",
     "relaunched_boot_id",
     "boot_decision",
+    "relaunch_decision",
     "run_state",
     "changed_at",
     "generation",

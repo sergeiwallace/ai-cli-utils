@@ -475,3 +475,157 @@ def test_given_settled_terminal_exit_when_reserved_then_resume_receives_original
     session_commands._launch_recipe(boot_record)
     assert reasons == ["terminal_quit_or_crash"]
     assert session_commands.os.environ[LAUNCH_REASON_VAR] == "previous-reason"
+
+
+@pytest.fixture
+def named_cli(boot_cli):
+    boot_cli.invoke = lambda *args: CliRunner().invoke(main._cli_group, ["sessions", "relaunch", *args])
+    return boot_cli
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_owned_dead_session_when_named_relaunch_then_ac_p_1_recipe_creates_detached_tmux(
+    named_cli, detached_launch, monkeypatch, platform
+):
+    named_cli.cfg["session_relaunch"]["on_boot"] = False
+    registry._mutate(
+        lambda doc: (
+            doc["sessions"][0].update(relaunch="never", run_state="exited", supervisor_exit={"cause": "manual_exit"})
+            or True
+        )
+    )
+    real_launch = named_cli.real_launch
+    reasons = []
+
+    def launch(record, **kwargs):
+        reasons.append(kwargs["cause"])
+        real_launch(record, **kwargs)
+
+    monkeypatch.setattr(session_commands, "_launch_recipe", launch)
+    monkeypatch.setattr(state.config, "load_config", lambda: named_cli.cfg)
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    monkeypatch.setattr(main.sys, "platform", platform)
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code == 0, result.output
+    calls, _ = detached_launch
+    created = [argv for argv, kw in calls if argv[:2] == ["tmux", "new-session"]]
+    assert len(created) == 1 and "-d" in created[0]
+    assert created[0][created[0].index("-s") + 1] == "c-myproject-host-1"
+    assert not any("attach-session" in argv for argv, kw in calls)
+    assert reasons == ["remote_request"]
+    record = registry.load_registry()["sessions"][0]
+    assert record["relaunch"] == "never"
+    assert record["relaunch_decision"]["cause"] == "remote_request"
+    assert record["relaunch_decision"]["reason"] == "relaunched detached"
+
+
+@pytest.mark.parametrize(
+    ("change", "alive", "slug", "reason"),
+    [
+        ({}, True, "c-myproject-host-1", "tmux session already exists"),
+        ({}, None, "c-myproject-host-1", "tmux liveness could not be established"),
+        ({}, False, "missing-session", "unknown session"),
+        ({"owning_host": "host-b"}, False, "c-myproject-host-1", "not owned by this host"),
+        ({"kind": "remote"}, False, "c-myproject-host-1", "not owned by this host"),
+        ({"boot_recipe": {}}, False, "c-myproject-host-1", "unsupported or incomplete boot recipe"),
+    ],
+)
+def test_given_ineligible_session_when_named_relaunch_then_ac_p_2_refuses_without_launch_or_change(
+    named_cli, monkeypatch, change, alive, slug, reason
+):
+    registry._mutate(lambda doc: doc["sessions"][0].update(change) or True)
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: alive)
+    before = registry.registry_path().read_bytes()
+    result = named_cli.invoke(slug)
+    assert result.exit_code != 0
+    assert reason in result.output
+    assert not named_cli.launches
+    assert registry.registry_path().read_bytes() == before
+    named_cli.publish.assert_not_called()
+
+
+@pytest.mark.parametrize("slug", ["", "bad.name", "bad/name", "bad name", "bad;name", "bad\n", "é"])
+def test_given_invalid_slug_when_named_relaunch_then_ac_4_3_refuses_before_registry_read(named_cli, monkeypatch, slug):
+    monkeypatch.setattr(registry, "load_registry", lambda: pytest.fail("invalid name read registry"))
+    result = named_cli.invoke(slug)
+    assert result.exit_code != 0
+    assert "session name" in result.output
+    assert not named_cli.launches
+
+
+@pytest.mark.parametrize("arguments", [[], ["--boot", "c-myproject-host-1"]])
+def test_given_invalid_relaunch_mode_when_invoked_then_ac_p_3_refuses_before_registry_read(
+    named_cli, monkeypatch, arguments
+):
+    monkeypatch.setattr(registry, "load_registry", lambda: pytest.fail("invalid mode read registry"))
+    result = named_cli.invoke(*arguments)
+    assert result.exit_code != 0
+    assert "--boot" in result.output
+    assert not named_cli.launches
+
+
+def test_given_named_dry_run_when_requested_then_no_launch_or_registry_change(named_cli):
+    before = registry.registry_path().read_bytes()
+    result = named_cli.invoke("c-myproject-host-1", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "would relaunch detached" in result.output
+    assert not named_cli.launches
+    assert registry.registry_path().read_bytes() == before
+
+
+def test_given_named_launch_failure_when_requested_then_failure_is_recorded_and_reported(named_cli, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("example failure")
+
+    monkeypatch.setattr(session_commands, "_launch_recipe", fail)
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code != 0
+    record = registry.load_registry()["sessions"][0]
+    assert record["relaunch_decision"]["cause"] == "remote_request"
+    assert record["relaunch_decision"]["reason"] == "launch failed (RuntimeError)"
+    assert "launch failed (RuntimeError)" in result.output
+
+
+def test_given_named_reservation_write_failure_when_requested_then_no_launch(named_cli, monkeypatch):
+    def fail_write(*args):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(registry, "_write", fail_write)
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code != 0
+    assert not named_cli.launches
+
+
+def test_given_remote_request_when_recipe_runs_then_cause_overrides_boot_and_environment_is_restored(
+    boot_record, monkeypatch
+):
+    boot_record["boot_decision"] = {"cause": "host_reboot"}
+    reasons = []
+    monkeypatch.setattr(
+        main, "_do_session_launch", lambda **kwargs: reasons.append(session_commands.os.environ[LAUNCH_REASON_VAR])
+    )
+    monkeypatch.setenv(LAUNCH_REASON_VAR, "previous-reason")
+    session_commands._launch_recipe(boot_record, cause="remote_request")
+    assert reasons == ["remote_request"]
+    assert session_commands.os.environ[LAUNCH_REASON_VAR] == "previous-reason"
+
+
+def test_given_default_host_identity_when_named_relaunch_then_registry_host_owns_exactly_one_launch(
+    named_cli, monkeypatch
+):
+    named_cli.cfg["machine"] = {}
+
+    def use_registry_host(doc):
+        record = doc["sessions"][0]
+        record["owning_host"] = doc["machine"]
+        record["boot_recipe"]["owning_host"] = doc["machine"]
+        return True
+
+    registry._mutate(use_registry_host)
+    monkeypatch.setattr(
+        session_commands, "_launch_recipe", lambda record, **kwargs: named_cli.launches.append(deepcopy(record))
+    )
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code == 0, result.output
+    assert len(named_cli.launches) == 1
+    assert named_cli.launches[0]["boot_recipe"]["session_name"] == "c-myproject-host-1"
