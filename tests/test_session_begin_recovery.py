@@ -261,3 +261,31 @@ def test_given_generated_child_when_legacy_registry_is_missing_then_real_cli_rec
     record = registry.load_registry()["sessions"][0]
     assert record["name"] == name and state.valid_boot_recipe(record)
     assert record["generation"]
+
+
+@pytest.mark.parametrize("local_exists", [False, True])
+def test_given_same_named_connection_when_local_generation_recovers_then_connection_is_preserved(
+    launch_metadata, monkeypatch, local_exists
+):
+    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    name = launch_metadata["session"]
+    if local_exists:
+        state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": launch_metadata["worktree_dir"]}, host="host-a")
+    connection = registry._new_record(
+        kind="remote",
+        name=name,
+        relaunch_argv=["ai", "c", "1", "--remote"],
+        cwd=None,
+        remote={"host": "example.com"},
+        iterm2=None,
+        launcher_pid=None,
+    )
+    registry._mutate(lambda doc: doc["sessions"].append(connection) or True)
+    result = CliRunner().invoke(
+        _cli_group, ["sessions", "_begin", name, "--launch-metadata", json.dumps(launch_metadata)]
+    )
+    assert result.exit_code == 0, result.output
+    records = registry.load_registry()["sessions"]
+    assert [r for r in records if r["kind"] == "remote"] == [connection]
+    locals_ = [r for r in records if r["kind"] == "local"]
+    assert len(locals_) == 1 and locals_[0]["generation"] == result.output.strip()

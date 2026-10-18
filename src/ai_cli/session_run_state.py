@@ -202,9 +202,9 @@ def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict 
     def change(doc):
         if recovery_recipe is not None:
             host = recovery_recipe["owning_host"]
-            matches = [r for r in doc["sessions"] if r.get("name") == name]
-            if any(r.get("kind") != "local" or r.get("owning_host", host) != host for r in matches):
-                raise ValueError("session belongs to another host or remote connection; recovery refused")
+            matches = [r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name]
+            if any(r.get("owning_host", host) != host for r in matches):
+                raise ValueError("session belongs to another host; recovery refused")
             if not matches:
                 record = registry._new_record(
                     kind="local",
