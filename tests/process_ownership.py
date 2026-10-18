@@ -169,7 +169,9 @@ def reap(proc: subprocess.Popen) -> None:
             proc.wait(timeout=_REAP_TIMEOUT)
         except subprocess.TimeoutExpired:
             continue
-    proc.wait()
+    # Bounded: a child that survives SIGKILL (stuck in an uninterruptible write)
+    # must fail the test with a traceback, not hold the job to its time cap.
+    proc.wait(timeout=_REAP_TIMEOUT)
 
 
 @contextlib.contextmanager

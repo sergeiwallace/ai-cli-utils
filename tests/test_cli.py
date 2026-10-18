@@ -1043,6 +1043,7 @@ class TestCliReconnectContinueBranch:
 
 
 @pytest.mark.usefixtures("tmux_available")
+@pytest.mark.usefixtures("interactive_terminal")
 class TestCliResumePath:
     def test_cli_when_resume_and_session_found_then_attaches(self):
         with patch("sys.argv", ["ai", "c", "-r", "1"]):
@@ -1072,6 +1073,7 @@ class TestCliResumePath:
 
 
 @pytest.mark.usefixtures("tmux_available")
+@pytest.mark.usefixtures("interactive_terminal")
 class TestCliOncePath:
     def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
@@ -1200,6 +1202,7 @@ class TestConfigureTmuxForIterm2:
 
 
 @pytest.mark.usefixtures("tmux_available")
+@pytest.mark.usefixtures("interactive_terminal")
 class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "1"]):

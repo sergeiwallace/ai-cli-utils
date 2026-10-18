@@ -173,6 +173,11 @@ ai c -q/--quiet        # Suppress launch progress (warnings and errors still pri
 ai c -v/--verbose      # Add skipped steps, resolved paths and timings to the launch progress
 ```
 
+Without a terminal on stdin, tmux launches leave the session detached and return 0
+after confirming a live pane. Launch failures still return nonzero; attach later
+with `ai attach <session-name>`. With a terminal, launches attach as usual.
+Bare launches (`-b/--bare`) keep returning the engine's exit status.
+
 #### Restarting an idle Claude Code session
 
 ```bash

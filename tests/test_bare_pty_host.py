@@ -483,7 +483,7 @@ def test_given_a_bare_pty_session_when_the_launcher_gets_a_termination_signal_th
 
 
 @posix_pty
-def test_given_tmux_hosts_the_session_when_launched_then_no_pty_is_hosted(tmp_path, agent, repo):
+def test_given_tmux_hosts_the_session_when_launched_then_no_pty_is_hosted(tmp_path, agent, repo, interactive_terminal):
     probes: list[int] = []
     hosted: list[str] = []
     execs: list[str] = []
