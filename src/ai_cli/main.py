@@ -34,6 +34,7 @@ from . import native_deps as _native_deps
 from . import output as _out
 from . import process_manager as _process_manager
 from . import session as _session
+from . import session_launch_state as _session_launch_state
 from . import session_naming as _session_naming
 from . import session_registry as _session_registry
 from . import session_script as _session_script
@@ -134,6 +135,7 @@ from .session import (  # noqa: F401
     get_project_prefix,
     resolve_session,
 )
+from .session_commands import sessions as _sessions_group
 from .session_script import get_engine_script  # noqa: F401
 from .transport import (  # noqa: F401
     _ensure_tailscale_up,
@@ -4222,6 +4224,25 @@ def _do_session_launch(
             d[ai_name] = uuid
             _config.save_session_map(d, engine)
 
+    try:
+        _session_launch_state.register_launch(
+            session_id,
+            engine=engine,
+            cwd=Path(worktree_path or Path.cwd()),
+            project=current_project_name,
+            options={
+                "once": once,
+                "bare": bare,
+                "sandbox": sandbox,
+                "no_worktree": no_worktree,
+                "no_direnv": no_direnv,
+            },
+            extra_args=list(extra_args),
+        )
+    except Exception as exc:
+        reporter.error("session", f"cannot persist session launch state: {type(exc).__name__}; launch refused")
+        sys.exit(1)
+
     if bare:
         # Bare launch: no tmux, but everything else the tmux path sets up has now
         # run — worktree created and synced, ai_name assigned, resume target
@@ -4274,7 +4295,13 @@ def _do_session_launch(
         else:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
-            _exec_with_direnv(target_root, command, handoff=_pty_handoff(session_id) if on_pty else _exec_handoff)
+            _exec_with_direnv(
+                target_root,
+                command,
+                handoff=_session_launch_state.handoff(
+                    session_id, _pty_handoff(session_id) if on_pty else _exec_handoff
+                ),
+            )
 
     # tmux panes inherit their session environment from the long-lived server,
     # not the process that runs `tmux new-session`. Carry the launch context so
@@ -4317,7 +4344,7 @@ def _do_session_launch(
             "--",
             _session_shell,
             "-c",
-            cd_prefix + shlex.join([*_direnv, *command]),
+            cd_prefix + _session_launch_state.single_run_shell(session_id, [*_direnv, *command]),
         ]
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
@@ -5409,6 +5436,9 @@ def cmd_doctor(dry_run):
 
 
 # --- memory group ---
+
+
+_cli_group.add_command(_sessions_group)
 
 
 @_cli_group.group("memory", help="Memory-file watchers and helpers")
