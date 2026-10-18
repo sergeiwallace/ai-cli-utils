@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shlex
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -23,16 +25,19 @@ OTHER_ID = "22222222-2222-4222-8222-222222222222"
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
+    # Process probes and signals below simulate POSIX independently of the host.
+    # Platform routing is exercised separately, including Windows injection.
+    monkeypatch.setattr(restart, "_signal_supported", lambda: True)
     monkeypatch.delenv("TMUX_PANE", raising=False)
     root = tmp_path / "home"
     root.mkdir()
     monkeypatch.setattr(Path, "home", lambda: root)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state with spaces"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     cwd = tmp_path / "myproject"
     cwd.mkdir()
     (root / ".claude").mkdir()
-    (root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup": true}')
+    (root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup": true}', encoding="utf-8")
     transcript = root / ".claude" / "projects" / "myproject" / f"{SESSION_ID}.jsonl"
     transcript.parent.mkdir(parents=True)
     rows = [
@@ -77,7 +82,7 @@ def world(tmp_path, monkeypatch):
     }
     script = state / "sessions" / f"{session}.sh"
     main._write_launch_script_if_changed(script, main._engine_script_from_meta(meta))
-    (state / f"session-meta-{session}.json").write_text(json.dumps(meta))
+    (state / f"session-meta-{session}.json").write_text(json.dumps(meta), encoding="utf-8")
     state_obj = SimpleNamespace(
         root=root,
         cwd=cwd,
@@ -110,8 +115,8 @@ def world(tmp_path, monkeypatch):
     state_obj.settings = settings
 
     def write():
-        registry.write_text(json.dumps(record))
-        transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        registry.write_text(json.dumps(record), encoding="utf-8")
+        transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
     state_obj.write = write
     write()
@@ -143,13 +148,13 @@ def world(tmp_path, monkeypatch):
             return state_obj.children
 
     monkeypatch.setattr(restart.psutil, "Process", Process)
-    monkeypatch.setattr(restart, "_script_source", lambda pid, path: path.read_text())
+    monkeypatch.setattr(restart, "_script_source", lambda pid, path: path.read_text(encoding="utf-8"))
 
     def subprocess_run(argv, **kwargs):
         if argv[0] == "tmux":
             fields = [session, "%1", "103", state_obj.generation]
             if "pane_start_command" in argv[-1]:
-                fields.append(f"bash {script}")
+                fields.append(shlex.join(["bash", str(script)]))
             return SimpleNamespace(returncode=0, stdout="\t".join(fields) + "\n")
         if argv[:3] == ["claude", "agents", "--json"]:
             replacement = {**record, "pid": 201, "procStart": 201}
@@ -178,7 +183,7 @@ def world(tmp_path, monkeypatch):
     def replace():
         state_obj.ended = True
         replacement = {**record, "pid": 201, "procStart": 201}
-        (registry.parent / "201.json").write_text(json.dumps(replacement))
+        (registry.parent / "201.json").write_text(json.dumps(replacement), encoding="utf-8")
 
     state_obj.replace = replace
 
@@ -245,7 +250,9 @@ def test_given_bad_target_when_restart_then_no_signal(world, monkeypatch, kind):
     if kind == "absent":
         world.registry.unlink()
     elif kind == "duplicate":
-        (world.registry.parent / "duplicate.json").write_text(json.dumps({**world.record, "pid": 202}))
+        (world.registry.parent / "duplicate.json").write_text(
+            json.dumps({**world.record, "pid": 202}), encoding="utf-8"
+        )
     elif kind == "dead":
         world.ended = True
     elif kind == "birth":
@@ -254,7 +261,7 @@ def test_given_bad_target_when_restart_then_no_signal(world, monkeypatch, kind):
     elif kind == "pane":
         monkeypatch.setattr(restart, "_run", lambda *a: "wrong\t%1\t103\tgeneration-1\tbash /tmp/other.sh")
     else:
-        world.script.write_text("echo unsupported\n")
+        world.script.write_text("echo unsupported\n", encoding="utf-8")
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] in ("identity", "target", "not-managed", "supervisor-upgrade-required")
     assert world.signals == []
@@ -292,7 +299,7 @@ def test_given_work_when_restart_then_refusal(world, monkeypatch, kind):
         world.children.append(SimpleNamespace(pid=501, ppid=lambda: 101, cmdline=lambda: ["sleep", "300"]))
     world.write()
     if kind == "unreadable":
-        world.transcript.write_text("{")
+        world.transcript.write_text("{", encoding="utf-8")
     if kind == "truncated":
         monkeypatch.setattr(restart, "TAIL_LIMIT", 10)
     code, report, _ = world.cli("-X", SESSION_ID)
@@ -315,15 +322,15 @@ def test_given_activation_when_restart_then_settings_preserved(world, kind):
     if kind == "missing":
         path.unlink()
     elif kind == "false":
-        path.write_text('{"remoteControlAtStartup":false}')
+        path.write_text('{"remoteControlAtStartup":false}', encoding="utf-8")
     elif kind == "unreadable":
-        path.write_text("{")
+        path.write_text("{", encoding="utf-8")
     else:
         project = world.cwd / ".claude"
         project.mkdir()
-        (project / "settings.json").write_text('{"remoteControlAtStartup":false}')
+        (project / "settings.json").write_text('{"remoteControlAtStartup":false}', encoding="utf-8")
         if kind == "local-true":
-            (project / "settings.local.json").write_text('{"remoteControlAtStartup":true}')
+            (project / "settings.local.json").write_text('{"remoteControlAtStartup":true}', encoding="utf-8")
     before = {p: p.read_bytes() for p in [path, *world.cwd.glob(".claude/*.json")] if p.exists()}
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == (0 if kind == "local-true" else 1)
@@ -399,6 +406,12 @@ def test_given_peer_when_restart_then_separate_verdict(world, kind):
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_given_platform_when_signal_support_checked_then_windows_unsupported(monkeypatch, platform):
+    monkeypatch.setattr(restart.sys, "platform", platform)
+    assert restart._signal_supported() is (platform != "win32")
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 @pytest.mark.parametrize("mechanism", ["kill", "exit"])
 def test_given_mechanism_when_restart_then_exact_route(world, monkeypatch, platform, mechanism):
     monkeypatch.setattr(restart, "_signal_supported", lambda: platform != "win32")
@@ -412,8 +425,10 @@ def test_given_mechanism_when_restart_then_exact_route(world, monkeypatch, platf
         assert world.signals == [(101, signal.SIGTERM)] and not world.injected
 
 
-def test_given_no_injector_when_exit_then_refusal(world):
-    world.settings["restart_session"]["mechanism"] = "exit"
+@pytest.mark.parametrize("signal_supported", [False, True])
+def test_given_no_injector_when_exit_then_refusal(world, monkeypatch, signal_supported):
+    monkeypatch.setattr(restart, "_signal_supported", lambda: signal_supported)
+    world.settings["restart_session"]["mechanism"] = "exit" if signal_supported else "kill"
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] == "no-mechanism" and not world.signals
 
@@ -516,6 +531,7 @@ def test_given_revalidation_when_busy_then_signal_unreachable(world, monkeypatch
     assert restart._object(restart.state_paths(world.session)[2])["status"] == "failed"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="AC-2.13: POSIX SIGKILL escalation is unsupported on Windows")
 def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatch):
     def kill(pid, sig):
         world.signals.append((pid, sig))
@@ -572,9 +588,9 @@ def test_given_pin_when_validated_then_fence_preserved(world, monkeypatch, fault
         elif fault == "generation":
             world.generation = "changed"
         elif fault == "script":
-            world.script.write_text("changed")
+            world.script.write_text("changed", encoding="utf-8")
         elif fault == "malformed":
-            path.write_text("{")
+            path.write_text("{", encoding="utf-8")
         elif fault == "crash":
             world.identities[request["owner_pid"]] = ProcessIdentity("fake", 999)
         code, stdout, _ = run_cli(["ai", "internal", "restart-pin", world.session, world.record["name"]])
@@ -594,7 +610,7 @@ def test_given_wrong_replacement_when_verified_then_resume_mismatch(world, monke
         world.signals.append((pid, sig))
         world.ended = True
         (world.registry.parent / "201.json").write_text(
-            json.dumps({**world.record, "pid": 201, "procStart": 201, "sessionId": OTHER_ID})
+            json.dumps({**world.record, "pid": 201, "procStart": 201, "sessionId": OTHER_ID}), encoding="utf-8"
         )
 
     monkeypatch.setattr(restart.os, "kill", replace)
@@ -626,7 +642,7 @@ def test_given_last_check_when_gate_changes_then_no_action(world, monkeypatch, f
         elif fault == "context":
             world.rows[0]["message"]["usage"]["input_tokens"] = 100_000
         elif fault == "activation":
-            (world.root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":false}')
+            (world.root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup":false}', encoding="utf-8")
         elif fault == "generation":
             world.generation = "changed"
         else:
@@ -669,14 +685,14 @@ def test_given_remote_slot_when_restart_then_remote_resolution_only(world, monke
 @pytest.mark.parametrize("changed_birth", [False, True])
 def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fenced(world, monkeypatch, changed_birth):
     monkeypatch.setattr(restart.sys, "platform", "darwin")
-    world.script.write_text(world.script.read_text() + "\n")
+    world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []
 
     def running_source(pid, path):
         reads.append(pid)
         if len(reads) > 2:
             raise restart.Refusal("supervisor-upgrade-required", "old inode unavailable after refresh")
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
 
     monkeypatch.setattr(restart, "_script_source", running_source)
     original = main._write_launch_script_if_changed
