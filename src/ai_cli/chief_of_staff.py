@@ -27,11 +27,17 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config as _config
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # Platform-specific: Windows has no fcntl, so the registry is not locked there.
+    _fcntl = None
 
 MACHINE_KEY_ENV = "AI_MACHINE_ID"
 ROLE_ENV = "AI_SESSION_ROLE"
@@ -194,6 +200,28 @@ def registry_path(home: Path) -> Path:
     return home / "registry.json"
 
 
+@contextmanager
+def _registry_lock(home: Path) -> Iterator[None]:
+    """Hold the exclusive advisory lock every writer of ``registry.json`` takes.
+
+    The contract: ``flock(LOCK_EX)`` on ``<home>/registry.json.lock`` (opened
+    ``O_CREAT | O_RDWR`` at 0600), released with ``LOCK_UN`` and then closed. Without
+    fcntl, or before the home exists, no lock is taken. Readers never lock.
+    """
+    if _fcntl is None or not home.is_dir():
+        yield
+        return
+    fd = os.open(home / "registry.json.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def registration_path(home: Path) -> Path:
     return home / "state" / "chief-session.json"
 
@@ -247,6 +275,8 @@ def _write_private_json(path: Path, data: dict) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
         fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     tmp.replace(path)
 
 
@@ -267,37 +297,39 @@ def write_registration(
     stale reader can tell it is stale.
     """
     stamp = (now or datetime.now(UTC)).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-    registry = _read_json_object(registry_path(home), "chief registry") or {}
-    generation = int(registry.get("chief_generation") or 0) + 1
-    # Narrow once into a local: two separate ``.get`` calls are two separate
-    # expressions, so neither the reader nor the type checker can tell that the
-    # ``isinstance`` guard applies to the value actually used.
-    stored_routes = registry.get("chief_routes")
-    routes: dict = stored_routes if isinstance(stored_routes, dict) else {}
     # <session>@<host>: the only session identifier ai-harness accepts.
     session = f"{native_agent_name}@{machine_name}"
-    registry.update(
-        {
-            "schema_version": REGISTRY_SCHEMA_VERSION,
-            "chief_of_staff_session": session,
-            "machine_key": machine_key,
-            "machine_name": machine_name,
-            "chief_instance_key": f"firstmate-chief/{machine_key}",
-            "chief_home": str(home),
-            "launch_cwd": launch_cwd,
-            "chief_generation": generation,
-            "chief_routes": {
-                "route_revision": int(routes.get("route_revision") or 0) + 1,
-                "native_agent_name": native_agent_name,
-                # Mail and typed-input routes are configured by their own provisioning;
-                # unknown here, and never invented.
-                "agent_mail": routes.get("agent_mail"),
-                "fm_send": routes.get("fm_send"),
-            },
-        }
-    )
-    registry.setdefault("vp_sessions", [])
-    _write_private_json(registry_path(home), registry)
+    # The save must follow the load it changed, so both happen under the writers' lock.
+    with _registry_lock(home):
+        registry = _read_json_object(registry_path(home), "chief registry") or {}
+        generation = int(registry.get("chief_generation") or 0) + 1
+        # Narrow once into a local: two separate ``.get`` calls are two separate
+        # expressions, so neither the reader nor the type checker can tell that the
+        # ``isinstance`` guard applies to the value actually used.
+        stored_routes = registry.get("chief_routes")
+        routes: dict = stored_routes if isinstance(stored_routes, dict) else {}
+        registry.update(
+            {
+                "schema_version": REGISTRY_SCHEMA_VERSION,
+                "chief_of_staff_session": session,
+                "machine_key": machine_key,
+                "machine_name": machine_name,
+                "chief_instance_key": f"firstmate-chief/{machine_key}",
+                "chief_home": str(home),
+                "launch_cwd": launch_cwd,
+                "chief_generation": generation,
+                "chief_routes": {
+                    "route_revision": int(routes.get("route_revision") or 0) + 1,
+                    "native_agent_name": native_agent_name,
+                    # Mail and typed-input routes are configured by their own provisioning;
+                    # unknown here, and never invented.
+                    "agent_mail": routes.get("agent_mail"),
+                    "fm_send": routes.get("fm_send"),
+                },
+            }
+        )
+        registry.setdefault("vp_sessions", [])
+        _write_private_json(registry_path(home), registry)
 
     registration = {
         "schema_version": REGISTRATION_SCHEMA_VERSION,
