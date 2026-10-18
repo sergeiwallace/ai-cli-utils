@@ -463,6 +463,38 @@ ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
 ai ssh [alias]                     # Open an interactive shell on that machine
 ```
 
+### Session boot relaunch
+
+On macOS and Linux, a boot or login job can run `ai sessions relaunch -b/--boot`
+to recreate eligible sessions in detached tmux sessions without opening a terminal application.
+Boot-job installation is separate from this command. Relaunch is off by default; configure
+`config.toml` under your ai-cli-utils configuration directory:
+
+```toml
+[session_relaunch]
+on_boot = true
+causes = ["host_reboot", "terminal_quit_or_crash"]
+network_wait_seconds = 120
+network_probe = "api.anthropic.com:443" # Empty disables the network wait
+```
+
+```bash
+ai sessions relaunch -b -d             # --boot --dry-run: print each decision and winning veto
+ai sessions relaunch --boot            # Recreate eligible owning-host sessions detached
+ai sessions list -j                    # --json: inspect recorded run state
+ai attach c-myproject-host-1           # Attach later from a terminal
+```
+
+The command waits for each eligible session's recorded directory and configured TCP endpoint,
+up to the timeout. It replays the exact stored session name and local launch recipe, including
+destination-owned remote sessions, once-only sessions and bare commands hosted inside tmux.
+Incomplete legacy recipes are refused with a diagnostic. A session finally exited back to the
+shell by hand stays down; `manual_exit` and `unknown` veto every policy, including `always`.
+The command also refuses foreign/remote records, deny-boot safety files, existing tmux sessions,
+disabled causes and policy `never`. Each boot attempt is durably reserved before launch and is
+never repeated in the same boot, even after launch failure. Decisions are logged and stored in
+the registry; configured publication uses the existing publisher. Dry runs write and launch nothing.
+
 ### Cross-machine sync
 
 ```bash
