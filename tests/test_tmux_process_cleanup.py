@@ -131,7 +131,10 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
                     process = psutil.Process(pid)
                     if process.create_time() == started:
                         processes.append(process)
-            assert processes and all(_alive(p) for p in processes)
+            # A startup shell can exit between the snapshot and here (seen on macOS). The tmux
+            # server, the first entry, must still be up; what remains is what cleanup must reap.
+            processes = [p for p in processes if _alive(p)]
+            assert processes and processes[0].pid == record["processes"][0][0]
             proceed.touch()
             if outcome not in {"pass", "fail"}:
                 target = psutil.Process(record["worker"] if outcome.startswith("worker-") else runner.pid)
