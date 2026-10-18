@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -1551,6 +1552,12 @@ class TestDoSessionLaunchRegistryDiscovery:
             '[[projects]]\nname = "myproject"\ntask_prefix = "MYPROJECT"\ntype = "tool"\nactive = true\n'
         )
         monkeypatch.chdir(project_dir)
+        run = subprocess.run
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["tmux", "new-session"]:
+                return subprocess.CompletedProcess(argv, 0)
+            return run(argv, **kwargs)
 
         with (
             patch("sys.argv", ["ai", "c", "--once", "2"]),
@@ -1567,6 +1574,7 @@ class TestDoSessionLaunchRegistryDiscovery:
             patch("ai_cli.session.build_session_name", return_value=("c-myproject-2", "myproject-2")),
             patch("ai_cli.trust.ensure_workspace_trusted"),
             patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+            patch("ai_cli.main.subprocess.run", side_effect=fake_run),
             patch.object(
                 config_module,
                 "validate_registry_completeness",

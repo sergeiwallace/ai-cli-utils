@@ -4272,67 +4272,21 @@ def _do_session_launch(
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            _exec_handoff(
-                "tmux",
-                [
-                    "tmux",
-                    "new-session",
-                    "-s",
-                    session_id,
-                    *_tmux_env_flags,
-                    "--",
-                    _session_shell,
-                    "-c",
-                    cd_prefix + shlex.join([*_direnv, *command]),
-                ],
-            )
         elif engine == "g":
             command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
-                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-                _exec_handoff(
-                    "tmux",
-                    [
-                        "tmux",
-                        "new-session",
-                        "-s",
-                        session_id,
-                        *_tmux_env_flags,
-                        "--",
-                        _session_shell,
-                        "-c",
-                        cd_prefix + shlex.join([*_direnv, *command]),
-                    ],
-                )
             else:
                 command += ["-i", f"/resume load {ai_name}"]
-                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-                _exec_handoff(
-                    "tmux",
-                    [
-                        "tmux",
-                        "new-session",
-                        "-s",
-                        session_id,
-                        *_tmux_env_flags,
-                        "--",
-                        _session_shell,
-                        "-c",
-                        cd_prefix + shlex.join([*_direnv, *command]),
-                    ],
-                )
         elif engine == "p":
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
-        reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_handoff(
-            "tmux",
+        result = subprocess.run(
             [
                 "tmux",
                 "new-session",
+                "-d",
                 "-s",
                 session_id,
                 *_tmux_env_flags,
@@ -4341,7 +4295,16 @@ def _do_session_launch(
                 "-c",
                 cd_prefix + shlex.join([*_direnv, *command]),
             ],
+            capture_output=True,
+            check=False,
         )
+        if result.returncode != 0:
+            reporter.error("tmux", "could not create one-shot session")
+            sys.exit(1)
+        if not is_remote:
+            _start_session_wake_watcher(config, f"={session_id}", ai_name)
+        reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+        _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.

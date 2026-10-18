@@ -925,11 +925,18 @@ def _once_exec_diagnosis(file: str) -> str:
 
 
 def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
-    """Return the argv ``--once`` hands to ``os.execvp`` for a real tmux exec."""
+    """Return the argv used to create the detached one-shot tmux session."""
     captured: list = []
+    run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv[:2] == ["tmux", "new-session"]:
+            captured.append(("tmux", argv))
+            return subprocess.CompletedProcess(argv, 0)
+        return run(argv, **kwargs)
 
     def fake_execvp(file, argv):
-        captured.append((file, argv))
+        assert file == "tmux", _once_exec_diagnosis(file)
         raise SystemExit(0)
 
     kwargs = _launch_kwargs(name="1")
@@ -938,6 +945,7 @@ def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main.subprocess.run", side_effect=fake_run),
         patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
@@ -949,7 +957,7 @@ def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
-    assert captured, "--once never reached os.execvp"
+    assert captured, "--once never created its tmux session"
     file, argv = captured[0]
     assert file == "tmux", _once_exec_diagnosis(file)
     return argv

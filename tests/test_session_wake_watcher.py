@@ -1,6 +1,8 @@
 """Per-session wake windows are detached from the agent and retry every exit."""
 
 import json
+import shlex
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -135,3 +137,40 @@ def test_given_windows_when_starting_watcher_then_no_subprocess(launch):
     with patch.object(main.sys, "platform", "win32"), patch.object(main.subprocess, "run") as run:
         main._start_session_wake_watcher({}, "$1", "session-1")
     run.assert_not_called()
+
+
+def test_given_once_launch_when_starting_then_watcher_precedes_attach(launch):
+    windows = launch.invoke(once=True)
+    assert len(windows) == 1
+    assert windows[0][4] == "=c-myproject-tst-1:"
+    creation = next(argv for argv, _ in launch.calls if argv[:2] == ["tmux", "new-session"])
+    assert "-d" in creation
+    assert launch.calls.index(next(call for call in launch.calls if call[0] == creation)) < launch.calls.index(
+        next(call for call in launch.calls if call[0] == windows[0])
+    )
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="requires a POSIX shell")
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_given_watcher_exit_when_window_loop_runs_then_restarts_within_two_seconds(launch, tmp_path, exit_code):
+    """Execute the exact window loop; fake sleep records delays and bounds retries."""
+    starts = tmp_path / "starts"
+    launch.script.write_text(
+        "import pathlib, sys\n"
+        f"with pathlib.Path({str(starts)!r}).open('a') as log:\n"
+        "    log.write(repr(sys.argv[1:]) + '\\n')\n"
+        f"sys.exit({exit_code})\n",
+        encoding="utf-8",
+    )
+    loop = launch.invoke()[0][-1]
+    pauses = tmp_path / "pauses"
+    # This substitutes only the clock delay, keeping the generated loop intact.
+    clock = (
+        "count=0; sleep() { "
+        f"printf '%s\\n' \"$1\" >> {shlex.quote(str(pauses))}; "
+        'count=$((count + 1)); if [ "$count" -ge 3 ]; then exit 0; fi; }; '
+    )
+    completed = subprocess.run(["sh", "-c", clock + loop], capture_output=True, text=True, timeout=5, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert starts.read_text().splitlines() == ["['watch', '--session', 'myproject-tst-1']"] * 3
+    assert [float(value) for value in pauses.read_text().splitlines()] == [2, 2, 2]
