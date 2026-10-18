@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from ai_cli import main, session_commands
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
+from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
 
 
 @pytest.fixture
@@ -457,3 +458,20 @@ def test_given_directory_and_network_recovery_when_waiting_then_launch_can_proce
     assert clock[0] == 2
     assert len(probes) == 2
     assert all(endpoint == ("example.com", 443) and 0 < timeout <= 2 for endpoint, timeout in probes)
+
+
+def test_given_settled_terminal_exit_when_reserved_then_resume_receives_original_cause(boot_record, monkeypatch):
+    boot_record.update(
+        run_state="relaunched",
+        supervisor_exit={"cause": "terminal_quit_or_crash"},
+        boot_decision={"cause": "terminal_quit_or_crash"},
+    )
+    reasons = []
+    monkeypatch.setattr(
+        main, "_do_session_launch", lambda **kwargs: reasons.append(session_commands.os.environ[LAUNCH_REASON_VAR])
+    )
+    monkeypatch.setattr(state.config, "load_config", dict)
+    monkeypatch.setenv(LAUNCH_REASON_VAR, "previous-reason")
+    session_commands._launch_recipe(boot_record)
+    assert reasons == ["terminal_quit_or_crash"]
+    assert session_commands.os.environ[LAUNCH_REASON_VAR] == "previous-reason"

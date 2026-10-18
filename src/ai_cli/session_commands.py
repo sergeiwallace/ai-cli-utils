@@ -97,7 +97,9 @@ def _launch_recipe(record: dict) -> None:
     previous_reason = os.environ.get(LAUNCH_REASON_VAR)
     try:
         os.chdir(recipe["cwd"])
-        os.environ[LAUNCH_REASON_VAR] = state.cause(record, registry.current_boot_id())
+        os.environ[LAUNCH_REASON_VAR] = record.get("boot_decision", {}).get("cause") or state.cause(
+            record, registry.current_boot_id()
+        )
         _do_session_launch(
             engine=recipe["engine"],
             name=recipe["session_name"],
