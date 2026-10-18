@@ -726,6 +726,25 @@ def test_given_context_evidence_when_checked_then_conservative_window(world, kin
     assert report["reason"] == ("restarted" if expected else "context")
 
 
+@pytest.mark.parametrize("key", ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
+@pytest.mark.parametrize("value", [None, True, "0", -1, float("nan"), float("inf")])
+def test_given_invalid_token_count_when_restart_then_context_refuses(world, key, value):
+    world.rows[0]["message"]["usage"][key] = value
+    world.write()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert not world.signals
+
+
+@pytest.mark.parametrize("key", ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
+def test_given_missing_token_count_when_restart_then_context_refuses(world, key):
+    del world.rows[0]["message"]["usage"][key]
+    world.write()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "context"
+    assert not world.signals
+
+
 def test_given_text_check_when_cli_then_gates_printed(world):
     code, out, err = run_cli(["ai", "-Y", SESSION_ID], config=world.settings)
     assert code == 0

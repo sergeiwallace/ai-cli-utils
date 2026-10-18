@@ -25,6 +25,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TypeGuard
 
 import portalocker
 import psutil
@@ -112,7 +113,7 @@ def _signal_supported() -> bool:
     return sys.platform != "win32"
 
 
-def _number(value: object) -> bool:
+def _number(value: object) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
@@ -278,9 +279,12 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return False
-    tokens = [usage.get(key) for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
-    if not all(_number(token) and token >= 0 for token in tokens):
-        return False
+    tokens: list[int | float] = []
+    for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        token = usage.get(key)
+        if not _number(token) or token < 0:
+            return False
+        tokens.append(token)
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:
