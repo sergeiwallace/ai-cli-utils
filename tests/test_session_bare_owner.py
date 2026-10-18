@@ -27,6 +27,7 @@ def test_given_bare_process_when_it_exits_then_owner_records_manual_exit(generat
     started = psutil.Process(process.pid).create_time()
     monkeypatch.setattr(owner.sys, "stdin", Mock(buffer=io.BytesIO()))
     try:
+        assert process.stdin is not None
         process.stdin.close()
         process.wait(timeout=10)
         owner.observe(process.pid, started, "c-session-1", generation)
@@ -65,6 +66,18 @@ def test_given_failed_final_write_when_owner_settles_then_retry_preserves_exit(g
     owner.settle("c-session-1", generation)
     assert len(attempts) == 2
     assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
+
+
+def test_given_owner_without_stdin_when_handoff_returns_then_final_exit_is_persisted(generation, monkeypatch):
+    monitor = Mock(stdin=None)
+    monkeypatch.setattr(launch.subprocess, "Popen", Mock(return_value=monitor))
+    delegate = Mock(return_value=7)
+    command = ["example-command"]
+    assert launch.handoff("c-session-1", delegate)(command[0], command) == 7
+    monitor.wait.assert_called_once_with()
+    record = registry.load_registry()["sessions"][0]
+    assert record["run_state"] == "exited"
+    assert state.cause(record, "next-boot") == "manual_exit"
 
 
 def test_given_new_generation_when_old_owner_settles_then_running_state_is_preserved(generation):

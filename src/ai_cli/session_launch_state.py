@@ -115,8 +115,9 @@ def handoff(name: str, delegate):
             raise
         finally:
             try:
-                owner.stdin.write(b"cancel")
-                owner.stdin.close()
+                if owner.stdin is not None:
+                    owner.stdin.write(b"cancel")
+                    owner.stdin.close()
             except BrokenPipeError:
                 pass
             owner.wait()
