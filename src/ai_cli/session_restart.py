@@ -944,7 +944,10 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         return "UNVERIFIED"
     started = time.time()
     try:
-        data = json.loads(_run(_argv(command, record)))
+        raw = _run(_argv(command, record))
+        if "sessions beyond the first pages are missing" in raw:
+            return "UNKNOWN"
+        data = json.loads(raw)
         observed = data.get("observed_at")
         moment = _timestamp(observed) if isinstance(observed, str) else observed
         if not _number(moment) or not started <= moment <= time.time() or data.get("complete") is not True:

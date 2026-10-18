@@ -485,3 +485,24 @@ def test_given_ac_4_5_malformed_local_rows_when_listed_then_unknown(monkeypatch,
         "messagingSocketPath": "socket",
     }
     assert restart.local_verdict(record) == "UNKNOWN"
+
+
+def test_given_ac_4_5_pagination_notice_when_observer_absent_then_unknown(monkeypatch):
+    monkeypatch.setattr(restart.time, "time", lambda: 1000)
+    monkeypatch.setattr(
+        restart,
+        "_run",
+        lambda argv: json.dumps(
+            {
+                "observed_at": 1000,
+                "complete": True,
+                "status": "absent",
+                "rows": [],
+                "notice": "sessions beyond the first pages are missing from this listing",
+            }
+        ),
+    )
+    assert (
+        restart.observer_verdict({"sessionId": "id-1", "name": "session-1", "tmux": "session-1:@1.%1"}, ["observer"])
+        == "UNKNOWN"
+    )
