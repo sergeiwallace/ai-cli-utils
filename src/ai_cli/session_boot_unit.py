@@ -15,13 +15,31 @@ LABEL = "org.ai-cli-utils.session-relaunch"
 UNIT = "ai-session-relaunch"
 
 
+def _service_path(path: str, executable: str) -> str:
+    """Keep durable tool directories and the installed entry point's directory."""
+    executable_dir = Path(executable).parent
+    seen = set()
+    entries = []
+    for entry in [*path.split(os.pathsep), str(executable_dir)]:
+        directory = Path(entry)
+        if not entry or directory in seen:
+            continue
+        if directory != executable_dir and (
+            not directory.is_dir() or {".worktrees", ".direnv"}.intersection(directory.parts)
+        ):
+            continue
+        seen.add(directory)
+        entries.append(entry)
+    return os.pathsep.join(entries)
+
+
 def render(*, platform: str, home: Path, path: str, executable: str) -> dict[Path, bytes]:
     """Render the installed entry point and the configuration/state environment."""
     if platform != "darwin" and not platform.startswith("linux"):
         raise ValueError("boot units support macOS and Linux only")
     if not Path(executable).is_absolute():
         raise ValueError("boot units require an absolute ai entry point")
-    environment = {"PATH": path, "HOME": str(home)}
+    environment = {"PATH": _service_path(path, executable), "HOME": str(home)}
     for key in ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
         value = os.environ.get(key, "")
         if value and Path(value).is_absolute():

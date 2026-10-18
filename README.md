@@ -569,6 +569,8 @@ macOS uses a `RunAtLoad` LaunchAgent in `~/Library/LaunchAgents` at login, with 
 Neither unit opens a terminal application. Both capture the absolute installed `ai` entry point,
 `PATH`, `HOME`, and absolute XDG directory overrides at installation; reinstall after moving
 the executable or changing that environment. Windows refuses boot-unit management.
+The captured `PATH` keeps existing directories in order, removes duplicates and entries with
+an exact `.worktrees` or `.direnv` path segment, and always retains the installed `ai` directory.
 
 The command waits for each eligible session's recorded directory and configured TCP endpoint,
 up to the timeout. It replays the exact stored session name and local launch recipe, including
