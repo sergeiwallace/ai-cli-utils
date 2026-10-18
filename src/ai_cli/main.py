@@ -1899,7 +1899,7 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
-    if action in ("restart-pin", "restart-detached"):
+    if action in ("restart-pin", "restart-detached", "restart-auto"):
         from . import session_restart
 
         if action == "restart-pin" and argv[1:] == ["--probe"]:
@@ -1913,6 +1913,9 @@ def _handle_internal(argv: list[str]) -> None:
         if action == "restart-detached" and len(argv) == 2:
             report = session_restart.restart(argv[1], detached=True)
             sys.exit(0 if report["reason"] == "restarted" else 1)
+        if action == "restart-auto" and len(argv) == 2:
+            report = session_restart.restart_auto(argv[1])
+            sys.exit(0 if report["reason"] in ("restarted", "no-trigger", "disabled") else 1)
         sys.exit(1)
     if action == "emit":
         # Before the config load: the session script runs this once per message.
@@ -2134,6 +2137,9 @@ def _handle_internal(argv: list[str]) -> None:
         # NATS unavailable — non-fatal
         with contextlib.suppress(Exception):
             asyncio.run(client.publish_heartbeat(argv[1], data))
+        from .session_restart import schedule_auto
+
+        schedule_auto(argv[1], config)
         sys.exit(0)
     elif action == "revoke-heartbeat":
         if len(argv) < 3:
