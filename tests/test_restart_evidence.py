@@ -506,3 +506,21 @@ def test_given_ac_4_5_pagination_notice_when_observer_absent_then_unknown(monkey
         restart.observer_verdict({"sessionId": "id-1", "name": "session-1", "tmux": "session-1:@1.%1"}, ["observer"])
         == "UNKNOWN"
     )
+
+
+@pytest.mark.parametrize(("title", "expected"), [("session-1", "NO"), ("generated-title", "YES")])
+def test_given_ac_4_2_configured_title_when_registry_and_peers_agree_then_drift_is_detected(
+    tmp_path, monkeypatch, title, expected
+):
+    monkeypatch.setattr(config, "get_xdg_state_home", lambda: tmp_path)
+    monkeypatch.setattr(restart.Path, "home", lambda: tmp_path)
+    (tmp_path / "session-meta-session-1.json").write_text(
+        json.dumps({"engine": "c", "session": "session-1", "ai_name": "session-1"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(restart, "local_verdict", lambda record: "VERIFIED")
+    monkeypatch.setattr(restart, "observer_verdict", lambda *args: "VERIFIED")
+    monkeypatch.setattr(restart, "_run", lambda *args: "")
+    verdicts = restart.trigger_verdicts(
+        {"sessionId": "id-1", "name": title, "nameSource": "user", "tmux": "session-1:@1.%1"}, {}
+    )
+    assert verdicts["unreachable"] == expected

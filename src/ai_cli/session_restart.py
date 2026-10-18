@@ -1050,6 +1050,22 @@ def trigger_verdicts(record: dict, commands: dict) -> dict:
     local = local_verdict(record)
     peer = observer_verdict(record, commands.get("observer"))
     unreachable = local == "FAILED" or peer == "FAILED"
+    # A registry and a peer can agree on a generated/renamed title while
+    # disagreeing with the supervisor's configured custom title.
+    try:
+        session, _ = _pane(record)
+        metadata = _object(config.get_xdg_state_home() / f"session-meta-{session}.json")
+        expected = metadata.get("ai_name")
+        if (
+            metadata.get("engine") == "c"
+            and metadata.get("session") == session
+            and isinstance(expected, str)
+            and expected
+            and record.get("name") != expected
+        ):
+            unreachable = True
+    except Refusal:
+        pass  # Unreadable metadata cannot establish a title mismatch.
     return {
         "update": update,
         "unreachable": "YES" if unreachable else "UNKNOWN" if local == "UNKNOWN" or peer != "VERIFIED" else "NO",
