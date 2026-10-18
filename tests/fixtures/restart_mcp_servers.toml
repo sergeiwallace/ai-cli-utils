@@ -1,0 +1,32 @@
+# Contract example: replace absolute paths and empty-file stamps at install time.
+version = 1
+
+[[servers]]
+name = "notifier"
+executable = "/opt/example/python"
+argv = ["/opt/example/python", "-P", "/opt/example/notifier.py", "mcp-adapter"]
+
+[[servers.identities]]
+path = "/opt/example/python"
+size = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[[servers.identities]]
+path = "/opt/example/notifier.py"
+size = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[[servers]]
+name = "example-tool"
+executable = "/opt/example/node"
+argv = ["npm exec example-tool", "", ""]
+
+[[servers.identities]]
+path = "/opt/example/node"
+size = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[[servers.identities]]
+path = "/opt/example/tool.js"
+size = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
