@@ -945,9 +945,16 @@ T-03a, this repo:
   `compaction_wait_seconds` for a new `compact_boundary` record in the target's transcript.
 - [ ] AC-3.2 When that compaction appears, the command shall wait for `settle_seconds` of `idle`,
   re-run every gate of D-3 and D-4, and restart only if they all pass.
-- [ ] AC-3.3 If the injection command exits non-zero, reports that it held or queued the injection,
-  or the wait times out, then the command shall refuse with reason `context` and the injection
-  command's own outcome, and signal nothing.
+- [ ] AC-3.3 When the injection command reports `QUEUED` with exit code 2, `submitted: true`
+  and `landing: "queued"` (matching transcript enqueue evidence), the command shall wait within
+  the existing `compaction_wait_seconds` deadline, without retrying injection or signalling.
+  A new compaction boundary and AC-3.2's idle interval and gates shall remain required to restart.
+  If no new boundary appears before that deadline, the command shall refuse with reason `context`,
+  reporting that save-state was queued and never observed to compact, and signal nothing.
+  If the injection reports `HELD`, `REFUSED`, `AMBIGUOUS`, `BOUND`, `CORRUPTED`, `DROPPED`, an unknown
+  state, an invalid queued result, or any other non-zero exit, then the command shall refuse at
+  once with reason `context` and the protocol state and exit code, omitting adapter diagnostics.
+  Any other wait timeout shall also refuse with reason `context` and signal nothing.
 - [ ] AC-3.4 If background work appears after the compaction, then the command shall refuse with
   reason `background-work`.
 
