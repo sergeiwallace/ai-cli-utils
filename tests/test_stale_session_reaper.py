@@ -675,7 +675,12 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_isolated_tmux_wrapper(bin_dir / "tmux")
-    _write_executable(bin_dir / "ai", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        bin_dir / "ai",
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        "exit 0\n",
+    )
     state_home = tmp_path / "state"
     sessions_dir = state_home / "ai-cli-utils" / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -728,7 +733,12 @@ def test_given_real_tmux_child_when_terminal_and_direct_signals_arrive_then_deli
     state_home = tmp_path / "state"
     exit_request = state_home / "ai-cli-utils" / f"session-int-exit-{session_id}"
     _write_isolated_tmux_wrapper(bin_dir / "tmux")
-    _write_executable(bin_dir / "ai", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        bin_dir / "ai",
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        "exit 0\n",
+    )
     _write_executable(
         bin_dir / "claude",
         "#!/usr/bin/env python3\n"
@@ -1725,6 +1735,7 @@ def _start_generated_supervisor(
     _write_executable(
         bin_dir / "ai",
         "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         'if [ "$1" = "internal" ] && [ "$2" = "acquire-generation-lease" ]; then\n'
         '  [ "${AI_CLI_TEST_LEASE_ACQUIRED:-0}" = "1" ] && exit 0\n'
         "  exit 1\n"
