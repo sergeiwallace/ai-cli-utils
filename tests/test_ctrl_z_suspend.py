@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -120,7 +121,9 @@ def _start_supervised_session(sock: str, tmp_path: Path, shell: str, session: st
     fake_bin.mkdir()
     (fake_bin / "claude").write_text(fake_claude)
     (fake_bin / "ai").write_text(
-        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
     )
     (fake_bin / "python3").symlink_to(sys.executable)
     for fake in fake_bin.iterdir():

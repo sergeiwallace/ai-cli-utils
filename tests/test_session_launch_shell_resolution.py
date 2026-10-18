@@ -557,7 +557,9 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     fake_pi.chmod(0o755)
     fake_ai = fake_bin / "ai"
     fake_ai.write_text(
-        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
     )
     fake_ai.chmod(0o755)
     fake_direnv = fake_bin / "direnv"
@@ -683,7 +685,9 @@ def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_se
     fake_pi.chmod(0o755)
     fake_ai = fake_bin / "ai"
     fake_ai.write_text(
-        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
     )
     fake_ai.chmod(0o755)
 
@@ -748,7 +752,9 @@ def _start_restarting_claude_session(
     fake_bin.mkdir()
     (fake_bin / "claude").write_text(fake_claude)
     (fake_bin / "ai").write_text(
-        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+        "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
     )
     for fake in fake_bin.iterdir():
         fake.chmod(0o755)

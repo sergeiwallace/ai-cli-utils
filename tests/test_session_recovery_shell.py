@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -91,7 +92,9 @@ class _RemoteSession:
         sessions.mkdir(parents=True)
         script = sessions / f"{session}.sh"
         (fake_bin / "ai").write_text(
-            '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+            "#!/bin/sh\n"
+            f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+            'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
         )
         (fake_bin / "claude").write_text(
             f"#!{sys.executable}\nimport os, sys, time\n"

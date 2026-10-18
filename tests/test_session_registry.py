@@ -18,7 +18,7 @@ from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch, cli
 
 # Taken at import, before conftest's autouse fixture pins the reader for every test.
-_REAL_CURRENT_BOOT_ID = getattr(session_registry, "current_boot_id", None)
+_REAL_CURRENT_BOOT_ID = session_registry.current_boot_id
 
 _ITERM_SESSION_ID = "w0t3p1:ABCDEF01-2345-6789-ABCD-EF0123456789"
 _PANE_TTY = "/dev/ttys042"
@@ -87,14 +87,14 @@ def _snapshot(state_home):
     return _sessions(state_home) if path.is_file() else None
 
 
-def _launch_local(state_home, *, argv, name="1"):
+def _launch_local(state_home, *, argv, name="1", is_remote=False):
     """Drive a local tmux launch through ``_do_session_launch`` up to its exec into tmux.
 
     tmux answers every call with success, so the launch re-attaches an existing session
     (`attach-session -d`). Returns ``(exec_argv, registry_at_exec)``: the registry as it
     stood at the moment the launcher handed off.
     """
-    seen: dict = {}
+    seen: dict = {"exec": None, "registry": None}
 
     def fake_run(cmd, *args, **kwargs):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -117,7 +117,7 @@ def _launch_local(state_home, *, argv, name="1"):
             return_value=MagicMock(must_refuse=False, platform_limited=False, detail="tmux"),
         ),
         patch("ai_cli.session.cleanup_stale_sessions"),
-        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.session._resolve_is_remote", return_value=is_remote),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -139,12 +139,12 @@ def _launch_local(state_home, *, argv, name="1"):
                 no_direnv=True,
                 remote=False,
                 project="",
-                is_remote=False,
+                is_remote=is_remote,
                 project_prefix_override="myproject",
                 extra_args=[],
                 config={"worktree": {"enabled": False}},
             )
-    return seen.get("exec"), seen.get("registry")
+    return seen["exec"], seen["registry"]
 
 
 def _remote_preflight(command, **_kwargs):
@@ -264,7 +264,7 @@ def test_given_tracking_enabled_when_remote_session_launched_then_record_holds_a
         "[iterm2.persistence]\nenabled = false\n",
     ],
 )
-def test_given_tracking_disabled_when_session_launched_then_no_registry_file_is_written(
+def test_given_tracking_disabled_when_session_launched_then_run_state_recipe_is_registered(
     state_home, iterm2_toml, outside_iterm2, toml_text
 ):
     iterm2_toml(toml_text)
@@ -272,9 +272,9 @@ def test_given_tracking_disabled_when_session_launched_then_no_registry_file_is_
     exec_argv, registry_at_exec = _launch_local(state_home, argv=["ai", "c", "1"])
 
     assert exec_argv is not None, "the launch must still hand off"
-    assert registry_at_exec is None
-    assert not _registry_file(state_home).exists()
-    assert not _registry_file(state_home).with_name("iterm2-sessions.json.lock").exists()
+    assert registry_at_exec[0]["boot_recipe"]["session_name"] == "c-myproject-tst-1"
+    assert registry_at_exec[0]["iterm2"] is None
+    assert _registry_file(state_home).exists()
 
 
 @pytest.mark.parametrize(
@@ -304,7 +304,7 @@ def test_given_tracking_disabled_when_launch_is_tracked_then_the_state_directory
         ("[iterm2.persistence.tracking]\ninclude_local = false\n", "include_local = false"),
     ],
 )
-def test_given_a_filter_rule_when_session_launched_then_it_is_not_recorded_and_the_rule_is_logged_at_debug(
+def test_given_a_filter_rule_when_session_launched_then_recipe_is_recorded_and_terminal_rule_is_logged(
     state_home, iterm2_toml, outside_iterm2, caplog, toml_text, rule
 ):
     iterm2_toml(toml_text)
@@ -313,7 +313,8 @@ def test_given_a_filter_rule_when_session_launched_then_it_is_not_recorded_and_t
     exec_argv, registry_at_exec = _launch_local(state_home, argv=["ai", "c", "1"])
 
     assert exec_argv is not None
-    assert registry_at_exec is None
+    assert registry_at_exec[0]["boot_recipe"]["session_name"] == "c-myproject-tst-1"
+    assert registry_at_exec[0]["iterm2"] is None
     debug = [
         r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG and r.name == "ai_cli.session_registry"
     ]
@@ -337,7 +338,7 @@ def test_given_iterm_session_id_absent_or_malformed_when_launched_then_record_ha
     assert "session registry" not in capsys.readouterr().err
 
 
-def test_given_registry_cannot_be_written_when_launched_then_one_warning_and_the_launch_is_unchanged(
+def test_given_registry_cannot_be_written_when_launched_then_untracked_start_is_refused(
     state_home, iterm2_toml, outside_iterm2, capsys
 ):
     # A directory where the registry file belongs: the launcher's own state still works.
@@ -345,10 +346,9 @@ def test_given_registry_cannot_be_written_when_launched_then_one_warning_and_the
 
     exec_argv, _ = _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert exec_argv == ["tmux", "attach-session", "-d", "-t", "c-myproject-tst-1"]
+    assert exec_argv is None
     assert _registry_file(state_home).is_dir()
-    warnings = [line for line in capsys.readouterr().err.splitlines() if "session registry" in line]
-    assert len(warnings) == 1, warnings
+    assert "launch refused" in capsys.readouterr().err
 
 
 def test_given_a_bad_persistence_key_when_launched_then_one_warning_names_it_and_the_launch_proceeds(
@@ -563,7 +563,7 @@ def test_given_a_clean_remote_exit_when_sessions_are_pruned_then_that_record_is_
 
 
 def _seed(name, *, kind="local", remote=None, tty="", iterm_session_id=None, launcher_pid=0):
-    return session_registry.record_launch(
+    record = session_registry.record_launch(
         kind=kind,
         name=name,
         relaunch_argv=["ai", "c", name],
@@ -574,6 +574,9 @@ def _seed(name, *, kind="local", remote=None, tty="", iterm_session_id=None, lau
         launcher_pid=launcher_pid,
         config=_PERSISTENCE_DEFAULTS,
     )
+
+    assert record is not None
+    return record
 
 
 def _fake_tmux_and_ssh(*, live_local=(), clients=None, remote_answers=None):
@@ -738,7 +741,7 @@ def test_given_iterm2_does_not_answer_when_refreshed_then_skip_is_reported_exit_
 
     def run(cmd, *args, **kwargs):
         if cmd[0] == "osascript":
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         return tmux(cmd, *args, **kwargs)
 
     with patch("ai_cli.iterm2.subprocess.run", side_effect=run):

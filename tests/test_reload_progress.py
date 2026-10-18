@@ -30,6 +30,7 @@ import contextlib
 import fcntl
 import os
 import re
+import shlex
 import signal
 import struct
 import subprocess
@@ -187,6 +188,7 @@ class Session:
         fakes = {
             "ai": (
                 "#!/bin/sh\n"
+                f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
                 'if [ "$1" = ps ] && [ "$2" = cron ]; then\n'
                 f"  n=$(cat {counter} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {counter}\n"
                 f'  case " {" ".join(map(str, reload_on))} " in *" $n "*)\n'
@@ -374,6 +376,21 @@ def test_given_reloads_past_both_thresholds_when_rendered_then_the_warning_and_p
     reload_rows = _reload_rows(rows)
     assert reload_rows == [errors[0] + 1], rows
     assert "attempt 3" in rows[reload_rows[0]]
+
+
+def test_given_supervisor_fixture_when_sequence_requested_then_reply_is_numeric(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    Session._fakes(bin_dir, tmp_path / "session.sh", tmp_path / "state", (), (600.0,), False, None, False, False)
+    reply = subprocess.run(
+        [str(bin_dir / "ai"), "sessions", "_sequence"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert reply.returncode == 0, reply.stderr
+    assert reply.stdout.strip().isdigit(), "the final-exit helper requires a numeric sequence reply"
 
 
 @pytest.mark.parametrize("closer", ["agent", "record", "exit"])

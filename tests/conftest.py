@@ -15,6 +15,7 @@ import threading
 import types
 import warnings
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -795,7 +796,7 @@ def _refuse_real_plyer_toasts():
         if saved is _MISSING:
             del sys.modules[_DESKTOP_ESCAPE_IMPORT]
         else:
-            sys.modules[_DESKTOP_ESCAPE_IMPORT] = saved
+            sys.modules[_DESKTOP_ESCAPE_IMPORT] = cast(types.ModuleType, saved)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -845,7 +846,7 @@ def _refuse_real_windows_registry_reads():
             raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
         if real is None:
             raise OSError("no winreg on this platform")
-        return real.OpenKey(root, subkey, *args, **kwargs)
+        return vars(real)["OpenKey"](root, subkey, *args, **kwargs)
 
     stub = types.ModuleType("winreg")
     if real is None:
@@ -866,7 +867,7 @@ def _refuse_real_windows_registry_reads():
         if saved is _MISSING:
             del sys.modules["winreg"]
         else:
-            sys.modules["winreg"] = saved
+            sys.modules["winreg"] = cast(types.ModuleType, saved)
 
 
 def _retire_tmux_isolation_dir(tmux_tmpdir: Path) -> None:
@@ -943,7 +944,7 @@ def _isolate_tmux_default_server(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _reject_real_agent_processes(request):
+def _reject_real_agent_processes(request, monkeypatch):
     """Prevent test launches from creating live tmux/agent processes (AI-CLI-117).
 
     Session-launch tests that patch ``os.execvp`` must also patch ``subprocess.run``
@@ -1008,12 +1009,13 @@ def _reject_real_agent_processes(request):
         _reject_real_agent_process(command, argv=argv)
         return real_execvp(*args, **kwargs)
 
-    with (
-        patch("subprocess.run", side_effect=guarded_run),
-        patch("subprocess.Popen", side_effect=guarded_popen),
-        patch("os.execvp", side_effect=guarded_execvp),
-    ):
-        yield
+    # Share the test's undo stack: a separate patch context can exit before
+    # monkeypatch restores a test override, resurrecting this expired guard with
+    # the previous test's allowances. Reverse restoration on one stack leaves
+    # the original process boundaries in place for the next test.
+    monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=guarded_run))
+    monkeypatch.setattr(subprocess, "Popen", MagicMock(side_effect=guarded_popen))
+    monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
 
 
 @pytest.fixture

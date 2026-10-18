@@ -86,7 +86,7 @@ def _registry_paths() -> list[str]:
 
 def _everything(slot) -> dict:
     """Every tree and ref a retirement may touch, for a nothing-changed check."""
-    trees = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
     trees["refs"] = _git("for-each-ref", cwd=slot["repo"])
     trees["worktrees"] = _git("worktree", "list", "--porcelain", cwd=slot["repo"])
     trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")

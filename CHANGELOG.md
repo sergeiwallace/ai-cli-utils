@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without retrying or signalling. `-Y` never runs it.
 - Local tmux launches now open a detached `wake-watch` window when the effective
   sidecar mode is `session` or `both`. The watcher retries every exit after two seconds.
+- Every launch now records durable session run state (`running` or `exited`, with a cause and
+  the host's boot id) in the session registry, independent of terminal tracking and hook
+  evidence. A launch that cannot persist its state is refused. The launch recipe is stored
+  with the record, and the supervisor settles the final exit before the shell returns.
+- `ai sessions mark` sets a session's run state by hand, and the new `[session_relaunch]`
+  settings (`on_boot` off by default, permitted causes `host_reboot` and
+  `terminal_quit_or_crash`) are validated on every config load. The optional
+  `[session_relaunch.publish]` settings publish a debounced registry snapshot to a Git ref with
+  plumbing commands, never touching a checkout. Boot relaunch itself ships separately.
 - Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and

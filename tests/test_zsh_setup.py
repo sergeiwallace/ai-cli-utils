@@ -524,7 +524,9 @@ class TestInstallZsh:
         monkeypatch.setattr(zsh_setup, "zsh_runs", lambda *a, **k: order.append("probe") or True)
 
         zsh_setup.install_zsh()
-        assert captured["verify"]() is True
+        verify = captured["verify"]
+        assert callable(verify)
+        assert verify() is True
         assert order == ["adopt", "probe"], order
 
 

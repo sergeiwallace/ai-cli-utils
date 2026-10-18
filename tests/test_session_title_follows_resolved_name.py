@@ -223,6 +223,7 @@ def test_given_a_host_without_the_iterm2_api_when_the_attached_session_starts_th
     # nothing and says so. Every other `ai` call the session makes is a no-op.
     (fake_bin / "ai").write_text(
         "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         'if [ "$1" = internal ] && [ "$2" = set-iterm2-name ]; then exit 1; fi\n'
         'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\n'
         "exit 0\n"

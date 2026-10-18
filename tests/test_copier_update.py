@@ -640,6 +640,7 @@ def test_do_update_copier_failure(tmp_path):
         with patch("ai_cli.copier_update._run_copier_update", return_value=("copier boom", None, None)):
             status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status != "ok"
+    assert isinstance(detail, str)
     assert "boom" in detail
 
 
@@ -660,6 +661,7 @@ def test_do_update_conflict(tmp_path):
     ):
         status, detail = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", True)
     assert status == "conflict"
+    assert isinstance(detail, list)
     assert [Path(path) for path in detail] == [Path("docs") / "x.py"]
     # never committed or pushed on conflict
     assert not any("commit" in c for c in runner.calls)
@@ -793,6 +795,7 @@ def test_given_drifted_template_hunk_when_copier_exits_cleanly_then_update_fails
             status, detail = _do_update_in_worktree(wt_dir, tmp_path / "root", "/usr/bin/copier", False)
 
     assert status != "ok"
+    assert isinstance(detail, str)
     assert "parity" in detail
     assert not any("commit" in command for command in calls)
 
@@ -823,6 +826,7 @@ def test_given_non_default_answer_when_copier_resets_it_then_update_fails_closed
         status, detail = _do_update_in_worktree(tmp_path, tmp_path / "root", "/usr/bin/copier", False)
 
     assert status != "ok"
+    assert isinstance(detail, str)
     assert "stored Copier answers" in detail
 
 
@@ -1025,7 +1029,7 @@ def test_given_ssh_template_source_when_host_has_no_ssh_access_then_it_is_read_o
     """The framework host authenticates over HTTPS; a stored git@github.com source must still resolve."""
     _reachable_source.cache_clear()
     run, calls = _probe_runner(ssh_reachable=False)
-    answers = {"_src_path": "git@github.com:example-org/example-template.git"}
+    answers: dict[str, object] = {"_src_path": "git@github.com:example-org/example-template.git"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
         resolved = _resolve_copier_source(tmp_path, answers)
         again = _resolve_copier_source(tmp_path, answers)
@@ -1036,7 +1040,7 @@ def test_given_ssh_template_source_when_host_has_no_ssh_access_then_it_is_read_o
 def test_given_ssh_template_source_when_host_has_ssh_access_then_the_stored_source_is_kept(tmp_path):
     _reachable_source.cache_clear()
     run, _ = _probe_runner(ssh_reachable=True)
-    answers = {"_src_path": "ssh://git@github.com/example-org/example-template"}
+    answers: dict[str, object] = {"_src_path": "ssh://git@github.com/example-org/example-template"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
         assert _resolve_copier_source(tmp_path, answers) == "ssh://git@github.com/example-org/example-template"
 
@@ -1060,7 +1064,7 @@ def test_given_bare_template_name_when_a_nested_copy_exists_then_the_nested_copy
 def test_given_https_template_source_then_no_reachability_probe_runs(tmp_path):
     _reachable_source.cache_clear()
     run, calls = _probe_runner(ssh_reachable=False)
-    answers = {"_src_path": "https://github.com/example-org/example-template"}
+    answers: dict[str, object] = {"_src_path": "https://github.com/example-org/example-template"}
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
         assert _resolve_copier_source(tmp_path, answers) == "https://github.com/example-org/example-template"
     assert calls == []
@@ -1133,6 +1137,7 @@ def _make_stale_local_template_source(tmp_path: Path, source_spelling: str = "ab
 def test_given_origin_ahead_of_local_source_when_updating_then_project_uses_origin_commit(tmp_path, capsys):
     fixture = _make_stale_local_template_source(tmp_path)
 
+    assert isinstance(fixture["projects"], Path)
     result = run_copier_update(projects_dir=fixture["projects"], isolate=False)
 
     assert result == 0
@@ -1147,6 +1152,7 @@ def test_given_origin_ahead_of_local_source_when_updating_then_project_uses_orig
 def test_given_bare_name_local_source_when_updating_then_project_uses_origin_commit(tmp_path):
     fixture = _make_stale_local_template_source(tmp_path, source_spelling="bare")
 
+    assert isinstance(fixture["projects"], Path)
     result = run_copier_update(projects_dir=fixture["projects"], isolate=False)
 
     assert result == 0
@@ -1172,6 +1178,7 @@ def test_given_local_source_fetch_failure_when_updating_then_project_is_refused_
     before_status = _git_output(project, "status", "--porcelain")
     before_answers = (project / ".copier-answers.yml").read_bytes()
 
+    assert isinstance(fixture["projects"], Path)
     result = run_copier_update(projects_dir=fixture["projects"], isolate=False)
 
     assert result == EX_TEMPFAIL
@@ -1196,6 +1203,7 @@ def test_given_dirty_local_source_when_updating_then_source_head_and_worktree_ar
     before_status = _git_output(local_template, "status", "--porcelain")
     before_config = (local_template / "copier.yml").read_bytes()
 
+    assert isinstance(fixture["projects"], Path)
     result = run_copier_update(projects_dir=fixture["projects"], isolate=False)
 
     assert result == 0
@@ -1297,6 +1305,7 @@ def test_do_update_pushfail(tmp_path):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "pushfail"
+    assert isinstance(detail, str)
     assert "rejected" in detail
 
 
@@ -1305,6 +1314,7 @@ def test_update_one_isolated_not_a_repo(tmp_path):
     with patch("ai_cli.copier_update._repo_root", return_value=None):
         status, detail = _update_one_isolated(tmp_path, "/usr/bin/copier")
     assert status == "failed"
+    assert isinstance(detail, str)
     assert "not a git repository" in detail
 
 

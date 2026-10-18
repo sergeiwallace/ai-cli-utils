@@ -637,7 +637,7 @@ def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
     def normalize(text: str) -> str:
-        text = re.sub(r"(?ms)^    # BEGIN PINNED RESTART.*?^    # END PINNED RESTART\n", "", text)
+        text = re.sub(r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE)[^\n]*\n.*?^    # END \1\n", "", text)
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 

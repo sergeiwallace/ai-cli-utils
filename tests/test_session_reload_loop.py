@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -156,6 +157,7 @@ def _start_session(
     )
     (fake_bin / "ai").write_text(
         "#!/bin/sh\n"
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f"{rewrite}"
         'if [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\n'
         "exit 0\n"

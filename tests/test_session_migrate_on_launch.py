@@ -55,7 +55,7 @@ def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[di
         raise SystemExit(0)
 
     with ExitStack() as stack:
-        for target, kwargs in (
+        patches: tuple[tuple[str, dict], ...] = (
             ("ai_cli.session.create_worktree", {"side_effect": _start}),
             ("ai_cli.session.build_session_name", {"return_value": (f"c-{NEW}", NEW)}),
             ("ai_cli.session.detect_repo_root", {"return_value": str(slot["repo"])}),
@@ -66,7 +66,8 @@ def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[di
             ("ai_cli.trust.ensure_workspace_trusted", {}),
             ("ai_cli.main._ensure_dolt_server", {}),
             ("ai_cli.tunnel._ensure_nats_tunnel", {}),
-        ):
+        )
+        for target, kwargs in patches:
             stack.enter_context(patch(target, **kwargs))
         code, out, err = run_cli(["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo"])
     return code, out, err, launched

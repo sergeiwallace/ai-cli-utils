@@ -502,6 +502,19 @@ stale_session_timeout = 15
 ## scrollback (install tmux for those).
 # use_pty = true
 
+[session_relaunch]
+on_boot = false
+causes = ["host_reboot", "terminal_quit_or_crash"]
+network_wait_seconds = 120
+network_probe = "api.anthropic.com:443"
+
+[session_relaunch.publish]
+repo = ""
+remote = "origin"
+ref_prefix = "refs/heads/fleet-sessions/"
+debounce_seconds = 60
+host = ""
+
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
 ## default. `ai c` starts its Circus watcher when needed. On native Windows,
@@ -699,6 +712,9 @@ def load_config():
             pass
 
     cfg["sidecar"] = get_sidecar_config(cfg)
+    causes = cfg.get("session_relaunch", {}).get("causes", ["host_reboot", "terminal_quit_or_crash"])
+    if not isinstance(causes, list) or any(c not in {"host_reboot", "terminal_quit_or_crash"} for c in causes):
+        raise ValueError("session_relaunch.causes permits only host_reboot and terminal_quit_or_crash")
 
     return cfg
 

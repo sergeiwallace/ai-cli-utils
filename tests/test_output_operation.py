@@ -64,6 +64,7 @@ def test_given_a_dropped_link_when_ai_c_r_reattaches_then_transport_and_dolt_lin
     results = iter([(b"Permission denied (publickey).\n", 255), (b"", 255), (b"", 255)])
 
     def ssh(_args, stderr=None, **_kwargs):
+        assert stderr is not None
         text, code = next(results)
         stderr.write(text)
         return code
@@ -217,4 +218,5 @@ def test_given_launch_output_when_rendered_on_a_pty_then_the_launch_lines_carry_
     handoff = len(_rows(screen)) - 1 - _rows(screen)[::-1].index(rows[-1])
     assert _styled(_cells(screen, handoff, "handoff:"), fg="green", bold=True), rows[-1]
     for row in rows:
-        assert _LINE.match(row) and _LINE.match(row)["op"] in SHIPPED, row
+        match = _LINE.match(row)
+        assert match and match["op"] in SHIPPED, row

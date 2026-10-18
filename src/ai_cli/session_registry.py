@@ -132,16 +132,20 @@ def current_boot_id() -> str | None:
 
 
 @contextlib.contextmanager
-def _locked() -> Iterator[Path]:
+def _locked(timeout: float | None = None) -> Iterator[Path]:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_path = path.with_name(f"{path.name}.lock")
-    with lock_path.open("a") as lock_fd:
-        portalocker.lock(lock_fd, portalocker.LOCK_EX)
-        try:
+    if timeout is not None:
+        with portalocker.Lock(lock_path, mode="a", timeout=timeout):
             yield path
-        finally:
-            portalocker.unlock(lock_fd)
+    else:
+        with lock_path.open("a") as lock_fd:
+            portalocker.lock(lock_fd, portalocker.LOCK_EX)
+            try:
+                yield path
+            finally:
+                portalocker.unlock(lock_fd)
 
 
 def _write(path: Path, doc: dict) -> None:
@@ -153,18 +157,43 @@ def _write(path: Path, doc: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
         temp_path.replace(path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
 
 
-def _mutate(change: Callable[[dict], bool]) -> None:
+def _mutate(
+    change: Callable[[dict], bool],
+    *,
+    dirty: bool = True,
+    write_failure: Callable[[dict], None] | None = None,
+    timeout: float | None = None,
+    after_write: Callable[[], None] | None = None,
+) -> None:
     """Apply ``change`` to the registry under the lock; it returns whether to write."""
-    with _locked() as path:
+    with _locked(timeout) as path:
         doc = load_registry()
         if change(doc):
-            _write(path, doc)
+            if dirty:
+                doc["dirty_revision"] = doc.get("dirty_revision", 0) + 1
+            try:
+                _write(path, doc)
+            except OSError:
+                if write_failure is None:
+                    raise
+                write_failure(doc)
+            else:
+                if after_write is not None:
+                    after_write()
 
 
 def _remote_alias(record: dict) -> str | None:
@@ -222,6 +251,22 @@ def _new_record(
     }
 
 
+DURABLE_FIELDS = (
+    "relaunch",
+    "relaunched_boot_id",
+    "run_state",
+    "changed_at",
+    "generation",
+    "transition_seq",
+    "boot_recipe",
+    "supervisor_exit",
+    "owning_host",
+    "ended_at",
+    "exit",
+    "boot_id",
+)
+
+
 def record_launch(
     *,
     kind: str,
@@ -255,6 +300,11 @@ def record_launch(
     )
 
     def upsert(doc: dict) -> bool:
+        for previous in doc["sessions"]:
+            if _same_session(previous, record):
+                for key in DURABLE_FIELDS:
+                    if key in previous:
+                        record[key] = previous[key]
         doc["sessions"] = [r for r in doc["sessions"] if not _same_session(r, record)] + [record]
         return True
 
@@ -280,7 +330,9 @@ def mark_ended(record_id: str) -> None:
     _mutate(mark)
 
 
-def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None = None) -> list[dict]:
+def record_exit(
+    name_or_id: str, *, cause: str, evidence: dict, at: str | None = None, _document: dict | None = None
+) -> list[dict]:
     """Set the ``exit`` of every record whose id or name is ``name_or_id``; return those records.
 
     Also sets ``ended_at`` when it is unset. An empty list means nothing matched and
@@ -288,7 +340,7 @@ def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None =
     """
     if cause not in EXIT_CAUSES:
         raise ValueError(f"cause must be one of {', '.join(EXIT_CAUSES)}, got {cause!r}")
-    if not registry_path().exists():
+    if _document is None and not registry_path().exists():
         return []
     stamp = at or _now()
     marked: list[dict] = []
@@ -302,7 +354,10 @@ def record_exit(name_or_id: str, *, cause: str, evidence: dict, at: str | None =
                 marked.append(record)
         return bool(marked)
 
-    _mutate(mark)
+    if _document is None:
+        _mutate(mark)
+    else:
+        mark(_document)
     return marked
 
 
@@ -313,7 +368,7 @@ def remove(record_ids: Iterable[str]) -> None:
         return
 
     def drop(doc: dict) -> bool:
-        kept = [r for r in doc["sessions"] if r.get("id") not in ids]
+        kept = [r for r in doc["sessions"] if r.get("id") not in ids or r.get("boot_recipe")]
         changed = len(kept) != len(doc["sessions"])
         doc["sessions"] = kept
         return changed
@@ -438,7 +493,7 @@ def prune(
     def drop(doc: dict) -> bool:
         kept = []
         for record in doc["sessions"]:
-            if record.get("id") in verdicts:
+            if record.get("id") in verdicts and not record.get("boot_recipe"):
                 removed.append((record, verdicts[record.get("id")]))
             else:
                 kept.append(record)

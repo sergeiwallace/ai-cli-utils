@@ -62,7 +62,7 @@ def click_expands_like_windows(monkeypatch):
     """
     import click.core
 
-    real_os = click.core.os
+    real_os = vars(click.core)["os"]
     windows_view = {k: getattr(real_os, k) for k in dir(real_os) if not k.startswith("__")}
     windows_view["name"] = "nt"
     monkeypatch.setattr(click.core, "os", types.SimpleNamespace(**windows_view))
@@ -265,8 +265,13 @@ class TestCosCommand:
                     ),
                 )
             )
+
             # Exercise the real launch's name resolution, stopping at its read-only plan.
-            launch.side_effect = lambda **kwargs: real_launch(**(kwargs | {"dry_run": True}))
+            def dry_launch(**kwargs):
+                kwargs["dry_run"] = True
+                return real_launch(**kwargs)
+
+            launch.side_effect = dry_launch
             code, _out, err = run_cli(["ai", *command, *suffix])
             assert code == 0, err
             plan.assert_called_once()
@@ -765,7 +770,12 @@ def _real_plan(stack: ExitStack, monkeypatch):
     stack.enter_context(patch("ai_cli.direnv_setup.ensure_direnv"))
     plan = stack.enter_context(patch("ai_cli.main._print_launch_plan"))
     plan.side_effect = lambda **_kwargs: plan.__dict__.setdefault("cwd", Path.cwd())
-    launch.side_effect = lambda **kwargs: real_launch(**(kwargs | {"dry_run": True}))
+
+    def dry_launch(**kwargs):
+        kwargs["dry_run"] = True
+        return real_launch(**kwargs)
+
+    launch.side_effect = dry_launch
     return launch, plan
 
 

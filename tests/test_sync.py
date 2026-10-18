@@ -1,3 +1,4 @@
+import gc
 import json
 import re
 import subprocess
@@ -3999,13 +4000,21 @@ def test_sync_watch_when_verbose_then_prints_connected(tmp_path, capsys):
     assert "connected to NATS" in capsys.readouterr().out
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 def test_sync_watch_when_keyboard_interrupt_during_run_then_returns_0(capsys):
     """Covers lines 1651-1652: KeyboardInterrupt during asyncio.run → ok=True, return 0."""
+
+    def interrupted_run(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("asyncio.run", side_effect=KeyboardInterrupt):
+            with patch("asyncio.run", side_effect=interrupted_run):
                 result = sync_watch([])
     assert result == 0
+    gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -4272,6 +4281,8 @@ def test_wait_for_dream_completion_when_no_recent_write_then_closes_and_returns(
     mock_client.close.assert_awaited_once()
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 def test_wait_for_dream_completion_when_recent_write_and_completes_then_returns(tmp_path):
     """Covers lines 1298-1319, 1322-1323: recent write → subscribe, wait, complete."""
 
@@ -4301,7 +4312,7 @@ def test_wait_for_dream_completion_when_recent_write_and_completes_then_returns(
 
     # wait_for completes immediately (simulate dream done)
     async def fake_wait_for(coro, timeout):
-        pass  # returns without raising TimeoutError
+        coro.close()
 
     with (
         patch("ai_cli.sync._pid_file_path", return_value=pid_file),
@@ -4313,8 +4324,11 @@ def test_wait_for_dream_completion_when_recent_write_and_completes_then_returns(
 
     mock_sub.unsubscribe.assert_awaited()
     mock_client.close.assert_awaited()
+    gc.collect()
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(tmp_path):
     """Covers lines 1314-1316: asyncio.TimeoutError path in dream guard."""
 
@@ -4341,6 +4355,7 @@ def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(t
     recent_mem.write_text("fresh")
 
     async def fake_wait_for_timeout(coro, timeout):
+        coro.close()
         raise TimeoutError
 
     with (
@@ -4353,6 +4368,7 @@ def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(t
 
     mock_sub.unsubscribe.assert_awaited()
     mock_client.close.assert_awaited()
+    gc.collect()
 
 
 def test_wait_for_dream_completion_when_stat_raises_then_continues(tmp_path):
