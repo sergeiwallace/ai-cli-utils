@@ -1183,8 +1183,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     monkeypatch.setattr(main, "_write_launch_script_if_changed", refresh)
     code, report, _ = world.cli("-X", SESSION_ID)
     assert reads == [103, 102]
-    assert code == (1 if changed_birth else 0)
-    assert report["reason"] == ("identity" if changed_birth else "restarted")
+    assert code == (1 if changed_birth else 0), report
+    assert report["reason"] == ("identity" if changed_birth else "restarted"), report
     assert bool(world.signals) is not changed_birth
 
 

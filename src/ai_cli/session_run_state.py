@@ -171,8 +171,10 @@ def can_begin(name: str) -> None:
     """Check generation prerequisites without creating a file or changing a record.
 
     This is a snapshot, not a reservation: callers must repeat it before action.
-    The existing lock is opened read-only; a missing lock refuses rather than
-    creating it through the registry's mutating lock context manager.
+    The existing lock is opened read/write without creating or truncating it
+    (Windows refuses an exclusive lock on a read-only handle); a missing lock
+    refuses rather than creating it through the registry's mutating lock
+    context manager.
     """
     path = registry.registry_path()
     lock_path = path.with_name(f"{path.name}.lock")
@@ -183,7 +185,7 @@ def can_begin(name: str) -> None:
     ):
         if not os.access(target, mode):
             raise OSError(f"registry generation storage unavailable: {target}")
-    with portalocker.Lock(lock_path, mode="r", timeout=2):
+    with portalocker.Lock(lock_path, mode="r+", timeout=2):
         record = _find(registry.load_registry(), name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")
