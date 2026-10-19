@@ -72,6 +72,16 @@ def render(*, platform: str, home: Path, path: str, executable: str) -> dict[Pat
     return {root / f"{UNIT}.service": service.encode("utf-8")}
 
 
+def _unlisted(identity: str, runner) -> bool:
+    """Return whether systemd answers cleanly that no unit file has this name."""
+    listing = run_manager(
+        ["systemctl", "--user", "list-unit-files", "--no-legend", identity], runner=runner, check=False
+    )
+    if listing.returncode not in (0, 1) or listing.stderr.strip():
+        return False
+    return not any(line.split()[:1] == [identity] for line in listing.stdout.splitlines())
+
+
 def manage(action: str, *, on_boot: bool | None = None, dry_run: bool = False, runner=None) -> str:
     """Converge desired unit state without starting a Linux session at install time."""
     runner = runner or subprocess.run
@@ -108,9 +118,12 @@ def manage(action: str, *, on_boot: bool | None = None, dry_run: bool = False, r
 
     result = run_manager(probe, runner=runner, check=False)
     absent_codes = (1, 3, 113) if mac else (1, 4)
-    if result.returncode and (
-        result.returncode not in absent_codes or (not mac and result.returncode == 1 and result.stderr)
-    ):
+    unknown = result.returncode not in (0, *absent_codes)
+    if not mac and result.returncode == 1 and result.stderr:
+        # systemd 249 explains a missing unit on stderr even under --quiet; that
+        # stderr only means "absent" when the unit is neither on disk nor listed.
+        unknown = previous is not None or not _unlisted(identity, runner)
+    if unknown:
         raise RuntimeError("cannot determine boot-unit state from service manager")
     enabled = result.returncode == 0
     if action == "status":
