@@ -221,6 +221,29 @@ not been individually classified; no unrelated production code was changed.
 | `test_transport_termination_signals.py` | 3 | 0 |
 | `test_worktree_branch_path_mismatch.py` | 4 | 0 |
 
+### Follow-up: real-supervisor fixture identity
+
+The next CI run exposed seven failures in `test_stale_session_reaper.py` on
+Linux and macOS. Its shared real-supervisor helper registered `test-session`
+but generated launch metadata for engine `c` and agent name `session-1`.
+`session_commands.begin` correctly rejected that identity before launching a
+child. The helper also supplied only `argv` and `cwd` as its recipe: the base
+revision's `valid_boot_recipe` and restart preflight already reject that
+incomplete registration. Ordinary launches use `session_launch_state.register_launch`
+to register the resolved engine-prefixed identity and a complete recipe.
+
+The correction is confined to the fixture. Local and remote cases now use
+`c-session-1` and `c-r-session-1`, respectively, and register complete recipes.
+The helper calls `can_begin` before starting tmux so invalid setup fails at its
+source. All launch-count, lease, heartbeat, process-exit and ownership assertions
+remain intact; recovery validation and production signal handling are unchanged.
+
+The frozen fast-exit regression reported **1 failed, 1 error** before the
+correction and **1 passed, 1 error** after it. The base scratch checkout also
+reported **1 passed, 1 error**. All three teardown errors come from the sandbox
+denying process enumeration in the cleanup watcher. The base is `aeb2a421`,
+extracted into a fresh temporary directory without changing Git worktrees.
+
 ## Observability
 
 Read only the local state registry, saved metadata, launch logs and reaper log.
