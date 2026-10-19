@@ -2163,7 +2163,9 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
     finally:
         if "process" in locals() and process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
+            # The tree, not the supervisor's group: the child it is promoting is in a group of
+            # its own, which a group kill misses and orphans (AI-CLI-ozid).
+            reap_tree(process)
         owner.kill()
         owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)
