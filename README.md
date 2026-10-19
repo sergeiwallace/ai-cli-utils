@@ -661,6 +661,67 @@ name and flags come from that script, the directory from the live pane and the h
 are refused without changing the registry. Restart still requires every existing gate,
 including `remoteControlAtStartup = true`; enrolment does not enable Remote Control.
 
+After the fixed package is available, run these commands in order on **each**
+macOS or Linux host, as the user who owns its tmux server:
+
+```sh
+uv tool upgrade --reinstall ai-cli-utils
+ai sessions enrol --all --dry-run --json
+ai sessions enrol --all --json
+ai sessions list --json
+```
+
+For a source installation, replace the first command with
+`uv tool install --force .` from the updated package checkout. `ai update` is
+not required for this recovery. A package reinstall alone refreshes validated
+sessions on their next existing heartbeat or acquisition call; the explicit
+enrolment commands also cover sessions without either call.
+
+On Windows with tmux in WSL's default distribution, run in PowerShell:
+
+```powershell
+wsl.exe -- uv tool upgrade --reinstall ai-cli-utils
+wsl.exe -- ai sessions enrol --all --dry-run --json
+wsl.exe -- ai sessions enrol --all --json
+wsl.exe -- ai sessions list --json
+```
+
+For tmux in Git Bash, run the macOS/Linux commands inside Git Bash instead.
+Native Windows without tmux reports
+discovery unavailable; boot relaunch remains supported only on macOS and Linux.
+
+The bulk command (`-a/--all`, `-d/--dry-run`, `-j/--json`) reports each session as
+`registered`, `already-registered`, or `skipped` with a reason. In a dry run,
+`registered` means **would register**; nothing is written. It validates the live
+pane's exact generated script, embedded launch metadata, and any saved metadata.
+Legacy supervisors and remote-style names are supported. Missing saved metadata
+is recoverable when the generated script supplies it; absent or conflicting
+evidence, renamed tmux sessions, and foreign ownership are skipped without guessing.
+Discovery failures return a nonzero exit status.
+
+Bulk enrolment preserves existing records, ownership, generations and policy;
+newly recovered sessions default to boot policy `never`. It atomically regenerates
+validated stable scripts, including already registered sessions; running shells
+retain their current program until the next child launch. It never signals,
+restarts or types into a pane. Repeated runs leave current scripts and records
+unchanged. To opt a recovered session into boot replay deliberately, use
+`ai sessions policy c-session-1 auto`; the configured boot and safety gates still apply.
+
+Template refresh after an update, supervisor generation acquisition, heartbeats, and
+`ai sessions relaunch --boot` also attempt bulk recovery automatically, reading
+configuration at call time. Automatic recovery is best effort and logs its
+decisions; use the explicit command to inspect every skip. A stopped supervisor
+or unverifiable session still requires operator attention.
+
+Older acquisition scripts can inherit extended keyboard mode from an agent,
+encoding Ctrl+C as text instead of delivering SIGINT. The upgraded acquisition
+helper resets terminal input before waiting and records a clean stop recognized
+by old supervisors. A child already parked permanently after its twentieth
+failure runs only shell `sleep`: it cannot execute upgraded helpers or read a
+regenerated script. Enrolment can register it and refresh its script, but waking
+that particular child requires a separate operator action; these commands do
+not restart it. Regeneration prevents that permanent park on future child starts.
+
 ### Cross-machine sync
 
 ```bash

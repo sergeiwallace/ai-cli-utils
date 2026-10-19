@@ -141,9 +141,12 @@ class _FakeTmux:
     def __init__(self, sessions):
         self.sessions = sessions
         self.calls = 0
+        self.commands = []
 
     def __call__(self, cmd, *args, **kwargs):
-        self.calls += 1
+        self.commands.append(cmd)
+        if cmd[:2] == ["tmux", "list-sessions"]:
+            self.calls += 1
         return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(self.sessions) + "\n", stderr="")
 
 
@@ -206,8 +209,10 @@ def test_given_refresh_called_in_a_storm_then_it_stops_and_reports_the_caller(re
         _refresh_live_session_scripts()
 
     assert fake_tmux.calls <= main._REFRESH_BURST_LIMIT, (
-        f"{fake_tmux.calls} tmux subprocesses for {attempts} refresh attempts — the refresh is not bounded"
+        f"{fake_tmux.calls} tmux discoveries for {attempts} refresh attempts — the refresh is not bounded"
     )
+    # Enrolment also reads each candidate pane, at most twice per refresh.
+    assert len(fake_tmux.commands) <= main._REFRESH_BURST_LIMIT * (1 + 2 * len(fake_tmux.sessions))
     err = capsys.readouterr().err
     assert "refresh" in err.lower()
     assert str(main._REFRESH_BURST_LIMIT) in err
@@ -225,6 +230,7 @@ def test_given_refresh_budget_is_spent_when_caller_keeps_spinning_then_rejection
 
     calls_path = state / "refresh-template-calls.json"
     original_write_text = Path.write_text
+    original_commands = len(fake_tmux.commands)
     counter_writes = 0
 
     def count_counter_writes(path, *args, **kwargs):
@@ -238,6 +244,7 @@ def test_given_refresh_budget_is_spent_when_caller_keeps_spinning_then_rejection
         _refresh_live_session_scripts()
 
     assert fake_tmux.calls == main._REFRESH_BURST_LIMIT
+    assert len(fake_tmux.commands) == original_commands
     assert counter_writes == 0
 
 

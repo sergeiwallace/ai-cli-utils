@@ -148,6 +148,41 @@ positive outcome (clean supervisor termination) and the negative constraint
 
 ## Fix log
 
+### 2026-10-18 — acquisition before terminal cleanup
+
+A separate acquisition failure was reproduced locally in real tmux using the
+frozen pre-feature supervisor and the acquisition body rendered from template
+commit `dedd4ffc`. In inherited extended keyboard mode, `send-keys C-c` produced
+literal `CSI 27;5;99~` input, rather than SIGINT. Signal disposition and retry
+sleep latency did not explain this reproduction: the terminal encoded the key
+before a signal could be generated. This establishes one mechanism matching the
+reported symptom, without proving which terminal mode was active on another host.
+
+The terminal cleanup in the generated child ran after generation acquisition.
+The installed acquisition helper now resets keyboard modes through its terminal
+stderr (falling back to the controlling terminal), restores signal input, and
+records the existing supervisor exit marker on SIGINT. The old supervisor then
+stops instead of respawning a child whose ordinary interrupt status it treats as
+retryable. Its captured generation reply remains free of terminal control bytes.
+
+Bulk enrolment previously wrote only registry bookkeeping. It now atomically
+regenerates validated stable scripts too, including already registered sessions,
+and serializes competing enrolments' writes. Existing heartbeats also perform
+recovery after a package reinstall, covering agents that never restart. Ownership,
+generations and existing policies remain unchanged; new recovery rows use `never`.
+
+The four real-tmux upgrade and interrupt assertions failed against the unchanged
+production implementation, then passed after restoring the fix. The fixture keeps
+the pane leader stable and checks both successful registration/child startup and
+clean interrupt termination without agent startup. No live sessions were used.
+
+An old child permanently parked after twenty failures invokes only shell `sleep`.
+It cannot execute upgraded Python or observe a regenerated script while parked.
+Enrolment can repair its registry and disk script, but waking that child requires
+operator intervention, outside a recovery that promises not to restart sessions.
+Regeneration prevents the same permanent park on its next child start. Operator
+upgrade steps and this limitation are documented in README.
+
 | Date | Change | Notes |
 |---|---|---|
 | 2026-09-02 | Regression and loop guard | Implemented as `implement` / high effort because process-group signal handling has multiple plausible failure modes. |
