@@ -86,10 +86,13 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
             root = psutil.Process(int(server.stdout))
             processes = [root, *root.children(recursive=True)]
             assert any("--ai-cli-heartbeat-ticker" in p.cmdline() for p in processes)
-            Path({str(ready)!r}).write_text(json.dumps({{
+            # Publish atomically: the outer test reads the record as soon as the name exists.
+            staged = Path({str(ready)!r} + ".tmp")
+            staged.write_text(json.dumps({{
                 "worker": os.getpid(), "socket": tmux_socket,
                 "processes": [[p.pid, p.create_time()] for p in processes],
             }}))
+            os.replace(staged, {str(ready)!r})
             while not Path({str(proceed)!r}).exists():
                 time.sleep(0.01)
             if {outcome!r} == "fail":
