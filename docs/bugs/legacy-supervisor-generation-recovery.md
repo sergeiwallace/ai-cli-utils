@@ -244,6 +244,48 @@ reported **1 passed, 1 error**. All three teardown errors come from the sandbox
 denying process enumeration in the cleanup watcher. The base is `aeb2a421`,
 extracted into a fresh temporary directory without changing Git worktrees.
 
+The follow-up focused lifecycle gate reports **146 passed**, including both
+shell variants of terminal-delivered Ctrl+C during legacy acquisition and
+backoff. The reaper file reports **5 failed, 78 passed, 17 errors**: all five
+failures occur after child startup while waiting for heartbeat evidence, which
+the sandbox's denied process-group probes disable. All 22 failure/error events
+also occur at the base revision. Its comparison of the previously failing files
+reports **74 failed, 302 passed, 1 skipped, 1 warning, 110 errors**. Explicit
+`PYTHONPATH` entries select the archived base package for subprocesses as well
+as the outer tests, avoiding the shared environment's editable package path.
+Ruff checking source and tests, formatting all 260 source and test files,
+document validation, and `pyright src/` pass; Pyright reports zero errors,
+warnings and information messages across 72 files.
+
+The required full command, `uv run --no-sync pytest -q -n 8 --timeout 300`,
+reports **80 failed, 5415 passed, 23 skipped, 2 warnings, 110 errors in
+2315.15s (0:38:35)**. Comparing exact node IDs initially matches 74 failures
+and every error to the base. Further comparisons of
+`test_pytest_memory_guard.py` and `test_session_migrate.py` report
+**5 failed, 45 passed** on base and **6 failed, 44 passed** on current, proving
+three more of the full-run failures pre-existing. In total, **77 failures and
+110 errors** reproduce on base.
+
+Three full-run failures remain intermittent: the memory guard's host-locale
+allocation probe times out after thirty seconds, and the two unreadable-store
+migration cases fail while using a one-second subprocess budget. Serial
+retests of those exact cases report **3 passed** on base and **3 passed** on
+current. Both modules and their tests are unchanged from base. These results
+establish no additional regression, but leave the failures under the full
+parallel workload unresolved. No timeout or behavioral assertion was relaxed.
+
+The focused lifecycle command was:
+
+```sh
+uv run --no-sync pytest -q -n 0 --timeout 120 tests/test_session_begin_recovery.py tests/test_session_begin_retry.py tests/test_session_run_state.py tests/test_session_commands.py tests/test_session_enrol.py tests/test_session_script_bash32.py
+```
+
+The base CI run also records an intermittent failure in
+`test_tmux_process_cleanup.py` for the recovery-shell fixture's killed-run case:
+the process tree survives cleanup. This differs from the local sandbox's
+deterministic enumeration denial, which prevents investigating that mechanism
+here. No cleanup behavior was changed without a matching causal reproduction.
+
 ## Observability
 
 Read only the local state registry, saved metadata, launch logs and reaper log.
@@ -284,5 +326,9 @@ relaunch policy.
 
 2026-10-18: Implemented as an implementation worker; regression-first diagnosis
 uses real shell, terminal and registry boundaries. No agents were delegated.
+
+2026-10-18: Corrected the real-supervisor fixture identity and recipe without
+changing production validation or existing behavioral assertions. Recorded full
+verification, isolated base comparisons and the remaining intermittent cases.
 
 <!-- /doc:region name="fix_log" -->
