@@ -192,6 +192,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The transport outcome record of a remote session is replaced in one step, so a
+  client killed while recording it no longer leaves an empty file.
+
+- A launcher killed while auto-updating no longer leaves the update held. The lock
+  is now an OS lock that ends with its holder, so later launches update at once
+  instead of each waiting 90 s and skipping the update.
+
 - `ai sessions boot-unit install` and `status` no longer fail with "cannot determine
   boot-unit state" on systemd 249 when the unit is not installed yet. That version answers
   `is-enabled --quiet` for a missing unit with exit 1 and a message on stderr. The unit now

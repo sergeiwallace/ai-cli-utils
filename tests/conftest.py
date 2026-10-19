@@ -2014,3 +2014,41 @@ def _fixed_boot_id(monkeypatch):
     osascript would otherwise receive that call too, on the macOS CI leg only.
     """
     monkeypatch.setattr("ai_cli.session_registry.current_boot_id", lambda: TEST_BOOT_ID, raising=False)
+
+
+@contextlib.contextmanager
+def hold_file_lock(path: Path):
+    """Hold an exclusive OS lock on ``path`` in a separate live process.
+
+    Yields a ``release`` callable that ends the holder, as a finished or killed peer
+    does. The holder also exits on its own after 60 s, so a failed test cannot leave
+    it running.
+    """
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys, threading, portalocker\n"
+            "threading.Timer(60, os._exit, (0,)).start()\n"
+            f"f = open({str(path)!r}, 'a')\n"
+            "portalocker.lock(f, portalocker.LOCK_EX | portalocker.LOCK_NB)\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n"
+            "os._exit(0)\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    def release() -> None:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=10)
+
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        yield release
+    finally:
+        release()

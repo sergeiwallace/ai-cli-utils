@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -895,3 +896,25 @@ class TestEnsureTailscaleUp:
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
         assert asyncio.run(run()) is False
+
+
+# Windows refuses to replace a file another handle has open, so the observation this
+# test makes (an open reader keeps the old record) exists only on POSIX.
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX replace semantics: an open reader keeps the old file")
+def test_given_an_existing_outcome_record_when_it_is_rewritten_then_the_old_record_is_replaced_whole(tmp_path):
+    """AI-CLI-2kko: a client killed mid-write left a 0-byte outcome record.
+
+    Function-level because the run loop cannot be killed inside this write cheaply;
+    this pins the frozen bug reproduction. A truncate-then-write rewrites the record
+    in place, so a reader of the old record sees it emptied first; a replace leaves
+    the old record whole until the new one exists.
+    """
+    from ai_cli.transport import _write_transport_outcome
+
+    path = tmp_path / "transport-outcomes" / "c-r-session-1.json"
+    _write_transport_outcome(path, verdict="reconnecting")
+    with path.open() as old_reader:
+        _write_transport_outcome(path, verdict="terminated")
+        assert json.loads(old_reader.read())["verdict"] == "reconnecting"
+    assert json.loads(path.read_text())["verdict"] == "terminated"
+    assert [p.name for p in path.parent.iterdir()] == [path.name], "no temp file is left behind"

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import make_iterm2_config, run_cli
+from conftest import hold_file_lock, make_iterm2_config, run_cli
 
 from ai_cli.main import (
     _UPDATE_RETRY_BASE_SECONDS,
@@ -632,11 +632,99 @@ class TestAutoUpdateIfStaleLockContention:
         head.stdout = "abc123\n"
         return head, _installed_source_fingerprint(tmp_path)
 
+    def test_given_lock_left_by_a_launcher_that_died_when_auto_update_runs_then_it_updates_without_waiting(
+        self, tmp_path
+    ):
+        """AI-CLI-2kko: a launcher killed mid-update leaves its lock file behind.
+
+        Its owner is gone, so the update is nobody's. Treating the file's existence as
+        "a peer holds it" made every later launch wait the full bound and skip the
+        update, so the stale fingerprint, and the wait, repeated on every launch.
+        """
+        self._project(tmp_path)
+        lock = tmp_path / "last_install_fingerprint.lock"
+        # A real process creates the lock and exits without releasing it, as a killed
+        # launcher does.
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import os; os.open({str(lock)!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY); os._exit(0)",
+            ],
+            check=True,
+        )
+        assert lock.exists()
+        update_calls = []
+
+        def fake_run(cmd, **kwargs):
+            if len(cmd) >= 2 and cmd[1] == "update":
+                update_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("ai_cli.main._PEER_UPDATE_WAIT_SECONDS", 5.0),
+        ):
+            start = time.monotonic()
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+            elapsed = time.monotonic() - start
+
+        assert update_calls, "an abandoned lock must not stop the update"
+        assert updated is True
+        assert elapsed < 2.0, f"waited {elapsed:.1f}s on a lock nobody holds"
+
+    def test_given_a_live_process_holds_the_lock_when_auto_update_runs_then_it_waits_and_does_not_update(
+        self, tmp_path, capsys
+    ):
+        """The negative constraint: a lock a running launcher holds is still respected."""
+        self._project(tmp_path)
+        lock = tmp_path / "last_install_fingerprint.lock"
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time, portalocker\n"
+                f"f = open({str(lock)!r}, 'a')\n"
+                "portalocker.lock(f, portalocker.LOCK_EX | portalocker.LOCK_NB)\n"
+                "print('held', flush=True)\n"
+                "time.sleep(60)\n",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "held"
+
+            def fake_run(cmd, **kwargs):
+                if len(cmd) >= 2 and cmd[1] == "update":
+                    raise AssertionError("a live peer owns the update")
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+                patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+                patch("subprocess.run", side_effect=fake_run),
+                patch("shutil.which", return_value="/usr/bin/ai"),
+                patch("ai_cli.main._PEER_UPDATE_WAIT_SECONDS", 0.3),
+                patch("ai_cli.main._PEER_UPDATE_POLL_SECONDS", 0.05),
+            ):
+                updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+        finally:
+            holder.kill()
+            holder.wait(timeout=10)
+
+        assert updated is False
+        assert "Warning" in capsys.readouterr().err
+
     def test_given_peer_holds_lock_and_completes_update_when_auto_update_runs_then_requests_reexec(self, tmp_path):
         """The peer finished and the stamp advanced, so our imports are stale -> re-exec."""
         head, fingerprint = self._project(tmp_path)
         lock = tmp_path / "last_install_fingerprint.lock"
-        lock.write_text("")  # a peer already claimed the update
+        finished = []
 
         def fake_run(cmd, **kwargs):
             if "rev-parse" in cmd:
@@ -644,11 +732,15 @@ class TestAutoUpdateIfStaleLockContention:
             raise AssertionError("the loser must not run `ai update` itself")
 
         def peer_finishes(*_args, **_kwargs):
-            # Model the winner completing mid-wait: stamp written, lock released.
-            (tmp_path / "last_install_fingerprint.txt").write_text(fingerprint)
-            lock.unlink(missing_ok=True)
+            # Model the winner completing mid-wait: stamp written, then its process
+            # ends and the OS drops its lock.
+            if not finished:
+                finished.append(True)
+                (tmp_path / "last_install_fingerprint.txt").write_text(fingerprint)
+                release()
 
         with (
+            hold_file_lock(lock) as release,  # a peer already claimed the update
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run),
@@ -664,7 +756,6 @@ class TestAutoUpdateIfStaleLockContention:
     ):
         """Bounded wait: a stuck peer must not hang the launch or loop re-execing (AC-3)."""
         head, _fingerprint = self._project(tmp_path)
-        (tmp_path / "last_install_fingerprint.lock").write_text("")  # never released
 
         def fake_run(cmd, **kwargs):
             if "rev-parse" in cmd:
@@ -672,6 +763,7 @@ class TestAutoUpdateIfStaleLockContention:
             raise AssertionError("the loser must not run `ai update` itself")
 
         with (
+            hold_file_lock(tmp_path / "last_install_fingerprint.lock"),  # never released
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run),
