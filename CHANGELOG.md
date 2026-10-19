@@ -176,6 +176,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer to a declared question still refuses the update, and the message now names each one.
   A dropped answer is how Copier treats a question whose `when` is false, so the message says
   so and points to `ask: false`, which keeps a question unprompted and its answer recorded.
+- `ai copier-update --no-isolate` and `--no-push` gain the short forms `-n` and `-N`, which the
+  CLI's short-and-long-form convention requires of every option.
 - `ai cos` now takes the exclusive advisory lock on `<home>/registry.json.lock` across its
   whole load-change-save of `registry.json`, so a change another locked writer saves while a
   chief starts is no longer overwritten. The save is fsynced before the rename. There is no
