@@ -290,6 +290,22 @@ def get_engine_script(
             "launch_log_path": launch_log_path or "",
         }
     )
+    _generation_meta = json.dumps(
+        {
+            key: json.loads(_meta)[key]
+            for key in (
+                "engine",
+                "ai_name",
+                "session",
+                "project_prefix",
+                "project_name",
+                "worktree_dir",
+                "sandbox",
+                "is_remote",
+                "notify",
+            )
+        }
+    )
 
     return f"""
     # The pane leader is deliberately stable.  Replaceable session bodies run as
@@ -414,7 +430,7 @@ def get_engine_script(
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
     # BEGIN RUN STATE supervisor-generation
-      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session") || exit 1
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
       export AI_CLI_RUN_GENERATION
     # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
@@ -784,26 +800,27 @@ def get_engine_script(
     # A supported pre-feature supervisor cannot pass a run-state generation.
     # Its refreshed child acquires one before any agent or final-exit path runs.
     if [[ -z "${{AI_CLI_RUN_GENERATION:-}}" ]]; then
+      # Old supervisors restart every status except 77/79. Install the clean-stop
+      # traps before Python starts, including its imports and error reporting.
+      trap 'exit 77' INT
+      trap 'exit 79' TERM
       _begin_failures_file="$_ai_state_dir/session-begin-failures-$tmux_session"
       _begin_failures=0
       if [[ -f "$_begin_failures_file" ]]; then
         IFS= read -r _begin_failures < "$_begin_failures_file" || true
       fi
       [[ "$_begin_failures" =~ ^[0-9]{{1,2}}$ ]] || _begin_failures=0
-      _begin_park() {{
+      _begin_stop() {{
         printf 'session %s: %s; not retrying\\n' "$tmux_session" "$1" >&2
-        trap 'exit 143' TERM
-        trap 'exit 130' INT
-        # Foreground sleeps bound trap latency to one second and leave no helper.
-        while true; do sleep 1; done
+        exit 77
       }}
-      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session"); then
-        printf '0\\n' > "$_begin_failures_file" || _begin_park "cannot reset generation failure counter"
+      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --launch-metadata {shlex.quote(_generation_meta)}); then
+        printf '0\\n' > "$_begin_failures_file" || _begin_stop "cannot reset generation failure counter"
       else
         _begin_failures=$((10#$_begin_failures + 1))
-        printf '%s\\n' "$_begin_failures" > "$_begin_failures_file" || _begin_park "cannot persist generation failure counter"
+        printf '%s\\n' "$_begin_failures" > "$_begin_failures_file" || _begin_stop "cannot persist generation failure counter"
         if (( _begin_failures >= 20 )); then
-          _begin_park "cannot acquire a durable supervisor generation after 20 consecutive failures (see error above)"
+          _begin_stop "cannot acquire a durable supervisor generation after 20 consecutive failures (see error above)"
         fi
         _begin_delay=1
         for (( _begin_attempt=1; _begin_attempt<_begin_failures && _begin_delay<30; _begin_attempt++ )); do
@@ -814,6 +831,7 @@ def get_engine_script(
         exit 76
       fi
       export AI_CLI_RUN_GENERATION
+      trap - INT TERM
     fi
     # END RUN STATE
     _ai_progress_marker="$_ai_state_dir/session-progress-open-$tmux_session"

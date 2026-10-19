@@ -51,9 +51,43 @@ def mark(name, status, cause, evidence, generation, sequence):
 
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
-def begin(name):
+@click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
+def begin(name, launch_metadata):
     try:
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name))
+        recipe = None
+        if launch_metadata is not None:
+            meta = json.loads(launch_metadata)
+            engine = meta["engine"]
+            host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
+            cwd = meta.get("worktree_dir") or str(Path.cwd())
+            if meta["session"] != name or name not in (f"{engine}-{meta['ai_name']}", f"{engine}-r-{meta['ai_name']}"):
+                raise ValueError("launch metadata does not match the session identity")
+            prefix = meta["project_prefix"]
+            if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", prefix):
+                raise ValueError("invalid launch project prefix")
+            options = {key: meta.get(key, False) for key in ("sandbox", "is_remote", "notify")}
+            if any(not isinstance(value, bool) for value in options.values()):
+                raise ValueError("invalid launch options")
+            argv = ["ai", engine, name, "--project-prefix", prefix]
+            project = meta.get("project_name", "")
+            if project:
+                argv += ["-p", project]
+            for key in ("sandbox", "is_remote", "notify"):
+                if options[key]:
+                    argv.append("--" + key.replace("_", "-"))
+            recipe = {
+                "engine": engine,
+                "session_name": name,
+                "owning_host": host,
+                "cwd": cwd,
+                "project": project,
+                "argv": argv,
+                "options": options,
+                "extra_args": [],
+            }
+            if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
+                raise ValueError("invalid launch recovery recipe")
+        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
 
