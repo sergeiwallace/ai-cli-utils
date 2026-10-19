@@ -199,6 +199,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now an OS lock that ends with its holder, so later launches update at once
   instead of each waiting 90 s and skipping the update.
 
+- A session whose terminal can never be handed to its child now reports the failure after
+  30 seconds, as documented. The promotion retry loop counted attempts, and each attempt starts a
+  Python interpreter, so its "30 second" budget really meant 3000 interpreter starts: over an hour
+  at the 1.4 seconds per attempt measured on one macOS host. It now stops on elapsed time.
 - `ai sessions boot-unit install` and `status` no longer fail with "cannot determine
   boot-unit state" on systemd 249 when the unit is not installed yet. That version answers
   `is-enabled --quiet` for a missing unit with exit 1 and a message on stderr. The unit now

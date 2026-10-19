@@ -1804,10 +1804,14 @@ fi
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
     if fast_promotion_retry:
-        # Bound only in the test harness (docs/bugs/terminal-promotion-failure-hang.md
-        # "Required next reproduction") so a deterministically-failing promotion
-        # gives up in ~0.2s instead of the production 30s (3000 * 0.01s).
-        script = script.replace("_promotion_attempt < 3000", "_promotion_attempt < 20")
+        # Shortened only in the test harness (docs/bugs/terminal-promotion-failure-hang.md),
+        # so a promotion that can never succeed gives up in 10 s instead of production's 30 s.
+        # Long enough for the child to report its group on a loaded host, so the failure is
+        # the "could not promote" one the tests assert. Asserted, because a replace that no
+        # longer matches would silently restore the 30 s budget.
+        budget = "_promotion_budget_seconds=30"
+        assert budget in script, "the promotion budget line moved; update this harness"
+        script = script.replace(budget, "_promotion_budget_seconds=10")
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -2071,8 +2075,8 @@ def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_sup
     10 ms sleep, so "30 s" (3000 attempts) really meant 3000 interpreter starts. Measured on
     an unloaded macOS host, 20 attempts took 27.6 s, about 1.4 s each, which is why the test
     above, bounded to 20 attempts, timed out on a loaded machine with nothing on stderr yet:
-    it was still retrying. In production that same loop held a pane blank for most of an
-    hour before reporting a promotion it could never make.
+    it was still retrying. At that rate production's 3000-attempt bound would hold a pane
+    blank for over an hour before reporting a promotion it could never make.
 
     Here every attempt is made slow on purpose, the way a loaded host makes it slow, so a
     count-bounded loop needs at least 40 s and a timed one gives up within seconds.
