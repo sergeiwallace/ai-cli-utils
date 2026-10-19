@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ from conftest import run_cli
 
 from ai_cli import config, main
 from ai_cli import session_restart as restart
+from ai_cli import session_run_state as run_state
 from ai_cli.process_probe import ProcessIdentity, StartTimeMatch
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
@@ -280,6 +282,20 @@ def world(tmp_path, monkeypatch):
     config_home = config.get_xdg_config_home()
     monkeypatch.setattr(config, "get_xdg_state_home", lambda: state)
     monkeypatch.setattr(config, "get_xdg_config_home", lambda: config_home)
+    run_state.register(
+        session,
+        recipe={
+            "engine": "c",
+            "session_name": session,
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(cwd),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     meta = {
         "engine": "c",
         "ai_name": record["name"],
@@ -426,6 +442,58 @@ def world(tmp_path, monkeypatch):
     # monkeypatch is finalized later and would resurrect that expired guard.
     with patch.object(restart.subprocess, "run", subprocess_run):
         yield state_obj
+
+
+@pytest.mark.parametrize("missing", ["record", "recipe", "invalid"])
+@pytest.mark.parametrize("mechanism", ["kill", "exit", "fallback"])
+def test_given_unrelaunchable_session_when_restart_then_no_boot_recipe_before_any_action(
+    world, monkeypatch, missing, mechanism
+):
+    from ai_cli import session_registry
+
+    def remove(doc):
+        if missing == "record":
+            doc["sessions"].clear()
+        else:
+            doc["sessions"][0]["boot_recipe"] = {} if missing == "recipe" else {"engine": "unknown"}
+        return True
+
+    session_registry._mutate(remove)
+    world.settings["restart_session"].update(mechanism="exit" if mechanism == "exit" else "kill", pre_step=True)
+    monkeypatch.setattr(restart, "_signal_supported", lambda: mechanism != "fallback")
+    monkeypatch.setattr(restart, "context_gate", lambda *args: False)
+    world.commands({"inject": ["inject"]})
+    before = session_registry.registry_path().read_bytes()
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "no-boot-recipe"
+    assert ("not registered" if missing == "record" else "boot recipe") in report["detail"]
+    assert not world.injected and not world.signals and not world.ended
+    assert session_registry.registry_path().read_bytes() == before
+
+
+def test_given_recipe_removed_after_precheck_when_final_assessment_then_no_signal(world, monkeypatch):
+    from ai_cli import session_registry
+
+    prepare = restart.prepare_request
+
+    def remove_after_prepare(*args):
+        result = prepare(*args)
+        session_registry._mutate(lambda doc: doc["sessions"][0].pop("boot_recipe") is not None)
+        return result
+
+    monkeypatch.setattr(restart, "prepare_request", remove_after_prepare)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "no-boot-recipe"
+    assert not world.injected and not world.signals and not world.ended
+
+
+def test_given_missing_recipe_when_checking_then_boot_gate_refuses_without_action(world):
+    from ai_cli import session_registry
+
+    session_registry._mutate(lambda doc: doc["sessions"].clear() or True)
+    code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 1 and report["gates"]["boot-recipe"] == "no-boot-recipe"
+    assert not world.injected and not world.signals
 
 
 @pytest.mark.parametrize("mechanism", ["kill", "exit", "fallback"])
@@ -819,9 +887,241 @@ def test_given_failure_when_cooldown_expires_then_auto_suppressed(world, monkeyp
     world.commands({})
     assert world.cli("-X", SESSION_ID)[1]["reason"] == "verification-incomplete"
     world.registry.unlink()
+    world.connection.__enter__.return_value.connect.side_effect = ConnectionRefusedError()
     monkeypatch.setattr(config, "load_config", lambda: world.settings)
     report = restart.restart(SESSION_ID, automatic=True)
     assert report["reason"] == "previous-verification-failed" and len(world.signals) == 1
+
+
+@pytest.fixture
+def failed_restart(world):
+    settings = config.read_restart_config(world.settings)
+    with restart.session_lock(world.session):
+        request = restart.prepare_request(world.record, restart.managed_gate(world.record, settings), settings)
+        request["status"] = "failed"
+        _, result_path, request_path = restart.state_paths(world.session)
+        restart._atomic_json(request_path, request)
+        restart._atomic_json(
+            result_path,
+            {
+                "session_id": SESSION_ID,
+                "last_restart": time.time() - 100,
+                "failed": True,
+                "reason": "verification-failed",
+            },
+        )
+    world.replace()
+    world.request_path = request_path
+    world.result_path = result_path
+    world.replacement_path = world.registry.parent / "201.json"
+    world.request = request
+    return world
+
+
+@pytest.mark.parametrize("renamed", [False, True])
+def test_given_failed_request_when_verified_replacement_checked_then_reconciled_and_fence_passes(
+    failed_restart, renamed
+):
+    world = failed_restart
+    if renamed:
+        world.request["title"] = "previous-title"
+        restart._atomic_json(world.request_path, world.request)
+    before = restart._object(world.result_path)
+    started = time.time()
+    code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 0, report
+    assert report["gates"]["failure-fence"] == "PASS"
+    request = restart._object(world.request_path)
+    assert request["status"] == "complete"
+    assert request["request_id"] == world.request["request_id"]
+    assert request["reconciliation"]["replacement_pid"] == 201
+    assert started <= request["reconciliation"]["time"] <= time.time()
+    assert set(request["reconciliation"]["evidence"]) == {
+        "pane",
+        "session-id",
+        "replacement-pid",
+        "process-start",
+        "supervisor-identity",
+        "supervisor-ancestry",
+        "local-verdict",
+    }
+    result = restart._object(world.result_path)
+    assert result["failed"] is False
+    assert "reconciled" in result["reason"]
+    assert result["last_restart"] == before["last_restart"]
+    saved = world.request_path.read_bytes(), world.result_path.read_bytes()
+    code, report, _ = world.cli("-Y", SESSION_ID)
+    assert code == 0 and report["gates"]["failure-fence"] == "PASS"
+    assert (world.request_path.read_bytes(), world.result_path.read_bytes()) == saved
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize("flag", ["-Y", "-X"])
+def test_given_failed_request_when_reconciled_during_cooldown_then_original_cooldown_remains(failed_restart, flag):
+    world = failed_restart
+    world.settings["restart_session"]["cooldown_seconds"] = 3600
+    before = restart._object(world.result_path)["last_restart"]
+    code, report, _ = world.cli(flag, SESSION_ID)
+    assert code == 1
+    assert (report["gates"]["cooldown"] if flag == "-Y" else report["reason"]) == "cooldown"
+    assert restart._object(world.request_path)["status"] == "complete"
+    assert restart._object(world.result_path)["last_restart"] == before
+    assert restart._object(world.result_path)["failed"] is False
+    assert not world.signals and not world.injected
+
+
+def test_given_failed_request_when_manual_retry_prepares_then_reconciliation_precedes_it(failed_restart, monkeypatch):
+    world = failed_restart
+    seen = []
+
+    def prepare(*args):
+        seen.append(restart._object(world.request_path))
+        raise restart.Refusal("busy")
+
+    monkeypatch.setattr(restart, "prepare_request", prepare)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "busy"
+    assert seen[0]["status"] == "complete"
+    assert seen[0]["reconciliation"]["replacement_pid"] == 201
+    assert restart._object(world.result_path)["failed"] is False
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize("flag", ["-Y", "-X"])
+@pytest.mark.parametrize("target", ["request_path", "result_path"])
+@pytest.mark.parametrize("after_replace", [False, True])
+def test_given_reconciliation_write_error_when_attempted_then_fence_and_files_preserved(
+    failed_restart, monkeypatch, flag, target, after_replace
+):
+    world = failed_restart
+    before = world.request_path.read_bytes(), world.result_path.read_bytes()
+    atomic_json = restart._atomic_json
+    failed = False
+
+    def write(path, value):
+        nonlocal failed
+        with pytest.raises(restart.Refusal, match="locked"):
+            with restart.session_lock(world.session):
+                pytest.fail("reconciliation must hold the session lock")
+        if path == getattr(world, target) and not failed:
+            failed = True
+            if after_replace:
+                atomic_json(path, value)
+            raise OSError("fixture write failed")
+        atomic_json(path, value)
+
+    monkeypatch.setattr(restart, "_atomic_json", write)
+    code, _, _ = world.cli(flag, SESSION_ID)
+    assert code == 1
+    assert failed
+    assert (world.request_path.read_bytes(), world.result_path.read_bytes()) == before
+    assert not world.signals and not world.injected
+
+
+def test_given_verified_replacement_when_automatic_retry_then_failed_suppression_is_cleared(
+    failed_restart, monkeypatch
+):
+    world = failed_restart
+    world.commands({})
+    monkeypatch.setattr(config, "load_config", lambda: world.settings)
+    prepare = Mock(side_effect=restart.Refusal("busy"))
+    monkeypatch.setattr(restart, "prepare_request", prepare)
+    report = restart.restart(SESSION_ID, automatic=True)
+    assert report["reason"] == "busy"
+    prepare.assert_called_once()
+    assert restart._object(world.result_path)["failed"] is False
+    assert restart._object(world.request_path)["status"] == "complete"
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize("flag", ["-Y", "-X"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "no-replacement",
+        "supervisor",
+        "ancestry",
+        "supervisor-birth",
+        "session-id",
+        "pane",
+        "local-failed",
+        "local-unknown",
+        "old-pid",
+        "dead",
+        "reused",
+        "request-unreadable",
+        "request-inaccessible",
+        "result-unreadable",
+        "exception",
+    ],
+)
+def test_given_failed_request_when_replacement_unproven_then_fence_and_files_preserved(
+    failed_restart, monkeypatch, flag, fault
+):
+    world = failed_restart
+    replacement = restart._object(world.replacement_path)
+    if fault == "no-replacement":
+        # Inspect the fixture record before removing only this simulated replacement.
+        assert replacement["pid"] == 201
+        world.replacement_path.unlink()
+        world.ended = False
+    elif fault == "supervisor":
+        world.request["supervisor_pid"] = 999
+        world.request["supervisor_identity"] = {"backend": "fake", "marker": 999}
+    elif fault == "supervisor-birth":
+        world.identities[103] = ProcessIdentity("fake", 999)
+    elif fault == "ancestry":
+        monkeypatch.setattr(restart.psutil.Process, "parents", lambda process: [])
+    elif fault == "session-id":
+        world.request["session_id"] = OTHER_ID
+    elif fault == "pane":
+        world.request["tmux"] = f"{world.session}:@1.%2"
+    elif fault in ("local-failed", "local-unknown"):
+        if fault == "local-failed":
+            replacement["bridgeSessionId"] = ""
+        else:
+            world.connection.__enter__.return_value.connect.side_effect = FileNotFoundError()
+    elif fault == "old-pid":
+        world.request["old_agent_pid"] = 201
+    elif fault in ("dead", "reused"):
+        if fault == "dead":
+            world.probe.has_ended = lambda pid: pid == 201
+            world.ended = False
+        else:
+            replacement["procStart"] = 999
+    elif fault == "exception":
+        monkeypatch.setattr(restart, "_same", Mock(side_effect=RuntimeError("fixture probe failed")))
+    restart._atomic_json(world.request_path, world.request)
+    if fault != "no-replacement":
+        restart._atomic_json(world.replacement_path, replacement)
+    if fault == "request-unreadable":
+        world.request_path.write_text("{", encoding="utf-8")
+    elif fault == "result-unreadable":
+        world.result_path.write_text("{", encoding="utf-8")
+    before = world.request_path.read_bytes(), world.result_path.read_bytes()
+    if fault == "request-inaccessible":
+        original_stat = restart.os.stat
+
+        def stat(path, *args, **kwargs):
+            if path == world.request_path:
+                raise PermissionError("fixture request inaccessible")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(restart.os, "stat", stat)
+    if flag == "-X":
+        # A manual retry keeps its own same-conversation rule; it never counts as reconciliation.
+        with contextlib.suppress(Exception):
+            world.cli(flag, world.session)
+        request = {}
+        with contextlib.suppress(Exception):
+            request = restart._object(world.request_path)
+        assert "reconciliation" not in request
+        return
+    code, report, _ = world.cli(flag, world.session)
+    assert code == 1, report
+    assert report["gates"]["failure-fence"] != "PASS"
+    assert (world.request_path.read_bytes(), world.result_path.read_bytes()) == before
+    assert not world.signals and not world.injected
 
 
 @pytest.mark.parametrize("phase", ["pre-step", "relaunch"])
@@ -932,6 +1232,106 @@ def test_given_unavailable_socket_family_when_passively_probed_then_local_unknow
     monkeypatch.delattr(restart.socket, "AF_UNIX")
     assert restart.local_verdict(row) == "UNKNOWN"
     assert not world.signals and not world.injected
+
+
+@pytest.fixture
+def replacement_listing(world, monkeypatch):
+    settings = config.read_restart_config(world.settings)
+    restart.prepare_request(world.record, restart.managed_gate(world.record, settings), settings)
+    world.replace()
+    replacement = restart._object(world.registry.parent / "201.json")
+    listing = SimpleNamespace(rows=[replacement.copy()], flags=None, delay=0, elapsed=0)
+    monkeypatch.setattr(restart.time, "monotonic", lambda: listing.elapsed)
+    monkeypatch.setattr(restart.time, "sleep", lambda seconds: setattr(listing, "elapsed", listing.elapsed + seconds))
+
+    def run(argv, **kwargs):
+        if argv == ["claude", "agents", "--json"]:
+            listing.elapsed += listing.delay
+            data = listing.rows if listing.flags is None else {"sessions": listing.rows, **listing.flags}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(data))
+        return world.subprocess_run(argv, **kwargs)
+
+    monkeypatch.setattr(restart.subprocess, "run", run)
+    return replacement, listing, settings
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("unrelated", [{"pid": None}, {"sessionId": ""}, {"name": ""}])
+def test_given_unrelated_malformed_agent_when_local_checked_then_replacement_verified(
+    replacement_listing, wrapped, unrelated
+):
+    replacement, listing, _ = replacement_listing
+    listing.rows.insert(0, {"sessionId": OTHER_ID, "name": "other-session", "pid": 301, **unrelated})
+    if wrapped:
+        listing.flags = {"complete": True}
+    assert restart.local_verdict(replacement) == "VERIFIED"
+    assert restart.trigger_verdicts(replacement, {"observer": ["observer"]})["unreachable"] == "NO"
+
+
+@pytest.mark.parametrize("peer", [False, True])
+@pytest.mark.parametrize("delay", [0, 15])
+def test_given_unrelated_pidless_agent_when_replacement_verified_then_restart_succeeds(
+    world, replacement_listing, peer, delay
+):
+    _, listing, settings = replacement_listing
+    listing.rows.append({"sessionId": OTHER_ID, "name": "other-session", "pid": None})
+    listing.delay = delay
+    settings["relaunch_timeout_seconds"] = 180
+    report = restart._verify_replacement(world.record, settings, {"observer": ["observer"]} if peer else {})
+    assert report["reason"] == ("restarted" if peer else "verification-incomplete"), report
+    assert report["local"] == "VERIFIED"
+    assert listing.elapsed == 2 * delay
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("pid", None), ("pid", "201"), ("pid", True), ("pid", 1), ("sessionId", ""), ("name", "")],
+)
+@pytest.mark.parametrize("missing", [False, True])
+def test_given_malformed_target_agent_when_replacement_verified_then_refusal_names_field(
+    world, replacement_listing, field, value, missing
+):
+    replacement, listing, settings = replacement_listing
+    if missing:
+        listing.rows[0].pop(field)
+    else:
+        listing.rows[0][field] = value
+    assert restart.local_verdict(replacement) == "UNKNOWN"
+    report = restart._verify_replacement(world.record, settings, {})
+    assert report["reason"] == "verification-failed" and report["local"] == "FAILED"
+    assert "matching local agent row" in report["detail"] and field in report["detail"], report
+    assert not world.signals and not world.injected
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        ("absent", "FAILED"),
+        ("duplicate", "FAILED"),
+        ("pid", "FAILED"),
+        ("sessionId", "FAILED"),
+        ("name", "FAILED"),
+        ("complete", "UNKNOWN"),
+        ("listTruncated", "UNKNOWN"),
+        ("localListFailed", "UNKNOWN"),
+        ("bridgeWalkFailed", "UNKNOWN"),
+        ("truncated", "UNKNOWN"),
+    ],
+)
+def test_given_agent_listing_fault_when_local_checked_then_existing_verdict_preserved(
+    replacement_listing, fault, expected
+):
+    replacement, listing, _ = replacement_listing
+    if fault == "absent":
+        listing.rows.clear()
+    elif fault == "duplicate":
+        listing.rows *= 2
+    elif fault in ("pid", "sessionId", "name"):
+        listing.rows[0][fault] = {"pid": 301, "sessionId": OTHER_ID, "name": "other-session"}[fault]
+    else:
+        listing.flags = {"complete": fault != "complete", **({fault: True} if fault != "complete" else {})}
+    assert restart.local_verdict(replacement) == expected
 
 
 @pytest.mark.parametrize(
@@ -1095,6 +1495,10 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     world = request.getfixturevalue("world")
     # Executable discovery stays native while this test simulates macOS provenance.
     monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))
+    from ai_cli import session_registry
+
+    # The registry resolves its state directory per platform; keep it where the fixture registered.
+    monkeypatch.setattr(session_registry, "get_xdg_state_home", config.get_xdg_state_home)
     monkeypatch.setattr(restart.sys, "platform", "darwin")
     world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []
@@ -1116,8 +1520,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     monkeypatch.setattr(main, "_write_launch_script_if_changed", refresh)
     code, report, _ = world.cli("-X", SESSION_ID)
     assert reads == [103, 102]
-    assert code == (1 if changed_birth else 0)
-    assert report["reason"] == ("identity" if changed_birth else "restarted")
+    assert code == (1 if changed_birth else 0), report
+    assert report["reason"] == ("identity" if changed_birth else "restarted"), report
     assert bool(world.signals) is not changed_birth
 
 
@@ -1153,6 +1557,160 @@ def test_given_context_evidence_when_checked_then_conservative_window(world, kin
     assert report["reason"] == ("restarted" if expected else "context")
     if not expected:
         assert not world.signals and not world.injected
+
+
+@pytest.fixture
+def context_row():
+    return {
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-5-5",
+            "usage": {"input_tokens": 17_600, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 100_000},
+        },
+    }
+
+
+@pytest.fixture
+def context_settings():
+    return config.read_restart_config({})
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]"])
+@pytest.mark.parametrize(("requested", "allowed"), [("claude-opus-5-5[1m]", True), ("claude-opus-5-5", False)])
+def test_given_matching_requested_model_when_context_checked_then_requested_window_wins(
+    context_row, context_settings, model, requested, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = requested
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize("extended", [False, True])
+@pytest.mark.parametrize(
+    "requested",
+    [
+        None,
+        False,
+        1,
+        [],
+        {},
+        "",
+        " ",
+        "claude-opus-5-5[1m]\n",
+        " claude-opus-5-5[1m]",
+        "claude-opus-5-5[1M]",
+        "claude-opus-5-5[2m]",
+        "claude-opus-5-5[1m][1m]",
+        "claude-opus-5-5[1m]/extra",
+        "claude-sonnet-5-5[1m]",
+        "claude-sonnet-5-5",
+    ],
+)
+def test_given_untrusted_requested_model_when_context_checked_then_message_window_applies(
+    context_row, context_settings, requested, extended
+):
+    context_row["requestedModel"] = requested
+    if extended:
+        context_row["message"]["model"] += "[1m]"
+    assert restart.context_gate([context_row], context_settings) is extended
+
+
+@pytest.mark.parametrize(
+    ("requested", "window", "allowed"),
+    [("claude-opus-5-5[1m]", 200_000, False), ("claude-opus-5-5", 1_000_000, True)],
+)
+def test_given_window_override_when_requested_model_disagrees_then_override_wins(
+    context_row, context_settings, requested, window, allowed
+):
+    context_row["requestedModel"] = requested
+    context_settings["context_window_tokens"] = window
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize(
+    ("model", "requested", "allowed"),
+    [
+        ("claude-opus-5-5", "us.anthropic.claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5-5-v12:34[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0[1m]", "claude-opus-5-5", False),
+        ("us.anthropic.eu.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5[1m]", True),
+        ("us.anthropic.claude-opus-5-5-v1:0[1m]", None, True),
+        ("us.anthropic.claude-opus-5-5-v1:0", None, False),
+    ],
+)
+def test_given_provider_model_ids_when_context_checked_then_stripped_bases_match(
+    context_row, context_settings, model, requested, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = requested
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "us.anthropic.claude-haiku-5-5-v1:0"])
+@pytest.mark.parametrize(("tokens", "allowed"), [(117_600, False), (10_000, True)])
+def test_given_haiku_requested_extension_when_context_checked_then_base_window_applies(
+    context_row, context_settings, model, tokens, allowed
+):
+    context_row["message"]["model"] = model
+    context_row["requestedModel"] = "claude-haiku-5-5[1m]"
+    context_row["message"]["usage"] = {
+        "input_tokens": tokens,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    assert restart.context_gate([context_row], context_settings) is allowed
+
+
+def test_given_unknown_requested_model_when_context_checked_then_unknown_window_refuses(context_row, context_settings):
+    context_row["message"]["model"] = "unknown-model"
+    context_row["requestedModel"] = "unknown-model[1m]"
+    context_row["message"]["usage"]["cache_read_input_tokens"] = 0
+    assert not restart.context_gate([context_row], context_settings)
+
+
+def test_given_provider_base_model_when_usage_is_low_then_normalized_table_window_passes(context_row, context_settings):
+    context_row["message"]["model"] = "us.anthropic.claude-opus-5-5-v1:0"
+    context_row["message"]["usage"]["cache_read_input_tokens"] = 0
+    assert restart.context_gate([context_row], context_settings)
+
+
+def test_given_model_switch_when_latest_main_usage_selected_then_older_and_sidechain_windows_are_ignored(
+    context_row, context_settings, tmp_path
+):
+    older = {**context_row, "message": {**context_row["message"]}, "requestedModel": "claude-opus-5-5[1m]"}
+    context_row["requestedModel"] = "claude-sonnet-5-5"
+    context_row["message"]["model"] = "claude-sonnet-5-5"
+    sidechain = {**context_row, "requestedModel": "claude-sonnet-5-5[1m]", "isSidechain": True}
+    rows = [
+        older,
+        context_row,
+        {"type": "assistant", "requestedModel": "claude-sonnet-5-5[1m]", "message": {"usage": None}},
+        sidechain,
+    ]
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert not restart.context_gate(restart.transcript_tail(transcript), context_settings)
+
+
+def test_given_context_docs_when_window_precedence_described_then_contract_is_explicit():
+    root = Path(__file__).resolve().parents[1]
+    plan = next((root / "docs" / "plans").glob("*restart-idle-sessions-plan.md"))
+    for path in (root / "README.md", plan):
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "`context_window_tokens` wins",
+            "matching `requestedModel`",
+            "even when `message.model` has `[1m]`",
+            "known non-haiku models",
+            "1,000,000",
+            "200,000",
+            "malformed",
+            "mismatched request",
+            "last `anthropic.`",
+            "`-v<digits>:<digits>`",
+        ):
+            assert required in text, (path.name, required)
 
 
 @pytest.mark.parametrize("key", ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
@@ -1275,7 +1833,9 @@ def pre_step_world(world, monkeypatch):
                 {"type": "user", "isCompactSummary": True, "message": {"content": "Session summary"}},
             ]
         )
-        world.record["statusUpdatedAt"] = time.time() * 1000
+        # One millisecond back: the gate reads this as time.time() - ms / 1000, and writing "now" exactly
+        # lets float rounding return a tiny negative quiet time (about 1 in 90 epochs), which reads as busy.
+        world.record["statusUpdatedAt"] = (time.time() - 0.001) * 1000
         world.write()
 
     world.compact = compact

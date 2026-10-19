@@ -2109,12 +2109,10 @@ class TestGetEngineScript:
             "c", "session-1", "c-session-1", "c-session-", "session", worktree_dir=f"/tmp/project; touch {marker}"
         )
         assert f"cd -- '/tmp/project; touch {marker}'" in script
-        # The raw value also appears once more inside the session-meta JSON blob
-        # (pre-existing metadata capture, unrelated to shell-quoting safety); that
-        # occurrence sits inside a JSON string value, and the whole blob is itself
-        # shell-quoted via shlex.quote() for its printf argument, so it is not an
-        # executable-context duplicate of the guarded cd command above.
-        assert script.count("touch /tmp/marker") == 2
+        # The value also appears in session metadata and both generation-acquisition
+        # payloads. Each JSON blob is shell-quoted as a single argument, so those
+        # copies are not executable-context duplicates of the guarded cd above.
+        assert script.count("touch /tmp/marker") == 4
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")

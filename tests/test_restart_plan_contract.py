@@ -73,3 +73,22 @@ def test_given_restart_plan_when_visibility_contract_checked_then_incomplete_evi
     assert "SendMessage" in rollout and "mobile" in rollout
     assert "D-11 blocks completion" in restart_plan
     assert "nothing waits on this choice" not in restart_plan
+
+
+def test_given_restart_documents_when_boot_recipe_contract_checked_then_refusal_is_consistent(restart_plan):
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    contract = acceptance_criterion(restart_plan, "5.7")
+    for document in (readme, contract):
+        assert "no-boot-recipe" in document
+        assert "read-only" in document
+        assert "final assessment" in document
+        assert "generation" in document
+    assert "valid_boot_recipe" in contract
+    assert "leave registry bytes unchanged" in contract
+    for document in (readme, contract):
+        assert "30-second" in document or "30 seconds" in document
+        assert "counter" in document and "reset" in document
+        assert "143" in document and "130" in document
+        assert "AI_CLI_RUN_GENERATION" in document
+    assert "Failure 20" in contract and "not retrying" in contract
+    assert "underlying exception" in contract and "empty stdout" in contract

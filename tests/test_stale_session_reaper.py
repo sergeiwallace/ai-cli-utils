@@ -263,7 +263,7 @@ def _start_real_tmux_supervisor(
     ownership_bootstrap_barrier: tuple[Path, Path] | None = None,
 ) -> tuple[str, Path, Path]:
     """Run a generated supervisor through real tmux, locks, and heartbeat writes."""
-    session_id = "test-session"
+    session_id = "c-r-session-1" if is_remote else "c-session-1"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_isolated_tmux_wrapper(bin_dir / "tmux")
@@ -294,7 +294,21 @@ def _start_real_tmux_supervisor(
     from ai_cli import session_registry, session_run_state
 
     with patch.object(session_registry, "registry_path", return_value=state_home / session_registry.REGISTRY_FILENAME):
-        session_run_state.register(session_id, recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
+        session_run_state.register(
+            session_id,
+            recipe={
+                "engine": "c",
+                "session_name": session_id,
+                "owning_host": "host-a",
+                "argv": ["ai", "c", session_id],
+                "cwd": str(tmp_path),
+                "project": "myproject",
+                "options": {"is_remote": is_remote},
+                "extra_args": [],
+            },
+            host="host-a",
+        )
+        session_run_state.can_begin(session_id)
     if child_body is not None:
         sessions_dir = state_home / "sessions"
         sessions_dir.mkdir(parents=True)

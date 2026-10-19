@@ -1,0 +1,35 @@
+# Acquisition body rendered from the session template at dedd4ffc.
+    # A supported pre-feature supervisor cannot pass a run-state generation.
+    # Its refreshed child acquires one before any agent or final-exit path runs.
+    if [[ -z "${AI_CLI_RUN_GENERATION:-}" ]]; then
+      _begin_failures_file="$_ai_state_dir/session-begin-failures-$tmux_session"
+      _begin_failures=0
+      if [[ -f "$_begin_failures_file" ]]; then
+        IFS= read -r _begin_failures < "$_begin_failures_file" || true
+      fi
+      [[ "$_begin_failures" =~ ^[0-9]{1,2}$ ]] || _begin_failures=0
+      _begin_park() {
+        printf 'session %s: %s; not retrying\n' "$tmux_session" "$1" >&2
+        trap 'exit 143' TERM
+        trap 'exit 130' INT
+        # Foreground sleeps bound trap latency to one second and leave no helper.
+        while true; do sleep 1; done
+      }
+      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session"); then
+        printf '0\n' > "$_begin_failures_file" || _begin_park "cannot reset generation failure counter"
+      else
+        _begin_failures=$((10#$_begin_failures + 1))
+        printf '%s\n' "$_begin_failures" > "$_begin_failures_file" || _begin_park "cannot persist generation failure counter"
+        if (( _begin_failures >= 20 )); then
+          _begin_park "cannot acquire a durable supervisor generation after 20 consecutive failures (see error above)"
+        fi
+        _begin_delay=1
+        for (( _begin_attempt=1; _begin_attempt<_begin_failures && _begin_delay<30; _begin_attempt++ )); do
+          _begin_delay=$((_begin_delay * 2))
+        done
+        (( _begin_delay > 30 )) && _begin_delay=30
+        sleep "$_begin_delay"
+        exit 76
+      fi
+      export AI_CLI_RUN_GENERATION
+    fi
