@@ -1628,6 +1628,8 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
     """
     if not _refresh_within_burst_budget():
         return 0
+    from .session_enrol import heal_live_sessions
+
     try:
         ls = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
@@ -1636,6 +1638,7 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
         return 0
     if ls.returncode != 0:
         return 0
+    heal_live_sessions(names=ls.stdout.splitlines())
     refreshed = 0
     for sname in ls.stdout.split():
         if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists() and _sync_stable_session_script(
@@ -2008,6 +2011,9 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 2:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal refresh-template <tmux_session>", err=True)
             sys.exit(1)
+        from .session_enrol import heal_live_sessions
+
+        heal_live_sessions()
         tmux_session = argv[1]
         meta_path = _config.get_xdg_state_home() / f"session-meta-{tmux_session}.json"
         if not meta_path.exists():

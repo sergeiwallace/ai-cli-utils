@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions enrol -a/--all` registers validated live sessions on the current host
+  without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
+  registrations, existing records and skips. Update refresh, supervisor start and
+  boot relaunch also attempt recovery, preserving ownership and existing policy.
 - Validated `[restart_session]` settings for safe session restarts, with a default
   context threshold of 20 percent and configurable idle, uptime and cooldown gates.
 - A guarded restart engine validates process identity, background work and Remote

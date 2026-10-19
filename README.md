@@ -661,6 +661,41 @@ name and flags come from that script, the directory from the live pane and the h
 are refused without changing the registry. Restart still requires every existing gate,
 including `remoteControlAtStartup = true`; enrolment does not enable Remote Control.
 
+To recover all existing sessions on a host after upgrading, run these commands
+as the user who owns its tmux server (macOS or Linux):
+
+```sh
+ai sessions enrol --all --dry-run --json
+ai sessions enrol --all --json
+```
+
+On Windows, run the same commands in the environment that owns tmux. For a WSL
+default distribution, PowerShell can invoke them with
+`wsl.exe -- ai sessions enrol --all --dry-run --json` followed by
+`wsl.exe -- ai sessions enrol --all --json`. Native Windows without tmux reports
+discovery unavailable; boot relaunch remains supported only on macOS and Linux.
+
+The bulk command (`-a/--all`, `-d/--dry-run`, `-j/--json`) reports each session as
+`registered`, `already-registered`, or `skipped` with a reason. In a dry run,
+`registered` means **would register**; nothing is written. It validates the live
+pane's exact generated script, embedded launch metadata, and any saved metadata.
+Legacy supervisors and remote-style names are supported. Missing saved metadata
+is recoverable when the generated script supplies it; absent or conflicting
+evidence, renamed tmux sessions, and foreign ownership are skipped without guessing.
+Discovery failures return a nonzero exit status.
+
+Bulk enrolment preserves existing records, ownership, generations and policy;
+newly recovered sessions default to boot policy `never`. It never signals,
+restarts, rewrites scripts or types into a pane. Repeated runs leave valid records
+unchanged. To opt a recovered session into boot replay deliberately, use
+`ai sessions policy c-session-1 auto`; the configured boot and safety gates still apply.
+
+Template refresh after an update, supervisor generation acquisition, and
+`ai sessions relaunch --boot` also attempt bulk recovery automatically, reading
+configuration at call time. Automatic recovery is best effort and logs its
+decisions; use the explicit command to inspect every skip. A stopped supervisor
+or unverifiable session still requires operator attention.
+
 ### Cross-machine sync
 
 ```bash

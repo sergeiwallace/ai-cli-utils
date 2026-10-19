@@ -16,7 +16,7 @@ from . import session_registry as registry
 from . import session_run_state as state
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
-from .session_enrol import enrol
+from .session_enrol import enrol, heal_live_sessions
 
 
 @click.group("sessions", help="Session run state and publication")
@@ -87,6 +87,7 @@ def begin(name, launch_metadata):
             }
             if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
                 raise ValueError("invalid launch recovery recipe")
+        heal_live_sessions()
         output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
@@ -293,6 +294,7 @@ def relaunch(slug, boot, dry_run):
     if slug is not None:
         _relaunch_named(slug, dry_run=dry_run)
         return
+    heal_live_sessions(dry_run=dry_run)
     cfg = state.settings()
     doc = registry.load_registry()
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]

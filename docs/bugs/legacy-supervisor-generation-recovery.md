@@ -288,6 +288,77 @@ here. No cleanup behavior was changed without a matching causal reproduction.
 
 ## Observability
 
+### Follow-up: enrol existing live sessions
+
+Acquisition-time recovery only runs when a refreshed supervisor or child calls
+`sessions _begin` with launch metadata. It cannot register a session that stays
+alive without acquiring again. The original single-session `sessions enrol`
+uses a recorded launch when available, but its no-record parser requires a
+remote-style Claude name and `AI_HOST`. It does not support host-wide discovery.
+A tmux name differing from the generated identity must be skipped, not inferred.
+
+Bulk enrolment now discovers live tmux names, validates the exact stable-script
+invocation and its embedded metadata, and checks saved metadata when present.
+Generated defaults may add fields absent from older saved metadata; every
+persisted field must still agree. Missing saved metadata is recoverable from the
+script; missing evidence everywhere is not. The running supervisor need not
+implement the current generation or child protocol. No process or script changes
+are needed to write its local registration.
+
+The registry transaction preserves existing ownership, policy, generations and
+connection records. Concurrent enrolment returns `already-registered` for the
+loser without another write. Pane PID and script bytes are rechecked before
+the transaction; changed evidence is refused. New records default to policy
+`never`, preserving the earlier recovery safety contract. Existing incomplete
+records retain their recorded launch arguments when constructing their recipe.
+The original named enrolment command and its output contract remain unchanged.
+
+Automatic recovery is called from update-time stable-script refresh, the
+version-change template-refresh command, supervisor generation acquisition, and
+boot relaunch. These calls read current configuration and never block an
+unrelated launch on discovery failure. The explicit bulk command reports those
+failures and per-session skip reasons. Native Windows discovery uses the same
+portable filesystem and registry code; hosts without tmux are diagnosed rather
+than treated as empty. The existing Windows boot-relaunch restriction remains.
+
+Additional acceptance criteria:
+
+- WHEN bulk enrolment discovers a validated legacy session, the tool SHALL add
+  its local registration without restarting or signalling any session.
+- WHEN a valid local registration exists, the tool SHALL leave its record and
+  registry bytes unchanged, including ownership, generation and relaunch policy.
+- WHEN metadata, identity or ownership cannot be validated, the tool SHALL report
+  a skip with a reason and leave that session unchanged.
+- WHEN concurrent enrolment registers the same session, the tool SHALL persist
+  exactly one record and preserve the winning registration.
+- WHEN dry-run is requested, the tool SHALL report proposed results without
+  creating a registry, lock, or script, including through boot relaunch.
+- WHEN an update refresh, supervisor start or boot relaunch runs, the tool SHALL
+  attempt live-session enrolment using configuration read at that call.
+- WHEN the existing named enrolment command runs, the tool SHALL preserve its
+  prior recipe output, validation and explicit policy behavior.
+
+The new regression module initially reported **25 failed** on the starting
+revision `c0738310`. After correcting the internal-refresh test's dispatcher and
+the concurrent-test instrumentation, all **25 failed** again against the
+archived base package, then **25 passed** against the implementation. Tests use
+generated scripts and real registry files/locks; tmux and process inspection are
+fixture-controlled so no live session is touched. README documents host-local
+operator commands and each result status. Further regressions cover socket
+permission failures, pane replacement, platform dispatch, boot dry-run and
+uninitialised configuration. Bulk inspection uses a read-only config load so it
+cannot create or rewrite a machine profile. The config cases reported **2 failed**
+before that correction; the socket-permission case reported **1 failed, 1 passed**
+before distinguishing unavailable discovery from an empty server.
+
+The focused lifecycle/config gate reports **318 passed**. The refresh-dispatch,
+burst-limit and complete bulk module gate reports **88 passed**. Refresh reuses
+its existing tmux discovery for enrolment; burst tests retain the discovery
+limit, bound the new per-pane inspections, and verify that rejected refreshes
+perform no subprocesses or counter writes. Ruff and full Pyright pass, with
+**0 errors, 0 warnings, 0 informations**. Full-suite baseline comparison is in
+progress; final results will be recorded after both runs finish.
+
 Read only the local state registry, saved metadata, launch logs and reaper log.
 The registry has 31 records (3 local and 28 remote connection records), with no
 boot recipes. There are 32 saved metadata files; 30 lack a launch-log path.
@@ -330,5 +401,9 @@ uses real shell, terminal and registry boundaries. No agents were delegated.
 2026-10-18: Corrected the real-supervisor fixture identity and recipe without
 changing production validation or existing behavioral assertions. Recorded full
 verification, isolated base comparisons and the remaining intermittent cases.
+
+2026-10-19: Added bulk enrolment and automatic recovery for validated live
+sessions. Preserved the named enrolment contract, existing registrations and
+boot policy; added regression coverage and host-local operator commands.
 
 <!-- /doc:region name="fix_log" -->
