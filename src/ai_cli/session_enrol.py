@@ -418,7 +418,7 @@ def enrol(name: str | None, all_sessions: bool, dry_run: bool, as_json: bool) ->
                 for report in reports:
                     output.emit(
                         output.Tag.SESSIONS,
-                        "enrol",
+                        "session",
                         f"{report['name']}: {report['status']} {report['reason']}".rstrip(),
                     )
             return

@@ -356,8 +356,7 @@ burst-limit and complete bulk module gate reports **88 passed**. Refresh reuses
 its existing tmux discovery for enrolment; burst tests retain the discovery
 limit, bound the new per-pane inspections, and verify that rejected refreshes
 perform no subprocesses or counter writes. Ruff and full Pyright pass, with
-**0 errors, 0 warnings, 0 informations**. Full-suite baseline comparison is in
-progress; final results will be recorded after both runs finish.
+**0 errors, 0 warnings, 0 informations**.
 
 A follow-up identity regression reported **1 failed** when read-only loading
 returned no profile for an absent config: enrolment recorded the OS hostname,
@@ -366,6 +365,39 @@ Read-only loading now resolves missing profile fields in memory using the same
 identity detection as ordinary loading, without persisting them. Its bulk/config
 gate reports **90 passed**. Full Pyright on both base and changed code reports
 **0 errors, 0 warnings, 0 informations**.
+
+The full command, `uv run --no-sync pytest -q -n 8 --timeout 300`, reports
+**76 failed, 5453 passed, 23 skipped, 3 warnings, 110 errors in 1387.23s
+(0:23:07)**. An archived checkout of starting revision `c0738310`, using the same
+interpreter and explicit base-package import paths, reports **77 failed,
+5417 passed, 24 skipped, 3 warnings, 110 errors in 1693.80s (0:28:13)**.
+Exact test-ID comparison matches **72 failures and all 110 errors** to base.
+The base-only failures include three repository-index checks affected by the
+archive having no Git metadata and two memory-allocation probes; these are not
+claimed as fixes from enrolment.
+
+Four failures were unmatched. Two were the refresh burst assertions already
+corrected by reusing discovery and accounting for bounded pane inspections.
+The source-enforcement check identified an undeclared output operation; bulk
+reports now use the existing `session` operation. The fourth is the unchanged
+memory-guard stderr-forwarding test's subprocess timeout under the full parallel
+workload. Serial probes of that case plus source enforcement report **2 passed**
+on base and **2 passed** on changed code. The timing failure remains intermittent;
+its timeout and assertions were not changed.
+
+After all corrections, the final gate reports **199 passed**:
+
+```sh
+uv run --no-sync pytest -q -n 4 --timeout 120 --tb=short tests/test_output_enforcement.py tests/test_cli_dispatch.py tests/test_runaway_loop_guards.py tests/test_session_enrol_all.py tests/test_config.py
+uv run --no-sync ruff check src tests
+uv run --no-sync pyright
+```
+
+The full-suite run began before the refresh and output-operation corrections;
+their passing final focused gate verifies those fixes. A new ownership case was
+also added after collection and is included in the final focused gate. The full
+suite remains red from the reproduced base failures and process-inspection
+restrictions. Native Windows and live operator enrolment were not exercised.
 
 Read only the local state registry, saved metadata, launch logs and reaper log.
 The registry has 31 records (3 local and 28 remote connection records), with no
@@ -413,5 +445,9 @@ verification, isolated base comparisons and the remaining intermittent cases.
 2026-10-19: Added bulk enrolment and automatic recovery for validated live
 sessions. Preserved the named enrolment contract, existing registrations and
 boot policy; added regression coverage and host-local operator commands.
+
+2026-10-19: Preserved launcher identity during read-only config inspection,
+aligned bulk output with the shipped vocabulary, and recorded full-suite
+comparison and final focused verification.
 
 <!-- /doc:region name="fix_log" -->
