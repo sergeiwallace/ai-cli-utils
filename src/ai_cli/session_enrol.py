@@ -1,4 +1,4 @@
-"""Explicit, read-only process inspection to enrol legacy session recipes."""
+"""Validate live launch evidence before enrolling recipes and refreshing scripts."""
 
 import json
 import os
@@ -201,8 +201,8 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
     registry._mutate(change, timeout=2)
 
 
-def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> dict:
-    """Validate generated launch evidence without executing or rewriting it."""
+def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict, str]:
+    """Validate launch evidence and render its current replacement without executing it."""
     from .main import _engine_script_from_meta
 
     script = config.get_xdg_state_home() / "sessions" / f"{name}.sh"
@@ -262,8 +262,9 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> dict:
                 for match in re.finditer(r"\brun_agent [^\n]+", line)
             }
 
+        replacement = _engine_script_from_meta(meta)
         actual = launches(source)
-        if not actual or not actual <= launches(_engine_script_from_meta(meta)):
+        if not actual or not actual <= launches(replacement):
             raise ValueError
     except (OSError, UnicodeError, ValueError, KeyError, IndexError, TypeError) as exc:
         raise ValueError("generated launch metadata, identity, directory or flags could not be validated") from exc
@@ -284,7 +285,7 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> dict:
     }
     if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
         raise ValueError("unsupported or incomplete recovery recipe")
-    return recipe
+    return recipe, replacement
 
 
 def _enrol_live(name: str, *, dry_run: bool) -> str:
@@ -302,12 +303,11 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
         return bool(matches and state.valid_boot_recipe(matches[0]))
 
     matches = local_records(snapshot)
-    if registered(matches):
-        return "already-registered"
+    already_registered = registered(matches)
     pane = _pane_snapshot(name)
     script = config.get_xdg_state_home() / "sessions" / f"{name}.sh"
     source = script.read_bytes() if script.exists() else None
-    recipe = _live_recipe(name, pane[0], pane[1], host)
+    recipe, replacement = _live_recipe(name, pane[0], pane[1], host)
     if matches:
         # A recorded launch may carry engine arguments absent from old metadata.
         recipe = _record_recipe(matches[0], recipe["engine"], host)
@@ -316,7 +316,7 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
         if Path(recipe["cwd"]).resolve() != Path(pane[0]).resolve():
             raise ValueError("recorded launch directory differs from live pane")
     if dry_run:
-        return "registered"
+        return "already-registered" if already_registered else "registered"
     prepared = (
         matches[0]
         if matches
@@ -332,18 +332,24 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
     )
     # Recheck live evidence outside the registry lock. Enrolment never invokes a
     # terminal command or changes a supervisor generation inside the transaction.
-    if _pane_snapshot(name) != pane or script.read_bytes() != source:
+    if _pane_snapshot(name) != pane or script.read_bytes() not in (source, replacement.encode("utf-8")):
         raise ValueError("live pane changed during enrolment; retry")
+    from .main import _write_launch_script_if_changed
+
     status = "registered"
 
     def change(doc):
         nonlocal status
         current = local_records(doc)
         if registered(current):
+            _write_launch_script_if_changed(script, replacement)
             status = "already-registered"
             return False
         if current != matches:
             raise ValueError("local registration changed during enrolment; retry")
+        # Serialize atomic script replacements with competing enrolments, using
+        # the same lock as registration; no process inspection runs under it.
+        _write_launch_script_if_changed(script, replacement)
         record = current[0] if current else prepared
         if not current:
             doc["sessions"].append(record)

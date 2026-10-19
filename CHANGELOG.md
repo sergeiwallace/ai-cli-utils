@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
   boot relaunch also attempt recovery, preserving ownership and existing policy.
+  Bulk enrolment now atomically refreshes validated stable scripts, even for
+  registered sessions. Existing heartbeats recover running sessions after a
+  package reinstall without an `ai update` or a session restart. See README's
+  enrolment instructions for ordered macOS, Linux and Windows/WSL upgrade steps.
+- Generation acquisition resets inherited extended keyboard/input modes and
+  records an interrupt stop that old supervisors recognize, so terminal Ctrl+C
+  stops acquisition instead of appearing as escape text or triggering a respawn.
+  A legacy child permanently parked in shell-only sleep still requires operator
+  intervention before it can load a regenerated script. Policy defaults are unchanged.
 - Validated `[restart_session]` settings for safe session restarts, with a default
   context threshold of 20 percent and configurable idle, uptime and cooldown gates.
 - A guarded restart engine validates process identity, background work and Remote

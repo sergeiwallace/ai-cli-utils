@@ -1,4 +1,4 @@
-"""Bulk recovery inspects generated launch evidence and only writes bookkeeping."""
+"""Bulk recovery validates launch evidence before registering and refreshing scripts."""
 
 import json
 import subprocess
@@ -90,7 +90,7 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     w = live_sessions
     name = f"{engine}-{'r-' if remote else ''}session-1"
     script = w.add(name, legacy=True, saved=False, engine=engine, remote=remote)
-    source, stat = script.read_bytes(), script.stat()
+    source = script.read_bytes()
     result = invoke("--all", "--json")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == [{"name": name, "status": "registered", "reason": ""}]
@@ -99,7 +99,8 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     assert record["kind"] == "local" and record["owning_host"] == "host-a"
     assert record["relaunch"] == "never" and "generation" not in record
     assert record["boot_recipe"]["options"]["is_remote"] is remote
-    assert script.read_bytes() == source and script.stat().st_mtime_ns == stat.st_mtime_ns
+    assert script.read_bytes() != source
+    assert script.read_text() == main._engine_script_from_meta(w.meta[name])
     assert {cmd[1] for cmd in w.commands} == {"list-sessions", "list-panes"}
 
 
@@ -115,6 +116,20 @@ def test_given_existing_ownership_and_policy_when_bulk_repeated_then_bytes_and_r
     assert json.loads(result.output)[0]["status"] == "already-registered"
     assert registry.registry_path().read_bytes() == before
     assert registry.registry_path().stat().st_mtime_ns == stat.st_mtime_ns
+
+
+def test_given_registered_legacy_script_when_bulk_runs_then_script_refreshes_without_generation_change(live_sessions):
+    w = live_sessions
+    script = w.add()
+    assert invoke("-a", "-j").exit_code == 0
+    registry._mutate(lambda doc: doc["sessions"][0].update(relaunch="always", generation="generation-1") or True)
+    w.add(legacy=True)
+    before = registry.registry_path().read_bytes()
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["status"] == "already-registered"
+    assert script.read_text() == main._engine_script_from_meta(w.meta["c-session-1"])
+    assert registry.registry_path().read_bytes() == before
 
 
 def test_given_unregistered_sessions_when_bulk_dry_run_then_no_registry_lock_or_script_changes(live_sessions):
@@ -227,8 +242,10 @@ def test_given_concurrent_bulk_runs_when_same_session_is_discovered_then_one_reg
     assert registry.load_registry()["dirty_revision"] == 1
 
 
-@pytest.mark.parametrize("entry", ["begin", "refresh", "boot"])
-def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_without_starting_it(live_sessions, entry):
+@pytest.mark.parametrize("entry", ["begin", "refresh", "boot", "heartbeat"])
+def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_without_starting_it(
+    live_sessions, entry, monkeypatch
+):
     w = live_sessions
     w.add("c-session-1", legacy=True)
     w.add("c-session-2")
@@ -240,12 +257,25 @@ def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_wi
     elif entry == "refresh":
         command = click.Command("refresh", callback=lambda: main._handle_internal(["refresh-template", "c-session-2"]))
         result = CliRunner().invoke(command)
+    elif entry == "heartbeat":
+
+        async def publish(*args):
+            pass
+
+        monkeypatch.setattr("ai_cli.messaging.NATSClient.publish_heartbeat", publish)
+        monkeypatch.setattr("ai_cli.session_restart.schedule_auto", lambda *args: None)
+        command = click.Command(
+            "heartbeat", callback=lambda: main._handle_internal(["publish-heartbeat", "c-session-1", "{}"])
+        )
+        result = CliRunner().invoke(command)
     else:
         result = CliRunner().invoke(main._cli_group, ["sessions", "relaunch", "--boot"])
     assert result.exit_code == 0, result.output
     record = next(r for r in registry.load_registry()["sessions"] if r["name"] == "c-session-1")
     assert state.valid_boot_recipe(record) and "generation" not in record
     assert record["relaunch"] == "never"
+    script = w.root / "sessions/c-session-1.sh"
+    assert script.read_text() == main._engine_script_from_meta(w.meta["c-session-1"])
     assert all(cmd[1] in ("list-sessions", "list-panes") for cmd in w.commands)
 
 

@@ -2098,6 +2098,12 @@ def _handle_internal(argv: list[str]) -> None:
         except json.JSONDecodeError as e:
             _out.emit(Tag.INTERNAL, "heartbeat", f"Invalid JSON: {e}", err=True)
             sys.exit(1)
+        from .session_enrol import heal_live_sessions
+
+        # Existing supervisors call this installed helper even while their agent
+        # never exits. Package upgrades can therefore refresh their stable script
+        # and register them without restarting a running session.
+        heal_live_sessions(names=[argv[1]])
         # The wrapper supplies its generation token only after it has acquired its
         # lifetime lease.  Local persistence is deliberately independent from the
         # best-effort message publication below: a ledger failure must not suppress
