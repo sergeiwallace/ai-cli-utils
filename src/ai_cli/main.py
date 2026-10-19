@@ -5853,11 +5853,13 @@ def cmd_cc_usage_status():
     help="Write isolated, no-push delivered content as JSON to PATH",
 )
 @click.option(
+    "-n",
     "--no-isolate",
     is_flag=True,
     help="Run copier directly in each repo's main tree (legacy; unsafe while sessions are active)",
 )
 @click.option(
+    "-N",
     "--no-push",
     is_flag=True,
     help="Isolated mode: commit in the temp worktree but do not push HEAD:main",

@@ -73,6 +73,26 @@ class TestCmdCopierUpdate:
         assert exit_code == 1
         assert "--inspect-output requires isolated mode" in stderr
 
+    def test_given_every_option_when_listed_then_each_has_a_short_and_long_form(self):
+        """CLI convention: no long-only flags (CLAUDE.md)."""
+        import click
+
+        from ai_cli.main import cmd_copier_update
+
+        for param in cmd_copier_update.params:
+            if not isinstance(param, click.Option):
+                continue
+            shorts = [o for o in param.opts if len(o) == 2 and o.startswith("-") and not o.startswith("--")]
+            longs = [o for o in param.opts if o.startswith("--")]
+            assert shorts and longs, f"{param.name} needs both a short and a long form, has {param.opts}"
+
+    def test_given_short_direct_and_no_push_flags_when_invoked_then_dispatches_like_long_forms(self):
+        with patch("ai_cli.copier_update.run_copier_update", return_value=0) as run_update:
+            exit_code, _, _ = run_cli(["ai", "copier-update", "-n", "-N"])
+
+        assert exit_code == 0
+        run_update.assert_called_once_with(dry_run=False, project_filter=None, isolate=False, push=False)
+
 
 # --- `ai internal refresh-template` ---
 
