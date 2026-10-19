@@ -359,6 +359,14 @@ perform no subprocesses or counter writes. Ruff and full Pyright pass, with
 **0 errors, 0 warnings, 0 informations**. Full-suite baseline comparison is in
 progress; final results will be recorded after both runs finish.
 
+A follow-up identity regression reported **1 failed** when read-only loading
+returned no profile for an absent config: enrolment recorded the OS hostname,
+but a later ordinary launch would register the configured environment identity.
+Read-only loading now resolves missing profile fields in memory using the same
+identity detection as ordinary loading, without persisting them. Its bulk/config
+gate reports **90 passed**. Full Pyright on both base and changed code reports
+**0 errors, 0 warnings, 0 informations**.
+
 Read only the local state registry, saved metadata, launch logs and reaper log.
 The registry has 31 records (3 local and 28 remote connection records), with no
 boot recipes. There are 32 saved metadata files; 30 lack a launch-log path.

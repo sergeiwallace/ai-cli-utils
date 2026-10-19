@@ -326,3 +326,18 @@ def test_given_uninitialised_config_when_bulk_dry_run_then_config_is_not_created
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)[0]["status"] == "registered"
     assert {p: p.read_bytes() for p in directory.rglob("*") if p.is_file()} == before
+
+
+def test_given_uninitialised_host_profile_when_enrolled_then_owner_matches_future_launcher(live_sessions, monkeypatch):
+    w = live_sessions
+    w.add()
+    path = w.root / "config.toml"
+    monkeypatch.setattr(config, "load_config", _LOAD_CONFIG)
+    monkeypatch.setattr(config, "config_file_text", lambda: str(path))
+    monkeypatch.setattr(registry.socket, "gethostname", lambda: "host-b")
+    monkeypatch.setenv("AI_HOST", "host-a")
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    record = registry.load_registry()["sessions"][0]
+    assert record["owning_host"] == record["boot_recipe"]["owning_host"] == "host-a"
+    assert not path.exists()

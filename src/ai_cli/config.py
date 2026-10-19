@@ -703,11 +703,18 @@ def load_config(*, read_only: bool = False):
             cfg = tomllib.load(f)
     except Exception as e:
         if read_only and isinstance(e, FileNotFoundError):
+            cfg = {}
+        else:
+            _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
             return {}
-        _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
-        return {}
 
-    if not read_only and ensure_machine_profile_registered(config_path, cfg):
+    if read_only:
+        machine = cfg.setdefault("machine", {})
+        missing = [key for key in ("host_id", "os_type") if not machine.get(key)]
+        if missing:
+            profile = detect_machine_profile()
+            machine.update({key: profile[key] for key in missing})
+    elif ensure_machine_profile_registered(config_path, cfg):
         try:
             with config_path.open("rb") as f:
                 cfg = tomllib.load(f)
