@@ -1,9 +1,14 @@
 """Bulk recovery validates launch evidence before registering and refreshing scripts."""
 
+import io
 import json
+import os
 import subprocess
+import sys
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import click
@@ -54,9 +59,9 @@ def live_sessions(tmp_path, monkeypatch):
             source = source.replace(
                 "AI_CLI_RUN_GENERATION=$(ai sessions _begin", "legacy_generation=$(ai sessions _begin"
             )
-        script.write_text(source, encoding="utf-8")
+        script.write_text(source, encoding="utf-8", newline="\n")
         if saved:
-            (root / f"session-meta-{name}.json").write_text(json.dumps(meta), encoding="utf-8")
+            (root / f"session-meta-{name}.json").write_text(json.dumps(meta), encoding="utf-8", newline="\n")
         rows[name] = f"{name}\t{100 + len(rows)}\t{cwd}\n"
         leaders[100 + len(leaders)] = ["bash", str(script)]
         metadata[name] = meta
@@ -82,6 +87,71 @@ def invoke(*args):
     return CliRunner().invoke(main._cli_group, ["sessions", "enrol", *args])
 
 
+@pytest.fixture
+def windows_text_defaults(monkeypatch):
+    """Exercise real file IO with legacy Windows encoding and newline defaults."""
+    original_open, original_fdopen = Path.open, os.fdopen
+
+    def text_options(mode, encoding, newline):
+        if "b" not in mode:
+            encoding = encoding or "cp1252"
+            if newline is None and any(flag in mode for flag in "wax"):
+                newline = "\r\n"
+        return encoding, newline
+
+    def path_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        encoding, newline = text_options(mode, encoding, newline)
+        return original_open(path, mode, buffering, encoding, errors, newline)
+
+    def fdopen(fd, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        encoding, newline = text_options(mode, encoding, newline)
+        return original_fdopen(fd, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, "open", path_open)
+    monkeypatch.setattr(os, "fdopen", fdopen)
+
+
+@pytest.mark.usefixtures("windows_text_defaults")
+def test_given_windows_text_defaults_when_bulk_enrolled_then_utf8_script_uses_lf(live_sessions):
+    script = live_sessions.add(legacy=True)
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["status"] == "registered"
+    source = script.read_bytes()
+    assert source == main._engine_script_from_meta(live_sessions.meta["c-session-1"]).encode("utf-8")
+    assert b"\r\n" not in source
+    assert state.valid_boot_recipe(registry.load_registry()["sessions"][0])
+
+
+@pytest.mark.usefixtures("windows_text_defaults")
+def test_given_windows_text_defaults_when_template_refreshed_then_utf8_script_uses_lf(live_sessions):
+    live_sessions.add()
+    command = click.Command("refresh", callback=lambda: main._handle_internal(["refresh-template", "c-session-1"]))
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    source = Path(result.output.strip()).read_bytes()
+    assert main._engine_script_from_meta(live_sessions.meta["c-session-1"]).encode("utf-8") in source
+    assert b"\r\n" not in source
+
+
+def test_given_legacy_console_when_refresh_returns_unicode_path_then_utf8_reply(live_sessions, monkeypatch):
+    live_sessions.add()
+    directory = live_sessions.root / "scripts-\u2713"
+    directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
+    monkeypatch.setattr(main.sys, "platform", "win32")
+    buffer = io.BytesIO()
+    with io.TextIOWrapper(buffer, encoding="cp1252") as stream:
+        monkeypatch.setattr(main.sys, "stdout", stream)
+        with pytest.raises(SystemExit) as exc:
+            main._handle_internal(["refresh-template", "c-session-1"])
+        assert exc.value.code == 0
+        stream.flush()
+        reply = buffer.getvalue().decode("utf-8").strip()
+    assert Path(reply).parent == directory
+    assert Path(reply).is_file()
+
+
 @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
 @pytest.mark.parametrize("remote", [False, True])
 def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_without_restart(
@@ -100,7 +170,7 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     assert record["relaunch"] == "never" and "generation" not in record
     assert record["boot_recipe"]["options"]["is_remote"] is remote
     assert script.read_bytes() != source
-    assert script.read_text() == main._engine_script_from_meta(w.meta[name])
+    assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
     assert {cmd[1] for cmd in w.commands} == {"list-sessions", "list-panes"}
 
 
@@ -128,7 +198,7 @@ def test_given_registered_legacy_script_when_bulk_runs_then_script_refreshes_wit
     result = invoke("-a", "-j")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)[0]["status"] == "already-registered"
-    assert script.read_text() == main._engine_script_from_meta(w.meta["c-session-1"])
+    assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta["c-session-1"])
     assert registry.registry_path().read_bytes() == before
 
 
@@ -154,16 +224,16 @@ def test_given_unvalidated_metadata_when_bulk_runs_then_skips_with_reason_withou
     if failure == "name":
         w.rows["c-session-2"] = w.rows.pop("c-session-1").replace("c-session-1", "c-session-2")
     elif failure == "saved":
-        (w.root / "session-meta-c-session-1.json").write_text('{"session":"c-other-1"}')
+        (w.root / "session-meta-c-session-1.json").write_text('{"session":"c-other-1"}', encoding="utf-8", newline="\n")
     elif failure == "script":
-        script.write_text("unrecognised script")
+        script.write_text("unrecognised script", encoding="utf-8", newline="\n")
     elif failure == "leader":
         w.leaders[100] = ["bash", "-c", str(script)]
     elif failure == "missing":
         script.rename(script.with_suffix(".old"))
     elif failure == "options":
-        source = script.read_text().replace('"sandbox": false', '"sandbox": "false"')
-        script.write_text(source)
+        source = script.read_text(encoding="utf-8").replace('"sandbox": false', '"sandbox": "false"')
+        script.write_text(source, encoding="utf-8", newline="\n")
     elif failure == "cwd":
         w.rows["c-session-1"] = w.rows["c-session-1"].replace(str(w.cwd), str(w.root))
     else:
@@ -242,7 +312,18 @@ def test_given_concurrent_bulk_runs_when_same_session_is_discovered_then_one_reg
     assert registry.load_registry()["dirty_revision"] == 1
 
 
-@pytest.mark.parametrize("entry", ["begin", "refresh", "boot", "heartbeat"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "begin",
+        "refresh",
+        pytest.param(
+            "boot",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="boot relaunch supports macOS and Linux"),
+        ),
+        "heartbeat",
+    ],
+)
 def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_without_starting_it(
     live_sessions, entry, monkeypatch
 ):
@@ -275,7 +356,7 @@ def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_wi
     assert state.valid_boot_recipe(record) and "generation" not in record
     assert record["relaunch"] == "never"
     script = w.root / "sessions/c-session-1.sh"
-    assert script.read_text() == main._engine_script_from_meta(w.meta["c-session-1"])
+    assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta["c-session-1"])
     assert all(cmd[1] in ("list-sessions", "list-panes") for cmd in w.commands)
 
 
@@ -329,6 +410,7 @@ def test_given_supported_platform_when_bulk_runs_then_portable_enrolment_registe
     assert json.loads(result.output)[0]["status"] == "registered"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="boot relaunch supports macOS and Linux")
 def test_given_boot_dry_run_when_live_sessions_exist_then_recovery_changes_nothing(live_sessions):
     live_sessions.add()
     before = {p: p.read_bytes() for p in live_sessions.root.rglob("*") if p.is_file()}
@@ -347,7 +429,7 @@ def test_given_uninitialised_config_when_bulk_dry_run_then_config_is_not_created
     directory.mkdir()
     path = directory / "config.toml"
     if existing_config:
-        path.write_text('[machine]\nhost_id = "host-a"\n')
+        path.write_text('[machine]\nhost_id = "host-a"\n', encoding="utf-8", newline="\n")
     monkeypatch.setattr(config, "load_config", _LOAD_CONFIG)
     monkeypatch.setattr(config, "get_xdg_config_home", lambda: directory)
     monkeypatch.setattr(config, "config_file_text", lambda: str(path))

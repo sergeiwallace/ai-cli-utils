@@ -1510,7 +1510,7 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
     # running shell on the old inode; the next exec opens the new one.
     temporary = script_path.with_name(f".{script_path.name}.{os.getpid()}.tmp")
     try:
-        temporary.write_text(script, encoding="utf-8")
+        temporary.write_text(script, encoding="utf-8", newline="\n")
         temporary.chmod(0o700)
         temporary.replace(script_path)
     finally:
@@ -1555,7 +1555,7 @@ def _refresh_within_burst_budget() -> bool:
 
     calls_path = state_dir / "refresh-template-calls.json"
     try:
-        persisted = [float(t) for t in json.loads(calls_path.read_text())]
+        persisted = [float(t) for t in json.loads(calls_path.read_text(encoding="utf-8"))]
     except (OSError, ValueError, TypeError):
         persisted = []
     persisted = [t for t in persisted if 0 <= now - t < _REFRESH_BURST_WINDOW_SECS]
@@ -1568,7 +1568,7 @@ def _refresh_within_burst_budget() -> bool:
     if attempts <= _REFRESH_BURST_LIMIT:
         with contextlib.suppress(OSError):
             calls_path.parent.mkdir(parents=True, exist_ok=True)
-            calls_path.write_text(json.dumps(persisted[-_REFRESH_BURST_LIMIT * 2 :]))
+            calls_path.write_text(json.dumps(persisted[-_REFRESH_BURST_LIMIT * 2 :]), encoding="utf-8", newline="\n")
         return True
 
     with contextlib.suppress(OSError):
@@ -1609,7 +1609,7 @@ def _sync_stable_session_script(tmux_session: str) -> "bool | None":
     if not meta_path.exists():
         return None
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         script = _engine_script_from_meta(meta)
     except Exception as exc:
         _out.emit(Tag.UPDATE, "refresh", f"  (warning: could not regenerate {tmux_session}: {exc})", err=True)
@@ -1632,7 +1632,11 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
 
     try:
         ls = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
     except Exception:
         return 0
@@ -1898,6 +1902,7 @@ def _handle_internal(argv: list[str]) -> None:
     Kept out of Click so sub-millisecond startup is preserved for hot paths.
     Always calls ``sys.exit`` — never returns.
     """
+    _out.utf8_stdout_on_windows()
     if not argv:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
@@ -2020,7 +2025,7 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(Tag.INTERNAL, "refresh", f"No session metadata for {tmux_session}", err=True)
             sys.exit(1)
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             script = _engine_script_from_meta(meta)
         except Exception as exc:
             _out.emit(Tag.INTERNAL, "refresh", f"Failed to read session metadata: {exc}", err=True)
@@ -2028,7 +2033,7 @@ def _handle_internal(argv: list[str]) -> None:
         import tempfile
 
         fd, tmp_path = tempfile.mkstemp(prefix=f"ai-refresh-{tmux_session}-", suffix=".sh")
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("#!/usr/bin/env bash\n")
             fh.write(f'rm -f "{tmp_path}"\n')  # self-delete on exec
             fh.write(script)
@@ -4935,6 +4940,7 @@ def _restart_launch_target(target, check, options, *, json_output=False):
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json):
     """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
+    _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
         ctx.exit(0)

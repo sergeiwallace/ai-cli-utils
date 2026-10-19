@@ -15,7 +15,10 @@ import pytest
 from ai_cli import config, main
 from ai_cli import session_registry as registry
 
-pytestmark = [pytest.mark.real_tmux, pytest.mark.skipif(os.name != "posix", reason="POSIX supervisor")]
+pytestmark = [
+    pytest.mark.real_tmux,
+    pytest.mark.skipif(sys.platform == "win32" or os.name != "posix", reason="tmux supervisors require POSIX shells"),
+]
 
 
 def wait_for(check, timeout=30):
@@ -36,14 +39,16 @@ def old_session(tmp_path, monkeypatch, request):
     binaries.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".zshrc").write_text("")
+    (home / ".zshrc").write_text("", encoding="utf-8", newline="\n")
     state = tmp_path / "state/ai-cli-utils"
     scripts = state / "sessions"
     scripts.mkdir(parents=True)
     script = scripts / "c-myproject-box-1.sh"
     fixtures = Path(__file__).parent / "fixtures"
-    legacy = (fixtures / "session_restart_legacy.txt").read_text().replace("__PROJECT_DIR__", str(tmp_path))
-    acquisition = (fixtures / "session_acquisition_legacy.txt").read_text()
+    legacy = (
+        (fixtures / "session_restart_legacy.txt").read_text(encoding="utf-8").replace("__PROJECT_DIR__", str(tmp_path))
+    )
+    acquisition = (fixtures / "session_acquisition_legacy.txt").read_text(encoding="utf-8")
     child = f"""
 if [[ "${{1:-}}" == --ai-cli-child-body ]]; then
     tmux_session=c-myproject-box-1
@@ -56,11 +61,11 @@ if [[ "${{1:-}}" == --ai-cli-child-body ]]; then
     exit 77
 fi
 """
-    script.write_text(child + legacy)
+    script.write_text(child + legacy, encoding="utf-8", newline="\n")
     script.chmod(0o700)
     meta_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     meta = json.loads(shlex.split(meta_line)[2])
-    (state / "session-meta-c-myproject-box-1.json").write_text(json.dumps(meta))
+    (state / "session-meta-c-myproject-box-1.json").write_text(json.dumps(meta), encoding="utf-8", newline="\n")
     for name in ("bash", "zsh", "base64", "cat", "date", "id", "mkdir", "mktemp", "ps", "rm", "sleep", "stat", "tr"):
         found = shutil.which(name)
         if found:
@@ -86,7 +91,9 @@ fi
         "    from ai_cli.main import cli\n"
         "    cli()\n"
         "elif sys.argv[1:3] == ['internal', 'get-version']: print('unknown')\n"
-        "elif sys.argv[1:3] == ['internal', 'acquire-generation-lease']: sys.exit(1)\n"
+        "elif sys.argv[1:3] == ['internal', 'acquire-generation-lease']: sys.exit(1)\n",
+        encoding="utf-8",
+        newline="\n",
     )
     ai.chmod(0o700)
     monkeypatch.setenv("HOME", str(home))
@@ -106,7 +113,7 @@ fi
     sock = str(sockdir / "tmux.sock")
 
     def run(*args):
-        return subprocess.run([tmux, "-S", sock, *args], capture_output=True, text=True, check=False)
+        return subprocess.run([tmux, "-S", sock, *args], capture_output=True, text=True, encoding="utf-8", check=False)
 
     try:
         assert (
@@ -133,9 +140,9 @@ def test_given_old_retrying_supervisor_when_package_changes_then_script_and_regi
     leader = tmux("display-message", "-p", "#{pane_pid}").stdout.strip()
     (root / "upgraded").touch()
     assert wait_for(lambda: (root / "started").exists()), tmux("capture-pane", "-p").stdout
-    assert "--launch-metadata" in script.read_text()
+    assert "--launch-metadata" in script.read_text(encoding="utf-8")
     assert tmux("display-message", "-p", "#{pane_pid}").stdout.strip() == leader
-    document = json.loads(registry.registry_path().read_text())
+    document = json.loads(registry.registry_path().read_text(encoding="utf-8"))
     assert len(document["sessions"]) == 1
     assert document["sessions"][0]["relaunch"] == "never"
 
@@ -150,6 +157,6 @@ def test_given_old_acquisition_and_extended_keys_when_terminal_interrupts_then_s
     assert tmux("send-keys", "C-c").returncode == 0
     assert wait_for(lambda: tmux("has-session", "-t", "=c-myproject-box-1").returncode != 0, timeout=8), (
         tmux("capture-pane", "-p", "-S", "-").stdout,
-        (root / "ready").read_text(),
+        (root / "ready").read_text(encoding="utf-8"),
     )
     assert not (root / "started").exists()

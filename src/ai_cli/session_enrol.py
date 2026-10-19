@@ -25,6 +25,7 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
             ["tmux", "list-panes", "-t", f"={name}", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             check=True,
         )
@@ -369,6 +370,7 @@ def enrol_live_sessions(*, dry_run: bool = False, names: Iterable[str] | None = 
                 ["tmux", "list-sessions", "-F", "#{session_name}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=5,
                 check=False,
             )
