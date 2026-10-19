@@ -41,6 +41,7 @@ from pathlib import Path, PurePosixPath
 
 import jinja2
 import yaml
+from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
 from .copier_recovery import (
@@ -535,23 +536,32 @@ def _excluded_on_update(config: dict[str, object], answers: dict[str, object] | 
 
     An exclusion such as ``{% if 'python' not in tech_stack %}pytest_memory_guard.py{% endif %}`` drops
     the file for a TypeScript project, so a template change to it can never land there. An entry that
-    cannot be rendered (an answer is unknown) or is a glob is left out, so parity stays strict for it.
+    cannot be rendered (an answer is unknown, or it needs a filter only Copier ships) or is a glob is left
+    out, so parity stays strict for it. Rendering follows Copier: a sandboxed environment with the
+    template's ``_envops``, and each line of a rendered entry is its own pattern.
     """
     exclusions = config.get("_exclude", [])
     if not isinstance(exclusions, list):
         return set()
+    template_envops = config.get("_envops", {})
+    envops = {"keep_trailing_newline": True, **(template_envops if isinstance(template_envops, dict) else {})}
+    try:
+        environment = SandboxedEnvironment(**{**envops, "undefined": jinja2.StrictUndefined})
+    except (TypeError, ValueError):
+        return set()
     context = {**_question_defaults(config), **(answers or {}), "_copier_operation": "update"}
-    environment = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
     result = set()
     for exclusion in exclusions:
         if not isinstance(exclusion, str):
             continue
         try:
-            path = environment.from_string(exclusion).render(**context).strip()
+            rendered = environment.from_string(exclusion).render(**context)
         except jinja2.TemplateError:
             continue
-        if path and not any(char in path for char in "*?[!"):
-            result.add(path.removesuffix(".jinja"))
+        for line in re.split(r"\r\n|\r|\n", rendered):
+            path = line.strip()
+            if path and not any(char in path for char in "*?[!"):
+                result.add(path.removesuffix(".jinja"))
     return result
 
 

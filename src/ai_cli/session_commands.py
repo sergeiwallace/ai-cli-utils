@@ -3,9 +3,11 @@
 import json
 import os
 import re
+import signal
 import socket
 import sys
 import time
+from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 
@@ -16,11 +18,15 @@ from . import session_registry as registry
 from . import session_run_state as state
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
+from .session_enrol import enrol, heal_live_sessions
 
 
 @click.group("sessions", help="Session run state and publication")
 def sessions():
     pass
+
+
+sessions.add_command(enrol)
 
 
 @sessions.command("mark")
@@ -47,11 +53,80 @@ def mark(name, status, cause, evidence, generation, sequence):
 
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
-def begin(name):
+@click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
+def begin(name, launch_metadata):
+    # Acquisition precedes the generated shell's terminal reset. A previous
+    # agent may have left extended keys enabled, encoding Ctrl+C as text. Use
+    # the controlling terminal: stdout is a captured generation-token reply.
+    previous_int = None
+    if os.name == "posix" and re.fullmatch(r"(?:cx|c|g|p)-[A-Za-z0-9_-]+", name):
+        import termios
+
+        from .transport import _TERMINAL_RESTORE
+
+        def interrupted(_signum, _frame):
+            # Old supervisors already check this file before considering a
+            # respawn; they otherwise retry a child's ordinary SIGINT status.
+            marker = state.config.get_xdg_state_home() / f"session-int-exit-{name}"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+            raise KeyboardInterrupt
+
+        previous_int = signal.signal(signal.SIGINT, interrupted)
+        try:
+            with ExitStack() as stack:
+                terminal_fd = 2
+                if not os.isatty(terminal_fd):
+                    terminal = stack.enter_context(Path("/dev/tty").open("r+b", buffering=0))
+                    terminal_fd = terminal.fileno()
+                os.write(terminal_fd, _TERMINAL_RESTORE.encode())
+                attrs = termios.tcgetattr(terminal_fd)
+                attrs[3] |= termios.ISIG | termios.ICANON | termios.ECHO
+                attrs[6][termios.VINTR] = b"\x03"
+                termios.tcsetattr(terminal_fd, termios.TCSANOW, attrs)
+        except (OSError, termios.error):
+            pass
     try:
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name))
+        recipe = None
+        if launch_metadata is not None:
+            meta = json.loads(launch_metadata)
+            engine = meta["engine"]
+            host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
+            cwd = meta.get("worktree_dir") or str(Path.cwd())
+            if meta["session"] != name or name not in (f"{engine}-{meta['ai_name']}", f"{engine}-r-{meta['ai_name']}"):
+                raise ValueError("launch metadata does not match the session identity")
+            prefix = meta["project_prefix"]
+            if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", prefix):
+                raise ValueError("invalid launch project prefix")
+            options = {key: meta.get(key, False) for key in ("sandbox", "is_remote", "notify")}
+            if any(not isinstance(value, bool) for value in options.values()):
+                raise ValueError("invalid launch options")
+            argv = ["ai", engine, name, "--project-prefix", prefix]
+            project = meta.get("project_name", "")
+            if project:
+                argv += ["-p", project]
+            for key in ("sandbox", "is_remote", "notify"):
+                if options[key]:
+                    argv.append("--" + key.replace("_", "-"))
+            recipe = {
+                "engine": engine,
+                "session_name": name,
+                "owning_host": host,
+                "cwd": cwd,
+                "project": project,
+                "argv": argv,
+                "options": options,
+                "extra_args": [],
+            }
+            if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
+                raise ValueError("invalid launch recovery recipe")
+        heal_live_sessions()
+        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
     except Exception as exc:
-        raise click.ClickException("cannot acquire a durable supervisor generation") from exc
+        raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
+    finally:
+        if previous_int is not None:
+            signal.signal(signal.SIGINT, previous_int)
 
 
 @sessions.command("_sequence", hidden=True)
@@ -255,6 +330,7 @@ def relaunch(slug, boot, dry_run):
     if slug is not None:
         _relaunch_named(slug, dry_run=dry_run)
         return
+    heal_live_sessions(dry_run=dry_run)
     cfg = state.settings()
     doc = registry.load_registry()
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]

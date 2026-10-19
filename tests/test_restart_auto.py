@@ -217,6 +217,8 @@ def test_given_ac_4_2_failed_verification_when_automatic_retried_then_no_second_
     assert evaluate(auto_world)[0] == 1
     assert log_rows()[0]["outcome"] == "verification-incomplete"
     assert len(auto_world.signals) == 1
+    # Suppression applies while local recovery is still unproven.
+    auto_world.connection.__enter__.return_value.connect.side_effect = FileNotFoundError()
     assert evaluate(auto_world)[0] == 1
     assert log_rows()[1]["outcome"] == "previous-verification-failed"
     assert len(auto_world.signals) == 1

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions enrol -a/--all` registers validated live sessions on the current host
+  without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
+  registrations, existing records and skips. Update refresh, supervisor start and
+  boot relaunch also attempt recovery, preserving ownership and existing policy.
+  Bulk enrolment now atomically refreshes validated stable scripts, even for
+  registered sessions. Existing heartbeats recover running sessions after a
+  package reinstall without an `ai update` or a session restart. See README's
+  enrolment instructions for ordered macOS, Linux and Windows/WSL upgrade steps.
+- Generation acquisition resets inherited extended keyboard/input modes and
+  records an interrupt stop that old supervisors recognize, so terminal Ctrl+C
+  stops acquisition instead of appearing as escape text or triggering a respawn.
+  A legacy child permanently parked in shell-only sleep still requires operator
+  intervention before it can load a regenerated script. Policy defaults are unchanged.
 - Validated `[restart_session]` settings for safe session restarts, with a default
   context threshold of 20 percent and configurable idle, uptime and cooldown gates.
 - A guarded restart engine validates process identity, background work and Remote
@@ -155,6 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[output.elements.operation]` config table; a user table may add operations but not
   remove the shipped ones. `ai internal emit` takes the operation after the level:
   `ai internal emit <tag> <level> <operation> <terminal|plain> <text>`.
+- `ai sessions enrol <name>` gives a session that predates launch recipes a boot recipe,
+  so `ai -X` can restart it. It reads the session's registry record, or, for a remote
+  session with no record, its generated session script when the live pane is running
+  exactly that script. It validates the recipe, checks the working directory against
+  the live pane, prints the recipe, turns boot relaunch off, changes nothing on a second
+  run, and never touches the running process. `--dry-run` writes nothing.
 
 ### Changed
 
@@ -170,11 +189,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai sessions boot-unit install` and `status` no longer fail with "cannot determine
+  boot-unit state" on systemd 249 when the unit is not installed yet. That version answers
+  `is-enabled --quiet` for a missing unit with exit 1 and a message on stderr. The unit now
+  counts as absent only when its file is not on disk and `systemctl --user list-unit-files`
+  lists no unit of that name without an error. Any other service-manager error still fails.
+- `ai copier-update` renders a template's `_exclude` entries the way Copier does when it checks
+  template parity. The template's `_envops` (custom delimiters included) apply, and each line of
+  a rendered entry is its own exclusion. A file such a template leaves out of a project is no
+  longer reported as a missing changed file. New tests run a real Copier update, in isolated and
+  `--no-isolate` mode, against a template that adds files under a new directory and excludes
+  files by the project's answers.
 - `ai copier-update` no longer refuses an update because a stored answer belongs to a
   question the template has removed. Copier stops recording such an answer, and the stored-
   answer check now counts only questions the current template declares. A dropped or changed
   answer to a declared question still refuses the update, and the message now names each one.
-  A dropped answer is how Copier treats a question whose `when` is false, so the message says
+  A dropped answer is how Copier treats a question whose `when` renders false, so the message says
   so and points to `ask: false`, which keeps a question unprompted and its answer recorded.
 - `ai copier-update --no-isolate` and `--no-push` gain the short forms `-n` and `-N`, which the
   CLI's short-and-long-form convention requires of every option.

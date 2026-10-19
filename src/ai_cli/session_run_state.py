@@ -9,6 +9,8 @@ import time
 import uuid
 from pathlib import Path
 
+import portalocker
+
 from . import config
 from . import session_registry as registry
 
@@ -165,11 +167,67 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
     return result
 
 
-def begin(name: str, *, command: list[str] | None = None) -> str:
+def can_begin(name: str) -> None:
+    """Check generation prerequisites without creating a file or changing a record.
+
+    This is a snapshot, not a reservation: callers must repeat it before action.
+    The existing lock is opened read/write without creating or truncating it
+    (Windows refuses an exclusive lock on a read-only handle); a missing lock
+    refuses rather than creating it through the registry's mutating lock
+    context manager.
+    """
+    path = registry.registry_path()
+    lock_path = path.with_name(f"{path.name}.lock")
+    # os.access is not a reliable write test on Windows (it ignores ACLs and refuses
+    # some writable directories); there the lock open and the registry read decide.
+    for target, mode in (
+        (path.parent, os.W_OK | os.X_OK),
+        (path, os.R_OK | os.W_OK),
+        (lock_path, os.R_OK | os.W_OK),
+    ):
+        if os.name != "nt" and not os.access(target, mode):
+            raise OSError(f"registry generation storage unavailable: {target}")
+    with portalocker.Lock(lock_path, mode="r+", timeout=2):
+        record = _find(registry.load_registry(), name)
+        if not record.get("boot_recipe"):
+            raise ValueError("session has no boot recipe; refusing an untracked start")
+        if not valid_boot_recipe(record):
+            raise ValueError("session has an invalid boot recipe; refusing an untracked start")
+
+
+def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict | None = None) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
 
     def change(doc):
+        if recovery_recipe is not None:
+            host = recovery_recipe["owning_host"]
+            matches = [r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name]
+            # Existing recipes retain the normal begin contract; ownership checks
+            # constrain reconstruction, never a re-labeling of registered sessions.
+            if (
+                matches
+                and not matches[0].get("boot_recipe")
+                and any(r.get("owning_host", host) != host for r in matches)
+            ):
+                raise ValueError("session belongs to another host; recovery refused")
+            if not matches:
+                record = registry._new_record(
+                    kind="local",
+                    name=name,
+                    relaunch_argv=recovery_recipe["argv"],
+                    cwd=recovery_recipe["cwd"],
+                    remote=None,
+                    iterm2=None,
+                    launcher_pid=None,
+                )
+                doc["sessions"].append(record)
+            else:
+                record = matches[0]
+            if not record.get("boot_recipe"):
+                record.update(boot_recipe=recovery_recipe, owning_host=host)
+                # Recover tracking without opting a pre-feature session into boot replay.
+                record.setdefault("relaunch", "never")
         record = _find(doc, name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")

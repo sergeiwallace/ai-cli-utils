@@ -36,7 +36,7 @@ from typing import TypeGuard
 import portalocker
 import psutil
 
-from . import config
+from . import config, session_run_state
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
@@ -361,6 +361,11 @@ def idle_gate(record: dict, rows: list[dict], settings: dict) -> None:
         raise Refusal("background-work", "unfinished background launch")
 
 
+def _base_model(model: str) -> str:
+    model = model.split("[", 1)[0].rsplit("anthropic.", 1)[-1]
+    return re.sub(r"-v\d+:\d+$", "", model)
+
+
 def context_gate(rows: list[dict], settings: dict) -> bool:
     boundary = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("subtype") == "compact_boundary"), None)
     if boundary is not None:
@@ -404,8 +409,16 @@ def context_gate(rows: list[dict], settings: dict) -> bool:
     window = settings["context_window_tokens"]
     model = message.get("model", "")
     if not window:
-        window = MODEL_WINDOWS.get(model)
-        if str(model).endswith("[1m]") and str(model).removesuffix("[1m]") in MODEL_WINDOWS and "haiku" not in model:
+        base = _base_model(model) if isinstance(model, str) else ""
+        requested = latest.get("requestedModel")
+        if (
+            isinstance(requested, str)
+            and re.fullmatch(r"[A-Za-z0-9._:/@-]+(\[1m\])?", requested)
+            and _base_model(requested) == base
+        ):
+            model = requested
+        window = MODEL_WINDOWS.get(model, MODEL_WINDOWS.get(base)) if isinstance(model, str) else None
+        if isinstance(model, str) and model.endswith("[1m]") and base in MODEL_WINDOWS and "haiku" not in base:
             window = 1_000_000
     return bool(window and 100 * sum(tokens) / window <= settings["context_threshold_pct"])
 
@@ -987,6 +1000,14 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 
+def boot_recipe_gate(record: dict) -> None:
+    session, _ = _pane(record)
+    try:
+        session_run_state.can_begin(session)
+    except (OSError, ValueError, RuntimeError, portalocker.exceptions.LockException) as exc:
+        raise Refusal("no-boot-recipe", str(exc)) from exc
+
+
 def assess(
     record: dict,
     settings: dict,
@@ -998,6 +1019,7 @@ def assess(
     check_lock: Callable[[], None] | None = None,
 ) -> Managed:
     managed = managed_gate(record, settings, prepared=prepared)
+    boot_recipe_gate(record)
     cwd = Path(record.get("cwd", "")).resolve()
     if not record.get("cwd") or not cwd.is_dir():
         raise Refusal("not-managed", "working directory unavailable")
@@ -1303,7 +1325,7 @@ def observer_verdict(record: dict, command: list[str] | None) -> str:
         return "UNKNOWN"
 
 
-def local_verdict(record: dict) -> str:
+def local_verdict(record: dict, *, details: list[str] | None = None) -> str:
     try:
         pid = record["pid"]
         probe = probe_for()
@@ -1333,13 +1355,7 @@ def local_verdict(record: dict) -> str:
             rows = data.get("sessions")
         else:
             rows = data
-        if not isinstance(rows, list) or any(
-            not isinstance(row, dict)
-            or any(not isinstance(row.get(key), str) or not row[key] for key in ("sessionId", "name"))
-            or type(row.get("pid")) is not int
-            or row["pid"] <= 1
-            for row in rows
-        ):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             return "UNKNOWN"
         matches = [
             row
@@ -1347,6 +1363,19 @@ def local_verdict(record: dict) -> str:
             if isinstance(row, dict)
             and (row.get("sessionId") == record["sessionId"] or row.get("name") == record["name"])
         ]
+        if not matches and any(
+            not any(isinstance(row.get(key), str) and row[key] for key in ("sessionId", "name")) for row in rows
+        ):
+            # A row with neither identity field could be the target's own row, so absence is not proved.
+            return "UNKNOWN"
+        for row in matches:
+            invalid = [key for key in ("sessionId", "name") if not isinstance(row.get(key), str) or not row[key]]
+            if type(row.get("pid")) is not int or row["pid"] <= 1:
+                invalid.append("pid")
+            if invalid:
+                if details is not None:
+                    details.append("matching local agent row has invalid " + ", ".join(invalid))
+                return "UNKNOWN"
         if len(matches) != 1 or any(matches[0].get(key) != record[key] for key in ("pid", "sessionId", "name")):
             return "FAILED"
         return "VERIFIED"
@@ -1479,11 +1508,97 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
     }
 
 
+def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> bool:
+    """Under the session lock, retire a failed fence only on positive local proof."""
+    try:
+        session, pane = _pane(record)
+        _, result_path, request_path = state_paths(session)
+        try:
+            request_path.stat()
+        except FileNotFoundError:
+            return True
+        request = _object(request_path)
+        if request.get("status") != "failed":
+            return True
+        result = _object(result_path)
+        pid = record["pid"]
+        supervisor = request["supervisor_pid"]
+        probe = probe_for()
+        if (
+            any(type(value) is not int or value <= 1 for value in (pid, supervisor, request["old_agent_pid"]))
+            or record.get("tmux") != request["tmux"]
+            or record.get("sessionId") != request["session_id"]
+            or result.get("session_id") != request["session_id"]
+            or not _number(result.get("last_restart"))
+            or pid == request["old_agent_pid"]
+            or probe.has_ended(pid)
+            or probe.start_time_match(pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH
+        ):
+            return False
+        shown = (
+            _run(
+                [
+                    "tmux",
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
+                ]
+            )
+            .strip()
+            .split("\t")
+        )
+        if (
+            shown != [session, pane, str(supervisor), request["generation"]]
+            or not _same(supervisor, request["supervisor_identity"])
+            or supervisor not in [parent.pid for parent in psutil.Process(pid).parents()]
+            or local_verdict(record) != "VERIFIED"
+        ):
+            return False
+        check_lock()
+        if _object(request_path) != request or _object(result_path) != result:
+            return False
+    except Exception:
+        # Probe failures, including unexpected ones, cannot authorize recovery.
+        return False
+    reconciled = {
+        **request,
+        "status": "complete",
+        "reconciliation": {
+            "time": time.time(),
+            "replacement_pid": pid,
+            "evidence": [
+                "pane",
+                "session-id",
+                "replacement-pid",
+                "process-start",
+                "supervisor-identity",
+                "supervisor-ancestry",
+                "local-verdict",
+            ],
+        },
+    }
+    # Publish the result first: an interrupted update must retain the request fence.
+    try:
+        _atomic_json(result_path, {**result, "failed": False, "reason": "reconciled"})
+        _atomic_json(request_path, reconciled)
+    except Exception as exc:
+        # A rename can succeed before fsync raises; restore either changed document.
+        if _object(request_path) != request:
+            _atomic_json(request_path, request)
+        if _object(result_path) != result:
+            _atomic_json(result_path, result)
+        raise Refusal("restart-fenced", "reconciliation could not be persisted") from exc
+    return True
+
+
 def _check(record: dict, settings: dict, commands: dict) -> dict:
     gates = {}
     cwd = Path(record.get("cwd") or Path.cwd())
     for name, check in (
         ("live-supervisor-uptime", lambda: managed_gate(record, settings)),
+        ("boot-recipe", lambda: boot_recipe_gate(record)),
         ("rc-activation", lambda: activation_gate(cwd)),
         ("idle-background-transcript", lambda: idle_gate(record, transcript_tail(transcript_path(record)), settings)),
         ("background-descendants", lambda: descendants_gate(record["pid"], cwd)),
@@ -1501,15 +1616,16 @@ def _check(record: dict, settings: dict, commands: dict) -> dict:
     _, result_path, request_path = state_paths(session)
     gates.update({"lock": "UNKNOWN", "cooldown": "UNKNOWN", "failure-fence": "UNKNOWN"})
     try:
-        with session_lock(session):
+        with session_lock(session) as check_lock:
             gates["lock"] = "PASS"
+            reconciled = _reconcile_failed_request(record, check_lock)
             result = _object(result_path) if result_path.exists() else {}
             gates["cooldown"] = (
                 "cooldown" if time.time() - result.get("last_restart", 0) < settings["cooldown_seconds"] else "PASS"
             )
             gates["failure-fence"] = (
                 "restart-fenced"
-                if request_path.exists() and _object(request_path).get("status") != "complete"
+                if not reconciled or (request_path.exists() and _object(request_path).get("status") != "complete")
                 else "PASS"
             )
     except Refusal as exc:
@@ -1534,6 +1650,7 @@ def _fresh(record_path: Path, original: dict) -> dict:
 def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
     deadline = time.monotonic() + settings["relaunch_timeout_seconds"]
     while True:
+        local_details: list[str] = []
         candidates = [row for _, row in records() if row.get("tmux") == old["tmux"] and row.get("pid") != old["pid"]]
         for row in candidates:
             probe = probe_for()
@@ -1546,7 +1663,7 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                 continue
             if row.get("sessionId") != old["sessionId"]:
                 return _report("resume-mismatch", local="FAILED")
-            if row.get("name") == old["name"] and local_verdict(row) == "VERIFIED":
+            if row.get("name") == old["name"] and local_verdict(row, details=local_details) == "VERIFIED":
                 peer = observer_verdict(row, commands.get("observer"))
                 session, pane = _pane(old)
                 request = _object(state_paths(session)[2])
@@ -1584,9 +1701,10 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                     replacement_pid=row["pid"],
                 )
         if time.monotonic() >= deadline:
-            return _report(
-                "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
-            )
+            detail = "replacement or local bridge verification timed out"
+            if local_details:
+                detail += "; " + "; ".join(local_details)
+            return _report("verification-failed", detail=detail, local="FAILED")
         time.sleep(POLL_SECONDS)
 
 
@@ -1721,6 +1839,7 @@ def restart(
             return _report("detached")
         with session_lock(session) as check_lock:
             _, result_path, request_path = state_paths(session)
+            _reconcile_failed_request(record, check_lock)
             previous = _object(result_path) if result_path.exists() else {}
             if time.time() - previous.get("last_restart", 0) < settings["cooldown_seconds"]:
                 raise Refusal("cooldown")
