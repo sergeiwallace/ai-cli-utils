@@ -327,3 +327,88 @@ def test_given_transient_path_when_dry_run_then_filtered_path_is_shown_without_m
     assert "dry-run: 0 mutations" in result.output
     assert not unit.calls
     assert not any(path.exists() for path in unit.files())
+
+
+SYSTEMD_249_MISSING = "Failed to get unit file state for {}: No such file or directory\n"
+
+
+def _systemd(unit, *, missing_rc=1, missing_stderr=SYSTEMD_249_MISSING, listing_stderr=""):
+    """Answer like systemd for a unit that may not be on disk yet."""
+    identity = f"{boot.UNIT}.service"
+
+    def runner(argv, **kwargs):
+        unit.calls.append(argv)
+        on_disk = any(path.exists() for path in unit.files())
+        if "is-enabled" in argv:
+            if unit.enabled[0]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if on_disk:
+                return subprocess.CompletedProcess(argv, 1, "", "")
+            return subprocess.CompletedProcess(argv, missing_rc, "", missing_stderr.format(identity))
+        if "list-unit-files" in argv:
+            if listing_stderr:
+                return subprocess.CompletedProcess(argv, 1, "", listing_stderr)
+            listed = f"{identity} disabled enabled\n" if on_disk else ""
+            return subprocess.CompletedProcess(argv, 0 if listed else 1, listed, "")
+        if "enable" in argv:
+            unit.enabled[0] = True
+        if "disable" in argv:
+            unit.enabled[0] = False
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return runner
+
+
+@pytest.mark.parametrize("unit", ["linux"], indirect=True)
+@pytest.mark.parametrize(
+    ("missing_rc", "missing_stderr"),
+    [(1, SYSTEMD_249_MISSING), (1, ""), (4, "")],
+    ids=["systemd-249-rc1-stderr", "rc1-silent", "rc4-not-found"],
+)
+def test_given_uninstalled_unit_when_systemd_reports_it_missing_then_status_and_install_succeed(
+    unit, monkeypatch, missing_rc, missing_stderr
+):
+    monkeypatch.setattr(boot.subprocess, "run", _systemd(unit, missing_rc=missing_rc, missing_stderr=missing_stderr))
+    status = unit.invoke("status")
+    assert status.exit_code == 0, status.output
+    assert "absent, disabled or outdated" in status.output
+    assert not any(path.exists() for path in unit.files())
+    install = unit.invoke("install")
+    assert install.exit_code == 0, install.output
+    assert unit.enabled[0]
+    assert {path: path.read_bytes() for path in unit.files()} == unit.files()
+    assert ["systemctl", "--user", "enable", f"{boot.UNIT}.service"] in unit.calls
+    assert "installed and enabled" in unit.invoke("status").output
+
+
+@pytest.mark.parametrize("unit", ["linux"], indirect=True)
+@pytest.mark.parametrize("action", ["install", "status"])
+def test_given_manager_error_with_stderr_when_listing_also_fails_then_state_is_unknown(unit, monkeypatch, action):
+    bus_failure = "Failed to connect to bus: private diagnostics\n"
+    monkeypatch.setattr(boot.subprocess, "run", _systemd(unit, missing_stderr=bus_failure, listing_stderr=bus_failure))
+    result = unit.invoke(action)
+    assert result.exit_code != 0
+    assert "cannot determine boot-unit state" in result.output
+    assert "private diagnostics" not in result.output
+    assert not any(path.exists() for path in unit.files())
+    assert not any("enable" in argv or "daemon-reload" in argv for argv in unit.calls)
+
+
+@pytest.mark.parametrize("unit", ["linux"], indirect=True)
+@pytest.mark.parametrize("action", ["install", "status"])
+def test_given_unit_file_on_disk_when_probe_errors_with_stderr_then_state_is_unknown(unit, monkeypatch, action):
+    assert unit.invoke("install").exit_code == 0
+    unit.enabled[0] = False
+
+    def runner(argv, **kwargs):
+        unit.calls.append(argv)
+        if "is-enabled" in argv:
+            return subprocess.CompletedProcess(argv, 1, "", "unexpected manager diagnostics")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(boot.subprocess, "run", runner)
+    unit.calls.clear()
+    result = unit.invoke(action)
+    assert result.exit_code != 0
+    assert "cannot determine boot-unit state" in result.output
+    assert not any("enable" in argv for argv in unit.calls)

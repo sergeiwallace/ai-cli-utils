@@ -189,6 +189,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai sessions boot-unit install` and `status` no longer fail with "cannot determine
+  boot-unit state" on systemd 249 when the unit is not installed yet. That version answers
+  `is-enabled --quiet` for a missing unit with exit 1 and a message on stderr. The unit now
+  counts as absent only when its file is not on disk and `systemctl --user list-unit-files`
+  lists no unit of that name without an error. Any other service-manager error still fails.
 - `ai copier-update` renders a template's `_exclude` entries the way Copier does when it checks
   template parity. The template's `_envops` (custom delimiters included) apply, and each line of
   a rendered entry is its own exclusion. A file such a template leaves out of a project is no
