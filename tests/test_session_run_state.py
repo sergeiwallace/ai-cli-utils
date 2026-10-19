@@ -9,8 +9,21 @@ from ai_cli import session_run_state as state
 
 
 @pytest.fixture
-def registered():
-    state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": "/work/myproject"}, host="host-a")
+def registered(tmp_path):
+    state.register(
+        "c-session-1",
+        recipe={
+            "engine": "c",
+            "session_name": "c-session-1",
+            "owning_host": "host-a",
+            "argv": ["ai", "c", "1"],
+            "extra_args": [],
+            "options": {},
+            "cwd": str(tmp_path / "myproject"),
+            "project": "myproject",
+        },
+        host="host-a",
+    )
     return state.begin("c-session-1")
 
 
@@ -142,3 +155,70 @@ def test_reattach_then_new_start_when_recipe_changes_then_only_new_start_replace
     state.register("c-session-1", recipe=replacement, host="host-a", new_start=True)
     assert record()["boot_recipe"] == replacement
     assert record()["generation"] == registered
+
+
+@pytest.mark.parametrize("generation", [False, True])
+def test_given_valid_recipe_when_can_begin_then_registry_bytes_and_generation_unchanged(registered, generation):
+    if not generation:
+        registry._mutate(lambda doc: doc["sessions"][0].pop("generation") is not None)
+    path = registry.registry_path()
+    before = {entry: entry.read_bytes() for entry in path.parent.rglob("*") if entry.is_file()}
+    state.can_begin("c-session-1")
+    assert before == {entry: entry.read_bytes() for entry in path.parent.rglob("*") if entry.is_file()}
+    assert ("generation" in record()) == generation
+
+
+@pytest.mark.parametrize("missing", ["record", "recipe", "invalid", "lock", "permissions", "locked", "corrupt"])
+def test_given_unusable_registry_when_can_begin_then_refused_without_writes(registered, monkeypatch, missing):
+    import portalocker
+
+    path = registry.registry_path()
+    lock = path.with_name(f"{path.name}.lock")
+    if missing == "record":
+        registry._mutate(lambda doc: doc["sessions"].clear() or True)
+    elif missing in ("recipe", "invalid"):
+        registry._mutate(
+            lambda doc: (
+                doc["sessions"][0].update(boot_recipe={} if missing == "recipe" else {"engine": "unknown"}) or True
+            )
+        )
+    elif missing == "lock":
+        assert lock.read_bytes() == b""
+        lock.unlink()
+    elif missing == "permissions":
+        if state.os.name == "nt":
+            pytest.skip("os.access is not a write test on Windows; the lock open and registry read decide there")
+        monkeypatch.setattr(state.os, "access", lambda *args: False)
+    elif missing == "locked":
+
+        def unavailable(*args, **kwargs):
+            raise portalocker.exceptions.LockException("registry lock unavailable")
+
+        monkeypatch.setattr(state.portalocker, "Lock", unavailable)
+    elif missing == "corrupt":
+        assert path.read_bytes()
+        path.write_text("{")
+    before = {entry: entry.read_bytes() for entry in path.parent.rglob("*") if entry.is_file()}
+    with pytest.raises((ValueError, OSError, registry.RegistryError, portalocker.exceptions.LockException)):
+        state.can_begin("c-session-1")
+    assert before == {entry: entry.read_bytes() for entry in path.parent.rglob("*") if entry.is_file()}
+
+
+def test_given_absent_registry_when_can_begin_then_no_file_or_lock_created():
+    path = registry.registry_path()
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}.lock").exists()
+    with pytest.raises((ValueError, OSError)):
+        state.can_begin("c-session-1")
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}.lock").exists()
+
+
+def test_given_legacy_recipe_when_begin_then_launch_is_preserved_but_restart_probe_refuses(tmp_path):
+    state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": str(tmp_path)}, host="host-a")
+    generation = state.begin("c-session-1")
+    assert record()["generation"] == generation
+    before = registry.registry_path().read_bytes()
+    with pytest.raises(ValueError, match="invalid boot recipe"):
+        state.can_begin("c-session-1")
+    assert registry.registry_path().read_bytes() == before

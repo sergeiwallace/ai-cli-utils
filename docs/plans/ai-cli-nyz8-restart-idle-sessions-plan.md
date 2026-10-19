@@ -213,7 +213,8 @@ prompt injection in play. The supervisor already relaunches on any exit but 77 a
 **Cons:**
 
 - Claude Code gets no chance to show its own "background work is running" dialog.
-- Needs a supervisor in the pane; a bare `claude` in tmux would just exit.
+- Needs a supervisor in the pane.
+- A bare `claude` in tmux would just exit.
 
 ##### (b) Inject `/exit` only
 
@@ -637,7 +638,7 @@ mobile visibility.
 
 > **Decision:** ✅ Resolved by Opus orchestrator — (a) Version comparison for trigger 1; positive reachability failure for trigger 2
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=medium; ai-profile=architect -->
-<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-8; decision-topic=auto-trigger-definitions; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=trigger on positive update or reachability-failure evidence; unknown and local-only verdicts never trigger; applicability=scope:restart-session; outcome-id=positive-evidence-triggers; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-nyz8/D-8; decision-topic=auto-trigger-definitions; governs=plan:ai-cli-nyz8-restart-idle-sessions-plan; normalized-proposition=trigger on positive update or reachability-failure evidence, and never on unknown or local-only verdicts; applicability=scope:restart-session; outcome-id=positive-evidence-triggers; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Round 1 of the doc audit found that the first version's age bound restarted a healthy session
 only because nobody had observed it, which the ask rules out: the automatic restart happens only
@@ -886,7 +887,18 @@ section in `src/ai_cli/config.py`, the pinned-restart child path in
   shall refuse with reason `background-work` and signal nothing.
 - [ ] AC-2.7 If the context gate of D-4 fails and the pre-step cannot run or does not complete,
   then the command shall refuse with reason `context` and signal nothing; the threshold shall be
-  read from the config file on that call.
+  read from the config file on that call. For window selection, `context_window_tokens` wins;
+  otherwise the latest main-chain assistant usage row's matching `requestedModel` shall take
+  precedence: `[1m]` selects 1,000,000 for known non-haiku models, and an untagged request selects
+  the base table window (200,000 for known models), even when `message.model` has `[1m]`.
+  Bases shall strip everything from the first `[` onward, everything through the last
+  `anthropic.` prefix, then a trailing Bedrock `-v<digits>:<digits>` version; table lookups shall
+  use the stripped base while preserving existing raw-id lookups. A malformed request (not a
+  string matching `^[A-Za-z0-9._:/@-]+(\[1m\])?$`) or mismatched request shall be ignored: fall
+  back to a `[1m]` suffix on `message.model` (known non-haiku models only), then the model table.
+  Unknown windows shall still refuse without an override; no settings file shall be read to
+  infer the window. Tests shall cover both override directions, matching and untagged requests,
+  malformed and mismatched requests, provider and Bedrock ids, haiku and model switches.
 - [ ] AC-2.8 When every prerequisite and gate passes under the lock, the command shall re-check
   them, send `SIGTERM` to the one verified pid (and `SIGKILL` to that same pid only after
   `term_grace_seconds` and a fresh start-time match), and wait for a replacement in the same pane
@@ -933,6 +945,19 @@ section in `src/ai_cli/config.py`, the pinned-restart child path in
   cover missing transcripts, stale requests, changed generation, old-child identity mismatch,
   failed resume and a crash before verification, proving zero title/fresh fallback and retained
   failure fencing. Ordinary launches without a request shall preserve existing resolver behaviour.
+
+- [ ] AC-2.19 When `ai sessions enrol <name>` targets an existing session without a valid
+  recipe, it shall prefer a local registry record's launch argv and cwd and the launcher's
+  owning-host identity; absent a record, it shall require the pane leader's exact generated
+  `c-r-*` script invocation and derive engine, name and flags from that script, cwd from the
+  live pane and host from `AI_HOST`. It shall validate with `valid_boot_recipe`, refuse a
+  live-pane cwd mismatch or unproven script with the failed check named, print the recipe,
+  and persist through registry mutation helpers with `relaunch = "never"`, preserving other
+  record fields. An already valid recipe shall be unchanged; `-d/--dry-run` shall print without
+  writes. Enrolment shall never signal or send tmux input. Fixture tests shall prove byte-level
+  idempotence, refusals, dry runs and an enrolled remote-control session restarting through the
+  unchanged activation gate with restored remote control. This criterion adds enrolment only;
+  existing restart, save-state and launch behavior is preserved.
 
 ### T-03: The save-state pre-step (AI-CLI-nyz8.3)
 
@@ -1028,6 +1053,25 @@ T-04b, private harness repository, its own PR:
   same-title competitor after pre-check and assert that only the original UUID reaches the fake
   agent, in both launch branches. Unknown running versions shall refuse before action and be
   recorded as migration blockers; tests shall prove no supervisor signal or pane respawn occurs.
+  Before any pre-step injection and again in the final assessment before signalling, the
+  restart shall check read-only that the local registry record exists, its boot recipe passes
+  `valid_boot_recipe`, and the registry file, directory and existing lock are usable for a
+  supervisor generation. Missing records, missing or invalid recipes, and unavailable
+  generation storage shall refuse with `no-boot-recipe`, inject and signal nothing, and leave
+  the old agent alive. The check shall leave registry bytes unchanged and write no generation;
+  it shall never adopt or synthesize records. Valid recipes shall retain the existing restart
+  behaviour. Tests shall also remove a recipe after pre-check and prove final refusal.
+  When a refreshed legacy child cannot acquire a generation, it shall persist a per-session
+  consecutive-failure counter in the existing state directory and sleep before exit 76 with
+  delays doubling from 1 second to a 30-second cap. Success shall reset the counter. Failure 20
+  shall print one line naming the session and generation failure and saying it is not retrying,
+  then park in one-second waits without exiting. SIGTERM and Ctrl+C shall end the parked child
+  with statuses 143 and 130 respectively; an old supervisor may relaunch it, but a subsequent
+  failed acquisition shall park again using the retained counter. A supervisor-provided
+  `AI_CLI_RUN_GENERATION` shall bypass this block. Fragment tests shall stub `ai` and sleep,
+  prove the delays, reset, park and signal response, and never reach a real agent or registry.
+  The `_begin` command shall report the underlying exception while retaining exit status 1
+  and empty stdout on failure, and generation-only stdout on success.
 
 ### T-06: Feedback delivery
 

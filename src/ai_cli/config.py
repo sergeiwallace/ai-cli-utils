@@ -692,19 +692,29 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
     return {key: sidecar.get(key, value) for key, value in defaults.items()}
 
 
-def load_config():
-    config_dir = get_xdg_config_home()
-    config_path = config_dir / "config.toml"
+def load_config(*, read_only: bool = False):
+    # Inspection commands must not initialise a profile or change permissions.
+    config_path = Path(config_file_text()) if read_only else get_xdg_config_home() / "config.toml"
 
     try:
-        _secure_config_file(config_path)
+        if not read_only:
+            _secure_config_file(config_path)
         with config_path.open("rb") as f:
             cfg = tomllib.load(f)
     except Exception as e:
-        _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
-        return {}
+        if read_only and isinstance(e, FileNotFoundError):
+            cfg = {}
+        else:
+            _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
+            return {}
 
-    if ensure_machine_profile_registered(config_path, cfg):
+    if read_only:
+        machine = cfg.setdefault("machine", {})
+        missing = [key for key in ("host_id", "os_type") if not machine.get(key)]
+        if missing:
+            profile = detect_machine_profile()
+            machine.update({key: profile[key] for key in missing})
+    elif ensure_machine_profile_registered(config_path, cfg):
         try:
             with config_path.open("rb") as f:
                 cfg = tomllib.load(f)

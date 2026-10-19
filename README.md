@@ -217,13 +217,18 @@ Uncertified installations, unrelated executables and unreadable processes refuse
 with `background-work`; non-npx entries retain their existing behavior.
 
 Context must be at or below 20 percent, or within one assistant turn of an automatic
-compaction. Missing usage and unknown model windows do not count as zero. Configure
-`context_window_tokens` for an unrecognised or extended model window. Known
-models use a 200,000-token base window and a `[1m]` model tag selects 1,000,000;
-a session running the larger window without the tag therefore reads as fuller
-than it is, which can only make the gate refuse or compact sooner. The status
-line assumes 1,000,000 for the Claude 5 family, so its percentage can differ
-from this gate's. A manual compaction passes only through the percentage gate.
+compaction. Missing usage and unknown model windows do not count as zero.
+`context_window_tokens` wins over transcript window evidence. Otherwise, the latest
+main-chain assistant usage row's matching `requestedModel` takes precedence: `[1m]`
+selects 1,000,000 for known non-haiku models; an untagged request selects the base
+table window (200,000 for known models), even when `message.model` has `[1m]`.
+Provider prefixes through the last `anthropic.` and trailing Bedrock `-v<digits>:<digits>`
+versions are stripped when comparing bases and looking up windows. A malformed or
+mismatched request is ignored: fall back to a `[1m]` suffix on `message.model`
+(known non-haiku models only), then the model table. Unknown windows require an
+explicit override. The status line assumes 1,000,000 for the Claude 5 family, so
+its percentage can differ from this gate's. A manual compaction passes only
+through the percentage gate.
 
 When context fails and `pre_step = true`, the configured injection adapter submits
 `/save-state` once to the target pane. The command waits up to
@@ -235,6 +240,23 @@ supervisor generation, or lost lock aborts the wait. Background work after
 compaction refuses with `background-work`; adapter failures and timeouts refuse
 with `context`. With `pre_step = false` or no adapter, failing context refuses
 without injection. Check mode never runs the pre-step.
+
+Before the `/save-state` pre-step and again in the final assessment, the restart
+checks read-only that the local registry record has a valid boot recipe and that
+the registry file, directory and existing lock permit acquiring a generation.
+Missing records, missing or invalid recipes, and unavailable generation storage
+refuse with `no-boot-recipe`, leaving the agent alive without injection or signals.
+The check neither adopts legacy sessions nor writes a generation.
+
+For a refreshed child under a pre-feature supervisor, failed generation acquisition
+is counted in `<state dir>/session-begin-failures-<tmux session>`. The child waits
+1, 2, 4, 8, 16, then 30 seconds before exit 76; later delays stay at 30 seconds.
+A successful acquisition resets the counter. On failure 20 it prints one session
+warning and parks in one-second waits without retrying or starting an agent.
+SIGTERM exits the parked child with status 143; Ctrl+C (SIGINT) exits it with
+status 130, within one wait interval. If the old supervisor relaunches that child,
+the retained counter makes another failed acquisition park again. Supervisors
+that already pass `AI_CLI_RUN_GENERATION` bypass this compatibility path.
 
 The restart pins the exact conversation before signalling, atomically prepares a
 compatible replacement child, and sends SIGTERM only to the verified agent PID.
@@ -253,6 +275,20 @@ still has the same birth identity, or its identity cannot be proved. It records
 the reason, actor and proof of target absence or PID reuse in the supervisor's
 launch log, then removes only that request file so the waiting loop can continue.
 If the log cannot be written, the request remains fenced.
+
+On the next check or restart attempt, a failed request is reconciled to `complete`
+under the session lock if a live replacement has the pinned conversation UUID
+in the same tmux pane, a different PID from the old agent, a matching
+recorded process start time, and `VERIFIED` local evidence. The pane must still
+belong to the recorded supervisor generation and birth identity, and that
+supervisor must be an ancestor of the replacement. The request records the
+reconciliation time, replacement PID and evidence kinds; the result records
+`failed: false` with reason `reconciled`. Missing, unreadable, unknown or conflicting
+evidence keeps the fence and leaves both files unchanged. Reconciliation preserves
+`last_restart`, so the existing cooldown is unchanged and can still refuse a retry.
+The cooldown always counts from `last_restart`, which is written before the action,
+and applies to every outcome: a verified restart, a failed one and a reconciled one.
+No command clears it early.
 
 Restart settings are read on every call from `config.toml`:
 
@@ -380,6 +416,13 @@ timeouts, malformed, stale or partial listings remain unknown.
 The report separates `local`, `peer`, `message_delivery` and `mobile` verdicts.
 Local verification requires the replacement's exact UUID, user title, bridge
 registration, passive messaging socket connection and complete local agent listing.
+Only agent rows matching the target UUID or title participate in identity checks;
+unrelated rows with a missing PID or incomplete identity do not block verification.
+A matching row must have a non-empty UUID and title and an integer PID greater
+than 1. Malformed matching rows remain unknown, and a replacement-verification
+timeout names their invalid fields in the report detail. Duplicate matches and
+PID, UUID or title mismatches still fail; incomplete or truncated listings remain
+unknown.
 Without verified peer evidence the result is non-zero `verification-incomplete`,
 even after a local restart. Message delivery and mobile visibility remain
 `UNVERIFIED` until independently observed.
@@ -602,6 +645,82 @@ Live, unknown, foreign and incomplete records are refused; `-d/--dry-run` previe
 and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <auto|never|always>`
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
+
+### Enrol an existing session
+
+Use `ai sessions enrol <name>` to give an existing live tmux session a validated restart
+recipe. It prints the recipe and sets boot relaunch policy to `never`. Preview with
+`-d/--dry-run`; an already valid recipe is left unchanged. Enrolment only updates registry
+bookkeeping: it never signals, restarts or types into the session.
+
+The command first uses the local registry record's launch argv and working directory,
+with the launcher's configured host identity. Without a record, a `c-r-*` session must have
+a pane leader running its exact generated `<state dir>/sessions/<name>.sh` script; engine,
+name and flags come from that script, the directory from the live pane and the host from
+`AI_HOST`. Missing or unparseable script data, invalid recipes and a directory mismatch
+are refused without changing the registry. Restart still requires every existing gate,
+including `remoteControlAtStartup = true`; enrolment does not enable Remote Control.
+
+After the fixed package is available, run these commands in order on **each**
+macOS or Linux host, as the user who owns its tmux server:
+
+```sh
+uv tool upgrade --reinstall ai-cli-utils
+ai sessions enrol --all --dry-run --json
+ai sessions enrol --all --json
+ai sessions list --json
+```
+
+For a source installation, replace the first command with
+`uv tool install --force .` from the updated package checkout. `ai update` is
+not required for this recovery. A package reinstall alone refreshes validated
+sessions on their next existing heartbeat or acquisition call; the explicit
+enrolment commands also cover sessions without either call.
+
+On Windows with tmux in WSL's default distribution, run in PowerShell:
+
+```powershell
+wsl.exe -- uv tool upgrade --reinstall ai-cli-utils
+wsl.exe -- ai sessions enrol --all --dry-run --json
+wsl.exe -- ai sessions enrol --all --json
+wsl.exe -- ai sessions list --json
+```
+
+For tmux in Git Bash, run the macOS/Linux commands inside Git Bash instead.
+Native Windows without tmux reports
+discovery unavailable; boot relaunch remains supported only on macOS and Linux.
+
+The bulk command (`-a/--all`, `-d/--dry-run`, `-j/--json`) reports each session as
+`registered`, `already-registered`, or `skipped` with a reason. In a dry run,
+`registered` means **would register**; nothing is written. It validates the live
+pane's exact generated script, embedded launch metadata, and any saved metadata.
+Legacy supervisors and remote-style names are supported. Missing saved metadata
+is recoverable when the generated script supplies it; absent or conflicting
+evidence, renamed tmux sessions, and foreign ownership are skipped without guessing.
+Discovery failures return a nonzero exit status.
+
+Bulk enrolment preserves existing records, ownership, generations and policy;
+newly recovered sessions default to boot policy `never`. It atomically regenerates
+validated stable scripts, including already registered sessions; running shells
+retain their current program until the next child launch. It never signals,
+restarts or types into a pane. Repeated runs leave current scripts and records
+unchanged. To opt a recovered session into boot replay deliberately, use
+`ai sessions policy c-session-1 auto`; the configured boot and safety gates still apply.
+
+Template refresh after an update, supervisor generation acquisition, heartbeats, and
+`ai sessions relaunch --boot` also attempt bulk recovery automatically, reading
+configuration at call time. Automatic recovery is best effort and logs its
+decisions; use the explicit command to inspect every skip. A stopped supervisor
+or unverifiable session still requires operator attention.
+
+Older acquisition scripts can inherit extended keyboard mode from an agent,
+encoding Ctrl+C as text instead of delivering SIGINT. The upgraded acquisition
+helper resets terminal input before waiting and records a clean stop recognized
+by old supervisors. A child already parked permanently after its twentieth
+failure runs only shell `sleep`: it cannot execute upgraded helpers or read a
+regenerated script. Enrolment can register it and refresh its script, but waking
+that particular child requires a separate operator action; these commands do
+not restart it. Regeneration prevents that permanent park on future child starts.
 
 ### Cross-machine sync
 
