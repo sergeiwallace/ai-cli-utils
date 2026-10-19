@@ -26,7 +26,7 @@ import portalocker
 import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
-from process_ownership import reap, spawn_owned_sleeper, watch_tmux_directory
+from process_ownership import reap, reap_tree, spawn_owned_sleeper, watch_tmux_directory
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
@@ -1684,13 +1684,8 @@ def _reap_leaked_supervisors() -> Iterator[None]:
         process = _SPAWNED_SUPERVISORS.pop()
         if process.poll() is not None:
             continue
-        with contextlib.suppress(psutil.NoSuchProcess):
-            root = psutil.Process(process.pid)
-            for descendant in [*root.children(recursive=True), root]:
-                with contextlib.suppress(psutil.NoSuchProcess):
-                    descendant.kill()
         with contextlib.suppress(Exception):
-            process.wait(timeout=_PROCESS_WAIT_SECONDS)
+            reap_tree(process)
 
 
 def _start_generated_supervisor(
@@ -2017,7 +2012,10 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
         try:
             stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
-            process.kill()
+            # The whole tree, never the supervisor alone (AI-CLI-ozid): its child is in a group
+            # of its own, parked for a promotion that never comes, and killing only its parent
+            # reparents it to init, where it was found still running five days later.
+            reap_tree(process)
             stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
             pytest.fail(
                 "supervisor never exited after a failed foreground promotion -- it hung "

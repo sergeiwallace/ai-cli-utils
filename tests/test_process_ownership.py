@@ -21,6 +21,7 @@ from process_ownership import (
     owned_process,
     owned_sleeper,
     reap,
+    reap_tree,
     spawn_owned,
     spawn_owned_sleeper,
 )
@@ -31,6 +32,15 @@ from process_ownership import (
 _PARENT_OF_A_GRANDCHILD = (
     "import subprocess, sys, time\n"
     "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    "print(kid.pid, flush=True)\n"
+    "time.sleep(30)\n"
+)
+
+# The same, except the grandchild starts a session (and so a group) of its own, as
+# a supervised child that calls setpgrp() does.
+_PARENT_OF_A_GROUP_LEAVER = (
+    "import subprocess, sys, time\n"
+    "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)\n"
     "print(kid.pid, flush=True)\n"
     "time.sleep(30)\n"
 )
@@ -108,6 +118,28 @@ def test_given_a_child_with_a_grandchild_when_reaped_then_the_whole_tree_is_gone
     # theoretical one.
     assert proc.poll() is not None, "reap returned before the child had actually exited"
     assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its group"
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgrp"), reason="process groups are POSIX-only")
+def test_given_a_grandchild_in_a_group_of_its_own_when_the_tree_is_reaped_then_it_is_gone_too():
+    """A descendant that left its parent's group must not outlive the reap (AI-CLI-ozid).
+
+    A generated session supervisor's child makes a process group of its own before it
+    parks waiting for the terminal. A timed-out test killed only the supervisor, so
+    that child was reparented to init and was found still running days later. A group
+    reap of the supervisor cannot reach it either, which is why :func:`reap_tree`
+    exists.
+    """
+    proc = spawn_owned([sys.executable, "-c", _PARENT_OF_A_GROUP_LEAVER], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    grandchild = int(proc.stdout.readline().strip())
+    proc.stdout.close()
+    assert os.getpgid(grandchild) != os.getpgid(proc.pid), "the grandchild never left the group"
+
+    reap_tree(proc)
+
+    assert proc.poll() is not None, "reap_tree returned before the child had actually exited"
+    assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its tree"
 
 
 def _raise_inside_an_owned_process(captured: list[int]) -> None:
