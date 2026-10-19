@@ -203,7 +203,13 @@ def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict 
         if recovery_recipe is not None:
             host = recovery_recipe["owning_host"]
             matches = [r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name]
-            if any(r.get("owning_host", host) != host for r in matches):
+            # Existing recipes retain the normal begin contract; ownership checks
+            # constrain reconstruction, never a re-labeling of registered sessions.
+            if (
+                matches
+                and not matches[0].get("boot_recipe")
+                and any(r.get("owning_host", host) != host for r in matches)
+            ):
                 raise ValueError("session belongs to another host; recovery refused")
             if not matches:
                 record = registry._new_record(

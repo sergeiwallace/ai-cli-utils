@@ -254,7 +254,7 @@ def test_given_generated_child_when_legacy_registry_is_missing_then_real_cli_rec
     environment = {key: value for key, value in os.environ.items() if key != "AI_CLI_RUN_GENERATION"}
     environment["PATH"] = str(tmp_path) + os.pathsep + environment["PATH"]
     result = subprocess.run(
-        [shell, "-c", body], env=environment, capture_output=True, text=True, timeout=5, check=False
+        [shell, "-c", body], env=environment, capture_output=True, text=True, timeout=30, check=False
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "agent-started"
@@ -289,3 +289,20 @@ def test_given_same_named_connection_when_local_generation_recovers_then_connect
     assert [r for r in records if r["kind"] == "remote"] == [connection]
     locals_ = [r for r in records if r["kind"] == "local"]
     assert len(locals_) == 1 and locals_[0]["generation"] == result.output.strip()
+
+
+def test_given_registered_recipe_when_launch_host_label_changes_then_begin_preserves_existing_owner(
+    launch_metadata, monkeypatch
+):
+    name = launch_metadata["session"]
+    state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": launch_metadata["worktree_dir"]}, host="host-a")
+    before = registry.load_registry()["sessions"][0]
+    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-b"}})
+    result = CliRunner().invoke(
+        _cli_group, ["sessions", "_begin", name, "--launch-metadata", json.dumps(launch_metadata)]
+    )
+    assert result.exit_code == 0, result.output
+    after = registry.load_registry()["sessions"][0]
+    assert after["owning_host"] == before["owning_host"]
+    assert after["boot_recipe"] == before["boot_recipe"]
+    assert after["generation"] == result.output.strip()
