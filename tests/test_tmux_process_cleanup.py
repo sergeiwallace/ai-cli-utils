@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from test_session_recovery_shell import _STOP_SECONDS
 from test_tmux_default_server_isolation import stand_in_server as sibling_server
 
 stand_in_server = sibling_server
@@ -19,10 +20,13 @@ stand_in_server = sibling_server
 pytestmark = [pytest.mark.real_tmux, pytest.mark.skipif(os.name != "posix", reason="tmux requires POSIX")]
 
 _WAIT = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+# The inner test waits up to _STOP_SECONDS for the stop line and again for the banner
+# before it publishes; the outer must not give up first, or it times out a healthy run.
+_READY_WAIT = 2 * _STOP_SECONDS + _WAIT
 
 
-def _wait(predicate):
-    deadline = time.monotonic() + _WAIT
+def _wait(predicate, seconds=_WAIT):
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if predicate():
             return True
@@ -125,7 +129,7 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
     with (tmp_path / "output").open("w+") as output:
         runner = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
         try:
-            assert _wait(lambda: ready.exists() or runner.poll() is not None)
+            assert _wait(lambda: ready.exists() or runner.poll() is not None, _READY_WAIT)
             assert ready.exists(), "inner test did not reach its recovery shell"
             record = json.loads(ready.read_text())
             sock = Path(record["socket"])
