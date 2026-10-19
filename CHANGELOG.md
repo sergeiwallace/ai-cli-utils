@@ -194,6 +194,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `is-enabled --quiet` for a missing unit with exit 1 and a message on stderr. The unit now
   counts as absent only when its file is not on disk and `systemctl --user list-unit-files`
   lists no unit of that name without an error. Any other service-manager error still fails.
+- `ai copier-update` renders a template's `_exclude` entries the way Copier does when it checks
+  template parity. The template's `_envops` (custom delimiters included) apply, and each line of
+  a rendered entry is its own exclusion. A file such a template leaves out of a project is no
+  longer reported as a missing changed file. New tests run a real Copier update, in isolated and
+  `--no-isolate` mode, against a template that adds files under a new directory and excludes
+  files by the project's answers.
 - `ai cos` now takes the exclusive advisory lock on `<home>/registry.json.lock` across its
   whole load-change-save of `registry.json`, so a change another locked writer saves while a
   chief starts is no longer overwritten. The save is fsynced before the rename. There is no
