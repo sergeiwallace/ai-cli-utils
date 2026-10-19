@@ -177,6 +177,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The development dependency on Copier is now `>=9.19`, the first release with
+  `ask: false` questions, which templates use to keep hidden answers on update.
+
 - Every line an `ai` command prints is now rendered by one renderer, and every element
   of it is styled. `[transport]` and `[dolt_server]` lines used to print plain; the tag
   is now bold blue on every line (it was dim), `Warning:` and `Error:` keep their colours,
