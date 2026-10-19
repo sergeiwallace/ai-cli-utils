@@ -1781,16 +1781,21 @@ def test_given_python_answers_when_copier_omits_python_only_file_then_parity_nam
     projects = _make_python_only_files_template(tmp_path, "python", _PYTHON_ONLY_GUARD_EXCLUDES)
     project = projects / "myproject"
     real_run = subprocess.run
+    # The exact binary the update runs: on Windows it is copier.EXE, so a name match misses it.
+    copier_bin = shutil.which("copier")
+    dropped = []
 
     def copier_that_drops_guard(command, **kwargs):
         result = real_run(command, **kwargs)
-        if Path(command[0]).name == "copier" and command[1:2] == ["update"]:
+        if command[0] == copier_bin and command[1:2] == ["update"]:
             (project / "guard.py").unlink()
+            dropped.append(True)
         return result
 
     with patch("ai_cli.copier_update.subprocess.run", side_effect=copier_that_drops_guard):
         result = run_copier_update(projects_dir=projects, isolate=False)
 
+    assert dropped == [True]
     assert result == EX_PARTIAL_MUTATION
     assert "missing changed file(s): guard.py" in capsys.readouterr().out
 
