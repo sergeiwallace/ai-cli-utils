@@ -87,7 +87,7 @@ provides-extras = ["notify-win", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "copier", specifier = ">=9.18" },
+    { name = "copier", specifier = ">=9.19" },
     { name = "freezegun", specifier = ">=1.5" },
     { name = "google-genai", specifier = ">=1.0" },
     { name = "pre-commit", specifier = ">=4" },
