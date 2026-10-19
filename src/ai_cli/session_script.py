@@ -566,20 +566,25 @@ def get_engine_script(
         # Returns 0 promoted, 2 interrupted, 1 never reported or not promotable.
         [[ -t 0 ]] || return 0
         trap '' TTOU
-        # The budget is wall-clock time, never a count of attempts (AI-CLI-ozid). Each
+        _promotion_attempt=0
+    # BEGIN RUN STATE promotion-deadline
+        # The budget is wall-clock time, not the attempt count below (AI-CLI-ozid). Each
         # attempt after the child reports starts a Python interpreter, which measured
-        # about 1.4 s apiece on one macOS host, so a 3000-attempt bound sold as "30 s"
+        # about 1.4 s apiece on one macOS host, so the 3000-attempt bound sold as "30 s"
         # would hold a pane blank for over an hour there before reporting the failure.
-        # `SECONDS` is a builtin in bash 3.2 and zsh alike, so reading it spawns nothing.
+        # The count stays only as an outer cap, which every attempt's 10 ms sleep keeps
+        # beyond 30 s. `SECONDS` is a builtin in bash 3.2 and zsh, so reading it spawns
+        # nothing. Bracketed so a supervisor started before this change still certifies.
         _promotion_budget_seconds=30
         _promotion_deadline=$((SECONDS + _promotion_budget_seconds))
+    # END RUN STATE
         _child_pgid=""
         # Compare against a per-attempt baseline, not against zero. The INT
         # counter is cumulative for the life of the supervisor, and this loop
         # runs once per child: an earlier Ctrl+C that correctly restarted the
         # agent would otherwise abort every later promotion before it began.
         _promotion_int_baseline=$_supervisor_int_count
-        while (( SECONDS < _promotion_deadline )); do
+        while (( _promotion_attempt < 3000 )); do
           if (( _supervisor_int_count > _promotion_int_baseline )); then
             # Ctrl+C while the terminal is being transferred must end this wait.
             # The INT trap only records, so without this check the keypress is
@@ -598,6 +603,10 @@ def get_engine_script(
             return 1
           fi
           sleep 0.01
+          _promotion_attempt=$((_promotion_attempt + 1))
+    # BEGIN RUN STATE promotion-deadline-check
+          (( SECONDS < _promotion_deadline )) || return 1
+    # END RUN STATE
         done
         return 1
       }}
