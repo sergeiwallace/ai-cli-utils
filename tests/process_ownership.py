@@ -270,10 +270,13 @@ def _watch_tmux_directory(directory: Path, tmux: str) -> None:
     snapshot()
     # Stop parents before taking a final descendant snapshot so none can spawn
     # another child during cleanup. psutil pins identity with PID + creation time.
+    # A process this user may not inspect or signal (macOS /bin/ps is setuid root, and the
+    # session's suspend watchdog polls it) raises AccessDenied. It must not abort the walk:
+    # that left the already-stopped tree alive and the directory behind (AI-CLI-57fp).
     pending = list(owned)
     while pending:
         process = pending.pop()
-        with contextlib.suppress(psutil.NoSuchProcess):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             process.ppid()
             process.cwd()
             process.suspend()
@@ -282,7 +285,7 @@ def _watch_tmux_directory(directory: Path, tmux: str) -> None:
                     owned.add(child)
                     pending.append(child)
     for process in owned:
-        with contextlib.suppress(psutil.NoSuchProcess):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             process.kill()
     deadline = monotonic() + _REAP_TIMEOUT
     while True:

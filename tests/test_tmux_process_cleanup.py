@@ -6,10 +6,12 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
 
+import process_ownership
 import psutil
 import pytest
 from test_session_recovery_shell import _STOP_SECONDS
@@ -40,6 +42,94 @@ def _alive(process):
     return False
 
 
+def _describe(processes):
+    """Who is still alive, with what a reaper needs to have reached them."""
+    lines = []
+    for process in processes:
+        with contextlib.suppress(psutil.Error):
+            if _alive(process):
+                pgid, sid = os.getpgid(process.pid), os.getsid(process.pid)
+                lines.append(
+                    f"pid={process.pid} ppid={process.ppid()} pgid={pgid} sid={sid} "
+                    f"status={process.status()} cmdline={process.cmdline()}"
+                )
+    return lines
+
+
+def _identified(pairs):
+    found = []
+    for pid, started in pairs:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            process = psutil.Process(pid)
+            if process.create_time() == started:
+                found.append(process)
+    return found
+
+
+def test_given_a_setuid_process_in_the_tree_when_the_watcher_reaps_then_the_rest_of_the_tree_is_still_killed():
+    """A process the watcher may not touch must not stop it reaping the rest (AI-CLI-57fp).
+
+    macOS ``/bin/ps`` is setuid root, so a session helper that polls it puts a process in
+    the tree whose cwd, suspend and kill all answer EPERM, psutil ``AccessDenied``. Measured:
+    one such ``ps`` aborted the watcher, leaving the tree alive and SIGSTOPped, and the
+    socket directory behind. The stand-in child, like ``ps``, ends once its parent is gone.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="ai-cli-setuid-"))
+    sock = directory / "tmux.sock"
+    pane = textwrap.dedent("""
+        import os, time
+        parent = os.getpid()
+        if os.fork() == 0:
+            while os.getppid() == parent:
+                time.sleep(0.05)
+            os._exit(0)
+        time.sleep(300)
+    """)
+    processes = []
+    try:
+        subprocess.run(
+            ["tmux", "-S", str(sock), "new-session", "-d", "-s", "test-session", sys.executable, "-c", pane],
+            check=True,
+        )
+        server = subprocess.run(
+            ["tmux", "-S", str(sock), "display-message", "-p", "#{pid} #{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        server_pid, pane_pid = map(int, server.stdout.split())
+        root = psutil.Process(server_pid)
+        assert _wait(lambda: len(root.children(recursive=True)) == 2), "the pane never forked its child"
+        processes = [root, *root.children(recursive=True)]
+        (privileged,) = psutil.Process(pane_pid).children()
+        reader, writer = os.pipe()
+        os.close(writer)
+        with pytest.MonkeyPatch.context() as patched, os.fdopen(reader) as closed_pipe:
+            for name in ("cwd", "suspend", "kill"):
+                real = getattr(psutil.Process, name)
+
+                def refuse(process, real=real):
+                    if process.pid == privileged.pid:
+                        raise psutil.AccessDenied(process.pid)
+                    return real(process)
+
+                patched.setattr(psutil.Process, name, refuse)
+            patched.setattr(sys, "stdin", closed_pipe)
+            process_ownership._watch_tmux_directory(directory, "tmux")
+        assert _wait(lambda: not any(_alive(p) for p in processes)), _describe(processes)
+        assert not directory.exists()
+    finally:
+        for process in reversed(processes):
+            with contextlib.suppress(psutil.Error):
+                if _alive(process):
+                    process.kill()
+        if directory.exists():
+            for socket in directory.iterdir():
+                assert socket.is_socket()
+                socket.unlink()
+            directory.rmdir()
+
+
 @pytest.mark.parametrize(
     ("fixture_module", "fixture_name", "outcome"),
     [
@@ -67,7 +157,7 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
     inner = tmp_path / "test_inner.py"
     inner.write_text(
         textwrap.dedent(f"""
-        import json, os, time
+        import contextlib, json, os, time
         from pathlib import Path
         import psutil
         import pytest
@@ -90,11 +180,17 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
             root = psutil.Process(int(server.stdout))
             processes = [root, *root.children(recursive=True)]
             assert any("--ai-cli-heartbeat-ticker" in p.cmdline() for p in processes)
+            watchers = []
+            for child in psutil.Process().children():
+                with contextlib.suppress(psutil.Error):
+                    if any(arg.endswith("process_ownership.py") for arg in child.cmdline()):
+                        watchers.append(child)
             # Publish atomically: the outer test reads the record as soon as the name exists.
             staged = Path({str(ready)!r} + ".tmp")
             staged.write_text(json.dumps({{
                 "worker": os.getpid(), "socket": tmux_socket,
                 "processes": [[p.pid, p.create_time()] for p in processes],
+                "watchers": [[p.pid, p.create_time()] for p in watchers],
             }}))
             os.replace(staged, {str(ready)!r})
             while not Path({str(proceed)!r}).exists():
@@ -133,11 +229,8 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
             assert ready.exists(), "inner test did not reach its recovery shell"
             record = json.loads(ready.read_text())
             sock = Path(record["socket"])
-            for pid, started in record["processes"]:
-                with contextlib.suppress(psutil.NoSuchProcess):
-                    process = psutil.Process(pid)
-                    if process.create_time() == started:
-                        processes.append(process)
+            processes = _identified(record["processes"])
+            watchers = _identified(record["watchers"])
             # A startup shell can exit between the snapshot and here (seen on macOS). The tmux
             # server, the first entry, must still be up; what remains is what cleanup must reap.
             processes = [p for p in processes if _alive(p)]
@@ -149,7 +242,10 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
                 target.send_signal(signal.SIGKILL if outcome.endswith("kill") else signal.SIGTERM)
             result = runner.wait(timeout=_WAIT)
             assert result == 0 if outcome == "pass" else result != 0
-            assert _wait(lambda: not any(_alive(p) for p in processes)), "pytest left its tmux process tree alive"
+            assert _wait(lambda: not any(_alive(p) for p in processes)), (
+                "pytest left its tmux process tree alive",
+                {"survivors": _describe(processes), "watchers": _describe(watchers) or "exited"},
+            )
             assert _wait(lambda: not sock.parent.exists()), "pytest left its private socket directory behind"
             sibling = stand_in_server / f"tmux-{os.getuid()}" / "default"
             assert (
