@@ -14,9 +14,10 @@ import uuid as uuid_module
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import IO, Any, NoReturn, cast
 
 import click
+import portalocker
 
 # Module aliases used by the call sites throughout this file. Tests can
 # patch on the source module (``patch("ai_cli.config.load_config")``) and
@@ -1081,8 +1082,17 @@ _PEER_UPDATE_WAIT_SECONDS = 90.0
 _PEER_UPDATE_POLL_SECONDS = 0.25
 
 
+def _try_lock(lock_file: IO[str]) -> bool:
+    """Take the update lock without blocking; False while another process holds it."""
+    try:
+        portalocker.lock(lock_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    except portalocker.exceptions.LockException:
+        return False
+    return True
+
+
 def _await_peer_update(
-    lock_path: Path,
+    lock_file: IO[str],
     stamp_file: Path,
     current_hash: str,
     timeout: float | None = None,
@@ -1108,7 +1118,9 @@ def _await_peer_update(
         poll = _PEER_UPDATE_POLL_SECONDS
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not lock_path.exists():
+        # The peer's lock ends with the peer, whether it finished or was killed.
+        if _try_lock(lock_file):
+            portalocker.unlock(lock_file)
             break
         time.sleep(poll)
     try:
@@ -1328,14 +1340,15 @@ def _auto_update_if_stale(config: dict) -> bool:
             f"~{max(int(retry_wait // 60), 1)}m. Run `ai update --force` to retry now.",
         )
         return False
-    # Serialize concurrent workers with an exclusive create-only lockfile.
-    # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
+    # Serialize concurrent workers with an exclusive OS lock on a persistent file.
+    # The kernel releases it when its holder exits, killed or not, so a launcher
+    # that dies mid-update cannot leave the update held (AI-CLI-2kko). A create-only
+    # lockfile could: its mere existence read as "a peer is updating", so every
+    # later launch waited out the bound and skipped the update.
     lock_path = stamp_file.with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
-    except OSError:
+    lock_file = lock_path.open("a")
+    if not _try_lock(lock_file):
         # Another process claimed the update -- which means it is running
         # `uv tool install`, tearing down and rewriting THIS process's own
         # installed tree while we run.  Returning False here said "no restart
@@ -1345,7 +1358,10 @@ def _auto_update_if_stale(config: dict) -> bool:
         # adjacent line.  Wait for the peer instead, then re-exec if it advanced
         # the stamp.  Terminating by construction: the re-exec'd process sees the
         # fresh stamp and early-returns above, so it never reaches this branch.
-        return _await_peer_update(lock_path, stamp_file, fingerprint)
+        try:
+            return _await_peer_update(lock_file, stamp_file, fingerprint)
+        finally:
+            lock_file.close()
     try:
         # Re-check after acquiring lock — another process may have just updated.
         if stamp_file.exists() and stamp_file.read_text().strip() == fingerprint:
@@ -1411,7 +1427,10 @@ def _auto_update_if_stale(config: dict) -> bool:
             _out.relay(Tag.UPDATE, "update", warnings, err=True)
         return True
     finally:
-        lock_path.unlink(missing_ok=True)
+        # The file stays: unlinking it would let the next launcher lock a fresh
+        # inode while a waiter still polls this one.
+        portalocker.unlock(lock_file)
+        lock_file.close()
 
 
 def trigger_background_update():

@@ -16,7 +16,6 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 """
 
 import json
-import os
 import stat
 import sys
 from pathlib import Path
@@ -24,8 +23,9 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
-from conftest import run_cli
+from conftest import hold_file_lock, run_cli
 
+import ai_cli.main
 from ai_cli.copier_update import CopierUpdateInspection, DeliveredUpdate
 from ai_cli.main import (
     _auto_update_if_stale,
@@ -465,13 +465,13 @@ class TestAutoUpdateLockfile:
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        # Pre-create the lockfile so O_CREAT|O_EXCL fails
-        (state_dir / "last_install_fingerprint.lock").touch()
 
         def fake_run(cmd, **kwargs):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
+            # A live peer holds the update lock for the whole call.
+            hold_file_lock(state_dir / "last_install_fingerprint.lock"),
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("subprocess.run", side_effect=fake_run) as mock_run,
@@ -501,28 +501,29 @@ class TestAutoUpdateLockfile:
         def fake_run(cmd, **kwargs):
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        real_os_open = os.open
+        real_try_lock = ai_cli.main._try_lock
 
-        def fake_os_open(path, flags, *args, **kwargs):
-            fd = real_os_open(path, flags, *args, **kwargs)
-            if "last_install_fingerprint.lock" in str(path):
+        def fake_try_lock(lock_file):
+            acquired = real_try_lock(lock_file)
+            if acquired:
                 (state_dir / "last_install_fingerprint.txt").write_text(fingerprint)
-            return fd
+            return acquired
 
         with (
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("subprocess.run", side_effect=fake_run) as mock_run,
             patch("shutil.which", return_value="/usr/bin/ai"),
-            patch("os.open", side_effect=fake_os_open),
+            patch("ai_cli.main._try_lock", side_effect=fake_try_lock),
         ):
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
 
         calls = [c.args[0] for c in mock_run.call_args_list]
         update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
         assert not update_calls  # must skip update due to post-lock re-check
-        # lockfile cleaned up
-        assert not (state_dir / "last_install_fingerprint.lock").exists()
+        # the lock is released, so the next launcher can take it
+        with hold_file_lock(state_dir / "last_install_fingerprint.lock"):
+            pass
 
     def test_given_successful_update_when_auto_update_then_records_stamp_and_requests_restart(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
