@@ -26,7 +26,7 @@ import portalocker
 import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
-from process_ownership import reap, spawn_owned_sleeper, watch_tmux_directory
+from process_ownership import reap, reap_tree, spawn_owned_sleeper, watch_tmux_directory
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
@@ -1684,13 +1684,8 @@ def _reap_leaked_supervisors() -> Iterator[None]:
         process = _SPAWNED_SUPERVISORS.pop()
         if process.poll() is not None:
             continue
-        with contextlib.suppress(psutil.NoSuchProcess):
-            root = psutil.Process(process.pid)
-            for descendant in [*root.children(recursive=True), root]:
-                with contextlib.suppress(psutil.NoSuchProcess):
-                    descendant.kill()
         with contextlib.suppress(Exception):
-            process.wait(timeout=_PROCESS_WAIT_SECONDS)
+            reap_tree(process)
 
 
 def _start_generated_supervisor(
@@ -1809,10 +1804,14 @@ fi
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
     if fast_promotion_retry:
-        # Bound only in the test harness (docs/bugs/terminal-promotion-failure-hang.md
-        # "Required next reproduction") so a deterministically-failing promotion
-        # gives up in ~0.2s instead of the production 30s (3000 * 0.01s).
-        script = script.replace("_promotion_attempt < 3000", "_promotion_attempt < 20")
+        # Shortened only in the test harness (docs/bugs/terminal-promotion-failure-hang.md),
+        # so a promotion that can never succeed gives up in 10 s instead of production's 30 s.
+        # Long enough for the child to report its group on a loaded host, so the failure is
+        # the "could not promote" one the tests assert. Asserted, because a replace that no
+        # longer matches would silently restore the 30 s budget.
+        budget = "_promotion_budget_seconds=30"
+        assert budget in script, "the promotion budget line moved; update this harness"
+        script = script.replace(budget, "_promotion_budget_seconds=10")
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -1942,6 +1941,74 @@ def test_given_a_child_body_that_traps_a_signal_when_inspected_then_the_trap_pre
     )
 
 
+def _run_supervisor_on_a_terminal_owned_elsewhere(
+    tmp_path: Path,
+    shell: str,
+    *,
+    timeout: float,
+    extra_commands: dict[str, str] | None = None,
+) -> tuple[int | None, str, str]:
+    """Run the generated supervisor on a pty another session controls, so promotion always fails.
+
+    Returns the exit status, or None if the supervisor was still running after *timeout*, and
+    its output. A supervisor that times out is reaped with its whole tree (AI-CLI-ozid): its
+    child is in a group of its own, parked for a promotion that never comes, and killing only
+    the supervisor reparents that child to init, where one was found still running five days
+    later.
+    """
+    # Imported here, not at module scope (AI-CLI-ta1l). On Windows `import pty` pulls in
+    # `tty`, which does `from termios import *`, and termios does not exist there -- so a
+    # module-level import made this ENTIRE FILE fail to COLLECT on Windows with
+    # `ModuleNotFoundError: No module named 'termios'`, taking all ~69 of its tests with
+    # it, and tests/test_skip_hygiene.py with them (it imports this module). A
+    # module-level `pytestmark` skip cannot help: collection imports the module before
+    # any marker is consulted.
+    import pty
+
+    master_fd, initial_slave_fd = pty.openpty()
+    slave_name = os.ttyname(initial_slave_fd)
+    os.close(initial_slave_fd)
+
+    owner_fd = os.open(slave_name, os.O_RDWR)
+    owner = subprocess.Popen(
+        ["bash", "-c", "echo owner-up; sleep 120"],
+        stdin=owner_fd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        text=True,
+    )
+    os.close(owner_fd)
+    try:
+        assert owner.stdout is not None
+        owner.stdout.readline()  # blocks until the owner has claimed the terminal
+
+        slave_fd = os.open(slave_name, os.O_RDWR)
+        try:
+            process, _, _ = _start_generated_supervisor(
+                tmp_path,
+                shell,
+                stdin_fd=slave_fd,
+                fast_promotion_retry=True,
+                wait_for_child_ready=False,
+                extra_commands=extra_commands,
+            )
+        finally:
+            os.close(slave_fd)
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            reap_tree(process)
+            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
+            return None, stdout, stderr
+        return process.returncode, stdout, stderr
+    finally:
+        owner.kill()
+        owner.wait(timeout=_PROCESS_WAIT_SECONDS)
+        os.close(master_fd)
+
+
 def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exits_and_child_dies(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -1975,66 +2042,67 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
     ``os.tcsetpgrp`` on it fails deterministically with ENOTTY every time,
     exactly matching the production failure mode.
     """
-    # Imported here, not at module scope (AI-CLI-ta1l). On Windows `import pty` pulls in
-    # `tty`, which does `from termios import *`, and termios does not exist there -- so a
-    # module-level import made this ENTIRE FILE fail to COLLECT on Windows with
-    # `ModuleNotFoundError: No module named 'termios'`, taking all ~69 of its tests with
-    # it, and tests/test_skip_hygiene.py with them (it imports this module). A
-    # module-level `pytestmark` skip cannot help: collection imports the module before
-    # any marker is consulted. This is the only use of pty in the file.
-    import pty
-
-    master_fd, initial_slave_fd = pty.openpty()
-    slave_name = os.ttyname(initial_slave_fd)
-    os.close(initial_slave_fd)
-
-    owner_fd = os.open(slave_name, os.O_RDWR)
-    owner = subprocess.Popen(
-        ["bash", "-c", "echo owner-up; sleep 60"],
-        stdin=owner_fd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        text=True,
+    returncode, stdout, stderr = _run_supervisor_on_a_terminal_owned_elsewhere(
+        tmp_path, supported_session_shell, timeout=_PROCESS_WAIT_SECONDS
     )
-    os.close(owner_fd)
-    try:
-        assert owner.stdout is not None
-        owner.stdout.readline()  # blocks until the owner has claimed the terminal
+    assert returncode is not None, (
+        "supervisor never exited after a failed foreground promotion (AI-CLI-jpnd, AI-CLI-ozid); "
+        f"stdout={stdout!r} stderr={stderr!r}"
+    )
 
-        slave_fd = os.open(slave_name, os.O_RDWR)
-        try:
-            process, _, _ = _start_generated_supervisor(
-                tmp_path,
-                supported_session_shell,
-                stdin_fd=slave_fd,
-                fast_promotion_retry=True,
-                wait_for_child_ready=False,
-            )
-        finally:
-            os.close(slave_fd)
+    # The message names the group it could not promote, because the supervisor now learns that
+    # group from the child rather than assuming it is `$!` (AI-CLI-dw1g). Assert the stable half
+    # of the wording; the trailing pgid is the useful part and varies per run.
+    assert "could not promote the session shell's process group" in stderr, stderr
+    assert "to the terminal foreground" in stderr, stderr
+    assert returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
 
-        try:
-            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
-            pytest.fail(
-                "supervisor never exited after a failed foreground promotion -- it hung "
-                "waiting on a stopped child that never received SIGCONT (AI-CLI-jpnd); "
-                f"stdout={stdout!r} stderr={stderr!r}"
-            )
 
-        # The message names the group it could not promote, because the supervisor now learns that
-        # group from the child rather than assuming it is `$!` (AI-CLI-dw1g). Assert the stable half
-        # of the wording; the trailing pgid is the useful part and varies per run.
-        assert "could not promote the session shell's process group" in stderr, stderr
-        assert "to the terminal foreground" in stderr, stderr
-        assert process.returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
-    finally:
-        owner.kill()
-        owner.wait(timeout=_PROCESS_WAIT_SECONDS)
-        os.close(master_fd)
+# Each promotion attempt is held this long. Twenty of them, the harness's former attempt bound,
+# take at least 40 s, so the regression below can tell a count-bounded loop from a timed one
+# by wall clock alone, however loaded the host is.
+_SLOW_PROMOTION_ATTEMPT_SECONDS = 2
+_SLOW_PROMOTION_GIVE_UP_SECONDS = 30
+
+
+def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_supervisor_gives_up_on_time(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The promotion retry budget is a length of time, not a number of attempts (AI-CLI-ozid).
+
+    Every attempt after the child reports its group starts a Python interpreter to call
+    ``tcsetpgrp``. The loop bounded itself by counting attempts and assumed each costs its
+    10 ms sleep, so "30 s" (3000 attempts) really meant 3000 interpreter starts. Measured on
+    an unloaded macOS host, 20 attempts took 27.6 s, about 1.4 s each, which is why the test
+    above, bounded to 20 attempts, timed out on a loaded machine with nothing on stderr yet:
+    it was still retrying. At that rate production's 3000-attempt bound would hold a pane
+    blank for over an hour before reporting a promotion it could never make.
+
+    Here every attempt is made slow on purpose, the way a loaded host makes it slow, so a
+    count-bounded loop needs at least 40 s and a timed one gives up within seconds.
+    """
+    real_python = shlex.quote(sys.executable)
+    slow_promotion = (
+        "#!/bin/sh\n"
+        f'case "$*" in *"os.tcsetpgrp(0, pgid)"*) sleep {_SLOW_PROMOTION_ATTEMPT_SECONDS} ;; esac\n'
+        f'exec {real_python} "$@"\n'
+    )
+
+    started = time.monotonic()
+    returncode, stdout, stderr = _run_supervisor_on_a_terminal_owned_elsewhere(
+        tmp_path,
+        supported_session_shell,
+        timeout=_SLOW_PROMOTION_GIVE_UP_SECONDS,
+        extra_commands={"python3": slow_promotion},
+    )
+    elapsed = time.monotonic() - started
+
+    assert returncode is not None, (
+        f"the supervisor was still retrying a failed promotion after {elapsed:.0f}s, so its retry "
+        f"budget is counting attempts rather than time; stdout={stdout!r} stderr={stderr!r}"
+    )
+    assert "could not promote the session shell's process group" in stderr, stderr
+    assert returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
 
 
 def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it_tears_down_its_tmux_session(
@@ -2095,7 +2163,9 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
     finally:
         if "process" in locals() and process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
+            # The tree, not the supervisor's group: the child it is promoting is in a group of
+            # its own, which a group kill misses and orphans (AI-CLI-ozid).
+            reap_tree(process)
         owner.kill()
         owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)

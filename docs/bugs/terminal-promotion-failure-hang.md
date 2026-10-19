@@ -128,6 +128,33 @@ real Linux host (Fedora, kernel 7.2.5):
   `SIGCONT` afterward -> child exits with the queued `SIGTERM`) was also
   re-confirmed directly against this same Linux host before writing the fix.
 
+## Follow-up: the retry budget counted attempts, not time (AI-CLI-ozid, 2026-10-19)
+
+The regression above later timed out on loaded machines, sometimes with nothing on
+stderr. A timed-out run also left its child running: one was found under PID 1 five
+days later, still in the test child body's `sleep 0.05` loop.
+
+Two causes, both reproduced on macOS:
+
+- **The hang.** `_supervisor_promote_child` bounded its retries by counting attempts
+  and assumed each costs its 10 ms sleep. Every attempt after the child reports its
+  group starts a Python interpreter to call `tcsetpgrp`. On an unloaded macOS host 20
+  attempts took 27.6 s, about 1.4 s each, so the harness's 20-attempt bound ran past
+  the test's 60 s deadline under load before the failure message was printed. At that
+  rate production's 3000-attempt "30 s" bound would take over an hour. The loop now stops
+  on elapsed time (`SECONDS`, a builtin in bash 3.2 and zsh) against
+  `_promotion_budget_seconds=30`. The harness shortens that one line to 10 s and asserts
+  the line is present, so the replace cannot silently stop matching.
+  `test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_supervisor_gives_up_on_time`
+  holds each attempt for 2 s. It was red on both shells before the fix (still retrying
+  after 30 s, empty stderr) and finishes in 12 to 16 s after it.
+- **The leak.** On timeout the test killed only the supervisor. Its child is in a
+  process group of its own, parked waiting for a promotion, so it was reparented to init.
+  The autouse cleanup then skipped the supervisor as already exited. The test now reaps
+  the whole tree with `reap_tree()` from `tests/process_ownership.py`, which reads the
+  tree before anything dies. With a forced 8 s timeout, the old teardown left two parked
+  child shims under PID 1. The new one left none.
+
 ## Verification
 
 - Read the current generated supervisor and prior signal/terminal bug records.
@@ -156,3 +183,4 @@ trigger from the resulting cleanup deadlock.
 | 2026-09-20 | Investigation recorded | Static causal chain and a real stopped-child signal experiment support the cleanup hypothesis; no production fix because Linux tmux RED evidence is unavailable. |
 | 2026-09-21 | Live Linux evidence and macOS pty attempt recorded | Live stopped children had pending `SIGTERM` and Linux supervisors waited in `sigsuspend`. The macOS pty reached the real promotion error but exited, so Iron Gate 5 prevents a production edit until a Linux RED regression is run. |
 | 2026-09-22 | Fixed and verified on real Linux (AI-CLI-jpnd) | Built a deterministic non-controlling-pty RED regression, confirmed it hangs on current source, applied a `kill -CONT -"$_child_pid"` fix after the existing `kill -TERM`, re-verified GREEN, reverted-and-reconfirmed RED, then restored the fix. Full test suite run on both Linux (Framework) and macOS shows zero new failures beyond the pre-existing set tracked under `AI-CLI-u3zc`. |
+| 2026-10-19 | Retry budget is wall-clock time; timed-out test reaps its tree (AI-CLI-ozid) | The attempt-counted loop cost one interpreter start per attempt. A slow-attempt regression went red before the fix and green after, and a forced timeout no longer leaves a child running. |

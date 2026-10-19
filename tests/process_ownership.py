@@ -174,6 +174,44 @@ def reap(proc: subprocess.Popen) -> None:
     proc.wait(timeout=_REAP_TIMEOUT)
 
 
+def reap_tree(proc: subprocess.Popen) -> None:
+    """Kill *proc*, every descendant it has now, and each descendant's process group.
+
+    For a child whose own descendants leave its group: a job-control shell, or a
+    supervisor whose child calls ``setpgrp()``. :func:`reap` signals only the
+    root's group, so it misses those, and killing only the root reparents them
+    to init, where nothing in this suite can find them again. That is how a
+    timed-out supervisor test left its parked child running for days. So the tree
+    is read BEFORE anything dies, while the descendants are still reachable
+    through their parent, and each one's group is signalled as well, which also
+    catches a member that has already been reparented.
+
+    Never this process's own group, which would take down the test runner.
+    Safe on a process that has already exited, and always ends in a bounded
+    ``wait()``.
+    """
+    victims: list[psutil.Process] = []
+    with contextlib.suppress(psutil.Error):
+        root = psutil.Process(proc.pid)
+        root.suspend()  # a stopped root cannot start a child the snapshot misses
+        victims = [*root.children(recursive=True), root]
+    groups: set[int] = set()
+    if sys.platform != "win32":
+        for victim in victims:
+            with contextlib.suppress(OSError):
+                groups.add(os.getpgid(victim.pid))
+        groups.discard(os.getpgrp())
+    for victim in victims:
+        with contextlib.suppress(psutil.Error):
+            victim.kill()
+    for group in groups:
+        with contextlib.suppress(OSError):
+            os.killpg(group, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        proc.kill()
+    proc.wait(timeout=_REAP_TIMEOUT)
+
+
 @contextlib.contextmanager
 def owned_process(command: list[str], **kwargs: Any) -> Iterator[subprocess.Popen]:
     """Spawn *command* owned, hand it to the caller, and reap its group after.
