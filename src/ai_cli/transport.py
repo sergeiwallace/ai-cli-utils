@@ -26,6 +26,7 @@ import psutil
 from . import output as _out
 from .config import get_xdg_state_home
 from .output import Tag, Untagged
+from .session_restart import _atomic_json
 from .session_script import _current_update_commit
 
 # Module-level alias so tests can patch _monotonic without affecting asyncio internals
@@ -457,9 +458,10 @@ def transport_outcome_path(session: str) -> Path:
 def _write_transport_outcome(path: Path, **fields) -> None:
     """Record the runner's terminal outcome. A write failure never masks the session's exit."""
     record = {"session": path.stem, **fields, "ended_at": datetime.now(UTC).isoformat()}
+    # Replaced, never rewritten in place: a client killed mid-write left a 0-byte
+    # record when this truncated the file first (AI-CLI-2kko).
     with contextlib.suppress(OSError):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record))
+        _atomic_json(path, record)
 
 
 def _read_vpn_cache(path: Path, ttl: float) -> bool | None:
