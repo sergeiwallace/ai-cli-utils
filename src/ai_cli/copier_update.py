@@ -93,6 +93,8 @@ class TemplateChanges:
     deleted_paths: set[str]
     excluded_on_update: set[str] = field(default_factory=set)
     previous_paths: set[str] = field(default_factory=set)
+    # Questions the current template declares; None when its configuration could not be read.
+    declared_questions: set[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -391,14 +393,45 @@ def _restore_answer_source(
     return True
 
 
-def _answer_values_preserved(before: dict[str, object], after: dict[str, object]) -> bool:
-    """All previously stored project answers must survive an update unchanged."""
-    return all(after.get(key) == value for key, value in before.items() if not key.startswith("_"))
+_ANSWERS_NOT_PRESERVED = "stored Copier answers were not preserved"
+_MISSING = object()
+
+
+def _unpreserved_answers(
+    before: dict[str, object], after: dict[str, object], declared_questions: set[str] | None
+) -> list[str]:
+    """Stored answers to questions the template still declares that the update dropped or changed.
+
+    Copier records answers only for declared questions, so an answer to a question the template
+    removed drops by design. When the template's questions are unknown, every stored answer counts.
+    """
+    return [
+        key
+        for key, value in before.items()
+        if not key.startswith("_")
+        and (declared_questions is None or key in declared_questions)
+        and after.get(key, _MISSING) != value
+    ]
+
+
+def _unpreserved_answers_error(keys: list[str], after: dict[str, object]) -> str:
+    """Name the lost answers; a dropped declared answer is how Copier treats a ``when: false`` question."""
+    dropped = [key for key in keys if key not in after]
+    changed = [key for key in keys if key in after]
+    parts = []
+    if dropped:
+        parts.append(
+            f"dropped {', '.join(dropped)} (Copier discards the stored answer to a question whose"
+            " `when` renders false, as with `when: false`; `ask: false` keeps the question unprompted and its answer recorded)"
+        )
+    if changed:
+        parts.append(f"changed {', '.join(changed)}")
+    return f"{_ANSWERS_NOT_PRESERVED}: {'; '.join(parts)}"
 
 
 def _is_semantic_update_failure(error: str) -> bool:
     """Whether an error means Copier changed files but the result is unsafe to commit."""
-    return error == "stored Copier answers were not preserved"
+    return error.startswith(_ANSWERS_NOT_PRESERVED)
 
 
 def _path_candidates(path: str) -> set[str]:
@@ -599,6 +632,7 @@ def _template_diff(
         deleted_paths,
         _excluded_on_update(config, answers),
         previous_paths,
+        {name for name in config if not name.startswith("_")} if config else None,
     )
 
 
@@ -770,8 +804,10 @@ def _run_copier_update(
             failure = result.stderr.strip() or "copier update failed"
         else:
             answers_after = _load_answers(answers_file)
-            if answers_after is None or not _answer_values_preserved(original_answers, answers_after):
-                failure = "stored Copier answers were not preserved"
+            if answers_after is None:
+                failure = _ANSWERS_NOT_PRESERVED
+            elif lost := _unpreserved_answers(original_answers, answers_after, template_changes.declared_questions):
+                failure = _unpreserved_answers_error(lost, answers_after)
     finally:
         if hidden:
             _hide_answers_change(project_dir, answers_file, hide=False)

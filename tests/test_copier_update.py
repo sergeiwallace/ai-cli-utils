@@ -747,7 +747,7 @@ def test_given_non_ascii_answers_when_source_is_unchanged_then_copier_starts_cle
         assert status.stdout == ""
         return MagicMock(returncode=0, stdout="", stderr="")
 
-    with patch("ai_cli.copier_update._template_diff", return_value=(set(), set())):
+    with patch("ai_cli.copier_update._template_diff", return_value=TemplateChanges(set(), set(), set(), set())):
         with patch("ai_cli.copier_update.subprocess.run", side_effect=run_copier):
             failure, _, _ = _run_copier_update(tmp_path, "/usr/bin/copier", resolved_source=source)
 
@@ -1336,10 +1336,10 @@ def test_given_stored_answer_for_question_the_template_hid_when_updating_through
     exit_code, output = _cli_update(fixture["projects"])
 
     assert exit_code == EX_PARTIAL_MUTATION
-    assert "include_feature" in output
+    assert "dropped include_feature" in output
     assert "when: false" in output
-    answers = yaml.safe_load((project / ".copier-answers.yml").read_text())
-    assert answers["include_feature"] is False
+    # Copier itself drops the answer from the file it writes, which is what the refusal guards against.
+    assert "include_feature" not in yaml.safe_load((project / ".copier-answers.yml").read_text())
 
 
 def test_given_file_mentioning_conflict_marker_mid_line_when_scanning_then_it_is_not_a_conflict(tmp_path):

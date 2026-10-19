@@ -170,6 +170,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai copier-update` no longer refuses an update because a stored answer belongs to a
+  question the template has removed. Copier stops recording such an answer, and the stored-
+  answer check now counts only questions the current template declares. A dropped or changed
+  answer to a declared question still refuses the update, and the message now names each one.
+  A dropped answer is how Copier treats a question whose `when` is false, so the message says
+  so and points to `ask: false`, which keeps a question unprompted and its answer recorded.
 - `ai cos` now takes the exclusive advisory lock on `<home>/registry.json.lock` across its
   whole load-change-save of `registry.json`, so a change another locked writer saves while a
   chief starts is no longer overwritten. The save is fsynced before the rename. There is no
