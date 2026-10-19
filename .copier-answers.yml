@@ -1,4 +1,4 @@
-_commit: v1.18.0-163-gde99db5
+_commit: v1.18.0-172-g1b296b0
 _src_path: git@github.com:sergeiwallace/project-template.git
 project_description: Unified AI session manager for Claude Code and Gemini CLI
 project_name: ai-cli-utils
