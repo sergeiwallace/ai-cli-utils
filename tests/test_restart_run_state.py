@@ -99,6 +99,10 @@ if args and args[0] == 'sessions':
 @pytest.mark.parametrize("fault", ["none", "registry", "both"])
 def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_is_durable(supervisor_fixture, fault):
     root, script, supervisor = supervisor_fixture
+    # The supervisor inherits this process's environment. Check it here too, because
+    # macOS hides a platform binary's environment from psutil and the line below
+    # then passes vacuously.
+    assert os.environ.get("AI_CLI_RUN_GENERATION") is None
     assert not psutil.Process(supervisor.pid).environ().get("AI_CLI_RUN_GENERATION")
 
     def launches():
