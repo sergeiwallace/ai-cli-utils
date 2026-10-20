@@ -599,7 +599,9 @@ def test_given_relative_supervisor_path_when_probed_then_child_directory_is_used
 def test_given_macos_withholds_supervisor_environment_when_probed_then_tmux_pane_environment_decides(
     world, monkeypatch, tmux_has_path
 ):
-    monkeypatch.setattr(restart.sys, "platform", "darwin")
+    # Replace only this module's view of sys: patching sys.platform itself would also
+    # change shutil.which's executable lookup on a Windows host.
+    monkeypatch.setattr(restart, "sys", SimpleNamespace(platform="darwin"))
     pane_path = str(world.pane_ai.parent)
     world.pane_env.clear()
     shown = {
@@ -629,7 +631,9 @@ def test_given_macos_withholds_supervisor_environment_when_probed_then_tmux_pane
 
 
 def test_given_linux_supervisor_with_empty_environment_when_probed_then_tmux_is_not_consulted(world, monkeypatch):
-    monkeypatch.setattr(restart.sys, "platform", "linux")
+    # Replace only this module's view of sys: patching sys.platform itself would also
+    # change shutil.which's executable lookup on a Windows host.
+    monkeypatch.setattr(restart, "sys", SimpleNamespace(platform="linux"))
     world.pane_env.clear()
     calls = []
 
