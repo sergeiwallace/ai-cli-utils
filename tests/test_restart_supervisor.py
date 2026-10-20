@@ -132,7 +132,10 @@ elif args[0] == 'display-message':
             fields.append('bash ' + str(root / 'state/ai-cli-utils/sessions/c-myproject-box-1.sh'))
         print('\\t'.join(fields))
 elif args[0] == 'show-environment':
-    print('AI_SESSION_STARTED=1')
+    # Real tmux's global scope is the server's environment, and the launcher's
+    # `new-session -e PATH=...` keeps the pane's PATH in it.
+    for line in ([f'{k}={v}' for k, v in os.environ.items()] if args[1:] == ['-g'] else ['AI_SESSION_STARTED=1']):
+        print(line)
 """,
         encoding="utf-8",
     )

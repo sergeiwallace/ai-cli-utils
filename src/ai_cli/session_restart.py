@@ -881,10 +881,30 @@ def _compatible(source: str, expected: str) -> bool:
     return normalize(source) == normalize(expected)
 
 
-def _restart_pin_gate(supervisor: int, cwd: Path) -> None:
+def _tmux_pane_environment(session: str) -> dict[str, str]:
+    """The environment tmux hands a new pane in *session*: global, then session overrides."""
+    environment: dict[str, str] = {}
+    for scope in (["-g"], ["-t", session]):
+        for line in _run(["tmux", "show-environment", *scope]).splitlines():
+            name, separator, value = line.partition("=")
+            if separator:
+                environment[name] = value
+            elif name.startswith("-"):  # tmux's mark for a variable removed in this scope
+                environment.pop(name[1:], None)
+    return environment
+
+
+def _restart_pin_gate(supervisor: int, cwd: Path, session: str) -> None:
     """Probe the helper the replacement child inherits, not the caller's install."""
     try:
         environment = psutil.Process(supervisor).environ()
+        if "PATH" not in environment and sys.platform == "darwin":
+            # macOS-specific: the kernel withholds the environment of Apple platform
+            # binaries, and every real supervisor runs under one (/bin/zsh, /bin/bash),
+            # so psutil returns {} instead of raising. The pane's PATH was set by the
+            # launcher's `new-session -e PATH=...`, which tmux still holds.
+            with contextlib.suppress(Refusal):
+                environment = _tmux_pane_environment(session)
         if "PATH" not in environment:
             raise Refusal("supervisor-upgrade-required", "supervisor PATH unavailable")
         # The child changes to its working directory before resolving `ai`.
@@ -980,7 +1000,7 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         if not all(_compatible(text, expected) for text in (source, *running_sources)):
             raise Refusal("supervisor-upgrade-required", "unknown running supervisor or child program")
         child_cwd = (Path(psutil.Process(supervisor).cwd()) / (metadata.get("worktree_dir") or "")).resolve()
-        _restart_pin_gate(supervisor, child_cwd)
+        _restart_pin_gate(supervisor, child_cwd, session)
         return Managed(
             session,
             pane,

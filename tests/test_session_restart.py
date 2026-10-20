@@ -566,7 +566,7 @@ def test_given_unproven_restart_pin_when_checked_then_upgrade_is_required(world,
 
     with patch.object(restart.subprocess, "run", run):
         with pytest.raises(restart.Refusal, match="supervisor-upgrade-required"):
-            restart._restart_pin_gate(103, world.cwd)
+            restart._restart_pin_gate(103, world.cwd, world.session)
     assert not world.signals and not world.injected
 
 
@@ -587,8 +587,64 @@ def test_given_relative_supervisor_path_when_probed_then_child_directory_is_used
         return SimpleNamespace(returncode=0, stdout="restart-pin-v1\n")
 
     with patch.object(restart.subprocess, "run", run):
-        restart._restart_pin_gate(103, world.cwd)
+        restart._restart_pin_gate(103, world.cwd, world.session)
     assert len(probes) == 1
+
+
+# macOS returns an EMPTY environment for an Apple platform binary such as /bin/zsh or
+# /bin/bash, which is what every real supervisor runs under there; psutil reports it as
+# `{}` rather than raising. The pane's environment is then read back from tmux, which
+# holds the `new-session -e PATH=...` the launcher set.
+@pytest.mark.parametrize("tmux_has_path", [True, False])
+def test_given_macos_withholds_supervisor_environment_when_probed_then_tmux_pane_environment_decides(
+    world, monkeypatch, tmux_has_path
+):
+    # Replace only this module's view of sys: patching sys.platform itself would also
+    # change shutil.which's executable lookup on a Windows host.
+    monkeypatch.setattr(restart, "sys", SimpleNamespace(platform="darwin"))
+    pane_path = str(world.pane_ai.parent)
+    world.pane_env.clear()
+    shown = {
+        ("-g",): f"PATH=/usr/bin\nHOME={world.root}\n-STALE\n",
+        ("-t", world.session): (f"PATH={pane_path}\n" if tmux_has_path else "") + "AI_SESSION_STARTED=1\n",
+    }
+    probes = []
+
+    def run(argv, **kwargs):
+        if argv[:2] == ["tmux", "show-environment"]:
+            return SimpleNamespace(returncode=0, stdout=shown[tuple(argv[2:])])
+        probes.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="restart-pin-v1\n")
+
+    with patch.object(restart.subprocess, "run", run):
+        if not tmux_has_path:
+            # The global /usr/bin holds no restart-pin `ai`, so the gate must still refuse.
+            with pytest.raises(restart.Refusal, match="supervisor-upgrade-required"):
+                restart._restart_pin_gate(103, world.cwd, world.session)
+            assert not probes
+            return
+        restart._restart_pin_gate(103, world.cwd, world.session)
+    assert len(probes) == 1
+    argv, kwargs = probes[0]
+    assert Path(argv[0]).resolve() == world.pane_ai.resolve()
+    assert kwargs["env"] == {"PATH": pane_path, "HOME": str(world.root), "AI_SESSION_STARTED": "1"}
+
+
+def test_given_linux_supervisor_with_empty_environment_when_probed_then_tmux_is_not_consulted(world, monkeypatch):
+    # Replace only this module's view of sys: patching sys.platform itself would also
+    # change shutil.which's executable lookup on a Windows host.
+    monkeypatch.setattr(restart, "sys", SimpleNamespace(platform="linux"))
+    world.pane_env.clear()
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=f"PATH={world.pane_ai.parent}\n")
+
+    with patch.object(restart.subprocess, "run", run):
+        with pytest.raises(restart.Refusal, match="supervisor-upgrade-required"):
+            restart._restart_pin_gate(103, world.cwd, world.session)
+    assert not calls
 
 
 @pytest.mark.parametrize("worktree_dir", [".", ""])
