@@ -192,6 +192,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai -X` session restart works on macOS. The restart pin gate read the
+  supervisor's environment, which macOS withholds for the system shells every
+  supervisor runs under, so it refused every session. It now reads the pane's
+  environment from tmux when that happens.
 - The transport outcome record of a remote session is replaced in one step, so a
   client killed while recording it no longer leaves an empty file.
 
