@@ -1520,6 +1520,22 @@ def _strip_inherited_direnv_vars(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _strip_inherited_supervisor_vars(monkeypatch):
+    """Never inherit the runner's own session supervisor state into test subprocesses.
+
+    A suite launched from inside a managed session carries that supervisor's
+    ``AI_CLI_RUN_GENERATION`` and ``AI_CLI_SUPERVISOR_*`` exports. A fixture supervisor
+    started by a test then passes the runner's generation to its child, which skips
+    acquiring its own, so every ``running`` transition is refused as a stale generation
+    and the child never starts its agent (AI-CLI-znml).
+    """
+    for var in [
+        name for name in os.environ if name == "AI_CLI_RUN_GENERATION" or name.startswith("AI_CLI_SUPERVISOR_")
+    ]:
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_launch_reexec_marker(monkeypatch):
     """No test sees, or leaves behind, the launcher's restart-after-update marker.
 
