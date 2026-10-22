@@ -243,12 +243,12 @@ Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 ```bash
 ai cos [SUFFIX|N] [-k|--machine-key KEY] [-H|--fm-home DIR] [-R] [-m MACHINE] [-r] [-d|--dry-run]
 ai c -F|--chief [SUFFIX|N] ...     # the same launch on any engine: ai c, ai g, ai p, ai cx
-ai fm [SUFFIX|N] ...               # alias of ai cos
+ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos
 ```
 
 Attach to, resume or launch this machine's one chief-of-staff session (with `-R`, the remote
-machine's). It needs the `[chief_of_staff]` settings in `config.toml`, none of which has a
-built-in default; a launch that needs one that is unset exits 1 and names it:
+machine's). It needs the `[chief_of_staff]` settings in `config.toml`; the first four have no
+built-in default, and a launch that needs one that is unset exits 1 and names it:
 
 | Setting | Used for |
 |---|---|
@@ -256,6 +256,8 @@ built-in default; a launch that needs one that is unset exits 1 and names it:
 | `session_name` | the session-name segment that marks a chief: `ai c <session_name>[-N]` is the chief launch itself |
 | `instance_key_prefix` | the registry's `chief_instance_key`, written as `<instance_key_prefix>/<machine-key>` |
 | `homes_dir` | the directory of per-machine chief homes, relative to `$XDG_STATE_HOME` unless absolute or `~`; not needed with `-H` |
+| `command_aliases` | optional list of extra subcommand names that behave exactly like `ai cos`; one naming a built-in command is refused |
+| `flag_aliases` | optional list of extra long-flag names, without the `--`, that behave exactly like `--chief` on every engine command; one naming an existing option is refused |
 
 - `-k`/`--machine-key KEY` — machine key naming the chief home (default `$AI_MACHINE_ID`, else
   the one seeded home under `homes_dir`).

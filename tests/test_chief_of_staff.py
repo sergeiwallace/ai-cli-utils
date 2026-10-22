@@ -936,7 +936,8 @@ class TestAttach:
             ["c", "--chief"],
             ["cos"],
             ["cos", "1", "-r"],
-            ["fm", "1", "-r"],
+            ["mychief", "1", "-r"],
+            ["c", "--mychief", "1"],
         ],
     )
     def test_given_a_running_chief_when_any_form_names_it_then_attaches_and_writes_nothing(
@@ -1040,7 +1041,7 @@ class TestResumeAndCreate:
         _register(seeded_home, target="c-r-hub-fw-chief-1")
         with ExitStack() as stack:
             launch = _launch_patches(stack, live=False, real_names=True)
-            code, _out, err = run_cli(["ai", "fm", "1", "-r"])
+            code, _out, err = run_cli(["ai", "mychief", "1", "-r"])
             kwargs = launch.call_args.kwargs
         assert code == 0, err
         assert kwargs["name"] == "chief-1"
@@ -1093,7 +1094,8 @@ class TestNaming:
             (["c", "chief-2", "-p", "hub"], "c-hub-fw-chief-2"),
             (["c", "--chief", "2"], "c-hub-fw-chief-2"),
             (["cos", "2"], "c-hub-fw-chief-2"),
-            (["fm", "1"], "c-hub-fw-chief-1"),
+            (["mychief", "1"], "c-hub-fw-chief-1"),
+            (["c", "--mychief", "1"], "c-hub-fw-chief-1"),
             ([*REMOTE_SIDE, "c-r-hub-fw-chief-2"], "c-r-hub-fw-chief-2"),
             ([*REMOTE_SIDE, "chief-2"], "c-r-hub-fw-chief-2"),
             ([*REMOTE_SIDE, "chief"], "c-r-hub-fw-chief-1"),
@@ -1141,7 +1143,8 @@ class TestRemoteForms:
             (["cos", "1", "-r"], "--chief --resume chief-1"),
             (["c", "chief", "1", "-r"], "--chief --resume chief-1"),
             (["c", "chief-1", "-r"], "--chief --resume chief-1"),
-            (["fm", "1", "-r"], "--chief --resume chief-1"),
+            (["mychief", "1", "-r"], "--chief --resume chief-1"),
+            (["c", "--mychief", "1", "-r"], "--chief --resume chief-1"),
             (["c", "--chief", "1", "-r"], "--chief --resume chief-1"),
             (["c", "chief-1", "-p", "hub"], "--chief chief-1"),
         ],
@@ -1406,3 +1409,77 @@ class TestChiefSettings:
         monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
         assert not cos.is_chief_positional("chief-1")
         assert not cos.names_a_chief("myproject-box-chief-1")
+
+
+def _dispatched(argv, config):
+    """The ``(engine, options)`` an ``ai`` command line hands the session dispatcher."""
+    with patch("ai_cli.main._dispatch_session") as dispatch:
+        code, _out, err = _run_cli(["ai", *argv], config=config)
+    assert code == 0, err
+    engine, _ctx, options = dispatch.call_args.args
+    return engine, options
+
+
+class TestChiefAliases:
+    """``command_aliases`` and ``flag_aliases`` are synonyms for ``ai cos`` and ``--chief``, read from config."""
+
+    def test_given_a_configured_command_alias_when_invoked_then_it_dispatches_exactly_like_cos(self):
+        config = with_environment_config()
+
+        assert _dispatched(["mychief", "2", "-r"], config) == _dispatched(["cos", "2", "-r"], config)
+
+    @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
+    def test_given_a_configured_flag_alias_when_passed_then_it_dispatches_exactly_like_chief(self, engine):
+        config = with_environment_config()
+
+        aliased = _dispatched([engine, "--mychief", "2"], config)
+
+        assert aliased == _dispatched([engine, "--chief", "2"], config)
+        assert aliased[1]["chief"] is True
+
+    def test_given_no_command_aliases_configured_when_the_alias_is_invoked_then_it_is_no_command(self):
+        config = _config_without("command_aliases")
+        with patch("ai_cli.main._dispatch_session") as dispatch:
+            code, _out, err = _run_cli(["ai", "mychief"], config=config)
+        assert code == 1
+        assert "No such command 'mychief'" in err
+        dispatch.assert_not_called()
+
+    def test_given_no_flag_aliases_configured_when_the_alias_is_passed_then_it_is_not_the_chief(self):
+        engine, options = _dispatched(["c", "--mychief", "2"], _config_without("flag_aliases"))
+
+        assert engine == "c"
+        assert options["chief"] is False
+
+    @pytest.mark.parametrize("argv", [["cos"], ["ls"]])
+    def test_given_a_command_alias_naming_a_built_in_when_any_command_runs_then_refuses_naming_it(self, argv):
+        config = with_environment_config({"chief_of_staff": {"command_aliases": ["ls"]}})
+        with patch("ai_cli.main._dispatch_session") as dispatch, patch("ai_cli.main._do_ls") as do_ls:
+            code, _out, err = _run_cli(["ai", *argv], config=config)
+        assert code == 1
+        assert "command_aliases names 'ls', which is already the `ai ls` command" in err
+        dispatch.assert_not_called()
+        do_ls.assert_not_called()
+
+    @pytest.mark.parametrize("alias", ["resume", "chief", "help"])
+    def test_given_a_flag_alias_naming_an_existing_option_when_launched_then_refuses_naming_it(self, alias):
+        config = with_environment_config({"chief_of_staff": {"flag_aliases": [alias]}})
+        with patch("ai_cli.main._dispatch_session") as dispatch:
+            code, _out, err = _run_cli(["ai", "c", "--chief"], config=config)
+        assert code == 1
+        assert f"flag_aliases names {alias!r}, but --{alias} is already an option of `ai c`" in err
+        dispatch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("command_aliases", "mychief"), ("flag_aliases", ["--mychief"]), ("command_aliases", [""])],
+    )
+    def test_given_an_alias_setting_that_is_not_a_list_of_bare_names_when_launched_then_refuses_naming_it(
+        self, key, value
+    ):
+        config = with_environment_config({"chief_of_staff": {key: value}})
+        with patch("ai_cli.main._dispatch_session") as dispatch:
+            code, _out, err = _run_cli(["ai", "c", "--chief"], config=config)
+        assert code == 1
+        assert f"chief_of_staff.{key} must be a list of bare names" in err
+        dispatch.assert_not_called()

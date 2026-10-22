@@ -4954,8 +4954,59 @@ def _restart_launch_target(target, check, options, *, json_output=False):
     return session
 
 
+def _chief_alias_setting(key: str) -> tuple[str, ...]:
+    try:
+        return _chief_of_staff.alias_setting(key)
+    except _chief_of_staff.ChiefOfStaffError as exc:
+        raise click.UsageError(str(exc)) from None
+
+
+def _chief_command_aliases(group: click.Group) -> tuple[str, ...]:
+    """``[chief_of_staff] command_aliases``; one naming a built-in command is refused, never shadowed."""
+    aliases = _chief_alias_setting("command_aliases")
+    for alias in aliases:
+        if alias in group.commands:
+            raise click.UsageError(
+                f"[chief_of_staff] command_aliases names {alias!r}, which is already the `ai {alias}` command; "
+                f"remove it from {_config.config_file_text()}"
+            )
+    return aliases
+
+
+class _ChiefFlagCommand(click.Command):
+    """A command whose ``--chief`` also answers to each ``[chief_of_staff] flag_aliases`` name."""
+
+    def make_parser(self, ctx):
+        parser = super().make_parser(ctx)
+        if not any(param.name == "chief" for param in self.params):
+            return parser
+        taken = {opt for param in self.get_params(ctx) for opt in (*param.opts, *param.secondary_opts)}
+        for alias in _chief_alias_setting("flag_aliases"):
+            flag = f"--{alias}"
+            if flag in taken:
+                raise click.UsageError(
+                    f"[chief_of_staff] flag_aliases names {alias!r}, but {flag} is already an option of "
+                    f"`ai {ctx.info_name}`; remove it from {_config.config_file_text()}"
+                )
+            # Parsed into the same destination as --chief, so the declared option reads it.
+            click.Option([flag, "chief"], is_flag=True).add_to_parser(parser, ctx)
+        return parser
+
+
+class _ChiefAliasGroup(click.Group):
+    """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
+
+    command_class = _ChiefFlagCommand
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] in _chief_command_aliases(self):
+            return args[0], self.commands["cos"], args[1:]
+        return super().resolve_command(ctx, args)
+
+
 @click.group(
     name="ai",
+    cls=_ChiefAliasGroup,
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -5459,7 +5510,8 @@ def cmd_cx(ctx, **options):
     context_settings=SESSION_CONTEXT,
     help=(
         "Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a "
-        "remote machine (`ai c --chief`; also `ai fm`). Needs the [chief_of_staff] settings in config.toml"
+        "remote machine (`ai c --chief`). Needs the [chief_of_staff] settings in config.toml, whose "
+        "command_aliases and flag_aliases add synonyms for `cos` and `--chief`"
     ),
 )
 @_session_options
@@ -5474,10 +5526,6 @@ def cmd_cos(ctx, **options):
     """
     options["chief"] = True
     _dispatch_session("c", ctx, options)
-
-
-# `ai fm 1 -r -R` is `ai cos 1 -r -R`: the same command object.
-_cli_group.add_command(cmd_cos, name="fm")
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
@@ -7078,7 +7126,10 @@ def _windows_expand_args(argv: "list[str]") -> bool:
     """
     command = next((arg for arg in argv if not arg.startswith("-")), "")
     session_commands = {name for name, cmd in _cli_group.commands.items() if cmd.context_settings == SESSION_CONTEXT}
-    return command not in session_commands
+    if not command or command in _cli_group.commands:
+        return command not in session_commands
+    # Only a word that is no built-in command can be a configured alias, so `ai -V` reads no config.
+    return command not in _chief_command_aliases(_cli_group)
 
 
 def cli() -> None:

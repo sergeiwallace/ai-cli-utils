@@ -635,6 +635,12 @@ stale_after_seconds = 600
 ## Directory holding one chief home per machine key; relative to $XDG_STATE_HOME unless
 ## absolute or starting with ~. -H/--fm-home names a home directly instead.
 # homes_dir = "myenv/chief-of-staff"
+## Extra subcommand names that behave exactly like `ai cos`; one naming a built-in
+## command is refused.
+# command_aliases = ["mychief"]
+## Extra long-flag names (without the leading --) that behave exactly like --chief on
+## every engine command; one naming an existing option is refused.
+# flag_aliases = ["mychief"]
 
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)

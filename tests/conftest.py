@@ -1892,6 +1892,8 @@ ENVIRONMENT_CONFIG = {
         "session_name": "chief",
         "instance_key_prefix": "example-chief",
         "homes_dir": f"{CHIEF_PROJECT}/chief-of-staff",
+        "command_aliases": ["mychief"],
+        "flag_aliases": ["mychief"],
     },
     "worktree": {"marker_prefix": "hub"},
 }

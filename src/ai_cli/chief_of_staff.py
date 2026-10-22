@@ -12,7 +12,9 @@ The names that tie a chief to one environment are configuration, read from the
 ``project`` (the repository every chief launches into), ``session_name`` (the session-name
 segment that marks a chief), ``instance_key_prefix`` (the registry's chief instance key is
 ``<prefix>/<machine-key>``) and ``homes_dir`` (relative to ``$XDG_STATE_HOME`` unless
-absolute). A launch that needs one that is unset refuses and names it.
+absolute). A launch that needs one that is unset refuses and names it. Two optional lists
+add synonyms for the built-in names: ``command_aliases`` (extra subcommands that are
+``ai cos``) and ``flag_aliases`` (extra long flags that are ``--chief``).
 
 This module owns the launch-side bookkeeping around that home:
 
@@ -57,6 +59,7 @@ REGISTRATION_SCHEMA_VERSION = 1
 # launch a chief that would dispatch against an unknown order.
 REQUIRED_HOME_FILES = ("config/message-transports.json",)
 _MACHINE_KEY = re.compile(r"^[A-Za-z0-9._-]+$")
+_ALIAS_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class ChiefOfStaffError(Exception):
@@ -68,6 +71,20 @@ def setting(key: str) -> str:
     section = _config.load_config().get(SETTINGS_SECTION)
     value = section.get(key) if isinstance(section, dict) else None
     return value.strip() if isinstance(value, str) else ""
+
+
+def alias_setting(key: str) -> tuple[str, ...]:
+    """``[chief_of_staff] <key>``: a list of extra names, read at call time; () when unset."""
+    section = _config.load_config().get(SETTINGS_SECTION)
+    value = section.get(key) if isinstance(section, dict) else None
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(name, str) and _ALIAS_NAME.match(name) for name in value):
+        raise ChiefOfStaffError(
+            f'{SETTINGS_SECTION}.{key} must be a list of bare names such as ["mychief"] (letters, digits, '
+            f"'-' and '_', no leading dash) in {_config.config_file_text()}"
+        )
+    return tuple(dict.fromkeys(value))
 
 
 def required_setting(key: str) -> str:

@@ -761,7 +761,7 @@ ai attach <name>   # Attach directly to a named tmux session
 
 One coordinating session per machine that dispatches to your other sessions and surfaces their blockers, with its `FM_HOME` in a per-machine state directory rather than a repository. `-F/--chief` is a mode on every engine command, so the chief can be any agent you launch.
 
-The names that tie a chief to your environment are settings in `config.toml`, read on every launch. None has a built-in default: a chief launch that needs one that is unset refuses and names it.
+The names that tie a chief to your environment are settings in `config.toml`, read on every launch. None has a built-in default: a chief launch that needs one that is unset refuses and names it. The two alias lists are optional: an alias naming a built-in command or an existing option is refused.
 
 ```toml
 [chief_of_staff]
@@ -769,6 +769,8 @@ project = "myenv"                      # the repository every chief launches int
 session_name = "chief"                 # the session-name segment that marks a chief
 instance_key_prefix = "example-chief"  # registry key: <instance_key_prefix>/<machine-key>
 homes_dir = "myenv/chief-of-staff"     # relative to $XDG_STATE_HOME unless absolute or ~
+command_aliases = ["mychief"]          # optional: extra subcommands that are `ai cos`
+flag_aliases = ["mychief"]             # optional: extra long flags that are `--chief`
 ```
 
 A chief always launches into `project`, whatever repository you run the command from. These examples use the settings above, a project whose task prefix is `env`, and host alias `box`:
@@ -781,13 +783,14 @@ ai c chief -p env           # -p may name the chief's project (by alias, prefix 
 ai c --chief review         # Optional suffix: env-box-chief-review-1
 ai p --chief                # Same mode on Pi: tmux p-env-box-chief-1 (likewise `ai g`, `ai cx`)
 ai cos                      # Shorthand for `ai c --chief` (takes the same optional suffix or N)
-ai fm 1                     # Alias of `ai cos 1`
+ai mychief 1                # A configured command alias: the same as `ai cos 1`
+ai g --mychief              # A configured flag alias: the same as `ai g --chief`
 ai c -F -k/--machine-key K  # Machine key naming the chief home (default: $AI_MACHINE_ID)
 ai c -F -H/--fm-home DIR    # Use an explicit chief home instead of <homes_dir>/<key>
 ai c -F --dry-run           # Print the resolved plan; registers and starts nothing
 ai c chief-2 -R -m box      # Run the chief on remote machine `box`: named, homed and registered there
 ai cos -R -m box            # Same, through the shorthand
-ai fm 1 -r -R -p env        # From another machine: attach to or resume chief 1 on the remote machine
+ai cos 1 -r -R -p env       # From another machine: attach to or resume chief 1 on the remote machine
 ```
 
 Every one of these attaches, resumes or creates, decided on the machine the chief runs on (the remote one with `-R`):
@@ -1023,6 +1026,8 @@ enabled = true                 # git worktree isolation per session
 # session_name = "chief"
 # instance_key_prefix = "example-chief"
 # homes_dir = "myenv/chief-of-staff"
+# command_aliases = ["mychief"]
+# flag_aliases = ["mychief"]
 
 [worktree_upstream]
 # Integration branch for session worktrees, keyed by repository directory name.
