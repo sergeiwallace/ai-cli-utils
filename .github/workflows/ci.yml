@@ -112,7 +112,9 @@ jobs:
     # the blast radius of any future hang instead of burning hours of CI time.
     # The suite alone reached 14-15 minutes by 2026-10 and was cancelled at a
     # 15-minute cap after passing (AI-CLI-nqf2), so the cap leaves headroom.
-    timeout-minutes: 25
+    # By 2026-10 the suite reached 24 minutes on a healthy run, so two PRs adding a
+    # few tests were cancelled at the old 25-minute cap with every test passing.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
@@ -162,8 +164,9 @@ jobs:
     # actually targets, so it was the least covered and most exercised OS.
     #
     # macOS runners are the slowest and the most expensive per minute, so bound a
-    # hang rather than discovering it on the bill.
-    timeout-minutes: 20
+    # hang rather than discovering it on the bill. Healthy runs reached 19 minutes by
+    # 2026-10, so the cap sits well above that.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
