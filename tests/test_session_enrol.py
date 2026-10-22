@@ -26,7 +26,7 @@ def enrolled_world(tmp_path, monkeypatch):
     path = root / "registry.json"
     monkeypatch.setattr(registry, "registry_path", lambda: path)
     monkeypatch.setattr(config, "get_xdg_state_home", lambda: root)
-    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-a"}})
     monkeypatch.setenv("AI_HOST", "host-a")
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
     name = "c-r-myproject-1"

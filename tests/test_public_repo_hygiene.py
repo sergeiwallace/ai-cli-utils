@@ -14,6 +14,8 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+
 _SCANNED_PATHS = (
     "src",
     "tests",
@@ -239,6 +241,97 @@ def scan_for_private_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+# The private environment repository this package was first written against, and the
+# names its sessions carry: the repository itself, the chief session's name segment, and
+# the repository's two-letter-plus session prefix (``<prefix>-1``, ``c-r-<prefix>-box-1``,
+# ``branch.<b>.<prefix>-session-home``). They sat in ``src/`` as load-bearing values -- the
+# project a chief launches into, its registry key, git-config marker keys -- so forbidding
+# them needed those values moved into configuration first, not a scrub (AI-CLI-nout).
+_PRIVATE_ENVIRONMENT_NAMES = ("ai-harness", "firstmate")  # public-hygiene: allow
+_PRIVATE_ENVIRONMENT_PREFIX = "aih"  # public-hygiene: allow
+
+# Unbounded: the chief name reaches code as an identifier fragment (``_prepare_<name>_launch``,
+# ``--<name>``), where a word boundary would miss it, and neither token is an English word.
+_ENVIRONMENT_NAME = re.compile("|".join(re.escape(name) for name in _PRIVATE_ENVIRONMENT_NAMES), re.IGNORECASE)
+# The prefix in the same two shapes as the personal session prefix above, for the same
+# reasons: case-sensitive with a separator, so the uppercase tracker ids that share the
+# letters stay with the tracker-id guard, and case-insensitive as a bare quoted literal.
+_ENVIRONMENT_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}-")
+_ENVIRONMENT_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}[\"']", re.IGNORECASE)
+
+# Everything the name guard scans except ``docs``. Measured 2026-10-21 with `grep -rniE`:
+# ``docs`` holds about 150 lines naming the repository and about 200 carrying the prefix,
+# across design records, audits and the archived roadmap, where a name is often the only
+# provenance a maintainer has. Rewriting those is its own change; the shipped package, its
+# tests, scripts and the root metadata a reader sees first are this guard's scope.
+_ENVIRONMENT_NAME_SCANNED_PATHS = tuple(path for path in _SCANNED_PATHS if path != "docs")
+
+
+def _line_has_environment_name(line: str) -> bool:
+    return bool(
+        _ENVIRONMENT_NAME.search(line)
+        or _ENVIRONMENT_SESSION_NAME.search(line)
+        or _ENVIRONMENT_PREFIX_LITERAL.search(line)
+    )
+
+
+def scan_for_private_environment_names(root: Path) -> list[str]:
+    """Return ``path:lineno: line`` for every private environment name outside ``docs``."""
+    findings: list[str] = []
+    for path, relative_path, text in _scanned_text_files(root, _ENVIRONMENT_NAME_SCANNED_PATHS):
+        del path
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _line_has_environment_name(line) and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_environment_names_remain():
+    findings = scan_for_private_environment_names(_repo_root())
+    assert not findings, "private environment names in a public package:\n" + "\n".join(findings)
+
+
+class TestTheEnvironmentNameGuardCanActuallyFail:
+    """Positive and negative controls for the patterns, in the shapes the names shipped in."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'CHIEF_PROJECT = "ai-harness"',  # public-hygiene: allow
+            '"--firstmate",',  # public-hygiene: allow
+            "def _prepare_firstmate_launch(engine):",  # public-hygiene: allow
+            'name = "c-r-aih-box-1"',  # public-hygiene: allow
+            '_KEY = r"^branch\\..+\\.aih-session-home$"',  # public-hygiene: allow
+            'aliases = {"aih": "myproject"}',  # public-hygiene: allow
+        ],
+    )
+    def test_given_a_line_carrying_an_environment_name_when_matched_then_it_is_flagged(self, line):
+        assert _line_has_environment_name(line)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "# fixed in AIH-123",  # public-hygiene: allow
+            "# a test harness for the launcher",
+            'name = "c-r-myproject-box-1"',
+        ],
+    )
+    def test_given_an_ordinary_line_when_matched_then_it_is_not_flagged(self, line):
+        assert not _line_has_environment_name(line)
+
+    def test_given_an_offender_in_docs_and_in_src_when_scanned_then_only_src_is_flagged(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "docs").mkdir()
+        offender = f"project = {_PRIVATE_ENVIRONMENT_NAMES[0]}\n"
+        (tmp_path / "src" / "example.py").write_text(offender)
+        (tmp_path / "docs" / "example.md").write_text(offender)
+
+        findings = scan_for_private_environment_names(tmp_path)
+
+        assert len(findings) == 1
+        assert findings[0].startswith("src/example.py:1:")
 
 
 # Identifiers from private issue trackers. A published reference to a tracker no reader can

@@ -112,7 +112,7 @@ def test_given_npx_root_when_descendant_uses_unstamped_installation_then_backgro
     with pytest.raises(restart.Refusal, match="background-work") as caught:
         restart.descendants_gate(1, tree.home)
     assert "uncertified npx installation" in caught.value.detail
-    assert "ai-harness apply --only restart-mcp" in caught.value.detail
+    assert "regenerate the MCP launcher certificates" in caught.value.detail
 
 
 def test_given_certified_npx_root_when_node_and_shell_helpers_idle_then_passes(npx_tree, monkeypatch):
@@ -944,7 +944,7 @@ def test_given_failure_when_cooldown_expires_then_auto_suppressed(world, monkeyp
     assert world.cli("-X", SESSION_ID)[1]["reason"] == "verification-incomplete"
     world.registry.unlink()
     world.connection.__enter__.return_value.connect.side_effect = ConnectionRefusedError()
-    monkeypatch.setattr(config, "load_config", lambda: world.settings)
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: world.settings)
     report = restart.restart(SESSION_ID, automatic=True)
     assert report["reason"] == "previous-verification-failed" and len(world.signals) == 1
 
@@ -1079,7 +1079,7 @@ def test_given_verified_replacement_when_automatic_retry_then_failed_suppression
 ):
     world = failed_restart
     world.commands({})
-    monkeypatch.setattr(config, "load_config", lambda: world.settings)
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: world.settings)
     prepare = Mock(side_effect=restart.Refusal("busy"))
     monkeypatch.setattr(restart, "prepare_request", prepare)
     report = restart.restart(SESSION_ID, automatic=True)
@@ -1202,7 +1202,7 @@ def test_given_contenders_when_locked_then_one_action(world, monkeypatch, phase)
             return original(*args)
 
         monkeypatch.setattr(restart, "_verify_replacement", verify)
-    monkeypatch.setattr(config, "load_config", lambda: world.settings)
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: world.settings)
     reports = []
     actor = threading.Thread(target=lambda: reports.append(restart.restart(SESSION_ID)))
     actor.start()

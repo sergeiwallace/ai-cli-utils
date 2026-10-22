@@ -41,7 +41,7 @@ def test_given_unregistered_launch_when_generation_recovers_then_exact_local_rec
     meta = launch_metadata | {"engine": engine, "is_remote": remote}
     name = f"{engine}-{'r-' if remote else ''}session-1"
     meta["session"] = name
-    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-a"}})
     result = CliRunner().invoke(_cli_group, ["sessions", "_begin", name, "--launch-metadata", json.dumps(meta)])
     assert result.exit_code == 0, result.output
     record = registry.load_registry()["sessions"][0]
@@ -58,7 +58,7 @@ def test_given_unregistered_launch_when_generation_recovers_then_exact_local_rec
 def test_given_existing_record_when_generation_recovers_then_policy_and_ownership_are_preserved(
     launch_metadata, monkeypatch, existing
 ):
-    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-a"}})
     name = launch_metadata["session"]
     state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": launch_metadata["worktree_dir"]}, host="host-a")
 
@@ -267,7 +267,7 @@ def test_given_generated_child_when_legacy_registry_is_missing_then_real_cli_rec
 def test_given_same_named_connection_when_local_generation_recovers_then_connection_is_preserved(
     launch_metadata, monkeypatch, local_exists
 ):
-    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-a"}})
     name = launch_metadata["session"]
     if local_exists:
         state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": launch_metadata["worktree_dir"]}, host="host-a")
@@ -297,7 +297,7 @@ def test_given_registered_recipe_when_launch_host_label_changes_then_begin_prese
     name = launch_metadata["session"]
     state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": launch_metadata["worktree_dir"]}, host="host-a")
     before = registry.load_registry()["sessions"][0]
-    monkeypatch.setattr(config, "load_config", lambda: {"machine": {"host_id": "host-b"}})
+    monkeypatch.setattr(config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-b"}})
     result = CliRunner().invoke(
         _cli_group, ["sessions", "_begin", name, "--launch-metadata", json.dumps(launch_metadata)]
     )

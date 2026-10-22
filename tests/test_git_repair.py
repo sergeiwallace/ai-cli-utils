@@ -139,7 +139,7 @@ def test_repair_when_stale_worktree_config_then_unsets_and_reports_repaired(tmp_
         if "core.bare" in cmd and "--get" in cmd:
             return MagicMock(returncode=0, stdout="false\n")
         if "core.worktree" in cmd and "--get" in cmd:
-            return MagicMock(returncode=0, stdout="/some/sibling/.worktrees/aih-37\n")
+            return MagicMock(returncode=0, stdout="/some/sibling/.worktrees/hub-37\n")
         return MagicMock(returncode=0, stdout="")
 
     with patch("subprocess.run", side_effect=mock_run) as mock_subprocess:
@@ -155,7 +155,7 @@ def test_repair_when_both_bare_true_and_stale_worktree_then_repairs_both(tmp_pat
         if "core.bare" in cmd and "--get" in cmd:
             return MagicMock(returncode=0, stdout="true\n")
         if "core.worktree" in cmd and "--get" in cmd:
-            return MagicMock(returncode=0, stdout="/some/sibling/.worktrees/aih-37\n")
+            return MagicMock(returncode=0, stdout="/some/sibling/.worktrees/hub-37\n")
         return MagicMock(returncode=0, stdout="")
 
     with patch("subprocess.run", side_effect=mock_run) as mock_subprocess:
@@ -211,7 +211,7 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
     # core.bare=true and point core.worktree at a sibling worktree directory
     # (the sibling dir must exist — git rejects config ops that reference a
     # nonexistent core.worktree path with "fatal: Invalid path").
-    sibling_worktree = tmp_path / ".worktrees" / "aih-37"
+    sibling_worktree = tmp_path / ".worktrees" / "hub-37"
     sibling_worktree.mkdir(parents=True)
     subprocess.run(["git", "-C", str(repo), "config", "--local", "core.bare", "true"], check=True)
     subprocess.run(

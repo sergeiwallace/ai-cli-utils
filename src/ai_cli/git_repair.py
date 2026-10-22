@@ -17,7 +17,7 @@ Two layers of defense:
    call that touches repo/worktree structure, so it always targets the repo
    passed via ``-C``/``cwd``, never one redirected by an inherited
    ``GIT_DIR``/``GIT_WORK_TREE``. ``_creator_env()`` extends it with the
-   worktree-creator attestation that ai-harness's ``post-checkout`` backstop
+   worktree-creator attestation that the environment's ``post-checkout`` backstop
    reads, and belongs here because that attestation must ride on the same
    scrubbed environment every ``git worktree add`` already uses.
 2. ``repair_bare_worktree_config()`` — a deterministic backstop: assert +
@@ -128,7 +128,7 @@ def _git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
 def _creator_env(creator: str, canonical_leaf: str | None = None) -> dict[str, str]:
     """``_git_env()`` plus the worktree-creator attestation, for a ``git worktree add``.
 
-    ai-harness installs a ``post-checkout`` backstop
+    An environment may install a ``post-checkout`` backstop
     (``scripts/worktree_creation_guard.py``) that undoes a worktree created flat under
     ``<repo>/.worktrees/``, because that root is reserved for a Claude Code session's own
     checkout. The backstop admits a creation only when the creating process's environment

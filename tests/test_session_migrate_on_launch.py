@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 import test_session_migrate
 import test_session_migrate_hooks
-from conftest import run_cli
+from conftest import run_cli as _run_cli
 from test_session_migrate import (
     NEW,
     OLD,
@@ -69,7 +69,7 @@ def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[di
         )
         for target, kwargs in patches:
             stack.enter_context(patch(target, **kwargs))
-        code, out, err = run_cli(["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo"])
+        code, out, err = test_session_migrate.run_cli(["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo"])
     return code, out, err, launched
 
 
@@ -198,6 +198,6 @@ def test_given_a_manual_finish_succeeds_when_new_is_launched_then_it_is_not_run_
 
 
 def test_given_the_launch_help_when_printed_then_it_names_the_pending_finish():
-    code, out, _err = run_cli(["ai", "c", "--help"])
+    code, out, _err = _run_cli(["ai", "c", "--help"])
     assert code == 0
     assert "session-migrate OLD NEW --finish -y" in " ".join(out.split())

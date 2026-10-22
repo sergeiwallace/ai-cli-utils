@@ -177,6 +177,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The chief-of-staff launch no longer carries any environment's names in code. The
+  project it launches into, its session-name segment, its registry instance-key prefix
+  and its homes directory are now `[chief_of_staff] project`, `session_name`,
+  `instance_key_prefix` and `homes_dir` in `config.toml`, read on every launch, with no
+  defaults: `ai cos` refuses and names an unset one. The flag, named after one
+  environment's chief, is renamed to `-F/--chief`, and the old name is available through
+  `[chief_of_staff] flag_aliases`; the `ai cos` aliases named after that chief, including
+  `ai fm`, are available through `[chief_of_staff] command_aliases`. Each alias behaves
+  exactly like the built-in name, and one that collides with an existing command or
+  option is refused. Both ends of an `ai cos -R` hand-off need this release.
+- Three other environment-specific values are settings too, each off when unset:
+  `[project] environment_repo` names the sibling repository whose host-alias registry is
+  authoritative and whose `dolt_server.py` and wake sidecar are run; `[machine]
+  marker_file` names the host-id file read when `AI_HOST` is unset; `[worktree]
+  marker_prefix` names the git-config marker namespace `ai session-migrate` rewrites.
 - The development dependency on Copier is now `>=9.19`, the first release with
   `ask: false` questions, which templates use to keep hidden answers on update.
 

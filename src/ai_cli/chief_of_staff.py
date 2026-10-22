@@ -2,10 +2,19 @@
 
 A chief-of-staff is one coordinating Claude Code session per machine that talks to the
 user, dispatches to the other ("VP") sessions and surfaces their blockers. It runs as
-an ordinary interactive session whose Firstmate home (``FM_HOME``) is a per-machine
+an ordinary interactive session whose chief home (``FM_HOME``) is a per-machine
 state directory outside every repository, seeded by the environment's installer:
 
-    $XDG_STATE_HOME/firstmate/chief-of-staff/<machine-key>
+    <[chief_of_staff] homes_dir>/<machine-key>
+
+The names that tie a chief to one environment are configuration, read from the
+``[chief_of_staff]`` section of ``config.toml`` at call time and never guessed:
+``project`` (the repository every chief launches into), ``session_name`` (the session-name
+segment that marks a chief), ``instance_key_prefix`` (the registry's chief instance key is
+``<prefix>/<machine-key>``) and ``homes_dir`` (relative to ``$XDG_STATE_HOME`` unless
+absolute). A launch that needs one that is unset refuses and names it. Two optional lists
+add synonyms for the built-in names: ``command_aliases`` (extra subcommands that are
+``ai cos``) and ``flag_aliases`` (extra long flags that are ``--chief``).
 
 This module owns the launch-side bookkeeping around that home:
 
@@ -43,70 +52,117 @@ MACHINE_KEY_ENV = "AI_MACHINE_ID"
 ROLE_ENV = "AI_SESSION_ROLE"
 ROLE = "chief-of-staff"
 FM_HOME_ENV = "FM_HOME"
-SESSION_NAME = "firstmate"
+SETTINGS_SECTION = "chief_of_staff"
 REGISTRY_SCHEMA_VERSION = 2
 REGISTRATION_SCHEMA_VERSION = 1
 # The installer seeds these; a home without them has no transport policy and must not
 # launch a chief that would dispatch against an unknown order.
 REQUIRED_HOME_FILES = ("config/message-transports.json",)
 _MACHINE_KEY = re.compile(r"^[A-Za-z0-9._-]+$")
+_ALIAS_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class ChiefOfStaffError(Exception):
     """A launch-time refusal; the message names the remedy."""
 
 
-#: The repository every chief launches into, whatever repository the command ran from:
-#: the chief home, its hooks and its worktree convention are ai-harness's.
-CHIEF_PROJECT = "ai-harness"
-_CHIEF_SEGMENT = re.compile(rf"(?:^|-){SESSION_NAME}(?:-|$)")
-#: ``firstmate``, ``firstmate-N``, or a full chief session name ending in one
-#: (``aih-fw-firstmate-1``, ``c-r-aih-fw-firstmate-1``): the positional forms that are a
-#: chief launch on their own, without ``--firstmate``.
-_CHIEF_POSITIONAL = re.compile(rf"(?:^|-){SESSION_NAME}(?:-\d+)?$")
+def setting(key: str) -> str:
+    """``[chief_of_staff] <key>`` from config.toml, read at call time; "" when unset."""
+    section = _config.load_config().get(SETTINGS_SECTION)
+    value = section.get(key) if isinstance(section, dict) else None
+    return value.strip() if isinstance(value, str) else ""
+
+
+def alias_setting(key: str) -> tuple[str, ...]:
+    """``[chief_of_staff] <key>``: a list of extra names, read at call time; () when unset.
+
+    Command routing reads it on every ``ai`` invocation, dry runs and session scripts
+    included, so it reads config.toml without creating it or registering the machine.
+    """
+    section = _config.load_config(read_only=True).get(SETTINGS_SECTION)
+    value = section.get(key) if isinstance(section, dict) else None
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(name, str) and _ALIAS_NAME.match(name) for name in value):
+        raise ChiefOfStaffError(
+            f'{SETTINGS_SECTION}.{key} must be a list of bare names such as ["mychief"] (letters, digits, '
+            f"'-' and '_', no leading dash) in {_config.config_file_text()}"
+        )
+    return tuple(dict.fromkeys(value))
+
+
+def required_setting(key: str) -> str:
+    """``[chief_of_staff] <key>``, or a refusal naming the setting when it is unset."""
+    value = setting(key)
+    if not value:
+        raise ChiefOfStaffError(
+            f'{SETTINGS_SECTION}.{key} is not set: add {key} = "..." under [{SETTINGS_SECTION}] in '
+            f"{_config.config_file_text()}; a chief-of-staff launch does not guess it"
+        )
+    return value
+
+
+def _session_name() -> str:
+    """The configured chief session-name segment, casefolded; "" when none is configured."""
+    return setting("session_name").casefold()
+
+
+def _chief_segment(session_name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:^|-){re.escape(session_name)}(?:-|$)")
 
 
 def is_chief_positional(name: str) -> bool:
-    """True when a positional session name alone asks for the chief launch."""
-    return bool(name) and bool(_CHIEF_POSITIONAL.search(name.casefold()))
+    """True when a positional session name alone asks for the chief launch.
+
+    That is the configured session name, ``<name>-N``, or a full chief session name ending
+    in one (``myproject-box-chief-1``, ``c-r-myproject-box-chief-1`` for session name
+    ``chief``). With no session name configured, no positional name is a chief launch.
+    """
+    session_name = _session_name()
+    if not name or not session_name:
+        return False
+    return bool(re.search(rf"(?:^|-){re.escape(session_name)}(?:-\d+)?$", name.casefold()))
 
 
 def names_a_chief(name: str) -> bool:
-    """True when ``name`` carries the ``firstmate`` segment anywhere."""
-    return bool(name) and bool(_CHIEF_SEGMENT.search(name.casefold()))
+    """True when ``name`` carries the configured chief session-name segment anywhere."""
+    session_name = _session_name()
+    return bool(name) and bool(session_name) and bool(_chief_segment(session_name).search(name.casefold()))
 
 
 def chief_session_name(name: str) -> str:
-    """The session name a chief launch asks for: ``firstmate[-<suffix>]``.
+    """The session name a chief launch asks for: ``<session name>[-<suffix>]``.
 
-    A name that already carries the ``firstmate`` segment is a chief session name
-    (``aih-fw-firstmate-1``, ``c-r-aih-fw-firstmate-1``, ``firstmate-review``) and is
+    A name that already carries the session-name segment is a chief session name
+    (``myproject-box-chief-1``, ``c-r-myproject-box-chief-1``, ``chief-review``) and is
     returned unchanged, so the slot a remote dispatcher allocated and the session name an
     iTerm2 relaunch replays both reach the same session instead of nesting a second
-    ``firstmate-`` in front of it.
+    segment in front of it.
     """
+    session_name = required_setting("session_name").casefold()
     if not name:
-        return SESSION_NAME
+        return session_name
     if names_a_chief(name):
         return name
-    return f"{SESSION_NAME}-{name}"
+    return f"{session_name}-{name}"
 
 
 def chief_slot(name: str) -> str:
-    """The ``firstmate[-...]`` slot a chief session, agent or requested name carries.
+    """The ``<session name>[-...]`` slot a chief session, agent or requested name carries.
 
-    Prefix-agnostic (``c-r-aih-fw-firstmate-1``, ``aih-fw-firstmate-1`` and
-    ``firstmate-1`` are all ``firstmate-1``) and sanitized the way a session slot is, so a
+    Prefix-agnostic (``c-r-myproject-box-chief-1``, ``myproject-box-chief-1`` and
+    ``chief-1`` are all ``chief-1``) and sanitized the way a session slot is, so a
     request and a registration compare equal exactly when they name the same chief.
     """
     folded = name.casefold()
-    match = _CHIEF_SEGMENT.search(folded)
+    session_name = _session_name()
+    match = _chief_segment(session_name).search(folded) if session_name else None
     tail = folded[match.start() :] if match else folded
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]+", "-", tail)).strip("-")
 
 
 def is_numbered_slot(slot: str) -> bool:
-    """``firstmate-1`` names one chief; ``firstmate`` / ``firstmate-review`` ask for *the* chief."""
+    """``chief-1`` names one chief; ``chief`` / ``chief-review`` ask for *the* chief."""
     return slot.rsplit("-", 1)[-1].isdigit()
 
 
@@ -114,7 +170,7 @@ def same_chief(requested_slot: str, running_slot: str) -> bool:
     """Whether a request reaches the running chief rather than asking for a second one.
 
     A numbered request must name the running chief's slot exactly; an unnumbered one
-    (``ai cos``, ``ai c --firstmate``, ``ai c firstmate``) means whichever chief of that
+    (``ai cos``, ``ai c --chief``, ``ai c <session name>``) means whichever chief of that
     name is running, whatever index it was given.
     """
     if is_numbered_slot(requested_slot):
@@ -138,9 +194,19 @@ def tmux_panes_all_dead(target: str) -> bool:
         return False
 
 
-def chief_homes_root() -> Path:
-    """The directory holding one chief home per machine key."""
-    return _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / "firstmate" / "chief-of-staff"
+def chief_homes_root() -> Path | None:
+    """The directory holding one chief home per machine key; None when none is configured.
+
+    ``[chief_of_staff] homes_dir``, resolved under ``$XDG_STATE_HOME`` unless it is absolute
+    or starts with ``~``.
+    """
+    configured = setting("homes_dir")
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    if path.is_absolute():
+        return path
+    return _config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / path
 
 
 def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict | None = None) -> Path:
@@ -156,6 +222,11 @@ def resolve_chief_home(fm_home: str | None, machine_key: str | None, env: dict |
     if fm_home:
         return Path(fm_home).expanduser()
     root = chief_homes_root()
+    if root is None:
+        raise ChiefOfStaffError(
+            f'{SETTINGS_SECTION}.homes_dir is not set: add homes_dir = "..." under [{SETTINGS_SECTION}] in '
+            f"{_config.config_file_text()}, or name the home with -H/--fm-home"
+        )
     key = machine_key or environ.get(MACHINE_KEY_ENV, "")
     if not key:
         seeded = sorted(path.name for path in _seeded_homes(root))
@@ -288,6 +359,7 @@ def write_registration(
     machine_key: str,
     machine_name: str,
     launch_cwd: str,
+    instance_key_prefix: str,
     now: datetime | None = None,
 ) -> dict:
     """Record this launch in the registry and the registration file; return the registration.
@@ -297,7 +369,7 @@ def write_registration(
     stale reader can tell it is stale.
     """
     stamp = (now or datetime.now(UTC)).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # <session>@<host>: the only session identifier ai-harness accepts.
+    # <session>@<host>: the only session identifier the registry's readers accept.
     session = f"{native_agent_name}@{machine_name}"
     # The save must follow the load it changed, so both happen under the writers' lock.
     with _registry_lock(home):
@@ -314,7 +386,7 @@ def write_registration(
                 "chief_of_staff_session": session,
                 "machine_key": machine_key,
                 "machine_name": machine_name,
-                "chief_instance_key": f"firstmate-chief/{machine_key}",
+                "chief_instance_key": f"{instance_key_prefix}/{machine_key}",
                 "chief_home": str(home),
                 "launch_cwd": launch_cwd,
                 "chief_generation": generation,

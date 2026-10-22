@@ -40,16 +40,17 @@ def test_given_projects_dir_config_when_launching_then_resolves_its_dolt_server(
     load_config() re-reads config.toml from disk every call, unlike an env var,
     which would need every already-running process to restart.
     """
-    harness = tmp_path / "ai-harness"
-    (harness / "scripts").mkdir(parents=True)
-    script = harness / "scripts" / "dolt_server.py"
+    environment = tmp_path / "myhub"
+    (environment / "scripts").mkdir(parents=True)
+    script = environment / "scripts" / "dolt_server.py"
     script.write_text("", encoding="utf-8")
-    other_cwd = tmp_path / "job-pilot"
+    other_cwd = tmp_path / "other-repo"
     other_cwd.mkdir()
     monkeypatch.chdir(other_cwd)
 
     with (
         patch("ai_cli.main.load_config", return_value={}),
+        patch("ai_cli.config.load_config", return_value={"project": {"environment_repo": "myhub"}}),
         patch("ai_cli.config._get_projects_dir", return_value=tmp_path),
         patch("ai_cli.main.subprocess.run") as run,
     ):
@@ -58,6 +59,27 @@ def test_given_projects_dir_config_when_launching_then_resolves_its_dolt_server(
     command = run.call_args.args[0]
     assert command[1] == str(script)
     assert command[-1] == str(other_cwd)
+
+
+def test_given_no_environment_repo_configured_when_launching_then_a_sibling_supervisor_is_not_run(
+    monkeypatch, tmp_path
+):
+    """Which sibling ships the supervisor is configuration; nothing guesses it from a name."""
+    (tmp_path / "myhub" / "scripts").mkdir(parents=True)
+    (tmp_path / "myhub" / "scripts" / "dolt_server.py").write_text("", encoding="utf-8")
+    other_cwd = tmp_path / "other-repo"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    with (
+        patch("ai_cli.main.load_config", return_value={}),
+        patch("ai_cli.config.load_config", return_value={}),
+        patch("ai_cli.config._get_projects_dir", return_value=tmp_path),
+        patch("ai_cli.main.subprocess.run") as run,
+    ):
+        _ensure_dolt_server()
+
+    run.assert_not_called()
 
 
 def test_given_no_supervisor_when_launching_then_does_not_run_a_guess(monkeypatch, tmp_path):

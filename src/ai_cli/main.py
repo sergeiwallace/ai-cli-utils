@@ -168,11 +168,17 @@ from .tunnel import (  # noqa: F401
 # --- Helpers ---
 
 
-def _dolt_server_script() -> Path | None:
-    """Locate ai-harness's dolt_server.py without hardcoding a cross-repo path.
+def _environment_roots() -> list[Path]:
+    """The ``[project] environment_repo`` checkout (when configured), then the cwd."""
+    repo = _config.get_environment_repo()
+    return [_find_project_dir(repo), Path.cwd()] if repo else [Path.cwd()]
 
-    Most sessions launch into a repo that is NOT ai-harness, so a bare
-    cwd-relative lookup only ever fires inside ai-harness itself.
+
+def _dolt_server_script() -> Path | None:
+    """Locate the environment's dolt_server.py without hardcoding a cross-repo path.
+
+    Most sessions launch into a repo that is NOT the one shipping the script, so a
+    bare cwd-relative lookup only ever fires inside that repository itself.
     Deliberately config.toml-driven, not env-var-driven: ``load_config()`` is
     re-read from disk on every call, so editing ``[dolt_server] script_path`` (or
     ``[project] projects_dir``, which ``_find_project_dir`` already reads) takes
@@ -180,14 +186,13 @@ def _dolt_server_script() -> Path | None:
     up the change, which an env var would require.
 
     Checked in order: an explicit ``[dolt_server] script_path`` override, the
-    conventional checkout found via ``_find_project_dir("ai-harness")`` (honors
-    ``[project] projects_dir``, default ``~/projects``), then a source checkout
-    that vendors its own copy (the ai-harness case, resolved from cwd).
+    ``[project] environment_repo`` checkout under ``[project] projects_dir`` (default
+    ``~/projects``), then a source checkout that vendors its own copy (resolved from cwd).
     """
     configured = load_config().get("dolt_server", {}).get("script_path")
     if isinstance(configured, str) and configured.strip():
         return Path(configured.strip()).expanduser()
-    for root in (_find_project_dir("ai-harness"), Path.cwd()):
+    for root in _environment_roots():
         script = root / "scripts" / "dolt_server.py"
         if script.is_file():
             return script
@@ -217,8 +222,8 @@ _WAKE_SIDECAR_TIMEOUT_SECONDS = 3
 
 
 def _wake_sidecar_script() -> Path | None:
-    """Locate the optional wake-sidecar CLI in a discovered ai-harness checkout."""
-    for root in (_find_project_dir("ai-harness"), Path.cwd()):
+    """Locate the optional wake-sidecar CLI in the environment repo's checkout, else the cwd."""
+    for root in _environment_roots():
         script = root / "scripts" / "wake_sidecar_cli.py"
         if script.is_file():
             return script
@@ -3091,7 +3096,7 @@ def _print_remote_launch_plan(
         f"  project      {remote_project}   (prefix {remote_prefix})",
         f"  remote cmd   {remote_cmd}",
     ]
-    if "--firstmate" in (remote_args or []):
+    if "--chief" in (remote_args or []):
         lines.insert(
             -1,
             "  role         chief-of-staff: the remote host decides from its own chief home and tmux -- "
@@ -3726,7 +3731,7 @@ def _do_session_launch(
         # that does not source the shell's rc file where the uv env PATH setup
         # typically lives.
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
-        # The chief-of-staff arguments (``--firstmate`` and its home options): the remote
+        # The chief-of-staff arguments (``--chief`` and its home options): the remote
         # ``ai`` resolves, checks and registers the chief against its own machine.
         for _remote_arg in remote_args or []:
             remote_cmd += f" {shlex.quote(_remote_arg)}"
@@ -3742,10 +3747,10 @@ def _do_session_launch(
         # the name) the slot resolves to. Composing `<engine>-r-<prefix>-<slot>` here
         # titled the pane and keyed the transport after a session that does not exist.
         remote_session_id = ""
-        # An unnumbered chief request (`ai cos -R`, `ai c firstmate -R`) means whichever
+        # An unnumbered chief request (`ai cos -R`, `ai c chief -R`) means whichever
         # chief the remote host has, which only that host's registration can say: a slot
         # allocated here would be the next free index, a second chief the remote refuses.
-        chief_unnumbered = "--firstmate" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
+        chief_unnumbered = "--chief" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
             _chief_of_staff.chief_slot(name)
         )
         if chief_unnumbered:
@@ -3907,7 +3912,7 @@ def _do_session_launch(
                 # Match the entry by either name the session goes by, whatever engine
                 # wrote it. The registry is keyed by PATH and each registration
                 # overwrites the entry's engine and name, so the launcher's own
-                # `(c, c-r-<ai_name>)` is replaced moments later by ai-harness's
+                # `(c, c-r-<ai_name>)` is replaced moments later by the environment's
                 # SessionStart hook writing `(claude-session-start, <ai_name>)` --
                 # the shape a real host almost always holds (AI-CLI-fkvp). The engine
                 # scopes nothing here: ai_name has no engine segment, so every engine's
@@ -4949,8 +4954,59 @@ def _restart_launch_target(target, check, options, *, json_output=False):
     return session
 
 
+def _chief_alias_setting(key: str) -> tuple[str, ...]:
+    try:
+        return _chief_of_staff.alias_setting(key)
+    except _chief_of_staff.ChiefOfStaffError as exc:
+        raise click.UsageError(str(exc)) from None
+
+
+def _chief_command_aliases(group: click.Group) -> tuple[str, ...]:
+    """``[chief_of_staff] command_aliases``; one naming a built-in command is refused, never shadowed."""
+    aliases = _chief_alias_setting("command_aliases")
+    for alias in aliases:
+        if alias in group.commands:
+            raise click.UsageError(
+                f"[chief_of_staff] command_aliases names {alias!r}, which is already the `ai {alias}` command; "
+                f"remove it from {_config.config_file_text()}"
+            )
+    return aliases
+
+
+class _ChiefFlagCommand(click.Command):
+    """A command whose ``--chief`` also answers to each ``[chief_of_staff] flag_aliases`` name."""
+
+    def make_parser(self, ctx):
+        parser = super().make_parser(ctx)
+        if not any(param.name == "chief" for param in self.params):
+            return parser
+        taken = {opt for param in self.get_params(ctx) for opt in (*param.opts, *param.secondary_opts)}
+        for alias in _chief_alias_setting("flag_aliases"):
+            flag = f"--{alias}"
+            if flag in taken:
+                raise click.UsageError(
+                    f"[chief_of_staff] flag_aliases names {alias!r}, but {flag} is already an option of "
+                    f"`ai {ctx.info_name}`; remove it from {_config.config_file_text()}"
+                )
+            # Parsed into the same destination as --chief, so the declared option reads it.
+            click.Option([flag, "chief"], is_flag=True).add_to_parser(parser, ctx)
+        return parser
+
+
+class _ChiefAliasGroup(click.Group):
+    """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
+
+    command_class = _ChiefFlagCommand
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] in _chief_command_aliases(self):
+            return args[0], self.commands["cos"], args[1:]
+        return super().resolve_command(ctx, args)
+
+
 @click.group(
     name="ai",
+    cls=_ChiefAliasGroup,
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -5013,11 +5069,11 @@ def _session_options(func):
     )(func)
     func = click.option(
         "-F",
-        "--firstmate",
+        "--chief",
         is_flag=True,
-        help="Launch as a chief-of-staff / firstmate session (one per machine; with -R, on the remote machine)",
+        help="Launch as the chief-of-staff session (one per machine; with -R, on the remote machine)",
     )(func)
-    # The chief options ride on every engine command because --firstmate does: they are
+    # The chief options ride on every engine command because --chief does: they are
     # refused rather than ignored without it, so a typo cannot silently launch an
     # ordinary session that looks like it was aimed at the chief home.
     func = click.option(
@@ -5030,7 +5086,7 @@ def _session_options(func):
         "-H",
         "--fm-home",
         default="",
-        help="With -F: chief home directory (default: $XDG_STATE_HOME/firstmate/chief-of-staff/<machine-key>)",
+        help="With -F: chief home directory (default: <[chief_of_staff] homes_dir>/<machine-key>)",
     )(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
@@ -5044,50 +5100,48 @@ def _session_options(func):
     return click.option("--project-prefix", default="", hidden=True)(func)
 
 
-def _names_chief_project(project: str) -> bool:
-    """True when ``-p PROJECT`` names ai-harness: its directory, an alias, or its task prefix."""
-    if _config.get_project_aliases().get(project, project) == _chief_of_staff.CHIEF_PROJECT:
+def _names_chief_project(project: str, chief_project: str) -> bool:
+    """True when ``-p PROJECT`` names the chief's project: its directory, an alias, or its task prefix."""
+    if _config.get_project_aliases().get(project, project) == chief_project:
         return True
     try:
-        return _config.resolve_project_prefix_by_name(project) == _config.resolve_project_prefix_by_name(
-            _chief_of_staff.CHIEF_PROJECT
-        )
+        return _config.resolve_project_prefix_by_name(project) == _config.resolve_project_prefix_by_name(chief_project)
     except _config.ProjectPrefixError:
         return False
 
 
-def _chief_project_alias() -> str:
-    """The shortest name ``-p`` accepts for ai-harness: an alias, else its task prefix."""
+def _chief_project_alias(chief_project: str) -> str:
+    """The shortest name ``-p`` accepts for the chief's project: an alias, else its task prefix."""
     aliases = sorted(
-        (alias for alias, target in _config.get_project_aliases().items() if target == _chief_of_staff.CHIEF_PROJECT),
+        (alias for alias, target in _config.get_project_aliases().items() if target == chief_project),
         key=len,
     )
     if aliases:
         return aliases[0]
     try:
-        return _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
+        return _config.resolve_project_prefix_by_name(chief_project)
     except _config.ProjectPrefixError:
-        return _chief_of_staff.CHIEF_PROJECT
+        return chief_project
 
 
-def _chief_has_saved_session(engine: str, ai_name: str) -> bool:
+def _chief_has_saved_session(engine: str, ai_name: str, chief_project: str) -> bool:
     """Whether a chief that is not running left a session its relaunch would resume.
 
     Claude Code resumes by the transcript titled with the session name in the chief's
     worktree; the other engines resume from the worktree itself.
     """
-    worktree = _config._find_project_dir(_chief_of_staff.CHIEF_PROJECT) / _session.WORKTREE_DIR / ai_name
+    worktree = _config._find_project_dir(chief_project) / _session.WORKTREE_DIR / ai_name
     if engine == "c":
         return bool(_find_cc_session_candidates_by_title(worktree, ai_name))
     return worktree.is_dir()
 
 
-def _running_chief(registration: dict | None, naming_prefix: str) -> "tuple[str, str, bool] | None":
+def _running_chief(registration: dict | None, naming_prefix: str, session_name: str) -> "tuple[str, str, bool] | None":
     """``(agent, tmux target, registered)`` for the chief running on this machine, or None.
 
     The registration is the record, but a chief can be running under a registration that
     names another (a later launch that overwrote it and then died), so with no live
-    registration the tmux sessions named ``<engine>[-r]-<naming prefix>-firstmate...`` are
+    registration the tmux sessions named ``<engine>[-r]-<naming prefix>-<session name>...`` are
     the evidence. Two such sessions with no registration to choose between them is a
     refusal, not a guess.
     """
@@ -5095,7 +5149,7 @@ def _running_chief(registration: dict | None, naming_prefix: str) -> "tuple[str,
         target = str(registration.get("tmux_target") or "")
         return str(registration.get("native_agent_name") or _chief_of_staff.chief_slot(target)), target, True
     pattern = re.compile(
-        rf"^[a-z]+(?:-r)?-({re.escape(naming_prefix.casefold())}-{_chief_of_staff.SESSION_NAME}(?:-[a-z0-9_-]+)?)$"
+        rf"^[a-z]+(?:-r)?-({re.escape(naming_prefix.casefold())}-{re.escape(session_name)}(?:-[a-z0-9_-]+)?)$"
     )
     try:
         names = _session._tmux_session_names()
@@ -5114,13 +5168,14 @@ def _running_chief(registration: dict | None, naming_prefix: str) -> "tuple[str,
     return (*found[0], False) if found else None
 
 
-def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
+def _prepare_chief_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
     """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
-    Shared by ``--firstmate`` on every engine command and by ``ai cos`` (the Claude
+    Shared by ``--chief`` on every engine command and by ``ai cos`` (the Claude
     shorthand), so there is one place that resolves the home, enforces one chief per
     machine, records the registration other sessions read, and exports FM_HOME and the
-    role. Refuses rather than guesses: no home, a home without its transport policy, or a
+    role. Refuses rather than guesses: an unset ``[chief_of_staff]`` setting it needs, no
+    home, a home without its transport policy, or a
     request for a different chief while one is running all exit 1 before anything is
     created.
 
@@ -5130,7 +5185,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     own session name, which resumes its worktree and its conversation; otherwise a new
     chief is created and registered.
 
-    The positional NAME becomes the optional suffix in ``firstmate[-<suffix>]``; the index
+    The positional NAME becomes the optional suffix in ``<session name>[-<suffix>]``; the index
     and the sanitization come from the ordinary session-naming path, so the chief's tmux
     session and worktree are named like every other session.
 
@@ -5148,25 +5203,32 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
 
     Returns the arguments a remote dispatch must forward; empty for a local launch.
     """
-    session_name = _chief_of_staff.chief_session_name(str(options.get("name") or ""))
-    # The chief always launches into ai-harness, whatever repository the command ran
-    # from: `-p` may name it (by directory or alias) but never another project.
+    try:
+        chief_project = _chief_of_staff.required_setting("project")
+        chief_name = _chief_of_staff.required_setting("session_name").casefold()
+        session_name = _chief_of_staff.chief_session_name(str(options.get("name") or ""))
+    except _chief_of_staff.ChiefOfStaffError as exc:
+        _out.error(Tag.COS, "start", f"{exc}")
+        sys.exit(1)
+    # The chief always launches into its configured project, whatever repository the
+    # command ran from: `-p` may name it (by directory or alias) but never another project.
     requested = str(options.get("project") or "")
-    if requested and not _names_chief_project(requested):
-        alias = _chief_project_alias()
+    if requested and not _names_chief_project(requested, chief_project):
+        alias = _chief_project_alias(chief_project)
         raise click.UsageError(
             f"-p/--project {requested} names another project, and a chief-of-staff always launches into "
-            f"{_chief_of_staff.CHIEF_PROJECT}: pass `-p {alias}` (or drop -p)"
+            f"{chief_project}: pass `-p {alias}` (or drop -p)"
         )
-    options["project"] = _chief_of_staff.CHIEF_PROJECT
+    options["project"] = chief_project
     if options.get("remote"):
         options["name"] = session_name
         return [
-            "--firstmate",
+            "--chief",
             *(["--machine-key", machine_key] if machine_key else []),
             *(["--fm-home", fm_home] if fm_home else []),
         ]
     try:
+        instance_key_prefix = _chief_of_staff.required_setting("instance_key_prefix")
         home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
         _chief_of_staff.validate_chief_home(home)
         existing = _chief_of_staff.read_registration(home)
@@ -5175,7 +5237,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         sys.exit(1)
     config = _config.load_config()
     try:
-        prefix = options.get("project_prefix") or _config.resolve_project_prefix_by_name(_chief_of_staff.CHIEF_PROJECT)
+        prefix = options.get("project_prefix") or _config.resolve_project_prefix_by_name(chief_project)
     except _config.ProjectPrefixError as exc:
         _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
@@ -5200,11 +5262,12 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
             machine_key=machine_key_used,
             machine_name=_config.detect_machine_profile()["host_id"],
             launch_cwd=str(Path.cwd()),
+            instance_key_prefix=instance_key_prefix,
         )
         _out.emit(Tag.COS, "register", f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
 
     requested_slot = _chief_of_staff.chief_slot(session_name)
-    running = _running_chief(existing, naming_prefix)
+    running = _running_chief(existing, naming_prefix, chief_name)
     resuming = False
     # The session name the chief being resumed was recorded under.
     resumed_name = ""
@@ -5217,7 +5280,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
                 "start",
                 f"a chief-of-staff is already running on this machine (agent {agent!r}, tmux session {target!r}) "
                 f"and {requested_slot} is not it; there is one chief per machine. Attach to it with "
-                f"`ai c {running_slot}` (from another machine: `ai c {running_slot} -R -p {_chief_project_alias()}`) "
+                f"`ai c {running_slot}` (from another machine: `ai c {running_slot} -R -p {_chief_project_alias(chief_project)}`) "
                 f"or `ai attach {target}`.",
             )
             sys.exit(1)
@@ -5284,7 +5347,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
     if resuming and resumed_name != ai_name:
         # The host now names its chiefs differently (a new host alias): relaunching under the
         # new name would open a fresh worktree and conversation and strand the recorded ones.
-        project_dir = _config._find_project_dir(_chief_of_staff.CHIEF_PROJECT)
+        project_dir = _config._find_project_dir(chief_project)
         worktrees = project_dir / _session.WORKTREE_DIR
         if (worktrees / resumed_name).is_dir() and not (worktrees / ai_name).exists():
             end_first = f"end its tmux session (`tmux kill-session -t ={running[1]}`), then " if running else ""
@@ -5303,7 +5366,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
         # conversation the chief saved before its registration was lost. Checked before
         # anything is written: a -r that found nothing used to register the chief it was
         # about to fail to attach to, then failed on a session name prefixed twice.
-        if _chief_has_saved_session(engine, ai_name):
+        if _chief_has_saved_session(engine, ai_name, chief_project):
             _out.emit(
                 Tag.COS,
                 "resume",
@@ -5318,7 +5381,7 @@ def _prepare_firstmate_launch(engine: str, machine_key: str, fm_home: str, optio
                 "resume",
                 f"no resumable chief session for {ai_name} on {_config.detect_machine_profile()['host_id']}: "
                 "nothing running, and no saved session to resume; start one with "
-                f"`ai c {slot}` (from another machine: `ai c {slot} -R -p {_chief_project_alias()}`).",
+                f"`ai c {slot}` (from another machine: `ai c {slot} -R -p {_chief_project_alias(chief_project)}`).",
             )
             sys.exit(1)
 
@@ -5338,39 +5401,40 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     """
     project = str(options.get("project") or "")
     if project.startswith("-"):
-        # Click hands `-p -aih` the dash-led token as the value, so the typo would otherwise
-        # surface as "unknown project -aih" (or, for a chief, as a refusal of the project).
+        # Click hands `-p -myproject` the dash-led token as the value, so the typo would otherwise
+        # surface as "unknown project -myproject" (or, for a chief, as a refusal of the project).
         raise click.UsageError(
             f"-p/--project got {project!r}, which starts with '-'; no project alias does. "
             f"Did you mean `-p {project.lstrip('-')}`?"
         )
-    firstmate = options.pop("firstmate", False)
+    chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
     name = str(options.get("name") or "")
-    if name.casefold() == _chief_of_staff.SESSION_NAME and ctx.args and ctx.args[0].isdigit():
-        # `ai c firstmate 1` is `ai c firstmate-1`: the number is the chief's index, not an
+    chief_name = _chief_of_staff.setting("session_name").casefold()
+    if chief_name and name.casefold() == chief_name and ctx.args and ctx.args[0].isdigit():
+        # `ai c chief 1` is `ai c chief-1`: the number is the chief's index, not an
         # argument for the engine, which is where an extra positional otherwise goes.
-        name = f"{_chief_of_staff.SESSION_NAME}-{ctx.args[0]}"
+        name = f"{chief_name}-{ctx.args[0]}"
         options["name"] = name
         ctx.args = ctx.args[1:]
-    if not firstmate and _chief_of_staff.is_chief_positional(name):
-        # `ai c firstmate[-N]` is the chief launch itself, not an ordinary session that
+    if not chief and _chief_of_staff.is_chief_positional(name):
+        # `ai c chief[-N]` is the chief launch itself, not an ordinary session that
         # happens to look like one: it must register, export FM_HOME and the role.
-        firstmate = True
-    elif not firstmate and _chief_of_staff.names_a_chief(name):
+        chief = True
+    elif not chief and _chief_of_staff.names_a_chief(name):
         raise click.UsageError(
-            f"{name!r} looks like a chief-of-staff name but is not firstmate or firstmate-N; "
-            f"launch the chief as `ai c firstmate[-N]`, or add a suffix with `ai c --firstmate SUFFIX`"
+            f"{name!r} looks like a chief-of-staff name but is not {chief_name} or {chief_name}-N; "
+            f"launch the chief as `ai c {chief_name}[-N]`, or add a suffix with `ai c --chief SUFFIX`"
         )
     remote_args: list[str] = []
     try:
-        if firstmate:
-            remote_args = _prepare_firstmate_launch(engine, machine_key, fm_home, options)
+        if chief:
+            remote_args = _prepare_chief_launch(engine, machine_key, fm_home, options)
         elif machine_key or fm_home:
             raise click.UsageError(
                 "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
-                "add -F/--firstmate (or use `ai cos`) to launch one"
+                "add -F/--chief (or use `ai cos`) to launch one"
             )
         else:
             # A chief that launches an ordinary session would otherwise hand it the chief's
@@ -5446,26 +5510,22 @@ def cmd_cx(ctx, **options):
     context_settings=SESSION_CONTEXT,
     help=(
         "Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a "
-        "remote machine (`ai c --firstmate`; also `ai firstmate`, `ai fm`)"
+        "remote machine (`ai c --chief`). Needs the [chief_of_staff] settings in config.toml, whose "
+        "command_aliases and flag_aliases add synonyms for `cos` and `--chief`"
     ),
 )
 @_session_options
 def cmd_cos(ctx, **options):
     """Launch the chief-of-staff as a Claude session: `ai cos [SUFFIX]` == `ai c -F [SUFFIX]`.
 
-    Everything that makes a session the chief -- resolving and validating the Firstmate
+    Everything that makes a session the chief -- resolving and validating the chief
     home, one chief per machine, the registration other sessions read, FM_HOME and
-    AI_SESSION_ROLE=chief-of-staff in the pane -- lives in the shared --firstmate path, so
+    AI_SESSION_ROLE=chief-of-staff in the pane -- lives in the shared --chief path, so
     this command is only the engine choice. With ``-R`` all of it happens on the remote
     machine, which then hosts the chief.
     """
-    options["firstmate"] = True
+    options["chief"] = True
     _dispatch_session("c", ctx, options)
-
-
-# `ai firstmate 1 -r -R` and `ai fm 1 -r -R` are `ai cos 1 -r -R`: the same command object.
-_cli_group.add_command(cmd_cos, name="firstmate")
-_cli_group.add_command(cmd_cos, name="fm")
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
@@ -7066,7 +7126,10 @@ def _windows_expand_args(argv: "list[str]") -> bool:
     """
     command = next((arg for arg in argv if not arg.startswith("-")), "")
     session_commands = {name for name, cmd in _cli_group.commands.items() if cmd.context_settings == SESSION_CONTEXT}
-    return command not in session_commands
+    if not command or command in _cli_group.commands:
+        return command not in session_commands
+    # Only a word that is no built-in command can be a configured alias, so `ai -V` reads no config.
+    return command not in _chief_command_aliases(_cli_group)
 
 
 def cli() -> None:

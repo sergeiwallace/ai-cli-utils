@@ -18,7 +18,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import run_cli, snapshot_tree
+from conftest import run_cli as _run_cli
+from conftest import snapshot_tree, with_environment_config
 
 from ai_cli import session_registry
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
@@ -29,6 +30,11 @@ OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
 OUTBOX_KEYED = f"{OLD}-1791218749.md"
 CONFIRMED_KEYED = f"{OLD}-{'ab' * 16}.md"
+
+
+def run_cli(argv, config=None, env=None):
+    """``conftest.run_cli`` with the environment's marker prefix and chief homes configured."""
+    return _run_cli(argv, config=with_environment_config(config), env=env)
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -66,8 +72,8 @@ def slot(tmp_path):
     wt = repo / ".worktrees" / OLD
     _git("worktree", "add", "-q", str(wt), "-b", f"wt-{OLD}", cwd=repo)
     (wt / "uncommitted.txt").write_text("work in progress\n")
-    _git("config", f"branch.wt-{OLD}.aih-session-home", str(wt), cwd=repo)
-    _git("config", f"branch.wt/{OLD}/task.aih-session-home", str(wt), cwd=repo)
+    _git("config", f"branch.wt-{OLD}.hub-session-home", str(wt), cwd=repo)
+    _git("config", f"branch.wt/{OLD}/task.hub-session-home", str(wt), cwd=repo)
     register_canonical_worktree(wt, engine="c", session_name=f"c-{OLD}")
 
     project = cc_project_dir(wt, claude)
@@ -158,9 +164,9 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert f"worktree {new_wt.as_posix()}\n" in listed
     assert f"worktree {old_wt.as_posix()}\n" not in listed
     assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == f"wt-{NEW}"
-    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
-    assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
-    assert f"branch.wt/{OLD}/task.aih-session-home {new_wt}" in markers
+    markers = _git("config", "--get-regexp", r"hub-session-home$", cwd=repo)
+    assert f"branch.wt-{NEW}.hub-session-home {new_wt}" in markers
+    assert f"branch.wt/{OLD}/task.hub-session-home {new_wt}" in markers
     assert str(old_wt) + "\n" not in markers
 
     # canonical registry
@@ -210,6 +216,22 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert not (state / f"ai-watcher-lock-c-{NEW}").exists()
 
 
+def test_given_another_marker_prefix_configured_when_migrated_then_these_markers_are_not_rewritten(slot):
+    """The marker namespace is ``[worktree] marker_prefix``; markers outside it are not this tool's."""
+    repo, old_wt = slot["repo"], slot["wt"]
+    with (
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
+        patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
+    ):
+        code, out, err = run_cli(
+            ["ai", "session-migrate", OLD, NEW, "-r", str(repo), "-y"], config={"worktree": {"marker_prefix": "other"}}
+        )
+    assert code == 0, out + err
+
+    markers = _git("config", "--get-regexp", r"hub-session-home$", cwd=repo)
+    assert f"branch.wt/{OLD}/task.hub-session-home {old_wt}" in markers
+
+
 def test_given_a_dry_run_when_migrating_then_every_move_is_printed_and_nothing_changes(slot):
     before = _everything(slot)
     code, out, err = _migrate(slot["repo"], "--dry-run")
@@ -220,7 +242,7 @@ def test_given_a_dry_run_when_migrating_then_every_move_is_printed_and_nothing_c
     for expected in (
         f"worktree: {slot['wt']} -> {new_wt}",
         f"branch: wt-{OLD} -> wt-{NEW}",
-        f"session-home marker: branch.wt/{OLD}/task.aih-session-home",
+        f"session-home marker: branch.wt/{OLD}/task.hub-session-home",
         "canonical registry:",
         f"project dir: {slot['project']} -> {cc_project_dir(new_wt, slot['claude'])}",
         f"transcript title: {UUID}.jsonl",
@@ -329,8 +351,8 @@ def test_given_a_parked_canonical_branch_when_migrated_then_it_is_renamed_throug
     assert _ref(repo, ANCHOR) == tip
     assert _ref(repo, f"refs/heads/wt-{OLD}") is None
     assert _git("symbolic-ref", "--short", "HEAD", cwd=new_wt).strip() == "topic"
-    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
-    assert f"branch.wt-{NEW}.aih-session-home {new_wt}" in markers
+    markers = _git("config", "--get-regexp", r"hub-session-home$", cwd=repo)
+    assert f"branch.wt-{NEW}.hub-session-home {new_wt}" in markers
     assert f"branch.wt-{OLD}." not in markers
 
 
@@ -362,8 +384,8 @@ def test_given_git_refuses_the_branch_rename_when_migrated_then_stderr_is_quoted
     assert f"branch rename to wt-{NEW} failed: git branch -m wt-{OLD} wt-{NEW} was refused: " in err
     assert f"the tip stays anchored at {ANCHOR}" in err
     assert _ref(repo, f"refs/heads/wt-{OLD}") == tip == _ref(repo, ANCHOR)
-    markers = _git("config", "--get-regexp", r"aih-session-home$", cwd=repo)
-    assert f"branch.wt-{OLD}.aih-session-home {repo / '.worktrees' / NEW}" in markers
+    markers = _git("config", "--get-regexp", r"hub-session-home$", cwd=repo)
+    assert f"branch.wt-{OLD}.hub-session-home {repo / '.worktrees' / NEW}" in markers
 
 
 HELD_BODY = b"# replay\r\nverbatim \xe2\x80\x94 bytes\n\x00tail"
@@ -893,7 +915,7 @@ EVIDENCE_ID = "6caa27dd582811e0"
 
 
 def _chief_home() -> Path:
-    return Path(os.environ["XDG_STATE_HOME"]) / "firstmate" / "chief-of-staff" / "m-test"
+    return Path(os.environ["XDG_STATE_HOME"]) / "myhub" / "chief-of-staff" / "m-test"
 
 
 def _seed_chief(name: str = OLD, tmux_target: str | None = None) -> dict[str, Path]:

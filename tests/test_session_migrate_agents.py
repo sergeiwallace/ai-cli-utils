@@ -15,11 +15,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import run_cli, snapshot_tree
+from conftest import run_cli as _run_cli
+from conftest import snapshot_tree, with_environment_config
 
 from ai_cli.branch_rename import anchor_ref
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
+
+
+def run_cli(argv, config=None, env=None):
+    """``conftest.run_cli`` with the environment's marker prefix and chief homes configured."""
+    return _run_cli(argv, config=with_environment_config(config), env=env)
 
 
 def _git(*args: str, cwd: Path, check: bool = True) -> str:
@@ -52,14 +58,14 @@ def fleet(tmp_path):
     # An agent worktree in the slot's own repo, whose marker names the slot.
     leaf_c = repo / ".worktrees" / f"{OLD}-agents" / "leaf-c"
     _git("worktree", "add", "-q", str(leaf_c), "-b", f"wt/{OLD}/leaf-c", cwd=repo)
-    _git("config", f"branch.wt/{OLD}/leaf-c.aih-session-home", str(slot), cwd=repo)
+    _git("config", f"branch.wt/{OLD}/leaf-c.hub-session-home", str(slot), cwd=repo)
 
     other = _init(projects / "otherrepo")
     leaf_a = other / ".worktrees" / f"{OLD}-agents" / "leaf-a"
     _git("worktree", "add", "-q", str(leaf_a), "-b", f"wt/{OLD}/leaf-a", cwd=other)
     (leaf_a / "wip.txt").write_text("agent work\n")
     tip_b = _branch_at_main(other, f"wt/{OLD}/leaf-b")
-    _git("config", f"branch.wt/{OLD}/leaf-a.aih-session-home", str(slot), cwd=other)
+    _git("config", f"branch.wt/{OLD}/leaf-a.hub-session-home", str(slot), cwd=other)
     tip_a = _git("rev-parse", f"wt/{OLD}/leaf-a", cwd=other).strip()
     return {
         "projects": projects,
@@ -91,11 +97,11 @@ def _branches(repo: Path) -> list[str]:
 
 
 def _markers(repo: Path) -> str:
-    return _git("config", "--get-regexp", r"aih-session-home$", cwd=repo, check=False)
+    return _git("config", "--get-regexp", r"hub-session-home$", cwd=repo, check=False)
 
 
 def _provenance(worktree: Path) -> Path:
-    path = Path(_git("rev-parse", "--git-path", "aih-provenance.json", cwd=worktree).strip())
+    path = Path(_git("rev-parse", "--git-path", "hub-provenance.json", cwd=worktree).strip())
     return path if path.is_absolute() else worktree / path
 
 
@@ -110,7 +116,7 @@ def owned_fleet(fleet):
             json.dumps({"owner_session": OLD, "created_by": "test fixture"}),
             encoding="utf-8",
         )
-        _git("config", f"branch.{branch}.aih-agent-worktree", str(worktree), cwd=repo)
+        _git("config", f"branch.{branch}.hub-agent-worktree", str(worktree), cwd=repo)
     fleet["ownership_records"] = records
     return fleet
 
@@ -119,7 +125,7 @@ def test_given_owned_worktrees_when_dry_run_then_rebinds_are_listed_and_ownershi
     before = {
         worktree: (
             _provenance(worktree).read_bytes(),
-            _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo),
+            _git("config", "--get", f"branch.{branch}.hub-agent-worktree", cwd=repo),
         )
         for worktree, repo, branch in owned_fleet["ownership_records"]
     }
@@ -132,7 +138,7 @@ def test_given_owned_worktrees_when_dry_run_then_rebinds_are_listed_and_ownershi
     assert out.count("agent-worktree marker:") == 2
     for worktree, repo, branch in owned_fleet["ownership_records"]:
         assert _provenance(worktree).read_bytes() == before[worktree][0]
-        assert _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo) == before[worktree][1]
+        assert _git("config", "--get", f"branch.{branch}.hub-agent-worktree", cwd=repo) == before[worktree][1]
 
 
 def test_given_owned_worktrees_when_migrated_then_provenance_and_path_stamps_follow(owned_fleet):
@@ -152,7 +158,7 @@ def test_given_owned_worktrees_when_migrated_then_provenance_and_path_stamps_fol
             "owner_session": NEW,
             "created_by": "test fixture",
         }
-        assert _git("config", "--get", f"branch.{branch}.aih-agent-worktree", cwd=repo).strip() == str(worktree)
+        assert _git("config", "--get", f"branch.{branch}.hub-agent-worktree", cwd=repo).strip() == str(worktree)
 
 
 def test_given_an_unreadable_provenance_record_when_migrated_then_it_is_reported_and_skipped(fleet):
@@ -180,7 +186,7 @@ def test_given_agent_worktrees_and_a_parked_branch_when_dry_run_then_each_is_lis
     assert f"agent branch: wt/{OLD}/leaf-a ({fleet['other']}) -> wt/{NEW}/leaf-a" in out
     assert f"agent branch: wt/{OLD}/leaf-b ({fleet['other']}) -> wt/{NEW}/leaf-b" in out
     new_slot = fleet["repo"] / ".worktrees" / NEW
-    assert f"branch.wt/{NEW}/leaf-a.aih-session-home = {new_slot}" in out
+    assert f"branch.wt/{NEW}/leaf-a.hub-session-home = {new_slot}" in out
     assert snapshot_tree(fleet["projects"]) == before
     assert _branches(fleet["other"]) == before_refs
 
@@ -205,9 +211,9 @@ def test_given_agent_worktrees_and_a_parked_branch_when_migrated_then_all_follow
     assert _git("symbolic-ref", "--short", "HEAD", cwd=new_a).strip() == f"wt/{NEW}/leaf-a"
 
     # The marker follows the renamed branch and names the new slot, in both repos.
-    assert _markers(other) == f"branch.wt/{NEW}/leaf-a.aih-session-home {new_slot}\n"
+    assert _markers(other) == f"branch.wt/{NEW}/leaf-a.hub-session-home {new_slot}\n"
     slot_markers = _markers(repo)
-    assert f"branch.wt/{NEW}/leaf-c.aih-session-home {new_slot}\n" in slot_markers
+    assert f"branch.wt/{NEW}/leaf-c.hub-session-home {new_slot}\n" in slot_markers
     assert f"wt/{OLD}/" not in slot_markers
 
 

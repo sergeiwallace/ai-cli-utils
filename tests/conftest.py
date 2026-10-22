@@ -1419,8 +1419,8 @@ TEST_HOST_ALIAS = "tst"
 def _hermetic_host_alias(monkeypatch, tmp_path_factory):
     """Resolve the host alias from a temp file, never this machine's identity or config.
 
-    Session names carry the host alias, and it is read at call time from an ai-harness
-    checkout under ``projects_dir`` -- which the fixture above points at this checkout's
+    Session names carry the host alias, and it is read at call time from the environment
+    repo's checkout under ``projects_dir`` -- which the fixture above points at this checkout's
     own parent, so on a developer machine the suite would otherwise read that machine's
     real registry and on CI find none at all. Tests of the resolution itself restore the
     real ``host_id``/``alias_sources``, captured at import before this fixture runs.
@@ -1668,7 +1668,7 @@ def _refuse_the_hosts_dolt_supervisor(monkeypatch):
 
     ``_projects_dir_contains_the_checkout`` points ``projects_dir`` at the checkout's
     parent. In a main-tree checkout at ``~/projects/<repo>`` that parent is the real
-    projects directory, so ``_dolt_server_script()`` finds the sibling ai-harness
+    projects directory, so ``_dolt_server_script()`` finds a sibling
     checkout's ``scripts/dolt_server.py`` and every ``cli()`` launch test runs it,
     through whatever ``subprocess.run`` stub the test installed for SSH. In a worktree
     or a CI checkout there is no such sibling, so the same tests pass there and fail
@@ -1880,6 +1880,31 @@ def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
         except SystemExit:
             pass
         return mock_ssh_runner if capture_ssh_runner else mock_exec
+
+
+#: Placeholder values for the settings an environment supplies to ``ai cos`` and to the
+#: worktree markers ``ai session-migrate`` rewrites. Nothing in the package defaults them, so
+#: a test that exercises one merges this into the config it hands the launcher.
+CHIEF_PROJECT = "myhub"
+ENVIRONMENT_CONFIG = {
+    "chief_of_staff": {
+        "project": CHIEF_PROJECT,
+        "session_name": "chief",
+        "instance_key_prefix": "example-chief",
+        "homes_dir": f"{CHIEF_PROJECT}/chief-of-staff",
+        "command_aliases": ["mychief"],
+        "flag_aliases": ["mychief"],
+    },
+    "worktree": {"marker_prefix": "hub"},
+}
+
+
+def with_environment_config(config: dict | None = None) -> dict:
+    """``config`` with :data:`ENVIRONMENT_CONFIG`'s sections added (its own keys win)."""
+    merged = {section: dict(values) for section, values in ENVIRONMENT_CONFIG.items()}
+    for section, values in (config or {}).items():
+        merged[section] = {**merged.get(section, {}), **values} if isinstance(values, dict) else values
+    return merged
 
 
 def run_cli(argv, config=None, env=None):

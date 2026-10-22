@@ -117,7 +117,8 @@ class TestGetMachineId:
         from ai_cli.telemetry import _get_machine_id
 
         monkeypatch.delenv("AI_HOST", raising=False)
-        monkeypatch.setattr("ai_cli.config.MACHINE_MARKER_FILE", tmp_path / "no-such-marker")
+        no_marker = {"machine": {"marker_file": str(tmp_path / "no-such-marker")}}
+        monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: no_marker)
 
         result = _get_machine_id()
         assert result == socket.gethostname()

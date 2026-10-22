@@ -416,8 +416,8 @@ class TestRunTransportLoop:
         proc = _make_proc(returncode=returncode, poll_sequence=[None, returncode])
         nc = _mock_nats_client()
         stderr = (
-            "[cos] chief-of-staff registered: agent aih-fw-firstmate-1 (FM_HOME=/state/fm)\n"
-            "[launch] Error: no matching session found for 'c-r-aih-fw-firstmate-1'\n"
+            "[cos] chief-of-staff registered: agent hub-fw-chief-1 (FM_HOME=/state/fm)\n"
+            "[launch] Error: no matching session found for 'c-r-hub-fw-chief-1'\n"
             "[daemon] stale-session-reaper: failed to start ([Errno 2] No such file or directory: 'circusd')\n"
         )
 
@@ -447,7 +447,7 @@ class TestRunTransportLoop:
         last = err.strip().splitlines()[-1]
         assert last.endswith(
             "Remote launch failed after 1.0s, giving up: "
-            "[launch] Error: no matching session found for 'c-r-aih-fw-firstmate-1'"
+            "[launch] Error: no matching session found for 'c-r-hub-fw-chief-1'"
         )
 
     def test_when_mosh_fast_exit_has_remote_error_then_prints_it_without_reexecuting_command(self, tmp_path, capsys):

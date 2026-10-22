@@ -13,6 +13,7 @@ source: internal
 - [Overview](#overview)
 - [Session Management](#session-management)
   - [ai c](#ai-c)
+  - [ai cos](#ai-cos)
   - [ai ls](#ai-ls)
   - [ai attach](#ai-attach)
   - [ai reconnect](#ai-reconnect)
@@ -236,6 +237,36 @@ Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 **Session resume:** on each launch or restart, `ai g` checks `~/.gemini/tmp/{name}/chats/` for the most recent session file. If a `checkpoint-{name}.json` exists and is newer than the latest chat file (or no chat files exist), it is automatically converted to a chat session file and resumed via `gemini -r {uuid}`. No manual `/resume load` required.
 
 **Checkpoint conversion:** the conversion is idempotent — the same checkpoint always produces the same UUID. Once converted, Gemini auto-saves all future messages to the chat file natively. The original checkpoint is never deleted and remains as a fallback.
+
+### ai cos
+
+```bash
+ai cos [SUFFIX|N] [-k|--machine-key KEY] [-H|--fm-home DIR] [-R] [-m MACHINE] [-r] [-d|--dry-run]
+ai c -F|--chief [SUFFIX|N] ...     # the same launch on any engine: ai c, ai g, ai p, ai cx
+ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos
+```
+
+Attach to, resume or launch this machine's one chief-of-staff session (with `-R`, the remote
+machine's). It needs the `[chief_of_staff]` settings in `config.toml`; the first four have no
+built-in default, and a launch that needs one that is unset exits 1 and names it:
+
+| Setting | Used for |
+|---|---|
+| `project` | the repository every chief launches into, whatever the cwd; `-p` may name it but no other project |
+| `session_name` | the session-name segment that marks a chief: `ai c <session_name>[-N]` is the chief launch itself |
+| `instance_key_prefix` | the registry's `chief_instance_key`, written as `<instance_key_prefix>/<machine-key>` |
+| `homes_dir` | the directory of per-machine chief homes, relative to `$XDG_STATE_HOME` unless absolute or `~`; not needed with `-H` |
+| `command_aliases` | optional list of extra subcommand names that behave exactly like `ai cos`; one naming a built-in command is refused |
+| `flag_aliases` | optional list of extra long-flag names, without the `--`, that behave exactly like `--chief` on every engine command; one naming an existing option is refused |
+
+- `-k`/`--machine-key KEY` — machine key naming the chief home (default `$AI_MACHINE_ID`, else
+  the one seeded home under `homes_dir`).
+- `-H`/`--fm-home DIR` — an explicit chief home.
+- `-R` — run the chief on the remote machine; the dispatching machine reads only `project` and
+  `session_name`, and the remote `ai` resolves and registers everything else.
+
+Both `-k` and `-H` are refused without `-F`/`--chief` or `ai cos`. The full behaviour (attach,
+resume, create, one chief per machine) is in the README's "Chief-of-staff session" section.
 
 ### ai ls
 

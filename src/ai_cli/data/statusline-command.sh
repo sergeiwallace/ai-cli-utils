@@ -690,7 +690,7 @@ else
 fi
 # Show the tmux session name ONLY when there's no worktree name. For ai-cli worktree
 # sessions the worktree segment (⎇ <name>) already identifies the session, so the tmux
-# session name (e.g. "c-aih-2" vs worktree "aih-2") is redundant — drop it to free space.
+# session name (e.g. "c-myproject-2" vs worktree "myproject-2") is redundant — drop it to free space.
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
 # Quota-gauge segments grouped together: cc+Fable (quota_part) -> cxWk (Codex

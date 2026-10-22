@@ -104,14 +104,23 @@ def resolve_base_dir(env_var: str, fallback: Path | str) -> Path | str:
     return fallback
 
 
-#: On-disk host-identity marker, written by whatever provisioned the machine. Read when
-#: ``AI_HOST`` is not in the environment. Tests and administrators point it elsewhere by
-#: reassigning this name; it is deliberately not a config key, because a per-machine config
-#: file cannot be the place a machine learns its own identity.
-MACHINE_MARKER_FILE = Path("/etc/ai-harness/machine")
-
 #: ``host_id_source`` when nothing identified the machine and its hostname stood in.
 HOST_ID_SOURCE_HOSTNAME = "hostname"
+
+
+def machine_marker_file(config: dict | None = None) -> Path | None:
+    """``[machine] marker_file``: the host-identity marker a provisioner wrote; None when unset.
+
+    The setting names WHERE the identity is, never the identity itself, so one value serves
+    every machine an environment provisions. ``config`` is the already-loaded table when the
+    caller has one; otherwise config.toml is read without side effects.
+    """
+    cfg = load_config(read_only=True) if config is None else config
+    machine = cfg.get("machine")
+    value = machine.get("marker_file") if isinstance(machine, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return Path(value.strip()).expanduser()
 
 
 def _read_machine_marker(marker_file: Path) -> str | None:
@@ -122,10 +131,11 @@ def _read_machine_marker(marker_file: Path) -> str | None:
         return None
 
 
-def detect_machine_profile() -> dict[str, str]:
+def detect_machine_profile(config: dict | None = None) -> dict[str, str]:
     """Return this machine's host_id, os_type, and which tier supplied the host_id.
 
-    host_id: the ``AI_HOST`` environment variable, then :data:`MACHINE_MARKER_FILE`, then
+    host_id: the ``AI_HOST`` environment variable, then the ``[machine] marker_file`` marker
+    (:func:`machine_marker_file`; ``config`` is passed through to it), then
     ``socket.gethostname()``.
     os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'.
 
@@ -145,9 +155,10 @@ def detect_machine_profile() -> dict[str, str]:
     """
     host_id = os.environ.get("AI_HOST", "").strip()
     source = "AI_HOST"
-    if not host_id:
-        host_id = _read_machine_marker(MACHINE_MARKER_FILE) or ""
-        source = str(MACHINE_MARKER_FILE)
+    marker = machine_marker_file(config) if not host_id else None
+    if marker is not None:
+        host_id = _read_machine_marker(marker) or ""
+        source = str(marker)
     if not host_id:
         host_id = socket.gethostname()
         source = HOST_ID_SOURCE_HOSTNAME
@@ -169,7 +180,7 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     if not missing:
         return False
 
-    profile = detect_machine_profile()
+    profile = detect_machine_profile(config)
     text = config_path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
@@ -195,12 +206,14 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
         err=True,
     )
     if "host_id" in missing and profile["host_id_source"] == HOST_ID_SOURCE_HOSTNAME:
+        marker = machine_marker_file(config)
+        marker_state = f"{marker} is absent or empty" if marker else "no [machine] marker_file is configured"
         _out.warning(
             Tag.CONFIG,
             "register",
             f"nothing identified this machine, so its {HOST_ID_SOURCE_HOSTNAME} "
             f"{profile['host_id']!r} was recorded as the durable host_id. AI_HOST is unset and "
-            f"{MACHINE_MARKER_FILE} is absent or empty. On a cloud host a hostname names a lease "
+            f"{marker_state}. On a cloud host a hostname names a lease "
             f"rather than a machine, and this value is not re-detected: set [machine] host_id in "
             f"{config_path} if it is wrong.",
         )
@@ -457,6 +470,11 @@ notify_on_exit = true
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
+## Prefix of the git-config markers your worktree tooling writes on a session's branches
+## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
+## its <prefix>-provenance.json file. `ai session-migrate` rewrites them; unset, it leaves
+## no such markers to rewrite.
+# marker_prefix = "myenv"
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
@@ -598,6 +616,31 @@ stale_after_seconds = 600
 ##     name = "myproject"
 ##     task_prefix = "MYPROJECT"
 # fleet_registry = "~/projects/myconfig-repo/config.toml"
+## The sibling repository under projects_dir that supplies your environment's shared
+## tooling: its config/machine-host-aliases.toml is the authoritative host-alias registry,
+## and its scripts/dolt_server.py and scripts/wake_sidecar_cli.py are run when present.
+## Unset: those are looked for only in the current repository, and every sibling's alias
+## registry is read with equal weight.
+# environment_repo = "myenv"
+
+[chief_of_staff]
+## Settings for `ai cos` / `-F/--chief`. A chief launch that needs one of these and finds
+## it unset refuses and names it; nothing here has a built-in default.
+## The repository every chief launches into, whatever repository you run the command from.
+# project = "myenv"
+## The session-name segment that marks a chief: `ai c chief`, `ai c chief-2`.
+# session_name = "chief"
+## The registry records the chief as <instance_key_prefix>/<machine-key>.
+# instance_key_prefix = "example-chief"
+## Directory holding one chief home per machine key; relative to $XDG_STATE_HOME unless
+## absolute or starting with ~. -H/--fm-home names a home directly instead.
+# homes_dir = "myenv/chief-of-staff"
+## Extra subcommand names that behave exactly like `ai cos`; one naming a built-in
+## command is refused.
+# command_aliases = ["mychief"]
+## Extra long-flag names (without the leading --) that behave exactly like --chief on
+## every engine command; one naming an existing option is refused.
+# flag_aliases = ["mychief"]
 
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
@@ -605,11 +648,15 @@ nats_servers = ["nats://localhost:4222"]
 
 [machine]
 ## Identifier for this machine.
-## Auto-detected from the AI_HOST env var, then /etc/ai-harness/machine, then the hostname;
+## Auto-detected from the AI_HOST env var, then the marker_file below, then the hostname;
 ## set manually to override. Worth setting by hand on a cloud host, where the hostname names
 ## a lease rather than a machine and this key is written once and never re-detected.
-## Example values: "mac", "hetzner", "work-laptop", "acn-windows"
+## Example values: "laptop", "build-server", "work-laptop"
 # host_id = ""
+## A file your provisioning writes holding this machine's host id, read when AI_HOST is
+## unset (a git hook, a cron job or an agent shell often has no login profile). Unset: no
+## marker is read.
+# marker_file = "/etc/myenv/machine"
 ## OS type for this machine. Auto-detected from sys.platform on first run.
 ## Values: "windows", "macos", "linux"
 # os_type = ""
@@ -621,7 +668,7 @@ enabled = false
 mode = "machine"
 ## Declare that the operating system starts the sidecar instead of the launcher.
 boot = false
-## When an ai-harness checkout is present, its machine profile is authoritative and these values are ignored.
+## When the [project] environment_repo checkout is present, its machine profile is authoritative and these values are ignored.
 
 [update]
 ## Additional venv paths to install ai-cli-utils into after 'ai update'
@@ -660,13 +707,13 @@ boot = false
 # api_key = "ua-api-..."
 
 [dolt_server]
-## Explicit override for ai-harness's scripts/dolt_server.py, the optional local
-## Dolt sql-server supervisor run before each session launch (ai c/g/p/cx).
-## Only needed when ai-harness is not discoverable under [project] projects_dir
-## (default ~/projects) -- otherwise it is found there automatically.
+## Explicit path to scripts/dolt_server.py, the optional local Dolt sql-server
+## supervisor run before each session launch (ai c/g/p/cx). Only needed when it is
+## not in the [project] environment_repo checkout under projects_dir (default
+## ~/projects) -- otherwise it is found there automatically.
 ## Read fresh on every launch, so editing this takes effect immediately: no CC
 ## session or agent needs to restart, unlike an environment-variable override.
-# script_path = "~/projects/ai-harness/scripts/dolt_server.py"
+# script_path = "~/projects/myenv/scripts/dolt_server.py"
 """
 
 
@@ -712,7 +759,7 @@ def load_config(*, read_only: bool = False):
         machine = cfg.setdefault("machine", {})
         missing = [key for key in ("host_id", "os_type") if not machine.get(key)]
         if missing:
-            profile = detect_machine_profile()
+            profile = detect_machine_profile(cfg)
             machine.update({key: profile[key] for key in missing})
     elif ensure_machine_profile_registered(config_path, cfg):
         try:
@@ -1312,6 +1359,24 @@ def _get_projects_dir() -> Path:
     except Exception:
         pass
     return Path.home() / "projects"
+
+
+def get_worktree_marker_prefix() -> str:
+    """``[worktree] marker_prefix``, read at call time; "" when unset."""
+    try:
+        value = load_config().get("worktree", {}).get("marker_prefix")
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def get_environment_repo() -> str:
+    """``[project] environment_repo``, read at call time; "" when unset."""
+    try:
+        value = load_config().get("project", {}).get("environment_repo")
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _find_project_dir(name: str, _home: Path | None = None) -> Path:

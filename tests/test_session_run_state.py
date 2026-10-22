@@ -85,7 +85,9 @@ def test_both_stores_failed_when_exiting_then_exit_is_refused(registered, monkey
 
 
 def test_unsafe_causes_when_loading_then_configuration_refused(monkeypatch):
-    monkeypatch.setattr(state.config, "load_config", lambda: {"session_relaunch": {"causes": ["manual_exit"]}})
+    monkeypatch.setattr(
+        state.config, "load_config", lambda **_kwargs: {"session_relaunch": {"causes": ["manual_exit"]}}
+    )
     with pytest.raises(ValueError, match="permits only"):
         state.settings()
 

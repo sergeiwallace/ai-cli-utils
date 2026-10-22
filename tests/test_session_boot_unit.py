@@ -27,7 +27,7 @@ def unit(tmp_path, monkeypatch, request):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("PATH", str(executable.parent))
     cfg = {"session_relaunch": {"on_boot": True}}
-    monkeypatch.setattr(boot.state.config, "load_config", lambda: cfg)
+    monkeypatch.setattr(boot.state.config, "load_config", lambda **_kwargs: cfg)
     enabled = [False]
     calls = []
 
