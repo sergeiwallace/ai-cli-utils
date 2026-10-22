@@ -121,7 +121,7 @@ def test_given_missing_boot_identity_when_checked_then_unknown_is_refused(boot_r
 @pytest.fixture
 def boot_cli(boot_record, monkeypatch):
     cfg = {"machine": {"host_id": "host-a"}, "session_relaunch": {"on_boot": True, "network_probe": ""}}
-    monkeypatch.setattr(state.config, "load_config", lambda: cfg)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: cfg)
     monkeypatch.setattr(session_commands, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(registry, "current_boot_id", lambda: "current-boot")
     registry._mutate(lambda doc: doc["sessions"].append(deepcopy(boot_record)) or True)
@@ -204,7 +204,7 @@ def test_given_dry_run_when_cli_runs_then_each_winning_veto_prints_without_write
 @pytest.fixture
 def detached_launch(boot_record, monkeypatch):
     monkeypatch.chdir(boot_record["boot_recipe"]["cwd"])
-    monkeypatch.setattr(state.config, "load_config", lambda: {"machine": {"host_id": "host-a"}})
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: {"machine": {"host_id": "host-a"}})
     calls = []
     marker = [""]
     existing = [False]
@@ -309,7 +309,7 @@ def test_given_running_shutdown_record_when_boot_cli_replays_then_ac_2_1_detache
     boot_cli, detached_launch, monkeypatch, platform
 ):
     monkeypatch.setattr(session_commands, "_launch_recipe", boot_cli.real_launch)
-    monkeypatch.setattr(state.config, "load_config", lambda: boot_cli.cfg)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: boot_cli.cfg)
     monkeypatch.setattr(session_commands.sys, "platform", platform)
     monkeypatch.setattr(main.sys, "platform", platform)
     result = boot_cli.invoke()
@@ -502,7 +502,7 @@ def test_given_owned_dead_session_when_named_relaunch_then_ac_p_1_recipe_creates
         real_launch(record, **kwargs)
 
     monkeypatch.setattr(session_commands, "_launch_recipe", launch)
-    monkeypatch.setattr(state.config, "load_config", lambda: named_cli.cfg)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: named_cli.cfg)
     monkeypatch.setattr(session_commands.sys, "platform", platform)
     monkeypatch.setattr(main.sys, "platform", platform)
     result = named_cli.invoke("c-myproject-host-1")

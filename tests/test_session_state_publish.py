@@ -28,7 +28,7 @@ def publishing(tmp_path, monkeypatch):
     git(repo, "config", "user.email", "user@example.com")
     git(repo, "remote", "add", "origin", str(remote))
     cfg = {"machine": {"host_id": "host-a"}, "session_relaunch": {"publish": {"repo": str(repo)}}}
-    monkeypatch.setattr(state.config, "load_config", lambda: cfg)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: cfg)
     clock = [1000.0]
     monkeypatch.setattr(publish.time, "time", lambda: clock[0])
     state.register("c-session-1", recipe={"argv": ["ai", "c", "1"], "cwd": "/work/myproject"}, host="host-a")
