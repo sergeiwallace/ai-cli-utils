@@ -1057,19 +1057,16 @@ def _resolve_unchanged_conflicts(
         unchanged: list[tuple[Path, Path, Path]] = []
         for conflict in conflicts:
             relative = conflict.relative_to(wt_dir)
-            committed = subprocess.run(
-                ["git", "-C", str(wt_dir), "show", f"HEAD:{relative.as_posix()}"],
-                capture_output=True,
-                env=_git_env(),
-                check=False,
-            )
             previous, current = old_dir / relative, new_dir / relative
-            if (
-                committed.returncode == 0
-                and previous.is_file()
-                and current.is_file()
-                and previous.read_bytes() == committed.stdout
-            ):
+            if not (previous.is_file() and current.is_file()):
+                continue
+            # Compare as Git stores the content, so a platform's line-ending conversion of the
+            # rendered copy (Copier writes CRLF on Windows, Git stores LF) is not a difference.
+            committed = _git_read(["-C", str(wt_dir), "rev-parse", f"HEAD:{relative.as_posix()}"])
+            rendered = _git_read(
+                ["-C", str(wt_dir), "hash-object", f"--path={relative.as_posix()}", "--", str(previous)]
+            )
+            if committed is not None and committed.strip() and committed.strip() == (rendered or "").strip():
                 unchanged.append((conflict, relative, current))
         if not unchanged:
             return conflicts

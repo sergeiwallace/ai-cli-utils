@@ -58,9 +58,18 @@ def _commit_all(repo: Path, message: str) -> None:
 
 
 def _make_projects(
-    tmp_path: Path, *, edit_guard: str | None = None, edit_message: bool = False, fleet_shape: bool = False
+    tmp_path: Path,
+    *,
+    edit_guard: str | None = None,
+    edit_message: bool = False,
+    fleet_shape: bool = False,
+    crlf_template: bool = False,
 ) -> Path:
     """Build a project recorded at template version 1 whose template tip is version 2."""
+
+    def guard_text(text: str) -> bytes:
+        return text.replace("\n", "\r\n").encode() if crlf_template else text.encode()
+
     guard_paths = ("guard_plugin.py", "tests/test_guard_plugin.py") if fleet_shape else ("guard.py",)
     config_v1, config_v2 = (_FLEET_CONFIG_V1, _FLEET_CONFIG_V2) if fleet_shape else (_CONFIG_V1, _CONFIG_V2)
     author = tmp_path / "template-author"
@@ -80,7 +89,7 @@ def _make_projects(
     )
     for guard in guard_paths:
         (author / "template" / guard).parent.mkdir(parents=True, exist_ok=True)
-        (author / "template" / guard).write_text(_GUARD_V1)
+        (author / "template" / guard).write_bytes(guard_text(_GUARD_V1))
     (author / "template" / "message.txt").write_text("original\n")
     _commit_all(author, "version 1")
 
@@ -98,6 +107,9 @@ def _make_projects(
     assert "include_python_tests" not in recorded
 
     _run(project, "git", "init", "-q", "--initial-branch=main")
+    if crlf_template:
+        # What a Windows checkout does: Git stores the file with LF while Copier renders it with CRLF.
+        (project / ".gitattributes").write_text("*.py text\n")
     _run(project, "git", "config", "user.email", "test@example.com")
     _run(project, "git", "config", "user.name", "Test User")
     _run(project, "git", "add", "-A")
@@ -111,7 +123,7 @@ def _make_projects(
 
     (author / "copier.yml").write_text(config_v2)
     for guard in guard_paths:
-        (author / "template" / guard).write_text(_GUARD_V2)
+        (author / "template" / guard).write_bytes(guard_text(_GUARD_V2))
     (author / "template" / "message.txt").write_text("template update\n")
     _commit_all(author, "version 2")
     _run(local_template, "git", "pull", "-q", "--ff-only")
@@ -136,7 +148,7 @@ def test_given_unedited_file_when_update_conflicts_then_new_template_version_is_
 
     assert result.exit_code == 0
     (delivered,) = result.delivered_updates
-    assert delivered.changed_files["guard.py"] == _GUARD_V2.encode()
+    assert delivered.changed_files["guard.py"].replace(b"\r\n", b"\n") == _GUARD_V2.encode()
     out = capsys.readouterr().out
     assert "auto-resolved" in out
     assert "guard.py" in out
@@ -197,8 +209,21 @@ def test_given_plugin_excluded_by_hidden_question_when_updating_then_both_files_
 
     assert result.exit_code == 0
     (delivered,) = result.delivered_updates
-    assert delivered.changed_files["guard_plugin.py"] == _GUARD_V2.encode()
-    assert delivered.changed_files["tests/test_guard_plugin.py"] == _GUARD_V2.encode()
+    assert delivered.changed_files["guard_plugin.py"].replace(b"\r\n", b"\n") == _GUARD_V2.encode()
+    assert delivered.changed_files["tests/test_guard_plugin.py"].replace(b"\r\n", b"\n") == _GUARD_V2.encode()
     out = capsys.readouterr().out
     assert "auto-resolved (unchanged since the previous template): guard_plugin.py" in out
     assert "auto-resolved (unchanged since the previous template): tests/test_guard_plugin.py" in out
+
+
+def test_given_rendered_copy_with_other_line_endings_when_update_conflicts_then_the_file_still_resolves(
+    tmp_path, capsys
+):
+    projects = _make_projects(tmp_path, crlf_template=True)
+
+    result = _inspect(projects)
+
+    assert result.exit_code == 0
+    (delivered,) = result.delivered_updates
+    assert delivered.changed_files["guard.py"].replace(b"\r\n", b"\n") == _GUARD_V2.encode()
+    assert "auto-resolved" in capsys.readouterr().out
