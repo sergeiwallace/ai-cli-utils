@@ -112,7 +112,7 @@ def test_given_npx_root_when_descendant_uses_unstamped_installation_then_backgro
     with pytest.raises(restart.Refusal, match="background-work") as caught:
         restart.descendants_gate(1, tree.home)
     assert "uncertified npx installation" in caught.value.detail
-    assert "ai-harness apply --only restart-mcp" in caught.value.detail
+    assert "regenerate the MCP launcher certificates" in caught.value.detail
 
 
 def test_given_certified_npx_root_when_node_and_shell_helpers_idle_then_passes(npx_tree, monkeypatch):

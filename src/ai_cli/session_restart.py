@@ -737,7 +737,8 @@ def _mcp_npx_descendants(children: list[psutil.Process], entries: list[dict], cw
         entries = [entry for entry in entries if paths <= {Path(stamp["path"]) for stamp in entry["identities"]}]
         if not entries:
             raise Refusal(
-                "background-work", "uncertified npx installation; regenerate with ai-harness apply --only restart-mcp"
+                "background-work",
+                "uncertified npx installation; regenerate the MCP launcher certificates with the installer that wrote them",
             )
 
 

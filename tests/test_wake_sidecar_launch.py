@@ -23,7 +23,7 @@ def local_launch():
 
 @pytest.fixture
 def wake_script(tmp_path):
-    script = tmp_path / "ai-harness" / "scripts" / "wake_sidecar_cli.py"
+    script = tmp_path / "myhub" / "scripts" / "wake_sidecar_cli.py"
     script.parent.mkdir(parents=True)
     script.write_text("", encoding="utf-8")
     return script

@@ -166,10 +166,10 @@ extraPaths = ["src", "scripts"]
 # codebase is written in; make it on purpose, in its own change, not by editing
 # `requires-python`.
 target-version = "py311"
-# No fleet ai-harness `extend` pointer here on purpose (AI-CLI-bmt0/AI-CLI-u3zc): this repo
-# is public and must lint cleanly on GitHub's CI and for external contributors, neither of
-# which has ~/projects/ai-harness present. The select list below already carries every rule
-# ai-harness's fleet baseline (E4/E7/E9/F/I) would add, plus more, so this is a no-op fix.
+# No `extend` pointer to a shared, out-of-repo ruff baseline here on purpose
+# (AI-CLI-bmt0/AI-CLI-u3zc): this repo is public and must lint cleanly on GitHub's CI and for
+# external contributors, neither of which has that baseline's checkout. The select list below
+# already carries every rule that baseline (E4/E7/E9/F/I) would add, plus more.
 line-length = 120
 
 [tool.ruff.lint]

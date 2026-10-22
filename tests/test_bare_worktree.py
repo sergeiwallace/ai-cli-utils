@@ -1047,7 +1047,7 @@ def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_t
     """
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
-    _write_transcript(_cc_project_dir(target), "99999999-0000-4000-8000-000000000009", "aih-2")
+    _write_transcript(_cc_project_dir(target), "99999999-0000-4000-8000-000000000009", "hub-2")
     _write_session_registry(tmp_path, 4242, "99999999-0000-4000-8000-000000000009", proc_start=777)
 
     real_import = builtins.__import__
@@ -1059,7 +1059,7 @@ def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_t
 
     monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
 
-    argv = _bare_engine_command("c", "aih-2", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "hub-2", target, None, "gemini", "--no-sandbox", [])
 
     assert argv[0] == "claude"
-    assert "--name" in argv and argv[argv.index("--name") + 1] == "aih-2"
+    assert "--name" in argv and argv[argv.index("--name") + 1] == "hub-2"

@@ -184,11 +184,11 @@ class TestSessionWorktreeSurvivesExit:
         assert (worktree / "unpushed.txt").is_file()
 
 
-@pytest.mark.parametrize("ai_name", ["session-1", "aih-4", "ai-cli-1"])
+@pytest.mark.parametrize("ai_name", ["session-1", "hub-4", "ai-cli-1"])
 def test_no_internal_action_removes_a_canonical_session_worktree(tmp_path, monkeypatch, ai_name):
     """Every conventionally named session worktree is covered, not just session-1.
 
-    ai-harness's own ``is_canonical_session`` accepts each of these, so each was
+    myhub's own ``is_canonical_session`` accepts each of these, so each was
     exposed to the same teardown reap.
     """
     repo, worktree = _repo_with_session_worktree(tmp_path, ai_name)

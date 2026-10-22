@@ -1,6 +1,6 @@
 """Every `git worktree add` this tool runs attests who is creating the worktree.
 
-ai-harness installs a `post-checkout` backstop (`scripts/worktree_creation_guard.py`) that
+An environment may install a `post-checkout` backstop (`scripts/worktree_creation_guard.py`) that
 undoes a worktree created flat under `<repo>/.worktrees/`, because that root is reserved for
 a Claude Code session's own checkout. Both worktrees this package creates are flat there, so
 without the attestation the backstop would remove a session home at the moment `ai c <n>`

@@ -1312,7 +1312,7 @@ def _update_one_isolated(
 
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
     repair_bare_worktree_config(root)
-    # This temp worktree is flat under `<repo>/.worktrees/`, which ai-harness's
+    # This temp worktree is flat under `<repo>/.worktrees/`, which the environment's
     # post-checkout backstop undoes for anything but a trusted creator, so the add
     # identifies itself. No canonical leaf: `copier-update` is not a session slot, and the
     # backstop matches a declared leaf only for the `ai-c` creator.

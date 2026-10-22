@@ -545,11 +545,11 @@ def _sweep_stale_iterm2_profiles() -> None:
 def session_name_for(prefix: str, name: str) -> str:
     """The tmux session NAME means under PREFIX (``<engine>[-r]-<naming prefix>-``).
 
-    NAME is a slot (``1``, ``firstmate-1``) or, from a remote client, the full session
-    name its allocator returned (``c-r-aih-fw-firstmate-1``, or ``c-aih-fw-...`` for a
+    NAME is a slot (``1``, ``chief-1``) or, from a remote client, the full session
+    name its allocator returned (``c-r-myproject-box-chief-1``, or ``c-myproject-box-...`` for a
     session this host launched itself). A full name of the same engine and naming prefix
     is returned as it is; only a slot gets PREFIX. Idempotent: applying it to its own
-    output changes nothing, which is what keeps ``c-r-aih-fw-`` from being added twice.
+    output changes nothing, which is what keeps ``c-r-myproject-box-`` from being added twice.
     """
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
     if match and name:
@@ -572,7 +572,7 @@ def resolve_session(prefix: str, name: str) -> str:
     if target == name:
         # A full session name (a remote client resumes with the one its allocator
         # returned): it exists or it does not. Probing PREFIX+NAME for it, and then
-        # "<that>-*", is how `c-r-aih-fw-c-r-aih-fw-firstmate-1` was ever looked up.
+        # "<that>-*", is how `c-r-myproject-box-c-r-myproject-box-chief-1` was ever looked up.
         return name if name in _tmux_session_names() else ""
     # Exact `=NAME`: a bare name is a unique-PREFIX match in tmux, so slot 1 would
     # answer for a live slot 10 and -r would attach there (AI-CLI-gqb3).
@@ -1338,7 +1338,7 @@ def create_worktree(
             # `fatal: branch 'wt-<name>' does not exist` from the upstream step.
             #
             # Both adds carry the creator attestation (`_creator_env`): a flat
-            # `<repo>/.worktrees/<name>` is exactly what ai-harness's post-checkout backstop
+            # `<repo>/.worktrees/<name>` is exactly what the environment's post-checkout backstop
             # undoes unless the creating process identifies itself as this launcher, and the
             # slot name is declared alongside so the marker admits only the path it names.
             # No other git call here carries it — they create nothing.
@@ -1532,7 +1532,7 @@ def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> No
 # It contradicted the ratified rule that a canonical `ai c`/`ai g` session
 # worktree is a long-lived session home and is "never a cleanup candidate
 # whatever their merge status or cleanliness". Cleanliness was exactly the
-# condition the teardown used to justify removing one, and ai-harness's own
+# condition the teardown used to justify removing one, and the environment's own
 # `worktree_audit.py` carries a hard canonical veto so its audit path cannot.
 #
 # `git status --porcelain` was also the only safety test, so a worktree whose
