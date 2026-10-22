@@ -68,7 +68,10 @@ def _make_projects(tmp_path: Path, template_after: str, project_content: str | N
     _run(project, "git", "add", "-A")
     _run(project, "git", "commit", "-qm", "initial")
     if project_content is not None:
-        (project / "config.yaml").write_bytes(project_content.encode())
+        # Copier renders with the platform's line ending, so the trimmed file must follow it.
+        rendered = (project / "config.yaml").read_bytes()
+        newline = b"\r\n" if b"\r\n" in rendered else b"\n"
+        (project / "config.yaml").write_bytes(project_content.encode().replace(b"\n", newline))
         _commit_all(project, "formatter trims the file")
     (author / "template" / "config.yaml.jinja").write_bytes(template_after.encode())
     _commit_all(author, "version 2")
