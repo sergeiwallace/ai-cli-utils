@@ -74,8 +74,12 @@ def setting(key: str) -> str:
 
 
 def alias_setting(key: str) -> tuple[str, ...]:
-    """``[chief_of_staff] <key>``: a list of extra names, read at call time; () when unset."""
-    section = _config.load_config().get(SETTINGS_SECTION)
+    """``[chief_of_staff] <key>``: a list of extra names, read at call time; () when unset.
+
+    Command routing reads it on every ``ai`` invocation, dry runs and session scripts
+    included, so it reads config.toml without creating it or registering the machine.
+    """
+    section = _config.load_config(read_only=True).get(SETTINGS_SECTION)
     value = section.get(key) if isinstance(section, dict) else None
     if value is None:
         return ()
