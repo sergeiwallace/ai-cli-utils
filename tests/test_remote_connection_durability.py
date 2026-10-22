@@ -404,7 +404,7 @@ class TestARemoteLaunchRefusalIsNotADroppedLink:
     """
 
     def _remote_launch(self, ssh_exit_codes):
-        """Drive a real `ai c firstmate-1 -R` dispatch with ssh stubbed at the subprocess boundary."""
+        """Drive a real `ai c chief-1 -R` dispatch with ssh stubbed at the subprocess boundary."""
         from conftest import make_subprocess_result, run_cli
 
         calls = []
@@ -421,7 +421,7 @@ class TestARemoteLaunchRefusalIsNotADroppedLink:
             remote = command[-1]
             if "allocate-session-name" in remote:
                 return make_subprocess_result(
-                    stdout=json.dumps({"session_id": "c-r-aih-fw-firstmate-1", "ai_name": "aih-fw-firstmate-1"})
+                    stdout=json.dumps({"session_id": "c-r-hub-fw-chief-1", "ai_name": "hub-fw-chief-1"})
                 )
             return make_subprocess_result(stdout="current")
 
@@ -442,10 +442,10 @@ class TestARemoteLaunchRefusalIsNotADroppedLink:
             patch("ai_cli.transport.restore_terminal"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("ai_cli.config.get_project_aliases", return_value={"aih": "ai-harness"}),
-            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="aih"),
+            patch("ai_cli.config.get_project_aliases", return_value={"hub": "myhub"}),
+            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="hub"),
         ):
-            code, _out, err = run_cli(["ai", "c", "firstmate-1", "-R"], config=config)
+            code, _out, err = run_cli(["ai", "c", "chief-1", "-R"], config=config)
         return code, calls, err
 
     def test_given_the_remote_launcher_refuses_when_dispatched_then_ssh_runs_once_and_the_refusal_is_final(self):
@@ -467,7 +467,7 @@ class TestARemoteLaunchRefusalIsNotADroppedLink:
 class TestALongLivedSessionKeepsItsReconnectBudget:
     """The budget bounds ONE outage, not the life of the session.
 
-    Measured on acn-mac (AI-CLI-qre8): ``c-r-kg-1`` and ``c-r-aih-2`` on the remote host
+    Measured on a macOS laptop (AI-CLI-qre8): ``c-r-kg-1`` and ``c-r-hub-2`` on the remote host
     reattached nine times over three days, each reattach succeeding and then holding for
     hours, and the tenth drop (a 2.5-minute network blip that every other session on the
     same host rode out) ended both with "10 reconnect attempts did not restore it -- giving

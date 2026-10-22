@@ -420,13 +420,13 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
 ):
     """`ai c <n> -R` from another machine reaches this host as `--is-remote` with the
     full session name the allocator returned. A session this host launched itself
-    (`c-aih-firstmate-1`) must be attached, never duplicated as `c-r-aih-firstmate-1`,
+    (`c-hub-chief-1`) must be attached, never duplicated as `c-r-hub-chief-1`,
     and its script must stay the local one it was launched with (AI-CLI-wyku)."""
     server = patched_subprocess
-    server.new_session(session_name="c-aih-firstmate-1", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    server.new_session(session_name="c-hub-chief-1", detach=True, window_command=_LIVE_CHILD_COMMAND)
     before_ids = {s.id for s in server.sessions}
-    kwargs = _base_launch_kwargs(name="c-aih-firstmate-1")
-    kwargs.update(is_remote=True, resume=resume, project_prefix_override="aih")
+    kwargs = _base_launch_kwargs(name="c-hub-chief-1")
+    kwargs.update(is_remote=True, resume=resume, project_prefix_override="hub")
     engine_script = MagicMock(return_value=f"{_LIVE_CHILD_COMMAND}\n")
 
     with (
@@ -435,7 +435,7 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
         patch("ai_cli.main._resolve_remote_project", return_value=("", "")),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
-        patch("ai_cli.config.get_current_project_name", return_value="ai-harness"),
+        patch("ai_cli.config.get_current_project_name", return_value="myhub"),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -447,18 +447,18 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
             _do_session_launch(**kwargs)
 
     _assert_launch_reached_exec(server, capsys)
-    assert [s.name for s in server.sessions] == ["c-aih-firstmate-1"]
+    assert [s.name for s in server.sessions] == ["c-hub-chief-1"]
     assert {s.id for s in server.sessions} == before_ids
     assert not any(cmd[1:2] == ["new-session"] for cmd in server._tmux_commands)
     attach = (
-        ["tmux", "attach-session", "-t", "c-aih-firstmate-1"]
+        ["tmux", "attach-session", "-t", "c-hub-chief-1"]
         if resume
-        else ["tmux", "attach-session", "-d", "-t", "c-aih-firstmate-1"]
+        else ["tmux", "attach-session", "-d", "-t", "c-hub-chief-1"]
     )
     assert server._execvp_calls == [("tmux", attach)]
     if not resume:
         assert engine_script.call_args.kwargs["is_remote"] is False
-        assert engine_script.call_args.args[3] == "c-aih-"
+        assert engine_script.call_args.args[3] == "c-hub-"
 
 
 @pytest.mark.parametrize("name", ["2", "c-r-myproject-tst-2"])

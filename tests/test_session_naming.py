@@ -96,8 +96,9 @@ def real_alias_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(session_naming, "host_id", _REAL_HOST_ID)
     monkeypatch.setattr(session_naming, "alias_sources", _REAL_ALIAS_SOURCES)
     projects = tmp_path / "projects"
-    harness_config = projects / "ai-harness" / "config"
-    harness_config.mkdir(parents=True)
+    environment_config = projects / "myhub" / "config"
+    environment_config.mkdir(parents=True)
+    monkeypatch.setattr("ai_cli.config.get_environment_repo", lambda: "myhub")
     config_home = tmp_path / "xdg-config"
     monkeypatch.setenv("AI_HOST", "test-box")
     monkeypatch.setenv("PROJECTS_DIR", str(projects))
@@ -106,7 +107,7 @@ def real_alias_lookup(monkeypatch, tmp_path):
     # otherwise join sibling discovery; resolution tests see only the temp tree.
     monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: projects)
     return {
-        "harness": harness_config / session_naming.ALIAS_FILENAME,
+        "environment": environment_config / session_naming.ALIAS_FILENAME,
         "local": config_home / session_naming.ALIAS_FILENAME,
         "projects": projects,
     }
@@ -121,8 +122,8 @@ def _write_aliases(path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
-def test_given_both_sources_name_the_host_when_launching_then_the_ai_harness_registry_wins(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], 'max_length = 5\n[aliases]\ntest-box = "abc"\n')
+def test_given_both_sources_name_the_host_when_launching_then_the_environment_repo_registry_wins(real_alias_lookup):
+    _write_aliases(real_alias_lookup["environment"], 'max_length = 5\n[aliases]\ntest-box = "abc"\n')
     _write_aliases(real_alias_lookup["local"], '[aliases]\ntest-box = "xyz"\n')
     code, out, err = _dry_run()
     assert code == 0, err
@@ -130,14 +131,14 @@ def test_given_both_sources_name_the_host_when_launching_then_the_ai_harness_reg
 
 
 def test_given_the_registry_lacks_the_host_when_launching_then_the_local_file_answers(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\nother-box = "oth"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
     _write_aliases(real_alias_lookup["local"], '[aliases]\ntest-box = "xyz"\n')
     code, out, err = _dry_run()
     assert code == 0, err
     assert _planned_session(out) == "myrepo-xyz-1"
 
 
-def test_given_no_ai_harness_checkout_when_launching_then_the_local_file_answers(real_alias_lookup, tmp_path):
+def test_given_no_environment_repo_checkout_when_launching_then_the_local_file_answers(real_alias_lookup, tmp_path):
     _write_aliases(real_alias_lookup["local"], '[aliases]\ntest-box = "xyz"\n')
     code, out, err = _dry_run(env={"PROJECTS_DIR": str(tmp_path / "elsewhere")})
     assert code == 0, err
@@ -145,33 +146,33 @@ def test_given_no_ai_harness_checkout_when_launching_then_the_local_file_answers
 
 
 def test_given_an_unconfigured_host_when_launching_then_it_refuses_naming_the_config_file(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\nother-box = "oth"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
     code, out, err = _dry_run()
     assert code == 1
     assert "dry run" not in out
     assert "no host alias is configured" in err
     assert "test-box" in err
-    assert str(real_alias_lookup["harness"]) in err
+    assert str(real_alias_lookup["environment"]) in err
     assert str(real_alias_lookup["local"]) in err
 
 
 def test_given_an_alias_longer_than_max_length_when_launching_then_it_refuses(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], 'max_length = 3\n[aliases]\ntest-box = "abcd"\n')
+    _write_aliases(real_alias_lookup["environment"], 'max_length = 3\n[aliases]\ntest-box = "abcd"\n')
     code, _out, err = _dry_run()
     assert code == 1
-    assert "invalid" in err and str(real_alias_lookup["harness"]) in err
+    assert "invalid" in err and str(real_alias_lookup["environment"]) in err
 
 
 def test_given_an_alias_with_a_digit_after_a_letter_when_launching_then_it_names_the_session(real_alias_lookup):
     # A letters-only rule refused a real alias like `ec2`, and every `ai c` on that host exited.
-    _write_aliases(real_alias_lookup["harness"], 'max_length = 5\n[aliases]\ntest-box = "ec2"\n')
+    _write_aliases(real_alias_lookup["environment"], 'max_length = 5\n[aliases]\ntest-box = "ec2"\n')
     code, out, err = _dry_run()
     assert code == 0, err
     assert _planned_session(out) == "myrepo-ec2-1"
 
 
 def test_given_an_alias_starting_with_a_digit_when_launching_then_it_refuses(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\ntest-box = "2ec"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\ntest-box = "2ec"\n')
     code, _out, err = _dry_run()
     assert code == 1
     assert "starting with a letter" in err
@@ -180,8 +181,8 @@ def test_given_an_alias_starting_with_a_digit_when_launching_then_it_refuses(rea
 # --- sibling registries, discovered by shape ----------------------------------
 
 
-def test_given_the_harness_registry_names_the_host_when_launching_then_no_sibling_file_is_read(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\ntest-box = "abc"\n')
+def test_given_the_environment_registry_names_the_host_when_launching_then_no_sibling_file_is_read(real_alias_lookup):
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\ntest-box = "abc"\n')
     # Unparseable, so reading it at all would turn the launch into a refusal.
     _write_aliases(_sibling(real_alias_lookup["projects"], "config-repo"), "not toml {{{\n")
     code, out, err = _dry_run()
@@ -189,8 +190,20 @@ def test_given_the_harness_registry_names_the_host_when_launching_then_no_siblin
     assert _planned_session(out) == "myrepo-abc-1"
 
 
+def test_given_no_environment_repo_configured_when_its_registry_disagrees_then_it_is_only_a_sibling(
+    real_alias_lookup, monkeypatch
+):
+    """Without ``[project] environment_repo`` no sibling outranks another, so a conflict refuses."""
+    monkeypatch.setattr("ai_cli.config.get_environment_repo", lambda: "")
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\ntest-box = "abc"\n')
+    _write_aliases(_sibling(real_alias_lookup["projects"], "config-repo"), '[aliases]\ntest-box = "sib"\n')
+    code, _out, err = _dry_run()
+    assert code == 1
+    assert "disagree" in err
+
+
 def test_given_only_a_sibling_registry_names_the_host_when_launching_then_its_alias_is_used(real_alias_lookup):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\nother-box = "oth"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
     _write_aliases(_sibling(real_alias_lookup["projects"], "config-repo"), '[aliases]\ntest-box = "sib"\n')
     _write_aliases(real_alias_lookup["local"], '[aliases]\ntest-box = "xyz"\n')
     code, out, err = _dry_run()
@@ -228,7 +241,7 @@ def test_given_no_registry_names_the_host_when_launching_then_every_path_is_list
     code, _out, err = _dry_run()
     assert code == 1
     order = [
-        real_alias_lookup["harness"],
+        real_alias_lookup["environment"],
         _sibling(projects, "alpha"),
         _sibling(projects, "beta"),
         real_alias_lookup["local"],
@@ -243,11 +256,11 @@ def test_given_the_projects_dir_reached_through_a_symlink_when_refused_then_each
 ):
     link = tmp_path / "projects-link"
     link.symlink_to(real_alias_lookup["projects"], target_is_directory=True)
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\nother-box = "oth"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
     monkeypatch.setenv("PROJECTS_DIR", str(link))
     code, _out, err = _dry_run(env={"PROJECTS_DIR": str(link)})
     assert code == 1
-    assert err.count(f"ai-harness{os.sep}config{os.sep}{session_naming.ALIAS_FILENAME}\n") == 1, err
+    assert err.count(f"myhub{os.sep}config{os.sep}{session_naming.ALIAS_FILENAME}\n") == 1, err
 
 
 # --- the terminal prompt --------------------------------------------------------
@@ -291,17 +304,17 @@ _COMMENTED_REGISTRY = (
 def test_given_an_unconfigured_host_and_a_terminal_when_an_alias_is_typed_then_it_is_written_and_used(
     real_alias_lookup,
 ):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, _COMMENTED_REGISTRY)
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, _COMMENTED_REGISTRY)
     code, out, err = _allocate(_Terminal("box\n"))
     assert code == 0, err
     assert json.loads(out)["ai_name"] == "myrepo-box-1"
     assert "prefer 3 or fewer, at most 5" in err
-    assert f"the limit is max_length in {harness}" in err
-    data = tomllib.loads(harness.read_text(encoding="utf-8"))
+    assert f"the limit is max_length in {environment}" in err
+    data = tomllib.loads(environment.read_text(encoding="utf-8"))
     assert data["aliases"] == {"other-box": "oth", "test-box": "box"}
     assert "test-box" not in data["notes"]
-    lines = harness.read_text(encoding="utf-8").splitlines()
+    lines = environment.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "# Fleet host aliases."
     assert lines[lines.index('other-box = "oth"') + 1] == 'test-box = "box"'
 
@@ -309,22 +322,22 @@ def test_given_an_unconfigured_host_and_a_terminal_when_an_alias_is_typed_then_i
 def test_given_the_written_registry_is_in_a_git_checkout_when_prompted_then_it_says_commit_and_push(
     real_alias_lookup,
 ):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, '[aliases]\nother-box = "oth"\n')
-    marker = harness.parent.parent / ".git"
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, '[aliases]\nother-box = "oth"\n')
+    marker = environment.parent.parent / ".git"
     marker.mkdir()
     (marker / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     code, _out, err = _allocate(_Terminal("box\n"))
     assert code == 0, err
-    assert f'Wrote test-box = "box" to {harness}' in err
+    assert f'Wrote test-box = "box" to {environment}' in err
     assert "git-tracked: commit and push it" in err
 
 
 def test_given_the_written_registry_is_not_in_a_git_checkout_when_prompted_then_it_does_not_claim_tracking(
     real_alias_lookup,
 ):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, '[aliases]\nother-box = "oth"\n')
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, '[aliases]\nother-box = "oth"\n')
     code, _out, err = _allocate(_Terminal("box\n"))
     assert code == 0, err
     assert "Wrote test-box" in err
@@ -337,7 +350,7 @@ def test_given_only_a_sibling_registry_exists_when_prompted_then_the_alias_is_wr
     code, _out, err = _allocate(_Terminal("box\n"))
     assert code == 0, err
     assert tomllib.loads(sibling.read_text(encoding="utf-8"))["aliases"]["test-box"] == "box"
-    assert not real_alias_lookup["harness"].exists()
+    assert not real_alias_lookup["environment"].exists()
     assert not real_alias_lookup["local"].exists()
 
 
@@ -360,61 +373,61 @@ def test_given_no_registry_file_exists_when_prompted_then_the_local_file_is_crea
 def test_given_an_invalid_alias_is_typed_when_prompted_then_it_refuses_and_writes_nothing(
     real_alias_lookup, typed, why
 ):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, _COMMENTED_REGISTRY)
-    before = harness.read_bytes()
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, _COMMENTED_REGISTRY)
+    before = environment.read_bytes()
     code, _out, err = _allocate(_Terminal(f"{typed}\n"))
     assert code == 1
     assert why in err
     assert "Nothing was written" in err
-    assert harness.read_bytes() == before
+    assert environment.read_bytes() == before
 
 
 def test_given_an_edit_that_would_not_parse_when_prompted_then_the_file_is_left_byte_identical(real_alias_lookup):
-    harness = real_alias_lookup["harness"]
+    environment = real_alias_lookup["environment"]
     # An inline aliases table: appending an [aliases] header to it is a duplicate table.
-    _write_aliases(harness, 'aliases = { other-box = "oth" }\n')
-    before = harness.read_bytes()
+    _write_aliases(environment, 'aliases = { other-box = "oth" }\n')
+    before = environment.read_bytes()
     code, _out, err = _allocate(_Terminal("box\n"))
     assert code == 1
     assert "would not parse" in err and "unchanged" in err
-    assert harness.read_bytes() == before
-    assert [entry.name for entry in harness.parent.iterdir()] == [harness.name]
+    assert environment.read_bytes() == before
+    assert [entry.name for entry in environment.parent.iterdir()] == [environment.name]
 
 
 def test_given_no_terminal_when_the_host_is_unconfigured_then_it_refuses_without_reading_input(real_alias_lookup):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, '[aliases]\nother-box = "oth"\n')
-    before = harness.read_bytes()
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, '[aliases]\nother-box = "oth"\n')
+    before = environment.read_bytes()
     stdin = _Pipe("box\n")
     code, _out, err = _allocate(stdin)
     assert code == 1
     assert "no host alias is configured" in err
-    assert str(harness) in err and str(real_alias_lookup["local"]) in err
+    assert str(environment) in err and str(real_alias_lookup["local"]) in err
     assert "Host alias for" not in err
     assert stdin.tell() == 0
-    assert harness.read_bytes() == before
+    assert environment.read_bytes() == before
 
 
 def test_given_a_dry_run_in_a_terminal_when_the_host_is_unconfigured_then_it_plans_and_writes_nothing(
     real_alias_lookup,
 ):
-    harness = real_alias_lookup["harness"]
-    _write_aliases(harness, '[aliases]\nother-box = "oth"\n')
-    before = harness.read_bytes()
+    environment = real_alias_lookup["environment"]
+    _write_aliases(environment, '[aliases]\nother-box = "oth"\n')
+    before = environment.read_bytes()
     with patch("sys.stdin", _Terminal("box\n")):
         code, out, err = _dry_run()
     assert code == 0, err
     assert _planned_session(out) == "myrepo-box-1"
     assert "nothing was written" in err
-    assert harness.read_bytes() == before
+    assert environment.read_bytes() == before
     assert not real_alias_lookup["local"].exists()
 
 
 def test_given_an_invalid_registry_entry_and_a_terminal_when_launching_then_it_refuses_without_prompting(
     real_alias_lookup,
 ):
-    _write_aliases(real_alias_lookup["harness"], '[aliases]\ntest-box = "2ec"\n')
+    _write_aliases(real_alias_lookup["environment"], '[aliases]\ntest-box = "2ec"\n')
     code, _out, err = _allocate(_Terminal("box\n"))
     assert code == 1
     assert "invalid" in err

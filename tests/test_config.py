@@ -14,7 +14,9 @@ from ai_cli.config import (
     _pid_alive,
     detect_machine_profile,
     ensure_machine_profile_registered,
+    get_environment_repo,
     get_sidecar_config,
+    get_worktree_marker_prefix,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
@@ -310,11 +312,32 @@ class TestPidAlive:
 # ---------------------------------------------------------------------------
 
 
+class TestEnvironmentSettings:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [({"project": {"environment_repo": " myenv "}}, "myenv"), ({"project": {}}, ""), ({}, "")],
+    )
+    def test_given_project_config_when_environment_repo_read_then_it_is_the_configured_name(
+        self, config, expected, monkeypatch
+    ):
+        monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
+        assert get_environment_repo() == expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"), [({"worktree": {"marker_prefix": "myenv"}}, "myenv"), ({"worktree": {}}, "")]
+    )
+    def test_given_worktree_config_when_marker_prefix_read_then_it_is_the_configured_prefix(
+        self, config, expected, monkeypatch
+    ):
+        monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
+        assert get_worktree_marker_prefix() == expected
+
+
 class TestDetectMachineProfile:
     def test_when_ai_host_set_then_uses_it_as_host_id(self):
-        with patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False):
+        with patch.dict(os.environ, {"AI_HOST": "work-laptop"}, clear=False):
             result = detect_machine_profile()
-        assert result["host_id"] == "acn-windows"
+        assert result["host_id"] == "work-laptop"
 
     def test_when_ai_host_unset_and_no_marker_then_falls_back_to_hostname(self, tmp_path, monkeypatch):
         """The marker has to be absent too, or this asserts about the host running the suite.
@@ -323,7 +346,8 @@ class TestDetectMachineProfile:
         machine without one and failed on a machine with one.
         """
         env = {k: v for k, v in os.environ.items() if k != "AI_HOST"}
-        monkeypatch.setattr("ai_cli.config.MACHINE_MARKER_FILE", tmp_path / "no-such-marker")
+        no_marker = {"machine": {"marker_file": str(tmp_path / "no-such-marker")}}
+        monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: no_marker)
         with patch.dict(os.environ, env, clear=True), patch("socket.gethostname", return_value="my-box"):
             result = detect_machine_profile()
         assert result["host_id"] == "my-box"
@@ -374,13 +398,13 @@ class TestEnsureMachineProfileRegistered:
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text(_MINIMAL_CONFIG)
         with (
-            patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False),
+            patch.dict(os.environ, {"AI_HOST": "work-laptop"}, clear=False),
             patch("sys.platform", "win32"),
         ):
             result = ensure_machine_profile_registered(cfg_file, {})
         assert result is True
         text = cfg_file.read_text()
-        assert 'host_id = "acn-windows"' in text
+        assert 'host_id = "work-laptop"' in text
         assert 'os_type = "windows"' in text
 
     def test_when_both_already_set_then_returns_false_and_no_write(self, tmp_path):
@@ -433,12 +457,12 @@ class TestEnsureMachineProfileRegistered:
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text(_MINIMAL_CONFIG)
         with (
-            patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False),
+            patch.dict(os.environ, {"AI_HOST": "work-laptop"}, clear=False),
             patch("sys.platform", "win32"),
         ):
             ensure_machine_profile_registered(cfg_file, {})
         captured = capsys.readouterr()
-        assert "acn-windows" in captured.err
+        assert "work-laptop" in captured.err
         assert "windows" in captured.err
 
 

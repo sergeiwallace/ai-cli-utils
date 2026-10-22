@@ -8,10 +8,10 @@ can never leave a double hyphen behind.
 The host alias is resolved at call time from the registries :func:`alias_sources`
 lists, in this order:
 
-1. ``<projects>/ai-harness/config/machine-host-aliases.toml`` -- the fleet's
-   git-tracked registry, when that checkout exists (``$PROJECTS_DIR`` first, then
-   ``[project] projects_dir``, default ``~/projects``). When it names the host, no
-   other file is read.
+1. ``<projects>/<environment repo>/config/machine-host-aliases.toml`` -- the
+   environment's git-tracked registry, when ``[project] environment_repo`` names a
+   checkout that exists (``$PROJECTS_DIR`` first, then ``[project] projects_dir``,
+   default ``~/projects``). When it names the host, no other file is read.
 2. Every other sibling repository's ``config/machine-host-aliases.toml``, in
    directory-name order. A registry joins by shipping the file, so this package never
    names the repository that holds it. Two of them naming the host differently is
@@ -49,7 +49,6 @@ from .output import Tag
 
 ALIAS_FILENAME = "machine-host-aliases.toml"
 ALIAS_REGISTRY_MARKER = Path("config") / ALIAS_FILENAME
-HARNESS_REPO = "ai-harness"
 DEFAULT_MAX_LENGTH = 5
 PREFERRED_LENGTH = 3
 
@@ -109,18 +108,22 @@ def _projects_roots() -> list[Path]:
     return roots
 
 
-def _harness_registries(roots: list[Path]) -> list[Path]:
-    return [root / HARNESS_REPO / ALIAS_REGISTRY_MARKER for root in roots if (root / HARNESS_REPO).is_dir()]
+def _environment_registries(roots: list[Path]) -> list[Path]:
+    repo = _config.get_environment_repo()
+    if not repo:
+        return []
+    return [root / repo / ALIAS_REGISTRY_MARKER for root in roots if (root / repo).is_dir()]
 
 
 def _sibling_registries(roots: list[Path]) -> list[Path]:
+    environment_repo = _config.get_environment_repo()
     found: list[Path] = []
     for root in roots:
         if not root.is_dir():
             continue
         for repo in sorted(root.iterdir(), key=lambda entry: entry.name):
             candidate = repo / ALIAS_REGISTRY_MARKER
-            if repo.name != HARNESS_REPO and candidate.is_file() and candidate not in found:
+            if repo.name != environment_repo and candidate.is_file() and candidate not in found:
                 found.append(candidate)
     return found
 
@@ -130,9 +133,9 @@ def _local_registry() -> Path:
 
 
 def alias_sources() -> list[Path]:
-    """Alias files in resolution order: ai-harness's, every other sibling's, then the local one."""
+    """Alias files in resolution order: the environment repo's, every other sibling's, then the local one."""
     roots = _projects_roots()
-    return [*_harness_registries(roots), *_sibling_registries(roots), _local_registry()]
+    return [*_environment_registries(roots), *_sibling_registries(roots), _local_registry()]
 
 
 def _read_registry(path: Path) -> dict | None:
@@ -193,13 +196,13 @@ def _not_configured(host: str, sources: list[Path]) -> HostAliasNotConfiguredErr
 def _resolve_from(host: str, sources: list[Path]) -> str:
     """The alias the first naming source gives ``host``, refusing a sibling conflict.
 
-    A hit in the ai-harness registry or the local file is returned at once. A hit in a
+    A hit in the environment repo's registry or the local file is returned at once. A hit in a
     sibling registry is compared with every later sibling first: two repositories that
     disagree about a machine cannot both be right, and picking one is how a session
     gets named under the wrong alias.
     """
     roots = _projects_roots()
-    authoritative = {*_harness_registries(roots), _local_registry()}
+    authoritative = {*_environment_registries(roots), _local_registry()}
     for index, source in enumerate(sources):
         alias = _alias_from(source, host)
         if alias is None:

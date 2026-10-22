@@ -10,8 +10,12 @@ after ``ai session-migrate`` renames its slot, so this module moves them too:
   submodules, :mod:`ai_cli.worktree_move`), and the emptied container is removed;
 * every local ``wt/<old>/<leaf>`` branch becomes ``wt/<new>/<leaf>`` through
   :func:`ai_cli.branch_rename.rename_branch_anchored`, so its tip is anchored first;
-* every ``branch.*.aih-session-home`` marker naming the old slot or a moved worktree
-  is rewritten to the new path, under the branch's new name.
+* every ``branch.*.<prefix>-session-home`` marker naming the old slot or a moved
+  worktree is rewritten to the new path, under the branch's new name.
+
+``<prefix>`` is ``[worktree] marker_prefix``, the namespace the environment's worktree
+tooling writes its markers and its ``<prefix>-provenance.json`` record under. Unset,
+there are no such markers or records to carry, and none are read.
 
 Repositories are the git checkouts directly under ``[project] projects_dir`` plus the
 slot's own repo. A worktree a live Claude Code process has its cwd in is left where it
@@ -26,17 +30,32 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import config as _config
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
 from .worktree_move import move_worktree
 
-_SESSION_HOME_PATTERN = r"^branch\..+\.aih-session-home$"
-_PROVENANCE_FILE = "aih-provenance.json"
+
+def session_home_pattern() -> str | None:
+    """The ``git config --get-regexp`` pattern of session-home markers; None when unconfigured."""
+    prefix = _config.get_worktree_marker_prefix()
+    return rf"^branch\..+\.{re.escape(prefix)}-session-home$" if prefix else None
+
+
+def _agent_worktree_key(branch: str) -> str | None:
+    prefix = _config.get_worktree_marker_prefix()
+    return f"branch.{branch}.{prefix}-agent-worktree" if prefix else None
+
+
+def _provenance_file() -> str | None:
+    prefix = _config.get_worktree_marker_prefix()
+    return f"{prefix}-provenance.json" if prefix else None
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -126,8 +145,11 @@ def _holder(path: Path, live_cwds: list[tuple[int, Path]]) -> int | None:
 
 
 def _provenance(worktree: Path) -> tuple[dict | None, str]:
-    """Return a provenance object and ``present``, ``missing``, or ``unreadable``."""
-    located = _git(worktree, "rev-parse", "--git-path", _PROVENANCE_FILE)
+    """Return a provenance object and ``present``, ``missing``, ``unreadable`` or ``unconfigured``."""
+    provenance_file = _provenance_file()
+    if provenance_file is None:
+        return None, "unconfigured"
+    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
     if located.returncode != 0 or not located.stdout.strip():
         return None, "unreadable"
     path = Path(located.stdout.strip())
@@ -158,8 +180,9 @@ def plan_worktree_ownership(
     if provenance is not None and provenance["owner_session"] != old_owner:
         state = "different-owner"
     stamp_value = None
-    if branch:
-        stamp = _git(repo, "config", "--get", f"branch.{branch}.aih-agent-worktree")
+    key = _agent_worktree_key(branch) if branch else None
+    if key:
+        stamp = _git(repo, "config", "--get", key)
         if stamp.returncode == 0:
             stamp_value = stamp.stdout.rstrip("\n")
     return WorktreeOwnership(
@@ -187,7 +210,7 @@ def describe_worktree_ownership(plan: WorktreeOwnership) -> list[tuple[str, str,
                 "rewrite",
             )
         )
-    elif plan.provenance_state in {"missing", "unreadable"}:
+    elif plan.provenance_state in {"missing", "unreadable", "unconfigured"}:
         lines.append(("provenance record", str(plan.worktree), "", f"skipped: {plan.provenance_state}"))
     else:
         lines.append(("provenance record", str(plan.worktree), "", "left alone: owner does not match"))
@@ -196,8 +219,8 @@ def describe_worktree_ownership(plan: WorktreeOwnership) -> list[tuple[str, str,
         lines.append(
             (
                 "agent-worktree marker",
-                f"branch.{plan.branch}.aih-agent-worktree = {plan.stamp_value}",
-                f"branch.{target_branch}.aih-agent-worktree = {plan.dest}",
+                f"{_agent_worktree_key(plan.branch)} = {plan.stamp_value}",
+                f"{_agent_worktree_key(target_branch)} = {plan.dest}",
                 "rewrite",
             )
         )
@@ -212,7 +235,10 @@ def _replace_provenance_owner(worktree: Path, old_owner: str, new_owner: str) ->
     if record["owner_session"] != old_owner:
         return "owner no longer matches the old session"
     record["owner_session"] = new_owner
-    located = _git(worktree, "rev-parse", "--git-path", _PROVENANCE_FILE)
+    provenance_file = _provenance_file()
+    if provenance_file is None:
+        return "no [worktree] marker_prefix is configured"
+    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
     if located.returncode != 0 or not located.stdout.strip():
         return "record path is unreadable"
     path = Path(located.stdout.strip())
@@ -243,8 +269,8 @@ def apply_worktree_ownership(plan: WorktreeOwnership, branch: str | None) -> lis
         reason = _replace_provenance_owner(plan.dest, plan.old_owner, plan.new_owner)
         if reason:
             warnings.append(f"provenance owner for {plan.dest} was NOT rebound: {reason}")
-    if plan.stamp_value is not None and branch:
-        key = f"branch.{branch}.aih-agent-worktree"
+    key = _agent_worktree_key(branch) if branch else None
+    if plan.stamp_value is not None and key:
         written = _git(plan.repo, "config", key, str(plan.dest))
         if written.returncode != 0:
             warnings.append(f"agent-worktree marker {key} FAILED to rewrite: {(written.stderr or '').strip()}")
@@ -334,8 +360,9 @@ def plan_agents(
             plan.containers.append(container)
 
         moved = {e.worktree: e.dest for e in repo_entries if e.worktree and e.moves}
-        markers = _git(repo, "config", "--get-regexp", _SESSION_HOME_PATTERN)
-        for line in (markers.stdout or "").splitlines():
+        pattern = session_home_pattern()
+        markers = _git(repo, "config", "--get-regexp", pattern) if pattern else None
+        for line in (markers.stdout or "").splitlines() if markers else []:
             key, _, value = line.partition(" ")
             if not value:
                 continue

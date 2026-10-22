@@ -462,11 +462,13 @@ resolving as before.
 `{host-alias}` is this machine's short alias (lowercase letters and digits
 starting with a letter, at most the file's `max_length`, 5 by default; prefer 3
 or fewer), resolved at launch from this machine's host id (`AI_HOST`, then
-`/etc/ai-harness/machine`, then the hostname) by the first of these that names it:
+the `[machine] marker_file` when one is configured, then the hostname) by the
+first of these that names it:
 
-1. `<projects>/ai-harness/config/machine-host-aliases.toml`, when an ai-harness
-   checkout exists (`$PROJECTS_DIR`, then `[project] projects_dir`, default
-   `~/projects`). When it names the host, no other file is read.
+1. `<projects>/<environment repo>/config/machine-host-aliases.toml`, when
+   `[project] environment_repo` names a checkout that exists (`$PROJECTS_DIR`,
+   then `[project] projects_dir`, default `~/projects`). When it names the host,
+   no other file is read.
 2. `config/machine-host-aliases.toml` in any other repository under the projects
    directory, in directory-name order. A repository joins by shipping the file.
    Two of them giving the host different aliases is refused, naming both.
@@ -755,25 +757,37 @@ ai ls -a/--all     # Show all tmux sessions, not just ai-cli sessions
 ai attach <name>   # Attach directly to a named tmux session
 ```
 
-### Chief-of-staff (firstmate) session
+### Chief-of-staff session
 
-One coordinating session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository). `-F/--firstmate` is a mode on every engine command, so the chief can be any agent you launch. A chief always launches into the `ai-harness` repository (prefix `aih`), whatever repository you run the command from. These examples use host alias `fw`:
+One coordinating session per machine that dispatches to your other sessions and surfaces their blockers, with its `FM_HOME` in a per-machine state directory rather than a repository. `-F/--chief` is a mode on every engine command, so the chief can be any agent you launch.
+
+The names that tie a chief to your environment are settings in `config.toml`, read on every launch. None has a built-in default: a chief launch that needs one that is unset refuses and names it.
+
+```toml
+[chief_of_staff]
+project = "myenv"                      # the repository every chief launches into
+session_name = "chief"                 # the session-name segment that marks a chief
+instance_key_prefix = "example-chief"  # registry key: <instance_key_prefix>/<machine-key>
+homes_dir = "myenv/chief-of-staff"     # relative to $XDG_STATE_HOME unless absolute or ~
+```
+
+A chief always launches into `project`, whatever repository you run the command from. These examples use the settings above, a project whose task prefix is `env`, and host alias `box`:
 
 ```bash
-ai c firstmate              # Claude chief: session aih-fw-firstmate-1, tmux c-aih-fw-firstmate-1
-ai c firstmate-3            # Chief in slot 3: aih-fw-firstmate-3 (any integer N); `ai c firstmate 3` is the same
-ai c 3 -F/--firstmate       # The same slot through the flag
-ai c firstmate -p aih       # -p may name ai-harness (by alias, prefix or directory), never another project
-ai c --firstmate review     # Optional suffix: aih-fw-firstmate-review-1
-ai p --firstmate            # Same mode on Pi: tmux p-aih-fw-firstmate-1 (likewise `ai g`, `ai cx`)
-ai cos                      # Shorthand for `ai c --firstmate` (takes the same optional suffix or N)
-ai fm 1 / ai firstmate 1    # Aliases of `ai cos 1`
+ai c chief                  # Claude chief: session env-box-chief-1, tmux c-env-box-chief-1
+ai c chief-3                # Chief in slot 3: env-box-chief-3 (any integer N); `ai c chief 3` is the same
+ai c 3 -F/--chief           # The same slot through the flag
+ai c chief -p env           # -p may name the chief's project (by alias, prefix or directory), never another
+ai c --chief review         # Optional suffix: env-box-chief-review-1
+ai p --chief                # Same mode on Pi: tmux p-env-box-chief-1 (likewise `ai g`, `ai cx`)
+ai cos                      # Shorthand for `ai c --chief` (takes the same optional suffix or N)
+ai fm 1                     # Alias of `ai cos 1`
 ai c -F -k/--machine-key K  # Machine key naming the chief home (default: $AI_MACHINE_ID)
-ai c -F -H/--fm-home DIR    # Use an explicit chief home instead of $XDG_STATE_HOME/firstmate/chief-of-staff/<key>
+ai c -F -H/--fm-home DIR    # Use an explicit chief home instead of <homes_dir>/<key>
 ai c -F --dry-run           # Print the resolved plan; registers and starts nothing
-ai c firstmate-2 -R -m fw   # Run the chief on remote machine `fw`: named, homed and registered there
-ai cos -R -m fw             # Same, through the shorthand
-ai fm 1 -r -R -p aih        # From the Mac: attach to or resume chief 1 on the remote machine
+ai c chief-2 -R -m box      # Run the chief on remote machine `box`: named, homed and registered there
+ai cos -R -m box            # Same, through the shorthand
+ai fm 1 -r -R -p env        # From another machine: attach to or resume chief 1 on the remote machine
 ```
 
 Every one of these attaches, resumes or creates, decided on the machine the chief runs on (the remote one with `-R`):
@@ -785,15 +799,15 @@ Every one of these attaches, resumes or creates, decided on the machine the chie
 | nothing | create and register it; with `-r`, refuse with "no resumable chief session …" |
 | a different chief is running | refuse, naming the running chief and the command that attaches to it |
 
-An unnumbered request (`ai cos`, `ai c --firstmate`, `ai c firstmate`) means whichever chief is running or registered.
+An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered.
 
-The name is `aih-{host-alias}-firstmate-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `ai-harness/.worktrees/aih-{host-alias}-firstmate-[suffix-]{index}`. A positional `firstmate` or `firstmate-N` is the chief launch itself, with everything `--firstmate` does; any other name carrying a `firstmate` segment (`firstmate-x`) is refused without the flag, so an ordinary session can never pass for the chief.
+The name is `{repo-alias}-{host-alias}-{session_name}-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `<project>/.worktrees/` under that name. A positional `chief` or `chief-N` (your `session_name`) is the chief launch itself, with everything `--chief` does; any other name carrying that segment (`chief-x`) is refused without the flag, so an ordinary session can never pass for the chief. With no `session_name` configured, no positional name is a chief launch.
 
 Worktree isolation is **on**, like every other session: a session working in a main tree is the exception, not the chief. Pass `-W/--no-worktree` if you want the chief in the repo root instead.
 
-`-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); with neither `-k` nor `$AI_MACHINE_ID` set (a non-interactive shell, such as the remote side of `-R`, can miss an rc-file export) the one seeded home under `$XDG_STATE_HOME/firstmate/chief-of-staff/` is used, and several are refused; a chief launch refuses a missing or unseeded home and refuses a second chief while the first is running (it names the command that attaches to it). A chief running in tmux under a registration that names another (a later launch overwrote it and died) is still found by its tmux session name and re-registered when you attach. On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json`, then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
+`-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); with neither `-k` nor `$AI_MACHINE_ID` set (a non-interactive shell, such as the remote side of `-R`, can miss an rc-file export) the one seeded home under `homes_dir` is used, and several are refused; a chief launch refuses a missing or unseeded home and refuses a second chief while the first is running (it names the command that attaches to it). A chief running in tmux under a registration that names another (a later launch overwrote it and died) is still found by its tmux session name and re-registered when you attach. On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json` (with `chief_instance_key = "<instance_key_prefix>/<machine-key>"`), then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
 
-A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--firstmate`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-aih-{remote-alias}-firstmate-{index}`). An unnumbered `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief. Nothing is resolved or written on the dispatching machine, so it needs neither a chief home nor the remote's host alias.
+A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
 
 ### SSH tunnels
 
@@ -985,6 +999,7 @@ Configuration lives in `~/.config/ai-cli-utils/config.toml` (on Windows, `config
 ```toml
 [project]
 main_project = "myproject"     # default project directory under ~/projects/
+# environment_repo = "myenv"   # sibling repo with your shared tooling (host aliases, dolt_server.py, wake sidecar)
 
 [remote]
 default = "server"             # used by `ai c -R`
@@ -998,6 +1013,16 @@ transport = "mosh"              # "mosh" (default) or "ssh"
 
 [worktree]
 enabled = true                 # git worktree isolation per session
+# marker_prefix = "myenv"      # git-config marker namespace `ai session-migrate` rewrites
+
+[machine]
+# marker_file = "/etc/myenv/machine"  # host-id file, read when AI_HOST is unset
+
+[chief_of_staff]               # see "Chief-of-staff session"; required by `ai cos`
+# project = "myenv"
+# session_name = "chief"
+# instance_key_prefix = "example-chief"
+# homes_dir = "myenv/chief-of-staff"
 
 [worktree_upstream]
 # Integration branch for session worktrees, keyed by repository directory name.
@@ -1029,7 +1054,7 @@ notify_on_exit = true          # desktop notifications on task completion
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
 ```
 
-On a local session launch, `ai` asks a discovered ai-harness checkout to ensure its
+On a local session launch, `ai` asks the `[project] environment_repo` checkout to ensure its
 machine wake sidecar is running. That checkout's machine profile is authoritative when
 present, so the local `[sidecar]` values are ignored. The check is bounded, never runs
 for remote launches, and never blocks a session after a sidecar failure. Without a

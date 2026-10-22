@@ -748,7 +748,7 @@ class TestRemoteSessionIterm2Emit:
 #
 # Root cause: the remote allocator answers with the existing live session for a
 # slot, and a session the remote host launched itself is named `c-<ai_name>`, not
-# `c-r-<ai_name>`. The client accepted only `c-r-`, so `ai c firstmate-1 -R` from
+# `c-r-<ai_name>`. The client accepted only `c-r-`, so `ai c chief-1 -R` from
 # another machine failed with "invalid identity" instead of attaching.
 
 
@@ -779,9 +779,9 @@ def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None):
     with (
         patch("sys.argv", argv),
         patch("ai_cli.config.load_config", return_value=config),
-        patch("ai_cli.session.get_project_prefix", return_value="aih"),
+        patch("ai_cli.session.get_project_prefix", return_value="hub"),
         patch("ai_cli.config.get_project_aliases", return_value={}),
-        patch("ai_cli.config.resolve_project_prefix_by_name", return_value="aih"),
+        patch("ai_cli.config.resolve_project_prefix_by_name", return_value="hub"),
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._track_launch"),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -799,38 +799,38 @@ def _remote_session_arg(handoff) -> str:
     return shlex.split(shlex.split(handoff.call_args[0][0][-1])[-1])[-1]
 
 
-@pytest.mark.parametrize("argv_tail", [[], ["-p", "aih"]])
+@pytest.mark.parametrize("argv_tail", [[], ["-p", "hub"]])
 def test_given_live_local_prefixed_remote_session_when_remote_launched_then_attaches_that_session(argv_tail):
     code, handoff, stderr = _run_remote_named_launch(
-        ["ai", "c", "firstmate-1", "-R", *argv_tail], live_remote_sessions=["c-aih-firstmate-1"]
+        ["ai", "c", "chief-1", "-R", *argv_tail], live_remote_sessions=["c-hub-chief-1"]
     )
 
     assert code in (0, None), stderr
     assert "invalid identity" not in stderr
     handoff.assert_called_once()
-    assert _remote_session_arg(handoff) == "c-aih-firstmate-1"
-    assert handoff.call_args[0][1] == ["ai", "internal", "cleanup-session-files", "c-aih-firstmate-1"]
+    assert _remote_session_arg(handoff) == "c-hub-chief-1"
+    assert handoff.call_args[0][1] == ["ai", "internal", "cleanup-session-files", "c-hub-chief-1"]
 
 
 def test_given_no_live_remote_session_when_remote_launched_then_allocates_remote_prefixed_slot():
-    code, handoff, stderr = _run_remote_named_launch(["ai", "c", "firstmate-1", "-R"], live_remote_sessions=[])
+    code, handoff, stderr = _run_remote_named_launch(["ai", "c", "chief-1", "-R"], live_remote_sessions=[])
 
     assert code in (0, None), stderr
-    assert _remote_session_arg(handoff) == "c-r-aih-firstmate-1"
+    assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
 
 
 @pytest.mark.parametrize(
     "reply",
     [
-        json.dumps({"session_id": "c-other-1", "ai_name": "aih-firstmate-1"}),
-        json.dumps({"session_id": "g-aih-firstmate-1", "ai_name": "aih-firstmate-1"}),
+        json.dumps({"session_id": "c-other-1", "ai_name": "hub-chief-1"}),
+        json.dumps({"session_id": "g-hub-chief-1", "ai_name": "hub-chief-1"}),
         json.dumps({"session_id": "c-", "ai_name": ""}),
-        json.dumps({"session_id": 7, "ai_name": "aih-firstmate-1"}),
+        json.dumps({"session_id": 7, "ai_name": "hub-chief-1"}),
     ],
 )
 def test_given_malformed_allocator_identity_when_remote_launched_then_errors_before_handoff(reply):
     code, handoff, stderr = _run_remote_named_launch(
-        ["ai", "c", "firstmate-1", "-R"], live_remote_sessions=[], allocator_reply=reply
+        ["ai", "c", "chief-1", "-R"], live_remote_sessions=[], allocator_reply=reply
     )
 
     assert code == 1

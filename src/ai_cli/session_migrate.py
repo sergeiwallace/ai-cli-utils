@@ -8,7 +8,7 @@ tasks, memory and resume hand-off:
 
 * the worktree (``git worktree move``), its ``wt-<old>`` branch whether checked
   out or parked behind a topic branch (anchored first, see
-  :mod:`ai_cli.branch_rename`), and every ``branch.*.aih-session-home`` marker
+  :mod:`ai_cli.branch_rename`), and every ``branch.*.<prefix>-session-home`` marker
   naming the old path;
 * the canonical-session registry entry for the old path;
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
@@ -121,10 +121,6 @@ _STATE_FILE_STEMS = (
     "session-agent-exits-",
 )
 
-#: The fleet harness's SessionStart hook records a session's home as
-#: ``branch.<branch>.aih-session-home = <worktree path>``.
-_SESSION_HOME_KEY = re.compile(r"^branch\..+\.aih-session-home$")
-
 
 class MigrationError(AdoptionError):
     """A refusal raised before ``session-migrate`` writes anything."""
@@ -218,8 +214,16 @@ def _refuse_live(
 
 
 def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
-    """``(key, value)`` for every session-home marker naming ``old_wt``."""
-    res = _git(repo, "config", "--get-regexp", _SESSION_HOME_KEY.pattern)
+    """``(key, value)`` for every session-home marker naming ``old_wt``.
+
+    The environment's session-start tooling records a session's home as
+    ``branch.<branch>.<prefix>-session-home = <worktree path>``, ``<prefix>`` being
+    ``[worktree] marker_prefix``; unset, there is no marker to find.
+    """
+    pattern = _agents.session_home_pattern()
+    if pattern is None:
+        return []
+    res = _git(repo, "config", "--get-regexp", pattern)
     found: list[tuple[str, str]] = []
     for line in (res.stdout or "").splitlines():
         key, _, value = line.partition(" ")
@@ -344,7 +348,7 @@ def _memory_pattern(old: str) -> re.Pattern[str]:
 
 
 def _names_another_session(prefix: str, old: str, others: set[str]) -> bool:
-    """Whether ``<prefix><old>`` ends in a different session's name, e.g. ``kg-aih-3`` for ``aih-3``."""
+    """Whether ``<prefix><old>`` ends in a different session's name, e.g. ``kg-myproject-3`` for ``myproject-3``."""
     words = prefix.lstrip(".").rstrip("-").split("-")
     return any("-".join([*words[i:], old]) in others for i in range(len(words)))
 
@@ -1462,7 +1466,7 @@ def _plan_chief(old: str, new: str, tmux: list[str], result: MigrationResult) ->
 
     root = _cos.chief_homes_root()
     moves: list[PlannedMove] = []
-    for home in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+    for home in sorted(p for p in root.iterdir() if p.is_dir()) if root is not None and root.is_dir() else []:
         try:
             registration = _cos.read_registration(home)
             _cos._read_json_object(_cos.registry_path(home), "chief registry")

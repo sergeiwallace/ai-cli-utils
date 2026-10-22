@@ -66,13 +66,18 @@ def _projects_dir_config(projects_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _configure_marker(monkeypatch, marker: Path) -> None:
+    """Point ``[machine] marker_file`` at ``marker``, as config.toml would."""
+    monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: {"machine": {"marker_file": str(marker)}})
+
+
 class TestMachineIdentity:
     def test_given_no_ai_host_and_a_marker_file_when_detecting_the_profile_then_the_marker_answers(
         self, tmp_path, monkeypatch
     ):
         marker = tmp_path / "machine"
         marker.write_text("build-host-1\n", encoding="utf-8")
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", marker, raising=False)
+        _configure_marker(monkeypatch, marker)
         monkeypatch.delenv("AI_HOST", raising=False)
         monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
 
@@ -86,12 +91,12 @@ class TestMachineIdentity:
     ):
         marker = tmp_path / "machine"
         marker.write_text("build-host-1\n", encoding="utf-8")
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", marker, raising=False)
-        monkeypatch.setenv("AI_HOST", "acn-windows")
+        _configure_marker(monkeypatch, marker)
+        monkeypatch.setenv("AI_HOST", "work-laptop")
 
         profile = config.detect_machine_profile()
 
-        assert profile["host_id"] == "acn-windows"
+        assert profile["host_id"] == "work-laptop"
         assert profile["host_id_source"] == "AI_HOST"
 
     def test_given_an_empty_marker_file_when_detecting_the_profile_then_the_hostname_answers(
@@ -99,7 +104,7 @@ class TestMachineIdentity:
     ):
         marker = tmp_path / "machine"
         marker.write_text("\n", encoding="utf-8")
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", marker, raising=False)
+        _configure_marker(monkeypatch, marker)
         monkeypatch.delenv("AI_HOST", raising=False)
         monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
 
@@ -119,31 +124,44 @@ class TestMachineIdentity:
         detection.
         """
         absent_marker = tmp_path / "no-such-marker"
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", absent_marker, raising=False)
+        _configure_marker(monkeypatch, absent_marker)
         monkeypatch.delenv("AI_HOST", raising=False)
         monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
         config_file = tmp_path / "config.toml"
         config_file.write_text("[behavior]\nnotify_on_exit = true\n", encoding="utf-8")
 
-        assert config.ensure_machine_profile_registered(config_file, {}) is True
+        assert config.ensure_machine_profile_registered(config_file, config.load_config()) is True
 
         err = capsys.readouterr().err
         assert "ip-192-0-2-17" in err
         assert config.HOST_ID_SOURCE_HOSTNAME in err
         assert str(absent_marker) in err
 
-    def test_given_a_marker_when_registering_the_profile_then_no_fallback_is_reported(
+    def test_given_no_marker_file_configured_when_detecting_the_profile_then_no_marker_is_read(
         self, tmp_path, monkeypatch, capsys
     ):
-        marker = tmp_path / "machine"
-        marker.write_text("build-host-1\n", encoding="utf-8")
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", marker, raising=False)
+        monkeypatch.setattr(config, "load_config", lambda *_args, **_kwargs: {})
         monkeypatch.delenv("AI_HOST", raising=False)
         monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
         config_file = tmp_path / "config.toml"
         config_file.write_text("[behavior]\nnotify_on_exit = true\n", encoding="utf-8")
 
+        assert config.detect_machine_profile()["host_id_source"] == config.HOST_ID_SOURCE_HOSTNAME
         assert config.ensure_machine_profile_registered(config_file, {}) is True
+        assert "no [machine] marker_file is configured" in capsys.readouterr().err
+
+    def test_given_a_marker_when_registering_the_profile_then_no_fallback_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        marker = tmp_path / "machine"
+        marker.write_text("build-host-1\n", encoding="utf-8")
+        _configure_marker(monkeypatch, marker)
+        monkeypatch.delenv("AI_HOST", raising=False)
+        monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[behavior]\nnotify_on_exit = true\n", encoding="utf-8")
+
+        assert config.ensure_machine_profile_registered(config_file, config.load_config()) is True
 
         err = capsys.readouterr().err
         assert "build-host-1" in err
@@ -156,7 +174,7 @@ class TestMachineIdentity:
         """Telemetry rows outlive the lease whose DNS name the hostname is."""
         marker = tmp_path / "machine"
         marker.write_text("build-host-1\n", encoding="utf-8")
-        monkeypatch.setattr(config, "MACHINE_MARKER_FILE", marker, raising=False)
+        _configure_marker(monkeypatch, marker)
         monkeypatch.delenv("AI_HOST", raising=False)
         monkeypatch.setattr(socket, "gethostname", lambda: "ip-192-0-2-17")
 
