@@ -128,6 +128,12 @@ def _clean_anchored_pushfail(root: Path, wt_dir: Path, branch: str, ref: str) ->
         raise RuntimeError(f"backup anchor {ref}: rejected-push worktree is still dirty")
 
 
+def _tracker_failure(summary: str, proc: subprocess.CompletedProcess) -> str:
+    """``summary`` plus the tracker's exit status and the tail of its stderr, so the cause is visible."""
+    tail = " ".join((proc.stderr or "").split())[-300:]
+    return f"{summary} (exit {proc.returncode}: {tail})" if tail else f"{summary} (exit {proc.returncode})"
+
+
 def _file_recovery_issue(
     root: Path,
     ref: str,
@@ -157,7 +163,7 @@ def _file_recovery_issue(
     )
     listed = _bd(root, "list", "--all", "--json", "--limit", "0")
     if listed.returncode != 0:
-        raise RuntimeError("could not search the repository issue store")
+        raise RuntimeError(_tracker_failure("could not search the repository issue store", listed))
     try:
         rows = json.loads(listed.stdout)
     except (ValueError, TypeError) as exc:
@@ -167,8 +173,9 @@ def _file_recovery_issue(
     for row in rows:
         if marker in str(row.get("title", "")) and row.get("status") not in ("closed", "tombstone") and row.get("id"):
             issue = str(row["id"])
-            if _bd(root, "comments", "add", issue, body).returncode != 0:
-                raise RuntimeError("could not comment on the existing recovery issue")
+            commented = _bd(root, "comments", "add", issue, body)
+            if commented.returncode != 0:
+                raise RuntimeError(_tracker_failure("could not comment on the existing recovery issue", commented))
             return issue
     # The supported creator is user-installed; pathlib keeps its location portable.
     command = Path.home() / ".claude" / "bin" / "bd-new"
@@ -195,5 +202,5 @@ def _file_recovery_issue(
         check=False,
     )
     if created.returncode != 0:
-        raise RuntimeError("could not create the repository recovery issue with bd-new")
+        raise RuntimeError(_tracker_failure("could not create the repository recovery issue with bd-new", created))
     return created.stdout.strip()
