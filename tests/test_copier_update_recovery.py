@@ -396,3 +396,22 @@ def test_given_issue_filing_failure_when_entry_runs_then_anchor_and_clean_checko
     (anchor,) = _anchors(project)
     output = capsys.readouterr().out
     assert anchor in output and "tracker unavailable" in output
+
+
+def test_given_issue_search_fails_when_entry_runs_then_output_names_the_trackers_reason(
+    recovery_project, monkeypatch, capsys
+):
+    project, _, current = recovery_project
+    from ai_cli import session_migrate
+
+    def bd(store, *args):
+        return subprocess.CompletedProcess(args, 7, "", "no beads database found in myproject\n")
+
+    monkeypatch.setattr(session_migrate, "_bd", bd)
+    code, _ = _run(project, current)
+
+    assert code != 0
+    output = capsys.readouterr().out
+    assert "could not search the repository issue store" in output
+    assert "no beads database found in myproject" in output
+    assert "exit 7" in output
