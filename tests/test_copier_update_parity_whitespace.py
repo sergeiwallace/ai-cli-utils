@@ -46,6 +46,7 @@ def _make_projects(tmp_path: Path, template_after: str, project_content: str | N
     _run(tmp_path, "git", "init", "-q", "--initial-branch=main", str(author))
     _run(author, "git", "config", "user.email", "test@example.com")
     _run(author, "git", "config", "user.name", "Test User")
+    _run(author, "git", "config", "core.autocrlf", "false")
     (author / "copier.yml").write_bytes(_CONFIG.encode())
     (author / "template").mkdir()
     (author / "template" / ".copier-answers.yml.jinja").write_bytes(
@@ -65,6 +66,8 @@ def _make_projects(tmp_path: Path, template_after: str, project_content: str | N
     _run(project, "git", "init", "-q", "--initial-branch=main")
     _run(project, "git", "config", "user.email", "test@example.com")
     _run(project, "git", "config", "user.name", "Test User")
+    # A Windows runner defaults to autocrlf=true, which rewrites the worktree the update runs in.
+    _run(project, "git", "config", "core.autocrlf", "false")
     _run(project, "git", "add", "-A")
     _run(project, "git", "commit", "-qm", "initial")
     if project_content is not None:
@@ -79,13 +82,24 @@ def _make_projects(tmp_path: Path, template_after: str, project_content: str | N
     return projects
 
 
+def _describe_conflict(project: Path) -> str:
+    """What the backup anchor kept of ``config.yaml``, so a platform-specific failure shows its bytes."""
+    refs = _run(project, "git", "for-each-ref", "--format=%(refname)", "refs/backup").split()
+    if not refs:
+        return "no backup anchor"
+    kept = subprocess.run(
+        ["git", "show", f"{refs[0]}:config.yaml"], cwd=project, capture_output=True, check=False
+    ).stdout
+    return f"anchor config.yaml: {kept!r}; autocrlf: {_run(project, 'git', 'config', '--show-origin', '--get', 'core.autocrlf')!r}"
+
+
 def test_given_whitespace_only_template_change_when_project_already_trimmed_then_parity_does_not_fail(tmp_path, capsys):
     projects = _make_projects(tmp_path, _WHITESPACE_ONLY, "key: 1\n")
 
     result = run_copier_update(projects_dir=projects, isolate=True, push=False, inspect=True)
 
     assert isinstance(result, CopierUpdateInspection)
-    assert result.exit_code == 0
+    assert result.exit_code == 0, _describe_conflict(projects / "myproject")
     assert "parity failed" not in capsys.readouterr().out
 
 
