@@ -565,6 +565,37 @@ def _excluded_on_update(config: dict[str, object], answers: dict[str, object] | 
     return result
 
 
+# Jinja whitespace control: ``{%-``, ``-%}``, ``{{-``, ``-}}`` and their ``+`` forms.
+_JINJA_WHITESPACE_CONTROL = re.compile(r"(\{[{%#])[-+]|[-+]([}%#]\})")
+
+
+def _comparable_template_text(text: str) -> str:
+    """Template text with whitespace and Jinja whitespace control normalised away."""
+    plain = _JINJA_WHITESPACE_CONTROL.sub(lambda match: (match.group(1) or "") + (match.group(2) or ""), text)
+    return " ".join(plain.split())
+
+
+def _whitespace_only_change(template_dir: Path, previous_commit: str, path: str) -> bool:
+    """Whether a template file differs between two commits only in whitespace or Jinja whitespace control.
+
+    A project whose own formatter already produced the new whitespace gets no file change from Copier,
+    which is correct, so parity must not demand one. A file missing at either commit is not a match.
+    """
+    versions = []
+    for revision in (previous_commit, "HEAD"):
+        shown = subprocess.run(
+            ["git", "-C", str(template_dir), "show", f"{revision}:{path}"],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+        if shown.returncode != 0:
+            return False
+        versions.append(shown.stdout)
+    return _comparable_template_text(versions[0]) == _comparable_template_text(versions[1])
+
+
 def _template_diff(
     source: str, previous_commit: str, answers: dict[str, object] | None = None
 ) -> TemplateChanges | None:
@@ -593,6 +624,15 @@ def _template_diff(
         )
         config = _template_config(template_dir)
         subdirectory = _template_subdirectory(config)
+        whitespace_only = (
+            {
+                path
+                for path in _parse_diff_hunks(result.stdout)[0]
+                if _whitespace_only_change(template_dir, previous_commit, path)
+            }
+            if result.returncode == 0
+            else set()
+        )
         head_files = subprocess.run(
             ["git", "-C", str(template_dir), "ls-tree", "-r", "--name-only", "HEAD"],
             capture_output=True,
@@ -610,6 +650,8 @@ def _template_diff(
     if result.returncode != 0 or head_files.returncode != 0 or previous_files.returncode != 0:
         return None
     paths, hunks = _parse_diff_hunks(result.stdout)
+    paths -= whitespace_only
+    hunks = {hunk for hunk in hunks if hunk[0] not in whitespace_only}
     rendered_paths = {
         rendered_path for path in paths if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
     }
