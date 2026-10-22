@@ -1040,6 +1040,107 @@ def _hooks_rewrote_files(wt_dir: Path) -> bool:
     )
 
 
+def _render_template_version(
+    copier_bin: str, source: str, ref: str, answers: dict[str, object], destination: Path
+) -> bool:
+    """Render ``source`` at ``ref`` with the project's recorded answers; False when Copier fails."""
+    data = {key: value for key, value in answers.items() if not key.startswith("_")}
+    with tempfile.TemporaryDirectory(prefix="ai-copier-answers-") as scratch:
+        data_file = Path(scratch) / "answers.yml"
+        data_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+        result = subprocess.run(
+            [
+                copier_bin,
+                "copy",
+                "--defaults",
+                "--trust",
+                "--skip-tasks",
+                "--vcs-ref",
+                ref,
+                "--data-file",
+                str(data_file),
+                source,
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    return result.returncode == 0
+
+
+def _resolve_unchanged_conflicts(
+    wt_dir: Path,
+    root: Path,
+    conflicts: list[Path],
+    copier_bin: str,
+    source: str,
+    answers: dict[str, object],
+) -> list[Path]:
+    """Take the new template version of a conflicted file the project never edited; return the rest.
+
+    Copier renders the old copy of the template with the *new* template's ``_exclude`` rules, so a
+    file that rule excludes behind a question the old template never declared is missing from the old
+    copy. Copier then reads the update as "file added" and conflicts with the identical file already
+    in the project. A file whose committed bytes equal the previous template version, rendered with the
+    project's recorded answers, was never edited, so the new version loses nothing. Anything that
+    differs by a single byte stays a conflict. The backup anchor is taken before any file is written.
+    """
+    previous_commit = answers.get("_commit")
+    if not conflicts or not isinstance(previous_commit, str) or not previous_commit:
+        return conflicts
+    with tempfile.TemporaryDirectory(prefix="ai-copier-render-") as scratch:
+        old_dir, new_dir = Path(scratch) / "old", Path(scratch) / "new"
+        if not (
+            _render_template_version(copier_bin, source, previous_commit, answers, old_dir)
+            and _render_template_version(copier_bin, source, "HEAD", answers, new_dir)
+        ):
+            return conflicts
+        unchanged: list[tuple[Path, Path, Path]] = []
+        for conflict in conflicts:
+            relative = conflict.relative_to(wt_dir)
+            previous, current = old_dir / relative, new_dir / relative
+            if not (previous.is_file() and current.is_file()):
+                continue
+            # Compare as Git stores the content, so a platform's line-ending conversion of the
+            # rendered copy (Copier writes CRLF on Windows, Git stores LF) is not a difference.
+            committed = _git_read(["-C", str(wt_dir), "rev-parse", f"HEAD:{relative.as_posix()}"])
+            rendered = _git_read(
+                ["-C", str(wt_dir), "hash-object", f"--path={relative.as_posix()}", "--", str(previous)]
+            )
+            if committed is not None and committed.strip() and committed.strip() == (rendered or "").strip():
+                unchanged.append((conflict, relative, current))
+        if not unchanged:
+            return conflicts
+        try:
+            ref, _ = _anchor_failed_update(wt_dir, root.name, source)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            # Nothing is written unless the conflicted state is saved first.
+            return conflicts
+        _out.emit(Tag.COPIER, "update", f"    backup anchor: {ref}")
+        resolved: set[Path] = set()
+        for conflict, relative, current in unchanged:
+            shutil.copyfile(current, conflict)
+            shutil.copymode(current, conflict)
+            # Clear the unmerged stages back to HEAD so the new version reads as an ordinary
+            # unstaged change, the same as a file Copier updated without a conflict.
+            cleared = subprocess.run(
+                ["git", "-C", str(wt_dir), "reset", "-q", "HEAD", "--", relative.as_posix()],
+                capture_output=True,
+                env=_git_env(),
+                check=False,
+            )
+            if cleared.returncode != 0:
+                continue
+            resolved.add(conflict)
+            _out.emit(
+                Tag.COPIER,
+                "update",
+                f"    auto-resolved (unchanged since the previous template): {relative.as_posix()}",
+            )
+    return [conflict for conflict in conflicts if conflict not in resolved]
+
+
 def _do_update_in_worktree(
     wt_dir: Path,
     root: Path,
@@ -1059,7 +1160,7 @@ def _do_update_in_worktree(
       pushfail  — committed but push rejected — detail = str (git stderr)
       failed    — copier or commit failed — detail = str (message)
     """
-    update_error, _, template_changes = _run_copier_update(wt_dir, copier_bin, resolved_source)
+    update_error, original_answers, template_changes = _run_copier_update(wt_dir, copier_bin, resolved_source)
     if update_error is not None:
         if _is_semantic_update_failure(update_error):
             return "parityfail", update_error
@@ -1081,6 +1182,12 @@ def _do_update_in_worktree(
     # Only files copier actually touched can hold a real conflict marker — scoping the
     # scan to them avoids false positives from files that merely reference `<<<<<<<`.
     conflicts = _conflict_files(wt_dir, _changed_paths(status.stdout, wt_dir))
+    if conflicts and original_answers is not None:
+        source = resolved_source or _resolve_copier_source(wt_dir, original_answers)
+        if source is not None:
+            conflicts = _resolve_unchanged_conflicts(
+                wt_dir, root, [Path(c) for c in conflicts], copier_bin, source, original_answers
+            )
     if conflicts:
         rels = [str(Path(c).relative_to(wt_dir)) for c in conflicts]
         return "conflict", rels

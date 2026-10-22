@@ -84,6 +84,9 @@ def _run(project, current, *, mode="conflict", inject=None, file_issue=None):
     observed = {}
 
     def run(command, **kwargs):
+        if command[0] == "test-copier" and command[1:2] != ["update"]:
+            # Only the update is simulated; a render (``copier copy``) is unavailable, so conflicts stay.
+            return subprocess.CompletedProcess(command, 1, "", "render unavailable in this double")
         if command[0] == "test-copier":
             wt = Path(kwargs["cwd"])
             observed["worktree"] = wt
