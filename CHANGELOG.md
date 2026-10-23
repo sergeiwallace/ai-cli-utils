@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name, a repository or host alias, or a name whose title would be a strict prefix of
   a held title, or the reverse. When every name is filtered out, the refusal names
   each filter and how many names it removed.
+- The session-name registry: one git ref of a shared repository holds every
+  available and held session name, written with plumbing commits and fast-forward
+  pushes that never touch that repository's working tree. A write that loses a race
+  refetches and runs its whole check again. Each machine keeps spare names for
+  offline launches, activated under a host-local lock and published by the next
+  command that can reach the registry. An install with no shared repository keeps
+  the same files in a local directory seeded from the shipped list.
+- `ai sync-names [-d/--dry-run]` regenerates and publishes the name list when this
+  checkout's naming policy is newer than the published one. `ai add-name NAME
+  [-r/--reason TEXT]` adds a name to the database. `ai remove-name NAME` removes a
+  name that was added by hand.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
