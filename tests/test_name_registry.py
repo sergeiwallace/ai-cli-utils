@@ -512,7 +512,8 @@ def test_given_no_sibling_registry_when_discovered_then_the_local_registry_is_us
     registry = reg.discover().registry
 
     assert isinstance(registry, reg.LocalRegistry)
-    assert registry.root == tmp_path / "xdg-data" / "ai-cli-utils" / "session-names"
+    # The data home is $XDG_DATA_HOME/ai-cli-utils on POSIX and %LOCALAPPDATA%\ai-cli-utils on Windows.
+    assert registry.root == _config.get_xdg_data_home() / "session-names"
     reservation = reg.reserve_picked(registry, _slot(), words=frozenset())
     assert (registry.root / "names" / f"{reservation.name}.json").is_file()
     assert reservation.name in name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
