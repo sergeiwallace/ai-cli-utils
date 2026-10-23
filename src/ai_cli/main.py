@@ -24,6 +24,7 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
 from . import compact_transport as _compact_transport
 from . import config as _config
@@ -1964,6 +1965,23 @@ def _handle_internal(argv: list[str]) -> None:
         res = _session.get_latest_gemini_session_id(_ai_name_arg)
         if res:
             _out.raw(Untagged.INTERNAL_REPLY, str(res))
+        sys.exit(0)
+    elif action == "resolve-background-target":
+        if len(argv) < 3:
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>]",
+                err=True,
+            )
+            sys.exit(1)
+        resolution = _background_attach.resolve_background_target(
+            config, Path(argv[1]), argv[2], argv[3] if len(argv) > 3 else ""
+        )
+        if resolution.warning:
+            _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
+        if resolution.background_id:
+            _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
         sys.exit(0)
     elif action == "resolve-continue-target":
         if len(argv) < 3:

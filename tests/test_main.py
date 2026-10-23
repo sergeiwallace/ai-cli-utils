@@ -273,8 +273,9 @@ class TestGetEngineScript:
         assert '"$(direnv export bash)"' in script
         assert 'eval "$_direnv_exports"' in script
         assert 'direnv exec "$direnv_root" "$@"' not in script
-        # Prompt and regular launches each have exact-match and fresh-session paths.
-        assert script.count("run_agent claude") == 4
+        # Prompt and regular launches each have exact-match and fresh-session paths, and a
+        # regular launch can also attach to a background session; all go through run_agent.
+        assert script.count("run_agent claude") == 5
         assert "--resume" in script
         # Hot-reload must exec an interpreter that exists here — a hardcoded one
         # that does not kills the pane on the session's first self-update.
@@ -412,6 +413,18 @@ class TestGetEngineScript:
         assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name" "$resume_msg"' in script
         assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"' in script
         assert 'run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"' in script
+
+    def test_given_claude_script_when_generated_then_attaches_to_a_background_session_before_resuming(self):
+        """After "Move to background and exit" the conversation runs on in the background: attach, never resume a copy."""
+        script = self._make_script()
+        lookup = 'bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)'
+        assert lookup in script
+        assert script.index(lookup) < script.index('ai internal resolve-continue-target "$PWD" "$ai_name"')
+        assert 'run_agent claude attach "$bg_target"' in script
+        # Reset each pass, so a pinned restart or a prompted relaunch never reuses the last target.
+        assert script.index('bg_target=""') < script.index(lookup)
+        # A resume prompt marks a deliberate restart, and `claude attach` cannot carry a prompt.
+        assert 'if [[ ! -f "$prompt_file" ]]; then' in script[script.index(lookup) - 120 : script.index(lookup)]
         assert 'find "$HOME/.claude/projects' not in script
 
 

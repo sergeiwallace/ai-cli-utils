@@ -1329,6 +1329,7 @@ with open(path, 'w') as f:
 
     # BEGIN PINNED RESTART resolution
       _restart_requested=false
+      bg_target=""
       _restart_fenced=false
       _restart_request="$_ai_state_dir/restart-session/$tmux_session.request.json"
       while [[ "$engine" == "c" && -e "$_restart_request" ]]; do
@@ -1354,10 +1355,22 @@ with open(path, 'w') as f:
       if ! $_restart_requested; then
     # END PINNED RESTART
       # Resolve before every Claude Code launch so its exact transcript UUID can
-      # be passed to --resume.
+      # be passed to --resume. A conversation moved to the background ("Move to
+      # background and exit") is still running there: attach to it instead of
+      # resuming a second copy by title. A resume prompt means a deliberate
+      # restart, and `claude attach` cannot carry a prompt, so only the
+      # unprompted path looks for a background session.
       if [[ "$engine" == "c" ]]; then
-        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-        resolve_status=$?
+        if [[ ! -f "$prompt_file" ]]; then
+          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)
+        fi
+        if [[ -z "$bg_target" ]]; then
+          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
+          resolve_status=$?
+        else
+          matched_file=""
+          resolve_status=1
+        fi
       fi
 
     # BEGIN PINNED RESTART resolver-end
@@ -1396,7 +1409,9 @@ with open(path, 'w') as f:
           # Find the most recent conversation matching $ai_name by customTitle.
           # The shared resolver checks the session registry before returning its
           # transcript UUID. A live transcript cannot be resumed safely.
-          if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
+          if [[ -n "$bg_target" ]]; then
+            run_agent claude attach "$bg_target"
+          elif [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
             session_id="${{matched_file##*/}}"
             session_id="${{session_id%.jsonl}}"
             run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"
