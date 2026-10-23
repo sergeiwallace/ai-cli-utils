@@ -111,6 +111,7 @@ class Tag(StrEnum):
     MEMORY_WATCH = "memory-watch"
     MESSAGING = "messaging"
     MIGRATE = "migrate"
+    NAMES = "names"
     NOTIFY = "notify"
     PLAN = "plan"
     PS = "ps"
