@@ -1,7 +1,7 @@
 ---
-title: "ai session-migrate carries every session-keyed artifact"
+title: "ai migrate-session carries every session-keyed artifact"
 category: plan
-tags: [plan, session-migrate, worktrees, held-docs]
+tags: [plan, migrate-session, worktrees, held-docs]
 status: draft
 source: "None"
 template_version: "plan-1.0.0"
@@ -15,7 +15,7 @@ stub: false
 
 <!-- doc:region name="overview" kind="replaceable" -->
 
-# ai session-migrate carries every session-keyed artifact — Implementation Plan
+# ai migrate-session carries every session-keyed artifact — Implementation Plan
 
 ## Founding Ask Coverage
 
@@ -55,7 +55,7 @@ Coverage index (non-authoritative):
   - [T-02: External rekey hooks (the public package reaches private tooling)](#t-02-external-rekey-hooks-the-public-package-reaches-private-tooling)
   - [T-03: Session-named agent worktrees and branches across every repo (gap 5)](#t-03-session-named-agent-worktrees-and-branches-across-every-repo-gap-5)
   - [T-04: held migrate verb in ai-harness (gaps 2 and 3)](#t-04-held-migrate-verb-in-ai-harness-gaps-2-and-3)
-  - [T-05: session-adopt runs the hooks (adopt parity)](#t-05-session-adopt-runs-the-hooks-adopt-parity)
+  - [T-05: adopt-session runs the hooks (adopt parity)](#t-05-session-adopt-runs-the-hooks-adopt-parity)
   - [T-06: hooks for the classes D-5 deferred](#t-06-hooks-for-the-classes-d-5-deferred)
 - [Batch Plan](#batch-plan)
 - [Implementation Audit](#implementation-audit)
@@ -73,7 +73,7 @@ Coverage index (non-authoritative):
 
 ## Overview
 
-`ai session-migrate OLD NEW` (shipped in #253) moves a registered session's worktree, canonical
+`ai migrate-session OLD NEW` (shipped in #253) moves a registered session's worktree, canonical
 branch, transcript project directory, task namespace, resume tree, launcher state and iTerm2 record.
 A live migration on 2026-10-12 measured six classes it left behind (the gap list on `AI-CLI-6xyr`):
 held-output replay files in the main tree's memory directory, the git-tracked held store and its
@@ -99,7 +99,7 @@ to the existing `PlannedMove` planner so that task can share it unchanged.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
 <!-- doc:ac-rules:mirror:end -->
 
-Every test below drives the real CLI (`ai session-migrate ... -r <tmp repo>`) against a fake slot in
+Every test below drives the real CLI (`ai migrate-session ... -r <tmp repo>`) against a fake slot in
 the test suite's isolated HOME / XDG dirs, the way `tests/test_session_migrate.py` already does.
 Nothing touches a real session. Every guard added is falsified in the implementation audit: break it,
 watch the test go red, restore it.
@@ -130,7 +130,7 @@ dir exists. Every one keeps a parity AC (the existing seven tests stay green unc
 
 - [ ] AC-1.1 (gap 1) When the main tree's Claude Code project directory or the slot's own project directory holds `memory/.held-output-<old>-NN-<slug>.md` files, the dry run shall list each as `held output: <path> -> <same dir>/.held-output-<new>-NN-<slug>.md` and the real run shall rename exactly the filename prefix, leaving every body byte-identical (replay is byte-for-byte).
 - [ ] AC-1.2 (gap 1, failure path) If the destination filename already exists, then the system shall report it as `SKIPPED (target exists)`, leave both files untouched, and continue.
-- [ ] AC-1.3 (gap 4) When `wt-<old>` exists but is not the slot's checked-out branch, the dry run shall list `branch: wt-<old> -> wt-<new>` and the real run shall rename it through `branch_rename.rename_branch_anchored`, which first writes `refs/preserved/session-migrate/<old branch>` at the tip and then runs `git branch -m`; after the run the new branch resolves to the old tip and the anchor ref still exists.
+- [ ] AC-1.3 (gap 4) When `wt-<old>` exists but is not the slot's checked-out branch, the dry run shall list `branch: wt-<old> -> wt-<new>` and the real run shall rename it through `branch_rename.rename_branch_anchored`, which first writes `refs/preserved/migrate-session/<old branch>` at the tip and then runs `git branch -m`; after the run the new branch resolves to the old tip and the anchor ref still exists.
 - [ ] AC-1.4 (gap 4, parity) While `wt-<old>` is the checked-out branch, the rename shall still happen and the session-home markers shall follow it, exactly as at `36cebb3`.
 - [ ] AC-1.5 (gap 4, failure path) If `wt-<new>` already exists, then the system shall leave `wt-<old>` in place and warn, as at `36cebb3`; if `git branch -m` is refused (non-zero), then the warning shall quote git's stderr and the anchor ref shall remain, so the tip stays recoverable.
 - [ ] AC-1.6 (gap 4b) When `ai c --dry-run` resolves to an already-registered slot worktree, the plan's `branch` line shall print that worktree's actual checked-out branch with the note `(reused worktree keeps its branch)`; when the slot does not exist it shall keep printing `wt-<name>`.
@@ -146,18 +146,18 @@ dir exists. Every one keeps a parity AC (the existing seven tests stay green unc
 **Batch:** 1
 
 Implements D-1. A drop-in directory of small TOML files declares external commands that
-`session-migrate` runs with the old and new names. Private tooling (the ai-harness `held migrate`
+`migrate-session` runs with the old and new names. Private tooling (the ai-harness `held migrate`
 verb of T-04, and later Agent Mail / Buzz / issue-tracker rekeys) joins the migration by dropping a
 file in, and the public package never names it.
 
-Contract (`docs/reference/session-migrate-hooks.md`, new):
+Contract (`docs/reference/migrate-session-hooks.md`, new):
 
-- Directory: `<ai-cli-utils config dir>/session-migrate.d/*.toml` (the config dir is
+- Directory: `<ai-cli-utils config dir>/migrate-session.d/*.toml` (the config dir is
   `get_xdg_config_home()`, so `~/.config/ai-cli-utils/` on POSIX and `%APPDATA%\ai-cli-utils\` on
   Windows). Each file: `name = "<label>"`, `argv = ["<program>", "<arg>", ...]` (a list, never a shell
   string; `~` in the program path is expanded). Files are read at call time, sorted by filename.
 - Invocation: `argv + ["--old", OLD, "--new", NEW]`, plus `--dry-run` during planning. The hook prints
-  one line per artifact it would move / moved on stdout; `session-migrate` relays each as
+  one line per artifact it would move / moved on stdout; `migrate-session` relays each as
   `hook <name>: <line>`.
 - Exit status: during planning, non-zero refuses the whole migration before any write, quoting the
   hook's stderr (so a hook extends refuse-if-live). During the real run, non-zero is a `FAILED`
@@ -168,17 +168,17 @@ Contract (`docs/reference/session-migrate-hooks.md`, new):
 
 **Deliverables:**
 
-- Files created: `src/ai_cli/session_migrate_hooks.py`, `docs/reference/session-migrate-hooks.md`, `tests/test_session_migrate_hooks.py`
-- Files modified: `src/ai_cli/session_migrate.py` (plan + apply call sites), `README.md` (one paragraph under the session-migrate section)
+- Files created: `src/ai_cli/session_migrate_hooks.py`, `docs/reference/migrate-session-hooks.md`, `tests/test_session_migrate_hooks.py`
+- Files modified: `src/ai_cli/session_migrate.py` (plan + apply call sites), `README.md` (one paragraph under the migrate-session section)
 
 **Acceptance criteria:**
 
-- [ ] AC-2.1 When `session-migrate.d/` holds a conforming hook file, the dry run shall invoke it with `--old OLD --new NEW --dry-run` and list each stdout line as `hook <name>: <line>`, and nothing else in HOME, the state dir or the repo shall change.
+- [ ] AC-2.1 When `migrate-session.d/` holds a conforming hook file, the dry run shall invoke it with `--old OLD --new NEW --dry-run` and list each stdout line as `hook <name>: <line>`, and nothing else in HOME, the state dir or the repo shall change.
 - [ ] AC-2.2 When the real run proceeds, the hook shall be invoked once without `--dry-run`, after the worktree move and every core artifact (observable: the hook's recorded cwd listing shows the new slot present and the old absent).
 - [ ] AC-2.3 If a hook exits non-zero during planning, then the system shall refuse the migration, print the hook's stderr, and leave every artifact unchanged.
 - [ ] AC-2.4 If a hook exits non-zero during the real run, then the system shall complete the remaining hooks, emit a `FAILED` warning naming the hook, and exit 1.
 - [ ] AC-2.5 If a hook file is malformed (missing `name`/`argv`, `argv` not a list of strings), then the system shall refuse during planning naming the file and the field.
-- [ ] AC-2.6 While `session-migrate.d/` is absent or empty, the migration shall behave exactly as without this task (parity: the existing tests pass unchanged).
+- [ ] AC-2.6 While `migrate-session.d/` is absent or empty, the migration shall behave exactly as without this task (parity: the existing tests pass unchanged).
 
 **Dependencies:** None
 
@@ -209,7 +209,7 @@ keeps a consistent view. The migration does not refuse for it (it is not the ses
 
 **Acceptance criteria:**
 
-- [x] AC-3.1 When a second repo under the projects dir holds `.worktrees/<old>-agents/leaf-a` on `wt/<old>/leaf-a` and a parked branch `wt/<old>/leaf-b`, the dry run shall list the worktree move, both branch renames and the marker rewrite, and the real run shall perform them: the worktree is registered at the new path, both branches resolve to their old tips under the new names, each has a `refs/preserved/session-migrate/...` anchor, the markers name the new slot, and the old container directory is gone.
+- [x] AC-3.1 When a second repo under the projects dir holds `.worktrees/<old>-agents/leaf-a` on `wt/<old>/leaf-a` and a parked branch `wt/<old>/leaf-b`, the dry run shall list the worktree move, both branch renames and the marker rewrite, and the real run shall perform them: the worktree is registered at the new path, both branches resolve to their old tips under the new names, each has a `refs/preserved/migrate-session/...` anchor, the markers name the new slot, and the old container directory is gone.
 - [x] AC-3.2 If a live Claude Code process has its cwd inside one agent worktree, then the system shall leave that worktree and its branch in place, list them as held by that pid, and still migrate every other one.
 - [x] AC-3.3 If `git worktree move` or a rename is refused for one entry, then the system shall warn with git's stderr, continue with the rest, and exit 1.
 - [x] AC-3.4 If a destination worktree path or branch already exists, then the entry shall be listed `SKIPPED (target exists)` and left alone.
@@ -243,11 +243,11 @@ The dry run prints the same plan with nothing written, and exits non-zero (refus
 dirty, the destination directory already exists, or any item fails validation after the rewrite in a
 scratch check. Also add a guard test to `tests/test_ref_delete_guard.py`: with the branch arm
 enabled, `git branch -m` of a packed, unintegrated branch is refused, and the same rename succeeds
-after `refs/preserved/session-migrate/<branch>` is written at its tip (the premise of D-2).
+after `refs/preserved/migrate-session/<branch>` is written at its tip (the premise of D-2).
 
 **Deliverables (ai-harness):**
 
-- Files modified: `scripts/held_cli.py`, `docs/held/README.md` (verb list), `tests/test_held_cli.py`, `tests/test_ref_delete_guard.py`, `install.sh` (drops the hook file of T-02 into `session-migrate.d/held.toml`, idempotent)
+- Files modified: `scripts/held_cli.py`, `docs/held/README.md` (verb list), `tests/test_held_cli.py`, `tests/test_ref_delete_guard.py`, `install.sh` (drops the hook file of T-02 into `migrate-session.d/held.toml`, idempotent)
 
 **Acceptance criteria:**
 
@@ -256,24 +256,24 @@ after `refs/preserved/session-migrate/<branch>` is written at its tip (the premi
 - [ ] AC-4.3 When `--dry-run` is given, `migrate` shall print every planned path and change nothing (store trees, pads and refs byte-identical).
 - [ ] AC-4.4 If the new pad is dirty, the destination directory exists, or a rewritten item fails validation, then `migrate` shall refuse (exit 4 or 1 per the existing code table) and change nothing.
 - [ ] AC-4.5 If a session is given in the board form or with an `@`, then `migrate` shall exit 2 naming the slug form it expects.
-- [ ] AC-4.6 (guard premise) With `aih.refDeleteBranchArm enabled`, `git branch -m` of a packed branch that is neither integrated nor anchored is refused, and succeeds once `refs/preserved/session-migrate/<branch>` points at its tip.
-- [ ] AC-4.7 `install.sh` writes `session-migrate.d/held.toml` naming `held_cli.py migrate` with the T-02 argv shape, and a second run leaves it unchanged.
+- [ ] AC-4.6 (guard premise) With `aih.refDeleteBranchArm enabled`, `git branch -m` of a packed branch that is neither integrated nor anchored is refused, and succeeds once `refs/preserved/migrate-session/<branch>` points at its tip.
+- [ ] AC-4.7 `install.sh` writes `migrate-session.d/held.toml` naming `held_cli.py migrate` with the T-02 argv shape, and a second run leaves it unchanged.
 
 **Dependencies:** T-02 contract (the argv shape), not its code.
 
-### T-05: session-adopt runs the hooks (adopt parity)
+### T-05: adopt-session runs the hooks (adopt parity)
 
 **Size:** S
 **Batch:** 3
 
-Answers Open Question 1. An `ai session-adopt` that retitles a session (`-c retitle` with `-T`/`-I`)
+Answers Open Question 1. An `ai adopt-session` that retitles a session (`-c retitle` with `-T`/`-I`)
 renames it, so it runs the T-02 hooks under the same contract, with `--old` the title the session
 had and `--new` the title it is adopted under. An adoption that keeps its title runs no hook:
 nothing keyed by the name changed, and a rekey of a name onto itself is the identity.
 
 **Deliverables:**
 
-- Files modified: `src/ai_cli/session_migrate_hooks.py` (`plan_hooks`, `run_hooks`, `failure_warning`, shared by both verbs), `src/ai_cli/session_migrate.py` (uses them), `src/ai_cli/session_adopt.py` (plan before the first write, live after the core moves), `src/ai_cli/main.py` (prints the hook lines), `docs/reference/session-migrate-hooks.md`, `README.md`
+- Files modified: `src/ai_cli/session_migrate_hooks.py` (`plan_hooks`, `run_hooks`, `failure_warning`, shared by both verbs), `src/ai_cli/session_migrate.py` (uses them), `src/ai_cli/session_adopt.py` (plan before the first write, live after the core moves), `src/ai_cli/main.py` (prints the hook lines), `docs/reference/migrate-session-hooks.md`, `README.md`
 - Tests added: `tests/test_session_adopt_hooks.py`
 
 **Acceptance criteria:**
@@ -307,7 +307,7 @@ cache is keyed by the session id too.
 
 **Acceptance criteria:**
 
-- [x] AC-6.1 When `ai session-migrate OLD NEW` applies with the harness installed, the board identity, the relay key, the per-session marker files and the supervisor state keyed by OLD shall be re-keyed to NEW, each proved by a test that drives the hook's own entry point against a throwaway HOME.
+- [x] AC-6.1 When `ai migrate-session OLD NEW` applies with the harness installed, the board identity, the relay key, the per-session marker files and the supervisor state keyed by OLD shall be re-keyed to NEW, each proved by a test that drives the hook's own entry point against a throwaway HOME.
 - [x] AC-6.2 If a class would lose data (unread board mail it cannot prove empty, a relay key or directory binding already held by NEW), then its hook shall refuse while planning, naming the artifact, so the whole migration is refused before any write.
 - [x] AC-6.3 When `--dry-run`, every hook shall print its plan and write nothing (byte and mtime snapshot of every state root unchanged).
 - [x] AC-6.4 When a file carrying OLD exists that no installed hook plans to move and no reasoned exclusion names, the inventory test shall fail (falsified: a seeded `sessions/<old>.newthing.json` turned it red).
@@ -334,7 +334,7 @@ cache is keyed by the session id too.
 ### T-01
 
 - [x] AC-1.1 … AC-1.9: shipped in #261 (squash `6802902`), each with a behaviour test through
-  `ai session-migrate` in `tests/test_session_migrate.py`, `tests/test_branch_rename.py` and
+  `ai migrate-session` in `tests/test_session_migrate.py`, `tests/test_branch_rename.py` and
   `tests/test_session_dry_run.py`. One recorded deviation from the AC-1.1 text: for the slot's own
   replay files the dry run prints the destination inside the *new* project directory (where the file
   ends up after the directory moves), not "same dir". Every guard was falsified (anchor write,
@@ -349,7 +349,7 @@ cache is keyed by the session id too.
 
 ### T-03
 
-- [x] AC-3.1 … AC-3.6: `src/ai_cli/session_migrate_agents.py`, driven through `ai session-migrate`
+- [x] AC-3.1 … AC-3.6: `src/ai_cli/session_migrate_agents.py`, driven through `ai migrate-session`
   by `tests/test_session_migrate_agents.py` (one test per AC; AC-3.1 has a dry-run and a real-run
   test). Beyond the plan: a marker in the slot's own repo whose key names a renamed agent branch is
   rewritten under the new key, so the old key is never recreated.
@@ -359,14 +359,14 @@ cache is keyed by the session id too.
 - [x] AC-4.1 … AC-4.7: shipped in ai-harness #3138 (squash `2d5f464ff`): `held_cli.py migrate`
   with its tests in `tests/test_held_cli.py`, the guard-premise test in
   `tests/test_ref_delete_guard.py` (a packed, unanchored branch's `git branch -m` is refused until
-  `refs/preserved/session-migrate/<branch>` holds its tip) and `install.sh` Step 5q writing
-  `session-migrate.d/held.toml` idempotently (`tests/test_install_session_migrate_held_hook.py`).
+  `refs/preserved/migrate-session/<branch>` holds its tip) and `install.sh` Step 5q writing
+  `migrate-session.d/held.toml` idempotently (`tests/test_install_session_migrate_held_hook.py`).
   Serial gate on the merge base: `223 passed`, `115 passed, 1 skipped`, ruff clean.
 
 ### T-05
 
 - [x] AC-5.1 … AC-5.5: `tests/test_session_adopt_hooks.py`, one test per AC, each through
-  `ai session-adopt`.
+  `ai adopt-session`.
 
 ### T-06
 
@@ -389,7 +389,7 @@ cache is keyed by the session id too.
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
 | D-1 | How the public package reaches private session-keyed tooling | (a) drop-in hook directory, (b) hard-coded call to the ai-harness verb, (c) print the command only | (a) | (a) | No | Public package stays generic; hooks extend refuse-if-live; config over code | `Resolved` |
-| D-2 | Renaming a branch a ref-deletion guard refuses | (a) anchor under `refs/preserved/session-migrate/` then `git branch -m`, (b) `git branch -c` + guarded delete, (c) leave unrenamed and report | (a) | (a) | No | Only sanctioned by-hand anchor namespace; also the crash-safe shape | `Resolved` |
+| D-2 | Renaming a branch a ref-deletion guard refuses | (a) anchor under `refs/preserved/migrate-session/` then `git branch -m`, (b) `git branch -c` + guarded delete, (c) leave unrenamed and report | (a) | (a) | No | Only sanctioned by-hand anchor namespace; also the crash-safe shape | `Resolved` |
 | D-3 | Scope of gap 5 | (a) move worktrees and rename every `wt/<old>/*` branch, skipping live-held, (b) worktrees only, (c) report only | (a) | (a) | No | Ownership is inferred from the names; a half rename is a wrong owner | `Resolved` |
 | D-4 | How the held store moves | (a) commit in the new pad, print the ship command, (b) commit and ship | (a) | (a) | No | `ship` needs a forge CLI absent on a fleet host; a half-ship is worse than a durable pad commit | `Resolved` |
 | D-5 | Unmeasured session-keyed classes | (a) carry Agent Mail, Buzz, issue-tracker assignee, ledgers now, (b) defer to a follow-up through the D-1 hook; ledgers never rewritten | (b) | (b) | No | Identity form is mid-change under another owner; ledgers are history | `Resolved`; deferral closed by T-06 |
@@ -405,7 +405,7 @@ cache is keyed by the session id too.
 all keyed by the session name, and all live in private tooling (ai-harness). `ai-cli-utils` is a
 public package that must not name them. The migration must still list and move them in one run.
 
-##### (a) Drop-in hook directory (`<config>/session-migrate.d/*.toml`)
+##### (a) Drop-in hook directory (`<config>/migrate-session.d/*.toml`)
 
 **Pros:**
 
@@ -445,7 +445,7 @@ public package that must not name them. The migration must still list and move t
 
 > **Decision:** ✅ Resolved — (a) drop-in hook directory
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-1; decision-topic=public-package-reaches-private-rekey-tooling; governs=module:src/ai_cli/session_migrate_hooks.py; normalized-proposition=session-migrate runs config-declared external hooks in dry-run before any write and live after the core moves; applicability=repo:ai-cli-utils; outcome-id=hooks-shipped; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-1; decision-topic=public-package-reaches-private-rekey-tooling; governs=module:src/ai_cli/session_migrate_hooks.py; normalized-proposition=migrate-session runs config-declared external hooks in dry-run before any write and live after the core moves; applicability=repo:ai-cli-utils; outcome-id=hooks-shipped; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Chosen for the first two Pros. The rollback Con is mitigated by running every hook in dry-run before
 the first write (a hook that cannot do its part refuses the run), by making hooks idempotent by
@@ -466,7 +466,7 @@ names three anchor namespaces, and `refs/preserved/` is the one documented as "w
 by hand". The existing `create-ref` anchors only the checked-out branch, which gap 4 by definition
 is not.
 
-##### (a) Write `refs/preserved/session-migrate/<old branch>` at the tip, then `git branch -m`
+##### (a) Write `refs/preserved/migrate-session/<old branch>` at the tip, then `git branch -m`
 
 **Pros:**
 
@@ -501,9 +501,9 @@ is not.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) anchor under `refs/preserved/session-migrate/` then `git branch -m`
+> **Decision:** ✅ Resolved — (a) anchor under `refs/preserved/migrate-session/` then `git branch -m`
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-2; decision-topic=guarded-branch-rename-path; governs=module:src/ai_cli/branch_rename.py; normalized-proposition=every branch rename the migration performs writes a refs/preserved/session-migrate anchor at the tip first; applicability=repo:ai-cli-utils,ai-harness; outcome-id=anchored-rename; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-2; decision-topic=guarded-branch-rename-path; governs=module:src/ai_cli/branch_rename.py; normalized-proposition=every branch rename the migration performs writes a refs/preserved/migrate-session anchor at the tip first; applicability=repo:ai-cli-utils,ai-harness; outcome-id=anchored-rename; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The leftover-refs Con is accepted: a ref is forty bytes, the namespace is already the fleet's
 by-hand anchor, and the anchors are listed in the dry run so their count is visible before the run.
@@ -556,7 +556,7 @@ from `aih-session-home` markers; after a rename the old name is a dead owner.
 
 > **Decision:** ✅ Resolved — (a) move and rename all, skipping live-held
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-3; decision-topic=gap5-agent-worktree-scope; governs=module:src/ai_cli/session_migrate_agents.py; normalized-proposition=session-migrate moves every agent worktree and renames every wt/<old>/* branch under the projects dir except those a live process holds; applicability=repo:ai-cli-utils; outcome-id=agents-migrated; relation=different-question; related-decision-id=AI-CLI-6xyr/D-2; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-3; decision-topic=gap5-agent-worktree-scope; governs=module:src/ai_cli/session_migrate_agents.py; normalized-proposition=migrate-session moves every agent worktree and renames every wt/<old>/* branch under the projects dir except those a live process holds; applicability=repo:ai-cli-utils; outcome-id=agents-migrated; relation=different-question; related-decision-id=AI-CLI-6xyr/D-2; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The cross-repo Con is mitigated by per-entry independence (every refusal is reported with git's
 stderr and the run continues), by the dry run listing every write before it happens, and by the
@@ -716,7 +716,7 @@ the proof it needs is the poller's last pass, no older than five minutes.
 
 ## Open Questions
 
-1. Should `ai session-adopt` run the D-1 hooks too once it shares the planner (the migrate/adopt
+1. Should `ai adopt-session` run the D-1 hooks too once it shares the planner (the migrate/adopt
    split task)? Nothing here prevents it; the hook runner takes old and new names only.
    **Answered (T-05):** yes, whenever the adoption changes the session's name, under the same
    refuse-before-write contract.

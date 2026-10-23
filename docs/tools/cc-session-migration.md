@@ -1,4 +1,4 @@
-# Migrating a Claude Code session between project roots (`ai cc-migrate`)
+# Migrating a Claude Code session between project roots (`ai migrate-transcript`)
 
 > Move a Claude Code conversation that was started in one directory (typically a
 > repo root) into another directory's session store (typically a `.worktrees/<name>`
@@ -39,10 +39,10 @@ Run from the repo root the session was started in (or pass `-s/--source`):
 
 ```bash
 # What would happen (recommended first):
-ai cc-migrate .worktrees/myproject-2 --title myproject-2 --dry-run
+ai migrate-transcript .worktrees/myproject-2 --title myproject-2 --dry-run
 
 # Do it (move semantics — source transcript is removed after verification):
-ai cc-migrate .worktrees/myproject-2 --title myproject-2
+ai migrate-transcript .worktrees/myproject-2 --title myproject-2
 
 # Then resume it:
 ai c 2
@@ -105,7 +105,7 @@ transcript into another directory while keeping it as a faithful record.
 
 For the full job — worktree creation, the task-namespace merge, auto-memory, the
 duplicate-title gate, and a post-move check that `ai c` really resolves the
-result — use `ai session-adopt`, which reuses this module for the transcript
+result — use `ai adopt-session`, which reuses this module for the transcript
 step: [cc-session-adoption.md](cc-session-adoption.md).
 
 ## Safety properties
@@ -138,4 +138,4 @@ ai c <n>       # then check the conversation history is present
 ```
 
 Implementation: `src/ai_cli/cc_migrate.py` (library, stdlib-only) and the
-`cc-migrate` command in `src/ai_cli/main.py`. Tests: `tests/test_cc_migrate.py`.
+`migrate-transcript` command in `src/ai_cli/main.py`. Tests: `tests/test_cc_migrate.py`.

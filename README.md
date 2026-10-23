@@ -31,7 +31,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory, conversations, and task lists between machines |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale-session reaper** | `ai c` keeps an independent, heartbeat-corroborated watcher running in observe mode; set `mode = "reap"` explicitly to enable reaping |
-| **Session recovery** | `ai session-audit`, `ai session-adopt`, and `ai cc-migrate` find, adopt, and move resumable Claude Code sessions safely |
+| **Session recovery** | `ai audit-sessions`, `ai adopt-session`, and `ai migrate-transcript` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
@@ -579,41 +579,41 @@ file is in a git checkout, commit and push it so every machine sees it.
 an agent shell, `ai update`) the launch is refused with every path checked, rather than given an
 invented alias. Sessions named before the host alias joined the name
 (`myrepo-3`) still resolve by slot until they are moved with
-`ai session-migrate myrepo-3 myrepo-box-3`; nothing new is created in that form.
+`ai migrate-session myrepo-3 myrepo-box-3`; nothing new is created in that form.
 
-Choosing between the two verbs: `ai session-migrate OLD NEW` renames a session
+Choosing between the two verbs: `ai migrate-session OLD NEW` renames a session
 already registered in an `ai` slot (worktree, branch, transcript, tasks, memory,
 resume state, and its agent worktrees and `wt/OLD/*` branches in every repo
-follow the new name); `ai session-adopt NAME` registers a
+follow the new name); `ai adopt-session NAME` registers a
 session that was started outside `ai`, such as a plain `claude` in the repo root.
 
 ```bash
-ai session-migrate myrepo-3 myrepo-box-3   # rename a registered slot
-ai session-adopt myrepo-box-4              # register a session started outside ai
+ai migrate-session myrepo-3 myrepo-box-3   # rename a registered slot
+ai adopt-session myrepo-box-4              # register a session started outside ai
 ```
 
 A migration carries everything `ai` keys by the session's name or slot, listed
-first by `ai session-migrate -n` ([the full table](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-session-migrate)).
+first by `ai migrate-session -n` ([the full table](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-migrate-session)).
 State owned by other tools joins the same run through a hook file in
-`session-migrate.d/` under the config directory: each hook is planned with
+`migrate-session.d/` under the config directory: each hook is planned with
 `--dry-run` before anything is written, can refuse the migration, and runs after
-the core moves ([hook contract](docs/reference/session-migrate-hooks.md)). An
-`ai session-adopt` that retitles the session runs the same hooks the same way.
+the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
+`ai adopt-session` that retitles the session runs the same hooks the same way.
 
 A session that is finished for good has its home slot retired by its owner with
-`ai session-retire NAME`; no automatic reap removes a session home. The command
+`ai retire-session NAME`; no automatic reap removes a session home. The command
 refuses while the session runs (a Claude Code process, its tmux session, or a
 heartbeat fresher than the reaper's `stale_after_seconds`), while the checkout
 has uncommitted or untracked work, or while its checked-out commit is in neither
 its upstream nor `origin/main`. Otherwise it anchors the tips of the checked-out
-branch and `wt-NAME` under `refs/preserved/session-retire/`, runs
+branch and `wt-NAME` under `refs/preserved/retire-session/`, runs
 `git worktree remove`, drops the canonical-registry entry and appends a row to
 `session-retirements.jsonl` in the state directory. The branches and the Claude
-Code project directory stay ([details](docs/tools/cc-session-adoption.md#retiring-a-dead-sessions-slot-ai-session-retire)).
+Code project directory stay ([details](docs/tools/cc-session-adoption.md#retiring-a-dead-sessions-slot-ai-retire-session)).
 
 ```bash
-ai session-retire myrepo-3 -n   # what would be removed and preserved, nothing written
-ai session-retire myrepo-3      # prompts, then retires
+ai retire-session myrepo-3 -n   # what would be removed and preserved, nothing written
+ai retire-session myrepo-3      # prompts, then retires
 ```
 
 #### What a new worktree tracks
@@ -830,11 +830,11 @@ On pull, transcript `cwd` and `originalCwd` fields are rewritten to the receivin
 ### Session recovery
 
 ```bash
-ai session-audit                    # Find titled sessions that cannot resume
-ai session-audit -a/--adopt         # Adopt every safe session
-ai session-adopt <name>             # Adopt one session into this repository
-ai session-retire <name>            # Retire a dead session's home slot
-ai cc-migrate <destination>         # Move a transcript between project roots
+ai audit-sessions                    # Find titled sessions that cannot resume
+ai audit-sessions -a/--adopt         # Adopt every safe session
+ai adopt-session <name>              # Adopt one session into this repository
+ai retire-session <name>             # Retire a dead session's home slot
+ai migrate-transcript <destination>  # Move a transcript between project roots
 ```
 
 ### Session picker
@@ -1104,7 +1104,7 @@ transport = "mosh"              # "mosh" (default) or "ssh"
 
 [worktree]
 enabled = true                 # git worktree isolation per session
-# marker_prefix = "myenv"      # git-config marker namespace `ai session-migrate` rewrites
+# marker_prefix = "myenv"      # git-config marker namespace `ai migrate-session` rewrites
 
 [machine]
 # marker_file = "/etc/myenv/machine"  # host-id file, read when AI_HOST is unset

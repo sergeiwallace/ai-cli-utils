@@ -1,23 +1,23 @@
-# `ai session-audit` — survey titled Claude Code sessions, and drive their adoption
+# `ai audit-sessions` — survey titled Claude Code sessions, and drive their adoption
 
-`ai session-adopt` fixes **one** session whose name and location you already know.
-`ai session-audit` answers the questions you have to ask before that: which titled
+`ai adopt-session` fixes **one** session whose name and location you already know.
+`ai audit-sessions` answers the questions you have to ask before that: which titled
 sessions exist, where do they really live, and which ones will `ai c <n>` fail to
 resume?
 
 It is read-only by default. With `-a/--adopt` it drives adoption for everything
-safe to adopt, delegating to the same code path as `ai session-adopt` — so every
+safe to adopt, delegating to the same code path as `ai adopt-session` — so every
 refusal that command makes, this one makes too.
 
 ## Usage
 
 ```sh
-ai session-audit                      # survey everything, write nothing
-ai session-audit -r /path/to/myproject   # only sessions owned by one repo
-ai session-audit -t myproject-2        # only one title
-ai session-audit -a -n                # show what adoption would do, write nothing
-ai session-audit -a                    # adopt, after a confirmation prompt
-ai session-audit -a -y                 # adopt without the prompt
+ai audit-sessions                        # survey everything, write nothing
+ai audit-sessions -r /path/to/myproject  # only sessions owned by one repo
+ai audit-sessions -t myproject-2         # only one title
+ai audit-sessions -a -n                  # show what adoption would do, write nothing
+ai audit-sessions -a                     # adopt, after a confirmation prompt
+ai audit-sessions -a -y                  # adopt without the prompt
 ```
 
 ## Options
@@ -114,7 +114,7 @@ Two refusals belong to the adoption module and stay there:
 * **A live session is refused.** Adopting one moves its transcript out from under
   a running process that still has it open.
 
-`session-audit` classifies both *before* calling the adopter, so a bulk run reports
+`audit-sessions` classifies both *before* calling the adopter, so a bulk run reports
 them as expected skips and keeps going. One refusal never aborts the batch. The
 adopter's own gates remain the authority and still fire regardless.
 

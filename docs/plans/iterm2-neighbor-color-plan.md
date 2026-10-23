@@ -247,7 +247,7 @@ Add a handler to `fleet-layout.py` (the existing iTerm2 Python daemon) for the `
 
 #### **Option B: Periodic tmux poll daemon**
 
-A background daemon (similar to `ai vpn-watch`) polls tmux pane geometry every 5–10 seconds. If it detects that two adjacent panes have similar colors, it calls `ai recolor` to fix.
+A background daemon (similar to `ai watch-vpn`) polls tmux pane geometry every 5–10 seconds. If it detects that two adjacent panes have similar colors, it calls `ai recolor` to fix.
 
 **Pros:**
 - Works without iTerm2 Python API

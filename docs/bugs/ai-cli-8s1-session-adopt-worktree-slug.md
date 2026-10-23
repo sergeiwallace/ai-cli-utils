@@ -1,12 +1,12 @@
 ---
-title: "ai session-adopt fails when target session ran in a worktree (wrong CC project slug)"
+title: "ai adopt-session fails when target session ran in a worktree (wrong CC project slug)"
 category: bug
-tags: [bug, session-adopt, worktree, windows, cc-migrate]
+tags: [bug, adopt-session, worktree, windows, migrate-transcript]
 status: open
 template_version: "bug-1.0.0"
 ---
 
-# ai session-adopt fails when target session ran in a worktree
+# ai adopt-session fails when target session ran in a worktree
 
 **Status:** open — reproduction confirmed, root cause identified, fix deferred to post-compaction /bug-fix
 
@@ -26,7 +26,7 @@ template_version: "bug-1.0.0"
 
 ## Summary
 
-`ai session-adopt <name>` finds CC transcripts by computing the Claude Code project-slug
+`ai adopt-session <name>` finds CC transcripts by computing the Claude Code project-slug
 directory for the repo root (e.g. `C--Users-…-acn-automation`) and searching there for a JSONL
 file whose `customTitle` field matches `<name>`. When the CC session ran inside a
 **worktree** (e.g. `.worktrees/acn-1`), CC stored its transcript under the slug for
@@ -37,7 +37,7 @@ Passing `-s/--source .worktrees/acn-1` should re-direct the search to the worktr
 the NAME positional argument is still required and no auto-detection of the worktree name is
 attempted. If the transcript `customTitle` doesn't match the name passed, the error is the same.
 
-User impact: `ai session-adopt` is unusable for worktree-based sessions without manual
+User impact: `ai adopt-session` is unusable for worktree-based sessions without manual
 inspection of the CC project directory and exact title matching.
 
 <!-- /doc:region name="summary" -->
@@ -50,18 +50,18 @@ Environment: `AI_HOST=acn-windows`, repo `acn-automation`, session `acn-1` that 
 `.worktrees/acn-1`.
 
 ```
-$ ai session-adopt acn-1
+$ ai adopt-session acn-1
 Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
 C--Users-user-Projects-acn-automation — nothing to adopt
-(check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
+(check the title with `ai migrate-transcript --dry-run`, or pass -s/--source)
 
-$ ai session-adopt -s .worktrees/acn-1
+$ ai adopt-session -s .worktrees/acn-1
 Error: NAME is required (or use -a/--all)
 
-$ ai session-adopt acn-1 -s .worktrees/acn-1
+$ ai adopt-session acn-1 -s .worktrees/acn-1
 Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
 C--Users-user-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
-(check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
+(check the title with `ai migrate-transcript --dry-run`, or pass -s/--source)
 ```
 
 The third command shows the search is now in the right directory
@@ -85,11 +85,11 @@ Two compounding issues:
    `customTitle` may not equal the bare session name (`acn-1`). CC sets the title to the
    value passed via `--name`; if the session was started differently (e.g. without `--name`,
    or with a longer name), the JSONL `customTitle` will differ. The fix should use
-   `ai cc-migrate --dry-run` output to discover the actual title, or fall back to `--all`.
+   `ai migrate-transcript --dry-run` output to discover the actual title, or fall back to `--all`.
 
 **Causal chain:**
 ```
-ai session-adopt acn-1
+ai adopt-session acn-1
   → adopt_session(repo_root, "acn-1", source_root=repo_root)
   → cc_project_dir(repo_root, home)   # computes slug for repo root
   → find_transcript(source_dir, title="acn-1")
@@ -127,18 +127,18 @@ Investigation deferred to /bug-fix post-compaction.
 Three sequential reproduction attempts, captured 2026-08-12 on `acn-windows`:
 
 ```
-$ ai session-adopt acn-1
+$ ai adopt-session acn-1
 Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
 C--Users-user-Projects-acn-automation — nothing to adopt
-(check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
+(check the title with `ai migrate-transcript --dry-run`, or pass -s/--source)
 
-$ ai session-adopt -s .worktrees/acn-1
+$ ai adopt-session -s .worktrees/acn-1
 Error: NAME is required (or use -a/--all)
 
-$ ai session-adopt acn-1 -s .worktrees/acn-1
+$ ai adopt-session acn-1 -s .worktrees/acn-1
 Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
 C--Users-user-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
-(check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
+(check the title with `ai migrate-transcript --dry-run`, or pass -s/--source)
 ```
 
 Note: third attempt confirms the `-s` flag is being applied (slug now ends in

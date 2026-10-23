@@ -171,7 +171,7 @@ A separate long-running process outside Circus.
 
 ##### Recommendation
 
-**✅ Approved: (a) Circus watcher.** Circus is a core architecture foundation (alongside NATS and ntfy), not an incidental dependency. A single global `vpn-watch` Circus watcher polls `_is_vpn_active()` every 3 seconds and publishes `vpn.state.changed` to NATS on transition. Each transport loop subscribes to that NATS subject and self-terminates its child transport process in response. The watcher is started lazily when the first `ai c -R` session launches and torn down when the last session exits (via reference counting in the state files). Circus supervision ensures the watcher restarts on crash.
+**✅ Approved: (a) Circus watcher.** Circus is a core architecture foundation (alongside NATS and ntfy), not an incidental dependency. A single global `watch-vpn` Circus watcher polls `_is_vpn_active()` every 3 seconds and publishes `vpn.state.changed` to NATS on transition. Each transport loop subscribes to that NATS subject and self-terminates its child transport process in response. The watcher is started lazily when the first `ai c -R` session launches and torn down when the last session exits (via reference counting in the state files). Circus supervision ensures the watcher restarts on crash.
 
 ---
 
@@ -293,7 +293,7 @@ Each `ai c -R` process runs its own background thread.
 
 ### Components
 
-**`vpn-watch` Circus watcher** (new file: `src/ai_cli/vpn_watch.py`):
+**`watch-vpn` Circus watcher** (new file: `src/ai_cli/vpn_watch.py`):
 - Polls `_is_vpn_active()` every 3 seconds
 - On state change: waits 2 seconds (debounce), re-checks, then publishes `vpn.state.changed` to NATS with payload `{"vpn": true/false, "ts": "..."}` if state is confirmed
 - Logs each transition to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL)
@@ -379,17 +379,17 @@ async def _run_transport_loop(
 ai c N -R launched
   → _ensure_vpn_watcher(config)
       → reads transport state files to count active sessions
-      → if count == 0: CircusClient.add_watcher("vpn-watch", cmd="ai vpn-watch")
+      → if count == 0: CircusClient.add_watcher("watch-vpn", cmd="ai watch-vpn")
   → registers own transport-{session}.json
   → runs transport loop (subscribes to vpn.state.changed)
 
 ai c N -R exits
   → transport-{session}.json deleted (finally block)
   → _maybe_stop_vpn_watcher(config)
-      → if no transport-*.json remain: CircusClient.stop("vpn-watch")
+      → if no transport-*.json remain: CircusClient.stop("watch-vpn")
 ```text
 
-`ai vpn-watch` is a new subcommand (entry point for the Circus watcher process).
+`ai watch-vpn` is a new subcommand (entry point for the Circus watcher process).
 
 ### State Transitions
 
@@ -553,14 +553,14 @@ If VPN blocks even the initial SSH handshake:
 
 **New file:** `src/ai_cli/vpn_watch.py`
 
-1. `run_vpn_watch(config)` — entry point for `ai vpn-watch` subcommand
+1. `run_vpn_watch(config)` — entry point for `ai watch-vpn` subcommand
 2. Polls `_is_vpn_active()` every `[remote] vpn_poll_interval` seconds (default 3)
 3. On state change: 2s debounce, re-check, publish `vpn.state.changed` to NATS
 4. Logs each confirmed transition to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL: `{"ts": "...", "vpn": true/false}`)
 
 **Changes to `src/ai_cli/main.py`:**
 
-1. Add `ai vpn-watch` dispatch (~5 lines)
+1. Add `ai watch-vpn` dispatch (~5 lines)
 2. Add `_ensure_vpn_watcher(config)` — starts watcher via `CircusClient.add_watcher()` if no transport state files exist yet
 3. Add `_maybe_stop_vpn_watcher(config)` — stops watcher via `CircusClient.stop()` if no transport state files remain
 4. Add `[remote] vpn_poll_interval = 3` to `DEFAULT_CONFIG`
