@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated list of short human first names for session names, shipped as package
+  data under `ai_cli/data/session-names/` (622 names of 3 to 4 letters).
+  `scripts/refresh_session_names.py` rebuilds it from two pinned downloads, a
+  public-domain first-name list and an English spelling dictionary, and refuses to
+  write when either digest differs from its pin. Common English words and curated
+  non-names are dropped.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
