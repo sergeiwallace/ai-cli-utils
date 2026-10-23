@@ -919,6 +919,33 @@ def test_given_text_that_merely_contains_the_prefix_letters_when_scanned_then_it
     assert scan_for_private_names(tmp_path) == []
 
 
+_SESSION_NAME_DATA = Path("src") / "ai_cli" / "data" / "session-names"
+
+
+def test_given_the_shipped_session_name_data_when_scanned_then_every_file_is_in_view():
+    """The generated name list is shipped data, and a first-name source can carry a private name.
+
+    It is covered because it sits under ``src``; asserting each file by path keeps that from
+    becoming an assumption, the way ``scripts`` once was.
+    """
+    scanned = {relative for _path, relative, _text in _scanned_text_files(_repo_root())}
+
+    for filename in ("names.txt", "generation.json", "non-names.txt"):
+        assert _SESSION_NAME_DATA / filename in scanned, f"{filename} is outside the hygiene scan"
+
+
+def test_given_a_personal_name_in_the_session_name_list_when_scanned_then_it_is_flagged(tmp_path):
+    data = tmp_path / _SESSION_NAME_DATA
+    data.mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (data / "names.txt").write_text(f"ada\n{_PERSONAL_IDENTIFIERS[2]}\nida\n")
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith(f"{_SESSION_NAME_DATA.as_posix()}/names.txt:2:")
+
+
 def test_given_a_non_utf8_file_when_scanned_then_it_is_skipped_without_error(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
