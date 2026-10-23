@@ -73,15 +73,14 @@ def _script_recipe(name: str, engine: str, cwd: str, argv: list[str], script: Pa
                 raise ValueError
         launches = [shlex.split(line) for line in lines if line.startswith("run_agent claude ")]
         expected = ["run_agent", "claude", "$claude_perms_flag"]
-        if not launches or any(
-            launch
-            not in [
-                expected + resume + ["--name", "$ai_name"] + prompt
-                for resume in ([], ["--resume", "$session_id"])
-                for prompt in ([], ["$resume_msg"])
-            ]
-            for launch in launches
-        ):
+        allowed = [
+            expected + resume + ["--name", "$ai_name"] + prompt
+            for resume in ([], ["--resume", "$session_id"])
+            for prompt in ([], ["$resume_msg"])
+        ]
+        # Attaching to the live background session carries no permission flag or name.
+        allowed.append(["run_agent", "claude", "attach", "$bg_target"])
+        if not launches or any(launch not in allowed for launch in launches):
             raise ValueError
         if 'claude_perms_flag="--dangerously-skip-permissions"' not in lines:
             raise ValueError

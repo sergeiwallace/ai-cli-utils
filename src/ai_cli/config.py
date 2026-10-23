@@ -403,6 +403,26 @@ def read_restart_config(config: dict) -> dict:
     return result
 
 
+RELAUNCH_DEFAULTS = {
+    "background_session_resolver": "",
+    "background_session_resolver_timeout_seconds": 10,
+}
+
+
+def read_relaunch_config(config: dict) -> dict:
+    """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
+    section = config.get("relaunch", {})
+    if not isinstance(section, dict):
+        raise ValueError("relaunch must be a table")
+    result = RELAUNCH_DEFAULTS | section
+    if not isinstance(result["background_session_resolver"], str):
+        raise ValueError("invalid relaunch.background_session_resolver")
+    timeout = result["background_session_resolver_timeout_seconds"]
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid relaunch.background_session_resolver_timeout_seconds")
+    return result
+
+
 DEFAULT_CONFIG = """## ai-cli-utils configuration
 
 [restart_session]
@@ -421,6 +441,21 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # compaction_wait_seconds = 1800
 # auto = false
 # auto_interval_seconds = 600
+
+[relaunch]
+## When a Claude Code session exits with "Move to background and exit", the
+## conversation keeps running as a background session. On relaunch, ai attaches to
+## it instead of opening a second copy, but only after `claude agents --json` shows
+## the session live. Read on every relaunch.
+## Optional: a command that names the background session id. It is run as
+## `<command> --session <ai session name> --pane-capture <file>`, where the file
+## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
+## id on stdout is an answer; anything else is no answer. The id is only a hint:
+## it is attached only if `claude agents --json` lists it as a live background
+## session. Unset (the default) skips the command; ai then attaches only when exactly
+## one live background session has this session's name and directory.
+# background_session_resolver = "/path/to/resolver-command"
+# background_session_resolver_timeout_seconds = 10
 
 [gemini]
 ## Projects that should NOT be sandboxed by default
