@@ -238,7 +238,7 @@ def _reachable_source(source: str) -> str:
     """A GitHub SSH template source this host cannot reach is read over HTTPS instead.
 
     A project stores whichever spelling the machine that generated it used. A host with SSH keys
-    keeps the stored SSH URL; a host that authenticates over HTTPS (framework-fedora) cannot clone
+    keeps the stored SSH URL; a host that authenticates over HTTPS (fw-lnx) cannot clone
     it, so every update of such a project failed before Copier ran. The stored answer is untouched:
     only this run's source changes, and the answers file is restored afterwards.
     """

@@ -1496,7 +1496,7 @@ class TestEnsureCircusd:
                 _ensure_circusd()
 
     def test_given_circusd_only_in_the_tool_venv_when_started_then_that_binary_is_launched(self, tmp_path):
-        """`uv tool install` puts circusd beside the tool's python, not on PATH (framework-fedora, -R)."""
+        """`uv tool install` puts circusd beside the tool's python, not on PATH (fw-lnx, -R)."""
         from ai_cli.main import _ensure_circusd
 
         venv_bin = tmp_path / "tool" / "bin"
