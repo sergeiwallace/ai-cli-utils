@@ -23,7 +23,7 @@ import ai_cli.copier_update as copier_update
 import ai_cli.sync as sync
 import ai_cli.telemetry as telemetry
 import ai_cli.trust as trust
-from ai_cli.main import cmd_trust_backfill
+from ai_cli.main import cmd_backfill_trust
 from ai_cli.setup import _is_managed_platform
 
 #: Captured at import, which is before any fixture has run. ``conftest`` installs an autouse
@@ -261,7 +261,7 @@ class TestConfiguredProjectsRoot:
 
         monkeypatch.setattr(trust, "backfill_projects_trust", _record)
 
-        result = CliRunner().invoke(cmd_trust_backfill, [])
+        result = CliRunner().invoke(cmd_backfill_trust, [])
 
         assert result.exit_code == 0, result.output
         assert scanned == [elsewhere]
@@ -276,7 +276,7 @@ class TestConfiguredProjectsRoot:
         scanned: list[Path] = []
         monkeypatch.setattr(trust, "backfill_projects_trust", lambda root: scanned.append(Path(root)) or [])
 
-        result = CliRunner().invoke(cmd_trust_backfill, ["--root", str(explicit)])
+        result = CliRunner().invoke(cmd_backfill_trust, ["--root", str(explicit)])
 
         assert result.exit_code == 0, result.output
         assert scanned == [explicit]

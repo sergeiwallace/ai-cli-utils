@@ -3319,7 +3319,7 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
 
 
 def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
-    """Run ``session-migrate --finish`` for each migration to ``ai_name`` this host recorded unfinished.
+    """Run ``migrate-session --finish`` for each migration to ``ai_name`` this host recorded unfinished.
 
     A migration made while its new session was live could never be finished: ``--finish``
     refuses a running session, so its old-keyed leftovers stayed. The launch is the one
@@ -3330,7 +3330,7 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
     from .session_migrate import finish_session, pending_finishes
 
     for old, repo in pending_finishes(ai_name):
-        retry = f"`ai session-migrate {old} {ai_name} -r {repo} --finish -y`"
+        retry = f"`ai migrate-session {old} {ai_name} -r {repo} --finish -y`"
         try:
             result = finish_session(repo, old, ai_name)
         except Exception as exc:  # a finish failure must never block the launch
@@ -5857,7 +5857,7 @@ def _prepare_chief_launch(
                 f"chief-of-staff {resumed_name} is recorded under a name this host no longer gives it "
                 f"({ai_name}); relaunching would start a new conversation and leave its worktree behind. "
                 f"On {_config.detect_machine_profile()['host_id']}, {end_first}move it with "
-                f"`ai session-migrate {resumed_name} {ai_name} -r {project_dir}` and re-run this command.",
+                f"`ai migrate-session {resumed_name} {ai_name} -r {project_dir}` and re-run this command.",
             )
             sys.exit(1)
 
@@ -5957,7 +5957,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     context_settings=SESSION_CONTEXT,
     help=(
         "Launch a Claude Code session. A migration to the session's name that this host "
-        "recorded and never finished is finished first, as `ai session-migrate OLD NEW "
+        "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
         "--finish -y` would; a finish that fails is reported and the launch continues."
     ),
 )
@@ -6691,7 +6691,7 @@ def cmd_color(color_arg):
 
 
 @_cli_group.command(
-    "cc-migrate",
+    "migrate-transcript",
     help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
 )
 @click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
@@ -6708,7 +6708,7 @@ def cmd_color(color_arg):
 @click.option("-p", "--preserve-cwd", is_flag=True, help="Do not rewrite recorded cwd fields to the destination root")
 @click.option("-d", "--dry-run", is_flag=True, help="Show what would happen without writing anything")
 @click.option("-f", "--force", is_flag=True, help="Overwrite an existing destination transcript")
-def cmd_cc_migrate(dest, title, session_id, source, keep_source, preserve_cwd, dry_run, force):
+def cmd_migrate_transcript(dest, title, session_id, source, keep_source, preserve_cwd, dry_run, force):
     """Migrate a CC session so ``ai c <n>`` in DEST resumes it.
 
     Typical use: a session was launched at the repo root (``claude --name
@@ -6716,7 +6716,7 @@ def cmd_cc_migrate(dest, title, session_id, source, keep_source, preserve_cwd, d
     the repo root's ~/.claude/projects directory where the worktree launch
     cannot see it. From the repo root, run:
 
-        ai cc-migrate .worktrees/myproject-2 --title myproject-2
+        ai migrate-transcript .worktrees/myproject-2 --title myproject-2
 
     then ``ai c 2`` resumes the migrated conversation.
     """
@@ -6829,9 +6829,9 @@ def _print_collision(exc, out=None) -> None:
             err=True,
             file=stream,
         )
-        _out.emit(Tag.ADOPT, "adopt", f"  ai session-adopt {exc.title} -c retitle -T {proposed}", err=True, file=stream)
+        _out.emit(Tag.ADOPT, "adopt", f"  ai adopt-session {exc.title} -c retitle -T {proposed}", err=True, file=stream)
         _out.emit(
-            Tag.ADOPT, "adopt", f"  ai session-adopt {exc.title} -c retitle -I {exc.free_index}", err=True, file=stream
+            Tag.ADOPT, "adopt", f"  ai adopt-session {exc.title} -c retitle -I {exc.free_index}", err=True, file=stream
         )
     _out.emit(
         Tag.ADOPT,
@@ -6894,10 +6894,10 @@ def _adoption_title(repo_root: Path, name: str, human: str):
 
 
 @_cli_group.command(
-    "session-adopt",
+    "adopt-session",
     help=(
         "Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.\n\n"
-        "\b\nTo rename a session already in an `ai` slot, use `ai session-migrate`."
+        "\b\nTo rename a session already in an `ai` slot, use `ai migrate-session`."
     ),
 )
 @click.argument("name", required=False, default="")
@@ -6938,7 +6938,7 @@ def _adoption_title(repo_root: Path, name: str, human: str):
 @click.option(
     "-m", "--name", "human_name", default="", help="Adopt into a slot named with this first name, reserved first"
 )
-def cmd_session_adopt(
+def cmd_adopt_session(
     name,
     source,
     repo,
@@ -6960,7 +6960,7 @@ def cmd_session_adopt(
     slot and then verifies that ``ai c`` really does resolve the result.
 
     Use this for a session started outside ``ai``; to rename a session already
-    registered in an ``ai`` slot, use ``ai session-migrate``.
+    registered in an ``ai`` slot, use ``ai migrate-session``.
     """
     from .cc_migrate import find_transcript
     from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
@@ -7085,7 +7085,7 @@ def cmd_session_adopt(
 
 
 def _print_migration(result) -> None:
-    """Every planned (or performed) move of a ``session-migrate`` run, then its warnings."""
+    """Every planned (or performed) move of a ``migrate-session`` run, then its warnings."""
     verb = "would migrate" if result.dry_run else "migrated"
     _out.emit(Tag.MIGRATE, "migrate", f"{result.old} -> {result.new}: {verb}")
     for move in result.moves:
@@ -7301,7 +7301,7 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
 
 
 @_cli_group.command(
-    "session-migrate",
+    "migrate-session",
     help=(
         "Rename a session already registered in an `ai` slot.\n\n"
         "Afterwards it cleans up the old name in every other repo: a clean, landed "
@@ -7320,7 +7320,7 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
         "letters, within the configured limits; -O/--over-limit selects this host's sessions whose "
         "name is longer than max_name_length.\n\n"
-        "\b\nFor a session started outside `ai`, use `ai session-adopt`."
+        "\b\nFor a session started outside `ai`, use `ai adopt-session`."
     ),
 )
 @click.argument("old", required=False, default="")
@@ -7357,14 +7357,14 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
 @click.option("-T", "--to-names", is_flag=True, help="With -a/--all: migrate each one to a picked first name")
 @click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
 @click.option("-O", "--over-limit", is_flag=True, help="With -a -T: only names longer than max_name_length")
-def cmd_session_migrate(
+def cmd_migrate_session(
     old, new, repo, dry_run, yes, finish, beads_only, to_name, sweep, to_names, max_length, over_limit
 ):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
     Renames a session already registered in an ``ai c`` slot: worktree, branch,
     transcript, tasks, memory and resume state. One started outside ``ai`` is
-    registered with ``ai session-adopt`` instead. The session must not be
+    registered with ``ai adopt-session`` instead. The session must not be
     running: exit it and end its tmux session first. Every refusal is checked
     before the first write, ``--dry-run`` included. ``--finish`` repeats every
     step keyed by the old name for a slot that already moved, so a migration
@@ -7375,7 +7375,7 @@ def cmd_session_migrate(
     named, and the command exits 1.
 
     Every run also cleans up the old name in the other repos under the projects
-    dir: a ``.worktrees/OLD`` slot is retired like ``ai session-retire`` (tips
+    dir: a ``.worktrees/OLD`` slot is retired like ``ai retire-session`` (tips
     anchored, checkout removed) when it is clean and landed, and kept and named,
     exiting 1, when it is not; an empty ``OLD-agents`` container is removed and a
     full one named. Run with ``-r`` on a repo whose OLD slot is such a leftover
@@ -7427,7 +7427,7 @@ def cmd_session_migrate(
 
 
 def _print_retirement(result) -> None:
-    """What a ``session-retire`` run removed (or would), what it preserved and what it left."""
+    """What a ``retire-session`` run removed (or would), what it preserved and what it left."""
     verb = "would retire" if result.dry_run else "retired"
     _out.emit(Tag.RETIRE, "retire", f"{result.name}: {verb} {result.worktree}")
     checked_out = result.branch or "detached HEAD"
@@ -7453,11 +7453,11 @@ def _print_retirement(result) -> None:
 
 
 @_cli_group.command(
-    "session-retire",
+    "retire-session",
     help=(
         "Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the "
         "checkout and its registry entry.\n\n"
-        "\b\nTo rename a slot instead, use `ai session-migrate`."
+        "\b\nTo rename a slot instead, use `ai migrate-session`."
     ),
 )
 @click.argument("name")
@@ -7470,14 +7470,14 @@ def _print_retirement(result) -> None:
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Print what would be removed and preserved without writing")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
-def cmd_session_retire(name, repo, dry_run, yes):
+def cmd_retire_session(name, repo, dry_run, yes):
     """Retire the session in slot NAME (``.worktrees/NAME``), losing no commit.
 
     Refused, before anything is written and with ``--dry-run`` too, while the
     session is running (a Claude Code process, its tmux session or a fresh
     heartbeat), while the checkout has uncommitted or untracked work, or while
     its checked-out commit is in neither its upstream nor ``origin/main``. The
-    branch tips are anchored under ``refs/preserved/session-retire/`` and the
+    branch tips are anchored under ``refs/preserved/retire-session/`` and the
     branches kept; the Claude Code project directory is left in place.
     """
     from .session_adopt import AdoptionError
@@ -7542,7 +7542,7 @@ def _print_audit(report, ready, skipped, out=None) -> None:
 
 
 @_cli_group.command(
-    "session-audit",
+    "audit-sessions",
     help="Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume",
 )
 @click.option(
@@ -7556,13 +7556,13 @@ def _print_audit(report, ready, skipped, out=None) -> None:
 @click.option("-a", "--adopt", "run_adopt", is_flag=True, help="Adopt every session that is safe to adopt")
 @click.option("-n", "--dry-run", is_flag=True, help="With -a: show what would be adopted without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
-def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
+def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes):
     """Survey every titled CC session, then optionally drive their adoption.
 
     The survey scans outward from ``~/.claude/projects/`` rather than inward from
     a list of repos, so a session that ran in an agent worktree under
     ``<repo>/.claude/worktrees/<id>`` is found and attributed without anyone
-    supplying its path. Adoption itself is delegated to ``ai session-adopt``'s
+    supplying its path. Adoption itself is delegated to ``ai adopt-session``'s
     module, so the duplicate-title and live-session gates apply unchanged.
     """
     from .session_adopt import AdoptionError, TitleCollision
@@ -7678,11 +7678,11 @@ def cmd_cdp_status():
     sys.exit(0)
 
 
-# --- vpn-watch / ps / sync / reconnect / update / deploy / attach / ls ---
+# --- watch-vpn / ps / sync / reconnect / update / deploy / attach / ls ---
 
 
-@_cli_group.command("vpn-watch", help="Run the VPN-watch daemon")
-def cmd_vpn_watch():
+@_cli_group.command("watch-vpn", help="Run the VPN watch daemon")
+def cmd_watch_vpn():
     from .vpn_watch import run_vpn_watch
 
     run_vpn_watch(_config.load_config())
@@ -7886,7 +7886,7 @@ def cmd_deploy(force, quiet, verbose):
 
 
 @_cli_group.command(
-    "trust-backfill",
+    "backfill-trust",
     help="Register Claude Code workspace trust for every repo under a root "
     "(fixes 'workspace has not been trusted' permission drops, GH #72896)",
 )
@@ -7896,7 +7896,7 @@ def cmd_deploy(force, quiet, verbose):
     default=None,
     help="Root to scan for git repos (default: the configured [project] projects_dir)",
 )
-def cmd_trust_backfill(root):
+def cmd_backfill_trust(root):
     from .trust import backfill_projects_trust
 
     # Resolved at invocation rather than declared as the literal "~/projects": a click

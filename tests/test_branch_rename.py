@@ -9,7 +9,7 @@ import pytest
 
 from ai_cli.branch_rename import rename_branch_anchored
 
-ANCHOR = "refs/preserved/session-migrate/wt-session-1"
+ANCHOR = "refs/preserved/migrate-session/wt-session-1"
 
 
 def _git(*args: str, cwd: Path) -> str:

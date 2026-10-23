@@ -1,4 +1,4 @@
-"""``ai session-migrate OLD NEW`` moves a registered session to a new name, losing nothing.
+"""``ai migrate-session OLD NEW`` moves a registered session to a new name, losing nothing.
 
 Every test drives the real command against a fake slot in a temp HOME that carries
 each artifact the session's name or worktree path keys: the worktree and its branch,
@@ -138,7 +138,7 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
         patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])),
         patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
     ):
-        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), *flags])
+        return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), *flags])
 
 
 def _everything(slot) -> dict:
@@ -224,7 +224,7 @@ def test_given_another_marker_prefix_configured_when_migrated_then_these_markers
         patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
     ):
         code, out, err = run_cli(
-            ["ai", "session-migrate", OLD, NEW, "-r", str(repo), "-y"], config={"worktree": {"marker_prefix": "other"}}
+            ["ai", "migrate-session", OLD, NEW, "-r", str(repo), "-y"], config={"worktree": {"marker_prefix": "other"}}
         )
     assert code == 0, out + err
 
@@ -288,13 +288,13 @@ def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
 
 
 def test_given_an_unregistered_slot_when_migrating_then_it_points_at_session_adopt(slot, tmp_path):
-    code, _out, err = run_cli(["ai", "session-migrate", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
+    code, _out, err = run_cli(["ai", "migrate-session", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
     assert code == 1
-    assert "not a registered worktree" in err and "session-adopt" in err
+    assert "not a registered worktree" in err and "adopt-session" in err
 
 
 def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_refused(slot):
-    code, _out, err = run_cli(["ai", "session-migrate", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
+    code, _out, err = run_cli(["ai", "migrate-session", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
     assert code == 1
     assert "is not a session name" in err
 
@@ -306,19 +306,19 @@ def test_given_a_dry_run_or_a_refusal_when_migrating_then_every_line_carries_the
     assert lines
     assert all("[migrate]" in line for line in lines), out + err
 
-    code, out, err = run_cli(["ai", "session-migrate", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
+    code, out, err = run_cli(["ai", "migrate-session", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
     assert code == 1
     assert "[migrate]" in err and "[adopt]" not in out + err
 
 
 def test_given_either_verb_when_help_is_printed_then_it_names_the_other_verb():
-    code, out, _err = run_cli(["ai", "session-migrate", "--help"])
-    assert code == 0 and "session-adopt" in out
-    code, out, _err = run_cli(["ai", "session-adopt", "--help"])
-    assert code == 0 and "session-migrate" in out
+    code, out, _err = run_cli(["ai", "migrate-session", "--help"])
+    assert code == 0 and "adopt-session" in out
+    code, out, _err = run_cli(["ai", "adopt-session", "--help"])
+    assert code == 0 and "migrate-session" in out
 
 
-ANCHOR = f"refs/preserved/session-migrate/wt-{OLD}"
+ANCHOR = f"refs/preserved/migrate-session/wt-{OLD}"
 
 
 def _ref(repo: Path, ref: str) -> str | None:
@@ -468,7 +468,7 @@ def test_given_a_live_session_when_migrating_then_no_new_artifact_class_is_touch
     _git("switch", "-q", "-c", "topic", cwd=held_slot["wt"])
     (held_slot["claude"] / "tasks" / OLD / ".lock").write_text("")
     log = tmp_path / "hook-calls.jsonl"
-    hooks = get_xdg_config_home() / "session-migrate.d"
+    hooks = get_xdg_config_home() / "migrate-session.d"
     hooks.mkdir(parents=True)
     script = tmp_path / "record.py"
     script.write_text(f"open({str(log)!r}, 'a').write('called')\n")
@@ -605,7 +605,7 @@ def _finish(repo: Path, *flags: str, tmux: list[str] | None = None):
         patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])),
         patch("ai_cli.config._get_projects_dir", return_value=repo.parent),
     ):
-        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), "--finish", *flags])
+        return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), "--finish", *flags])
 
 
 def test_given_a_slot_migrated_before_these_steps_when_finished_then_every_leftover_is_carried_or_removed(slot):
@@ -752,7 +752,7 @@ def test_given_issues_assigned_to_old_when_migrated_then_new_holds_each_and_the_
     for issue, store in (("TST-1", stores["repo"]), ("TST-2", stores["repo"]), ("WS-1", stores["workspace"])):
         assert f"beads issue: {issue} [{OLD}] ({store}) -> {NEW}" in out, out
     comments = json.loads(stores["db"].read_text(encoding="utf-8"))["stores"][str(stores["workspace"])][0]["comments"]
-    assert comments == [f"Re-keyed from {OLD} to {NEW} by `ai session-migrate`."]
+    assert comments == [f"Re-keyed from {OLD} to {NEW} by `ai migrate-session`."]
     for store in (stores["repo"], stores["workspace"]):
         assert f"beads store: {store} (publish needed" in out, out
 
@@ -890,7 +890,7 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
     assert code == 1 and "still running" in err, out + err
 
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
-        code, out, err = run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
+        code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
 
     assert code == 0, out + err
     held = _assignees(stores)
@@ -901,7 +901,7 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
 def test_given_no_ledger_row_when_re_keyed_beads_only_then_nothing_is_written(stores, slot):
     before = stores["db"].read_text(encoding="utf-8")
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
-        code, out, err = run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
+        code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
     assert code == 0, out + err
     assert stores["db"].read_text(encoding="utf-8") == before
     assert _bd_writes(stores) == []

@@ -1,7 +1,7 @@
-"""``ai session-adopt`` runs the ``session-migrate.d/`` rekey hooks when it renames a session.
+"""``ai adopt-session`` runs the ``migrate-session.d/`` rekey hooks when it renames a session.
 
 A retitling adoption changes the session's name, so state other tools keep under that
-name must follow it exactly as it does for ``ai session-migrate``: every hook plans with
+name must follow it exactly as it does for ``ai migrate-session``: every hook plans with
 ``--dry-run`` before the first write (a refusal stops the adoption with nothing moved),
 and runs live after the core moves (a failure is a ``FAILED`` warning and exit 1). An
 adoption that keeps the name runs no hook.
@@ -21,7 +21,7 @@ existing_worktree = test_session_adopt.existing_worktree
 cli_world = test_session_adopt.cli_world
 hooks = test_session_migrate_hooks.hooks
 
-RETITLE = ["ai", "session-adopt", "myproject-2", "-c", "retitle", "-I", "4"]
+RETITLE = ["ai", "adopt-session", "myproject-2", "-c", "retitle", "-I", "4"]
 
 
 def _retitle_target(cli_world):
@@ -89,7 +89,7 @@ def test_given_a_hook_that_fails_live_when_adopting_then_it_warns_failed_and_exi
 def test_given_an_adoption_that_keeps_the_name_when_applied_then_no_hook_runs(cli_world, hooks):
     hooks("10-notes", "notes")
 
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
 
     assert code == 0, err
     assert hooks.calls() == []

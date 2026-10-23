@@ -1,18 +1,18 @@
-"""External rekey hooks for ``ai session-migrate``.
+"""External rekey hooks for ``ai migrate-session``.
 
 Tools outside this package can keep state keyed by a session name. Each one joins a
-migration by dropping a TOML file into ``<config dir>/session-migrate.d/``::
+migration by dropping a TOML file into ``<config dir>/migrate-session.d/``::
 
     name = "notes"
     argv = ["python3", "~/bin/notes_rekey.py"]
 
-``session-migrate`` runs every hook, sorted by filename, as
+``migrate-session`` runs every hook, sorted by filename, as
 ``argv + ["--old", OLD, "--new", NEW]``: with ``--dry-run`` while it plans (a
 non-zero exit refuses the whole migration before anything is written), then
 without it after every core move (a non-zero exit is reported as ``FAILED``).
-``session-adopt`` runs the same hooks under the same contract whenever an adoption
+``adopt-session`` runs the same hooks under the same contract whenever an adoption
 changes the session's name. The contract is documented in
-``docs/reference/session-migrate-hooks.md``.
+``docs/reference/migrate-session-hooks.md``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import config as _config
 
-HOOKS_DIRNAME = "session-migrate.d"
+HOOKS_DIRNAME = "migrate-session.d"
 
 
 class HookConfigError(ValueError):

@@ -2,7 +2,7 @@
 
 Why this exists
 ---------------
-``ai cc-migrate`` moves a *transcript* between project roots. That is necessary
+``ai migrate-transcript`` moves a *transcript* between project roots. That is necessary
 but not sufficient: a Claude Code session started as a plain ``claude`` in a repo
 root leaves state in several places, and only some of it is keyed by the session
 UUID (which a migration does not change). The rest is keyed by the **project
@@ -46,8 +46,8 @@ Adoption is the whole job, in one pass:
 5b. **Resume hand-off** — ``~/.claude/resume/``, keyed by the session *name*. See
    :func:`migrate_resume_artifacts`, which is a deliberately temporary bridge.
 5c. **External rekey hooks** — a retitle renames the session, so the
-   ``session-migrate.d/`` hooks (:mod:`ai_cli.session_migrate_hooks`) plan before
-   the first write and run after the core moves, exactly as for ``session-migrate``.
+   ``migrate-session.d/`` hooks (:mod:`ai_cli.session_migrate_hooks`) plan before
+   the first write and run after the core moves, exactly as for ``migrate-session``.
 6. **Everything else** — inventoried in ``docs/tools/cc-session-adoption.md``.
    UUID-keyed state (``~/.claude/teams/session-<uuid8>/``,
    ``~/.claude/session-env/<uuid>/``, ``~/.claude/file-history/<uuid>/``) is
@@ -918,7 +918,7 @@ def rekey_name_artifacts(
 ) -> tuple[list[TaskMove], list[ResumeMove]]:
     """Move the name-keyed state of a session to ``target``: its tasks and its resume tree.
 
-    Shared by ``ai session-adopt`` and ``ai session-migrate``, which differ only in
+    Shared by ``ai adopt-session`` and ``ai migrate-session``, which differ only in
     where these keys come from. Tasks from each namespace are merged into
     ``~/.claude/tasks/<target>/`` (renumbered on collision, see
     :func:`merge_task_namespace`) and every resume artifact filed under one of
@@ -1098,7 +1098,7 @@ def adopt_session(
             )
         raise AdoptionError(
             f"no transcript titled {ai_name!r} in {source_dir} — nothing to adopt "
-            f"(check the title with `ai cc-migrate --dry-run`, or pass -s/--source)"
+            f"(check the title with `ai migrate-transcript --dry-run`, or pass -s/--source)"
         )
 
     candidates = find_title_candidates(repo_root, ai_name, home, extra_dirs=[source_dir])
@@ -1129,7 +1129,7 @@ def adopt_session(
     resume_keys = resume_source_keys(src_jsonl, target_title)
 
     # A retitle renames the session, so state other tools keep under its name must
-    # follow, exactly as for `ai session-migrate`: every hook plans before the first
+    # follow, exactly as for `ai migrate-session`: every hook plans before the first
     # write, and a refusal stops the adoption while nothing has moved. Without a
     # retitle the name is unchanged and there is nothing name-keyed to carry.
     hooks: list[_hooks.Hook] = []

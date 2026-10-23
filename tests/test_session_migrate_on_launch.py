@@ -31,7 +31,7 @@ from test_session_migrate import (
 slot = test_session_migrate.slot
 hooks = test_session_migrate_hooks.hooks
 
-REMEDY = f"ai session-migrate {OLD} {NEW} -r"
+REMEDY = f"ai migrate-session {OLD} {NEW} -r"
 
 
 def _ledger(slot) -> list[dict]:
@@ -200,4 +200,4 @@ def test_given_a_manual_finish_succeeds_when_new_is_launched_then_it_is_not_run_
 def test_given_the_launch_help_when_printed_then_it_names_the_pending_finish():
     code, out, _err = _run_cli(["ai", "c", "--help"])
     assert code == 0
-    assert "session-migrate OLD NEW --finish -y" in " ".join(out.split())
+    assert "migrate-session OLD NEW --finish -y" in " ".join(out.split())

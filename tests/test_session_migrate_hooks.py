@@ -1,4 +1,4 @@
-"""``ai session-migrate`` runs the external rekey hooks declared in ``session-migrate.d/``.
+"""``ai migrate-session`` runs the external rekey hooks declared in ``migrate-session.d/``.
 
 Each hook here is a small Python program that records how it was called (its argv
 and the slot directories visible from its cwd) to a log outside every tree the
@@ -34,7 +34,7 @@ if {fail!r} == ("plan" if planning else "live"):
 @pytest.fixture
 def hooks(tmp_path):
     """Declare hooks: ``add(filename, name, fail=None)``; calls land in ``calls()``."""
-    directory = get_xdg_config_home() / "session-migrate.d"
+    directory = get_xdg_config_home() / "migrate-session.d"
     directory.mkdir(parents=True, exist_ok=True)
     log = tmp_path / "hook-calls.jsonl"
 

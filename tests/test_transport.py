@@ -87,7 +87,7 @@ class TestEnsureVpnWatcher:
 
         add_calls = [c for c in mock_client.send_message.call_args_list if c[0][0] == "add"]
         assert len(add_calls) == 1
-        assert add_calls[0][1]["name"] == "vpn-watch"
+        assert add_calls[0][1]["name"] == "watch-vpn"
 
     def test_when_transport_files_exist_then_skips_circus(self, tmp_path):
         # Another session already running — watcher already started
@@ -105,7 +105,7 @@ class TestEnsureVpnWatcher:
 
     def test_when_watcher_already_in_circus_then_skips_add(self, tmp_path):
         mock_client = MagicMock()
-        mock_client.send_message = MagicMock(return_value={"statuses": {"vpn-watch": "active"}})
+        mock_client.send_message = MagicMock(return_value={"statuses": {"watch-vpn": "active"}})
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
@@ -138,7 +138,7 @@ class TestMaybeStopVpnWatcher:
         ):
             _maybe_stop_vpn_watcher()
 
-        mock_client.send_message.assert_called_once_with("rm", name="vpn-watch")
+        mock_client.send_message.assert_called_once_with("rm", name="watch-vpn")
 
     def test_when_sessions_remain_then_does_not_stop(self, tmp_path):
         existing = tmp_path / "transport-c-r-session-2.json"

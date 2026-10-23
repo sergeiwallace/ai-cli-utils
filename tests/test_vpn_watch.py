@@ -1,4 +1,4 @@
-"""Tests for the vpn-watch Circus watcher (src/ai_cli/vpn_watch.py)."""
+"""Tests for the watch-vpn Circus watcher (src/ai_cli/vpn_watch.py)."""
 
 import asyncio
 import json

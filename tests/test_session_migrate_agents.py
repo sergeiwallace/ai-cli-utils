@@ -1,4 +1,4 @@
-"""``ai session-migrate OLD NEW`` carries the session's agent worktrees and branches in every repo.
+"""``ai migrate-session OLD NEW`` carries the session's agent worktrees and branches in every repo.
 
 Each test drives the real command against a temp projects dir holding the slot's repo
 and a second repo. The second repo carries what a delegating session leaves behind: an
@@ -83,7 +83,7 @@ def _migrate(fleet, *flags: str):
         patch("ai_cli.session._tmux_session_names", return_value=[]),
         patch("ai_cli.config._get_projects_dir", return_value=fleet["projects"]),
     ):
-        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(fleet["repo"]), *flags])
+        return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(fleet["repo"]), *flags])
 
 
 def _live(cwd: Path, name: str = "other-session-1") -> None:
@@ -355,7 +355,7 @@ def test_given_a_locked_agent_worktree_with_a_submodule_when_migrated_then_it_is
 # ``.worktrees/OLD``: its branch was renamed with the session's other ``wt/<old>/*`` branches,
 # but nothing moved or retired the folder.
 
-RETIRE_ANCHORS = "refs/preserved/session-retire"
+RETIRE_ANCHORS = "refs/preserved/retire-session"
 
 
 def _init_pushed(projects: Path, name: str) -> Path:
@@ -398,7 +398,7 @@ def _run_in(fleet, repo: Path, *flags: str):
         patch("ai_cli.session._tmux_session_names", return_value=[]),
         patch("ai_cli.config._get_projects_dir", return_value=fleet["projects"]),
     ):
-        return run_cli(["ai", "session-migrate", OLD, NEW, "-r", str(repo), *flags])
+        return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), *flags])
 
 
 def _registered(repo: Path) -> str:

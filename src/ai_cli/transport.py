@@ -588,7 +588,7 @@ def _write_transport_state(
 
 
 def _ensure_vpn_watcher(config: dict) -> None:
-    """Start the vpn-watch Circus watcher if not already running.
+    """Start the watch-vpn Circus watcher if not already running.
 
     Called by the first ``ai c -R`` session before entering the transport loop.
     Subsequent sessions see existing transport-*.json files and skip this.
@@ -608,15 +608,15 @@ def _ensure_vpn_watcher(config: dict) -> None:
         try:
             result = client.send_message("status")
             statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
-            if "vpn-watch" in statuses:
+            if "watch-vpn" in statuses:
                 return
         except Exception:
             pass  # Not covered: requires CircusClient.send_message to raise mid-call
         ai_bin = shutil.which("ai") or "ai"
         client.send_message(
             "add",
-            name="vpn-watch",
-            cmd=f"{ai_bin} vpn-watch",
+            name="watch-vpn",
+            cmd=f"{ai_bin} watch-vpn",
             options={
                 "copy_env": True,
                 "respawn": True,
@@ -630,7 +630,7 @@ def _ensure_vpn_watcher(config: dict) -> None:
 
 
 def _maybe_stop_vpn_watcher() -> None:
-    """Stop the vpn-watch Circus watcher if no transport sessions remain."""
+    """Stop the watch-vpn Circus watcher if no transport sessions remain."""
     state_dir = get_xdg_state_home()
     if list(state_dir.glob("transport-*.json")):
         return  # Other sessions still active
@@ -638,7 +638,7 @@ def _maybe_stop_vpn_watcher() -> None:
         endpoint = f"ipc://{state_dir}/circus.endpoint"
         from circus.client import CircusClient
 
-        CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name="vpn-watch")
+        CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name="watch-vpn")
     except Exception:
         pass
 

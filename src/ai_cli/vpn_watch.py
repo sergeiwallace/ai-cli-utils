@@ -17,7 +17,7 @@ from .transport import _is_vpn_active
 
 
 def run_vpn_watch(config: dict) -> None:
-    """Entry point for ``ai vpn-watch``. Runs the watcher loop until interrupted."""
+    """Entry point for ``ai watch-vpn``. Runs the watcher loop until interrupted."""
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_vpn_watch_loop(config))
 

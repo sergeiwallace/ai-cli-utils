@@ -1,11 +1,11 @@
-"""Retire a defunct ``ai`` session's home slot (``ai session-retire NAME``).
+"""Retire a defunct ``ai`` session's home slot (``ai retire-session NAME``).
 
 A session home ``<repo>/.worktrees/<name>`` is never reaped automatically: its
 owner retires it. This is that route. It removes the checkout and its
 canonical-registry entry, and nothing else of value:
 
 * the tip of the branch checked out in the slot, and of ``wt-<name>``, is first
-  anchored at ``refs/preserved/session-retire/<branch>``; the branches themselves
+  anchored at ``refs/preserved/retire-session/<branch>``; the branches themselves
   stay, so the anchor plus the branch is the recovery path;
 * the checkout goes through ``git worktree remove`` without ``--force``;
 * the canonical-registry entry for the slot is dropped under the registry's lock;
@@ -57,13 +57,13 @@ from .stale_session_reaper import (
     read_reaper_config,
 )
 
-ANCHOR_NAMESPACE = "refs/preserved/session-retire"
+ANCHOR_NAMESPACE = "refs/preserved/retire-session"
 LEDGER_FILENAME = "session-retirements.jsonl"
 INTEGRATION_REF = "refs/remotes/origin/main"
 
 
 class RetireError(AdoptionError):
-    """A refusal raised before ``session-retire`` writes anything."""
+    """A refusal raised before ``retire-session`` writes anything."""
 
 
 @dataclass
@@ -369,7 +369,7 @@ def retire_session(
     for anchor in [a for a in anchors if not a.exists]:
         # The empty old value makes the write fail if the ref appeared meanwhile.
         written = _git(
-            repo_root, "update-ref", "-m", f"session-retire: anchor {anchor.branch}", anchor.ref, anchor.tip, ""
+            repo_root, "update-ref", "-m", f"retire-session: anchor {anchor.branch}", anchor.ref, anchor.tip, ""
         )
         if written.returncode != 0:
             raise RetireError(
