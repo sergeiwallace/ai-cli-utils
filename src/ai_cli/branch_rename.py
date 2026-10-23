@@ -3,7 +3,7 @@
 ``git branch -m`` deletes the old ref and creates the new one. A rename interrupted
 between the two, or refused by a ``reference-transaction`` hook that judges the
 deletion of an unintegrated branch, must never leave the tip unreachable. So the tip
-is first written to ``refs/preserved/session-migrate/<old branch>`` and only then is
+is first written to ``refs/preserved/migrate-session/<old branch>`` and only then is
 the branch renamed. The anchor stays after a successful rename: it is what lets a
 ref-deletion guard prove the old tip is contained, and it costs one small ref.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .git_repair import _git_env
 
-ANCHOR_NAMESPACE = "refs/preserved/session-migrate"
+ANCHOR_NAMESPACE = "refs/preserved/migrate-session"
 
 
 @dataclass
@@ -73,7 +73,7 @@ def rename_branch_anchored(repo_root: Path, old: str, new: str, *, dry_run: bool
 
     if existing is None:
         # The empty old value makes the write fail if the ref appeared meanwhile.
-        written = _git(repo_root, "update-ref", "-m", f"session-migrate: anchor {old}", result.anchor, tip, "")
+        written = _git(repo_root, "update-ref", "-m", f"migrate-session: anchor {old}", result.anchor, tip, "")
         if written.returncode != 0:
             result.error = f"could not write anchor {result.anchor}: {(written.stderr or '').strip()}"
             return result

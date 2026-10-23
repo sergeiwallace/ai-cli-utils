@@ -677,7 +677,7 @@ class TestRemoteChief:
             (["cos", "-R"], False),
             (["c", "-F", "-H", "~/x"], False),
             (["-v", "cx"], False),
-            (["cc-migrate", "~/dest"], True),
+            (["migrate-transcript", "~/dest"], True),
             ([], True),
         ],
     )
@@ -1281,7 +1281,7 @@ class TestRemoteRelaunchOfAChief:
             code, _out, err = run_cli(["ai", *REMOTE_SIDE, "chief-1"])
             launch.assert_not_called()
         assert code == REMOTE_LAUNCH_REFUSED_EXIT
-        assert f"ai session-migrate hub-chief-1 hub-fw-chief-1 -r {chief_project}" in err
+        assert f"ai migrate-session hub-chief-1 hub-fw-chief-1 -r {chief_project}" in err
         assert json.loads(cos.registration_path(seeded_home).read_text()) == registration
         assert not (chief_project / ".worktrees" / "hub-fw-chief-1").exists()
 

@@ -1896,7 +1896,7 @@ def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
 
 
 #: Placeholder values for the settings an environment supplies to ``ai cos`` and to the
-#: worktree markers ``ai session-migrate`` rewrites. Nothing in the package defaults them, so
+#: worktree markers ``ai migrate-session`` rewrites. Nothing in the package defaults them, so
 #: a test that exercises one merges this into the config it hands the launcher.
 CHIEF_PROJECT = "myhub"
 ENVIRONMENT_CONFIG = {

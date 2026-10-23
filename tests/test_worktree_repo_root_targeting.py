@@ -14,7 +14,7 @@ message about a branch, several steps away from the repository mix-up that cause
 it.
 
 ``ai c`` never hit this because it launches from the repository root, where cwd and
-``repo_root`` agree. ``ai session-adopt`` is the exposed caller: it resolves
+``repo_root`` agree. ``ai adopt-session`` is the exposed caller: it resolves
 ``repo_root`` from a recorded transcript and passes it explicitly, so it can be run
 from anywhere — including another repository.
 """

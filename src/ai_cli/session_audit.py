@@ -2,7 +2,7 @@
 
 Why this exists
 ---------------
-``ai session-adopt`` fixes *one* session whose name and location you already
+``ai adopt-session`` fixes *one* session whose name and location you already
 know. Answering "which titled sessions exist, where do they really live, and
 which ones will ``ai c <n>`` fail to resume" was, until now, a set of throwaway
 one-liners — and the two defects that motivated this command are both cases where

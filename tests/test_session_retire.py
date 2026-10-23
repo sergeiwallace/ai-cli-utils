@@ -1,4 +1,4 @@
-"""``ai session-retire NAME`` retires a dead session's home slot, losing no commit.
+"""``ai retire-session NAME`` retires a dead session's home slot, losing no commit.
 
 Every test drives the real command against a temp repo with an ``origin`` remote and
 a registered slot ``.worktrees/myrepo-3`` whose branch ``wt-myrepo-3`` is contained in
@@ -26,7 +26,7 @@ from ai_cli.stale_session_reaper import write_heartbeat
 
 NAME = "myrepo-3"
 BRANCH = f"wt-{NAME}"
-ANCHORS = "refs/preserved/session-retire"
+ANCHORS = "refs/preserved/retire-session"
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -77,7 +77,7 @@ def slot(tmp_path):
 
 def _retire(repo: Path, *flags: str, tmux: list[str] | None = None):
     with patch("ai_cli.session._tmux_session_names", return_value=list(tmux or [])):
-        return run_cli(["ai", "session-retire", NAME, "-r", str(repo), *flags])
+        return run_cli(["ai", "retire-session", NAME, "-r", str(repo), *flags])
 
 
 def _registry_paths() -> list[str]:
@@ -214,15 +214,15 @@ def test_given_a_topic_branch_pushed_to_its_upstream_when_retired_then_both_tips
 
 
 def test_given_an_unregistered_slot_when_retiring_then_it_is_refused(slot):
-    code, _out, err = run_cli(["ai", "session-retire", "myrepo-9", "-r", str(slot["repo"]), "-y"])
+    code, _out, err = run_cli(["ai", "retire-session", "myrepo-9", "-r", str(slot["repo"]), "-y"])
     assert code == 1
     assert "is not a registered worktree" in err
 
 
 def test_given_the_help_when_printed_then_it_names_every_option_and_the_rename_verb():
-    code, out, _err = run_cli(["ai", "session-retire", "--help"])
+    code, out, _err = run_cli(["ai", "retire-session", "--help"])
     assert code == 0
-    for flag in ("-n, --dry-run", "-y, --yes", "-r, --repo", "session-migrate"):
+    for flag in ("-n, --dry-run", "-y, --yes", "-r, --repo", "migrate-session"):
         assert flag in out
 
 

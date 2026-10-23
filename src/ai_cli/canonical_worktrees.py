@@ -223,7 +223,7 @@ def removal_targets_canonical_worktree(target: Path) -> tuple[bool, Path]:
 def move_canonical_worktree(old_path: Path, new_path: Path, old_name: str, new_name: str, *, dry_run: bool) -> int:
     """Repoint every entry for ``old_path`` at ``new_path`` and rename its session.
 
-    For a session worktree moved by ``ai session-migrate``: the entry keeps its
+    For a session worktree moved by ``ai migrate-session``: the entry keeps its
     first-registration time, so the path stays protected without a gap. A
     ``session_name`` ending in ``old_name`` (``c-<old>`` or ``<old>``) takes
     ``new_name`` in its place. Returns how many entries matched; an absent
@@ -258,7 +258,7 @@ def move_canonical_worktree(old_path: Path, new_path: Path, old_name: str, new_n
 def unregister_canonical_worktree(path: Path, *, dry_run: bool) -> int:
     """Drop every entry for ``path``, returning how many matched; an absent registry has none.
 
-    For a session home retired by ``ai session-retire``, after its checkout is removed.
+    For a session home retired by ``ai retire-session``, after its checkout is removed.
     """
     registry_path = get_canonical_worktree_registry_path()
     if not registry_path.is_file():

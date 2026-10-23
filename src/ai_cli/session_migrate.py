@@ -1,6 +1,6 @@
-"""Migrate a registered ``ai`` session to a new name (``ai session-migrate OLD NEW``).
+"""Migrate a registered ``ai`` session to a new name (``ai migrate-session OLD NEW``).
 
-``ai session-adopt`` brings in a session that was started *outside* ``ai c``. This
+``ai adopt-session`` brings in a session that was started *outside* ``ai c``. This
 module moves one that already lives in a slot -- ``<repo>/.worktrees/<old>`` -- to
 ``<repo>/.worktrees/<new>``, carrying everything keyed by the old name or by the
 old worktree path, so ``ai c <new>`` resumes the same conversation with the same
@@ -21,7 +21,7 @@ tasks, memory and resume hand-off:
 * the old name's locks, ``.worktrees/.<old>.lock`` and ``ai-watcher-lock-*-<old>``,
   removed once no process holds them, and an emptied ``<old>-agents`` container;
 * the task namespace and the resume tree, through
-  :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``session-adopt``
+  :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``adopt-session``
   uses for the same two; the old namespace directory is removed once only its
   bookkeeping remains;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
@@ -46,7 +46,7 @@ tasks, memory and resume hand-off:
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
   a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
   <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`);
-* whatever the external hooks in ``session-migrate.d/`` declare
+* whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
 
@@ -125,7 +125,7 @@ _STATE_FILE_STEMS = (
 
 
 class MigrationError(AdoptionError):
-    """A refusal raised before ``session-migrate`` writes anything."""
+    """A refusal raised before ``migrate-session`` writes anything."""
 
 
 @dataclass
@@ -237,7 +237,7 @@ def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
 def _rewrite_transcript_cwd(path: Path, old_root: str, new_root: str) -> None:
     """Repoint ``path``'s recorded cwd fields from ``old_root`` to ``new_root``, in place.
 
-    Uses the line rewriter ``cc-migrate`` uses, so only top-level cwd fields change and
+    Uses the line rewriter ``migrate-transcript`` uses, so only top-level cwd fields change and
     conversation text keeps the paths it was written with. Atomic, mtime preserved.
     """
     temp = path.with_name(path.name + ".migrate-tmp")
@@ -554,7 +554,7 @@ def _plan_leftovers(
 ) -> list[_Leftover]:
     """Every ``<repo>/.worktrees/<old>`` in ``repos``, each proved removable or kept with its reason.
 
-    The proof is ``ai session-retire``'s own, run as a preview: no live owner, nothing
+    The proof is ``ai retire-session``'s own, run as a preview: no live owner, nothing
     uncommitted or untracked, and the checked-out commit contained in, or landed on, its
     upstream or ``origin/main``. A live refusal for ``strict`` is raised instead of kept.
     """
@@ -570,7 +570,7 @@ def _plan_leftovers(
         if cc_project_dir(slot, home).is_dir():
             item.kept = (
                 f"it has a Claude Code project directory, so it is a session home; carry it with "
-                f"`ai session-migrate {old} {new} -r {repo}`"
+                f"`ai migrate-session {old} {new} -r {repo}`"
             )
             continue
         try:
@@ -592,7 +592,7 @@ def _describe_leftovers(leftovers: list[_Leftover], dry_run: bool) -> list[Plann
         PlannedMove(
             "leftover slot",
             str(item.slot),
-            item.kept or "tips anchored under refs/preserved/session-retire/",
+            item.kept or "tips anchored under refs/preserved/retire-session/",
             "kept" if item.kept else verb,
         )
         for item in leftovers
@@ -835,7 +835,7 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
                 result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
                 continue
             changed += 1
-            note = f"Re-keyed from {old} to {new} by `ai session-migrate`."
+            note = f"Re-keyed from {old} to {new} by `ai migrate-session`."
             try:
                 noted = _bd(store.path, "comments", "add", issue, note)
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -990,7 +990,7 @@ def migrate_session(
     if old_wt is None:
         raise MigrationError(
             f"{repo_root / '.worktrees' / old} is not a registered worktree of {repo_root} -- nothing to "
-            f"migrate. A session started outside `ai c` is brought into a slot with `ai session-adopt`."
+            f"migrate. A session started outside `ai c` is brought into a slot with `ai adopt-session`."
         )
     new_wt = old_wt.parent / new
     if os.path.lexists(new_wt):

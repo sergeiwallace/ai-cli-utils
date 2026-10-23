@@ -945,7 +945,7 @@ def test_cli_given_a_collision_and_yes_when_adopting_then_the_gate_still_holds(f
     )
     before = _snapshot(fleet["home"])
 
-    code, out, err = run_cli(["ai", "session-audit", "-t", "myproject-2", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-2", "-a", "-y"])
 
     assert code == 1, "-y must not bypass the duplicate-title gate"
     assert "Title collisions" in out
@@ -958,7 +958,7 @@ def test_cli_given_a_live_session_and_yes_when_adopting_then_it_is_skipped(fleet
     _mark_live(fleet, 5353, "myproject-5", fleet["agent_dir"], session_id=UUID_B)
     before = _snapshot(fleet["home"])
 
-    code, out, err = run_cli(["ai", "session-audit", "-t", "myproject-5", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-5", "-a", "-y"])
 
     assert code == 1
     assert "live session (pid 5353)" in out
@@ -993,7 +993,7 @@ def cli_audit(fleet, monkeypatch):
 
 def test_cli_given_a_survey_when_invoked_then_every_session_is_reported(cli_audit):
     """AC-1 via the CLI: the default run is a read-only report."""
-    code, out, err = run_cli(["ai", "session-audit"])
+    code, out, err = run_cli(["ai", "audit-sessions"])
     assert code == 0, err
     assert "myproject-2" in out and "myproject-5" in out and "myapp-1" in out
     assert "Scanned 4 transcripts" in out
@@ -1002,7 +1002,7 @@ def test_cli_given_a_survey_when_invoked_then_every_session_is_reported(cli_audi
 
 def test_cli_given_a_repo_filter_when_invoked_then_only_that_repo_is_reported(cli_audit, fleet):
     """AC-6 via the CLI."""
-    code, out, err = run_cli(["ai", "session-audit", "--repo", str(fleet["myapp"])])
+    code, out, err = run_cli(["ai", "audit-sessions", "--repo", str(fleet["myapp"])])
     assert code == 0, err
     assert "myapp-1" in out and "myproject-2" not in out
 
@@ -1010,7 +1010,7 @@ def test_cli_given_a_repo_filter_when_invoked_then_only_that_repo_is_reported(cl
 def test_cli_given_a_collision_when_invoked_then_it_is_reported_before_any_adoption(cli_audit, fleet):
     """AC-3 via the CLI: the collision is named in the survey itself."""
     _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
-    code, out, err = run_cli(["ai", "session-audit"])
+    code, out, err = run_cli(["ai", "audit-sessions"])
     assert code == 0
     assert "Title collisions (1)" in out
     assert "claimed by 2 transcripts" in out
@@ -1022,7 +1022,7 @@ def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_wri
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
-    code, out, err = run_cli(["ai", "session-audit", "-a", "-n"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-a", "-n"])
 
     assert "Would adopt" in out
     assert _snapshot(*roots) == before, "-n must not write anything"
@@ -1031,7 +1031,7 @@ def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_wri
 def test_cli_given_the_adopt_flag_when_confirmed_then_sessions_are_adopted(cli_audit, fleet):
     """AC-4 via the CLI: real adoption reports the resolve probe."""
     _add_worktree(fleet["myproject"], "myproject-5")
-    code, out, err = run_cli(["ai", "session-audit", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-a", "-y"])
     assert "Adopted myproject-5" in out
     assert "resolve probe" in out
 
@@ -1042,7 +1042,7 @@ def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted
     monkeypatch.setattr("click.confirm", lambda *a, **k: False)
     before = _snapshot(fleet["home"])
 
-    code, out, err = run_cli(["ai", "session-audit", "-a"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-a"])
 
     assert code == 1
     assert "Aborted" in err
@@ -1053,13 +1053,13 @@ def test_cli_given_an_accepted_confirmation_when_prompted_then_sessions_are_adop
     """AC-4: accepting the prompt adopts."""
     _add_worktree(fleet["myproject"], "myproject-5")
     monkeypatch.setattr("click.confirm", lambda *a, **k: True)
-    code, out, err = run_cli(["ai", "session-audit", "-a"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-a"])
     assert "Adopted myproject-5" in out
 
 
 def test_cli_given_nothing_safe_to_adopt_when_invoked_then_reports_and_exits_nonzero(cli_audit, fleet):
     """AC-7 via the CLI: all skipped is a non-zero exit with reasons."""
-    code, out, err = run_cli(["ai", "session-audit", "-t", "myapp-1", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myapp-1", "-a", "-y"])
     assert code == 1
     assert "Nothing safe to adopt" in out
     assert "already adopted" in out
@@ -1070,7 +1070,7 @@ def test_cli_given_a_bulk_adopt_with_one_refusal_when_invoked_then_the_rest_adop
     _mark_live(fleet, 5454, "myproject-2", fleet["myproject"], session_id=UUID_A)
     _add_worktree(fleet["myproject"], "myproject-5")
 
-    code, out, err = run_cli(["ai", "session-audit", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-a", "-y"])
 
     assert code == 1
     assert "Adopted myproject-5" in out
@@ -1091,7 +1091,7 @@ def test_cli_given_a_collision_during_bulk_adoption_when_invoked_then_the_remedy
 
     monkeypatch.setattr(module, "triage", _blind_triage)
 
-    code, out, err = run_cli(["ai", "session-audit", "-t", "myproject-2", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-2", "-a", "-y"])
 
     assert code == 1
     assert "-c retitle" in err
@@ -1105,10 +1105,10 @@ def test_cli_given_every_option_when_help_requested_then_each_has_a_short_and_lo
     """AC-9 / CLI convention: no long-only flags (CLAUDE.md)."""
     import click
 
-    from ai_cli.main import cmd_session_audit
+    from ai_cli.main import cmd_audit_sessions
 
     seen = 0
-    for param in cmd_session_audit.params:
+    for param in cmd_audit_sessions.params:
         if not isinstance(param, click.Option):
             continue
         seen += 1
@@ -1120,7 +1120,7 @@ def test_cli_given_every_option_when_help_requested_then_each_has_a_short_and_lo
 
 def test_cli_given_help_when_requested_then_both_forms_are_shown():
     """AC-9: the help output itself shows both forms for every option."""
-    code, out, err = run_cli(["ai", "session-audit", "--help"])
+    code, out, err = run_cli(["ai", "audit-sessions", "--help"])
     for short, long_ in (("-r", "--repo"), ("-t", "--title"), ("-a", "--adopt"), ("-n", "--dry-run"), ("-y", "--yes")):
         assert short in out and long_ in out, f"{short}/{long_} missing from --help"
 
@@ -1175,13 +1175,13 @@ def test_cli_given_no_titled_sessions_when_invoked_then_reports_and_exits_zero(t
         "survey",
         lambda **kw: real_survey(**{**kw, "claude_home": tmp_path / "absent", "proc_dir": tmp_path / "proc"}),
     )
-    code, out, err = run_cli(["ai", "session-audit"])
+    code, out, err = run_cli(["ai", "audit-sessions"])
     assert code == 0
     assert "No titled sessions found" in out
 
 
 def test_cli_given_a_filter_matching_nothing_when_invoked_then_says_so(cli_audit):
     """AC-6 + AC-10: a filter that matches nothing reports the narrowed scope."""
-    code, out, err = run_cli(["ai", "session-audit", "-t", "absent-1"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "absent-1"])
     assert code == 0
     assert "matching the filters" in out

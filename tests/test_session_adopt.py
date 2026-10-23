@@ -718,7 +718,7 @@ def test_cli_given_a_failed_probe_when_invoked_then_exits_nonzero(world, existin
     monkeypatch.setattr(module, "adopt_session", _adopt)
     monkeypatch.setattr("ai_cli.session.detect_repo_root", lambda: world["repo"])
     monkeypatch.setattr(module, "probe_resolves", lambda *a, **k: world["tmp"] / "decoy.jsonl")
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
     assert code == 1
     assert "post-adopt check FAILED" in err
 
@@ -1350,13 +1350,13 @@ def cli_world(world, existing_worktree, monkeypatch):
 
 
 def test_cli_given_a_dry_run_when_invoked_then_reports_the_plan_and_exits_zero(cli_world):
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-n"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-n"])
     assert code == 0
     assert "Would adopt myproject-2" in out
 
 
 def test_cli_given_an_adoption_when_confirmed_then_reports_the_resolve_probe(cli_world):
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
     assert code == 0
     assert "resolve probe" in out and f"{UUID}.jsonl" in out
 
@@ -1364,7 +1364,7 @@ def test_cli_given_an_adoption_when_confirmed_then_reports_the_resolve_probe(cli
 def test_cli_given_a_collision_when_invoked_then_exits_nonzero_printing_both_candidates(cli_world):
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt, extra_lines=40)
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
     assert code == 1
     assert UUID in err and OTHER_UUID in err
     assert "MB" in err and "lines=" in err and "cwd=" in err
@@ -1375,7 +1375,7 @@ def test_cli_given_a_collision_and_yes_when_invoked_then_the_gate_still_holds(cl
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     other = _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt)
     before = (cli_world["src_dir"] / f"{UUID}.jsonl").read_bytes()
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
     assert code == 1, "-y must not bypass the duplicate-title gate"
     assert "-y/--yes does not cover it" in err
     assert (cli_world["src_dir"] / f"{UUID}.jsonl").read_bytes() == before
@@ -1383,7 +1383,7 @@ def test_cli_given_a_collision_and_yes_when_invoked_then_the_gate_still_holds(cl
 
 
 def test_cli_given_retitle_without_a_title_or_index_when_invoked_then_refused(cli_world):
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-c", "retitle", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-c", "retitle", "-y"])
     assert code == 1
     assert "human-confirmed title" in err
 
@@ -1392,14 +1392,14 @@ def test_cli_given_retitle_with_a_confirmed_index_when_invoked_then_the_new_titl
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt)
     _add_worktree(cli_world["repo"], "myproject-4")
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-c", "retitle", "-I", "4", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-c", "retitle", "-I", "4", "-y"])
     assert code == 0, err
     assert "retitled 'myproject-2' -> 'myproject-4'" in out
     assert probe_resolves(cli_world["repo"] / ".worktrees" / "myproject-4", "myproject-4", cli_world["home"])
 
 
 def test_cli_given_no_name_and_no_all_flag_when_invoked_then_refused(cli_world):
-    code, out, err = run_cli(["ai", "session-adopt"])
+    code, out, err = run_cli(["ai", "adopt-session"])
     assert code == 1
     assert "NAME is required" in err
 
@@ -1422,7 +1422,7 @@ def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_without_t_then
     cli_world, orphaned_transcript
 ):
     """The control: with neither -s nor -t the adoption cannot find the transcript."""
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
     assert code == 1
     assert f"{UUID}.jsonl" not in out
 
@@ -1430,7 +1430,7 @@ def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_without_t_then
 def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_with_t_then_it_resolves(
     cli_world, orphaned_transcript
 ):
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-t", str(orphaned_transcript), "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-t", str(orphaned_transcript), "-y"])
     assert code == 0, err
     assert "resolve probe" in out and f"{UUID}.jsonl" in out
     adopted = cc_project_dir(cli_world["repo"] / ".worktrees" / "myproject-2", cli_world["home"]) / f"{UUID}.jsonl"
@@ -1439,7 +1439,7 @@ def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_with_t_then_it
 
 def test_cli_given_both_t_and_s_when_invoked_then_refused_before_anything_is_written(cli_world, orphaned_transcript):
     code, out, err = run_cli(
-        ["ai", "session-adopt", "myproject-2", "--transcript", str(orphaned_transcript), "-s", str(cli_world["repo"])]
+        ["ai", "adopt-session", "myproject-2", "--transcript", str(orphaned_transcript), "-s", str(cli_world["repo"])]
     )
     assert code == 1
     assert "-t/--transcript" in err and "-s/--source" in err
@@ -1447,14 +1447,14 @@ def test_cli_given_both_t_and_s_when_invoked_then_refused_before_anything_is_wri
 
 
 def test_cli_given_t_naming_a_transcript_with_another_title_when_invoked_then_refused(cli_world, orphaned_transcript):
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-7", "-t", str(orphaned_transcript), "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-7", "-t", str(orphaned_transcript), "-y"])
     assert code == 1
     assert "myproject-7" in err and str(orphaned_transcript) in err
 
 
 def test_cli_given_a_live_session_when_invoked_then_exits_nonzero(cli_world):
     _mark_live(cli_world, 4242, "myproject-2", cli_world["repo"])
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
     assert code == 1
     assert "still" in err and "running" in err
 
@@ -1462,7 +1462,7 @@ def test_cli_given_a_live_session_when_invoked_then_exits_nonzero(cli_world):
 def test_cli_given_bulk_mode_when_invoked_then_each_session_is_reported(cli_world):
     _write_transcript(cli_world["src_dir"], OTHER_UUID, "myproject-3", cli_world["repo"])
     _add_worktree(cli_world["repo"], "myproject-3")
-    code, out, err = run_cli(["ai", "session-adopt", "-a", "-n"])
+    code, out, err = run_cli(["ai", "adopt-session", "-a", "-n"])
     assert code == 0
     assert "myproject-2" in out and "myproject-3" in out
     assert "2 adopted, 0 skipped" in out
@@ -1473,7 +1473,7 @@ def test_cli_given_bulk_mode_with_a_collision_when_invoked_then_the_rest_still_a
     _add_worktree(cli_world["repo"], "myproject-3")
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     _write_transcript(cc_project_dir(wt, cli_world["home"]), "33333333-2222-4333-8444-555555555555", "myproject-2", wt)
-    code, out, err = run_cli(["ai", "session-adopt", "-a", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "-a", "-y"])
     assert code == 1
     assert "Paused on myproject-2" in err
     assert "Adopted myproject-3" in out
@@ -1482,14 +1482,14 @@ def test_cli_given_bulk_mode_with_a_collision_when_invoked_then_the_rest_still_a
 
 def test_cli_given_bulk_mode_with_nothing_titled_when_invoked_then_reports_nothing_to_adopt(cli_world, monkeypatch):
     monkeypatch.setattr("ai_cli.session_adopt.titled_sessions", lambda *a, **k: [])
-    code, out, err = run_cli(["ai", "session-adopt", "-a"])
+    code, out, err = run_cli(["ai", "adopt-session", "-a"])
     assert code == 0
     assert "No titled sessions" in out
 
 
 def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted(cli_world, monkeypatch):
     monkeypatch.setattr("click.confirm", lambda *a, **k: False)
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
     assert code == 1
     assert "Aborted" in err
     assert (cli_world["src_dir"] / f"{UUID}.jsonl").is_file()
@@ -1497,22 +1497,22 @@ def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted
 
 def test_cli_given_an_accepted_confirmation_when_prompted_then_the_session_is_adopted(cli_world, monkeypatch):
     monkeypatch.setattr("click.confirm", lambda *a, **k: True)
-    code, out, err = run_cli(["ai", "session-adopt", "myproject-2"])
+    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
     assert code == 0
     assert "Adopted myproject-2" in out
 
 
 def test_cli_given_an_index_on_an_unindexed_name_when_invoked_then_refused(cli_world):
-    code, out, err = run_cli(["ai", "session-adopt", "noindex", "-I", "4", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "noindex", "-I", "4", "-y"])
     assert code == 1
     assert "cannot derive a prefix" in err
 
 
 def test_cli_given_every_option_when_help_requested_then_each_has_a_short_and_long_form():
     """CLI convention: no long-only flags (CLAUDE.md)."""
-    from ai_cli.main import cmd_session_adopt
+    from ai_cli.main import cmd_adopt_session
 
-    for param in cmd_session_adopt.params:
+    for param in cmd_adopt_session.params:
         if not isinstance(param, __import__("click").Option):
             continue
         shorts = [o for o in param.opts if len(o) == 2 and o.startswith("-") and not o.startswith("--")]

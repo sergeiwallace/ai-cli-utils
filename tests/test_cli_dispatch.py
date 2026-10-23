@@ -6,7 +6,7 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 - ``cmd_quota_statusline_part`` / ``cmd_quota_sync`` (1554-1563)
 - ``cmd_spend_gemini_cli`` (1616-1618)
 - ``cmd_cc_usage_push`` + ``cmd_cc_usage_status`` (1629-1653)
-- ``cmd_vpn_watch`` / ``cmd_ps`` (1793-1796, 1806-1808)
+- ``cmd_watch_vpn`` / ``cmd_ps`` (1793-1796, 1806-1808)
 - ``sync repair-worktree`` / ``cleanup`` / unknown (1846-1887)
 - ``cli()`` error paths (1936, 1946, 1952)
 - reconnect transport JSON error (875-876)
@@ -295,13 +295,13 @@ class TestCmdCcUsage:
         assert "never" in stdout
 
 
-# --- `ai vpn-watch` / `ai ps` ---
+# --- `ai watch-vpn` / `ai ps` ---
 
 
 class TestCmdVpnWatchAndPs:
     def test_given_vpn_watch_when_invoked_then_dispatches(self):
         with patch("ai_cli.vpn_watch.run_vpn_watch") as mock_fn:
-            exit_code, _, _ = run_cli(["ai", "vpn-watch"])
+            exit_code, _, _ = run_cli(["ai", "watch-vpn"])
         assert exit_code == 0
         mock_fn.assert_called_once()
 

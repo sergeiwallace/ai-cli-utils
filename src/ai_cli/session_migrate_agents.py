@@ -3,7 +3,7 @@
 A session ``<old>`` that delegates work leaves, in any repository it touched, agent
 worktrees under ``<repo>/.worktrees/<old>-agents/<leaf>`` and branches named
 ``wt/<old>/<leaf>``, checked out there or parked. Both keep naming the old session
-after ``ai session-migrate`` renames its slot, so this module moves them too:
+after ``ai migrate-session`` renames its slot, so this module moves them too:
 
 * every registered worktree under ``<old>-agents/`` moves to ``<new>-agents/<leaf>``
   with ``git worktree move`` (by hand plus ``git worktree repair`` for one holding

@@ -524,7 +524,7 @@ notify_on_exit = true
 enabled = true
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
-## its <prefix>-provenance.json file. `ai session-migrate` rewrites them; unset, it leaves
+## its <prefix>-provenance.json file. `ai migrate-session` rewrites them; unset, it leaves
 ## no such markers to rewrite.
 # marker_prefix = "myenv"
 
@@ -625,7 +625,7 @@ stale_after_seconds = 600
 # project = "my-project" # default project (directory name under ~/projects/)
 ## Optional VS Code Remote-SSH/SSH config alias for iTerm2 Cmd-click routing.
 # vscode_authority = "server"
-## VPN poll interval in seconds for the vpn-watch daemon (default: 3)
+## VPN poll interval in seconds for the watch-vpn daemon (default: 3)
 # vpn_poll_interval = 3
 ## SSH keepalive for the interactive session (AI-CLI-w679). An established session sends
 ## nothing while you read rather than type, and an idle flow is what gets reaped -- by a
