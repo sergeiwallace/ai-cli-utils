@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout's naming policy is newer than the published one. `ai add-name NAME
   [-r/--reason TEXT]` adds a name to the database. `ai remove-name NAME` removes a
   name that was added by hand.
+- New sessions get human names: `ai c` titles a session
+  `{repo-alias}-{host-alias}-[{label}-]{name}`, reserving the name in the registry
+  before anything is created, with `ai c ada` reattaching to a held name. `-N/--name
+  NAME` asks for a name by hand and offers to add one the database lacks;
+  `-w/--with-name` and `-u/--no-name` keep or drop the name after a label;
+  `-S/--session-names` and `-I/--no-session-names` override the `[session_names]`
+  config for one launch. Offline, a launch takes a reserved spare and says so.
+  `ai show-name-config` prints each setting with the layer it came from. Session
+  scripts, chief-of-staff slots, adoption, audit and iTerm2 colours read a
+  human-named title as they read an index-named one.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and

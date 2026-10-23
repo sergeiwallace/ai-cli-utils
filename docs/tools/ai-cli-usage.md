@@ -81,12 +81,21 @@ Behaviour is split across focused modules so `main.py` stays thin:
 ### ai c
 
 ```bash
-ai c [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
+ai c [N|LABEL|NAME] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```text
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
-- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/session-N` on branch `wt-session-N`.
+- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/<title>` on branch `wt-<title>`.
+- `LABEL` — an optional label the title carries: `ai c review` is `myrepo-box-review-ada` with human
+  names on, `myrepo-box-review-1` without.
+- `NAME` — a human name this repo already holds on this host reattaches to that session
+  (`ai c ada`); a positional name never creates one.
+- `-N`/`--name NAME` — name the new session with this first name. It is checked like a picked
+  one; a name not yet in the name database asks to be added. Never passed to the engine.
+- `-w`/`--with-name`, `-u`/`--no-name` — with a label, keep or drop the first name for this launch.
+- `-S`/`--session-names`, `-I`/`--no-session-names` — use human names or index names for this
+  launch, whatever the config says.
 - `-p PROJECT` — the project to launch in, given either as a registered task prefix or as the
   name of a repository directory under the projects directory. The launcher enters that
   directory before it creates the worktree, and refuses the launch when the directory is not
@@ -100,7 +109,9 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   every write, so it creates no worktree or branch, registers no workspace trust, reaps
   no stale sessions, and does not auto-update the CLI.
 
-Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
+Session naming convention: the title is `{repo-alias}-{host-alias}-[{label}-]{N}`, or with
+human names `{repo-alias}-{host-alias}-[{label}-]{name}`; its tmux session is `c-<title>` (local) or
+`c-r-<title>` (remote). See README § Session names for how a name is picked and reserved.
 The name records which machine launched the session. `ai c <name> -R` attaches to a live
 session of that name on the remote host whichever way it was launched, so a session the
 remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a

@@ -1760,7 +1760,12 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
 
 
 def _request_remote_session_allocation(
-    ssh_args: list[str], engine: str, project_prefix: str, name: str, remote_shell: str
+    ssh_args: list[str],
+    engine: str,
+    project_prefix: str,
+    name: str,
+    remote_shell: str,
+    naming_args: "list[str] | tuple[str, ...]" = (),
 ) -> tuple[str, str]:
     """Return the canonical session identity allocated by the remote host.
 
@@ -1773,6 +1778,7 @@ def _request_remote_session_allocation(
     remote_command = (
         'export PATH="$HOME/.local/bin:$PATH"; '
         f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
+        + "".join(f" {shlex.quote(arg)}" for arg in naming_args)
     )
     result = subprocess.run(
         [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
@@ -2069,6 +2075,7 @@ def _handle_internal(argv: list[str]) -> None:
             )
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
+        naming, project = _naming_from_internal_args(argv[4:])
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
             naming_prefix = _session_naming.naming_prefix(
@@ -2077,8 +2084,23 @@ def _handle_internal(argv: list[str]) -> None:
         except _session_naming.HostAliasError as exc:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
-        session_id, ai_name = _session.build_session_name(
-            engine, naming_prefix, name, config, is_remote=True, use_tmux=use_tmux, legacy_prefix=project_prefix
+        # The remote host names and reserves the session, so the row's machine is the
+        # host that can see the worktree and release the name.
+        session_id, ai_name = _resolve_session_identity(
+            engine,
+            naming_prefix,
+            name,
+            config,
+            is_remote=True,
+            use_tmux=use_tmux,
+            legacy_prefix=project_prefix,
+            naming=naming,
+            repo=project or _config.get_current_project_name(),
+            repo_alias=project_prefix,
+            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            worktree=bool(config.get("worktree", {}).get("enabled", True)),
+            dry_run=False,
+            reporter=_launch_reporter.active(),
         )
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
         sys.exit(0)
@@ -3197,6 +3219,23 @@ def _exit_missing_project_dir(project_name: str, project_dir: Path, source: str,
     sys.exit(1)
 
 
+_NAMING_FLAGS_WITH_VALUE = ("-N", "--name")
+_NAMING_FLAGS = ("-w", "--with-name", "-u", "--no-name", "-S", "--session-names", "-I", "--no-session-names")
+
+
+def _without_naming_flags(argv: list[str]) -> list[str]:
+    kept: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg in _NAMING_FLAGS_WITH_VALUE:
+            skip = True
+        elif not (arg in _NAMING_FLAGS or arg.startswith("--name=")):
+            kept.append(arg)
+    return kept
+
+
 def _relaunch_argv(name: str, session_name: str) -> list[str]:
     """The ``ai`` command line that brings back this exact session when re-run.
 
@@ -3208,6 +3247,9 @@ def _relaunch_argv(name: str, session_name: str) -> list[str]:
     argv = ["ai", *sys.argv[1:]]
     if name and (name.isdigit() or name.rsplit("-", 1)[-1].isdigit()):
         return argv
+    # A human-named session is brought back by its full title, which reattaches; the
+    # naming flags that chose it would ask for a second reservation.
+    argv = _without_naming_flags(argv)
     if name and name in argv[1:]:
         argv[len(argv) - 1 - argv[::-1].index(name)] = session_name
         return argv
@@ -3304,6 +3346,373 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
             reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
 
 
+@dataclass(frozen=True)
+class _NamingRequest:
+    """The launch flags that decide how a new session is named."""
+
+    custom: str | None = None
+    with_name: bool = False
+    no_name: bool = False
+    session_names: bool | None = None
+
+    @property
+    def label_flag(self) -> str | None:
+        if self.with_name and self.no_name:
+            raise click.UsageError("-w/--with-name and -u/--no-name cannot both be given")
+        return "with" if self.with_name else "no" if self.no_name else None
+
+    @classmethod
+    def from_options(cls, options: dict) -> "_NamingRequest":
+        enabled = options.pop("session_names", False)
+        disabled = options.pop("no_session_names", False)
+        if enabled and disabled:
+            raise click.UsageError("-S/--session-names and -I/--no-session-names cannot both be given")
+        return cls(
+            custom=(options.pop("human_name", None) or None),
+            with_name=options.pop("with_name", False),
+            no_name=options.pop("no_name", False),
+            session_names=True if enabled else False if disabled else None,
+        )
+
+
+def _naming_cli_args(naming: _NamingRequest) -> list[str]:
+    """The naming flags of ``naming`` as the remote allocator reads them."""
+    args: list[str] = []
+    if naming.custom:
+        args += ["--name", naming.custom]
+    if naming.with_name:
+        args.append("--with-name")
+    if naming.no_name:
+        args.append("--no-name")
+    if naming.session_names is True:
+        args.append("--session-names")
+    if naming.session_names is False:
+        args.append("--no-session-names")
+    return args
+
+
+def _naming_from_internal_args(args: list[str]) -> tuple[_NamingRequest, str]:
+    """``_naming_cli_args``'s flags, plus ``--project``, read back on the remote host."""
+    custom = project = None
+    flags = set()
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("--name", "--project") and rest:
+            value = rest.pop(0)
+            custom, project = (value, project) if arg == "--name" else (custom, value)
+        else:
+            flags.add(arg)
+    return (
+        _NamingRequest(
+            custom=custom,
+            with_name="--with-name" in flags,
+            no_name="--no-name" in flags,
+            session_names=True if "--session-names" in flags else False if "--no-session-names" in flags else None,
+        ),
+        project or "",
+    )
+
+
+def _session_id(engine: str, title: str, is_remote: bool) -> str:
+    return f"{engine}{'-r' if is_remote else ''}-{title}"
+
+
+def _naming_exit(reporter: LaunchReporter, message: str, code: int) -> NoReturn:
+    reporter.error("session", message)
+    sys.exit(code)
+
+
+def _resolve_session_identity(
+    engine: str,
+    naming_prefix: str,
+    name: str,
+    config: dict,
+    *,
+    is_remote: bool,
+    use_tmux: bool,
+    legacy_prefix: str,
+    naming: _NamingRequest,
+    repo: str,
+    repo_alias: str,
+    host_alias: str,
+    worktree: bool,
+    dry_run: bool,
+    reporter: LaunchReporter,
+) -> tuple[str, str]:
+    """``(tmux session, ai_name)`` for this launch.
+
+    With human names resolved off (and no ``--name``), or for an explicit index slot,
+    this is :func:`ai_cli.session.build_session_name` exactly as before. Otherwise the
+    title is composed by AC-DT-1 and its token is reserved in the name registry before
+    anything else exists; a dry run plans the same title and reserves nothing.
+    """
+    from . import name_commands, name_prompt, session_title
+    from . import name_registry as _names
+
+    def index_names() -> tuple[str, str]:
+        return _session.build_session_name(
+            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=use_tmux, legacy_prefix=legacy_prefix
+        )
+
+    try:
+        flag = naming.label_flag
+    except click.UsageError as exc:
+        _naming_exit(reporter, str(exc), 2)
+    if naming.session_names is False and not naming.custom:
+        return index_names()
+    try:
+        discovery = _names.discover()
+    except _names.RegistryError as exc:
+        _naming_exit(reporter, str(exc), 1)
+    registry = discovery.registry
+    host = _session_naming.host_id()
+    policy_config = _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.GitRegistry) else None
+    try:
+        settings = session_title.resolve_settings(
+            enabled_flag=naming.session_names,
+            with_label_flag=None,
+            policy_config=policy_config,
+            host=host,
+            policy_source=_names.policy_source(registry) if registry else "config/session-names.toml",
+        )
+    except session_title.TitleError as exc:
+        _naming_exit(reporter, str(exc), 2)
+    if not settings["enabled"].value and not naming.custom:
+        return index_names()
+    if registry is None:
+        if naming.custom:
+            _naming_exit(reporter, f"--name cannot be honoured: {discovery.reason}", 1)
+        reporter.warning("session", discovery.reason)
+        return index_names()
+    if not dry_run:
+        name_commands.publish_pending(registry)
+
+    clean = _session._slot_name(name, naming_prefix)
+    name_set = _names.known_names(registry)
+    positional = session_title.classify_positional(clean, name_set)
+    if positional.kind == "slot" and not naming.custom:
+        return index_names()
+    if positional.kind == "title" and not naming.custom:
+        return _reattach_title(
+            engine, naming_prefix, positional, registry, host, is_remote=is_remote, use_tmux=use_tmux, reporter=reporter
+        )
+
+    label = positional.value or None
+    policy = "drop" if flag == "no" else "keep" if flag == "with" else str(settings["name_with_label"].value)
+    try:
+        if label:
+            session_title.check_label(label, name_set)
+        kind = session_title.compose_kind(label=label, custom=naming.custom, flag=flag, policy=policy)
+    except session_title.TitleError as exc:
+        _naming_exit(reporter, str(exc), 2)
+    slot = _names.Slot(
+        repo=repo,
+        repo_alias=repo_alias.lower(),
+        host_alias=host_alias,
+        label=label,
+        machine=host,
+        client=session_title.CLIENTS.get(engine, engine),
+        worktree=worktree,
+    )
+    try:
+        limits = session_title.resolve_limits(registry)
+        if limits.warning:
+            reporter.warning("session", limits.warning)
+        if kind == session_title.LABEL:
+            return _reserve_label_title(
+                engine,
+                slot,
+                label or "",
+                registry,
+                is_remote=is_remote,
+                use_tmux=use_tmux,
+                dry_run=dry_run,
+                reporter=reporter,
+            )
+        if kind == session_title.CUSTOM:
+            return _reserve_custom_title(
+                engine, slot, naming.custom or "", registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter
+            )
+        return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
+    except name_prompt.PromptExit as exc:
+        _naming_exit(reporter, exc.message, exc.code)
+    except (_names.NoNameListError, _names.PolicyUnknownError) as exc:
+        _naming_exit(reporter, str(exc), 1)
+    except _session_naming.NamePoolExhaustedError as exc:
+        _naming_exit(reporter, str(exc), 1)
+    except _names.SparesExhaustedError as exc:
+        _naming_exit(reporter, str(exc), name_prompt.EXIT_UNREACHABLE)
+    except _names.HandChosenRefusedError as exc:
+        _naming_exit(reporter, str(exc), 2)
+    except _names.RegistryError as exc:
+        _naming_exit(reporter, str(exc), name_prompt.EXIT_UNREACHABLE)
+
+
+def _reattach_title(
+    engine: str,
+    naming_prefix: str,
+    positional,
+    registry,
+    host: str,
+    *,
+    is_remote: bool,
+    use_tmux: bool,
+    reporter: LaunchReporter,
+) -> tuple[str, str]:
+    """Reattach to a human-named title this repository holds on this machine, or refuse.
+
+    A name is chosen with ``--name``, never by typing it positionally, so a positional
+    name reaches only a session that already exists: a live tmux session, or a row this
+    machine holds for this title, whose worktree and conversation a relaunch resumes.
+    """
+    from . import name_registry as _names
+
+    title = _session_naming.compose_session_name(naming_prefix, positional.value)
+    existing = (
+        _session._resolve_explicit_tmux_slot(engine, naming_prefix, positional.value)
+        if use_tmux
+        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value)
+    )
+    if existing:
+        return existing
+    try:
+        snapshot = registry.snapshot()
+    except _names.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+    row = snapshot.rows.get(positional.name)
+    if row and row.get("title") == title and row.get("machine") == host:
+        return _session._new_session_display_name(engine, naming_prefix, positional.value, is_remote), title
+    holder = snapshot.holder(positional.name)
+    held = f"{positional.name} is held by {holder}" if holder else f"no session on {host} is named {title}"
+    _naming_exit(
+        reporter,
+        f"{held}. A first name is chosen with --name, never positionally: to launch a new session under it, "
+        f"run with `--name {positional.name}`.",
+        2,
+    )
+
+
+def _reserve_label_title(
+    engine: str, slot, label: str, registry, *, is_remote: bool, use_tmux: bool, dry_run: bool, reporter
+) -> tuple[str, str]:
+    """A drop-policy title ``{stem}-{label}``: reattach where this machine holds it, else reserve its label token."""
+    from . import name_registry as _names
+
+    title = f"{slot.stem}-{label}"
+    token = label.rsplit("-", 1)[-1]
+    try:
+        snapshot = registry.snapshot()
+    except _names.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+    row = snapshot.rows.get(token)
+    if row is not None:
+        if row.get("kind") == "label" and row.get("title") == title and row.get("machine") == slot.machine:
+            existing = (
+                _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
+                if use_tmux
+                else _session._resolve_explicit_bare_slot(engine, slot.stem, label)
+            )
+            return existing or (_session_id(engine, title, is_remote), title)
+        _naming_exit(reporter, f"the label's last token {token} is held by {snapshot.holder(token)}", 2)
+    if dry_run:
+        reporter.phase("session").outcome(f"planned {title} (label token {token}; reserves nothing)")
+        return _session_id(engine, title, is_remote), title
+    reservation = _names.reserve_label(registry, slot, label)
+    reporter.detail("session", f"reserved the label token {token} for {reservation.title}")
+    return _session_id(engine, reservation.title, is_remote), reservation.title
+
+
+def _prompt_line(prompt: str) -> str | None:
+    """One line typed at a naming prompt; None at end of input."""
+    line = _out.ask(Tag.NAMES, "session", prompt, err=True)
+    return None if line == "" else line.rstrip("\r\n")
+
+
+def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote: bool, dry_run: bool, reporter):
+    """The ``--name`` flow: the checks, the prompts and the reservation of AC-SM-1."""
+    from . import name_prompt
+    from . import name_registry as _names
+
+    try:
+        snapshot = registry.snapshot()
+    except _names.RegistryUnreachableError as exc:
+        raise name_prompt.PromptExit(
+            name_prompt.EXIT_UNREACHABLE,
+            f"{value.lower()} cannot be proved free because the registry is unreachable ({exc}); "
+            "nothing was created and no spare was taken",
+        ) from exc
+    words = _names.common_words(snapshot.policy)
+    if dry_run:
+        verdict, reason = _names.check_hand_chosen(snapshot, value.lower(), slot, words)
+        title = slot.title_for(value.lower())
+        if verdict in ("held", "confusable", "word", "limits"):
+            _naming_exit(reporter, f"dry run: {reason}", 2)
+        note = "would ask to add it to the name database" if verdict == "unknown" else "free"
+        reporter.phase("session").outcome(f"planned {title} ({note}; reserves nothing)")
+        return _session_id(engine, title, is_remote), title
+    io = name_prompt.PromptIO(
+        terminal=_config._can_prompt(),
+        ask=_prompt_line,
+        say=lambda message: reporter.warning("session", message),
+    )
+    reservation = name_prompt.choose_by_hand(
+        registry,
+        slot,
+        value,
+        io=io,
+        words=words,
+        added_by=f"{os.environ.get('AI_TMUX_SESSION') or 'cli'}@{slot.machine}",
+    )
+    added = " and added it to the name database" if reservation.added_to_database else ""
+    reporter.detail("session", f"reserved {reservation.name}{added}")
+    return _session_id(engine, reservation.title, is_remote), reservation.title
+
+
+def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_run: bool, reporter):
+    """Pick a name, reserve it (or take a spare when the registry is unreachable), and report the pick."""
+    from . import name_registry as _names
+
+    spool = _names.read_spool()
+    try:
+        snapshot = registry.snapshot()
+    except _names.RegistryUnreachableError:
+        snapshot = None
+    words = None
+    if snapshot is not None and snapshot.manual:
+        with contextlib.suppress(_names.RegistryError):
+            words = _names.common_words(snapshot.policy)
+    if dry_run:
+        snapshot = snapshot or registry.snapshot(fetch=False)
+        request, warnings = _names.pick_request(registry, snapshot, slot, spool=spool, words=words)
+        for warning in warnings:
+            reporter.warning("session", warning)
+        pick = _session_naming.pick_name(request)
+        title = slot.title_for(pick.name)
+        reporter.phase("session").outcome(
+            f"planned {title}: a {len(pick.name)}-letter name, tier {pick.tier}, picked from {pick.run_size} "
+            f"candidates in the run ({pick.free_total} free); reserves nothing"
+        )
+        return _session_id(engine, title, is_remote), title
+    try:
+        if snapshot is None:
+            raise _names.RegistryUnreachableError("the registry fetch did not complete")
+        reservation = _names.reserve_picked(registry, slot, spool=spool, words=words)
+    except (_names.RegistryUnreachableError, _names.RegistryContendedError):
+        reservation = _names.take_spare(registry, slot)
+        reporter.warning("session", f"offline: using reserved spare {reservation.name}")
+        return _session_id(engine, reservation.title, is_remote), reservation.title
+    for warning in reservation.warnings:
+        reporter.warning("session", warning)
+    low_water = int(snapshot.policy.get("low_water", 25))
+    if reservation.pick is not None:
+        warning = _session_naming.low_water_warning(reservation.pick, low_water)  # type: ignore[arg-type]
+        if warning:
+            reporter.warning("session", warning)
+    reporter.detail("session", f"reserved {reservation.name} ({getattr(reservation.pick, 'tier', '')})")
+    return _session_id(engine, reservation.title, is_remote), reservation.title
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -3328,6 +3737,7 @@ def _do_session_launch(
     detached: bool = False,
     replay_recipe: dict | None = None,
     attach: bool = True,
+    naming: "_NamingRequest | None" = None,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -3808,7 +4218,12 @@ def _do_session_launch(
             with reporter.phase("session", "allocating remote session") as _session_phase:
                 try:
                     remote_session_id, _ = _request_remote_session_allocation(
-                        preflight_ssh_args, engine, remote_prefix, name, remote_shell
+                        preflight_ssh_args,
+                        engine,
+                        remote_prefix,
+                        name,
+                        remote_shell,
+                        [*_naming_cli_args(naming or _NamingRequest()), "--project", remote_project],
                     )
                 except RuntimeError as exc:
                     reporter.error("session", str(exc))
@@ -4055,17 +4470,29 @@ def _do_session_launch(
         sys.exit(1)
     prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
 
+    worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
+
+    def resolve_identity(*, plan_only: bool) -> tuple[str, str]:
+        return _resolve_session_identity(
+            engine,
+            naming_prefix,
+            name,
+            config,
+            is_remote=is_remote,
+            use_tmux=not bare,
+            legacy_prefix=project_prefix,
+            naming=naming or _NamingRequest(),
+            repo=_config.get_current_project_name(),
+            repo_alias=project_prefix,
+            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            worktree=worktree_wanted,
+            dry_run=plan_only,
+            reporter=reporter,
+        )
+
     if dry_run:
         try:
-            session_id, ai_name = _session.build_session_name(
-                engine,
-                naming_prefix,
-                name,
-                config,
-                is_remote=is_remote,
-                use_tmux=not bare,
-                legacy_prefix=project_prefix,
-            )
+            session_id, ai_name = resolve_identity(plan_only=True)
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
@@ -4139,15 +4566,7 @@ def _do_session_launch(
             session_id = replay_recipe["session_name"]
             ai_name = session_id.removeprefix(f"{engine}-").removeprefix("r-")
         else:
-            session_id, ai_name = _session.build_session_name(
-                engine,
-                naming_prefix,
-                name,
-                config,
-                is_remote=is_remote,
-                use_tmux=not bare,
-                legacy_prefix=project_prefix,
-            )
+            session_id, ai_name = resolve_identity(plan_only=False)
     except _session.SessionSlotAmbiguityError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
@@ -4816,6 +5235,7 @@ def _session_command(engine: str):
         verbose,
         dry_run=False,
         remote_args=(),
+        naming=None,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -4890,6 +5310,7 @@ def _session_command(engine: str):
                 dry_run=dry_run,
                 remote_args=list(remote_args),
                 attach=sys.stdin.isatty(),
+                naming=naming,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -5137,6 +5558,18 @@ def _session_options(func):
         default="",
         help="With -F: chief home directory (default: <[chief_of_staff] homes_dir>/<machine-key>)",
     )(func)
+    # Human session names. -N/--name is declared, so it is never forwarded to the engine.
+    func = click.option(
+        "-N",
+        "--name",
+        "human_name",
+        default=None,
+        help="Use this first name for the new session",
+    )(func)
+    func = click.option("-w", "--with-name", is_flag=True, help="With a label, keep a first name after it")(func)
+    func = click.option("-u", "--no-name", is_flag=True, help="With a label, drop the first name")(func)
+    func = click.option("-S", "--session-names", is_flag=True, help="Use a first name for this launch")(func)
+    func = click.option("-I", "--no-session-names", is_flag=True, help="Use an index for this launch")(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -5217,7 +5650,9 @@ def _running_chief(registration: dict | None, naming_prefix: str, session_name: 
     return (*found[0], False) if found else None
 
 
-def _prepare_chief_launch(engine: str, machine_key: str, fm_home: str, options: dict) -> list[str]:
+def _prepare_chief_launch(
+    engine: str, machine_key: str, fm_home: str, options: dict, naming: "_NamingRequest | None" = None
+) -> list[str]:
     """Turn ``options`` into a chief-of-staff launch plan, or refuse before anything exists.
 
     Shared by ``--chief`` on every engine command and by ``ai cos`` (the Claude
@@ -5386,12 +5821,28 @@ def _prepare_chief_launch(engine: str, machine_key: str, fm_home: str, options: 
                 options["resume"] = False
 
     try:
-        tmux_target, ai_name = _session.build_session_name(
-            engine, naming_prefix, session_name, config, is_remote=is_remote, use_tmux=not bare, legacy_prefix=prefix
+        tmux_target, ai_name = _resolve_session_identity(
+            engine,
+            naming_prefix,
+            session_name,
+            config,
+            is_remote=is_remote,
+            use_tmux=not bare,
+            legacy_prefix=prefix,
+            naming=naming or _NamingRequest(),
+            repo=chief_project,
+            repo_alias=prefix,
+            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            worktree=not options.get("no_worktree"),
+            dry_run=dry_run,
+            reporter=_launch_reporter.active(),
         )
     except _session.SessionSlotAmbiguityError as exc:
         _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
+    # A human name is reserved here, once. The ordinary launch that follows is handed the
+    # full title, which it reattaches to rather than picking a second name.
+    human_named = not ai_name.rsplit("-", 1)[-1].isdigit()
 
     if resuming and resumed_name != ai_name:
         # The host now names its chiefs differently (a new host alias): relaunching under the
@@ -5438,7 +5889,7 @@ def _prepare_chief_launch(engine: str, machine_key: str, fm_home: str, options: 
         register(ai_name, "" if bare else tmux_target)
     os.environ[_chief_of_staff.FM_HOME_ENV] = str(home)
     os.environ[_chief_of_staff.ROLE_ENV] = _chief_of_staff.ROLE
-    options["name"] = session_name
+    options["name"] = ai_name if human_named and not dry_run else session_name
     return []
 
 
@@ -5459,6 +5910,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
+    naming = _NamingRequest.from_options(options)
     name = str(options.get("name") or "")
     chief_name = _chief_of_staff.setting("session_name").casefold()
     if chief_name and name.casefold() == chief_name and ctx.args and ctx.args[0].isdigit():
@@ -5479,7 +5931,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     remote_args: list[str] = []
     try:
         if chief:
-            remote_args = _prepare_chief_launch(engine, machine_key, fm_home, options)
+            remote_args = _prepare_chief_launch(engine, machine_key, fm_home, options, naming)
         elif machine_key or fm_home:
             raise click.UsageError(
                 "-k/--machine-key and -H/--fm-home name a chief-of-staff home; "
@@ -5490,7 +5942,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             # role and home through the inherited environment.
             os.environ.pop(_chief_of_staff.ROLE_ENV, None)
             os.environ.pop(_chief_of_staff.FM_HOME_ENV, None)
-        _session_command(engine)(ctx, **options, remote_args=remote_args)
+        _session_command(engine)(ctx, **options, remote_args=remote_args, naming=naming)
     except SystemExit as exc:
         # As the remote side of -R, a launch that refused before handing off exits with a
         # code of its own, so the dispatcher's reconnect ladder can tell a refusal, which

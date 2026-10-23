@@ -740,6 +740,22 @@ def test_triage_given_a_title_without_an_index_when_triaged_then_skipped(fleet, 
     assert "not <prefix>-<index>" in reason
 
 
+def test_given_a_human_named_title_when_audited_then_its_name_and_label_are_reported(fleet, audit, monkeypatch):
+    """T-3.6: a session whose title ends in a session name is addressable, and the audit says by what."""
+    monkeypatch.setattr("ai_cli.name_registry.known_names", lambda registry=None: frozenset({"ada"}))
+    monkeypatch.setattr("ai_cli.session_audit._label_of", lambda prefix, repo_root: "review")
+    _write_transcript(fleet["home"], UUID_B[:-1] + "9", "myproject-box-review-ada", fleet["myproject"] / "sub")
+
+    record = next(record for record in audit().sessions if record.title == "myproject-box-review-ada")
+    _, skipped = triage(audit())
+
+    assert (record.name, record.label, record.index) == ("ada", "review", None)
+    assert "name=ada label=review" in record.describe()
+    assert not [
+        reason for skipped_record, reason in skipped if skipped_record.title == record.title and "address" in reason
+    ]
+
+
 def test_triage_given_a_transcript_with_no_recorded_cwd_when_triaged_then_skipped(fleet, audit):
     """AC-4: without a cwd there is no way to know which directory to adopt from."""
     project_dir = cc_project_dir(fleet["myproject"], fleet["home"])

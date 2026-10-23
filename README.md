@@ -451,6 +451,73 @@ ai c review     # myrepo-box-review-1
 ai c 3          # myrepo-box-3 (or the existing session in that slot)
 ```
 
+##### Human session names
+
+With human names on, a new session ends in a short first name instead of `N`:
+`{repo-alias}-{host-alias}-[{label}-]{name}`, for example `myrepo-box-ada` or
+`myrepo-box-review-ada`. The name is unique on every machine that shares a name
+registry, so "the ada session" names one session wherever it runs.
+
+```bash
+ai c                # myrepo-box-ada: the shortest free name, then one sharing the alias's letters
+ai c review         # myrepo-box-review-ada
+ai c -N cleo        # myrepo-box-cleo: choose the name yourself (the label stays positional)
+ai c -N cleo review # myrepo-box-review-cleo
+ai c ada            # reattaches to myrepo-box-ada if this repo holds it here; never creates it
+ai c 3              # an index slot, exactly as before
+```
+
+| Flag | Effect for this launch |
+|---|---|
+| `-N/--name NAME` | Use this first name. It is never passed to the engine. |
+| `-w/--with-name` | With a label, keep a first name after it. |
+| `-u/--no-name` | With a label, drop the first name: `myrepo-box-review`. |
+| `-S/--session-names` | Use a first name, whatever the config says. |
+| `-I/--no-session-names` | Use an index, whatever the config says. |
+
+A name is picked from the name database: a generated list of first names of 3 to 4
+letters with common English words removed, plus any name added by hand. The picker
+never hands out a held name, a name one typo away from a held name, or a name whose
+title would be a prefix of another session's. A name you choose with `-N` passes the
+same checks. If it is not in the database yet, `ai` asks
+`cleo is not in the name database. Add it? [y/n]`. Answering `n`, or choosing a name
+that is refused, leads to `Name to use instead, or "auto" to pick one:`, which takes
+another name (added without a second question) or `auto`. A value outside the limits
+is refused with the limits printed, and the question repeats until a valid answer,
+end of input or Ctrl-C (exit 130, nothing created). Without a terminal there is no
+one to ask, so a refused or unknown name exits 2; `ai add-name NAME` adds one first.
+
+Settings live in `[session_names]` in `config.toml`; a new config file has
+`enabled = true`:
+
+```toml
+[session_names]
+enabled = true            # AI_CLI_SESSION_NAMES=1 or 0 overrides it
+name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
+min_name_length = 3       # used only where no shared name registry exists
+max_name_length = 4       # used only where no shared name registry exists
+```
+
+The registry is the first repository under the projects directory that ships
+`config/session-names.toml`. That file names a git ref, and every machine reserves
+names on it with a fast-forward push, so two machines can never take the same name.
+It also sets the length limits for every machine that uses it, plus per-host
+`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With no such
+repository, the registry is a local directory seeded with the shipped list.
+`ai show-name-config` prints each setting with the layer that set it.
+
+Offline, a launch takes one of the spare names its machine reserved earlier and
+prints `offline: using reserved spare <name>`; with none left it refuses before
+creating anything. The next `ai` command that reaches the registry publishes the
+activation.
+
+| Command | Effect |
+|---|---|
+| `ai show-name-config` | Each naming setting, its value and the layer that set it. |
+| `ai add-name NAME [-r/--reason TEXT]` | Add a name to the database without a prompt. |
+| `ai remove-name NAME` | Remove a name that was added by hand, unless it is held. |
+| `ai sync-names [-d/--dry-run]` | Regenerate the list when this checkout's naming policy is newer than the published one. |
+
 `{repo-alias}` is the repository's registered task prefix (`ai register -x`).
 Where it comes from a persistent `config/fleet-projects.toml` registry, from
 `ai register -x` or from the registration prompt, it must be lowercase letters

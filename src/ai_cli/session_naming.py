@@ -552,3 +552,15 @@ def low_water_warning(pick: NamePick, low_water: int) -> str | None:
         f"only {pick.free_total} free session names remain (warning below {low_water}); "
         "see `ai list-name-candidates`, and raise max_name_length to widen the pool"
     )
+
+
+def name_number(name: str) -> int:
+    """A stable positive number for a human name: distinct names always get distinct numbers.
+
+    The name read as a base-27 numeral with ``a`` as 1, which is one-to-one on lowercase
+    letter strings. It stands where an index stood for consumers that need a number.
+    """
+    number = 0
+    for char in name:
+        number = number * 27 + (ord(char) - 96)
+    return number
