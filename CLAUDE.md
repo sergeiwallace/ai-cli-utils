@@ -20,6 +20,7 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 - **All options must have both short and long forms** — e.g. `-f`/`--force`, `-d`/`--dry-run`. No long-only flags (except hidden internal `SUPPRESS` flags passed machine-to-machine).
 - When adding a new CLI option, add both forms simultaneously. Do not ship long-only flags.
+- Name every command {verb}-{noun} (`migrate-session`, not `session-migrate`). A command group is a noun and its subcommands are verbs. A new command that does not fit this form is raised with the maintainer for review before it ships.
 
 ## Test Requirements
 

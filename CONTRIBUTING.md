@@ -202,6 +202,12 @@ git diff
 One reviewable mechanical commit is strictly better than the same edits dribbling through
 unrelated ones.
 
+### Command names
+
+Name every command {verb}-{noun} (`migrate-session`, not `session-migrate`). A command
+group is a noun and its subcommands are verbs. A new command that does not fit this form
+is raised with the maintainer for review before it ships.
+
 ## Hard Gate
 
 All contributions must pass this before merge:
