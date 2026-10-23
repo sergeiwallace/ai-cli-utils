@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public-domain first-name list and an English spelling dictionary, and refuses to
   write when either digest differs from its pin. Common English words and curated
   non-names are dropped.
+- The session-name picker: it takes the shortest length that has a free name, prefers
+  names sharing the repository alias's letters, and picks at random within that tier.
+  It never returns a held name, a name one typo away from a held name, a denylisted
+  name, a repository or host alias, or a name whose title would be a strict prefix of
+  a held title, or the reverse. When every name is filtered out, the refusal names
+  each filter and how many names it removed.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
