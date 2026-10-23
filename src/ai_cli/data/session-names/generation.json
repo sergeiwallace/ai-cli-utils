@@ -1,0 +1,50 @@
+{
+  "count": 622,
+  "count_by_length": {
+    "3": 140,
+    "4": 482
+  },
+  "generated_at": "2026-10-23T19:52:13Z",
+  "policy": {
+    "confusable": {
+      "extra_words": [],
+      "keep_names": [],
+      "max_edit_distance": 1,
+      "words_digest": "sha512-3NHnE1uq33ZE/CIwaZ6gqxa4BnglHnxeAcTM0GJ7cmtRGcvX9InMK/IqLtYcUMFCUpUNgybH+DzkqdgAo3F1zg==",
+      "words_member": "package/index.dic",
+      "words_url": "https://registry.npmjs.org/dictionary-en/-/dictionary-en-4.0.0.tgz"
+    },
+    "denylist": [],
+    "limits": {
+      "max_name_length": 4,
+      "min_name_length": 3
+    },
+    "low_water": 25,
+    "offline_spares": 3,
+    "pick_floor": 10,
+    "publish_attempts": 5,
+    "publish_timeout_s": 15,
+    "schema": 1,
+    "source": {
+      "digest": "sha256:726e46254f2ed03f1ffb5d941dae3bc67c35123941c29becd02d48d0caa2a671",
+      "members": [
+        "names-0.3.0/names/dist.male.first",
+        "names-0.3.0/names/dist.female.first"
+      ],
+      "url": "https://files.pythonhosted.org/packages/44/4e/f9cb7ef2df0250f4ba3334fbdabaa94f9c88097089763d8e85ada8092f84/names-0.3.0.tar.gz"
+    }
+  },
+  "policy_commit": null,
+  "policy_committed_at": null,
+  "policy_digest": "sha256:d5edccb438fa40b0da92950e4f242d113116332bd005f4ffd5d66b37a04fa01c",
+  "schema": 1,
+  "source": {
+    "digest": "sha256:726e46254f2ed03f1ffb5d941dae3bc67c35123941c29becd02d48d0caa2a671",
+    "url": "https://files.pythonhosted.org/packages/44/4e/f9cb7ef2df0250f4ba3334fbdabaa94f9c88097089763d8e85ada8092f84/names-0.3.0.tar.gz"
+  },
+  "words": {
+    "digest": "sha512-3NHnE1uq33ZE/CIwaZ6gqxa4BnglHnxeAcTM0GJ7cmtRGcvX9InMK/IqLtYcUMFCUpUNgybH+DzkqdgAo3F1zg==",
+    "url": "https://registry.npmjs.org/dictionary-en/-/dictionary-en-4.0.0.tgz"
+  },
+  "writer": "ai-cli-utils 0.8.0"
+}
