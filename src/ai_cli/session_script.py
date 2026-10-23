@@ -1355,23 +1355,20 @@ with open(path, 'w') as f:
       if ! $_restart_requested; then
     # END PINNED RESTART
       # Resolve before every Claude Code launch so its exact transcript UUID can
-      # be passed to --resume. A conversation moved to the background ("Move to
-      # background and exit") is still running there: attach to it instead of
-      # resuming a second copy by title. A resume prompt means a deliberate
-      # restart, and `claude attach` cannot carry a prompt, so only the
-      # unprompted path looks for a background session.
+      # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
-        if [[ ! -f "$prompt_file" ]]; then
-          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)
-        fi
-        if [[ -z "$bg_target" ]]; then
-          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-          resolve_status=$?
-        else
-          matched_file=""
-          resolve_status=1
-        fi
+        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
+        resolve_status=$?
       fi
+    # BEGIN BACKGROUND ATTACH resolution
+      # A conversation moved to the background ("Move to background and exit")
+      # is still running there: attach to it instead of resuming a second copy
+      # by title. A resume prompt means a deliberate restart, and `claude attach`
+      # cannot carry a prompt, so only the unprompted path looks for one.
+      if [[ "$engine" == "c" && ! -f "$prompt_file" ]]; then
+        bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)
+      fi
+    # END BACKGROUND ATTACH
 
     # BEGIN PINNED RESTART resolver-end
       fi

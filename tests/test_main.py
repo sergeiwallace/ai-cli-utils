@@ -419,12 +419,16 @@ class TestGetEngineScript:
         script = self._make_script()
         lookup = 'bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)'
         assert lookup in script
-        assert script.index(lookup) < script.index('ai internal resolve-continue-target "$PWD" "$ai_name"')
-        assert 'run_agent claude attach "$bg_target"' in script
+        attach = 'run_agent claude attach "$bg_target"'
+        assert attach in script
+        assert script.index(lookup) < script.index(attach) < script.rindex('--resume "$session_id" --name "$ai_name"')
         # Reset each pass, so a pinned restart or a prompted relaunch never reuses the last target.
         assert script.index('bg_target=""') < script.index(lookup)
         # A resume prompt marks a deliberate restart, and `claude attach` cannot carry a prompt.
-        assert 'if [[ ! -f "$prompt_file" ]]; then' in script[script.index(lookup) - 120 : script.index(lookup)]
+        assert (
+            'if [[ "$engine" == "c" && ! -f "$prompt_file" ]]; then'
+            in script[script.index(lookup) - 120 : script.index(lookup)]
+        )
         assert 'find "$HOME/.claude/projects' not in script
 
 

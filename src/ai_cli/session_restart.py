@@ -875,7 +875,16 @@ def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
     def normalize(text: str) -> str:
-        text = re.sub(r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE)[^\n]*\n.*?^    # END \1\n", "", text)
+        text = re.sub(
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH)[^\n]*\n.*?^    # END \1\n", "", text
+        )
+        # The background-attach branch is the head of the launch if/elif chain, so it
+        # cannot be bracketed; dropping it leaves the pre-feature chain.
+        text = re.sub(
+            r'(?m)^( *)if \[\[ -n "\$bg_target" \]\]; then\n *run_agent claude attach "\$bg_target"\n *elif ',
+            r"\1if ",
+            text,
+        )
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
