@@ -436,8 +436,9 @@ def find_recent_session(prefix: str) -> str:
     return sessions[0][0]
 
 
-# Matches every current ``build_session_name`` engine/project/name shape.
-_AI_SESSION_RE = re.compile(r"^(?:c|g|p|cx)(?:-r)?-.+-\d+$")
+# Matches every current engine/project/name shape: the last segment is an index or a
+# human name (lowercase letters).
+_AI_SESSION_RE = re.compile(r"^(?:c|g|p|cx)(?:-r)?-.+-(?:\d+|[a-z]+)$")
 _PROCESS_START_TIME_TOLERANCE_SECONDS = 5
 
 
@@ -580,7 +581,8 @@ def resolve_session(prefix: str, name: str) -> str:
     if res.returncode == 0:
         return target
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
-    if name.isdigit() and match:
+    # An index or a human name: either one names exactly one session in local or remote form.
+    if match and (name.isdigit() or name.rsplit("-", 1)[-1].isalpha()):
         engine_short, project_prefix = match.groups()
         expected_prefix = prefix.casefold()
         candidates = [

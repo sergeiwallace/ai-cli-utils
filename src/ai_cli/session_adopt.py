@@ -91,6 +91,8 @@ _SPACE_MARGIN_BYTES = 16 * 1024 * 1024
 
 #: ``<prefix>-<index>`` — the ai_name shape ``ai c`` builds and worktrees use.
 _AI_NAME_RE = re.compile(r"^(?P<prefix>.+)-(?P<index>\d+)$")
+#: ``<prefix>-<name>`` — the same shape with a human session name in place of the index.
+_AI_HUMAN_NAME_RE = re.compile(r"^(?P<prefix>.+)-(?P<name>[a-z]+)$")
 
 
 class AdoptionError(Exception):
@@ -310,6 +312,18 @@ def split_ai_name(ai_name: str) -> tuple[str, int] | None:
     if not match:
         return None
     return match.group("prefix"), int(match.group("index"))
+
+
+def split_human_name(ai_name: str, name_set: frozenset[str]) -> tuple[str, str] | None:
+    """Split ``myproject-box-ada`` into ``("myproject-box", "ada")`` when ``ada`` is a session name.
+
+    A letters tail that is not in the name set is a label, not a name, so it does not
+    split: ``myproject-box-review`` is a whole title with no name in it.
+    """
+    match = _AI_HUMAN_NAME_RE.match(ai_name)
+    if not match or match.group("name") not in name_set:
+        return None
+    return match.group("prefix"), match.group("name")
 
 
 def _first_cwd(path: Path) -> str:

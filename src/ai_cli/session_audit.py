@@ -66,6 +66,7 @@ from .session_adopt import (
     live_sessions,
     probe_resolves,
     split_ai_name,
+    split_human_name,
 )
 
 #: Directory holding a repo's ``ai c`` session worktrees.
@@ -111,6 +112,8 @@ class SessionRecord:
     resolves: Path | None
     index: int | None
     claimants: int = 1
+    name: str | None = None
+    label: str | None = None
 
     @property
     def live(self) -> bool:
@@ -137,6 +140,8 @@ class SessionRecord:
             flags.append("slug-mismatch")
         flags.append("in-slot" if self.in_correct_slot else "not-in-slot")
         flags.append("resolvable" if self.resolves else "NOT-resolvable")
+        if self.name:
+            flags.append(f"name={self.name}" + (f" label={self.label}" if self.label else ""))
         return (
             f"{self.title}\n"
             f"    transcript={self.transcript} lines={self.lines} size={self.size / 1_000_000:.2f} MB\n"
@@ -329,6 +334,7 @@ def _build_record(candidate, project_dir: Path, home: Path, live: list) -> Sessi
         slug_matches = cc_project_dir(Path(cwd), home) == project_dir
 
     split = split_ai_name(candidate.title)
+    human = None if split else split_human_name(candidate.title, _session_names())
     slot = repo_root / WORKTREES / candidate.title if repo_root is not None and repo_root.is_dir() else None
     return SessionRecord(
         title=candidate.title,
@@ -344,7 +350,35 @@ def _build_record(candidate, project_dir: Path, home: Path, live: list) -> Sessi
         live_pid=_live_pid_for(candidate.path, candidate.title, cwd, live),
         resolves=probe_resolves(slot, candidate.title, home) if slot is not None else None,
         index=split[1] if split else None,
+        name=human[1] if human else None,
+        label=_label_of(human[0], repo_root) if human else None,
     )
+
+
+def _session_names() -> frozenset[str]:
+    from .name_registry import RegistryError, discover, known_names
+
+    try:
+        registry = discover().registry
+    except RegistryError:
+        registry = None
+    return known_names(registry)
+
+
+def _label_of(prefix: str, repo_root: Path | None) -> str | None:
+    """What stands between the repo's stem and the name, when the stem can be read."""
+    from . import config as _config
+    from .session_naming import HostAliasError, naming_prefix, resolve_host_alias
+
+    if repo_root is None:
+        return None
+    try:
+        stem = naming_prefix(_config.resolve_project_prefix(repo_root), resolve_host_alias())
+    except (HostAliasError, _config.ProjectPrefixError, OSError):
+        return None
+    if not prefix.startswith(f"{stem}-"):
+        return None
+    return prefix[len(stem) + 1 :] or None
 
 
 def triage(report: AuditReport) -> tuple[list[SessionRecord], list[tuple[SessionRecord, str]]]:
@@ -384,8 +418,14 @@ def triage(report: AuditReport) -> tuple[list[SessionRecord], list[tuple[Session
             skipped.append(
                 (record, f"owning repo {record.repo_root} does not exist on this host — nothing to adopt it into")
             )
-        elif record.index is None:
-            skipped.append((record, f"title {record.title!r} is not <prefix>-<index>, so `ai c <n>` cannot address it"))
+        elif record.index is None and record.name is None:
+            skipped.append(
+                (
+                    record,
+                    f"title {record.title!r} is not <prefix>-<index> or <prefix>-<session name>, "
+                    "so `ai c` cannot address it",
+                )
+            )
         elif record.in_correct_slot and record.resolves is not None:
             skipped.append((record, "already adopted — it is in its worktree slot and `ai c` resolves it"))
         else:

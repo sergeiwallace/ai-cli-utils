@@ -111,6 +111,22 @@ def _chief_segment(session_name: str) -> re.Pattern[str]:
     return re.compile(rf"(?:^|-){re.escape(session_name)}(?:-|$)")
 
 
+def _known_names() -> frozenset[str]:
+    """The session-name set, read without the network (see ``name_registry.known_names``)."""
+    from . import name_registry
+
+    try:
+        registry = name_registry.discover().registry
+    except name_registry.RegistryError:
+        registry = None
+    return name_registry.known_names(registry)
+
+
+def _names_one_chief(tail: str) -> bool:
+    """A slot tail that picks out one chief: an index, or a human session name."""
+    return tail.isdigit() or (tail.isalpha() and tail.islower() and tail in _known_names())
+
+
 def is_chief_positional(name: str) -> bool:
     """True when a positional session name alone asks for the chief launch.
 
@@ -121,7 +137,8 @@ def is_chief_positional(name: str) -> bool:
     session_name = _session_name()
     if not name or not session_name:
         return False
-    return bool(re.search(rf"(?:^|-){re.escape(session_name)}(?:-\d+)?$", name.casefold()))
+    match = re.search(rf"(?:^|-){re.escape(session_name)}(?:-([a-z0-9]+))?$", name.casefold())
+    return bool(match) and (match.group(1) is None or _names_one_chief(match.group(1)))
 
 
 def names_a_chief(name: str) -> bool:
@@ -162,8 +179,8 @@ def chief_slot(name: str) -> str:
 
 
 def is_numbered_slot(slot: str) -> bool:
-    """``chief-1`` names one chief; ``chief`` / ``chief-review`` ask for *the* chief."""
-    return slot.rsplit("-", 1)[-1].isdigit()
+    """``chief-1`` and ``chief-ada`` name one chief; ``chief`` / ``chief-review`` ask for *the* chief."""
+    return "-" in slot and _names_one_chief(slot.rsplit("-", 1)[-1])
 
 
 def same_chief(requested_slot: str, running_slot: str) -> bool:
@@ -175,7 +192,8 @@ def same_chief(requested_slot: str, running_slot: str) -> bool:
     """
     if is_numbered_slot(requested_slot):
         return requested_slot == running_slot
-    return re.sub(r"-\d+$", "", running_slot) == requested_slot
+    base = running_slot.rsplit("-", 1)[0] if is_numbered_slot(running_slot) else running_slot
+    return base == requested_slot
 
 
 def tmux_panes_all_dead(target: str) -> bool:
