@@ -517,6 +517,17 @@ activation.
 | `ai add-name NAME [-r/--reason TEXT]` | Add a name to the database without a prompt. |
 | `ai remove-name NAME` | Remove a name that was added by hand, unless it is held. |
 | `ai sync-names [-d/--dry-run]` | Regenerate the list when this checkout's naming policy is newer than the published one. |
+| `ai reconcile-names [-t/--title T] [-d/--dry-run] [-j/--json]` | Publish offline activations, release names whose worktree and transcript are both gone, and top up spares. |
+| `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. |
+| `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
+| `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
+
+A name is released by the machine that holds it, once the session's worktree and its
+client transcript are both proved gone. A store that cannot be read, or a session that
+cannot be matched to its record, holds the name. Existing sessions move to human names
+with `ai session-migrate OLD --to-name [NAME]` or, for a whole host,
+`ai session-migrate --all --to-names` ([details](docs/tools/cc-session-adoption.md));
+`ai session-adopt NAME -m/--name FIRST` adopts an outside session into a human-named slot.
 
 `{repo-alias}` is the repository's registered task prefix (`ai register -x`).
 Where it comes from a persistent `config/fleet-projects.toml` registry, from

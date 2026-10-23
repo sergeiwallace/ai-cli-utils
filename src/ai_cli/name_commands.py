@@ -8,17 +8,20 @@ refusal exits 2; a registry that could not be reached or written exits 75.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sys
+from pathlib import Path
 
 import click
 
 from . import name_list
 from . import name_registry as reg
 from . import output as _out
-from .output import Tag
+from .output import Tag, Untagged
 
 EXIT_REFUSED = 2
+EXIT_UNREADABLE = 3
 EXIT_UNREACHABLE = 75
 
 
@@ -191,4 +194,207 @@ def show_name_config_command() -> None:
         _out.emit(Tag.NAMES, "config", limits.warning, err=True, level=_out.Level.WARNING)
 
 
-COMMANDS = (sync_names_command, add_name_command, remove_name_command, show_name_config_command)
+def _projects_root() -> Path:
+    from .session_naming import _projects_roots
+
+    return _projects_roots()[0]
+
+
+def _adapters() -> dict[str, object]:
+    from . import session_clients
+
+    return {name: cls() for name, cls in session_clients.ADAPTERS.items()}
+
+
+def _host_alias() -> str:
+    from .session_naming import HostAliasError, resolve_host_alias
+
+    try:
+        return resolve_host_alias()
+    except HostAliasError as exc:
+        _out.error(Tag.NAMES, "config", str(exc))
+        sys.exit(1)
+
+
+def _recover(registry: reg.Registry) -> list[str]:
+    from . import migrate_names, session_clients
+
+    return migrate_names.recover_intents(
+        registry, _host(), projects_root=_projects_root(), adapters=session_clients.all_adapters()
+    )
+
+
+@click.command(
+    "reconcile-names",
+    help="Session names: publish offline activations, release names whose worktree and transcript are gone",
+)
+@click.option("-t", "--title", default=None, help="Consider only the row for this title")
+@click.option("-d", "--dry-run", is_flag=True, help="Report what would be released; write nothing")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the summary as JSON")
+def reconcile_names_command(title: str | None, dry_run: bool, as_json: bool) -> None:
+    registry = _registry_only()
+    try:
+        report = reg.reconcile(
+            registry,
+            _host(),
+            projects_root=_projects_root(),
+            adapters=_adapters(),
+            host_alias=_host_alias(),
+            title=title,
+            dry_run=dry_run,
+            recover=None if dry_run else (lambda: _recover(registry)),
+        )
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    summary = {
+        "dry_run": dry_run,
+        "published": report.published,
+        "recovered": report.recovered,
+        "released": report.released,
+        "spares_released": report.spares_released,
+        "spares_added": report.spares_added,
+        "held": report.held,
+    }
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(summary, sort_keys=True))
+        return
+    verb = "would release" if dry_run else "released"
+    lines = [f"{verb}: {', '.join(report.released) or 'none'}"]
+    if report.spares_released:
+        lines.append(f"{verb} spares outside the limits: {', '.join(report.spares_released)}")
+    if report.spares_added:
+        lines.append(f"added spares: {', '.join(report.spares_added)}")
+    lines += [f"published: {name}" for name in report.published]
+    lines += [f"recovered: {item}" for item in report.recovered]
+    lines += [f"held: {token}: {why}" for token, why in sorted(report.held.items())]
+    _out.emit(Tag.NAMES, "reconcile", "\n".join(lines))
+
+
+def _registry_only() -> reg.Registry:
+    """This machine's registry, without publishing the spool: the commands that do so under the lock themselves."""
+    try:
+        discovery = reg.discover()
+    except reg.RegistryError as exc:
+        _out.error(Tag.NAMES, "config", str(exc))
+        sys.exit(1)
+    if discovery.registry is None:
+        _out.error(Tag.NAMES, "config", discovery.reason)
+        sys.exit(1)
+    return discovery.registry
+
+
+@click.command("release-name", help="Session names: release one name once its worktree and transcript are both gone")
+@click.argument("name")
+def release_name_command(name: str) -> None:
+    registry = open_registry()
+    try:
+        reg.release_name(registry, name.lower(), _host(), projects_root=_projects_root(), adapters=_adapters())
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    _out.emit(Tag.NAMES, "release", f"released {name.lower()}")
+
+
+def _known_hosts() -> frozenset[str]:
+    from .session_naming import _read_registry, alias_sources
+
+    hosts: set[str] = set()
+    for source in alias_sources():
+        data = _read_registry(source) or {}
+        aliases = data.get("aliases", {})
+        if isinstance(aliases, dict):
+            hosts |= set(aliases)
+    return frozenset(hosts)
+
+
+@click.command(
+    "reassign-name",
+    help="Session names: move a name's reconciliation to another host id; the name stays held",
+)
+@click.argument("name")
+@click.option("-t", "--to", "to", required=True, help="Host id that will reconcile the row")
+@click.option("-r", "--reason", required=True, help="Why, recorded in the registry commit")
+def reassign_name_command(name: str, to: str, reason: str) -> None:
+    registry = open_registry()
+    try:
+        reg.reassign_name(registry, name.lower(), to, reason, known_hosts=_known_hosts())
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    _out.emit(Tag.NAMES, "reassign", f"{name.lower()} is now reconciled by {to}")
+
+
+@click.command(
+    "check-names",
+    help="Session names: report every held name outside the length limits; exit 1 when one is too long",
+)
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the report as JSON")
+def check_names_command(as_json: bool) -> None:
+    registry = _registry_only()
+    try:
+        snapshot = registry.snapshot()
+        report = reg.check_names(snapshot)
+        low, high = name_list.limits(snapshot.policy)
+    except reg.RegistryError as exc:
+        _out.error(Tag.NAMES, "check", f"could not read the registry, so the over-limit check did not run: {exc}")
+        sys.exit(EXIT_UNREADABLE)
+    if as_json:
+        _out.raw(
+            Untagged.JSON,
+            json.dumps(
+                {
+                    "limits": [low, high],
+                    "over_limit": report.over_limit,
+                    "spares_over_limit": report.spares_over_limit,
+                    "grandfathered": report.grandfathered,
+                    "incomplete": [{"row": row, "intent": intent} for row, intent in report.incomplete],
+                    "stale_intents": report.stale_intents,
+                    "counts": report.counts,
+                },
+                sort_keys=True,
+            ),
+        )
+        sys.exit(1 if report.failing else 0)
+    lines: list[str] = []
+    by_host: dict[str, list[str]] = {}
+    for row in report.over_limit:
+        by_host.setdefault(row["machine"], []).append(
+            f"  {row['token']} ({len(row['token'])} letters): {row['title']}; run on {row['machine']}: "
+            "ai session-migrate --all --to-names --over-limit -y"
+        )
+    for row in report.spares_over_limit:
+        by_host.setdefault(row["machine"], []).append(
+            f"  spare {row['token']} ({len(row['token'])} letters); run on {row['machine']}: ai reconcile-names"
+        )
+    for host, host_lines in sorted(by_host.items()):
+        lines.append(f"{host}:")
+        lines += host_lines
+    for row in report.grandfathered:
+        lines.append(f"grandfathered: {row['token']} ({row['title']}@{row['machine']}) is shorter than {low} letters")
+    for row, intent in report.incomplete:
+        survivors = ", ".join(f"{item['kind']} {item['identifier']}" for item in row.get("recovery") or [])
+        lines.append(
+            f"migration-incomplete: {row['title']}@{row['machine']} (rename of "
+            f"{(intent or {}).get('old_title', 'unknown')}); left: {survivors or 'nothing recorded'}"
+        )
+    for record in report.stale_intents:
+        lines.append(f"unfinished rename: {record['old_title']} -> {record['new_title']} on {record['machine']}")
+    counts = ", ".join(f"{host} {count}" for host, count in sorted(report.counts.items()))
+    lines.append(f"limits {low} to {high} letters; held per host: {counts or 'none'}")
+    if report.failing:
+        _out.error(Tag.NAMES, "check", "\n".join(["names over max_name_length:", *lines]))
+        sys.exit(1)
+    _out.emit(Tag.NAMES, "check", "\n".join(lines))
+
+
+COMMANDS = (
+    sync_names_command,
+    add_name_command,
+    remove_name_command,
+    show_name_config_command,
+    reconcile_names_command,
+    release_name_command,
+    reassign_name_command,
+    check_names_command,
+)

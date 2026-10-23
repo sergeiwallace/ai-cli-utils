@@ -43,7 +43,7 @@ vocabulary = [
     "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
     "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
     "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
-    "add", "remove", "spare",
+    "add", "remove", "spare", "reconcile", "release", "reassign", "locate",
 ]
 
 [output.elements.operation.styles]
