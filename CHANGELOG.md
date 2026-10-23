@@ -270,6 +270,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Four options had only a long form: `ai migrate-session --finish` and `--beads-only` now
+  also take `-f` and `-b`, and `ai notifications log --source` and `--failed` take `-S`
+  and `-F`. A test now fails on any visible option that lacks a short form.
 - `ai -X` session restart works on macOS. The restart pin gate read the
   supervisor's environment, which macOS withholds for the system shells every
   supervisor runs under, so it refused every session. It now reads the pane's

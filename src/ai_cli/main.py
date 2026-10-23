@@ -6320,8 +6320,8 @@ def cmd_notifications_list():
 @click.option("-s", "--since", default=None, help="Since DATETIME or relative (2h, 30m, 1d, yesterday)")
 @click.option("-f", "--from", "from_date", default=None, help="Start of date range (inclusive)")
 @click.option("-t", "--to", "to_date", default=None, help="End of date range (inclusive)")
-@click.option("--source", default=None, help="Filter by source (e.g. quota-watch)")
-@click.option("--failed", is_flag=True, help="Show only notifications with at least one failed channel")
+@click.option("-S", "--source", default=None, help="Filter by source (e.g. quota-watch)")
+@click.option("-F", "--failed", is_flag=True, help="Show only notifications with at least one failed channel")
 def cmd_notifications_log(last, since, from_date, to_date, source, failed):
     from .quota_db import query_notification_log
 
@@ -7335,11 +7335,13 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
 @click.option("-n", "--dry-run", is_flag=True, help="Print every planned move without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.option(
+    "-f",
     "--finish",
     is_flag=True,
     help="The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included",
 )
 @click.option(
+    "-b",
     "--beads-only",
     is_flag=True,
     help="Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running",
