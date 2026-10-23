@@ -25,6 +25,16 @@ STREAM_CONFIG = {
 }
 
 
+def _tunnel_hosts() -> list[str]:
+    """The hosts allowed to open the tunnel, read at call time; any config problem means none."""
+    try:
+        from .config import load_config, read_messaging_config
+
+        return read_messaging_config(load_config(read_only=True))["tunnel_hosts"]
+    except Exception:  # a broken config must never open a tunnel
+        return []
+
+
 class NATSClient:
     """Asynchronous NATS client wrapper with JetStream support."""
 
@@ -36,9 +46,9 @@ class NATSClient:
         self._tunnel_proc: subprocess.Popen | None = None
 
     async def _open_ssh_tunnel(self) -> None:
-        """Open SSH tunnel to Hetzner NATS when running on Mac and port 4222 is unreachable."""
+        """Open an SSH tunnel to the remote NATS when this host is listed in [messaging] tunnel_hosts and port 4222 is unreachable."""
         _host_id = os.environ.get("AI_HOST", "")
-        if _host_id != "mac":
+        if not _host_id or _host_id not in _tunnel_hosts():
             return
         try:
             with socket.create_connection(("localhost", 4222), timeout=1):
