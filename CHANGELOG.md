@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   -r/--reason TEXT` moves a name to another host; `ai check-names` reports names
   outside the length limits. Client session stores are read for Claude Code, Codex,
   Pi and Gemini CLI, and a store that cannot be read holds the name.
+- `ai locate-session NAME [-j/--json]` says which host holds a session, whether it
+  is active, its worktree and how to message it, using `fleet-liveness` and
+  `message-transports` when they are installed and saying so when they are not.
+  `ai list-names [-j/--json]` lists every held name; `ai list-name-candidates
+  [-r/--repo ALIAS] [-L/--max-length N]` counts the free names per length and letter
+  tier.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
