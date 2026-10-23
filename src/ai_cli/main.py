@@ -6813,6 +6813,56 @@ def _print_collision(exc, out=None) -> None:
     )
 
 
+def _adoption_title(repo_root: Path, name: str, human: str):
+    """The human-named title an adoption retitles to, and a callable that reserves it.
+
+    The callable runs only once the adoption's own preflight has passed, and returns
+    another that releases the reservation if the adoption then fails.
+    """
+    from . import name_registry as _names
+    from .session_adopt import split_ai_name
+
+    stem = _migration_stem(repo_root)
+    split = split_ai_name(name)
+    prefix = split[0] if split else name
+    label = (prefix[len(stem) + 1 :] or None) if prefix.startswith(f"{stem}-") else None
+    slot = _names.Slot(
+        repo=repo_root.name,
+        repo_alias=stem.rsplit("-", 1)[0],
+        host_alias=stem.rsplit("-", 1)[-1],
+        label=label,
+        machine=_session_naming.host_id(),
+        client="claude-code",
+    )
+    title = slot.title_for(human)
+
+    def reserve():
+        registry = _names_registry_or_exit()
+        try:
+            words = _names.common_words(registry.snapshot().policy)
+            _names.reserve_hand_chosen(
+                registry, human, slot, add=False, via="adopt", added_by=f"adopt@{slot.machine}", words=words
+            )
+        except _names.RegistryError as exc:
+            _out.error(Tag.ADOPT, "adopt", f"{human} could not be reserved, so nothing was adopted: {exc}")
+            sys.exit(2 if isinstance(exc, _names.WriteRefusedError) else 1)
+
+        def release():
+            def build(snapshot):
+                row = snapshot.rows.get(human)
+                if row is None or row.get("title") != title or row.get("machine") != slot.machine:
+                    return None
+                return _names.Change(
+                    {_names.row_path(human): None}, f"session-names: release {human} (adoption failed)"
+                )
+
+            registry.transact(build)
+
+        return release
+
+    return title, reserve
+
+
 @_cli_group.command(
     "session-adopt",
     help=(
@@ -6855,8 +6905,22 @@ def _print_collision(exc, out=None) -> None:
 @click.option("-a", "--all", "adopt_every", is_flag=True, help="Bulk mode: adopt every titled session in the source")
 @click.option("-n", "--dry-run", is_flag=True, help="Show what would happen without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
+@click.option(
+    "-m", "--name", "human_name", default="", help="Adopt into a slot named with this first name, reserved first"
+)
 def cmd_session_adopt(
-    name, source, repo, on_collision, new_title, new_index, task_namespace, transcript, adopt_every, dry_run, yes
+    name,
+    source,
+    repo,
+    on_collision,
+    new_title,
+    new_index,
+    task_namespace,
+    transcript,
+    adopt_every,
+    dry_run,
+    yes,
+    human_name,
 ):
     """Adopt a session's transcript, tasks, memory and worktree in one pass.
 
@@ -6905,6 +6969,14 @@ def cmd_session_adopt(
     if not name:
         _out.error(Tag.ADOPT, "adopt", "NAME is required (or use -a/--all)")
         sys.exit(1)
+
+    reserve_human = None
+    if human_name:
+        if new_title or new_index is not None:
+            _out.error(Tag.ADOPT, "adopt", "-m/--name sets the new title; it cannot be combined with -T or -I")
+            sys.exit(1)
+        new_title, reserve_human = _adoption_title(repo_root, name, human_name.lower())
+        on_collision = "retitle"
 
     if new_index is not None and not new_title:
         split = split_ai_name(name)
@@ -6962,7 +7034,13 @@ def cmd_session_adopt(
                 if not _out.confirm(Tag.ADOPT, "adopt", f"Adopt {name} into {result.dest_root}?"):
                     _out.emit(Tag.ADOPT, "adopt", "Aborted.", err=True)
                     sys.exit(1)
-            result = _run(False)
+            release = reserve_human() if reserve_human else None
+            try:
+                result = _run(False)
+            except BaseException:
+                if release is not None:
+                    release()
+                raise
     except TitleCollision as exc:
         _print_collision(exc)
         sys.exit(1)
@@ -6993,6 +7071,205 @@ def _print_migration(result) -> None:
         _out.emit(Tag.MIGRATE, "migrate", f"  warning: {warning}", err=True)
 
 
+def _migration_stem(repo_root: Path) -> str:
+    """``{repo-alias}-{host-alias}`` for the repo a migration renames sessions in."""
+    return _session_naming.naming_prefix(
+        _config.resolve_project_prefix(repo_root), _session_naming.resolve_host_alias()
+    )
+
+
+def _migrate_session_for_names(repo_root: Path, old: str, new: str, **kwargs):
+    from .session_migrate import migrate_session
+
+    if kwargs.get("regenerate_script") is None:
+        kwargs["regenerate_script"] = _engine_script_from_meta
+    return migrate_session(repo_root, old, new, **kwargs)
+
+
+def _complete_migration_for_names(registry, old: str, machine: str) -> bool:
+    from . import name_registry as _names
+
+    return _names.complete_migration(registry, old, machine)
+
+
+def _names_registry_or_exit():
+    from . import name_commands
+
+    return name_commands.open_registry()
+
+
+def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_length: int | None, dry_run: bool) -> int:
+    """``ai session-migrate OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
+    from . import migrate_names, session_clients
+    from . import name_registry as _names
+    from .session_adopt import AdoptionError
+
+    registry = _names_registry_or_exit()
+    host = _session_naming.host_id()
+    try:
+        stem = _migration_stem(repo_root)
+        parts = migrate_names.split_title(old, stem)
+        slot = _names.Slot(
+            repo=repo_root.name,
+            repo_alias=stem.rsplit("-", 1)[0],
+            host_alias=stem.rsplit("-", 1)[-1],
+            label=parts.label if parts else None,
+            machine=host,
+            client="claude-code",
+        )
+        snapshot = registry.snapshot()
+        migrate_names.bounded_max_length(max_length, snapshot.policy)
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        return 1
+    except ValueError as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        return 2
+    adapters = session_clients.all_adapters()
+    if dry_run:
+        try:
+            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
+            planned = name or _session_naming.pick_name(request).name
+        except (_names.RegistryError, _session_naming.NamePoolExhaustedError) as exc:
+            _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+            return 1
+        _out.emit(
+            Tag.MIGRATE, "migrate", f"dry run: {old} would become {slot.title_for(planned)}; nothing was reserved"
+        )
+        return 0
+    words = _names.common_words(snapshot.policy) if name else frozenset()
+    try:
+        pending = snapshot.migrations.get(old)
+        if pending and pending.get("status") == "intent" and pending.get("machine") == host:
+            new = str(pending["new_title"])
+            migrate_names.resume_rename(repo_root, old, new, regenerate_script=_engine_script_from_meta)
+            left = migrate_names.artifacts_under(old, repo_root, adapters)
+            if left:
+                _names.mark_migration_incomplete(
+                    registry, old, host, migrate_names.artifacts_under(new, repo_root, adapters)
+                )
+                _out.error(Tag.MIGRATE, "migrate", f"{old} still has {left}; {new} stays migration-incomplete")
+                return 1
+            _complete_migration_for_names(registry, old, host)
+            _out.emit(Tag.MIGRATE, "migrate", f"resumed and completed the rename of {old} to {new}")
+            return 0
+        done = migrate_names.migrate_to_name(
+            registry,
+            repo_root,
+            old,
+            slot,
+            name=name,
+            max_length=max_length,
+            words=words,
+            adapters=adapters,
+            migrate=_migrate_session_for_names,
+            complete=_complete_migration_for_names,
+        )
+    except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        return 1
+    if done.result is not None:
+        _print_migration(done.result)
+    _out.emit(Tag.MIGRATE, "migrate", f"migrated {old} to {done.new}")
+    return 0
+
+
+def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | None, over_limit: bool) -> int:
+    """``ai session-migrate --all --to-names [-y]``: list, then migrate every stopped session to a name."""
+    from . import migrate_names, session_clients
+    from . import name_list as _name_list
+    from . import name_registry as _names
+    from .session_adopt import AdoptionError
+
+    registry = _names_registry_or_exit()
+    host = _session_naming.host_id()
+    adapters = session_clients.all_adapters()
+    try:
+        stem = _migration_stem(repo_root)
+        snapshot = registry.snapshot()
+        high = migrate_names.bounded_max_length(max_length, snapshot.policy)
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        return 1
+    except ValueError as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        return 2
+    if over_limit:
+        limit = _name_list.limits(snapshot.policy)[1]
+        over = {
+            row["title"]
+            for row in snapshot.rows.values()
+            if row["kind"] == "session"
+            and row.get("machine") == host
+            and len(row["token"]) > limit
+            and row.get("repo") == repo_root.name
+        }
+        found = migrate_names.inventory(repo_root, stem, adapters=adapters, select=lambda title: title in over)
+        for title in sorted(over - {entry.title for entry in found.items}):
+            found.items.append(
+                migrate_names.InventoryItem(title=title, kinds=["registry row"], running=False, worktree=None)
+            )
+    else:
+        found = migrate_names.inventory(repo_root, stem, adapters=adapters)
+    for problem in found.blocking:
+        _out.error(Tag.MIGRATE, "migrate", f"cannot inventory: {problem}")
+    if found.blocking:
+        return 1
+    lines = []
+    for entry in found.items:
+        state = "running" if entry.running else ("stopped" if entry.worktree else "transcript only")
+        lines.append(f"  {entry.title}  [{state}; {', '.join(entry.kinds)}]")
+    _out.emit(
+        Tag.MIGRATE,
+        "migrate",
+        "\n".join([f"{len(found.items)} session(s) to name in {repo_root}:", *lines])
+        if lines
+        else f"no index-named session in {repo_root}",
+    )
+    if not write:
+        _out.emit(Tag.MIGRATE, "migrate", "nothing was written; run again with -y to migrate the stopped ones")
+        return 0
+    refused = 0
+    for entry in found.items:
+        if entry.running:
+            refused += 1
+            _out.error(Tag.MIGRATE, "migrate", f"{entry.title} is running; exit it and run again")
+            continue
+        parts = migrate_names.split_title(entry.title, stem)
+        client = entry.records[0].client if entry.records else "claude-code"
+        slot = _names.Slot(
+            repo=repo_root.name,
+            repo_alias=stem.rsplit("-", 1)[0],
+            host_alias=stem.rsplit("-", 1)[-1],
+            label=parts.label if parts else None,
+            machine=host,
+            client=client,
+            worktree=entry.worktree is not None,
+        )
+        try:
+            if entry.worktree is not None:
+                done = migrate_names.migrate_to_name(
+                    registry,
+                    repo_root,
+                    entry.title,
+                    slot,
+                    name=None,
+                    max_length=high,
+                    words=frozenset(),
+                    adapters=adapters,
+                    migrate=_migrate_session_for_names,
+                    complete=_complete_migration_for_names,
+                )
+            else:
+                done = migrate_names.migrate_transcript_only(registry, entry, slot, max_length=high, words=frozenset())
+        except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+            refused += 1
+            _out.error(Tag.MIGRATE, "migrate", f"{entry.title}: {exc}")
+            continue
+        _out.emit(Tag.MIGRATE, "migrate", f"migrated {entry.title} to {done.new}")
+    return 1 if refused else 0
+
+
 @_cli_group.command(
     "session-migrate",
     help=(
@@ -7008,11 +7285,16 @@ def _print_migration(result) -> None:
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
         "runs while NEW is live.\n\n"
+        "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
+        "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
+        "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
+        "letters, within the configured limits; -O/--over-limit selects this host's sessions whose "
+        "name is longer than max_name_length.\n\n"
         "\b\nFor a session started outside `ai`, use `ai session-adopt`."
     ),
 )
-@click.argument("old")
-@click.argument("new")
+@click.argument("old", required=False, default="")
+@click.argument("new", required=False, default="")
 @click.option(
     "-r",
     "--repo",
@@ -7032,7 +7314,22 @@ def _print_migration(result) -> None:
     is_flag=True,
     help="Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running",
 )
-def cmd_session_migrate(old, new, repo, dry_run, yes, finish, beads_only):
+@click.option(
+    "-t",
+    "--to-name",
+    "to_name",
+    is_flag=False,
+    flag_value="",
+    default=None,
+    help="Reserve a first name (this one, or the shortest free one) and migrate OLD to it",
+)
+@click.option("-a", "--all", "sweep", is_flag=True, help="With -T/--to-names: every index-named session here")
+@click.option("-T", "--to-names", is_flag=True, help="With -a/--all: migrate each one to a picked first name")
+@click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
+@click.option("-O", "--over-limit", is_flag=True, help="With -a -T: only names longer than max_name_length")
+def cmd_session_migrate(
+    old, new, repo, dry_run, yes, finish, beads_only, to_name, sweep, to_names, max_length, over_limit
+):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
     Renames a session already registered in an ``ai c`` slot: worktree, branch,
@@ -7062,6 +7359,18 @@ def cmd_session_migrate(old, new, repo, dry_run, yes, finish, beads_only):
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+    if sweep or to_names or over_limit:
+        if not (sweep and to_names):
+            raise click.UsageError("-a/--all and -T/--to-names go together")
+        sys.exit(
+            _migrate_all_to_names(repo_root, write=yes and not dry_run, max_length=max_length, over_limit=over_limit)
+        )
+    if to_name is not None:
+        if not old or new:
+            raise click.UsageError("--to-name takes OLD and no NEW: `ai session-migrate OLD --to-name [NAME]`")
+        sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run))
+    if not old or not new:
+        raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
 
     def _run(preview: bool):
         if beads_only:

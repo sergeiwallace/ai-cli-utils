@@ -437,6 +437,39 @@ print(find_transcript(cc_project_dir(Path('<repo>/.worktrees/myproject-2')), tit
 Then the real end-to-end check, which no automated probe can substitute for:
 run `ai c 2` and confirm the conversation history is present.
 
+## Migrating a session to a human name (`ai session-migrate --to-name`)
+
+```bash
+ai session-migrate myrepo-box-3 --to-name           # reserve the shortest free name, then migrate
+ai session-migrate myrepo-box-3 --to-name cleo      # reserve cleo, then migrate
+ai session-migrate myrepo-box-3 -t -L 3             # a picked name of at most 3 letters
+ai session-migrate --all --to-names                 # list every index-named session here; write nothing
+ai session-migrate --all --to-names -y              # migrate each stopped one, refuse each running one
+ai session-migrate --all --to-names --over-limit -y # only the names longer than max_name_length
+```
+
+Every refusal check of the plain migration runs first, and nothing is reserved when one
+fails. The name is then reserved in the name registry together with an `intent` record of
+the rename (`migrations/<old title>.json`), the session is migrated exactly as
+`ai session-migrate OLD NEW` would, and the record becomes `complete` in the commit that
+also releases a human-named old name. `-L/--max-length N` must lie between the configured
+limits, because a longer name would fail the next install's check.
+
+A migration that fails after its name is reserved is checked for anything left under the
+new title (the worktree, a tmux session, a client record). When nothing is, the name and
+its intent record are released together. When something is, the name stays held as
+`migration-incomplete` with the survivors listed, `ai reconcile-names` and
+`ai release-name` leave it alone, and running the same command again resumes the rename.
+A rename that finished but whose completion was never published completes itself at the
+next `ai reconcile-names` or `ai session-migrate`.
+
+The host sweep inventories, for one repository, every index-named worktree, tmux session
+and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
+including sessions whose worktree was already retired. Such a transcript-only session is
+named by retitling its client records; no worktree is made for it. A record the sweep
+cannot read stops it with the record named, so a sweep never reports a host as finished
+while something on it was skipped.
+
 ## Migrating a session that already has a slot (`ai session-migrate`)
 
 Adoption brings in a session started **outside** `ai c`. A session that already

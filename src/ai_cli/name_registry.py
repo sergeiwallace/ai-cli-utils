@@ -1509,3 +1509,443 @@ def local_policy(registry: Registry) -> dict:
         if isinstance(value, int) and not isinstance(value, bool):
             policy["limits"][key] = value
     return policy
+
+
+# --- release ---------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Absence:
+    """Both release tests for one row: each ``present``, ``absent`` or ``unknown``, with why."""
+
+    worktree: str
+    worktree_reason: str
+    transcript: str
+    transcript_reason: str
+
+    @property
+    def releasable(self) -> bool:
+        return self.worktree == "absent" and self.transcript == "absent"
+
+    def held_because(self) -> str:
+        reasons = []
+        if self.worktree != "absent":
+            reasons.append(f"worktree {self.worktree}: {self.worktree_reason}")
+        if self.transcript != "absent":
+            reasons.append(f"transcript {self.transcript}: {self.transcript_reason}")
+        return "; ".join(reasons)
+
+
+def _registered_worktree_paths(repo: Path) -> set[str] | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "list", "--porcelain"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return None
+    return {line[len("worktree ") :] for line in result.stdout.splitlines() if line.startswith("worktree ")}
+
+
+def worktree_path(row: dict, projects_root: Path) -> Path | None:
+    """The worktree a row names, rebuilt on this machine from its relative path."""
+    if not row.get("worktree") or not row.get("repo"):
+        return None
+    return projects_root / row["repo"] / row["worktree"]
+
+
+def probe_absence(row: dict, projects_root: Path, adapters: dict[str, object]) -> Absence:
+    """Run both release tests for ``row``, each on its own: the worktree, then the client transcript."""
+    from .session_clients import UNKNOWN
+
+    path = worktree_path(row, projects_root)
+    repo = projects_root / str(row.get("repo") or "")
+    if path is None:
+        worktree, worktree_reason = "absent", "the session never had a worktree"
+    elif path.exists():
+        worktree, worktree_reason = "present", str(path)
+    else:
+        registered = _registered_worktree_paths(repo) if repo.is_dir() else set()
+        if registered is None:
+            worktree, worktree_reason = "unknown", f"`git worktree list` failed in {repo}"
+        elif any(Path(item).resolve(strict=False) == path.resolve(strict=False) for item in registered):
+            worktree, worktree_reason = "present", f"{path} is still registered with git"
+        else:
+            worktree, worktree_reason = "absent", f"{path} is gone from disk and from git"
+    client = adapters.get(str(row.get("client")))
+    if client is None:
+        transcript, transcript_reason = UNKNOWN, f"no store adapter for client {row.get('client')!r}"
+    else:
+        target = path.resolve(strict=False) if path is not None else None
+        probe = client.probe_transcript(target, str(row.get("title")))  # type: ignore[attr-defined]
+        transcript, transcript_reason = probe.state, probe.reason
+    return Absence(worktree, worktree_reason, transcript, transcript_reason)
+
+
+@dataclass
+class ReconcileReport:
+    published: list[str] = field(default_factory=list)
+    released: list[str] = field(default_factory=list)
+    spares_released: list[str] = field(default_factory=list)
+    spares_added: list[str] = field(default_factory=list)
+    held: dict[str, str] = field(default_factory=dict)
+    recovered: list[str] = field(default_factory=list)
+
+
+def _renaming(snapshot: Snapshot, row: dict) -> bool:
+    """Whether a rename recorded as ``intent`` still needs this row, as its old or its new title."""
+    return any(
+        record.get("status") == "intent" and row.get("title") in (record.get("old_title"), record.get("new_title"))
+        for record in snapshot.migrations.values()
+    )
+
+
+def _over_limits(name: str, policy: dict) -> bool:
+    low, high = name_list.limits(policy)
+    return not low <= len(name) <= high
+
+
+def reconcile(
+    registry: Registry,
+    machine: str,
+    *,
+    projects_root: Path,
+    adapters: dict[str, object],
+    host_alias: str,
+    title: str | None = None,
+    dry_run: bool = False,
+    recover: Callable[[], list[str]] | None = None,
+) -> ReconcileReport:
+    """This machine's reconcile pass: publish the spool, recover migrations, release, top up spares.
+
+    Holds ``spool.lock`` for the whole pass, from before the spool is read until the
+    release push lands or gives up, so an offline launch can never activate a spare
+    between the final check and its release. Only rows whose ``machine`` is this host
+    are ever edited or deleted.
+    """
+    report = ReconcileReport()
+    with spool_lock(lock_wait(registry)):
+        if not dry_run:
+            report.published = publish_spool(registry, machine)
+            if recover is not None:
+                report.recovered = recover()
+        snapshot = registry.snapshot()
+        spool = read_spool()
+        candidates: dict[str, str] = {}
+        for token, row in snapshot.rows.items():
+            if row.get("machine") != machine or row["kind"] == "spare":
+                continue
+            if title is not None and row.get("title") != title:
+                continue
+            if row.get("state") == "migration-incomplete":
+                report.held[token] = "migration-incomplete: run the same `ai session-migrate` command again"
+                continue
+            if _renaming(snapshot, row):
+                report.held[token] = "a recorded rename of this session has not completed"
+                continue
+            absence = probe_absence(row, projects_root, adapters)
+            if absence.releasable:
+                candidates[token] = snapshot.blobs.get(token, "")
+            else:
+                report.held[token] = absence.held_because()
+        spares: dict[str, str] = {}
+        if title is None:
+            policy = snapshot.policy
+            for row in snapshot.rows_of(machine, "spare"):
+                if row["token"] not in spool and _over_limits(row["token"], policy):
+                    spares[row["token"]] = snapshot.blobs.get(row["token"], "")
+        if dry_run:
+            report.released = sorted(candidates)
+            report.spares_released = sorted(spares)
+            return report
+        if not candidates and not spares and title is not None:
+            return report
+
+        def build(tip: Snapshot) -> Change | None:
+            writes: dict[str, bytes | None] = {}
+            current_spool = read_spool()
+            released, spares_out = [], []
+            for token, blob in candidates.items():
+                row = tip.rows.get(token)
+                if (
+                    row is not None
+                    and tip.blobs.get(token) == blob
+                    and row.get("machine") == machine
+                    and row.get("state") != "migration-incomplete"
+                    and not _renaming(tip, row)
+                ):
+                    writes[row_path(token)] = None
+                    released.append(token)
+            policy = tip.policy
+            for token, blob in spares.items():
+                row = tip.rows.get(token)
+                if (
+                    row is not None
+                    and row["kind"] == "spare"
+                    and tip.blobs.get(token) == blob
+                    and row.get("machine") == machine
+                    and token not in current_spool
+                    and _over_limits(token, policy)
+                ):
+                    writes[row_path(token)] = None
+                    spares_out.append(token)
+            held = held_tokens(tip, current_spool) - set(released) - set(spares_out)
+            remaining = Snapshot(
+                tip=tip.tip,
+                rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out},
+                blobs=tip.blobs,
+                manual=tip.manual,
+                migrations=tip.migrations,
+                names=tip.names,
+                generation=tip.generation,
+            )
+            slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
+            top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            writes.update(top_up)
+            if not writes:
+                return None
+            report.released, report.spares_released, report.spares_added = released, spares_out, added
+            summary = ", ".join([*released, *spares_out]) or "none"
+            return Change(writes, f"session-names: release {summary} ({machine})")
+
+        registry.transact(build)
+    return report
+
+
+def release_name(
+    registry: Registry, name: str, machine: str, *, projects_root: Path, adapters: dict[str, object]
+) -> None:
+    """Release one row by hand, after the same two absence tests a reconcile runs. There is no bypass."""
+    snapshot = registry.snapshot()
+    row = snapshot.rows.get(name)
+    if row is None:
+        raise WriteRefusedError(f"no session holds {name}")
+    if row.get("machine") != machine:
+        raise WriteRefusedError(
+            f"{name} is held by {snapshot.holder(name)}; only {row.get('machine')} can test its worktree and transcript"
+        )
+    if row.get("state") == "migration-incomplete":
+        raise WriteRefusedError(f"{name} is migration-incomplete; run the same `ai session-migrate` command again")
+    absence = probe_absence(row, projects_root, adapters)
+    if not absence.releasable:
+        raise WriteRefusedError(f"{name} is still held: {absence.held_because()}")
+    blob = snapshot.blobs.get(name)
+
+    def build(tip: Snapshot) -> Change:
+        current = tip.rows.get(name)
+        if current is None or tip.blobs.get(name) != blob:
+            raise WriteRefusedError(f"the row for {name} changed since it was tested; nothing was released")
+        return Change({row_path(name): None}, f"session-names: release {name} ({row.get('title')}@{machine})")
+
+    registry.transact(build)
+
+
+def reassign_name(registry: Registry, name: str, to: str, reason: str, *, known_hosts: frozenset[str]) -> None:
+    """Move a row's reconciliation to another host id. The name stays held; the reason is in the commit."""
+    if to not in known_hosts:
+        raise WriteRefusedError(
+            f"{to!r} is not a host id in the machine host alias registry ({', '.join(sorted(known_hosts)) or 'none'})"
+        )
+    seen = registry.snapshot()
+    if name not in seen.rows:
+        raise WriteRefusedError(f"no session holds {name}")
+    blob = seen.blobs.get(name)
+    owner = seen.rows[name].get("machine")
+
+    def build(tip: Snapshot) -> Change:
+        row = tip.rows.get(name)
+        if row is None or tip.blobs.get(name) != blob or row.get("machine") != owner:
+            raise WriteRefusedError(f"the row for {name} changed since it was read; nothing was reassigned")
+        return Change(
+            {row_path(name): checked_row({**row, "machine": to})},
+            f"session-names: reassign {name} from {owner} to {to}: {reason}",
+        )
+
+    registry.transact(build)
+
+
+# --- the over-limit check ------------------------------------------------------------------
+
+
+@dataclass
+class CheckReport:
+    over_limit: list[dict] = field(default_factory=list)
+    spares_over_limit: list[dict] = field(default_factory=list)
+    grandfathered: list[dict] = field(default_factory=list)
+    incomplete: list[tuple[dict, dict | None]] = field(default_factory=list)
+    stale_intents: list[dict] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def failing(self) -> bool:
+        return bool(self.over_limit or self.spares_over_limit)
+
+
+STALE_INTENT_SECONDS = 30 * 60
+
+
+def check_names(snapshot: Snapshot, *, now: datetime | None = None) -> CheckReport:
+    """Every held name outside the published limits, grouped the way ``ai check-names`` prints them."""
+    policy = snapshot.policy
+    low, high = name_list.limits(policy)
+    report = CheckReport()
+    for row in sorted(snapshot.rows.values(), key=lambda r: (str(r.get("machine")), r["token"])):
+        machine = str(row.get("machine"))
+        report.counts[machine] = report.counts.get(machine, 0) + 1
+        token = row["token"]
+        if row["kind"] == "session":
+            if len(token) > high:
+                report.over_limit.append(row)
+            elif len(token) < low:
+                report.grandfathered.append(row)
+            if row.get("state") == "migration-incomplete":
+                intent = next((m for m in snapshot.migrations.values() if m.get("new_title") == row.get("title")), None)
+                report.incomplete.append((row, intent))
+        elif row["kind"] == "spare" and len(token) > high:
+            report.spares_over_limit.append(row)
+    moment = now or datetime.now(UTC)
+    incomplete_titles = {row.get("title") for row, _intent in report.incomplete}
+    for record in snapshot.migrations.values():
+        if record.get("status") != "intent" or record.get("new_title") in incomplete_titles:
+            continue
+        try:
+            started = datetime.strptime(str(record.get("started_at")), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        except ValueError:
+            started = moment
+        if (moment - started).total_seconds() > STALE_INTENT_SECONDS:
+            report.stale_intents.append(record)
+    return report
+
+
+# --- the rename ledger ----------------------------------------------------------------------
+
+
+def migration_record(old_title: str, new_title: str, machine: str, client: str) -> dict:
+    return {
+        "schema": 1,
+        "old_title": old_title,
+        "new_title": new_title,
+        "machine": machine,
+        "client": client,
+        "status": "intent",
+        "started_at": utc_now(),
+        "completed_at": None,
+        "writer": writer(),
+    }
+
+
+def reserve_for_migration(
+    registry: Registry,
+    slot: Slot,
+    old_title: str,
+    *,
+    name: str | None,
+    max_length: int | None,
+    words: frozenset[str],
+    rng=None,
+) -> Reservation:
+    """Reserve the migration's new name and declare the rename as ``intent``, in one commit."""
+    from . import session_naming
+
+    def build(snapshot: Snapshot) -> Change:
+        if name is None:
+            request, warnings = pick_request(registry, snapshot, slot, max_length=max_length, words=words)
+            pick = session_naming.pick_name(request, rng)
+            chosen, tier = pick.name, pick.tier
+        else:
+            verdict, reason = check_hand_chosen(snapshot, name, slot, words)
+            if verdict != "ok":
+                raise HandChosenRefusedError(
+                    verdict, reason if verdict != "unknown" else f"{reason}; add it with `ai add-name {name}` first"
+                )
+            chosen, tier, warnings = name, None, []
+        title = slot.title_for(chosen)
+        row = session_row(
+            name=chosen,
+            title=title,
+            repo=slot.repo,
+            repo_alias=slot.repo_alias,
+            host_alias=slot.host_alias,
+            label=slot.label,
+            machine=slot.machine,
+            client=slot.client,
+            source="migrated",
+            tier=tier,
+            worktree=slot.worktree_for(title),
+        )
+        record = migration_record(old_title, title, slot.machine, slot.client)
+        return Change(
+            {row_path(chosen): checked_row(row), migration_path(old_title): encode_json(record)},
+            f"session-names: reserve {chosen} ({title}@{slot.machine}) for the rename of {old_title}",
+            result=Reservation(chosen, title, row, warnings=warnings),
+        )
+
+    change = registry.transact(build)
+    assert change is not None
+    return change.result  # type: ignore[return-value]
+
+
+def complete_migration(registry: Registry, old_title: str, machine: str) -> bool:
+    """Mark the rename ``complete``, set its row active, and release a human-named old row, in one commit.
+
+    Writes nothing when the record is already ``complete``; returns whether it wrote.
+    """
+
+    def build(snapshot: Snapshot) -> Change | None:
+        record = snapshot.migrations.get(old_title)
+        if record is None:
+            raise WriteRefusedError(f"no rename of {old_title} is recorded")
+        if record.get("status") == "complete":
+            return None
+        if record.get("machine") != machine:
+            raise WriteRefusedError(f"the rename of {old_title} belongs to {record.get('machine')}")
+        new_token = str(record["new_title"]).rsplit("-", 1)[-1]
+        row = snapshot.rows.get(new_token)
+        if row is None or row.get("title") != record["new_title"]:
+            raise WriteRefusedError(f"the row for {record['new_title']} is not as this migration wrote it")
+        writes: dict[str, bytes | None] = {
+            migration_path(old_title): encode_json({**record, "status": "complete", "completed_at": utc_now()}),
+            row_path(new_token): checked_row({**row, "state": "active", "recovery": None}),
+        }
+        old_token = old_title.rsplit("-", 1)[-1]
+        old_row = snapshot.rows.get(old_token)
+        if old_row is not None and old_row.get("title") == old_title and old_row.get("machine") == machine:
+            writes[row_path(old_token)] = None
+        return Change(writes, f"session-names: complete the rename of {old_title} to {record['new_title']}")
+
+    return registry.transact(build) is not None
+
+
+def release_failed_migration(registry: Registry, old_title: str, machine: str) -> None:
+    """After a failed rename whose rollback is proved, release the new row and delete its intent record."""
+
+    def build(snapshot: Snapshot) -> Change:
+        record = snapshot.migrations.get(old_title)
+        if record is None or record.get("status") != "intent" or record.get("machine") != machine:
+            raise WriteRefusedError(f"the intent record for {old_title} is not as this migration wrote it")
+        new_token = str(record["new_title"]).rsplit("-", 1)[-1]
+        writes: dict[str, bytes | None] = {migration_path(old_title): None}
+        row = snapshot.rows.get(new_token)
+        if row is not None and row.get("title") == record["new_title"] and row.get("machine") == machine:
+            writes[row_path(new_token)] = None
+        return Change(writes, f"session-names: release {new_token} after the failed rename of {old_title}")
+
+    registry.transact(build)
+
+
+def mark_migration_incomplete(registry: Registry, old_title: str, machine: str, survivors: list[dict]) -> None:
+    """Hold the new row as ``migration-incomplete`` with what survived under the new title."""
+
+    def build(snapshot: Snapshot) -> Change:
+        record = snapshot.migrations.get(old_title)
+        if record is None or record.get("machine") != machine:
+            raise WriteRefusedError(f"no rename of {old_title} is recorded for {machine}")
+        new_token = str(record["new_title"]).rsplit("-", 1)[-1]
+        row = snapshot.rows.get(new_token)
+        if row is None:
+            raise WriteRefusedError(f"the row for {record['new_title']} is gone")
+        updated = {**row, "state": "migration-incomplete", "recovery": survivors}
+        return Change(
+            {row_path(new_token): checked_row(updated)},
+            f"session-names: hold {new_token} as migration-incomplete ({record['new_title']}@{machine})",
+        )
+
+    registry.transact(build)

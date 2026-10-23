@@ -111,6 +111,8 @@ ENGINES = ("c", "g", "p", "cx")
 
 #: A session name: lowercase hyphen-separated segments ending in ``-<N>``.
 _NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-\d+")
+#: The same shape ending in a human session name, accepted only once the registry holds it.
+_HUMAN_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[a-z]+")
 
 #: State files named ``<stem><tmux session>``, each a record of that session.
 _STATE_FILE_STEMS = (
@@ -956,8 +958,12 @@ def migrate_session(
     tmux_names: Callable[[], list[str]] | None = None,
     regenerate_script: Callable[[dict], str] | None = None,
     projects_dir: Path | None = None,
+    new_is_reserved: bool = False,
 ) -> MigrationResult:
     """Move the session in slot ``old`` to slot ``new``; see the module docstring.
+
+    ``new`` ends in an index, or, with ``new_is_reserved``, in a human name the name
+    registry already holds for it (``session-migrate --to-name`` reserves it first).
 
     ``regenerate_script`` turns a session-metadata dict into its wrapper script
     (the launcher's ``_engine_script_from_meta``); without it the old script is
@@ -972,10 +978,12 @@ def migrate_session(
 
     if old == new:
         raise MigrationError(f"{old!r} is already the session's name")
-    if not _NAME_RE.fullmatch(new):
+    if not _NAME_RE.fullmatch(new) and not (new_is_reserved and _HUMAN_NAME_RE.fullmatch(new)):
+        human = _HUMAN_NAME_RE.fullmatch(new) is not None
         raise MigrationError(
             f"{new!r} is not a session name: lowercase letters and digits in hyphen-separated "
             f"segments, ending in -<N> (e.g. myrepo-box-1)"
+            + (". A name ending in a first name is reserved first: use --to-name instead" if human else "")
         )
     registered = registered_worktrees(repo_root)
     old_wt = _registered_worktree_at(repo_root / ".worktrees" / old, registered)
