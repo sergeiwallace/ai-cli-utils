@@ -111,6 +111,7 @@ from .iterm2 import (  # noqa: F401
 )
 from .launch_logging import create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
+from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
 from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
@@ -5699,6 +5700,8 @@ def cmd_doctor(dry_run):
 
 
 _cli_group.add_command(_sessions_group)
+for _name_command in _NAME_COMMANDS:
+    _cli_group.add_command(_name_command)
 
 
 @_cli_group.group("memory", help="Memory-file watchers and helpers")
