@@ -1,0 +1,24 @@
+# Tokens in the first-name source that the generator drops, one per line.
+# A `#` starts a comment. Each entry is reviewed: add one when a refresh diff shows a
+# token that is not a usable first name, and say which kind it is.
+#
+# Tokens the public-repo hygiene test forbids are not listed here, because this file is
+# inside the scan and listing one would fail it. That test scans the generated
+# names.txt beside this file, so a forbidden token reaching the list fails CI instead.
+
+# Abbreviations and truncations in the source
+chas
+eliz
+jame
+marg
+robt
+
+# Name particles rather than first names
+del
+von
+
+# Places, and tokens read first as a group or a historical figure rather than a first name
+asia
+isis
+mao
+marx
