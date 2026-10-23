@@ -148,7 +148,7 @@ def resolve_background_target(config: dict, cwd: Path, ai_name: str, tmux_sessio
         return Resolution(warning="could not read `claude agents --json`; resuming by title instead")
 
     command = settings["background_session_resolver"].strip() if settings else ""
-    if command:
+    if settings and command:
         hint, reason = _run_resolver(
             command, ai_name, tmux_session, settings["background_session_resolver_timeout_seconds"]
         )
