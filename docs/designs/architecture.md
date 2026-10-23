@@ -96,9 +96,9 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai ls [-a]` — fzf-powered session picker sorted by activity
 - `ai attach SESSION` — attach to named tmux session
 - `ai reconnect [N ...]` — print reconnect commands for matching remote sessions
-- `ai cc-migrate DEST` — move a Claude Code transcript to another project root
-- `ai session-adopt [NAME]` — adopt a session that was started outside `ai c`
-- `ai session-audit` — survey titled sessions and identify sessions that cannot be resumed
+- `ai migrate-transcript DEST` — move a Claude Code transcript to another project root
+- `ai adopt-session [NAME]` — adopt a session that was started outside `ai c`
+- `ai audit-sessions` — survey titled sessions and identify sessions that cannot be resumed
 
 ### Historical Gemini Spend
 - `ai spend gemini` — report historical Gemini CLI run logs and optional BigQuery billing data; it does not invoke Gemini
@@ -125,7 +125,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 ### Daemons / Process Management
 - `ai ps [clean]` — inspect and clean up stale ai-cli processes and PID files
-- `ai vpn-watch` — Circus-managed VPN state daemon
+- `ai watch-vpn` — Circus-managed VPN state daemon
 - `ai memory watch` — start memory file watcher
 - `ai telemetry writer` — start NATS-to-SQLite telemetry writer
 
@@ -143,7 +143,7 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai register PROJECT [-p PREFIX] [-t TYPE]` — register a repository root and task prefix
 - `ai copier-update [--project NAME]` — propagate project-template changes to all downstream projects
 - `ai ssh [ALIAS]` — open an SSH shell to a configured remote machine
-- `ai trust-backfill [-r ROOT]` — register Claude Code workspace trust for repositories under a root
+- `ai backfill-trust [-r ROOT]` — register Claude Code workspace trust for repositories under a root
 - `ai internal publish SUBJECT PAYLOAD` — raw NATS publish (used by hooks)
 
 ---

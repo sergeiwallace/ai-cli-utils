@@ -127,7 +127,7 @@ Research behind every decision: [Claude Code session identity and reachability](
 | Launch-convention session naming | `session.build_session_name()`, `_resolve_explicit_tmux_slot()` | `ai c N [-R] -p P --restart-session` resolves the session `ai c` would attach. |
 | Process birth identity | `process_probe.capture_identity()`, `start_time_match()` | The kill is gated on the pid's start time matching the registry's `procStart`. |
 | Config read at call time | `config.load_config()`, `DEFAULT_CONFIG`, the validated-section pattern of `read_reaper_config()` | New `[restart_session]` section. |
-| External commands through drop-in files | `<config dir>/session-migrate.d/*.toml` | New `<config dir>/restart-session.d/*.toml` for the injection command and the optional reachability observer. |
+| External commands through drop-in files | `<config dir>/migrate-session.d/*.toml` | New `<config dir>/restart-session.d/*.toml` for the injection command and the optional reachability observer. |
 | Supervisor heartbeat every 30 s through `ai internal publish-heartbeat` | `session_script.py` ticker | Runs the automatic evaluator on its own interval (D-7). |
 
 Parity: ordinary launches without a restart request retain their resolver and relaunch behaviour.
@@ -469,7 +469,7 @@ private, and this package is public, so it cannot import it by name.
 
 - The pre-step uses the shared library on every host that has it, through its own CLI and its
   readiness, landing and verification checks.
-- Follows the existing `session-migrate.d` precedent for reaching private tooling.
+- Follows the existing `migrate-session.d` precedent for reaching private tooling.
 
 **Cons:**
 

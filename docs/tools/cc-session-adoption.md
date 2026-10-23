@@ -6,7 +6,7 @@ status: current
 source: AI-CLI-168
 ---
 
-# Adopting a Claude Code session into a session slot (`ai session-adopt`)
+# Adopting a Claude Code session into a session slot (`ai adopt-session`)
 
 > Take a Claude Code conversation that was started **without** `ai c` — a plain
 > `claude` in a repo root — and make it fully resumable by `ai c <n>` from the
@@ -14,7 +14,7 @@ source: AI-CLI-168
 > every step is written so it can be carried out by hand if the command is
 > unavailable.
 
-`ai cc-migrate` ([cc-session-migration.md](cc-session-migration.md)) moves the
+`ai migrate-transcript` ([cc-session-migration.md](cc-session-migration.md)) moves the
 *transcript* and nothing else. That is the right scope for a transcript move, but
 it is not enough to adopt a session: several other pieces of state are keyed by
 the **project slug** or the session's **name** rather than by the session UUID,
@@ -134,11 +134,11 @@ invocation:
 
 ```bash
 # 1. See the candidates and the proposed index. Writes nothing, exits non-zero.
-ai session-adopt myproject-2
+ai adopt-session myproject-2
 
 # 2. Having chosen, confirm it explicitly — by title or by index:
-ai session-adopt myproject-2 -c retitle -T myproject-5
-ai session-adopt myproject-2 -c retitle -I 5
+ai adopt-session myproject-2 -c retitle -T myproject-5
+ai adopt-session myproject-2 -c retitle -I 5
 ```
 
 Retitling rewrites **every** `customTitle` record equal to the old title, not
@@ -157,17 +157,17 @@ the batch would strand the others for no reason.
 
 ```bash
 # Preview everything, writing nothing (recommended first):
-ai session-adopt myproject-2 -n
+ai adopt-session myproject-2 -n
 
 # Adopt it (prompts for confirmation, showing the plan):
-ai session-adopt myproject-2
+ai adopt-session myproject-2
 
 # Adopt without the prompt (does NOT cover a title collision):
-ai session-adopt myproject-2 -y
+ai adopt-session myproject-2 -y
 
 # Adopt every titled session found in the source root:
-ai session-adopt -a -n
-ai session-adopt -a -y
+ai adopt-session -a -n
+ai adopt-session -a -y
 
 # Then resume:
 ai c 2
@@ -232,7 +232,7 @@ at the old path.
 
 ### 2. Move the transcript
 
-Delegated to `ai cc-migrate` — see
+Delegated to `ai migrate-transcript` — see
 [cc-session-migration.md](cc-session-migration.md) for the manual procedure. In
 summary: the recorded `cwd`/`originalCwd` fields are rewritten from the old root
 to the worktree, the sidecar `<uuid>/` directory moves alongside, the destination
@@ -240,7 +240,7 @@ is re-parsed line-for-line **before** the source is removed, and the source mtim
 is preserved so newest-first resume ordering stays honest.
 
 ```bash
-ai cc-migrate .worktrees/myproject-2 --title myproject-2
+ai migrate-transcript .worktrees/myproject-2 --title myproject-2
 ```
 
 ### 2b. Clear the stale worktree binding
@@ -300,7 +300,7 @@ Every renumbering is reported (`task 1 -> 4`).
 **The rule: copy, never move; and never overwrite.**
 
 `~/.claude/projects/<slug>/memory/` is keyed by the **project slug, not by the
-session** — every session that ever ran from that directory shares it. `cc-migrate`
+session** — every session that ever ran from that directory shares it. `migrate-transcript`
 refuses to touch it for exactly this reason: **moving it would steal it from other
 sessions still running from the source root.** So adoption *copies*, leaving the
 source byte-identical and any sibling session unaffected.
@@ -437,21 +437,21 @@ print(find_transcript(cc_project_dir(Path('<repo>/.worktrees/myproject-2')), tit
 Then the real end-to-end check, which no automated probe can substitute for:
 run `ai c 2` and confirm the conversation history is present.
 
-## Migrating a session to a human name (`ai session-migrate --to-name`)
+## Migrating a session to a human name (`ai migrate-session --to-name`)
 
 ```bash
-ai session-migrate myrepo-box-3 --to-name           # reserve the shortest free name, then migrate
-ai session-migrate myrepo-box-3 --to-name cleo      # reserve cleo, then migrate
-ai session-migrate myrepo-box-3 -t -L 3             # a picked name of at most 3 letters
-ai session-migrate --all --to-names                 # list every index-named session here; write nothing
-ai session-migrate --all --to-names -y              # migrate each stopped one, refuse each running one
-ai session-migrate --all --to-names --over-limit -y # only the names longer than max_name_length
+ai migrate-session myrepo-box-3 --to-name           # reserve the shortest free name, then migrate
+ai migrate-session myrepo-box-3 --to-name cleo      # reserve cleo, then migrate
+ai migrate-session myrepo-box-3 -t -L 3             # a picked name of at most 3 letters
+ai migrate-session --all --to-names                 # list every index-named session here; write nothing
+ai migrate-session --all --to-names -y              # migrate each stopped one, refuse each running one
+ai migrate-session --all --to-names --over-limit -y # only the names longer than max_name_length
 ```
 
 Every refusal check of the plain migration runs first, and nothing is reserved when one
 fails. The name is then reserved in the name registry together with an `intent` record of
 the rename (`migrations/<old title>.json`), the session is migrated exactly as
-`ai session-migrate OLD NEW` would, and the record becomes `complete` in the commit that
+`ai migrate-session OLD NEW` would, and the record becomes `complete` in the commit that
 also releases a human-named old name. `-L/--max-length N` must lie between the configured
 limits, because a longer name would fail the next install's check.
 
@@ -461,7 +461,7 @@ its intent record are released together. When something is, the name stays held 
 `migration-incomplete` with the survivors listed, `ai reconcile-names` and
 `ai release-name` leave it alone, and running the same command again resumes the rename.
 A rename that finished but whose completion was never published completes itself at the
-next `ai reconcile-names` or `ai session-migrate`.
+next `ai reconcile-names` or `ai migrate-session`.
 
 The host sweep inventories, for one repository, every index-named worktree, tmux session
 and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
@@ -470,28 +470,28 @@ named by retitling its client records; no worktree is made for it. A record the 
 cannot read stops it with the record named, so a sweep never reports a host as finished
 while something on it was skipped.
 
-## Migrating a session that already has a slot (`ai session-migrate`)
+## Migrating a session that already has a slot (`ai migrate-session`)
 
 Adoption brings in a session started **outside** `ai c`. A session that already
 lives in a slot and needs a new name (for example `myrepo-3` to
 `myrepo-box-3` when the host alias joined the
 [naming template](../../README.md#session-names)) is moved with
-`ai session-migrate OLD NEW` instead. Only discovery differs: migration reads the
+`ai migrate-session OLD NEW` instead. Only discovery differs: migration reads the
 registered slot `.worktrees/OLD`, where adoption searches for an unregistered
 transcript. The task namespace and resume tree are moved by the same executor
 (`session_adopt.rekey_name_artifacts`) for both.
 
 ```bash
-ai session-migrate myrepo-3 myrepo-box-3 -n   # every planned move, nothing written
-ai session-migrate myrepo-3 myrepo-box-3      # prompts, then migrates
-ai session-migrate myrepo-3 myrepo-box-3 -y   # no prompt
+ai migrate-session myrepo-3 myrepo-box-3 -n   # every planned move, nothing written
+ai migrate-session myrepo-3 myrepo-box-3      # prompts, then migrates
+ai migrate-session myrepo-3 myrepo-box-3 -y   # no prompt
 ai c myrepo-box-3                             # resume under the new name
 ```
 
 | What | How it follows the new name |
 |---|---|
 | Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
-| Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/session-migrate/wt-OLD`, which stays, so a refused rename never loses it |
+| Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/migrate-session/wt-OLD`, which stays, so a refused rename never loses it |
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
@@ -507,17 +507,17 @@ ai c myrepo-box-3                             # resume under the new name
 | The chief-of-staff registration `ai cos` wrote, when it names OLD (`<chief home>/state/chief-session.json`, and `registry.json`'s `chief_of_staff_session` and `chief_routes.native_agent_name`) | rewritten for NEW, tmux target included; `vp_sessions` is left to its hook. Kept and named, exiting 1, while its tmux target is live; a file that cannot be read refuses the migration |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
 | An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`) |
-| A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai session-retire`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/session-retire/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
+| A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai retire-session`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/retire-session/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
 | `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
 | Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing: each store it changed is named `publish needed`, and publishing it is a separate step. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
-| State of other tools | each hook in `session-migrate.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/session-migrate-hooks.md)) |
+| State of other tools | each hook in `migrate-session.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/migrate-session-hooks.md)) |
 
 ### Per-session state found left under OLD (AI-CLI-2oes)
 
 Each class an earlier migration left keyed by the old name, where it lives, who owns it,
-and what a migration now does with it. The ai-harness classes run as `session-migrate.d/` hooks
+and what a migration now does with it. The ai-harness classes run as `migrate-session.d/` hooks
 (`scripts/session_rekey_cli.py <class>`, installed by ai-harness's held-hook step); each one
 lists what it plans in `--dry-run`, runs again in `--finish`, names a file it cannot read and
 exits non-zero, and leaves a live claim in place, named, exiting 1 so `--finish` is re-run once
@@ -535,7 +535,7 @@ it is free.
 | Resume attempt records | `~/.claude/resume/attempts/<key>-<id>.json`, body field `key` | resume key, read from the body | ai-harness (`context_supervisor.ResumeStore`) | **migrate** (hook `compact-lifecycle`): the core renames the file but not the body, and the supervisor reads the key from the body, so a renamed record was invisible to NEW while the supervisor kept logging `CC-REAUTH-REFUSED key=OLD`; the hook sets `key` to NEW and repoints `evidence_path` at the moved capture |
 | Buzz keys `OLD-<2 hex>@<host>.key` | `$XDG_CONFIG_HOME/ai-harness/buzz/` | a sub-agent's own identity | ai-harness (`buzz_channel.py`) | **keep**, each named (hook `buzz`): a different identity from OLD's, retired by the notifier with its agent; only OLD's own key `OLD@<host>.key` is carried |
 
-`ai session-migrate OLD NEW --finish` completes a migration whose slot already moved
+`ai migrate-session OLD NEW --finish` completes a migration whose slot already moved
 to NEW: a migration run before one of these steps existed, or one whose agent worktree
 a live process held. It repeats every step keyed by the old name that is safe to
 repeat (agent worktrees, branches, containers and markers; launcher state, maps and
@@ -552,7 +552,7 @@ to its slot never names OLD, so neither counts. For a migration run before the
 ledger existed, append the row by hand from the migrating session's own record,
 one JSON object per line: `{"old": "OLD", "new": "NEW", "repo": "<repo>",
 "source": "<where the pair is recorded>"}`, then run `--finish -n` to check the
-plan. `--finish` refuses while either session runs; `ai session-migrate OLD NEW
+plan. `--finish` refuses while either session runs; `ai migrate-session OLD NEW
 --beads-only` does only this re-key, under the same ledger rule, and runs while
 NEW is live, so a migrated session already back at work need not exit for it.
 
@@ -582,7 +582,7 @@ of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats
 that mentions the old path.
 
 Refused before anything is written, `-n` included: a slot that is not a
-registered worktree (use `session-adopt`), an existing `.worktrees/NEW` or
+registered worktree (use `adopt-session`), an existing `.worktrees/NEW` or
 project directory for it, a running Claude Code process named OLD/NEW or working
 inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent:
 exit the session and end the tmux session first). A destination file that exists
@@ -591,16 +591,16 @@ is reported and skipped, never overwritten.
 A `.venv` inside the worktree moves with it, but its console scripts name the old
 path; the command warns, and `uv sync --reinstall` in the new worktree fixes it.
 
-## Retiring a dead session's slot (`ai session-retire`)
+## Retiring a dead session's slot (`ai retire-session`)
 
 A session home is never reaped automatically: the reaper refuses it by design,
-because only its owner knows the session is finished. `ai session-retire NAME`
+because only its owner knows the session is finished. `ai retire-session NAME`
 is that owner's route for `.worktrees/NAME`.
 
 ```bash
-ai session-retire myrepo-3 -n   # what would be removed and preserved, nothing written
-ai session-retire myrepo-3      # prompts, then retires
-ai session-retire myrepo-3 -y   # no prompt
+ai retire-session myrepo-3 -n   # what would be removed and preserved, nothing written
+ai retire-session myrepo-3      # prompts, then retires
+ai retire-session myrepo-3 -y   # no prompt
 ```
 
 Refused before anything is written, `-n` included, with every blocking item named:
@@ -608,16 +608,16 @@ Refused before anything is written, `-n` included, with every blocking item name
 | Refusal | Why |
 |---|---|
 | `.worktrees/NAME` is not a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
-| a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `session-migrate` |
+| a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `migrate-session` |
 | a heartbeat in `session-heartbeats/` for one of those tmux sessions, written in this boot within the reaper's `[stale_session_reaper] stale_after_seconds` | the reaper's own freshness rule; an unreadable record or one that cannot be dated counts as fresh |
 | an uncommitted change, or an untracked file that is not ignored | removing the checkout would lose it (ignored files are removed with it) |
 | a checked-out commit (branch or detached HEAD) in neither the branch's upstream nor `origin/main`, whose content has not landed there either | the commit would survive only on a branch nobody pushed. A squash-merged branch passes on content: every line it added since its merge-base is on the target, was there in a commit since then, or replaced a line the target also rewrote. A binary file passes only when the target's blob is the same, and a branch that adds no line never passes this way |
-| an existing `refs/preserved/session-retire/<branch>` at a different commit | it preserves an earlier tip and is never overwritten |
+| an existing `refs/preserved/retire-session/<branch>` at a different commit | it preserves an earlier tip and is never overwritten |
 
 Otherwise, in order:
 
 1. The tips of the checked-out branch and of `wt-NAME` are written to
-   `refs/preserved/session-retire/<branch>` (`git update-ref <ref> <tip> ""`, so a
+   `refs/preserved/retire-session/<branch>` (`git update-ref <ref> <tip> ""`, so a
    ref that appeared meanwhile fails the write and nothing is removed).
 2. `git worktree remove` without `--force` removes the checkout.
 3. The canonical-registry entry for the slot is dropped under the registry's lock.
@@ -645,9 +645,9 @@ Nothing is written, and the exit status is zero.
 ## Implementation
 
 `src/ai_cli/session_adopt.py` (library, stdlib-only apart from creating a
-worktree) and the `session-adopt` command in `src/ai_cli/main.py`. Tests:
+worktree) and the `adopt-session` command in `src/ai_cli/main.py`. Tests:
 `tests/test_session_adopt.py`. The transcript move itself is
-`src/ai_cli/cc_migrate.py`, reused unchanged. `ai session-migrate` is
+`src/ai_cli/cc_migrate.py`, reused unchanged. `ai migrate-session` is
 `src/ai_cli/session_migrate.py`, tested in `tests/test_session_migrate.py`.
-`ai session-retire` is `src/ai_cli/session_retire.py`, tested in
+`ai retire-session` is `src/ai_cli/session_retire.py`, tested in
 `tests/test_session_retire.py`.

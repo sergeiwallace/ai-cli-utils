@@ -131,14 +131,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the terminal's access time, which Linux moves only in 8-second steps. Text arriving
   through the FIFO does not move it.
 
-- `ai c NEW` (and every engine launch) now runs the pending `session-migrate --finish` of any
+- `ai c NEW` (and every engine launch) now runs the pending `migrate-session --finish` of any
   migration to NEW this host's `session-migrations.jsonl` records, before the session starts,
   so a migration made while NEW was live completes on its next launch. A finish that completes
   appends a `"finished": true` row for the pair, from `ai c` or a manual `--finish`, so it runs
   once; one that refuses or fails is reported on one line with the retry command and never
   blocks the launch.
 
-- `ai session-migrate` (and `--finish`) now re-keys the chief-of-staff registration `ai cos`
+- `ai migrate-session` (and `--finish`) now re-keys the chief-of-staff registration `ai cos`
   wrote when it names OLD (`state/chief-session.json` and `registry.json`'s chief fields,
   leaving it named and exiting 1 while its tmux target is live), and renames OLD's
   `launch-logs/` files for NEW so NEW's retention prunes them. Resume `evidence/` files
@@ -146,16 +146,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-class table in `docs/tools/cc-session-adoption.md` lists every class found left under
   the old name, its owner and its disposition (AI-CLI-2oes).
 
-- `ai session-migrate` now cleans up the old name in every other repo once the session has
+- `ai migrate-session` now cleans up the old name in every other repo once the session has
   moved: a `.worktrees/OLD` slot that is clean and landed is retired the way
-  `ai session-retire` retires one (tips anchored, checkout removed), an empty `OLD-agents`
+  `ai retire-session` retires one (tips anchored, checkout removed), an empty `OLD-agents`
   container is removed, and anything kept is named with its reason and makes the command
   exit 1. Run with `-r` on a repo whose OLD slot is such a leftover, it does only that
   cleanup, so it no longer refuses while NEW is live in its own slot elsewhere.
-- `ai session-migrate OLD NEW --finish` carries or removes every leftover still named OLD for a
+- `ai migrate-session OLD NEW --finish` carries or removes every leftover still named OLD for a
   slot that already moved to NEW, hooks included, so a migration run before a step existed
   completes without hand steps.
-- `ai session-migrate` now also renames memory files named for the session (`active-work-OLD.md`,
+- `ai migrate-session` now also renames memory files named for the session (`active-work-OLD.md`,
   `.resume-OLD-N.md`) and the links to them in `MEMORY.md`, removes an emptied
   `.worktrees/OLD-agents/` container, and removes the old name's slot lock and watcher lock
   once no process holds them.
@@ -230,6 +230,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Seven commands are renamed to the verb-noun form: `session-migrate` is now
+  `migrate-session`, `session-adopt` is `adopt-session`, `session-retire` is
+  `retire-session`, `session-audit` is `audit-sessions`, `cc-migrate` is
+  `migrate-transcript`, `trust-backfill` is `backfill-trust` and `vpn-watch` is
+  `watch-vpn`. The old names are gone, with no alias. External rekey hooks are now
+  read from `<config dir>/migrate-session.d/`, so move any hook from
+  `session-migrate.d/`. New branch-tip anchors are written under
+  `refs/preserved/migrate-session/` and `refs/preserved/retire-session/`, and the VPN
+  watcher is registered with Circus as `watch-vpn`; anchors already written under
+  the old namespaces stay where they are.
 - The chief-of-staff launch no longer carries any environment's names in code. The
   project it launches into, its session-name segment, its registry instance-key prefix
   and its homes directory are now `[chief_of_staff] project`, `session_name`,
@@ -244,7 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[project] environment_repo` names the sibling repository whose host-alias registry is
   authoritative and whose `dolt_server.py` and wake sidecar are run; `[machine]
   marker_file` names the host-id file read when `AI_HOST` is unset; `[worktree]
-  marker_prefix` names the git-config marker namespace `ai session-migrate` rewrites.
+  marker_prefix` names the git-config marker namespace `ai migrate-session` rewrites.
 - The development dependency on Copier is now `>=9.19`, the first release with
   `ask: false` questions, which templates use to keep hidden answers on update.
 
@@ -357,7 +367,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so concurrent tabs run one detection command per interval. Detection and cache locking
   run in worker threads to keep the transport event loop responsive.
 
-- `ai session-migrate OLD NEW` now re-keys Beads assignees. Every non-closed issue assigned to
+- `ai migrate-session OLD NEW` now re-keys Beads assignees. Every non-closed issue assigned to
   exactly OLD, in every store under the projects dir, is reassigned to NEW through `bd --actor
   OLD update --if-assignee OLD` and given a comment naming the migration, so the migrated
   session can close and reassign its own issues without `--force`. `--dry-run` lists each
@@ -367,7 +377,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them unchanged when it does not. `--beads-only` does just that re-key and runs while NEW is
   live.
 
-- `ai session-audit` judges a session by the most recent cwd its transcript records that exists
+- `ai audit-sessions` judges a session by the most recent cwd its transcript records that exists
   on this host, not by the first one. A session that moved hosts or was migrated now reads
   `in-slot, resolvable`, and a session whose repo does not exist on this host is skipped, never
   offered for adoption into a missing path.
@@ -393,7 +403,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now tried once with no wait, a store that is held drops that telemetry batch at once
   (the launch log keeps every record), and only a batch that holds the lock looks the
   machine id up (AI-CLI-n0d7).
-- `ai session-retire` now retires a slot whose branch was squash-merged. It used to
+- `ai retire-session` now retires a slot whose branch was squash-merged. It used to
   refuse because the branch's commits were not ancestors of `origin/main`, which a
   squash merge never makes them. It now checks content: every line the branch added
   since its merge-base must be on the target, have been there in a commit since then,
@@ -462,7 +472,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when there are several. A remote launch that refuses now exits 78, and the ssh reconnect
   ladder stops on that code with one message instead of retrying the same refusal ten
   times. A chief registered under a name the host no longer gives it (its host alias
-  changed) is refused with the `ai session-migrate OLD NEW -r DIR` command to run first,
+  changed) is refused with the `ai migrate-session OLD NEW -r DIR` command to run first,
   where it used to start a new conversation under the new name and leave the old worktree
   behind.
 
@@ -478,7 +488,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command from the client machine. The bare "host not set" error left an operator who had
   simply typed the command on the remote itself with no next step.
 
-- `ai session-migrate` now moves a worktree that holds initialised submodules, which
+- `ai migrate-session` now moves a worktree that holds initialised submodules, which
   `git worktree move` refuses. It moves the directory, runs `git worktree repair`, and
   repoints each submodule's `core.worktree`, so `git status` works in the moved
   worktree and its submodules. A locked worktree is still never moved.
@@ -506,15 +516,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script existed before but no hook stage ran it, so about half of recent features reached
   `main` without an entry. `SKIP_CHANGELOG=1` bypasses it for one commit.
 
-- `ai session-adopt -t/--transcript FILE` adopts a transcript whose source directory no longer
+- `ai adopt-session -t/--transcript FILE` adopts a transcript whose source directory no longer
   exists, the case where `-s/--source` cannot be guessed. It refuses alongside `-s` or `-a`, and
   refuses a file that is not the one its title resolves to.
 
-- `ai session-retire NAME` retires a dead session's home slot `.worktrees/NAME`. It
+- `ai retire-session NAME` retires a dead session's home slot `.worktrees/NAME`. It
   refuses, before writing anything, while the session runs (a Claude Code process, its
   tmux session or a fresh heartbeat), while the checkout holds uncommitted or untracked
   work, or while its checked-out commit is in neither its upstream nor `origin/main`.
-  Otherwise it anchors the branch tips under `refs/preserved/session-retire/`, runs
+  Otherwise it anchors the branch tips under `refs/preserved/retire-session/`, runs
   `git worktree remove`, drops the canonical-registry entry and appends a row to
   `session-retirements.jsonl`. The branches and the Claude Code project directory stay.
 
@@ -525,11 +535,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   update has been installed since launch, a drop warns once that the launcher's code is
   older and that reattaching with the same command loads the fix.
 
-- `ai session-migrate OLD NEW` now also carries the session's delegated work in every
+- `ai migrate-session OLD NEW` now also carries the session's delegated work in every
   repository under `[project] projects_dir`. Agent worktrees under
   `.worktrees/OLD-agents/` move to `.worktrees/NEW-agents/`, and `wt/OLD/*` branches,
   checked out or parked, are renamed with each tip anchored under
-  `refs/preserved/session-migrate/` first. Session-home markers naming the old slot
+  `refs/preserved/migrate-session/` first. Session-home markers naming the old slot
   follow. A worktree a live Claude Code process is working in is left alone with its
   branch, an existing destination is skipped, and a git refusal warns and exits 1.
 

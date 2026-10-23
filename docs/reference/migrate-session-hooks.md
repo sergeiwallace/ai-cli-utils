@@ -1,14 +1,14 @@
 ---
-title: session-migrate external rekey hooks
+title: migrate-session external rekey hooks
 category: reference
-tags: [sessions, session-migrate, hooks, configuration]
+tags: [sessions, migrate-session, hooks, configuration]
 status: current
 source: AI-CLI-6xyr
 ---
 
-# `ai session-migrate` external rekey hooks
+# `ai migrate-session` external rekey hooks
 
-`ai session-migrate OLD NEW` moves everything this package knows is keyed by a
+`ai migrate-session OLD NEW` moves everything this package knows is keyed by a
 session's name. Other tools can keep their own name-keyed state (a notes store, a
 message board identity, a tracker assignee). A hook lets such a tool join the
 migration: it is planned in the same dry run, refuses under the same rules, and
@@ -16,13 +16,13 @@ runs in the same command, without this package knowing anything about the tool.
 
 ## Where hooks live
 
-One TOML file per hook in the `session-migrate.d/` directory under the
+One TOML file per hook in the `migrate-session.d/` directory under the
 ai-cli-utils config directory:
 
 | OS | Directory |
 |---|---|
-| Linux, macOS | `$XDG_CONFIG_HOME/ai-cli-utils/session-migrate.d/` (default `~/.config/ai-cli-utils/session-migrate.d/`) |
-| Windows | `%APPDATA%\ai-cli-utils\session-migrate.d\` |
+| Linux, macOS | `$XDG_CONFIG_HOME/ai-cli-utils/migrate-session.d/` (default `~/.config/ai-cli-utils/migrate-session.d/`) |
+| Windows | `%APPDATA%\ai-cli-utils\migrate-session.d\` |
 
 Files are read when the command runs, never cached, and run in filename order, so
 a numeric prefix (`10-notes.toml`, `20-board.toml`) sets the order. Only `*.toml`
@@ -60,7 +60,7 @@ its working directory:
 ```
 
 The hook prints one line per artifact it would move (dry run) or moved (real run)
-on standard output. `session-migrate` relays each non-blank line as:
+on standard output. `migrate-session` relays each non-blank line as:
 
 ```text
 hook notes: moved notes/myrepo-3 -> notes/myrepo-box-3
@@ -82,7 +82,7 @@ failure: they are already durable. Hooks must therefore be idempotent, so that
 running the failed hook alone (the same argv, without `--dry-run`) completes the
 migration.
 
-## `ai session-adopt`
+## `ai adopt-session`
 
 An adoption that retitles the session (`-c retitle` with `-T` or `-I`) changes its
 name, so it runs the same hooks under the same contract, with `--old` the title
@@ -97,7 +97,7 @@ the session had and `--new` the title it is adopted under:
   warning and the command exits 1.
 
 An adoption that keeps the session's title runs no hook: nothing keyed by the
-name has changed. `ai session-audit` adopts through the same code path.
+name has changed. `ai audit-sessions` adopts through the same code path.
 
 ## Writing a hook
 
