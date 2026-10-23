@@ -1398,11 +1398,14 @@ def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
 
 
 def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> str | None:
-    """Return an active/idle Claude Code state for a worktree, if one is known."""
-    match = re.search(r"(\d+)$", wt_dir.name)
-    if not match:
-        return None
-    session_name = f"c-{project_name}-{match.group(1)}"
+    """Return an active/idle Claude Code state for a worktree, if one is known.
+
+    The worktree directory is the session's title and its tmux session is that title
+    with the engine prefix, whatever the title ends in. The target is exact (``=``): a
+    bare name is a unique-prefix match in tmux.
+    """
+    del project_name
+    session_name = f"=c-{wt_dir.name}"
     has_session = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
     if has_session.returncode != 0:
         return None
