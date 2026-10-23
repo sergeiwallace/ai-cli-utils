@@ -1,4 +1,4 @@
-"""Session names: ``{repo-alias}-{host-alias}-{optional-slug}-{N}``.
+"""Session names: ``{repo-alias}-{host-alias}-{optional-slug}-{N}``, or a human name in place of ``{N}``.
 
 Every name ``ai c`` gives a session -- its ai_name, worktree directory, transcript
 title and pinned task namespace -- is built by :func:`compose_session_name`, so
@@ -31,6 +31,9 @@ attached asks for the alias and appends it to the first registry that exists
 (:func:`prompt_for_host_alias`); without a terminal it is refused with the paths to
 edit, because a name invented here would become a worktree directory, a branch and a
 transcript title, and renaming those later is a migration rather than an edit.
+
+The last part of this module picks the human first name that replaces ``{N}`` when
+human names are enabled (:func:`pick_name`).
 """
 
 from __future__ import annotations
@@ -38,13 +41,17 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import random
 import re
 import tempfile
 import tomllib
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import config as _config
 from . import output as _out
+from .name_list import one_edit_apart
 from .output import Tag
 
 ALIAS_FILENAME = "machine-host-aliases.toml"
@@ -60,6 +67,8 @@ _ALIAS_RE = re.compile(r"[a-z][a-z0-9]*")
 # dot would otherwise be read as a dotted key) is written as a quoted key.
 _BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 _ALIASES_HEADER_RE = re.compile(r"\s*\[aliases\]\s*(#.*)?")
+# A human name segment: lowercase ASCII letters only, so it can never read as an index.
+_NAME_SEGMENT_RE = re.compile(r"[a-z]+")
 
 
 class HostAliasError(RuntimeError):
@@ -368,3 +377,178 @@ def resolve_or_prompt_host_alias(*, dry_run: bool = False) -> str:
         if not _config._can_prompt():
             raise
     return prompt_for_host_alias(dry_run=dry_run)
+
+
+# --- Picking a human name -------------------------------------------------------------
+#
+# The last segment of a new session's name is a short human first name. A pick takes
+# the shortest length that still has a free candidate, then prefers names sharing the
+# repo alias's letters, then chooses at random. Everything that depends on what is held
+# right now (the held names, the titles they make, the aliases in use) is passed in, so
+# the same function serves a launch, a migration and a dry run.
+
+
+class NamePoolExhaustedError(RuntimeError):
+    """No candidate survives the filters; the message names each filter and what it removed."""
+
+
+@dataclass(frozen=True)
+class NamePick:
+    """One picked name, and what the picker saw when it chose it."""
+
+    name: str
+    tier: str
+    run_size: int
+    free_at_length: int
+    free_total: int
+
+
+@dataclass(frozen=True)
+class PickRequest:
+    """Everything a pick depends on.
+
+    ``title_prefix`` is the new title without its name (``myrepo-box-`` or
+    ``myrepo-box-review-``); ``stem`` is ``{repo-alias}-{host-alias}``. ``held`` is every
+    token the registry and this machine's spool hold; ``held_titles`` their titles.
+    ``manual`` is the names added by hand, a candidate only when ``passes_static`` says so.
+    """
+
+    generated: frozenset[str]
+    held: frozenset[str]
+    held_titles: frozenset[str]
+    stem: str
+    title_prefix: str
+    repo_alias: str
+    min_length: int
+    max_length: int
+    letters: frozenset[str]
+    pick_floor: int
+    reserved_words: frozenset[str] = frozenset()
+    denylist: frozenset[str] = frozenset()
+    manual: frozenset[str] = frozenset()
+    passes_static: Callable[[str], bool] | None = None
+    max_edit_distance: int = 1
+
+
+def alias_letters(repo_alias: str) -> frozenset[str]:
+    """The distinct letters of ``repo_alias`` (``my-app`` gives a, m, p, y)."""
+    return frozenset(char for char in repo_alias.lower() if "a" <= char <= "z")
+
+
+def resolve_letters(repo_alias: str, include: Iterable[str] | None, source: str) -> tuple[frozenset[str], str | None]:
+    """The letter set the picker uses, and a warning when the configured one cannot be used.
+
+    A configured include set is used only when every entry is one of the alias's own
+    letters; otherwise the alias's letters are used and the warning names ``source``,
+    the file the install-time check fails on.
+    """
+    own = alias_letters(repo_alias)
+    if include is None:
+        return own, None
+    configured = frozenset(include)
+    stray = sorted(letter for letter in configured if letter not in own)
+    if not configured or stray:
+        return own, (
+            f"the letters configured for {repo_alias!r} in {source} include {', '.join(stray) or 'nothing'}, "
+            f"outside the alias's letters ({', '.join(sorted(own))}); using the alias's letters"
+        )
+    return configured, None
+
+
+def _tier_key(name: str, letters: frozenset[str], first: str) -> tuple[int, bool]:
+    return len(set(name) & letters), name.startswith(first)
+
+
+def _tier_label(name: str, letters: frozenset[str], first: str) -> str:
+    contained, starts = _tier_key(name, letters, first)
+    return f"len{len(name)}/{contained}/{'first' if starts else 'other'}"
+
+
+def _prefix_pair(title: str, held_titles: Iterable[str], stem: str) -> bool:
+    same_stem = f"{stem}-"
+    return any(
+        held != title and held.startswith(same_stem) and (held.startswith(title) or title.startswith(held))
+        for held in held_titles
+    )
+
+
+def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
+    """The free candidates for ``request``, and how many each filter removed."""
+    removed = dict.fromkeys(
+        (
+            "outside the length limits",
+            "denylisted",
+            "added by hand and failing the static filters",
+            "held",
+            f"within {request.max_edit_distance} edit of a held name",
+            "equal to a repo or host alias",
+            "a strict-prefix title pair with a held title",
+        ),
+        0,
+    )
+    keys = list(removed)
+    manual = {name for name in request.manual if name not in request.generated}
+    candidates: list[str] = []
+    for name in sorted(request.generated | manual):
+        if not _NAME_SEGMENT_RE.fullmatch(name) or not request.min_length <= len(name) <= request.max_length:
+            removed[keys[0]] += 1
+        elif name in request.denylist:
+            removed[keys[1]] += 1
+        elif name in manual and not (request.passes_static and request.passes_static(name)):
+            removed[keys[2]] += 1
+        elif name in request.held:
+            removed[keys[3]] += 1
+        elif request.max_edit_distance and any(one_edit_apart(name, held) for held in request.held):
+            removed[keys[4]] += 1
+        elif name in request.reserved_words:
+            removed[keys[5]] += 1
+        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+            removed[keys[6]] += 1
+        else:
+            candidates.append(name)
+    return candidates, removed
+
+
+def pick_name(request: PickRequest, rng: random.Random | None = None) -> NamePick:
+    """Pick a free name: the shortest length first, then the letter ladder, then at random.
+
+    Within the shortest length that has a candidate, candidates are ranked by how many
+    of ``letters`` they contain and then by starting with the alias's first letter. The
+    pick is uniform over the smallest run of top tiers holding at least ``pick_floor``
+    candidates, or over every candidate of that length when no run reaches it. The run
+    never reaches a longer length.
+    """
+    candidates, removed = name_candidates(request)
+    if not candidates:
+        considered = len(request.generated | request.manual)
+        reasons = "; ".join(f"{reason}: {count}" for reason, count in removed.items() if count)
+        raise NamePoolExhaustedError(
+            f"no free session name: all {considered} names in the database were filtered out ({reasons or 'none'})"
+        )
+    shortest = min(len(name) for name in candidates)
+    at_length = [name for name in candidates if len(name) == shortest]
+    first = next((char for char in request.repo_alias.lower() if "a" <= char <= "z"), "")
+    ranked = sorted({_tier_key(name, request.letters, first) for name in at_length}, reverse=True)
+    run: list[str] = []
+    for tier in ranked:
+        run += [name for name in at_length if _tier_key(name, request.letters, first) == tier]
+        if len(run) >= request.pick_floor:
+            break
+    chosen = (rng or random.SystemRandom()).choice(sorted(run))
+    return NamePick(
+        name=chosen,
+        tier=_tier_label(chosen, request.letters, first),
+        run_size=len(run),
+        free_at_length=len(at_length),
+        free_total=len(candidates),
+    )
+
+
+def low_water_warning(pick: NamePick, low_water: int) -> str | None:
+    """The one warning a launch prints when the free pool is running low."""
+    if pick.free_total >= low_water:
+        return None
+    return (
+        f"only {pick.free_total} free session names remain (warning below {low_water}); "
+        "see `ai list-name-candidates`, and raise max_name_length to widen the pool"
+    )
