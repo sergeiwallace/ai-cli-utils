@@ -521,6 +521,16 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
+| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs. |
+| `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
+| `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
+
+`ai locate-session ada` reads the name's registry row, then on the host that holds it
+the tmux session, the worktree and the transcript. For a session on another host it runs
+`fleet-liveness status --session <title>@<host> --json` and prints its word as given; only
+`live` reads as active. It also runs `message-transports resolve --target <title>@<host>
+--json` for the rung that reaches it. Both are separate tools; when one is not on `PATH`
+the command says so and still prints the row.
 
 A name is released by the machine that holds it, once the session's worktree and its
 client transcript are both proved gone. A store that cannot be read, or a session that

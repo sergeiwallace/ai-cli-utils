@@ -388,6 +388,114 @@ def check_names_command(as_json: bool) -> None:
     _out.emit(Tag.NAMES, "check", "\n".join(lines))
 
 
+@click.command("list-names", help="Session names: list every held name with its title, host, client and kind")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
+def list_names_command(as_json: bool) -> None:
+    from .session import _tmux_session_names
+
+    registry = open_registry()
+    try:
+        snapshot = registry.snapshot()
+    except reg.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+        _out.emit(
+            Tag.NAMES,
+            "list",
+            "the registry is unreachable; listing the last fetched tip",
+            err=True,
+            level=_out.Level.WARNING,
+        )
+    host = _host()
+    live = set(_tmux_session_names())
+    rows = sorted(snapshot.rows.values(), key=lambda row: (str(row.get("machine")), row["token"]))
+
+    def running(row: dict) -> bool | None:
+        """Whether this machine runs the row's session; None for another machine's row or a spare."""
+        if row.get("machine") != host or not row.get("title"):
+            return None
+        return any(
+            f"{engine}{remote}-{row['title']}" in live for engine in ("c", "g", "p", "cx") for remote in ("", "-r")
+        )
+
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps([{**row, "running": running(row)} for row in rows], sort_keys=True))
+        return
+    if not rows:
+        _out.emit(Tag.NAMES, "list", "no names are held")
+        return
+    lines = []
+    for row in rows:
+        state = {True: " running", False: " stopped", None: ""}[running(row)]
+        lines.append(
+            f"{row['token']:<6} {row.get('title') or '-'!s:<32} {row.get('machine')!s:<16} "
+            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {row.get('reserved_at')}{state}"
+        )
+    _out.emit(Tag.NAMES, "list", "\n".join(lines))
+
+
+@click.command(
+    "list-name-candidates",
+    help="Session names: count the free names per length and the letter tiers the picker would use",
+)
+@click.option(
+    "-r", "--repo", "repo_alias", default=None, help="Repo alias whose letters rank the names (default: this repo)"
+)
+@click.option("-L", "--max-length", type=int, default=None, help="Count only names of at most this many letters")
+def list_name_candidates_command(repo_alias: str | None, max_length: int | None) -> None:
+    from . import session_naming
+    from .session import get_project_prefix
+
+    registry = open_registry()
+    try:
+        snapshot = registry.snapshot()
+    except reg.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+    alias = (repo_alias or get_project_prefix()).lower()
+    slot = reg.Slot(repo="", repo_alias=alias, host_alias=_host_alias(), label=None, machine=_host(), client="")
+    try:
+        request, warnings = reg.pick_request(registry, snapshot, slot, spool=reg.read_spool(), max_length=max_length)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    candidates, removed = session_naming.name_candidates(request)
+    first = next((char for char in alias if "a" <= char <= "z"), "")
+    lines = [f"letters {''.join(sorted(request.letters))} (repo alias {alias}), pick floor {request.pick_floor}"]
+    for length in sorted({len(name) for name in candidates}):
+        names = [name for name in candidates if len(name) == length]
+        tiers: dict[tuple[int, bool], int] = {}
+        for name in names:
+            key = (len(set(name) & request.letters), name.startswith(first))
+            tiers[key] = tiers.get(key, 0) + 1
+        ladder = ", ".join(
+            f"{count} with {contained}{' incl. first' if starts else ''}"
+            for (contained, starts), count in sorted(tiers.items(), reverse=True)
+        )
+        lines.append(f"{length} letters: {len(names)} free ({ladder})")
+    lines += [f"removed: {reason}: {count}" for reason, count in removed.items() if count]
+    lines += [f"warning: {warning}" for warning in warnings]
+    _out.emit(Tag.NAMES, "list", "\n".join(lines))
+
+
+@click.command(
+    "locate-session",
+    help="Session names: which host holds a session, whether it is active, and which messaging rung reaches it",
+)
+@click.argument("query")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print one JSON object with row, local, liveness and reach")
+def locate_session_command(query: str, as_json: bool) -> None:
+    from . import session_locate
+
+    registry = open_registry()
+    located = session_locate.locate(registry, query.lower(), _host(), projects_root=_projects_root())
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(located.as_json(), sort_keys=True))
+        sys.exit(0 if located.row is not None else 1)
+    if located.row is None:
+        _out.error(Tag.NAMES, "locate", f"no session holds {query}; `ai list-names` lists every held name")
+        sys.exit(1)
+    _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
+
+
 COMMANDS = (
     sync_names_command,
     add_name_command,
@@ -397,4 +505,7 @@ COMMANDS = (
     release_name_command,
     reassign_name_command,
     check_names_command,
+    list_names_command,
+    list_name_candidates_command,
+    locate_session_command,
 )
