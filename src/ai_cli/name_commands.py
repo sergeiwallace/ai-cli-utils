@@ -126,4 +126,69 @@ def remove_name_command(name: str) -> None:
     _out.emit(Tag.NAMES, "remove", f"removed {value} from the name database")
 
 
-COMMANDS = (sync_names_command, add_name_command, remove_name_command)
+@click.command("show-name-config", help="Session names: print each naming setting, its value and the layer that set it")
+def show_name_config_command() -> None:
+    from . import session_title
+
+    try:
+        discovery = reg.discover()
+    except reg.RegistryError as exc:
+        _out.error(Tag.NAMES, "config", str(exc))
+        sys.exit(1)
+    registry = discovery.registry
+    fleet = isinstance(registry, reg.GitRegistry)
+    policy_config = reg.read_policy_file(registry.policy_file) if isinstance(registry, reg.GitRegistry) else None
+    source = reg.policy_source(registry) if registry else "config/session-names.toml"
+    try:
+        settings = session_title.resolve_settings(
+            enabled_flag=None, with_label_flag=None, policy_config=policy_config, host=_host(), policy_source=source
+        )
+    except session_title.TitleError as exc:
+        _out.error(Tag.NAMES, "config", str(exc))
+        sys.exit(EXIT_REFUSED)
+    lines = [
+        f"registry           {registry.kind}: {registry.location}"
+        if registry
+        else f"registry           none: {discovery.reason}"
+    ]
+    for key in ("enabled", "name_with_label"):
+        lines.append(f"{key:<18} {settings[key].value!s:<8} ({settings[key].layer})")
+    if registry is None:
+        _out.emit(Tag.NAMES, "config", "\n".join(lines))
+        return
+    try:
+        snapshot = registry.snapshot()
+    except reg.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+        lines.append("note               the registry is unreachable; showing the last fetched tip")
+    try:
+        limits = session_title.resolve_limits(registry, snapshot)
+        policy = snapshot.policy
+    except reg.RegistryError as exc:
+        lines.append(f"policy             unavailable: {exc}")
+        _out.emit(Tag.NAMES, "config", "\n".join(lines))
+        return
+    lines += [
+        f"min_name_length    {limits.low:<8} ({limits.layer})",
+        f"max_name_length    {limits.high:<8} ({limits.layer})",
+    ]
+    layer = "published policy" if fleet else "built-in"
+    for key in ("pick_floor", "low_water", "offline_spares", "publish_timeout_s", "publish_attempts"):
+        lines.append(f"{key:<18} {policy.get(key)!s:<8} ({layer})")
+    lines.append(f"max_edit_distance  {policy.get('confusable', {}).get('max_edit_distance')!s:<8} ({layer})")
+    if isinstance(registry, reg.GitRegistry):
+        generation = snapshot.generation or {}
+        commit, _committed_at = reg.policy_revision(registry)
+        local_digest = name_list.policy_digest(reg.local_policy(registry))
+        state = reg.ancestry_state(registry, generation.get("policy_commit"), commit) if generation else "local-newer"
+        lines += [
+            f"published policy   commit {generation.get('policy_commit')}, digest {generation.get('policy_digest')}",
+            f"this checkout      commit {commit}, digest {local_digest}",
+            f"ancestry state     {state}",
+        ]
+    _out.emit(Tag.NAMES, "config", "\n".join(lines))
+    if limits.warning:
+        _out.emit(Tag.NAMES, "config", limits.warning, err=True, level=_out.Level.WARNING)
+
+
+COMMANDS = (sync_names_command, add_name_command, remove_name_command, show_name_config_command)

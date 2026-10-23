@@ -434,6 +434,37 @@ class TestChiefFlag:
         assert registration["native_agent_name"] == "hub-tst-chief-1"
         assert registration["tmux_target"] == "c-hub-tst-chief-1"
 
+    def test_given_human_names_when_the_chief_launches_then_a_picked_name_follows_and_a_second_chief_is_refused(
+        self, seeded_home, tmp_path, monkeypatch
+    ):
+        from name_fleet import build_fleet
+
+        from ai_cli import session_naming
+
+        own_host_id = session_naming.host_id
+        (tmp_path / "fleet").mkdir()
+        fleet = build_fleet(tmp_path / "fleet", monkeypatch)
+        # Keep this module's host id, the one its alias registry names (alias "tst").
+        monkeypatch.setattr(session_naming, "host_id", own_host_id)
+        monkeypatch.setenv("AI_CLI_SESSION_NAMES", "1")
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "--chief"])
+            assert code == 0, err
+            title = launch.call_args.kwargs["name"]
+        token = title.rsplit("-", 1)[-1]
+        assert title == f"hub-tst-chief-{token}"
+        assert fleet.rows()[token]["label"] == "chief"
+        assert json.loads(cos.registration_path(seeded_home).read_text())["native_agent_name"] == title
+
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            stack.enter_context(patch("ai_cli.session._tmux_session_names", return_value=[f"c-{title}"]))
+            code, _out, err = run_cli(["ai", "c", "--chief", "review"])
+        assert code == 1
+        assert "one chief per machine" in err
+        assert not launch.called
+
     def test_given_a_positional_suffix_when_launched_then_it_sits_between_chief_and_the_index(self, seeded_home):
         with ExitStack() as stack:
             launch = _launch_patches(stack, live=False, real_names=True)

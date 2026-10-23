@@ -619,8 +619,19 @@ class AdoptOutcome:
 
 
 def _is_slot(value: str) -> bool:
-    """A slot ``build_session_name`` maps back to one existing session: ``N`` or ``<name>-N``."""
-    return bool(value) and (value.isdigit() or value.rsplit("-", 1)[-1].isdigit())
+    """A slot a launch maps back to one existing session: ``N``, ``<label>-N``, or a human-named one."""
+    from .name_registry import discover, known_names
+
+    if not value:
+        return False
+    tail = value.rsplit("-", 1)[-1]
+    if value.isdigit() or tail.isdigit():
+        return True
+    try:
+        registry = discover().registry
+    except RuntimeError:
+        registry = None
+    return tail.isalpha() and tail in known_names(registry)
 
 
 def _local_candidate(name: str, projects: dict[str, str]) -> AdoptLine:

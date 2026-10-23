@@ -1470,6 +1470,19 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _index_session_names_by_default(monkeypatch):
+    """Every test names sessions by index unless it asks for human names.
+
+    The config template ships ``[session_names] enabled = true``, and a test that loads
+    config with no file present gets the template written for it. Without this, every
+    launch test would pick and reserve a human name in a local registry, which is not
+    what it tests. The environment layer outranks the local config, so this one variable
+    keeps them on index names; a test of human names sets it itself or deletes it.
+    """
+    monkeypatch.setenv("AI_CLI_SESSION_NAMES", "0")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_workspace_trust_registry(monkeypatch, tmp_path_factory):
     """Keep workspace-trust registration out of the real home directory.
 

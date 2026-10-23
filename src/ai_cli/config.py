@@ -551,7 +551,6 @@ enabled = true
 # myproject = "workspace"
 
 [session]
-## Session names: c-{project}-{n} or c-r-{project}-{n} for remote sessions
 ## Limits launch-time auxiliary-state housekeeping only; it never ends a tmux
 ## session. `ai c` keeps the independent stale-session reaper running.
 stale_session_timeout = 15
@@ -571,6 +570,21 @@ stale_session_timeout = 15
 ## terminal stays the terminal, and the pty path gives you no detach/reattach and no
 ## scrollback (install tmux for those).
 # use_pty = true
+
+[session_names]
+## Name each new session with a short human first name in place of an index:
+## {repo-alias}-{host-alias}-[{label}-]{name}, for example myproject-box-ada.
+## A name is unique on every machine that shares a name registry. Set false for
+## index names ({repo-alias}-{host-alias}-[{label}-]{N}). -S/--session-names and
+## -I/--no-session-names override this for one launch.
+enabled = true
+## With a label (`ai c review`): "keep" names the session myproject-box-review-ada,
+## "drop" names it myproject-box-review. -w/--with-name and -u/--no-name override it.
+name_with_label = "keep"
+## Name length limits. Used only where no shared name registry exists; a shared
+## registry's limits apply to every machine that uses it, and these are then ignored.
+min_name_length = 3
+max_name_length = 4
 
 [session_relaunch]
 on_boot = false

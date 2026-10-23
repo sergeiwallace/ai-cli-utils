@@ -1046,41 +1046,61 @@ def reserve_picked(
 def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozenset[str]) -> tuple[str, str]:
     """``(verdict, reason)`` for a name chosen by hand, under the snapshot's published policy.
 
-    The verdict is ``ok`` (known, free and in limits), ``unknown`` (free but not in the
-    database), or the rule that refuses it: ``limits``, ``held``, ``confusable`` or ``word``.
+    The checks run in the order the hand-chosen flow states them: ``held``, then
+    ``confusable`` (one edit from a held name, or a strict-prefix title pair), then
+    ``word``. A name in the database is then ``ok`` inside the limits and ``limits``
+    outside them; a name not in the database is ``unknown`` whatever its length,
+    because the flow asks whether to add it before it checks the limits.
     """
     from . import session_naming
 
     policy = snapshot.policy
-    low, high = name_list.limits(policy)
-    limits_text = f"the configured limit is {low} to {high} letters (config/session-names.toml [limits])"
-    if not _TOKEN_RE.fullmatch(name):
-        return "limits", f'"{name}" is not lowercase letters only; {limits_text}.'
     holder = snapshot.holder(name)
     if holder:
         return "held", f"{name} is held by {holder}"
-    held = held_tokens(snapshot)
-    if int(policy.get("confusable", {}).get("max_edit_distance", 1)):
-        near = sorted(token for token in held if session_naming.one_edit_apart(name, token))
-        if near:
-            return "confusable", f"{name} is one edit from the held name {near[0]} ({snapshot.holder(near[0])})"
-    title = slot.title_for(name)
-    for other in sorted(held_titles(snapshot)):
-        if (
-            other.startswith(f"{slot.stem}-")
-            and other != title
-            and (other.startswith(title) or title.startswith(other))
-        ):
-            return "confusable", f"the title {title} and the held title {other} are a prefix pair"
-    if is_common_word(name, policy, words):
-        return "word", (
-            f"{name} is a common English word; to allow it as a name, add it to keep_names in config/session-names.toml"
-        )
-    if not low <= len(name) <= high:
-        return "limits", f'"{name}" is {len(name)} letters; {limits_text}.'
-    if name in snapshot.available:
-        return "ok", ""
-    return "unknown", f"{name} is not in the name database"
+    if _TOKEN_RE.fullmatch(name):
+        held = held_tokens(snapshot)
+        if int(policy.get("confusable", {}).get("max_edit_distance", 1)):
+            near = sorted(token for token in held if session_naming.one_edit_apart(name, token))
+            if near:
+                return "confusable", f"{name} is one edit from the held name {near[0]} ({snapshot.holder(near[0])})"
+        title = slot.title_for(name)
+        for other in sorted(held_titles(snapshot)):
+            if (
+                other.startswith(f"{slot.stem}-")
+                and other != title
+                and (other.startswith(title) or title.startswith(other))
+            ):
+                return (
+                    "confusable",
+                    f"the title {title} and the held title {other} ({snapshot.holder(other.rsplit('-', 1)[-1]) or 'held'}) are a prefix pair",
+                )
+        if is_common_word(name, policy, words):
+            return "word", (
+                f"{name} is a common English word; to allow it as a name, add it to keep_names in "
+                "config/session-names.toml"
+            )
+    if name not in snapshot.available:
+        return "unknown", f"{name} is not in the name database"
+    reason = limits_reason(name, policy)
+    return ("limits", reason) if reason else ("ok", "")
+
+
+def limits_text(policy: dict) -> str:
+    low, high = name_list.limits(policy)
+    return f"the configured limit is {low} to {high} letters (config/session-names.toml [limits])"
+
+
+def limits_reason(name: str, policy: dict) -> str | None:
+    """Why ``name`` is outside the charset or the limits, or None when it is inside both."""
+    low, high = name_list.limits(policy)
+    if not _TOKEN_RE.fullmatch(name):
+        return f'"{name}" is not lowercase letters only; {limits_text(policy)}.'
+    if len(name) > high:
+        return f'"{name}" is {len(name)} letters; {limits_text(policy)}.'
+    if len(name) < low:
+        return f'"{name}" is {len(name)} letters, shorter than the minimum; {limits_text(policy)}.'
+    return None
 
 
 def reserve_hand_chosen(
@@ -1096,6 +1116,10 @@ def reserve_hand_chosen(
         verdict, reason = check_hand_chosen(snapshot, name, slot, words)
         if verdict not in ("ok", "unknown") or (verdict == "unknown" and not add):
             raise HandChosenRefusedError(verdict, reason)
+        if verdict == "unknown":
+            out_of_limits = limits_reason(name, snapshot.policy)
+            if out_of_limits:
+                raise HandChosenRefusedError("limits", out_of_limits)
         title = slot.title_for(name)
         source = "manual" if verdict == "unknown" else "custom"
         row = session_row(
@@ -1139,13 +1163,9 @@ def add_name(
 
     def build(snapshot: Snapshot) -> Change | None:
         policy = snapshot.policy
-        low, high = name_list.limits(policy)
-        if not _TOKEN_RE.fullmatch(name) or not low <= len(name) <= high:
-            raise HandChosenRefusedError(
-                "limits",
-                f'"{name}" is {len(name)} letters; the configured limit is {low} to {high} letters '
-                "(config/session-names.toml [limits]), lowercase letters only.",
-            )
+        out_of_limits = limits_reason(name, policy)
+        if out_of_limits:
+            raise HandChosenRefusedError("limits", out_of_limits)
         if is_common_word(name, policy, words_for(policy)):
             raise HandChosenRefusedError(
                 "word",
@@ -1179,6 +1199,57 @@ def remove_name(registry: Registry, name: str) -> None:
         raise WriteRefusedError(f"{name} is not in the name database")
 
     registry.transact(build)
+
+
+def known_names(registry: Registry | None) -> frozenset[str]:
+    """The parser's name set, read without the network: the last known list and held names.
+
+    It is the generated list and the names added by hand, plus the tokens of
+    ``session`` and ``spare`` rows. A dropped label's token is held but is not a name.
+    The shipped seed is always included, so a title can be read on a machine that
+    has never fetched the registry.
+    """
+    names: set[str] = set(name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE))
+    if registry is None:
+        return frozenset(names)
+    try:
+        snapshot = registry.snapshot(fetch=False)
+    except RegistryError:
+        return frozenset(names)
+    names |= snapshot.available
+    names |= {token for token, row in snapshot.rows.items() if row.get("kind") in ("session", "spare")}
+    return frozenset(names)
+
+
+def reserve_label(registry: Registry, slot: Slot, label: str) -> Reservation:
+    """Reserve a drop-policy title ``{stem}-{label}`` by its label's last token, as a ``label`` row."""
+    token = label.rsplit("-", 1)[-1]
+    title = f"{slot.stem}-{label}"
+
+    def build(snapshot: Snapshot) -> Change:
+        holder = snapshot.holder(token)
+        if holder:
+            raise HandChosenRefusedError("held", f"the label's last token {token} is held by {holder}")
+        row = label_row(
+            token=token,
+            title=title,
+            repo=slot.repo,
+            repo_alias=slot.repo_alias,
+            host_alias=slot.host_alias,
+            label=label,
+            machine=slot.machine,
+            client=slot.client,
+            worktree=slot.worktree_for(title),
+        )
+        return Change(
+            {row_path(token): checked_row(row)},
+            f"session-names: reserve {token} ({title}@{slot.machine})",
+            result=Reservation(token, title, row),
+        )
+
+    change = registry.transact(build)
+    assert change is not None
+    return change.result  # type: ignore[return-value]
 
 
 # --- spares and the offline spool ------------------------------------------------------

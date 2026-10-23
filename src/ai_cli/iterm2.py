@@ -19,6 +19,7 @@ from . import launch_reporter
 from . import output as _out
 from .config import get_xdg_config_home, get_xdg_state_home
 from .output import Untagged
+from .session_naming import name_number as _name_number
 
 # Default iTerm2 config written to ~/.config/ai-cli-utils/iterm2.toml on first use.
 # Also shipped as docs/reference/iterm2-defaults.toml for documentation.
@@ -380,7 +381,13 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
             _fallback_idx = int(_hashlib.md5(ai_name.encode()).hexdigest(), 16) % len(palette)
 
             use_avoidance = cfg.get("iterm2", {}).get("color", {}).get("collision_avoidance", True)
-            if use_avoidance:
+            # A human-named session (a letters tail) prefers the slot its name maps to, so the
+            # same title gets the same colour after a restart; a taken slot falls back below.
+            human_tail = ai_name.rsplit("-", 1)[-1]
+            human_slot = (_name_number(human_tail) - 1) % len(palette) if human_tail.isalpha() else None
+            if human_slot is not None and not preferred_color_name and human_slot not in occupied:
+                slot_idx = human_slot
+            elif use_avoidance:
                 # Try preferred color first (project_colors pin)
                 if preferred_color_name and preferred_color_name in palette_names:
                     preferred_idx = palette_names.index(preferred_color_name)
@@ -393,7 +400,7 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
             else:
                 # Anchored on the hyphen: a host alias may itself end in digits.
                 m = re.search(r"-(\d+)$", ai_name)
-                num = int(m.group(1)) if m else 1
+                num = int(m.group(1)) if m else (_name_number(human_tail) if human_tail.isalpha() else 1)
                 slot_idx = (num - 1) % len(palette)
 
             slot_name = palette_names[slot_idx]
