@@ -25,6 +25,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import psutil
+
 from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
@@ -47,6 +49,11 @@ _COMPOSER_LINES = 25
 HOLD_EXIT_STATUS = 75
 # Exit status once a hold has lasted the configured time: the script parks instead of waiting on.
 HOLD_TIMEOUT_EXIT_STATUS = 76
+# Exit status after stopping a copy that ran in another session's environment: the script
+# resolves the transcript again, because the stopped copy's conversation is now the one to resume.
+STOPPED_FOREIGN_EXIT_STATUS = 73
+_STOP_TIMEOUT_SECONDS = 30
+_TASK_LIST_VARIABLE = "CLAUDE_CODE_TASK_LIST_ID"
 DEFAULT_HOLD_TIMEOUT_SECONDS = 300.0
 DELIVERY_WAIT_SECONDS = 90.0
 DELIVERY_POLL_SECONDS = 1.0
@@ -61,12 +68,15 @@ class Resolution:
     is the ordinary case and stays silent. ``hold`` means the relaunch must neither
     attach nor resume: a live copy may exist and cannot be told from none.
     ``timed_out`` means the hold has lasted the configured time: the script stops waiting.
+    ``stopped`` means a copy running in another session's environment was stopped, so the
+    transcript to resume must be resolved again.
     """
 
     background_id: str | None = None
     warning: str | None = None
     hold: bool = False
     timed_out: bool = False
+    stopped: bool = False
 
 
 def _word(row: dict, key: str) -> str:
@@ -288,13 +298,13 @@ def _resolve(
         if hint is None:
             notes.append(f"background resolver {reason}")
         elif any(row["id"] == hint for row in rows):
-            return _attach_or_hold(next(row for row in rows if row["id"] == hint), prompted)
+            return _attach_or_hold(next(row for row in rows if row["id"] == hint), prompted, ai_name, cwd)
         else:
             notes.append(f"background resolver named {hint}, which is not a live background session")
 
     matches = [row for row in rows if is_moved_copy(row, ai_name, cwd)]
     if len(matches) == 1:
-        return _attach_or_hold(matches[0], prompted)
+        return _attach_or_hold(matches[0], prompted, ai_name, cwd)
     if len(matches) > 1:
         ids = ", ".join(sorted(row["id"] for row in matches))
         notes.append(f"{len(matches)} live background sessions match this name and directory ({ids})")
@@ -307,8 +317,77 @@ def _resolve(
     return Resolution()
 
 
-def _attach_or_hold(row: dict, prompted: bool) -> Resolution:
-    """Attach to ``row``; with a prompt waiting, only once the copy is between turns."""
+def hosting_environment(background_id: str) -> dict[str, str] | None:
+    """The environment of the process hosting background copy ``background_id``, or None.
+
+    ``claude agents --json`` gives a background row no pid. The process that hosts the copy
+    names the copy's socket, ``.../pty/<id>.sock``, as one argument, so it is found by that;
+    a command that only mentions the path inside a longer argument (a shell line) is not it.
+    None when no such process is found or its environment cannot be read.
+    """
+    socket_name = f"{background_id}.sock"
+    for process in psutil.process_iter(["cmdline"]):
+        try:
+            arguments = [Path(part) for part in process.info.get("cmdline") or ()]
+            if any(path.name == socket_name and path.parent.name == "pty" for path in arguments):
+                return process.environ()
+        except (psutil.Error, OSError):
+            continue
+    return None
+
+
+def foreign_owner(background_id: str, ai_name: str, cwd: Path) -> str | None:
+    """Whose environment hosts the copy, when it is not session ``ai_name``'s own; else None.
+
+    A Claude Code daemon pre-forks spare hosts from the environment of the session that
+    started it, and a later session moved to the background can be hosted by one of them.
+    That copy then runs with the other session's task list (AI-CLI-qe0c). The host's
+    ``CLAUDE_CODE_TASK_LIST_ID`` names whose environment it is; a host without one is
+    judged by the directory it was started from. An unreadable host is not judged foreign.
+    """
+    environment = hosting_environment(background_id)
+    if environment is None:
+        return None
+    owner = environment.get(_TASK_LIST_VARIABLE)
+    if owner:
+        return None if owner == ai_name else owner
+    started_in = environment.get("PWD")
+    if started_in and not _same_directory(started_in, cwd):
+        return started_in
+    return None
+
+
+def stop_background_session(background_id: str) -> bool:
+    """Stop a background copy with ``claude stop``; its conversation is kept."""
+    try:
+        completed = subprocess.run(
+            ["claude", "stop", background_id],
+            capture_output=True,
+            text=True,
+            timeout=_STOP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _attach_or_hold(row: dict, prompted: bool, ai_name: str, cwd: Path) -> Resolution:
+    """Attach to ``row``; with a prompt waiting, only once the copy is between turns.
+
+    A copy hosted in another session's environment is never attached: it is stopped once it
+    is between turns, and the relaunch then resumes its conversation as an ordinary process.
+    """
+    owner = foreign_owner(row["id"], ai_name, cwd)
+    if owner is not None:
+        described = f"background session {row['id']} runs in the environment of {owner}, not {ai_name}"
+        if not is_idle(row):
+            return Resolution(
+                warning=f"{described}; holding the relaunch until it is idle so it can be stopped", hold=True
+            )
+        if not stop_background_session(row["id"]):
+            return Resolution(warning=f"{described}; `claude stop {row['id']}` failed, holding the relaunch", hold=True)
+        return Resolution(warning=f"{described}; stopped it and resuming its conversation instead", stopped=True)
     if prompted and not is_idle(row):
         return Resolution(
             warning=(
