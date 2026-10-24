@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alias form is off or the host has no alias. During the move to alias names a session
   that exited to a shell can launch again; retiring the old form is a config change.
   Invalid values and combinations that name nothing are refused with the key to change.
+  On a fresh interactive `ai c N`, `auto_migrate` (default on) first plans and then
+  moves a stopped old-form slot to the alias form with `migrate-session`; collisions
+  take the next free index, while automatic restarts and non-interactive launches
+  never migrate. The first launch after a migration adds one old-to-new name,
+  worktree, branch and task-namespace notice to the existing resume-prompt channel.
 - A generated list of short human first names for session names, shipped as package
   data under `ai_cli/data/session-names/` (622 names of 3 to 4 letters).
   `scripts/refresh_session_names.py` rebuilds it from two pinned downloads, a

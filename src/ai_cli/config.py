@@ -413,6 +413,8 @@ NAMING_DEFAULTS = {
     # reached, and a new session takes the old name when the alias form is off or no host
     # alias resolves. Cutover default: "full", so a launch is never blocked by a missing alias.
     "legacy_convention": "full",
+    # Migrate a stopped old-form slot when an interactive `ai c N` reaches it.
+    "auto_migrate": True,
 }
 
 
@@ -424,6 +426,8 @@ def read_naming_config(config: dict) -> dict:
     result = NAMING_DEFAULTS | section
     if not isinstance(result["alias_convention"], bool):
         raise ValueError("invalid naming.alias_convention: use true or false")
+    if not isinstance(result["auto_migrate"], bool):
+        raise ValueError("invalid naming.auto_migrate: use true or false")
     if result["legacy_convention"] not in LEGACY_CONVENTION_LEVELS:
         raise ValueError(f"invalid naming.legacy_convention: use one of {', '.join(LEGACY_CONVENTION_LEVELS)}")
     if not result["alias_convention"] and result["legacy_convention"] == "reach":
@@ -514,8 +518,12 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ##   "reach" an existing old-named slot is still reached, nothing new is named that way
 ##   "full"  also reached, and a launch with no host alias (or alias_convention = false)
 ##           names the session the old way instead of refusing
+## auto_migrate: on an interactive `ai c N`, move a stopped old-form slot to the
+## alias form before launching it. Automatic restart and non-interactive launches
+## never migrate a slot.
 # alias_convention = true
 # legacy_convention = "full"
+# auto_migrate = true
 
 [relaunch]
 ## When a Claude Code session exits with "Move to background and exit", the

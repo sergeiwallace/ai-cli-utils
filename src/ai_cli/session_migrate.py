@@ -77,6 +77,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -875,6 +876,83 @@ def _ledger_rows(state: Path) -> list[dict]:
     return rows
 
 
+def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> bool:
+    """Whether this host already records a migration from ``old`` to ``new``."""
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    return any(
+        row.get("old") == old and row.get("new") == new and not row.get("finished") for row in _ledger_rows(state)
+    )
+
+
+def _pending_context_rows(new: str, state: Path) -> list[dict]:
+    """Initial migration rows for ``new`` without a later context-announcement row."""
+    pending: dict[tuple[str, str], dict] = {}
+    for row in _ledger_rows(state):
+        old, repo = row.get("old"), row.get("repo")
+        if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
+            continue
+        key = (old, repo)
+        if row.get("context_announced") is True:
+            pending.pop(key, None)
+        elif isinstance(row.get("worktree"), str):
+            pending[key] = row
+    return list(pending.values())
+
+
+def _migration_context(row: dict) -> str:
+    old, new = str(row["old"]), str(row["new"])
+    repo = Path(str(row["repo"]))
+    old_wt = repo / ".worktrees" / old
+    new_wt = Path(str(row.get("worktree") or repo / ".worktrees" / new))
+    return (
+        f"Your session name changed from {old} to {new}.\n"
+        f"Your worktree moved from {old_wt} to {new_wt}.\n"
+        f"Your branch changed from wt-{old} to wt-{new}.\n"
+        f"Your task namespace changed from {old} to {new}.\n"
+        "Continue using the new name and paths."
+    )
+
+
+def queue_migration_context(new: str, tmux_session: str, state_dir: Path | None = None) -> tuple[int, list[str]]:
+    """Append each unannounced migration to the existing resume prompt, once.
+
+    The prompt file is the channel the session supervisor already delivers after a
+    resume. Failures are returned as warnings so launch remains available.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    rows = _pending_context_rows(new, state)
+    if not rows:
+        return 0, []
+    prompt = state / f"cc-resume-prompt-{tmux_session}"
+    warnings: list[str] = []
+    try:
+        current = prompt.read_text(encoding="utf-8") if prompt.is_file() else ""
+        messages = [_migration_context(row) for row in rows]
+        additions = [message for message in messages if message not in current]
+        if additions:
+            separator = "\n\n" if current and not current.endswith("\n\n") else ""
+            content = current + separator + "\n\n".join(additions) + "\n"
+            state.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=state, delete=False) as handle:
+                handle.write(content)
+                temp = Path(handle.name)
+            try:
+                temp.replace(prompt)
+            except BaseException:
+                temp.unlink(missing_ok=True)
+                raise
+    except OSError as exc:
+        return 0, [f"migration context for {new} was not queued: {exc}"]
+    recorded = 0
+    for row in rows:
+        try:
+            _append_ledger(state, str(row["old"]), new, Path(str(row["repo"])), context_announced=True)
+            recorded += 1
+        except OSError as exc:
+            warnings.append(f"migration context for {row['old']} -> {new} was queued but not recorded: {exc}")
+    return recorded, warnings
+
+
 def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str, Path]]:
     """``(old, repo)`` for each migration to ``new`` this host records with no later ``finished`` row.
 
@@ -887,6 +965,8 @@ def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str,
     for row in _ledger_rows(state):
         old, repo = row.get("old"), row.get("repo")
         if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
+            continue
+        if row.get("context_announced") is True:
             continue
         if row.get("finished") is True:
             pending.pop(old, None)

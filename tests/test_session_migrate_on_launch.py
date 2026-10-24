@@ -36,7 +36,11 @@ REMEDY = f"ai migrate-session {OLD} {NEW} -r"
 
 def _ledger(slot) -> list[dict]:
     path = slot["state"] / "session-migrations.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [
+        row
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not (row := json.loads(line)).get("context_announced")
+    ]
 
 
 def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[dict]]:
