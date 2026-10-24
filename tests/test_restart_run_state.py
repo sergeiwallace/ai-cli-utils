@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -45,6 +46,16 @@ def test_given_pre_feature_program_when_ac_i_1_compared_then_lifecycle_insertion
     assert session_restart._compatible(legacy, current)
     assert "_ai_mark_running || exit 76" in current
     assert "(( _promotion_status == 2 )) && break" in current
+
+
+def test_given_program_launched_before_host_refresh_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN HOST REFRESH[^\n]*\n.*?^    # END HOST REFRESH\n"
+    before_feature = re.sub(bracket, "", current)
+    assert before_feature != current
+    assert "resolve-host-env" in current and "resolve-host-env" not in before_feature
+    assert session_restart._compatible(before_feature, current)
+    assert session_restart._compatible(current, before_feature)
 
 
 @pytest.mark.parametrize("program", ["legacy", "current"])
