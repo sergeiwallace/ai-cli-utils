@@ -2947,21 +2947,18 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         Tag.REMOTE, "reconnect", f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n"
     )
     for session_name in sorted(remote_sessions):
-        parts = session_name.split("-")
-        if len(parts) >= 4:
-            num = parts[-1]
-            proj_prefix = "-".join(parts[2:-1])
-        else:
-            continue
-        project_name = aliases.get(proj_prefix, proj_prefix)
+        # The remote machine owns its host alias. Keep its complete title and use
+        # only known project aliases to select the project, without resolving a local alias.
+        title = session_name.removeprefix("c-r-")
+        proj_prefix = next(
+            (alias for alias in sorted(aliases, key=len, reverse=True) if title.startswith(f"{alias}-")), ""
+        )
         _transport_tag = ""
         _transport = _transport_by_session.get(session_name, "")
         if _transport:
             _transport_tag = f"  [{_transport} connected]"
-        if project_name == proj_prefix:
-            _out.emit(Tag.REMOTE, "reconnect", f"  ai c {num} -R{_transport_tag}")
-        else:
-            _out.emit(Tag.REMOTE, "reconnect", f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
+        project_arg = f" -p {shlex.quote(proj_prefix)}" if proj_prefix else ""
+        _out.emit(Tag.REMOTE, "reconnect", f"  ai c {shlex.quote(session_name)} -R{project_arg}{_transport_tag}")
     sys.exit(0)
 
 
