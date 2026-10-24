@@ -92,7 +92,9 @@ bounded path.
   — `175 passed in 1.68s`.
 - Focused lint: `uv run ruff check` on all touched source and test files —
   `All checks passed!`.
-- The repository-level gate is recorded after the final documentation commit.
+- Repository lint: `uv run ruff check .` — `All checks passed!`.
+- Repository tests: `uv run pytest` —
+  `6144 passed, 21 skipped, 12 warnings in 222.50s (0:03:42)`.
 
 ## Lessons Learned
 
@@ -109,3 +111,4 @@ messages.
 | --- | --- |
 | `ce58dba` | Added and froze real-boundary and resolver RED coverage |
 | `eac3d87` | Added recent-copy classification, configurable attempt bound, one-time remedies, and preserved working-copy safety |
+| `54a2c4d` | Fixed two pre-existing repository-gate test isolation and polling races found during validation |
