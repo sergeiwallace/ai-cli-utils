@@ -1201,10 +1201,12 @@ def get_engine_script(
     }}
 
     # Extract session number from ai_name (e.g., "session-3" → "3") for downstream hooks.
-    # Anchored on the hyphen: a host alias may itself end in digits. A human name (letters)
-    # is read as a base-27 numeral with a as 1, which gives every name its own number,
-    # the same one ai_cli.session_title.name_number computes.
+    # Anchored on the hyphen: a host alias may itself end in digits.
     _session_num=$(printf '%s\\n' "$ai_name" | sed -nE 's/.*-([0-9]+)$/\\1/p')
+    # BEGIN RUN STATE human-name-number
+    # A human name (letters) is read as a base-27 numeral with a as 1, which gives every
+    # name its own number, the same one ai_cli.session_naming.name_number computes.
+    # Bracketed so a supervisor started before human names still compares compatible.
     if [[ -z "$_session_num" && "${{ai_name##*-}}" =~ ^[a-z]+$ ]]; then
       _name_tail="${{ai_name##*-}}"
       _session_num=0
@@ -1213,6 +1215,7 @@ def get_engine_script(
         _session_num=$(( _session_num * 27 + _code - 96 ))
       done
     fi
+    # END RUN STATE
     _session_num="${{_session_num:-1}}"
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
