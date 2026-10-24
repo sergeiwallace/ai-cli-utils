@@ -498,6 +498,74 @@ class TestGetEngineScript:
         assert done.returncode == 99
         assert "LAUNCH_REACHED" not in done.stdout
 
+    def _run_attach_blocks(self, tmp_path, *, ai_body: str, resume: bool, prompt: bool = True):
+        """Run the resolution and parked blocks of the generated script in bash, inside a loop.
+
+        `ai` is a stub with the given body; `date` advances 120 seconds per call and `sleep`
+        does nothing, so a hold reaches its limits without waiting. A `break` that parks
+        leaves the loop before LAUNCH_REACHED is printed.
+        """
+        script = self._make_script()
+        start = script.index("    # BEGIN BACKGROUND ATTACH resolution")
+        parked = script.index("    # BEGIN BACKGROUND ATTACH parked", start)
+        end = script.index("    # END BACKGROUND ATTACH", parked) + len("    # END BACKGROUND ATTACH\n")
+        harness = tmp_path / "blocks.sh"
+        matched = "/t/a.jsonl" if resume else ""
+        harness.write_text(
+            "\n".join(
+                [
+                    f"engine=c; ai_name=x; tmux_session=c-x; resolve_status=0; matched_file={matched}",
+                    f"prompt_file={tmp_path}/prompt",
+                    f'{"echo hello" if prompt else ":"} > "$prompt_file"',
+                    f"clock={tmp_path}/clock; echo 1000 > $clock",
+                    # `date` and `ai` run in command substitutions, so their state lives in files.
+                    "date() { n=$(cat $clock); echo $((n+120)) > $clock; echo $n; }",
+                    f"ai() {{ {ai_body}; }}",
+                    '_ai_emit() { echo "EMIT: $*"; }',
+                    '_ai_persist_exit() { echo "PERSIST: $*"; }',
+                    "sleep() { :; }",
+                    "for _once in 1; do",
+                    script[start:end],
+                    "echo LAUNCH_REACHED",
+                    "done",
+                    'echo "gave_up=$_bg_gave_up target=$bg_target"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    def test_given_the_lookup_times_out_then_the_script_parks_and_never_reaches_a_launch(self, tmp_path):
+        """Exit 76 means the hold lasted the configured time: say why in the pane, record the exit, stop."""
+        out = self._run_attach_blocks(tmp_path, ai_body="return 76", resume=True)
+
+        assert "LAUNCH_REACHED" not in out
+        assert "Relaunch parked" in out and "ai c x" in out and "exit 78" in out
+        assert "PERSIST: unknown" in out
+        assert "gave_up=true" in out
+
+    def test_given_the_lookup_crashes_and_a_resume_follows_then_the_script_holds_then_parks(self, tmp_path):
+        """A crashed lookup cannot say there is no live copy: it holds, then parks, never resuming."""
+        out = self._run_attach_blocks(tmp_path, ai_body="return 1", resume=True)
+
+        assert "LAUNCH_REACHED" not in out
+        assert out.count("Relaunch held") == 1
+        assert "Relaunch parked" in out
+
+    def test_given_the_lookup_crashes_and_no_resume_follows_then_a_fresh_launch_goes_ahead(self, tmp_path):
+        out = self._run_attach_blocks(tmp_path, ai_body="return 1", resume=False, prompt=False)
+
+        assert "LAUNCH_REACHED" in out
+        assert "Relaunch parked" not in out and "gave_up=false target=" in out
+
+    def test_given_an_idle_live_copy_then_the_script_attaches_with_the_prompt_waiting(self, tmp_path):
+        out = self._run_attach_blocks(tmp_path, ai_body="echo aaaa1111", resume=True)
+
+        assert "LAUNCH_REACHED" in out
+        assert "gave_up=false target=aaaa1111" in out
+
     def test_given_a_generated_script_then_it_parses_in_bash(self, tmp_path):
         path = tmp_path / "session.sh"
         path.write_text(self._make_script(), encoding="utf-8")

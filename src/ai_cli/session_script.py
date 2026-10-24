@@ -1366,16 +1366,29 @@ with open(path, 'w') as f:
       # beside it, with or without a resume prompt. The lookup exits 75 to hold
       # while a resume would start a second writer and the live copy cannot be
       # told from none, or while a waiting prompt would land on a copy that is
-      # mid-turn. Holding re-checks every few seconds and never resumes beside it.
+      # mid-turn. A hold is bounded: it re-checks every few seconds, and once it
+      # has lasted relaunch.background_hold_timeout_seconds (read by the lookup
+      # on each call) the lookup exits 76, writes a UR line and this script
+      # parks. It never resumes beside the live copy either way.
+      _bg_gave_up=false
       if [[ "$engine" == "c" ]]; then
         _bg_resume=""
         _bg_prompted=""
         if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then _bg_resume="--resume-follows"; fi
         if [[ -f "$prompt_file" ]]; then _bg_prompted="--prompted"; fi
         _bg_warned=false
+        _bg_hold_start=$(date +%s)
         while true; do
           _bg_status=0
-          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}}) || _bg_status=$?
+          _bg_held=$(( $(date +%s) - _bg_hold_start ))
+          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} "--held-seconds=$_bg_held") || _bg_status=$?
+          if [[ $_bg_status -eq 76 ]]; then _bg_gave_up=true; fi
+          # A lookup that crashed cannot say there is no live copy: when a resume
+          # would follow, hold on any failure, not only 75, up to a fixed cap (the
+          # lookup is the one that reads the configured limit, and it is down).
+          if [[ -n "$_bg_resume" && $_bg_status -ne 0 && $_bg_status -ne 75 && $_bg_status -ne 76 ]]; then
+            if (( _bg_held >= 300 )); then _bg_gave_up=true; else _bg_status=75; fi
+          fi
           [[ $_bg_status -eq 75 ]] || break
           bg_target=""
           if ! $_bg_warned; then
@@ -1385,6 +1398,15 @@ with open(path, 'w') as f:
           sleep 5
         done
         if [[ $_bg_status -ne 0 ]]; then bg_target=""; fi
+      fi
+    # END BACKGROUND ATTACH
+    # BEGIN BACKGROUND ATTACH parked
+      if $_bg_gave_up; then
+        _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' or type 'exit 78' here to try again."
+    # BEGIN RUN STATE background-parked
+        _ai_persist_exit unknown '{{"reason":"relaunch parked beside a live background copy"}}'
+    # END RUN STATE
+        break
       fi
     # END BACKGROUND ATTACH
 

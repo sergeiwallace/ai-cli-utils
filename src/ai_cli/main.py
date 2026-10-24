@@ -1971,12 +1971,17 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted]",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N]",
                 err=True,
             )
             sys.exit(1)
-        flags = {arg for arg in argv[3:] if arg.startswith("--")}
+        flags = {arg for arg in argv[3:] if arg.startswith("--") and "=" not in arg}
         positional = [arg for arg in argv[3:] if not arg.startswith("--")]
+        held_seconds = 0.0
+        for arg in argv[3:]:
+            if arg.startswith("--held-seconds="):
+                with contextlib.suppress(ValueError):
+                    held_seconds = float(arg.partition("=")[2])
         resolution = _background_attach.resolve_background_target(
             config,
             Path(argv[1]),
@@ -1984,11 +1989,15 @@ def _handle_internal(argv: list[str]) -> None:
             positional[0] if positional else "",
             resume_follows="--resume-follows" in flags,
             prompted="--prompted" in flags,
+            held_seconds=held_seconds,
         )
         if resolution.warning:
             _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
+        if resolution.timed_out:
+            _background_attach.record_hold_timeout(argv[2], resolution.warning or "", held_seconds)
+            sys.exit(_background_attach.HOLD_TIMEOUT_EXIT_STATUS)
         # 75 (EX_TEMPFAIL) tells the supervisor script to hold: no attach, no resume.
         sys.exit(_background_attach.HOLD_EXIT_STATUS if resolution.hold else 0)
     elif action == "deliver-resume-prompt":

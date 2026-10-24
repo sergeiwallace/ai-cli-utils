@@ -406,6 +406,9 @@ def read_restart_config(config: dict) -> dict:
 RELAUNCH_DEFAULTS = {
     "background_session_resolver": "",
     "background_session_resolver_timeout_seconds": 10,
+    # How long a relaunch holds, rather than resume beside a live background copy, before
+    # it parks and says why. Read on every call, so a change applies to the next relaunch.
+    "background_hold_timeout_seconds": 300,
 }
 
 
@@ -420,6 +423,9 @@ def read_relaunch_config(config: dict) -> dict:
     timeout = result["background_session_resolver_timeout_seconds"]
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("invalid relaunch.background_session_resolver_timeout_seconds")
+    hold = result["background_hold_timeout_seconds"]
+    if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not math.isfinite(hold) or hold <= 0:
+        raise ValueError("invalid relaunch.background_hold_timeout_seconds")
     return result
 
 
@@ -456,6 +462,9 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## one live background session has this session's name and directory.
 # background_session_resolver = "/path/to/resolver-command"
 # background_session_resolver_timeout_seconds = 10
+## Seconds a relaunch holds instead of resuming beside a live background copy (a busy
+## copy, several matches, an unreadable agents list) before it parks and says why.
+# background_hold_timeout_seconds = 300
 
 [gemini]
 ## Projects that should NOT be sandboxed by default
