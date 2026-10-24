@@ -511,7 +511,12 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 
 [naming]
 ## Which session-name conventions `ai` accepts, read on every launch. During a cutover
-## both work; retire the old form by setting legacy_convention = "off".
+## both work. Modes (alias_convention, legacy_convention):
+##   both:        true,  "full" (default)
+##   alias only:  true,  "off"
+##   legacy only: false, "full"
+##   neither:     false, "off" (refuses new launches)
+## false + "reach" is invalid: reaching old slots alone cannot name a new session.
 ## alias_convention: the {repo-alias}-{host-alias}-{slug?}-{N} form.
 ## legacy_convention: the old {repo-alias}-{N} form, including a bare `ai c N`:
 ##   "off"   never reached or created

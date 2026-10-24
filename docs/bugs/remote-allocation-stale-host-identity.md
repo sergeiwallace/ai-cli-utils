@@ -75,7 +75,8 @@ Rejected hypotheses:
 
 ## Scope Decision
 
-The fix changes one existing internal entry point and reuses an existing resolver. It adds
+The original fix changed one internal entry point; the follow-up moves refresh into the
+shared alias resolver and applies the existing naming policy to chief launches. It adds
 no public API or cross-repository boundary and is reversible. The narrow causal fix is
 therefore appropriate; no redesign threshold is met.
 
@@ -93,13 +94,60 @@ A fresh answer updates `AI_HOST` for allocation. When neither source answers, th
 stricter settings refuse and name the inherited host id that was tried. Both probes use the
 configured timeout and do not loop.
 
+## Entry-point follow-up
+
+The allocator-only fix left shell launches exposed: `ai cos` directly built an alias prefix,
+ignoring `[naming]`, and every other direct alias lookup still trusted inherited identity.
+The same defect affects ordinary engine launches, migration targets, audit labels and name
+commands. The production fix belongs at alias resolution, with one `refresh_host_env`
+helper updating `AI_HOST` only after a fresh answer. Name-command ownership uses that same
+helper before reading the machine id, and migration ownership is read after resolving the
+refreshed target stem. Chief launches use `resolve_launch_naming`, including its legacy
+prefix and host-alias fields; a legacy title therefore never invents a host segment.
+
+The underlying `resolve_host_env` source order and timeouts are unchanged. Existing-name
+inspection remains independent of launch policy: audit reads titles, explicit migrations
+need the alias target, and auto-migration can describe a manual target even when disabled.
+Replay, automatic restart and attach retain their recorded identities. The entry-point
+inventory also exposed a reconnect parser that stripped remote titles to the last segment
+and lost the project when host aliases or labels were present. Reconnect now preserves the
+full remote name and selects the longest registered project prefix, without resolving an
+alias for the local machine. Three additional frozen regressions fail on the exported base
+and pass after this independent correction.
+
+The focused regression module drives real CLI parsing over temporary alias registries,
+fake login-shell/tmux executables, temporary repositories and client stores. On base
+`1ecbbc17`, its 17 cases fail because engine plans use `myrepo-1`, chief/name/migration
+commands reject `old-host`, and audit omits `label=review`. Two initial fixture errors were
+corrected after restoring unfixed production source, then all 17 cases were re-confirmed
+RED and frozen again before restoring the fix. Regressions assert the four config modes,
+legacy fallback, actionable single refusal, refreshed ownership, and no chief registration
+on a dry run. No naming resolver is mocked in these cases.
+
 ## Verification
+
+Shared-entry-point follow-up on base `1ecbbc17`:
+
+- Frozen naming and reconnect regressions: `20 passed in 0.35s`.
+- Focused naming, remote, chief, migration, audit and relaunch gate:
+  `544 passed in 6.76s`.
+- `uv run ruff check src/ tests/`: `All checks passed!`.
+- `uv run ruff format --check src/ tests/`: `298 files already formatted`.
+- `uv run pyright src/`: `0 errors, 0 warnings, 0 informations`.
+- `uv run pytest -q --tb=short`:
+  `6194 passed, 21 skipped, 11 warnings in 218.17s (0:03:38)`.
+- Installed-style `uv run --no-sync ai cos 1 --dry-run` against the real source tree,
+  using temporary config, a seeded temporary chief home and fake shell/tmux executables,
+  plans `myrepo-box-chief-1` from a retired inherited host id without creating anything.
+- Documentation validation passes for this bug record, the usage guide and changelog.
+
+Original allocator-only verification:
 
 - RED on base `7b9a456395b58fdc87e1cb69df5565c0afb7e550`:
   `test_given_stale_remote_host_when_launcher_allocates_then_fresh_login_host_names_session`
   observed `('c-r-myrepo-4', 'myrepo-4')` instead of
   `('c-r-myrepo-box-4', 'myrepo-box-4')`.
-- Focused regression: 3 passed, covering login-shell priority, tmux fallback, and no-current-id
+- Original focused regression: 3 passed, covering login-shell priority, tmux fallback, and no-current-id
   naming policy.
 - Related suite: 133 passed across remote launch, host refresh, naming, client ownership,
   and internal-output coverage.
@@ -130,6 +178,26 @@ the changed allocation path.
 <!-- /doc:region name="root_cause" -->
 
 <!-- doc:region name="fix_log" kind="append_only" -->
+
+### 2026-10-24 — shared naming entry points fixed
+
+Role: `implement-network`, high effort, for the cross-entry-point identity and policy audit.
+Frozen regressions: `uv run pytest tests/test_naming_entry_points.py -n 0 -q --tb=short`:
+`17 passed in 0.38s`. Related naming, remote, migration, audit, chief and relaunch gate:
+`541 passed in 3.76s`. Tests explicitly cover replay and non-interactive launches keeping
+legacy slots unchanged. The original entry-point-only hypothesis was rejected by the
+additional stale-host regressions; refresh belongs in shared alias resolution.
+
+### 2026-10-24 — reconnect and public-comment follow-ups
+
+The full gate on the shared naming fix reported `2 failed, 6189 passed, 21 skipped,
+13 warnings in 200.78s (0:03:20)`. Both failures were existing public-package hygiene guards
+flagging a private machine name and tracking reference in a browser-test comment. An
+exported `1ecbbc17` snapshot reproduced both failures, alongside three new RED reconnect
+cases: `5 failed, 39 deselected in 0.40s`. The comment was scrubbed independently;
+`uv run pytest tests/test_public_repo_hygiene.py -n 0 -q --tb=short` then reported
+`41 passed in 1.58s`. Frozen naming and reconnect regressions together reported
+`20 passed in 0.35s` after the reconnect correction.
 
 ### 2026-10-24 — stale remote identity fixed
 
