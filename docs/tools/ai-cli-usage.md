@@ -117,6 +117,13 @@ session of that name on the remote host whichever way it was launched, so a sess
 remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
 `c-r-` session; only a slot with no live session is allocated as `c-r-`.
 
+The remote host refreshes its identity before that allocation. The single source order is:
+a fresh login shell run without inherited `AI_HOST`, then the global tmux environment, then
+the inherited `AI_HOST` only when neither fresh source answers. Each fresh probe is bounded
+by `[relaunch] host_refresh_timeout_seconds`. If the remaining identity has no host alias,
+`[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
+a refusal names the host id it tried.
+
 Before a remote launch, when this machine's `ai` is an editable install, the launcher
 fetches `origin/main` into that checkout (bounded by a 20 s timeout) and fast-forwards a
 checkout that is behind, then restarts itself on the new code. The remote host's copy
