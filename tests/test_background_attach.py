@@ -479,8 +479,11 @@ def test_given_no_prompt_waits_and_the_copy_is_mid_turn_when_resolving_then_it_s
     assert (out, code) == (LIVE_ID, 0)
 
 
-def _hold_config(seconds: float | str) -> dict:
-    return {"relaunch": {"background_hold_timeout_seconds": seconds}}
+def _hold_config(seconds: float | str, log: Path | None = None) -> dict:
+    relaunch: dict = {"background_hold_timeout_seconds": seconds}
+    if log is not None:
+        relaunch["background_hold_log"] = str(log)
+    return {"relaunch": relaunch}
 
 
 def _held_copy(workdir: Path) -> list[dict]:
@@ -498,29 +501,61 @@ def test_given_a_hold_shorter_than_the_limit_when_resolving_then_it_keeps_holdin
 
 
 def test_given_a_hold_that_reached_the_limit_when_resolving_then_it_times_out_and_logs_one_line(
-    workdir, fake_tools, capsys, tmp_path, monkeypatch
+    workdir, fake_tools, capsys, tmp_path
 ):
-    """A hold is bounded: at the limit the lookup exits 76, says why, and writes a UR line the fleet reads."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    """A hold is bounded: at the limit the lookup exits 76, says why, and writes a UR line to the configured log."""
     fake_tools(_held_copy(workdir))
+    log = tmp_path / "fleet" / "update-restart.log"
 
     out, err, code = _resolve_with(
-        workdir, _hold_config(120), capsys, "--resume-follows", "--prompted", "--held-seconds=120"
+        workdir, _hold_config(120, log), capsys, "--resume-follows", "--prompted", "--held-seconds=120"
     )
 
     assert (out, code) == ("", 76)
     assert "gave up after 120s" in err and "background_hold_timeout_seconds = 120" in err
-    log = tmp_path / "state" / "ai-harness" / "update-restart" / "update-restart.log"
     lines = log.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert " UR-RELAUNCH-PARKED session=myproject-1 held=120s reason=" in lines[0]
+
+
+def test_given_no_log_is_configured_when_a_hold_times_out_then_the_launchers_own_log_gets_the_line(
+    workdir, fake_tools, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
+    fake_tools(_held_copy(workdir))
+
+    _out, _err, code = _resolve_with(
+        workdir, _hold_config(60), capsys, "--resume-follows", "--prompted", "--held-seconds=60"
+    )
+
+    assert code == 76
+    own = (tmp_path / "state" / "relaunch-hold.log").read_text(encoding="utf-8")
+    assert " UR-RELAUNCH-PARKED session=myproject-1 held=60s " in own
+
+
+def test_given_an_unwritable_log_when_a_hold_times_out_then_it_still_parks(workdir, fake_tools, capsys, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    fake_tools(_held_copy(workdir))
+
+    _out, err, code = _resolve_with(
+        workdir,
+        _hold_config(60, blocker / "log"),
+        capsys,
+        "--resume-follows",
+        "--prompted",
+        "--held-seconds=60",
+    )
+
+    assert code == 76
+    assert "gave up after 60s" in err
 
 
 def test_given_the_limit_is_changed_between_calls_when_resolving_then_the_new_value_applies(
     workdir, fake_tools, capsys, tmp_path, monkeypatch
 ):
     """The limit is read on every call, so editing the config changes the next relaunch."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
     fake_tools(_held_copy(workdir))
     flags = ("--resume-follows", "--prompted", "--held-seconds=200")
 
@@ -533,7 +568,7 @@ def test_given_the_limit_is_changed_between_calls_when_resolving_then_the_new_va
 def test_given_the_default_limit_when_resolving_then_a_few_minutes_is_allowed(
     workdir, fake_tools, capsys, tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
     fake_tools(_held_copy(workdir))
 
     _out, _err, early = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted", "--held-seconds=299")
@@ -546,7 +581,7 @@ def test_given_the_default_limit_when_resolving_then_a_few_minutes_is_allowed(
 def test_given_an_invalid_limit_when_resolving_then_the_default_applies_and_the_hold_still_ends(
     workdir, fake_tools, capsys, tmp_path, monkeypatch, value
 ):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
     fake_tools(_held_copy(workdir))
 
     _out, _err, code = _resolve_with(

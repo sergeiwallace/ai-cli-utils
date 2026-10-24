@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import shlex
 import shutil
@@ -26,7 +25,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import read_relaunch_config
+from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
 _AGENTS_LIST_TIMEOUT_SECONDS = 15
@@ -217,19 +216,23 @@ def resolve_background_target(
     )
 
 
-def hold_log_path() -> Path:
-    """The update-restart log the fleet already reads, beside the harness that writes it."""
-    raw = os.environ.get("XDG_STATE_HOME", "")
-    base = Path(raw) if raw and Path(raw).is_absolute() else Path.home() / ".local" / "state"
-    return base / "ai-harness" / "update-restart" / "update-restart.log"
+def hold_log_path(config: dict) -> Path:
+    """The log a parked relaunch writes: ``relaunch.background_hold_log``, else the launcher's own."""
+    try:
+        configured = str(read_relaunch_config(config)["background_hold_log"]).strip()
+    except ValueError:
+        configured = ""
+    if configured:
+        return Path(configured).expanduser()
+    return get_xdg_state_home() / "relaunch-hold.log"
 
 
-def record_hold_timeout(ai_name: str, reason: str, held_seconds: float, log: Path | None = None) -> None:
-    """Append one ``UR-RELAUNCH-PARKED`` line, in the log's own ``time EVENT key=value`` shape."""
+def record_hold_timeout(config: dict, ai_name: str, reason: str, held_seconds: float, log: Path | None = None) -> None:
+    """Append one ``UR-RELAUNCH-PARKED`` line, in the shape of the update-restart log's lines."""
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     quoted = json.dumps(reason)
     line = f"{stamp} UR-RELAUNCH-PARKED session={ai_name} held={held_seconds:.0f}s reason={quoted}\n"
-    path = log or hold_log_path()
+    path = log or hold_log_path(config)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
