@@ -1989,17 +1989,25 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N]",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N] [--hold-attempt=N] [--relaunch-started-at=SECONDS]",
                 err=True,
             )
             sys.exit(1)
         flags = {arg for arg in argv[3:] if arg.startswith("--") and "=" not in arg}
         positional = [arg for arg in argv[3:] if not arg.startswith("--")]
         held_seconds = 0.0
+        hold_attempt = 0
+        relaunch_started_at = 0.0
         for arg in argv[3:]:
             if arg.startswith("--held-seconds="):
                 with contextlib.suppress(ValueError):
                     held_seconds = float(arg.partition("=")[2])
+            elif arg.startswith("--hold-attempt="):
+                with contextlib.suppress(ValueError):
+                    hold_attempt = int(arg.partition("=")[2])
+            elif arg.startswith("--relaunch-started-at="):
+                with contextlib.suppress(ValueError):
+                    relaunch_started_at = float(arg.partition("=")[2])
         resolution = _background_attach.resolve_background_target(
             config,
             Path(argv[1]),
@@ -2008,8 +2016,11 @@ def _handle_internal(argv: list[str]) -> None:
             resume_follows="--resume-follows" in flags,
             prompted="--prompted" in flags,
             held_seconds=held_seconds,
+            hold_attempt=hold_attempt,
+            relaunch_started_at=relaunch_started_at,
         )
-        if resolution.warning:
+        defer_hold_warning = "--defer-hold-warning" in flags
+        if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
             _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
@@ -2020,6 +2031,9 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(_background_attach.STOPPED_FOREIGN_EXIT_STATUS)
         # 75 (EX_TEMPFAIL) tells the supervisor script to hold: no attach, no resume.
         sys.exit(_background_attach.HOLD_EXIT_STATUS if resolution.hold else 0)
+    elif action == "background-hold-attempt-limit":
+        _out.raw(Untagged.INTERNAL_REPLY, str(_background_attach.hold_max_attempts(config)))
+        sys.exit(0)
     elif action == "deliver-resume-prompt":
         if len(argv) < 4:
             _out.emit(

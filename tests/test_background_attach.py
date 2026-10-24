@@ -415,6 +415,30 @@ def test_given_a_resume_follows_and_several_live_copies_when_resolving_then_the_
     assert LIVE_ID in err and OTHER_ID in err and "holding the relaunch" in err
 
 
+def test_given_recent_exit_copy_and_only_idle_siblings_when_resolving_then_adopts_recent_copy(
+    workdir, fake_tools, capsys
+):
+    recent = {
+        **_live(workdir, row_id=LIVE_ID, name=f"{SESSION} (2)", status="idle", state="blocked"),
+        "pid": 12345,
+        "startedAt": 999_000,
+    }
+    older_idle = {**_live(workdir, row_id=OTHER_ID), "startedAt": 900_000}
+    fake_tools([older_idle, recent])
+
+    out, _err, code = _resolve_with(
+        workdir,
+        {"relaunch": {"background_exit_copy_window_seconds": 30}},
+        capsys,
+        "--resume-follows",
+        "--prompted",
+        "--relaunch-started-at=1000",
+    )
+
+    assert (out, code) == (LIVE_ID, 0)
+    assert fake_tools.stopped == []
+
+
 def test_given_no_resume_follows_and_several_live_copies_when_resolving_then_it_does_not_hold(
     workdir, fake_tools, capsys
 ):
@@ -550,6 +574,26 @@ def test_given_a_foreign_copy_will_not_stop_when_resolving_then_the_relaunch_hol
 
     assert (out, code) == ("", 75)
     assert f"claude stop {host_id}" in err
+
+
+def test_given_a_foreign_copy_will_not_stop_when_attempt_limit_reached_then_relaunch_exits_with_remedies(
+    workdir, tmp_path, fake_tools, capsys
+):
+    fake_tools.fail_stop()
+
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, err, code = _resolve_with(
+            workdir,
+            {"relaunch": {"background_hold_max_attempts": 2}},
+            capsys,
+            "--resume-follows",
+            "--hold-attempt=2",
+        )
+
+    assert (out, code) == ("", 76)
+    assert err.count(f"claude stop {host_id}") == 2
+    assert err.count(f"claude attach {host_id}") == 1
 
 
 def test_given_the_copy_runs_with_its_own_task_list_when_resolving_then_it_is_attached(

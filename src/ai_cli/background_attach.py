@@ -55,6 +55,8 @@ STOPPED_FOREIGN_EXIT_STATUS = 73
 _STOP_TIMEOUT_SECONDS = 30
 _TASK_LIST_VARIABLE = "CLAUDE_CODE_TASK_LIST_ID"
 DEFAULT_HOLD_TIMEOUT_SECONDS = 300.0
+DEFAULT_HOLD_MAX_ATTEMPTS = 12
+DEFAULT_EXIT_COPY_WINDOW_SECONDS = 30.0
 DELIVERY_WAIT_SECONDS = 90.0
 DELIVERY_POLL_SECONDS = 1.0
 
@@ -77,6 +79,7 @@ class Resolution:
     hold: bool = False
     timed_out: bool = False
     stopped: bool = False
+    matching_ids: tuple[str, ...] = ()
 
 
 def _word(row: dict, key: str) -> str:
@@ -201,6 +204,40 @@ def hold_timeout_seconds(config: dict) -> float:
         return DEFAULT_HOLD_TIMEOUT_SECONDS
 
 
+def hold_max_attempts(config: dict) -> int:
+    """The configured hold-attempt limit, or the safe default when config is invalid."""
+    try:
+        return int(read_relaunch_config(config)["background_hold_max_attempts"])
+    except ValueError:
+        return DEFAULT_HOLD_MAX_ATTEMPTS
+
+
+def _recent_exit_copy(row: dict, relaunch_started_at: float, window_seconds: float) -> bool:
+    """Whether ``row`` has the provenance of the copy created by the exiting client."""
+    pid = row.get("pid")
+    started_at = row.get("startedAt")
+    if (
+        relaunch_started_at <= 0
+        or _word(row, "status") != "idle"
+        or isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or isinstance(started_at, bool)
+        or not isinstance(started_at, (int, float))
+        or not math.isfinite(started_at)
+    ):
+        return False
+    started_seconds = started_at / 1000.0
+    return relaunch_started_at - window_seconds <= started_seconds <= relaunch_started_at
+
+
+def _manual_remedies(background_ids: tuple[str, ...]) -> str:
+    return "; ".join(
+        f"use `claude attach {background_id}` to continue it or `claude stop {background_id}` to stop it"
+        for background_id in background_ids
+    )
+
+
 def resolve_background_target(
     config: dict,
     cwd: Path,
@@ -210,24 +247,40 @@ def resolve_background_target(
     resume_follows: bool = False,
     prompted: bool = False,
     held_seconds: float = 0.0,
+    hold_attempt: int = 0,
+    relaunch_started_at: float = 0.0,
 ) -> Resolution:
     """Choose the background session to attach to; a hold that has lasted too long times out.
 
-    ``held_seconds`` is how long the caller has already been holding. A hold never lasts
-    past ``relaunch.background_hold_timeout_seconds``: the result then carries
-    ``timed_out`` and the caller parks instead of waiting on a copy that may never settle.
+    ``held_seconds`` and ``hold_attempt`` describe the caller's existing hold. A hold never
+    passes either configured bound: the result then carries ``timed_out`` and the caller
+    parks instead of waiting on a copy that may never settle.
     """
-    resolution = _resolve(config, cwd, ai_name, tmux_session, resume_follows=resume_follows, prompted=prompted)
+    resolution = _resolve(
+        config,
+        cwd,
+        ai_name,
+        tmux_session,
+        resume_follows=resume_follows,
+        prompted=prompted,
+        relaunch_started_at=relaunch_started_at,
+    )
     limit = hold_timeout_seconds(config)
-    if not resolution.hold or not math.isfinite(held_seconds) or held_seconds < limit:
+    attempt_limit = hold_max_attempts(config)
+    time_exhausted = math.isfinite(held_seconds) and held_seconds >= limit
+    attempts_exhausted = hold_attempt >= attempt_limit
+    if not resolution.hold or not (time_exhausted or attempts_exhausted):
         return resolution
+    if attempts_exhausted:
+        exhausted = f"gave up after {hold_attempt} attempts (relaunch.background_hold_max_attempts = {attempt_limit})"
+    else:
+        exhausted = f"gave up after {held_seconds:.0f}s (relaunch.background_hold_timeout_seconds = {limit:g})"
+    remedies = _manual_remedies(resolution.matching_ids)
     return replace(
         resolution,
         timed_out=True,
-        warning=(
-            f"{resolution.warning}; gave up after {held_seconds:.0f}s "
-            f"(relaunch.background_hold_timeout_seconds = {limit:g}) and is not resuming beside it"
-        ),
+        warning=f"{resolution.warning}; {exhausted} and is not resuming beside it"
+        + (f"; {remedies}" if remedies else ""),
     )
 
 
@@ -264,6 +317,7 @@ def _resolve(
     *,
     resume_follows: bool = False,
     prompted: bool = False,
+    relaunch_started_at: float = 0.0,
 ) -> Resolution:
     """Choose the background session to attach to, in order: resolver hint, matching copy.
 
@@ -306,11 +360,21 @@ def _resolve(
     if len(matches) == 1:
         return _attach_or_hold(matches[0], prompted, ai_name, cwd)
     if len(matches) > 1:
+        window_seconds = (
+            settings["background_exit_copy_window_seconds"] if settings else DEFAULT_EXIT_COPY_WINDOW_SECONDS
+        )
+        recent = [row for row in matches if _recent_exit_copy(row, relaunch_started_at, window_seconds)]
+        if len(recent) == 1 and all(is_idle(row) for row in matches if row is not recent[0]):
+            # A blocked state can be an exit dialog even though the row is already idle.
+            # Attaching is safe; prompt delivery independently waits for the composer.
+            return _attach_or_hold(recent[0], False, ai_name, cwd)
         ids = ", ".join(sorted(row["id"] for row in matches))
         notes.append(f"{len(matches)} live background sessions match this name and directory ({ids})")
         if resume_follows:
             return Resolution(
-                warning="; ".join(notes) + "; holding the relaunch rather than resume beside them", hold=True
+                warning="; ".join(notes) + "; holding the relaunch rather than resume beside them",
+                hold=True,
+                matching_ids=tuple(sorted(row["id"] for row in matches)),
             )
     if notes:
         return Resolution(warning="; ".join(notes) + "; resuming by title instead")
@@ -383,10 +447,16 @@ def _attach_or_hold(row: dict, prompted: bool, ai_name: str, cwd: Path) -> Resol
         described = f"background session {row['id']} runs in the environment of {owner}, not {ai_name}"
         if not is_idle(row):
             return Resolution(
-                warning=f"{described}; holding the relaunch until it is idle so it can be stopped", hold=True
+                warning=f"{described}; holding the relaunch until it is idle so it can be stopped",
+                hold=True,
+                matching_ids=(row["id"],),
             )
         if not stop_background_session(row["id"]):
-            return Resolution(warning=f"{described}; `claude stop {row['id']}` failed, holding the relaunch", hold=True)
+            return Resolution(
+                warning=f"{described}; `claude stop {row['id']}` failed, holding the relaunch",
+                hold=True,
+                matching_ids=(row["id"],),
+            )
         return Resolution(warning=f"{described}; stopped it and resuming its conversation instead", stopped=True)
     if prompted and not is_idle(row):
         return Resolution(
@@ -395,6 +465,7 @@ def _attach_or_hold(row: dict, prompted: bool, ai_name: str, cwd: Path) -> Resol
                 f"(state {_word(row, 'state') or 'unknown'}); holding the relaunch until it is idle"
             ),
             hold=True,
+            matching_ids=(row["id"],),
         )
     return Resolution(background_id=row["id"])
 
