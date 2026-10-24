@@ -27,6 +27,7 @@ from ai_cli.main import (
     cli,
     get_engine_script,
 )
+from ai_cli.session_naming import name_number
 
 
 class TestResolveIterm2Config:
@@ -314,7 +315,8 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    _assign_iterm2_color_slot("other-session", "c")
+                    # An index-named session takes the first free slot, the preferred red.
+                    _assign_iterm2_color_slot("other-session-1", "c")
                     slot = _assign_iterm2_color_slot("session-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") != "e74c3c"
@@ -795,15 +797,27 @@ class TestTrailingIndexParsersAnchorOnHyphen:
         reason="the generated session-script line requires a POSIX bash/zsh environment",
     )
     @pytest.mark.parametrize("shell_name", ["bash", "zsh"])
-    @pytest.mark.parametrize(("ai_name", "expected"), [("myproject-host2-3", "3"), ("myproject-host2", "1")])
+    @pytest.mark.parametrize(
+        ("ai_name", "expected"),
+        [
+            ("myproject-host2-3", "3"),
+            ("myproject-host2", "1"),
+            ("myproject-host2-ada", str(name_number("ada"))),
+        ],
+    )
     def test_given_alias_with_digits_when_session_script_parses_index_then_only_hyphen_index_counts(
         self, shell_name, ai_name, expected
     ):
         if shutil.which(shell_name) is None:
             pytest.skip(f"{shell_name} not installed")
         script = get_engine_script("c", ai_name, f"c-{ai_name}", "c-myproject-", "myproject")
-        parse = [ln.strip() for ln in script.splitlines() if ln.strip().startswith("_session_num=")]
-        assert parse, "generated script no longer parses _session_num from ai_name"
+        lines = [ln.strip() for ln in script.splitlines()]
+        # The whole parse block, from the first assignment to the default, so a branch
+        # inside it runs with its condition rather than as a bare assignment.
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("_session_num=$(")), None)
+        end = next((i for i, ln in enumerate(lines) if ln.startswith('_session_num="${_session_num:-1}"')), None)
+        assert start is not None and end is not None, "generated script no longer parses _session_num from ai_name"
+        parse = lines[start : end + 1]
         snippet = f"ai_name={shlex.quote(ai_name)}\n" + "\n".join(parse) + '\nprintf "%s" "$_session_num"\n'
         result = subprocess.run([shell_name, "-c", snippet], capture_output=True, text=True, timeout=10, check=False)
         assert result.returncode == 0, result.stderr
