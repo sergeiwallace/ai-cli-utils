@@ -1971,18 +1971,48 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>]",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N]",
                 err=True,
             )
             sys.exit(1)
+        flags = {arg for arg in argv[3:] if arg.startswith("--") and "=" not in arg}
+        positional = [arg for arg in argv[3:] if not arg.startswith("--")]
+        held_seconds = 0.0
+        for arg in argv[3:]:
+            if arg.startswith("--held-seconds="):
+                with contextlib.suppress(ValueError):
+                    held_seconds = float(arg.partition("=")[2])
         resolution = _background_attach.resolve_background_target(
-            config, Path(argv[1]), argv[2], argv[3] if len(argv) > 3 else ""
+            config,
+            Path(argv[1]),
+            argv[2],
+            positional[0] if positional else "",
+            resume_follows="--resume-follows" in flags,
+            prompted="--prompted" in flags,
+            held_seconds=held_seconds,
         )
         if resolution.warning:
             _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
-        sys.exit(0)
+        if resolution.timed_out:
+            _background_attach.record_hold_timeout(config, argv[2], resolution.warning or "", held_seconds)
+            sys.exit(_background_attach.HOLD_TIMEOUT_EXIT_STATUS)
+        # 75 (EX_TEMPFAIL) tells the supervisor script to hold: no attach, no resume.
+        sys.exit(_background_attach.HOLD_EXIT_STATUS if resolution.hold else 0)
+    elif action == "deliver-resume-prompt":
+        if len(argv) < 4:
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal deliver-resume-prompt <tmux_session> <background_id> <prompt_file>",
+                err=True,
+            )
+            sys.exit(1)
+        failure = _background_attach.deliver_resume_prompt(argv[1], argv[2], Path(argv[3]))
+        if failure:
+            _out.emit(Tag.INTERNAL, "resume", f"resume prompt not delivered: {failure}", err=True)
+        sys.exit(1 if failure else 0)
     elif action == "resolve-continue-target":
         if len(argv) < 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)

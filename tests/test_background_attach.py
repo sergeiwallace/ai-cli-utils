@@ -22,6 +22,8 @@ from ai_cli.main import _handle_internal
 # command only runs under tmux, which Windows does not provide.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="tmux and sh are POSIX-only")
 
+# What an idle attached pane shows: Claude's prompt line between two rules.
+COMPOSER = "some output\n" + "─" * 40 + "\n❯ \n" + "─" * 40 + "\n  ? for shortcuts\n"
 LIVE_ID = "aaaa1111"
 OTHER_ID = "bbbb2222"
 THIRD_ID = "cccc3333"
@@ -58,28 +60,34 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
     Everything else, notably the resolver command under test, runs as a real subprocess.
     Returns a function that sets the agents list; if it is never called, ``claude`` exits 1.
     """
-    state: dict[str, list[dict] | None] = {"rows": None}
+    state: dict = {"rows": None, "tmux": [], "pane": COMPOSER}
     real_run = subprocess.run
 
     def run(command, *args, **kwargs):
         program = Path(str(command[0])).name
         if program == "claude" and list(command[1:]) == ["agents", "--json"]:
-            rows = state["rows"]
+            rows = state["rows"]() if callable(state["rows"]) else state["rows"]
             if rows is None:
                 return subprocess.CompletedProcess(command, 1, "", "no agents list")
             return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
+        if program == "tmux" and command[1] in ("load-buffer", "paste-buffer", "send-keys"):
+            text = Path(command[-1]).read_text(encoding="utf-8") if command[1] == "load-buffer" else ""
+            state["tmux"].append((command[1], text))
+            return subprocess.CompletedProcess(command, 0, "", "")
         if program == "tmux" and command[1] == "capture-pane":
             # Scrollback is requested with `-S -`; the visible screen alone lacks the older lines.
-            text = "scrollback line\nbackgrounded - b85c864a\n" if "-S" in command else "visible line\n"
+            text = "scrollback line\nbackgrounded - b85c864a\n" if "-S" in command else state["pane"]
             return subprocess.CompletedProcess(command, 0, text, "")
         return real_run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
 
-    def set_agents(rows: list[dict]) -> None:
+    def set_agents(rows) -> None:
         state["rows"] = rows
 
+    set_agents.tmux = state["tmux"]
+    set_agents.set_pane = lambda text: state.__setitem__("pane", text)
     return set_agents
 
 
@@ -89,6 +97,13 @@ def _resolve(workdir: Path, config: dict, capsys) -> tuple[str, str]:
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     return captured.out.strip(), captured.err
+
+
+def _resolve_with(workdir: Path, config: dict, capsys, *flags: str) -> tuple[str, str, int]:
+    with patch("ai_cli.config.load_config", return_value=config), pytest.raises(SystemExit) as exc_info:
+        _handle_internal(["resolve-background-target", str(workdir), SESSION, "c-myproject-1", *flags])
+    captured = capsys.readouterr()
+    return captured.out.strip(), captured.err, exc_info.value.code
 
 
 def _resolver_config(command: Path | str, timeout: float | None = None) -> dict:
@@ -319,3 +334,370 @@ def test_given_missing_arguments_when_resolving_then_prints_usage_and_exits_one(
 
     assert exc_info.value.code == 1
     assert "resolve-background-target" in capsys.readouterr().err
+
+
+def _live(cwd: Path, row_id: str = LIVE_ID, name: str = SESSION, status: str = "idle", state: str = "done") -> dict:
+    """A live moved copy as `claude agents --json` shows one between turns: state done, status idle."""
+    return {**_row("background", row_id, cwd, name=name, status=status), "state": state}
+
+
+def test_given_a_stopped_older_copy_beside_a_numbered_one_when_resolving_then_attaches_to_the_numbered_copy(
+    workdir, fake_tools, capsys
+):
+    """A stopped row is over; Claude Code numbers the live copy when an older one holds the bare name."""
+    fake_tools(
+        [
+            _live(workdir, row_id=OTHER_ID, state="stopped", status=None),
+            _live(workdir, row_id=LIVE_ID, name=f"{SESSION} (2)"),
+        ]
+    )
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def test_given_a_done_copy_when_resolving_then_it_is_a_live_copy_not_a_finished_one(workdir, fake_tools, capsys):
+    """state done is a live copy waiting for input (its process is alive), not an ended one."""
+    fake_tools([_live(workdir, state="done", status="idle")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def test_given_the_resolver_names_the_exact_copy_among_older_live_ones_when_resolving_then_it_is_the_one_attached(
+    workdir, tmp_path, fake_tools, capsys
+):
+    """The proven id picks the moved copy even when older live copies carry the same name."""
+    fake_tools(
+        [_live(workdir, row_id=OTHER_ID), _live(workdir, row_id=THIRD_ID, name=f"{SESSION} (2)"), _live(workdir)]
+    )
+    resolver = _script(tmp_path / "resolver", f"echo {LIVE_ID}\n")
+
+    out, _err, code = _resolve_with(workdir, _resolver_config(resolver), capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+@pytest.mark.parametrize("name", [f"{SESSION} (x)", f"{SESSION}-2", f"{SESSION}2 (2)"])
+def test_given_a_row_with_another_name_when_resolving_then_it_is_not_this_sessions_copy(
+    workdir, fake_tools, capsys, name
+):
+    fake_tools([_live(workdir, name=name)])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 0)
+
+
+def test_given_a_resume_follows_and_several_live_copies_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys
+):
+    """Never start a --resume while a matching live background copy exists."""
+    fake_tools([_live(workdir, row_id=LIVE_ID), _live(workdir, row_id=OTHER_ID, name=f"{SESSION} (2)")])
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert LIVE_ID in err and OTHER_ID in err and "holding the relaunch" in err
+
+
+def test_given_no_resume_follows_and_several_live_copies_when_resolving_then_it_does_not_hold(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir, row_id=LIVE_ID), _live(workdir, row_id=OTHER_ID, name=f"{SESSION} (2)")])
+
+    out, err, code = _resolve_with(workdir, {}, capsys)
+
+    assert (out, code) == ("", 0)
+    assert "resuming by title instead" in err
+
+
+def test_given_a_resume_follows_and_an_unreadable_list_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys
+):
+    del fake_tools  # the list is never set, so `claude agents --json` exits 1
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert "holding the relaunch" in err
+
+
+def test_given_no_resume_follows_and_an_unreadable_list_when_resolving_then_a_fresh_launch_goes_ahead(
+    workdir, fake_tools, capsys
+):
+    del fake_tools
+
+    out, err, code = _resolve_with(workdir, {}, capsys)
+
+    assert (out, code) == ("", 0)
+    assert "resuming by title instead" in err
+
+
+def test_given_a_live_copy_and_a_resume_follows_when_resolving_then_it_attaches_instead_of_resuming(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir)])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+@pytest.mark.parametrize(
+    ("status", "state"),
+    [
+        ("idle", "working"),
+        ("busy", "working"),
+        ("idle", "blocked"),
+        (None, "blocked"),
+        ("idle", "thinking"),
+        ("idle", ""),
+    ],
+)
+def test_given_a_prompt_waits_and_the_copy_is_not_between_turns_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys, status, state
+):
+    """Idle is an allowlist: a mid-turn copy, one waiting on a dialog and an unknown word all hold."""
+    fake_tools([_live(workdir, status=status, state=state)])
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == ("", 75)
+    assert "not between turns" in err
+
+
+def test_given_no_prompt_waits_and_the_copy_is_mid_turn_when_resolving_then_it_still_attaches(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir, status="idle", state="working")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def _hold_config(seconds: float | str, log: Path | None = None) -> dict:
+    relaunch: dict = {"background_hold_timeout_seconds": seconds}
+    if log is not None:
+        relaunch["background_hold_log"] = str(log)
+    return {"relaunch": relaunch}
+
+
+def _held_copy(workdir: Path) -> list[dict]:
+    return [_live(workdir, status="idle", state="working")]
+
+
+def test_given_a_hold_shorter_than_the_limit_when_resolving_then_it_keeps_holding(workdir, fake_tools, capsys):
+    fake_tools(_held_copy(workdir))
+
+    out, _err, code = _resolve_with(
+        workdir, _hold_config(120), capsys, "--resume-follows", "--prompted", "--held-seconds=119"
+    )
+
+    assert (out, code) == ("", 75)
+
+
+def test_given_a_hold_that_reached_the_limit_when_resolving_then_it_times_out_and_logs_one_line(
+    workdir, fake_tools, capsys, tmp_path
+):
+    """A hold is bounded: at the limit the lookup exits 76, says why, and writes a UR line to the configured log."""
+    fake_tools(_held_copy(workdir))
+    log = tmp_path / "fleet" / "update-restart.log"
+
+    out, err, code = _resolve_with(
+        workdir, _hold_config(120, log), capsys, "--resume-follows", "--prompted", "--held-seconds=120"
+    )
+
+    assert (out, code) == ("", 76)
+    assert "gave up after 120s" in err and "background_hold_timeout_seconds = 120" in err
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert " UR-RELAUNCH-PARKED session=myproject-1 held=120s reason=" in lines[0]
+
+
+def test_given_no_log_is_configured_when_a_hold_times_out_then_the_launchers_own_log_gets_the_line(
+    workdir, fake_tools, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
+    fake_tools(_held_copy(workdir))
+
+    _out, _err, code = _resolve_with(
+        workdir, _hold_config(60), capsys, "--resume-follows", "--prompted", "--held-seconds=60"
+    )
+
+    assert code == 76
+    own = (tmp_path / "state" / "relaunch-hold.log").read_text(encoding="utf-8")
+    assert " UR-RELAUNCH-PARKED session=myproject-1 held=60s " in own
+
+
+def test_given_an_unwritable_log_when_a_hold_times_out_then_it_still_parks(workdir, fake_tools, capsys, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    fake_tools(_held_copy(workdir))
+
+    _out, err, code = _resolve_with(
+        workdir,
+        _hold_config(60, blocker / "log"),
+        capsys,
+        "--resume-follows",
+        "--prompted",
+        "--held-seconds=60",
+    )
+
+    assert code == 76
+    assert "gave up after 60s" in err
+
+
+def test_given_the_limit_is_changed_between_calls_when_resolving_then_the_new_value_applies(
+    workdir, fake_tools, capsys, tmp_path, monkeypatch
+):
+    """The limit is read on every call, so editing the config changes the next relaunch."""
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
+    fake_tools(_held_copy(workdir))
+    flags = ("--resume-follows", "--prompted", "--held-seconds=200")
+
+    _out, _err, first = _resolve_with(workdir, _hold_config(600), capsys, *flags)
+    _out, _err, second = _resolve_with(workdir, _hold_config(100), capsys, *flags)
+
+    assert (first, second) == (75, 76)
+
+
+def test_given_the_default_limit_when_resolving_then_a_few_minutes_is_allowed(
+    workdir, fake_tools, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
+    fake_tools(_held_copy(workdir))
+
+    _out, _err, early = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted", "--held-seconds=299")
+    _out, _err, late = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted", "--held-seconds=300")
+
+    assert (early, late) == (75, 76)
+
+
+@pytest.mark.parametrize("value", [0, -5, "soon", True])
+def test_given_an_invalid_limit_when_resolving_then_the_default_applies_and_the_hold_still_ends(
+    workdir, fake_tools, capsys, tmp_path, monkeypatch, value
+):
+    monkeypatch.setattr("ai_cli.background_attach.get_xdg_state_home", lambda: tmp_path / "state")
+    fake_tools(_held_copy(workdir))
+
+    _out, _err, code = _resolve_with(
+        workdir, _hold_config(value), capsys, "--resume-follows", "--prompted", "--held-seconds=300"
+    )
+
+    assert code == 76
+
+
+def test_given_no_hold_when_the_time_is_long_then_nothing_times_out(workdir, fake_tools, capsys):
+    fake_tools([_live(workdir)])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted", "--held-seconds=99999")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def test_given_the_copy_is_idle_when_a_prompt_waits_then_the_prompt_is_pasted_once_after_a_settle_and_submitted(
+    fake_tools, tmp_path
+):
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path)])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("Resume after an update restart\nsecond line\n", encoding="utf-8")
+    events: list[object] = []
+
+    def settle(seconds: float) -> None:
+        events.append(("settle", seconds))
+        fake_tools.tmux.append(("settle", ""))
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=settle)
+
+    assert failure is None
+    # One trailing newline is dropped, and the Enter waits for the paste to be taken in.
+    assert fake_tools.tmux == [
+        ("load-buffer", "Resume after an update restart\nsecond line"),
+        ("paste-buffer", ""),
+        ("settle", ""),
+        ("send-keys", ""),
+    ]
+    assert events == [("settle", background_attach.PASTE_SETTLE_SECONDS)]
+    assert not prompt.exists()
+    assert not prompt.with_name("prompt.undelivered").exists()
+
+
+def test_given_the_input_box_is_not_drawn_yet_when_delivering_then_nothing_is_typed_until_it_is(fake_tools, tmp_path):
+    """The agents row is idle before `claude attach` has drawn its input; the paste waits for the pane."""
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path)])
+    fake_tools.set_pane("attaching...\n")
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+    waits: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 2:
+            fake_tools.set_pane(COMPOSER)
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=sleep)
+
+    assert failure is None
+    assert [call for call, _ in fake_tools.tmux] == ["load-buffer", "paste-buffer", "send-keys"]
+    assert len(waits) == 3
+
+
+def test_given_the_copy_is_mid_turn_then_idle_when_delivering_then_it_waits_for_the_idle_row(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    answers = iter([[_live(tmp_path, status="idle", state="working")]] * 3 + [[_live(tmp_path)]])
+    fake_tools(lambda: next(answers))
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+    waits: list[float] = []
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=waits.append)
+
+    assert failure is None
+    assert len(waits) == 4
+    assert [call for call, _ in fake_tools.tmux] == ["load-buffer", "paste-buffer", "send-keys"]
+
+
+@pytest.mark.parametrize("state", ["working", "blocked", "thinking"])
+def test_given_the_copy_never_goes_idle_when_delivering_then_nothing_is_typed_and_the_prompt_is_kept(
+    fake_tools, tmp_path, state
+):
+    """Never type into a copy that is mid-turn or waiting on a dialog."""
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path, status="idle", state=state)])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt(
+        "c-myproject-1", LIVE_ID, prompt, wait_seconds=0, sleep=lambda _seconds: None
+    )
+
+    assert failure is not None and "never became idle" in failure
+    assert fake_tools.tmux == []  # nothing typed
+    assert not prompt.exists()  # a later relaunch cannot replay it beside the live copy
+    assert prompt.with_name("prompt.undelivered").read_text(encoding="utf-8") == "go"
+    assert "prompt.undelivered" in failure
+
+
+def test_given_the_copy_is_gone_when_delivering_then_nothing_is_typed(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    fake_tools([])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt(
+        "c-myproject-1", LIVE_ID, prompt, wait_seconds=0, sleep=lambda _seconds: None
+    )
+
+    assert failure is not None and "no longer listed" in failure
+    assert fake_tools.tmux == []

@@ -13,19 +13,43 @@ shows it live.
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import read_relaunch_config
+from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
 _AGENTS_LIST_TIMEOUT_SECONDS = 15
 _PANE_CAPTURE_TIMEOUT_SECONDS = 10
+_TMUX_TIMEOUT_SECONDS = 10
+# Row words ``claude agents --json`` uses for a conversation that is over. A `done` row is
+# not one of them: it is a live copy whose turn ended and which waits for input (its pid is
+# alive and its status is idle). A `stopped` row is over, and the default list drops it.
+_OVER = frozenset({"finished", "failed", "stopped", "exited", "killed"})
+# The one state in which a copy is between turns and can take a typed prompt. `working` is
+# mid-turn and `blocked` is waiting on a dialog: typing into either answers the wrong thing.
+# Any word not listed is treated as not idle.
+_IDLE_STATES = frozenset({"done"})
+_IDLE_STATUSES = frozenset({"idle", ""})
+# Seconds between the paste and the Enter that submits it, so the TUI has taken the paste in.
+PASTE_SETTLE_SECONDS = 0.4
+_COMPOSER_LINES = 25
+# The relaunch holds (exit status 75, EX_TEMPFAIL) when resuming might start a second writer.
+HOLD_EXIT_STATUS = 75
+# Exit status once a hold has lasted the configured time: the script parks instead of waiting on.
+HOLD_TIMEOUT_EXIT_STATUS = 76
+DEFAULT_HOLD_TIMEOUT_SECONDS = 300.0
+DELIVERY_WAIT_SECONDS = 90.0
+DELIVERY_POLL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -33,12 +57,36 @@ class Resolution:
     """The background session to attach to, or why there is none.
 
     ``warning`` is set only when a person should hear why the relaunch falls back
-    to a title-matched resume. Having no background session at all is the ordinary
-    case and stays silent.
+    to a title-matched resume, or why it holds. Having no background session at all
+    is the ordinary case and stays silent. ``hold`` means the relaunch must neither
+    attach nor resume: a live copy may exist and cannot be told from none.
+    ``timed_out`` means the hold has lasted the configured time: the script stops waiting.
     """
 
     background_id: str | None = None
     warning: str | None = None
+    hold: bool = False
+    timed_out: bool = False
+
+
+def _word(row: dict, key: str) -> str:
+    return str(row.get(key) or "").lower()
+
+
+def is_idle(row: dict) -> bool:
+    """Whether the copy is between turns and can take a typed prompt (an allowlist)."""
+    return _word(row, "state") in _IDLE_STATES and _word(row, "status") in _IDLE_STATUSES
+
+
+def is_moved_copy(row: dict, name: str, cwd: Path) -> bool:
+    """Whether a background row is the copy of session ``name`` in ``cwd``.
+
+    Claude Code numbers a new background copy " (N)" when an older copy already holds
+    the bare name, so the moved copy is named ``name`` or ``name (N)``.
+    """
+    if not _same_directory(row.get("cwd"), cwd):
+        return False
+    return re.fullmatch(rf"{re.escape(name)}( \(\d+\))?", str(row.get("name") or "")) is not None
 
 
 def list_live_background_sessions() -> list[dict] | None:
@@ -66,7 +114,8 @@ def list_live_background_sessions() -> list[dict] | None:
         for row in rows
         if isinstance(row, dict)
         and row.get("kind") not in (None, "interactive")
-        and row.get("status") != "finished"
+        and _word(row, "status") not in _OVER
+        and _word(row, "state") not in _OVER
         and _BACKGROUND_ID.fullmatch(str(row.get("id", "")))
     ]
 
@@ -129,12 +178,86 @@ def _same_directory(left: object, right: Path) -> bool:
     return isinstance(left, str) and Path(left).resolve() == right.resolve()
 
 
-def resolve_background_target(config: dict, cwd: Path, ai_name: str, tmux_session: str) -> Resolution:
-    """Choose the background session to attach to, in order: resolver hint, exact name-and-directory match.
+def hold_timeout_seconds(config: dict) -> float:
+    """The configured hold limit, read from ``config`` as given; the default when it is invalid."""
+    try:
+        return float(read_relaunch_config(config)["background_hold_timeout_seconds"])
+    except ValueError:
+        return DEFAULT_HOLD_TIMEOUT_SECONDS
 
-    Anything else returns no id, so the caller keeps its title-matched resume. A
-    recorded or matched id is never attached unless ``claude agents --json`` lists
-    it as a live background session.
+
+def resolve_background_target(
+    config: dict,
+    cwd: Path,
+    ai_name: str,
+    tmux_session: str,
+    *,
+    resume_follows: bool = False,
+    prompted: bool = False,
+    held_seconds: float = 0.0,
+) -> Resolution:
+    """Choose the background session to attach to; a hold that has lasted too long times out.
+
+    ``held_seconds`` is how long the caller has already been holding. A hold never lasts
+    past ``relaunch.background_hold_timeout_seconds``: the result then carries
+    ``timed_out`` and the caller parks instead of waiting on a copy that may never settle.
+    """
+    resolution = _resolve(config, cwd, ai_name, tmux_session, resume_follows=resume_follows, prompted=prompted)
+    limit = hold_timeout_seconds(config)
+    if not resolution.hold or not math.isfinite(held_seconds) or held_seconds < limit:
+        return resolution
+    return replace(
+        resolution,
+        timed_out=True,
+        warning=(
+            f"{resolution.warning}; gave up after {held_seconds:.0f}s "
+            f"(relaunch.background_hold_timeout_seconds = {limit:g}) and is not resuming beside it"
+        ),
+    )
+
+
+def hold_log_path(config: dict) -> Path:
+    """The log a parked relaunch writes: ``relaunch.background_hold_log``, else the launcher's own."""
+    try:
+        configured = str(read_relaunch_config(config)["background_hold_log"]).strip()
+    except ValueError:
+        configured = ""
+    if configured:
+        return Path(configured).expanduser()
+    return get_xdg_state_home() / "relaunch-hold.log"
+
+
+def record_hold_timeout(config: dict, ai_name: str, reason: str, held_seconds: float, log: Path | None = None) -> None:
+    """Append one ``UR-RELAUNCH-PARKED`` line, in the shape of the update-restart log's lines."""
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    quoted = json.dumps(reason)
+    line = f"{stamp} UR-RELAUNCH-PARKED session={ai_name} held={held_seconds:.0f}s reason={quoted}\n"
+    path = log or hold_log_path(config)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        pass  # The pane still says why; a log that cannot be written must not stop the park.
+
+
+def _resolve(
+    config: dict,
+    cwd: Path,
+    ai_name: str,
+    tmux_session: str,
+    *,
+    resume_follows: bool = False,
+    prompted: bool = False,
+) -> Resolution:
+    """Choose the background session to attach to, in order: resolver hint, matching copy.
+
+    A recorded or matched id is never attached unless ``claude agents --json`` lists
+    it as a live background session. ``resume_follows`` says the caller would otherwise
+    resume the transcript, and ``prompted`` that a resume prompt is waiting to be
+    delivered. A resume never starts beside a live copy: when the copy cannot be told
+    from none (an unreadable list, several matches) and a resume follows, or when a
+    prompt is waiting and the one copy is mid-turn, the result holds instead.
     """
     notes: list[str] = []
     try:
@@ -145,7 +268,12 @@ def resolve_background_target(config: dict, cwd: Path, ai_name: str, tmux_sessio
 
     rows = list_live_background_sessions()
     if rows is None:
-        return Resolution(warning="could not read `claude agents --json`; resuming by title instead")
+        warning = "could not read `claude agents --json`"
+        if resume_follows:
+            return Resolution(
+                warning=f"{warning}; holding the relaunch rather than resume beside a possible live copy", hold=True
+            )
+        return Resolution(warning=f"{warning}; resuming by title instead")
 
     command = settings["background_session_resolver"].strip() if settings else ""
     if settings and command:
@@ -155,16 +283,139 @@ def resolve_background_target(config: dict, cwd: Path, ai_name: str, tmux_sessio
         if hint is None:
             notes.append(f"background resolver {reason}")
         elif any(row["id"] == hint for row in rows):
-            return Resolution(background_id=hint)
+            return _attach_or_hold(next(row for row in rows if row["id"] == hint), prompted)
         else:
             notes.append(f"background resolver named {hint}, which is not a live background session")
 
-    matches = [row for row in rows if row.get("name") == ai_name and _same_directory(row.get("cwd"), cwd)]
+    matches = [row for row in rows if is_moved_copy(row, ai_name, cwd)]
     if len(matches) == 1:
-        return Resolution(background_id=matches[0]["id"])
+        return _attach_or_hold(matches[0], prompted)
     if len(matches) > 1:
         ids = ", ".join(sorted(row["id"] for row in matches))
         notes.append(f"{len(matches)} live background sessions match this name and directory ({ids})")
+        if resume_follows:
+            return Resolution(
+                warning="; ".join(notes) + "; holding the relaunch rather than resume beside them", hold=True
+            )
     if notes:
         return Resolution(warning="; ".join(notes) + "; resuming by title instead")
     return Resolution()
+
+
+def _attach_or_hold(row: dict, prompted: bool) -> Resolution:
+    """Attach to ``row``; with a prompt waiting, only once the copy is between turns."""
+    if prompted and not is_idle(row):
+        return Resolution(
+            warning=(
+                f"background session {row['id']} is not between turns "
+                f"(state {_word(row, 'state') or 'unknown'}); holding the relaunch until it is idle"
+            ),
+            hold=True,
+        )
+    return Resolution(background_id=row["id"])
+
+
+def _tmux(*args: str) -> subprocess.CompletedProcess | None:
+    tmux = shutil.which("tmux")
+    if not tmux:
+        return None
+    try:
+        return subprocess.run(
+            [tmux, *args],
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _composer_drawn(tmux_session: str) -> bool:
+    """Whether the pane shows Claude's input box: its prompt line between two rules."""
+    captured = _tmux("capture-pane", "-p", "-t", tmux_session)
+    if captured is None or captured.returncode != 0:
+        return False
+    lines = [line.strip() for line in captured.stdout.splitlines() if line.strip()][-_COMPOSER_LINES:]
+    rules = sum(1 for line in lines if len(line) >= 10 and set(line) <= {"─"})
+    return rules >= 2 and any(line.startswith("❯") for line in lines)
+
+
+def _row_for(background_id: str) -> dict | None:
+    rows = list_live_background_sessions()
+    if rows is None:
+        return None
+    return next((row for row in rows if row["id"] == background_id), None)
+
+
+def deliver_resume_prompt(
+    tmux_session: str,
+    background_id: str,
+    prompt_file: Path,
+    *,
+    wait_seconds: float = DELIVERY_WAIT_SECONDS,
+    poll_seconds: float = DELIVERY_POLL_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    """Type the waiting resume prompt into the attached session once it is between turns.
+
+    ``claude attach`` carries no prompt, so the wrapper delivers it afterwards. The prompt
+    is pasted as one bracketed paste and submitted only when the copy's row says it is
+    live and idle, checked again immediately before the paste, never while it is mid-turn.
+    The prompt file is always removed so a later relaunch cannot replay it beside a live
+    copy; a prompt that could not be delivered is kept beside it as ``<name>.undelivered``.
+    Returns None on delivery, else the reason.
+    """
+    try:
+        text = prompt_file.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"could not read the resume prompt ({error})"
+    reason = "the attached session never became idle with its input box drawn"
+    deadline = time.monotonic() + wait_seconds
+    delivered = False
+    while True:
+        row = _row_for(background_id)
+        if row is None:
+            reason = f"background session {background_id} is no longer listed as live"
+        elif is_idle(row) and _composer_drawn(tmux_session):
+            delivered, reason = _paste(tmux_session, text, sleep), "tmux could not take the paste"
+            if delivered:
+                reason = ""
+            break
+        else:
+            reason = "the attached session never became idle with its input box drawn"
+        if time.monotonic() >= deadline:
+            break
+        sleep(poll_seconds)
+    if delivered:
+        prompt_file.unlink(missing_ok=True)
+        return None
+    kept = prompt_file.with_name(prompt_file.name + ".undelivered")
+    try:
+        prompt_file.replace(kept)
+    except OSError:
+        prompt_file.unlink(missing_ok=True)
+        return f"{reason}; the resume prompt could not be kept"
+    return f"{reason}; the resume prompt is kept at {kept}"
+
+
+def _paste(tmux_session: str, text: str, sleep: Callable[[float], None] = time.sleep) -> bool:
+    """Paste ``text`` into the session's pane as one bracketed paste, then submit it.
+
+    One trailing newline is dropped so the Enter that submits does not add a second, and the
+    Enter waits a moment so a TUI still taking in the paste does not swallow it.
+    """
+    buffer = f"ai-resume-{tmux_session}"
+    with tempfile.TemporaryDirectory(prefix="ai-resume-prompt-") as scratch:
+        path = Path(scratch) / "prompt.txt"
+        path.write_text(text.removesuffix("\n"), encoding="utf-8")
+        for step in (
+            ("load-buffer", "-b", buffer, str(path)),
+            ("paste-buffer", "-p", "-d", "-b", buffer, "-t", tmux_session),
+        ):
+            done = _tmux(*step)
+            if done is None or done.returncode != 0:
+                return False
+    sleep(PASTE_SETTLE_SECONDS)
+    submitted = _tmux("send-keys", "-t", tmux_session, "Enter")
+    return submitted is not None and submitted.returncode == 0
