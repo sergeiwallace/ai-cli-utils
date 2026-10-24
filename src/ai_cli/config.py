@@ -409,6 +409,7 @@ RELAUNCH_DEFAULTS = {
     # How long a relaunch holds, rather than resume beside a live background copy, before
     # it parks and says why. Read on every call, so a change applies to the next relaunch.
     "background_hold_timeout_seconds": 300,
+    "host_refresh_timeout_seconds": 5,
     # Where a parked relaunch appends its one-line record. Empty: relaunch-hold.log in the
     # launcher's own state directory. A fleet that watches another log names it here.
     "background_hold_log": "",
@@ -429,6 +430,9 @@ def read_relaunch_config(config: dict) -> dict:
     hold = result["background_hold_timeout_seconds"]
     if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not math.isfinite(hold) or hold <= 0:
         raise ValueError("invalid relaunch.background_hold_timeout_seconds")
+    host = result["host_refresh_timeout_seconds"]
+    if isinstance(host, bool) or not isinstance(host, (int, float)) or not math.isfinite(host) or host <= 0:
+        raise ValueError("invalid relaunch.host_refresh_timeout_seconds")
     if not isinstance(result["background_hold_log"], str):
         raise ValueError("invalid relaunch.background_hold_log")
     return result
@@ -470,6 +474,9 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Seconds a relaunch holds instead of resuming beside a live background copy (a busy
 ## copy, several matches, an unreadable agents list) before it parks and says why.
 # background_hold_timeout_seconds = 300
+## Seconds allowed for each fresh AI_HOST lookup (login shell, then tmux).
+## Read at every agent launch; unavailable values leave the inherited host in place.
+# host_refresh_timeout_seconds = 5
 ## Where a parked relaunch appends its one-line record (default: relaunch-hold.log in the
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"

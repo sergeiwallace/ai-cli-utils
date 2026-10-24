@@ -1287,6 +1287,23 @@ def get_engine_script(
       # its run, so a reload after this agent counts from 1 (AI-CLI-pfnh).
       _ai_close_progress
       rm -f "$_ai_reload_run_file"
+    # BEGIN HOST REFRESH launch
+      # Refresh on every launch, before direnv and the agent inherit this shell.
+      _host_line=$(ai internal resolve-host-env 2>/dev/null) || _host_line=""
+      _host_source=${{_host_line%% *}}
+      _host_value=${{_host_line#* }}
+      if [[ "$_host_source" == login-shell || "$_host_source" == tmux ]] && \\
+        [[ "$_host_value" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        if [[ "$_host_value" != "${{AI_HOST:-}}" ]]; then
+          _host_label="$_host_source"
+          [[ "$_host_label" == login-shell ]] && _host_label="login shell"
+          _ai_emit info host "AI_HOST source=$_host_label: ${{AI_HOST:-<unset>}} -> $_host_value"
+        fi
+        export AI_HOST="$_host_value"
+      else
+        _ai_emit info host "AI_HOST source=inherited: keeping ${{AI_HOST:-<unset>}} (fresh value unavailable)"
+      fi
+    # END HOST REFRESH
       start_watcher
       start_ts=$(date +%s)
       agent_attempted=false
