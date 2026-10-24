@@ -1,5 +1,7 @@
 """Leaf commands are named {verb}-{noun}; the {noun}-{verb} names they replaced are gone (AI-CLI-bcu3)."""
 
+import re
+
 import pytest
 from conftest import run_cli
 
@@ -19,7 +21,9 @@ def test_given_renamed_command_when_invoked_by_new_name_then_it_resolves(old, ne
     exit_code, stdout, stderr = run_cli(["ai", new, "--help"])
 
     assert exit_code == 0, stderr
-    assert f"Usage: ai {new} " in stdout
+    # The program name click prints depends on how pytest was launched (`python -m pytest`
+    # gives "python -m pytest.ai"), so match the usage line on the subcommand alone.
+    assert re.search(rf"^Usage: .*\b{re.escape(new)} ", stdout, re.M), stdout
 
 
 @pytest.mark.parametrize(("old", "new"), RENAMED)
