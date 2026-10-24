@@ -22,7 +22,12 @@ _REAL_HOST_ID = session_naming.host_id
 _REAL_ALIAS_SOURCES = session_naming.alias_sources
 
 
-def _dry_run(*args: str, tmux_sessions: list[str] | None = None, repo="/tmp/repo", env=None):
+# The cutover default falls back to the old name form when a host has no alias; the tests of the
+# refusal itself turn that fallback off.
+STRICT_ALIAS_FORM = {"naming": {"legacy_convention": "off"}}
+
+
+def _dry_run(*args: str, tmux_sessions: list[str] | None = None, repo="/tmp/repo", env=None, config=None):
     with (
         patch("ai_cli.session.detect_repo_root", return_value=repo),
         patch("ai_cli.session._tmux_session_names", return_value=list(tmux_sessions or [])),
@@ -30,7 +35,7 @@ def _dry_run(*args: str, tmux_sessions: list[str] | None = None, repo="/tmp/repo
         patch("ai_cli.session.is_current_project_resolved", return_value=True),
         patch("ai_cli.tmux_setup.tmux_present", return_value=True),
     ):
-        return run_cli(["ai", "c", "--project-prefix", "myrepo", "--dry-run", *args], env=env)
+        return run_cli(["ai", "c", "--project-prefix", "myrepo", "--dry-run", *args], config=config, env=env)
 
 
 def _planned_session(out: str) -> str:
@@ -147,7 +152,7 @@ def test_given_no_environment_repo_checkout_when_launching_then_the_local_file_a
 
 def test_given_an_unconfigured_host_when_launching_then_it_refuses_naming_the_config_file(real_alias_lookup):
     _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
-    code, out, err = _dry_run()
+    code, out, err = _dry_run(config=STRICT_ALIAS_FORM)
     assert code == 1
     assert "dry run" not in out
     assert "no host alias is configured" in err
@@ -238,7 +243,7 @@ def test_given_no_registry_names_the_host_when_launching_then_every_path_is_list
     projects = real_alias_lookup["projects"]
     _write_aliases(_sibling(projects, "beta"), '[aliases]\nother-box = "oth"\n')
     _write_aliases(_sibling(projects, "alpha"), '[aliases]\nother-box = "oth"\n')
-    code, _out, err = _dry_run()
+    code, _out, err = _dry_run(config=STRICT_ALIAS_FORM)
     assert code == 1
     order = [
         real_alias_lookup["environment"],
@@ -258,7 +263,7 @@ def test_given_the_projects_dir_reached_through_a_symlink_when_refused_then_each
     link.symlink_to(real_alias_lookup["projects"], target_is_directory=True)
     _write_aliases(real_alias_lookup["environment"], '[aliases]\nother-box = "oth"\n')
     monkeypatch.setenv("PROJECTS_DIR", str(link))
-    code, _out, err = _dry_run(env={"PROJECTS_DIR": str(link)})
+    code, _out, err = _dry_run(env={"PROJECTS_DIR": str(link)}, config=STRICT_ALIAS_FORM)
     assert code == 1
     assert err.count(f"myhub{os.sep}config{os.sep}{session_naming.ALIAS_FILENAME}\n") == 1, err
 
@@ -278,14 +283,14 @@ class _Pipe(io.StringIO):
         return False
 
 
-def _allocate(stdin: io.StringIO):
+def _allocate(stdin: io.StringIO, config=None):
     """``ai internal allocate-session-name``: resolves the alias and names a session, no dry run."""
     with (
         patch("sys.stdin", stdin),
         patch("ai_cli.session._tmux_session_names", return_value=[]),
         patch("ai_cli.tmux_setup.tmux_present", return_value=True),
     ):
-        return run_cli(["ai", "internal", "allocate-session-name", "c", "myrepo", ""])
+        return run_cli(["ai", "internal", "allocate-session-name", "c", "myrepo", ""], config=config)
 
 
 _COMMENTED_REGISTRY = (
@@ -400,7 +405,7 @@ def test_given_no_terminal_when_the_host_is_unconfigured_then_it_refuses_without
     _write_aliases(environment, '[aliases]\nother-box = "oth"\n')
     before = environment.read_bytes()
     stdin = _Pipe("box\n")
-    code, _out, err = _allocate(stdin)
+    code, _out, err = _allocate(stdin, STRICT_ALIAS_FORM)
     assert code == 1
     assert "no host alias is configured" in err
     assert str(environment) in err and str(real_alias_lookup["local"]) in err

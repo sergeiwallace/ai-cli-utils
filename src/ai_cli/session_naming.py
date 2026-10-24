@@ -388,6 +388,62 @@ def resolve_or_prompt_host_alias(*, dry_run: bool = False) -> str:
 # the same function serves a launch, a migration and a dry run.
 
 
+class NamingConventionError(HostAliasError):
+    """The configured naming conventions leave no way to name this session."""
+
+
+@dataclass(frozen=True)
+class LaunchNaming:
+    """How one launch names its session under the ``[naming]`` config.
+
+    ``prefix`` is what :func:`ai_cli.session.build_session_name` takes as its project
+    prefix, ``legacy_prefix`` the bare repo alias it may still reach an old-named slot
+    under (``None`` when the old form is not reachable), and ``host_alias`` the host
+    segment, empty when the old form names the session.
+    """
+
+    prefix: str
+    legacy_prefix: str | None
+    host_alias: str
+    legacy: bool
+
+
+def resolve_launch_naming(
+    repo_alias: str, config: dict, *, prompt: bool = False, dry_run: bool = False
+) -> LaunchNaming:
+    """Choose the naming convention for one launch from the ``[naming]`` section.
+
+    Raises :class:`NamingConventionError` for an invalid section or when the settings
+    leave no convention, and :class:`HostAliasError` when the alias form is the only one
+    allowed and the host has no alias. Read on every call, never cached.
+    """
+    try:
+        settings = _config.read_naming_config(config)
+    except ValueError as exc:
+        raise NamingConventionError(str(exc)) from exc
+    alias_on = settings["alias_convention"]
+    legacy = settings["legacy_convention"]
+    legacy_reach = repo_alias if legacy in ("reach", "full") else None
+    if alias_on:
+        try:
+            host = resolve_or_prompt_host_alias(dry_run=dry_run) if prompt else resolve_host_alias()
+        except HostAliasNotConfiguredError as exc:
+            if legacy != "full":
+                raise NamingConventionError(
+                    f"{exc}\n  The old session-name form is not allowed to stand in "
+                    f'(naming.legacy_convention = "{legacy}"); set it to "full" to name this session '
+                    f"the old way until the host has an alias."
+                ) from exc
+        else:
+            return LaunchNaming(naming_prefix(repo_alias, host), legacy_reach, host, False)
+    elif legacy != "full":
+        raise NamingConventionError(
+            "every session-name convention is disabled (naming.alias_convention = false, "
+            f'naming.legacy_convention = "{legacy}"): enable at least one to launch'
+        )
+    return LaunchNaming(repo_alias, None, "", True)
+
+
 class NamePoolExhaustedError(RuntimeError):
     """No candidate survives the filters; the message names each filter and what it removed."""
 

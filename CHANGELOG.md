@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A `[naming]` config section chooses which session-name conventions `ai` accepts,
+  read on every launch. `alias_convention` (default on) is the
+  `{repo-alias}-{host-alias}-{slug?}-{N}` form; `legacy_convention` (default `full`) is
+  the old `{repo-alias}-{N}` form: `off` never reaches or creates it, `reach` still
+  reaches an existing old-named slot, `full` also names a session the old way when the
+  alias form is off or the host has no alias. During the move to alias names a session
+  that exited to a shell can launch again; retiring the old form is a config change.
+  Invalid values and combinations that name nothing are refused with the key to change.
 - A generated list of short human first names for session names, shipped as package
   data under `ai_cli/data/session-names/` (622 names of 3 to 4 letters).
   `scripts/refresh_session_names.py` rebuilds it from two pinned downloads, a
