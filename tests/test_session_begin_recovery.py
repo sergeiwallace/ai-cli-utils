@@ -214,7 +214,9 @@ def test_given_tmux_legacy_supervisor_when_begin_stops_then_pane_accepts_shell_i
             assert (tmp_path / "calls").read_text() == "call"
             tmux("send-keys", "-t", "=session-1:", f"printf usable > {shlex.quote(str(usable))}", "Enter")
             deadline = time.monotonic() + 5
-            while not usable.exists() and time.monotonic() < deadline:
+            while time.monotonic() < deadline:
+                if usable.exists() and usable.read_text() == "usable":
+                    break
                 time.sleep(0.02)
             assert usable.read_text() == "usable"
         finally:

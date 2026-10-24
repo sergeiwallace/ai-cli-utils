@@ -444,6 +444,9 @@ class TestARemoteLaunchRefusalIsNotADroppedLink:
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
             patch("ai_cli.config.get_project_aliases", return_value={"hub": "myhub"}),
             patch("ai_cli.config.resolve_project_prefix_by_name", return_value="hub"),
+            # This transport test must not discover or register the checkout that
+            # happens to contain the test runner.
+            patch("ai_cli.session.get_project_prefix", return_value="hub"),
         ):
             code, _out, err = run_cli(["ai", "c", "chief-1", "-R"], config=config)
         return code, calls, err
