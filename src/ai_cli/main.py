@@ -3443,7 +3443,7 @@ def _resolve_session_identity(
     *,
     is_remote: bool,
     use_tmux: bool,
-    legacy_prefix: str,
+    legacy_prefix: str | None,
     naming: _NamingRequest,
     repo: str,
     repo_alias: str,
