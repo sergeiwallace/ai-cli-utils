@@ -287,6 +287,7 @@ def _allocate(stdin: io.StringIO, config=None):
     """``ai internal allocate-session-name``: resolves the alias and names a session, no dry run."""
     with (
         patch("sys.stdin", stdin),
+        patch("ai_cli.host_env.resolve_host_env", return_value=("inherited", os.environ.get("AI_HOST", ""))),
         patch("ai_cli.session._tmux_session_names", return_value=[]),
         patch("ai_cli.tmux_setup.tmux_present", return_value=True),
     ):

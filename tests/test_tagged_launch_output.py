@@ -157,6 +157,7 @@ def test_given_an_unknown_option_when_run_through_cli_then_the_usage_error_is_ta
 def test_given_allocate_session_name_when_run_through_cli_then_stdout_is_one_bare_json_document(capsys):
     with (
         patch("sys.argv", ["ai", "internal", "allocate-session-name", "c", "myproject", "4"]),
+        patch("ai_cli.host_env.resolve_host_env", return_value=("inherited", "test-host")),
         patch("ai_cli.main._session.build_session_name", return_value=("c-myproject-4", "myproject-4")),
         patch("ai_cli.main._tmux_setup.config_opts_out", return_value=False),
         patch("ai_cli.config.load_config", return_value={}),

@@ -62,6 +62,7 @@ def test_given_a_remote_launch_when_the_remote_host_allocates_then_it_reserves_a
     monkeypatch.setattr("ai_cli.session_naming.host_id", lambda: OTHER_HOST)
     monkeypatch.setattr("ai_cli.session_naming.resolve_or_prompt_host_alias", lambda **_: "two")
     monkeypatch.setattr("ai_cli.tmux_setup.config_opts_out", lambda config: False)
+    monkeypatch.setattr("ai_cli.host_env.resolve_host_env", lambda _config: ("inherited", OTHER_HOST))
 
     with pytest.raises(SystemExit) as caught:
         main._handle_internal(["allocate-session-name", "c", REPO, "", "--project", REPO])
