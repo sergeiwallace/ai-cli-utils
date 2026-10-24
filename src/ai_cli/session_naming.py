@@ -241,7 +241,19 @@ def resolve_host_alias() -> str:
     Raises :class:`HostAliasNotConfiguredError` naming every file checked, in order,
     when none does, and :class:`HostAliasError` for an invalid entry or a conflict.
     """
-    return _resolve_from(host_id(), alias_sources())
+    from .host_env import refresh_host_env
+
+    inherited = os.environ.get("AI_HOST", "")
+    refresh_host_env(_config.load_config())
+    host = host_id()
+    try:
+        return _resolve_from(host, alias_sources())
+    except HostAliasNotConfiguredError as exc:
+        if inherited and inherited != host:
+            raise HostAliasNotConfiguredError(
+                f"{exc}\n  Refreshed inherited host id {inherited!r} to {host!r} before alias lookup."
+            ) from exc
+        raise
 
 
 def _in_git_checkout(path: Path) -> Path | None:
@@ -441,6 +453,10 @@ def resolve_launch_naming(
             "every session-name convention is disabled (naming.alias_convention = false, "
             f'naming.legacy_convention = "{legacy}"): enable at least one to launch'
         )
+    if not alias_on:
+        from .host_env import refresh_host_env
+
+        refresh_host_env(config)
     return LaunchNaming(repo_alias, None, "", True)
 
 

@@ -26,8 +26,11 @@ EXIT_UNREACHABLE = 75
 
 
 def _host() -> str:
+    from . import config
+    from .host_env import refresh_host_env
     from .session_naming import host_id
 
+    refresh_host_env(config.load_config())
     return host_id()
 
 

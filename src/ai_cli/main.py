@@ -2101,14 +2101,6 @@ def _handle_internal(argv: list[str]) -> None:
                 err=True,
             )
             sys.exit(1)
-        # Allocation runs before the agent wrapper's per-launch host refresh. A remote login
-        # shell can inherit an identity retired since its parent environment started, so use
-        # the same bounded login-shell -> tmux source order before resolving the host alias.
-        from .host_env import resolve_host_env
-
-        host_source, current_host = resolve_host_env(config)
-        if host_source in ("login-shell", "tmux"):
-            os.environ["AI_HOST"] = current_host
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
         use_tmux = not _tmux_setup.config_opts_out(config)
@@ -5956,7 +5948,8 @@ def _prepare_chief_launch(
     bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
     dry_run = bool(options.get("dry_run"))
     try:
-        naming_prefix = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
+        launch_naming = _session_naming.resolve_launch_naming(prefix, config, dry_run=dry_run)
+        naming_prefix = launch_naming.prefix
     except _session_naming.HostAliasError as exc:
         _out.error(Tag.COS, "start", f"{exc}")
         sys.exit(1)
@@ -6055,11 +6048,11 @@ def _prepare_chief_launch(
             config,
             is_remote=is_remote,
             use_tmux=not bare,
-            legacy_prefix=prefix,
+            legacy_prefix=launch_naming.legacy_prefix,
             naming=naming or _NamingRequest(),
             repo=chief_project,
             repo_alias=prefix,
-            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            host_alias=launch_naming.host_alias,
             worktree=not options.get("no_worktree"),
             dry_run=dry_run,
             reporter=_launch_reporter.active(),
@@ -7362,9 +7355,9 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
     from .session_adopt import AdoptionError
 
     registry = _names_registry_or_exit()
-    host = _session_naming.host_id()
     try:
         stem = _migration_stem(repo_root)
+        host = _session_naming.host_id()
         parts = migrate_names.split_title(old, stem)
         slot = _names.Slot(
             repo=repo_root.name,
@@ -7439,10 +7432,10 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
     from .session_adopt import AdoptionError
 
     registry = _names_registry_or_exit()
-    host = _session_naming.host_id()
     adapters = session_clients.all_adapters()
     try:
         stem = _migration_stem(repo_root)
+        host = _session_naming.host_id()
         snapshot = registry.snapshot()
         high = migrate_names.bounded_max_length(max_length, snapshot.policy)
     except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:

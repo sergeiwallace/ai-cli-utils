@@ -1427,6 +1427,9 @@ def _hermetic_host_alias(monkeypatch, tmp_path_factory):
     """
     alias_file = tmp_path_factory.mktemp("host_alias") / _session_naming_module.ALIAS_FILENAME
     alias_file.write_text(f'[aliases]\ntest-host = "{TEST_HOST_ALIAS}"\n', encoding="utf-8")
+    # Naming tests restore the real refresh explicitly; ordinary launches must never
+    # inspect the operator's login profile or global tmux environment.
+    monkeypatch.setattr("ai_cli.host_env.refresh_host_env", lambda config: None)
     monkeypatch.setattr(_session_naming_module, "host_id", lambda: "test-host")
     monkeypatch.setattr(_session_naming_module, "alias_sources", lambda: [alias_file])
 
