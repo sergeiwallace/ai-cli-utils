@@ -415,6 +415,21 @@ RELAUNCH_DEFAULTS = {
 }
 
 
+MESSAGING_DEFAULTS: dict = {"tunnel_hosts": []}
+
+
+def read_messaging_config(config: dict) -> dict:
+    """Validate the messaging section; an invalid ``tunnel_hosts`` never opens a tunnel."""
+    section = config.get("messaging", {})
+    if not isinstance(section, dict):
+        raise ValueError("messaging must be a table")
+    result = MESSAGING_DEFAULTS | section
+    hosts = result["tunnel_hosts"]
+    if not isinstance(hosts, list) or not all(isinstance(host, str) and host.strip() for host in hosts):
+        raise ValueError("invalid messaging.tunnel_hosts")
+    return result
+
+
 def read_relaunch_config(config: dict) -> dict:
     """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
     section = config.get("relaunch", {})
@@ -711,6 +726,10 @@ stale_after_seconds = 600
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
 nats_servers = ["nats://localhost:4222"]
+## Machine ids (see [machine] host_id) that open an SSH tunnel to the configured remote
+## machine when the local NATS port is unreachable. Read on every connect. Empty (the
+## default) opens no tunnel on any machine.
+# tunnel_hosts = ["my-workstation"]
 
 [machine]
 ## Identifier for this machine.

@@ -4,6 +4,8 @@ import subprocess
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ai_cli.messaging import NATSClient
 
 
@@ -292,23 +294,39 @@ class TestNATSClientSubscribe:
 
 
 class TestSshTunnel:
-    """Tests for NATSClient._open_ssh_tunnel Mac auto-tunnel logic."""
+    """Tests for NATSClient._open_ssh_tunnel host-list tunnel logic."""
 
-    def test_when_not_mac_then_no_tunnel_opened(self, monkeypatch):
-        monkeypatch.setenv("AI_HOST", "hetzner")
+    @pytest.mark.parametrize(
+        ("host", "config"),
+        [
+            ("other-host", {"messaging": {"tunnel_hosts": ["example-host"]}}),
+            ("example-host", {}),
+            ("example-host", {"messaging": {"tunnel_hosts": []}}),
+            ("example-host", {"messaging": {"tunnel_hosts": "example-host"}}),
+            ("", {"messaging": {"tunnel_hosts": ["example-host"]}}),
+        ],
+        ids=["unlisted-host", "no-section", "empty-list", "invalid-list", "no-host-id"],
+    )
+    def test_when_host_not_listed_then_no_tunnel_opened(self, monkeypatch, host, config):
+        monkeypatch.setenv("AI_HOST", host)
         client = NATSClient()
-        with patch("ai_cli.messaging.subprocess.Popen") as mock_popen:
+        with (
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")),
+            patch("ai_cli.messaging.subprocess.Popen") as mock_popen,
+        ):
             asyncio.run(client._open_ssh_tunnel())
         mock_popen.assert_not_called()
         assert client._tunnel_proc is None
 
-    def test_when_mac_and_port_reachable_then_no_tunnel_opened(self, monkeypatch):
-        monkeypatch.setenv("AI_HOST", "mac")
+    def test_when_listed_host_and_port_reachable_then_no_tunnel_opened(self, monkeypatch):
+        monkeypatch.setenv("AI_HOST", "example-host")
         client = NATSClient()
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
         with (
+            patch("ai_cli.config.load_config", return_value={"messaging": {"tunnel_hosts": ["example-host"]}}),
             patch("ai_cli.messaging.socket.create_connection", return_value=mock_conn),
             patch("ai_cli.messaging.subprocess.Popen") as mock_popen,
         ):
@@ -316,8 +334,8 @@ class TestSshTunnel:
         mock_popen.assert_not_called()
         assert client._tunnel_proc is None
 
-    def test_when_mac_and_port_unreachable_then_tunnel_opened(self, monkeypatch):
-        monkeypatch.setenv("AI_HOST", "mac")
+    def test_when_listed_host_and_port_unreachable_then_tunnel_opened(self, monkeypatch):
+        monkeypatch.setenv("AI_HOST", "example-host")
         client = NATSClient()
         mock_proc = MagicMock()
         call_count = 0
@@ -332,7 +350,10 @@ class TestSshTunnel:
             mock_conn.__exit__ = MagicMock(return_value=False)
             return mock_conn  # tunnel up on retry
 
-        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        fake_cfg = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.1", "user": "user", "port": 22},
+        }
         with (
             patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection),
             patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen,
@@ -349,11 +370,14 @@ class TestSshTunnel:
         )
         assert client._tunnel_proc is mock_proc
 
-    def test_when_mac_and_tunnel_never_comes_up_then_prints_selinux_diagnostic(self, monkeypatch, capsys):
-        monkeypatch.setenv("AI_HOST", "mac")
+    def test_when_listed_host_and_tunnel_never_comes_up_then_prints_selinux_diagnostic(self, monkeypatch, capsys):
+        monkeypatch.setenv("AI_HOST", "example-host")
         client = NATSClient()
         mock_proc = MagicMock()
-        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        fake_cfg = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.1", "user": "user", "port": 22},
+        }
         with (
             patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")),
             patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
@@ -370,7 +394,7 @@ class TestSshTunnel:
     def test_when_tunnel_up_then_ssh_f_parent_is_reaped(self, monkeypatch):
         """AI-CLI-86: the `ssh -f` foreground parent exits after auth and must be
         reaped, or it lingers as a zombie for the watcher's whole lifetime."""
-        monkeypatch.setenv("AI_HOST", "mac")
+        monkeypatch.setenv("AI_HOST", "example-host")
         client = NATSClient()
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0  # already exited → reaped by poll()
@@ -386,7 +410,10 @@ class TestSshTunnel:
             conn.__exit__ = MagicMock(return_value=False)
             return conn
 
-        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        fake_cfg = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.1", "user": "user", "port": 22},
+        }
         with (
             patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection),
             patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
@@ -400,12 +427,15 @@ class TestSshTunnel:
 
     def test_when_parent_still_running_at_reap_then_waited(self, monkeypatch):
         """If poll() shows the parent hasn't exited yet, reap must wait() on it."""
-        monkeypatch.setenv("AI_HOST", "mac")
+        monkeypatch.setenv("AI_HOST", "example-host")
         client = NATSClient()
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # not exited yet → must wait()
 
-        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        fake_cfg = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.1", "user": "user", "port": 22},
+        }
         with (
             patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")),
             patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
@@ -433,7 +463,7 @@ class TestNATSClientCloseTunnel:
 
 
 class TestOpenSshTunnel:
-    def test_skips_when_not_mac(self):
+    def test_skips_when_host_not_listed(self):
         client = NATSClient()
         with patch.dict("os.environ", {"AI_HOST": "hetzner"}), patch("subprocess.Popen") as mock_popen:
             asyncio.run(client._open_ssh_tunnel())
@@ -442,7 +472,8 @@ class TestOpenSshTunnel:
     def test_skips_when_port_already_reachable(self):
         client = NATSClient()
         with (
-            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_HOST": "example-host"}),
+            patch("ai_cli.config.load_config", return_value={"messaging": {"tunnel_hosts": ["example-host"]}}),
             patch("socket.create_connection"),  # succeeds — port open
             patch("subprocess.Popen") as mock_popen,
         ):
@@ -452,7 +483,10 @@ class TestOpenSshTunnel:
     def test_uses_vpn_host_when_configured(self):
         """When vpn_host is set and VPN is active, the SSH tunnel uses vpn_host."""
         client = NATSClient()
-        config = {"remote": {"host": "192.0.2.20", "vpn_host": "192.0.2.1", "user": "user", "port": 22}}
+        config = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.20", "vpn_host": "192.0.2.1", "user": "user", "port": 22},
+        }
         popen_calls = []
 
         def fake_popen(cmd, **kwargs):
@@ -460,7 +494,7 @@ class TestOpenSshTunnel:
             return MagicMock()
 
         with (
-            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_HOST": "example-host"}),
             patch("socket.create_connection", side_effect=OSError),
             patch("subprocess.Popen", side_effect=fake_popen),
             patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)),
@@ -477,7 +511,10 @@ class TestOpenSshTunnel:
     def test_uses_configured_host_not_hardcoded_ip(self):
         """When VPN is off, tunnel uses config remote.host (not vpn_host)."""
         client = NATSClient()
-        config = {"remote": {"host": "192.0.2.20", "user": "user", "port": 22}}
+        config = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
+            "remote": {"host": "192.0.2.20", "user": "user", "port": 22},
+        }
         popen_calls = []
 
         def fake_popen(cmd, **kwargs):
@@ -488,7 +525,7 @@ class TestOpenSshTunnel:
             pass
 
         with (
-            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_HOST": "example-host"}),
             patch("socket.create_connection", side_effect=OSError),
             patch("subprocess.Popen", side_effect=fake_popen),
             patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
@@ -512,7 +549,7 @@ class TestOpenSshTunnel:
             return MagicMock()
 
         with (
-            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_HOST": "example-host"}),
             patch("socket.create_connection", side_effect=OSError),
             patch("subprocess.Popen", side_effect=fake_popen),
             patch("asyncio.sleep", new=AsyncMock()),
@@ -527,12 +564,13 @@ class TestOpenSshTunnel:
         """identity_file in remote config adds -i flag to SSH command (line 58)."""
         client = NATSClient()
         config = {
+            "messaging": {"tunnel_hosts": ["example-host"]},
             "remote": {
                 "host": "192.0.2.1",
                 "user": "user",
                 "port": 22,
                 "identity_file": "/home/user/.ssh/id_rsa",
-            }
+            },
         }
         popen_calls = []
 
@@ -541,7 +579,7 @@ class TestOpenSshTunnel:
             return MagicMock()
 
         with (
-            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_HOST": "example-host"}),
             patch("socket.create_connection", side_effect=OSError),
             patch("subprocess.Popen", side_effect=fake_popen),
             patch("asyncio.sleep", new=AsyncMock()),
