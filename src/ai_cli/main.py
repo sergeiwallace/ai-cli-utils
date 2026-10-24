@@ -1973,6 +1973,12 @@ def _handle_internal(argv: list[str]) -> None:
         if res:
             _out.raw(Untagged.INTERNAL_REPLY, str(res))
         sys.exit(0)
+    elif action == "resolve-host-env":
+        from .host_env import resolve_host_env
+
+        source, host = resolve_host_env(config)
+        _out.raw(Untagged.INTERNAL_REPLY, f"{source} {host}")
+        sys.exit(0)
     elif action == "resolve-background-target":
         if len(argv) < 3:
             _out.emit(
