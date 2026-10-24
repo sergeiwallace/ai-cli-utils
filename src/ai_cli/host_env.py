@@ -21,14 +21,20 @@ def resolve_host_env(config: dict) -> tuple[str, str]:
     except ValueError:
         timeout = RELAUNCH_DEFAULTS["host_refresh_timeout_seconds"]
     shell = os.environ.get("SHELL", "")
+    # The login shell must not hand back the stale value it inherited: without AI_HOST in its
+    # environment, only a profile that sets it can answer, and otherwise the tmux probe runs.
+    login_env = {name: value for name, value in os.environ.items() if name != "AI_HOST"}
     probes = []
     if shell:
-        probes.append(("login-shell", [shell, "-lic", 'printf "AI_HOST_FRESH=%s\\n" "${AI_HOST:-}"'], "AI_HOST_FRESH="))
-    probes.append(("tmux", ["tmux", "show-environment", "-g", "AI_HOST"], "AI_HOST="))
-    for source, command, prefix in probes:
+        probes.append(
+            ("login-shell", [shell, "-lic", 'printf "AI_HOST_FRESH=%s\\n" "${AI_HOST:-}"'], "AI_HOST_FRESH=", login_env)
+        )
+    probes.append(("tmux", ["tmux", "show-environment", "-g", "AI_HOST"], "AI_HOST=", None))
+    for source, command, prefix, probe_env in probes:
         try:
             completed = subprocess.run(
                 command,
+                env=probe_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

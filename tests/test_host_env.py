@@ -62,7 +62,7 @@ def test_given_fresh_login_host_when_resolving_then_login_wins_and_only_host_is_
         '[ "$1" = -lic ] || exit 1\n'
         '[ "$2" = \'printf "AI_HOST_FRESH=%s\\n" "${AI_HOST:-}"\' ] || exit 2\n'
         "read -r ignored && exit 3\n"
-        'AI_HOST=login-host\n/bin/sh -c "$2"',
+        'export AI_HOST=login-host\n/bin/sh -c "$2"',
         "exit 99",
     )
     assert _resolve(capsys) == "login-shell login-host\n"
@@ -90,6 +90,15 @@ def test_given_banner_noise_when_resolving_then_last_sentinel_wins(host_tools, c
     configure, _ = host_tools
     configure('printf "banner\\nAI_HOST_FRESH=earlier\\nprompt>\\nAI_HOST_FRESH=Host_2.example-1\\nfooter\\n"')
     assert _resolve(capsys) == "login-shell Host_2.example-1\n"
+
+
+def test_given_a_profile_that_does_not_set_the_host_when_resolving_then_the_stale_value_is_not_echoed_back(
+    host_tools, capsys
+):
+    configure, _ = host_tools
+    # A login shell whose profile never exports AI_HOST reports whatever it inherited.
+    configure('printf "AI_HOST_FRESH=%s\\n" "${AI_HOST:-}"')
+    assert _resolve(capsys) == "tmux tmux-host\n"
 
 
 @pytest.mark.parametrize(
