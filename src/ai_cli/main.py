@@ -3422,12 +3422,15 @@ def _auto_migrate_legacy_launch(
     old = _legacy_launch_name(repo_alias, name)
     if old is None:
         return session_id, ai_name
-    repo_root = Path(_session.detect_repo_root() or Path.cwd()).resolve()
-    old_path = repo_root / ".worktrees" / old
-    old_exists = os.path.lexists(old_path) or ai_name == old
-    if not old_exists:
-        return session_id, ai_name
     settings = _config.read_naming_config(config)
+    try:
+        detected_repo = _session.detect_repo_root()
+    except RuntimeError:
+        return session_id, ai_name
+    repo_root = Path(detected_repo or Path.cwd()).resolve()
+    old_path = repo_root / ".worktrees" / old
+    if not os.path.lexists(old_path):
+        return session_id, ai_name
     host_alias = launch_naming.host_alias
     if not host_alias:
         with contextlib.suppress(_session_naming.HostAliasError):
