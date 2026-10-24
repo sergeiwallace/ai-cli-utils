@@ -176,6 +176,47 @@ def records() -> list[tuple[Path, dict]]:
     return found
 
 
+def attached_background_id(command_lines: list[list[str]]) -> str | None:
+    """The background id named by a ``claude attach <id>`` command line, or None."""
+    for argv in command_lines:
+        for index in range(1, len(argv) - 1):
+            if argv[index] != "attach" or not re.fullmatch(r"[0-9a-f]{8}", argv[index + 1]):
+                continue
+            if any(Path(word).name.startswith("claude") for word in argv[:index]):
+                return argv[index + 1]
+    return None
+
+
+def _pane_attach_client(target: str | None) -> str | None:
+    """The background id a ``claude attach`` client in the target's tmux pane is attached to.
+
+    A pane that holds an attach client has no session-registry record of its own, so target
+    resolution finds nothing there. tmux is POSIX-only; without it this returns None.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if target:
+        query = ["tmux", "list-panes", "-s", "-t", target, "-F", "#{pane_pid}"]
+    elif pane:
+        query = ["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"]
+    else:
+        return None
+    try:
+        listed = _run(query)
+    except Refusal:
+        return None
+    command_lines = []
+    for pid_text in listed.split():
+        try:
+            root = psutil.Process(int(pid_text))
+            processes = [root, *root.children(recursive=True)]
+        except (ValueError, psutil.Error):
+            continue
+        for process in processes:
+            with contextlib.suppress(psutil.Error):
+                command_lines.append(process.cmdline())
+    return attached_background_id(command_lines)
+
+
 def resolve_target(target: str | None) -> tuple[Path, dict]:
     matches = []
     for path, record in records():
@@ -195,6 +236,18 @@ def resolve_target(target: str | None) -> tuple[Path, dict]:
     if matches and not live:
         raise Refusal("identity", "no live target process")
     matches = live
+    if not matches:
+        # The lookup only sharpens the refusal below, so a failure of any kind leaves it as it was.
+        try:
+            attached = _pane_attach_client(target)
+        except Exception:
+            attached = None
+        if attached:
+            raise Refusal(
+                "target",
+                f"the pane runs `claude attach {attached}`, a client of a background session, not a session "
+                f"to restart; run `claude stop {attached}`, then let the supervisor relaunch it",
+            )
     if len(matches) != 1:
         candidates = ", ".join(str(record.get("name", path.stem)) for path, record in matches)
         raise Refusal("target", f"{len(matches)} candidates" + (f": {candidates}" if candidates else ""))

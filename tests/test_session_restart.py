@@ -15,13 +15,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
+import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import owned_process
 
 from ai_cli import config, main
 from ai_cli import session_restart as restart
 from ai_cli import session_run_state as run_state
 from ai_cli.process_probe import ProcessIdentity, StartTimeMatch
+
+# Captured before any fixture replaces it.
+_REAL_PROCESS = psutil.Process
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
@@ -737,6 +742,31 @@ def test_given_bad_target_when_restart_then_no_signal(world, monkeypatch, kind):
         world.script.write_text("echo unsupported\n", encoding="utf-8")
     code, report, _ = world.cli("-X", SESSION_ID)
     assert code == 1 and report["reason"] in ("identity", "target", "not-managed", "supervisor-upgrade-required")
+    assert world.signals == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tmux panes are POSIX-only")
+def test_given_the_pane_holds_a_claude_attach_client_when_restart_then_the_refusal_names_it(world):
+    """AI-CLI-qe0c: a pane running `claude attach <id>` has no registry record, so the target
+    was reported as "0 candidates". The refusal names the attach client and the remedy."""
+    world.registry.unlink()
+    fake_run = restart.subprocess.run
+    with owned_process([sys.executable, "-c", "import time; time.sleep(60)", "claude", "attach", "fe7ea124"]) as client:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not _REAL_PROCESS(client.pid).cmdline():
+            time.sleep(0.01)
+
+        def run(argv, **kwargs):
+            if argv[:2] == ["tmux", "list-panes"]:
+                return SimpleNamespace(returncode=0, stdout=f"{client.pid}\n")
+            return fake_run(argv, **kwargs)
+
+        # The world fakes psutil.Process for the session's own processes; the pane's client is real.
+        with patch.object(restart.subprocess, "run", run), patch.object(restart.psutil, "Process", _REAL_PROCESS):
+            code, report, _ = world.cli("-X", "myproject-box-1")
+
+    assert code == 1 and report["reason"] == "target"
+    assert "claude attach fe7ea124" in report["detail"] and "claude stop fe7ea124" in report["detail"]
     assert world.signals == []
 
 
