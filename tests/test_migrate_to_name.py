@@ -34,7 +34,7 @@ def fleet(tmp_path, monkeypatch, slot):  # noqa: F811
 
 def migrate(fleet, *args):
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
-        return run_cli(["ai", "session-migrate", *args, "-r", str(fleet.slot["repo"]), "-y"])
+        return run_cli(["ai", "migrate-session", *args, "-r", str(fleet.slot["repo"]), "-y"])
 
 
 def test_given_a_stopped_session_when_migrated_to_a_chosen_name_then_the_reserving_commit_carries_the_intent(fleet):
@@ -190,7 +190,7 @@ def test_given_the_host_sweep_without_yes_when_run_then_it_lists_every_index_nam
 
     before = fleet.tip()
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
-        code, out, err = run_cli(["ai", "session-migrate", "--all", "--to-names", "-r", str(fleet.slot["repo"])])
+        code, out, err = run_cli(["ai", "migrate-session", "--all", "--to-names", "-r", str(fleet.slot["repo"])])
 
     assert code == 0, out + err
     assert OLD in out
@@ -201,7 +201,7 @@ def test_given_the_host_sweep_without_yes_when_run_then_it_lists_every_index_nam
 def sweep(fleet, *flags):
 
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
-        return run_cli(["ai", "session-migrate", "--all", "--to-names", "-r", str(fleet.slot["repo"]), *flags])
+        return run_cli(["ai", "migrate-session", "--all", "--to-names", "-r", str(fleet.slot["repo"]), *flags])
 
 
 def test_given_the_host_sweep_with_yes_when_one_session_runs_then_the_stopped_one_migrates_and_it_exits_non_zero(
@@ -272,7 +272,7 @@ def test_given_a_human_named_session_over_the_limit_when_swept_over_limit_then_i
     repo = fleet.slot["repo"]
     long_title = f"{STEM}-rebecca"
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
-        assert run_cli(["ai", "session-migrate", OLD, "myrepo-8", "-r", str(repo), "-y"])[0] == 0
+        assert run_cli(["ai", "migrate-session", OLD, "myrepo-8", "-r", str(repo), "-y"])[0] == 0
     row = reg.session_row(
         name="rebecca",
         title=long_title,
@@ -289,7 +289,7 @@ def test_given_a_human_named_session_over_the_limit_when_swept_over_limit_then_i
     fleet.registry.transact(lambda s: reg.Change({reg.row_path("rebecca"): reg.checked_row(row)}, "row (fixture)"))
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
         assert (
-            run_cli(["ai", "session-migrate", "myrepo-8", long_title, "-r", str(repo), "-y"])[0] != 0
+            run_cli(["ai", "migrate-session", "myrepo-8", long_title, "-r", str(repo), "-y"])[0] != 0
         )  # a hand-typed human name is refused
     git(repo, "worktree", "move", str(repo / ".worktrees" / "myrepo-8"), str(repo / ".worktrees" / long_title))
 
@@ -395,7 +395,7 @@ def test_given_a_session_adopted_with_a_name_when_adopted_then_the_name_is_reser
     )
 
     with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
-        code, out, err = run_cli(["ai", "session-adopt", "myrepo-9", "-r", str(repo), "-m", "dora", "-y"])
+        code, out, err = run_cli(["ai", "adopt-session", "myrepo-9", "-r", str(repo), "-m", "dora", "-y"])
 
     assert code == 0, out + err
     assert fleet.rows()["dora"]["title"] == f"{STEM}-dora"

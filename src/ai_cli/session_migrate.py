@@ -963,7 +963,7 @@ def migrate_session(
     """Move the session in slot ``old`` to slot ``new``; see the module docstring.
 
     ``new`` ends in an index, or, with ``new_is_reserved``, in a human name the name
-    registry already holds for it (``session-migrate --to-name`` reserves it first).
+    registry already holds for it (``migrate-session --to-name`` reserves it first).
 
     ``regenerate_script`` turns a session-metadata dict into its wrapper script
     (the launcher's ``_engine_script_from_meta``); without it the old script is

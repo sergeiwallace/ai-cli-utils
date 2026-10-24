@@ -1,4 +1,4 @@
-"""Migrating sessions to human names: ``ai session-migrate OLD --to-name [NAME]`` and the host sweep.
+"""Migrating sessions to human names: ``ai migrate-session OLD --to-name [NAME]`` and the host sweep.
 
 The rename itself is :func:`ai_cli.session_migrate.migrate_session`. This module puts
 the name registry around it: every refusal check runs first, then the new name is
@@ -144,7 +144,7 @@ def migrate_to_name(
     except reg.RegistryError as exc:
         raise MigrationError(
             f"{old} was renamed to {reservation.title}, but the completion could not be published ({exc}); "
-            "the next `ai reconcile-names` or `ai session-migrate` publishes it"
+            "the next `ai reconcile-names` or `ai migrate-session` publishes it"
         ) from exc
     return NamedMigration(old=old, new=reservation.title, released_old=old.rsplit("-", 1)[-1].isalpha(), result=result)
 

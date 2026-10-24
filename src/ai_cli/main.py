@@ -7129,7 +7129,7 @@ def _names_registry_or_exit():
 
 
 def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_length: int | None, dry_run: bool) -> int:
-    """``ai session-migrate OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
+    """``ai migrate-session OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
     from . import migrate_names, session_clients
     from . import name_registry as _names
     from .session_adopt import AdoptionError
@@ -7205,7 +7205,7 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
 
 
 def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | None, over_limit: bool) -> int:
-    """``ai session-migrate --all --to-names [-y]``: list, then migrate every stopped session to a name."""
+    """``ai migrate-session --all --to-names [-y]``: list, then migrate every stopped session to a name."""
     from . import migrate_names, session_clients
     from . import name_list as _name_list
     from . import name_registry as _names
@@ -7399,7 +7399,7 @@ def cmd_migrate_session(
         )
     if to_name is not None:
         if not old or new:
-            raise click.UsageError("--to-name takes OLD and no NEW: `ai session-migrate OLD --to-name [NAME]`")
+            raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
