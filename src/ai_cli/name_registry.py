@@ -1636,7 +1636,7 @@ def reconcile(
             if title is not None and row.get("title") != title:
                 continue
             if row.get("state") == "migration-incomplete":
-                report.held[token] = "migration-incomplete: run the same `ai session-migrate` command again"
+                report.held[token] = "migration-incomplete: run the same `ai migrate-session` command again"
                 continue
             if _renaming(snapshot, row):
                 report.held[token] = "a recorded rename of this session has not completed"
@@ -1723,7 +1723,7 @@ def release_name(
             f"{name} is held by {snapshot.holder(name)}; only {row.get('machine')} can test its worktree and transcript"
         )
     if row.get("state") == "migration-incomplete":
-        raise WriteRefusedError(f"{name} is migration-incomplete; run the same `ai session-migrate` command again")
+        raise WriteRefusedError(f"{name} is migration-incomplete; run the same `ai migrate-session` command again")
     absence = probe_absence(row, projects_root, adapters)
     if not absence.releasable:
         raise WriteRefusedError(f"{name} is still held: {absence.held_because()}")

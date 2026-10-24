@@ -42,13 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ai show-name-config` prints each setting with the layer it came from. Session
   scripts, chief-of-staff slots, adoption, audit and iTerm2 colours read a
   human-named title as they read an index-named one.
-- Existing sessions move to human names: `ai session-migrate OLD -t/--to-name [NAME]`
+- Existing sessions move to human names: `ai migrate-session OLD -t/--to-name [NAME]`
   reserves a name with a record of the rename, migrates the session, then marks the
   record complete; a failure releases the name when nothing was left under it and
   otherwise holds it as migration-incomplete until the same command resumes.
-  `ai session-migrate -a/--all -T/--to-names` sweeps a host, transcript-only sessions
+  `ai migrate-session -a/--all -T/--to-names` sweeps a host, transcript-only sessions
   included, with `-O/--over-limit` for names longer than the limit and
-  `-L/--max-length N` to bound a picked name. `ai session-adopt -m/--name NAME` adopts
+  `-L/--max-length N` to bound a picked name. `ai adopt-session -m/--name NAME` adopts
   into a human-named slot.
 - `ai reconcile-names` releases names whose worktree and client transcript are both
   proved gone, publishes offline activations and tops up spares; `ai release-name`

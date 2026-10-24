@@ -535,9 +535,9 @@ the command says so and still prints the row.
 A name is released by the machine that holds it, once the session's worktree and its
 client transcript are both proved gone. A store that cannot be read, or a session that
 cannot be matched to its record, holds the name. Existing sessions move to human names
-with `ai session-migrate OLD --to-name [NAME]` or, for a whole host,
-`ai session-migrate --all --to-names` ([details](docs/tools/cc-session-adoption.md));
-`ai session-adopt NAME -m/--name FIRST` adopts an outside session into a human-named slot.
+with `ai migrate-session OLD --to-name [NAME]` or, for a whole host,
+`ai migrate-session --all --to-names` ([details](docs/tools/cc-session-adoption.md));
+`ai adopt-session NAME -m/--name FIRST` adopts an outside session into a human-named slot.
 
 `{repo-alias}` is the repository's registered task prefix (`ai register -x`).
 Where it comes from a persistent `config/fleet-projects.toml` registry, from

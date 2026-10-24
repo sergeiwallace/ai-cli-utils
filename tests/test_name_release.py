@@ -614,7 +614,7 @@ def test_given_a_session_name_over_the_limit_when_checked_then_it_exits_one_with
     assert result.exit_code == 1
     assert f"{OTHER_HOST}:" in result.output and f"{HOST}:" in result.output
     assert "gloria (6 letters)" in result.output and f"{STEM}-gloria" in result.output
-    assert result.output.count("ai session-migrate --all --to-names --over-limit -y") == 2
+    assert result.output.count("ai migrate-session --all --to-names --over-limit -y") == 2
     assert "teamwork (8 letters)" not in result.output
 
 

@@ -361,7 +361,7 @@ def check_names_command(as_json: bool) -> None:
     for row in report.over_limit:
         by_host.setdefault(row["machine"], []).append(
             f"  {row['token']} ({len(row['token'])} letters): {row['title']}; run on {row['machine']}: "
-            "ai session-migrate --all --to-names --over-limit -y"
+            "ai migrate-session --all --to-names --over-limit -y"
         )
     for row in report.spares_over_limit:
         by_host.setdefault(row["machine"], []).append(
