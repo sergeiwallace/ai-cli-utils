@@ -211,7 +211,14 @@ def test_given_a_running_process_when_probed_without_procfs_then_present_and_not
     assert probe.is_present(proc.pid) is True
     assert probe.has_ended(proc.pid) is False
     assert probe.is_abandoned(proc.pid) is False
-    assert probe.state(proc.pid) in {psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_IDLE}
+    # A process that was just spawned can sit briefly in uninterruptible disk-sleep while it
+    # execs and loads under I/O load; it is still alive, which is all this test asserts.
+    assert probe.state(proc.pid) in {
+        psutil.STATUS_RUNNING,
+        psutil.STATUS_SLEEPING,
+        psutil.STATUS_IDLE,
+        psutil.STATUS_DISK_SLEEP,
+    }
 
 
 def test_given_an_exited_process_when_probed_without_procfs_then_it_has_ended(sleeper):

@@ -6,10 +6,21 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import _run_cli_with_args, remote_allocation_reply
+from conftest import _run_cli_with_args, remote_allocation_reply, run_cli
 
-from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, _update_remote_ai_cli, cli
+import ai_cli.config as config_module
+import ai_cli.session_naming as session_naming
+from ai_cli.main import (
+    _REMOTE_SHELL_PROBE_CMD,
+    _request_remote_session_allocation,
+    _resolve_remote_shell,
+    _update_remote_ai_cli,
+    cli,
+)
 from ai_cli.session import build_session_name
+
+_REAL_HOST_ID = session_naming.host_id
+_REAL_ALIAS_SOURCES = session_naming.alias_sources
 
 # --- --remote flag tests ---
 
@@ -22,6 +33,105 @@ def _answering_allocation(fallback):
         return allocation if allocation is not None else fallback(command, *args, **kwargs)
 
     return run
+
+
+@pytest.fixture
+def remote_host_allocation(tmp_path, monkeypatch):
+    """Drive the launcher's SSH command into the real internal allocator."""
+    projects = tmp_path / "projects"
+    registry = projects / "environment" / "config" / session_naming.ALIAS_FILENAME
+    registry.parent.mkdir(parents=True)
+    registry.write_text('[aliases]\nnew-host = "box"\n', encoding="utf-8")
+    config_home = tmp_path / "config"
+    login_shell = tmp_path / "login-shell"
+
+    monkeypatch.setattr(session_naming, "host_id", _REAL_HOST_ID)
+    monkeypatch.setattr(session_naming, "alias_sources", _REAL_ALIAS_SOURCES)
+    monkeypatch.setattr(config_module, "get_environment_repo", lambda: "environment")
+    monkeypatch.setattr(config_module, "_get_projects_dir", lambda: projects)
+    monkeypatch.setattr(config_module, "get_xdg_config_home", lambda: config_home)
+    monkeypatch.setenv("PROJECTS_DIR", str(projects))
+    monkeypatch.setenv("SHELL", str(login_shell))
+    monkeypatch.setenv("AI_HOST", "old-host")
+
+    def allocate(*, login_result, tmux_result, config=None):
+        probes = []
+        remote_commands = []
+
+        def run(command, *_args, **_kwargs):
+            if command[0] == "ssh":
+                remote_commands.append(command[-1])
+                wrapper = shlex.split(command[-1])
+                assert wrapper[:3] == ["bash", "-l", "-c"]
+                remote_tokens = shlex.split(wrapper[3])
+                ai = remote_tokens.index("ai")
+                with patch("ai_cli.session._tmux_session_names", return_value=[]):
+                    code, out, err = run_cli(["ai", *remote_tokens[ai + 1 :]], config=config or {})
+                return MagicMock(returncode=code, stdout=out, stderr=err)
+            if command[0] == str(login_shell):
+                probes.append("login-shell")
+                return MagicMock(**login_result)
+            if command[0] == "tmux":
+                probes.append("tmux")
+                return MagicMock(**tmux_result)
+            raise AssertionError(f"unexpected subprocess: {command!r}")
+
+        with patch("ai_cli.main.subprocess.run", side_effect=run):
+            result = _request_remote_session_allocation(
+                ["ssh", "user@example.com"],
+                "c",
+                "myrepo",
+                "4",
+                "bash",
+                ["--project", "myrepo"],
+            )
+        return result, probes, remote_commands
+
+    return allocate
+
+
+def test_given_stale_remote_host_when_launcher_allocates_then_fresh_login_host_names_session(
+    remote_host_allocation,
+):
+    result, probes, remote_commands = remote_host_allocation(
+        login_result={"returncode": 0, "stdout": "AI_HOST_FRESH=new-host\n"},
+        tmux_result={"returncode": 0, "stdout": "AI_HOST=wrong-host\n"},
+    )
+
+    assert result == ("c-r-myrepo-box-4", "myrepo-box-4")
+    assert probes == ["login-shell"]
+    assert len(remote_commands) == 1
+    assert "allocate-session-name c myrepo 4 --project myrepo" in remote_commands[0]
+
+
+def test_given_unusable_login_host_when_launcher_allocates_then_global_tmux_host_names_session(
+    remote_host_allocation,
+):
+    result, probes, _remote_commands = remote_host_allocation(
+        login_result={"returncode": 1, "stdout": ""},
+        tmux_result={"returncode": 0, "stdout": "AI_HOST=new-host\n"},
+    )
+
+    assert result == ("c-r-myrepo-box-4", "myrepo-box-4")
+    assert probes == ["login-shell", "tmux"]
+
+
+def test_given_no_current_remote_host_when_launcher_allocates_then_naming_config_controls_fallback(
+    remote_host_allocation,
+):
+    results, probes, _remote_commands = remote_host_allocation(
+        login_result={"returncode": 1, "stdout": ""},
+        tmux_result={"returncode": 1, "stdout": ""},
+    )
+    assert results == ("c-r-myrepo-4", "myrepo-4")
+    assert probes == ["login-shell", "tmux"]
+
+    with pytest.raises(RuntimeError, match="host id 'old-host'"):
+        remote_host_allocation(
+            login_result={"returncode": 1, "stdout": ""},
+            tmux_result={"returncode": 1, "stdout": ""},
+            config={"naming": {"legacy_convention": "off"}},
+        )
 
 
 @pytest.fixture(autouse=True)

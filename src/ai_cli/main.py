@@ -2101,6 +2101,14 @@ def _handle_internal(argv: list[str]) -> None:
                 err=True,
             )
             sys.exit(1)
+        # Allocation runs before the agent wrapper's per-launch host refresh. A remote login
+        # shell can inherit an identity retired since its parent environment started, so use
+        # the same bounded login-shell -> tmux source order before resolving the host alias.
+        from .host_env import resolve_host_env
+
+        host_source, current_host = resolve_host_env(config)
+        if host_source in ("login-shell", "tmux"):
+            os.environ["AI_HOST"] = current_host
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
         use_tmux = not _tmux_setup.config_opts_out(config)

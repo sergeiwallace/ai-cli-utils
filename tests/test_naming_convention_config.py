@@ -122,7 +122,10 @@ def test_given_an_invalid_naming_value_when_launching_then_it_refuses_naming_the
 def test_given_no_host_alias_when_a_remote_launch_allocates_then_the_reply_carries_the_old_form(registry):
     """The Mac's ``ai c N -R`` asks the remote host to allocate; an unmapped host id must not end it."""
     _write_aliases(registry["environment"], UNRELATED)
-    with patch("ai_cli.session._tmux_session_names", return_value=[]):
+    with (
+        patch("ai_cli.host_env.resolve_host_env", return_value=("inherited", "test-box")),
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
+    ):
         code, out, err = run_cli(["ai", "internal", "allocate-session-name", "c", "myrepo", "4", "--project", "myrepo"])
     assert code == 0, err
     assert json.loads(out)["ai_name"] == "myrepo-4"
