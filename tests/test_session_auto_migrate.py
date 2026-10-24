@@ -16,7 +16,9 @@ from ai_cli.session_migrate import MIGRATION_LEDGER
 slot = test_session_migrate.slot
 
 
-def _launch(slot, name: str = "3", *, config: dict | None = None) -> tuple[int, str, str, list[dict]]:
+def _launch(
+    slot, name: str = "3", *, config: dict | None = None, real_aliases: bool = False
+) -> tuple[int, str, str, list[dict]]:
     """Drive the real local ``ai c`` naming and migration path up to worktree reuse."""
     launched: list[dict] = []
 
@@ -50,6 +52,8 @@ def _launch(slot, name: str = "3", *, config: dict | None = None) -> tuple[int, 
             ("ai_cli.tunnel._ensure_nats_tunnel", {}),
         )
         for target, kwargs in patches:
+            if real_aliases and target == "ai_cli.session_naming.resolve_host_alias":
+                continue
             stack.enter_context(patch(target, **kwargs))
         code, out, err = test_session_migrate.run_cli(
             ["ai", "c", name, "-b", "-D", "--project-prefix", "myrepo"], config=config
