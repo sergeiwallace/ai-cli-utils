@@ -736,6 +736,16 @@ def _security_agent_windows() -> set[int]:
     return found
 
 
+# On macOS every launch of the installed Edge, headless or not, leaves a phantom Edge tile in
+# the Dock's recent applications when it quits (measured on acn-mac on 2026-10-24, ai-harness
+# AIH-85o3cu). The opt-in is the one fleet-testkit uses for the same refusal.
+_INSTALLED_APP_OPT_IN = "FLEET_TESTKIT_ALLOW_INSTALLED_APP_LAUNCH"
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin" and os.environ.get(_INSTALLED_APP_OPT_IN) != "1",
+    reason=f"each launch of the installed Edge leaves a Dock tile; set {_INSTALLED_APP_OPT_IN}=1 to run",
+)
 class TestCdpEdgeRealBoundary:
     """Real-boundary check for Edge and ``--remote-allow-origins=*``.
 
