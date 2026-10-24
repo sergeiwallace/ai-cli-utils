@@ -273,9 +273,9 @@ class TestGetEngineScript:
         assert '"$(direnv export bash)"' in script
         assert 'eval "$_direnv_exports"' in script
         assert 'direnv exec "$direnv_root" "$@"' not in script
-        # Prompt and regular launches each have exact-match and fresh-session paths, and a
-        # regular launch can also attach to a background session; all go through run_agent.
-        assert script.count("run_agent claude") == 5
+        # Prompt and regular launches each have exact-match and fresh-session paths, and each
+        # can also attach to a background session; all go through run_agent.
+        assert script.count("run_agent claude") == 6
         assert "--resume" in script
         # Hot-reload must exec an interpreter that exists here — a hardcoded one
         # that does not kills the pane on the session's first self-update.
@@ -417,19 +417,92 @@ class TestGetEngineScript:
     def test_given_claude_script_when_generated_then_attaches_to_a_background_session_before_resuming(self):
         """After "Move to background and exit" the conversation runs on in the background: attach, never resume a copy."""
         script = self._make_script()
-        lookup = 'bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" || true)'
+        lookup = 'resolve-background-target "$PWD" "$ai_name" "$tmux_session"'
         assert lookup in script
         attach = 'run_agent claude attach "$bg_target"'
         assert attach in script
         assert script.index(lookup) < script.index(attach) < script.rindex('--resume "$session_id" --name "$ai_name"')
-        # Reset each pass, so a pinned restart or a prompted relaunch never reuses the last target.
+        # Reset each pass, so a pinned restart never reuses the last target.
         assert script.index('bg_target=""') < script.index(lookup)
-        # A resume prompt marks a deliberate restart, and `claude attach` cannot carry a prompt.
-        assert (
-            'if [[ "$engine" == "c" && ! -f "$prompt_file" ]]; then'
-            in script[script.index(lookup) - 120 : script.index(lookup)]
-        )
         assert 'find "$HOME/.claude/projects' not in script
+
+    def test_given_a_resume_prompt_when_a_background_copy_is_live_then_the_prompt_is_delivered_to_it_not_resumed_beside_it(
+        self,
+    ):
+        """An update restart always carries a resume prompt: it attaches, and delivers the prompt after, never --resume."""
+        script = self._make_script()
+        lookup = script.index('resolve-background-target "$PWD" "$ai_name" "$tmux_session"')
+        # The lookup is not conditional on the absence of a prompt, and learns of one.
+        assert '! -f "$prompt_file" ]]; then\n        bg_target' not in script
+        assert '_bg_prompted="--prompted"' in script
+        delivery = 'ai internal deliver-resume-prompt "$tmux_session" "$bg_target" "$prompt_file"'
+        assert delivery in script
+        head = script.index('if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then')
+        main_branch = script.index('if [[ -f "$prompt_file" ]]; then\n        resume_msg=$(cat "$prompt_file")')
+        # The attach branch heads the chain, and the prompt is queued before the attach blocks.
+        attach = 'run_agent claude attach "$bg_target"'
+        assert lookup < head < script.index(delivery, head) < script.index(attach, head) < main_branch
+
+    def test_given_the_lookup_holds_then_the_script_waits_and_never_reaches_a_launch(self, tmp_path):
+        """While a resume would start a second writer the lookup exits 75: the script holds and re-checks, never launching."""
+        script = self._make_script()
+        start = script.index("    # BEGIN BACKGROUND ATTACH resolution")
+        end = script.index("    # END BACKGROUND ATTACH", start)
+        block = script[start:end]
+        harness = tmp_path / "hold.sh"
+        harness.write_text(
+            "\n".join(
+                [
+                    "engine=c; ai_name=x; tmux_session=c-x; resolve_status=0; matched_file=/t/a.jsonl",
+                    f'prompt_file={tmp_path}/prompt; echo hello > "$prompt_file"',
+                    "warnings=0",
+                    # Holds twice, then answers with the live copy. The lookup runs in a
+                    # command substitution, so its call count lives in the log file.
+                    'ai() { echo "$*" >> ' + str(tmp_path / "ai.log") + "; "
+                    "n=$(wc -l < " + str(tmp_path / "ai.log") + "); "
+                    "[[ $n -le 2 ]] && return 75; echo aaaa1111; return 0; }",
+                    "_ai_emit() { warnings=$((warnings+1)); }",
+                    "sleep() { :; }",
+                    block,
+                    'echo "target=$bg_target warnings=$warnings"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
+        assert done.stdout.strip() == "target=aaaa1111 warnings=1"
+        asked = (tmp_path / "ai.log").read_text(encoding="utf-8").splitlines()
+        assert len(asked) == 3
+        assert all("--resume-follows" in line and "--prompted" in line for line in asked)
+
+    def test_given_the_lookup_never_clears_then_no_launch_is_reached(self, tmp_path):
+        script = self._make_script()
+        start = script.index("    # BEGIN BACKGROUND ATTACH resolution")
+        end = script.index("    # END BACKGROUND ATTACH", start)
+        harness = tmp_path / "forever.sh"
+        harness.write_text(
+            "\n".join(
+                [
+                    "engine=c; ai_name=x; tmux_session=c-x; resolve_status=0; matched_file=/t/a.jsonl",
+                    f"prompt_file={tmp_path}/none; n=0",
+                    "ai() { return 75; }",
+                    "_ai_emit() { :; }",
+                    "sleep() { n=$((n+1)); [[ $n -lt 4 ]] || exit 99; }",
+                    script[start:end],
+                    "echo LAUNCH_REACHED",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
+        assert done.returncode == 99
+        assert "LAUNCH_REACHED" not in done.stdout
+
+    def test_given_a_generated_script_then_it_parses_in_bash(self, tmp_path):
+        path = tmp_path / "session.sh"
+        path.write_text(self._make_script(), encoding="utf-8")
+        done = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=30, check=False)
+        assert done.returncode == 0, done.stderr
 
 
 def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():

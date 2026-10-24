@@ -58,16 +58,20 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
     Everything else, notably the resolver command under test, runs as a real subprocess.
     Returns a function that sets the agents list; if it is never called, ``claude`` exits 1.
     """
-    state: dict[str, list[dict] | None] = {"rows": None}
+    state: dict = {"rows": None, "tmux": []}
     real_run = subprocess.run
 
     def run(command, *args, **kwargs):
         program = Path(str(command[0])).name
         if program == "claude" and list(command[1:]) == ["agents", "--json"]:
-            rows = state["rows"]
+            rows = state["rows"]() if callable(state["rows"]) else state["rows"]
             if rows is None:
                 return subprocess.CompletedProcess(command, 1, "", "no agents list")
             return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
+        if program == "tmux" and command[1] in ("load-buffer", "paste-buffer", "send-keys"):
+            text = Path(command[-1]).read_text(encoding="utf-8") if command[1] == "load-buffer" else ""
+            state["tmux"].append((command[1], text))
+            return subprocess.CompletedProcess(command, 0, "", "")
         if program == "tmux" and command[1] == "capture-pane":
             # Scrollback is requested with `-S -`; the visible screen alone lacks the older lines.
             text = "scrollback line\nbackgrounded - b85c864a\n" if "-S" in command else "visible line\n"
@@ -77,9 +81,10 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
 
-    def set_agents(rows: list[dict]) -> None:
+    def set_agents(rows) -> None:
         state["rows"] = rows
 
+    set_agents.tmux = state["tmux"]
     return set_agents
 
 
@@ -89,6 +94,13 @@ def _resolve(workdir: Path, config: dict, capsys) -> tuple[str, str]:
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     return captured.out.strip(), captured.err
+
+
+def _resolve_with(workdir: Path, config: dict, capsys, *flags: str) -> tuple[str, str, int]:
+    with patch("ai_cli.config.load_config", return_value=config), pytest.raises(SystemExit) as exc_info:
+        _handle_internal(["resolve-background-target", str(workdir), SESSION, "c-myproject-1", *flags])
+    captured = capsys.readouterr()
+    return captured.out.strip(), captured.err, exc_info.value.code
 
 
 def _resolver_config(command: Path | str, timeout: float | None = None) -> dict:
@@ -319,3 +331,182 @@ def test_given_missing_arguments_when_resolving_then_prints_usage_and_exits_one(
 
     assert exc_info.value.code == 1
     assert "resolve-background-target" in capsys.readouterr().err
+
+
+def _live(cwd: Path, row_id: str = LIVE_ID, name: str = SESSION, status: str = "idle", state: str = "blocked") -> dict:
+    return {**_row("background", row_id, cwd, name=name, status=status), "state": state}
+
+
+def test_given_a_numbered_copy_beside_a_finished_one_when_resolving_then_attaches_to_the_numbered_copy(
+    workdir, fake_tools, capsys
+):
+    """An older finished copy holds the bare name; Claude Code numbers the live one."""
+    fake_tools(
+        [
+            _live(workdir, row_id=OTHER_ID, state="done"),
+            _live(workdir, row_id=LIVE_ID, name=f"{SESSION} (2)"),
+        ]
+    )
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+@pytest.mark.parametrize("name", [f"{SESSION} (x)", f"{SESSION}-2", f"{SESSION}2 (2)"])
+def test_given_a_row_with_another_name_when_resolving_then_it_is_not_this_sessions_copy(
+    workdir, fake_tools, capsys, name
+):
+    fake_tools([_live(workdir, name=name)])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 0)
+
+
+def test_given_a_resume_follows_and_several_live_copies_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys
+):
+    """Never start a --resume while a matching live background copy exists."""
+    fake_tools([_live(workdir, row_id=LIVE_ID), _live(workdir, row_id=OTHER_ID, name=f"{SESSION} (2)")])
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert LIVE_ID in err and OTHER_ID in err and "holding the relaunch" in err
+
+
+def test_given_no_resume_follows_and_several_live_copies_when_resolving_then_it_does_not_hold(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir, row_id=LIVE_ID), _live(workdir, row_id=OTHER_ID, name=f"{SESSION} (2)")])
+
+    out, err, code = _resolve_with(workdir, {}, capsys)
+
+    assert (out, code) == ("", 0)
+    assert "resuming by title instead" in err
+
+
+def test_given_a_resume_follows_and_an_unreadable_list_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys
+):
+    del fake_tools  # the list is never set, so `claude agents --json` exits 1
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert "holding the relaunch" in err
+
+
+def test_given_no_resume_follows_and_an_unreadable_list_when_resolving_then_a_fresh_launch_goes_ahead(
+    workdir, fake_tools, capsys
+):
+    del fake_tools
+
+    out, err, code = _resolve_with(workdir, {}, capsys)
+
+    assert (out, code) == ("", 0)
+    assert "resuming by title instead" in err
+
+
+def test_given_a_live_copy_and_a_resume_follows_when_resolving_then_it_attaches_instead_of_resuming(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir)])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+@pytest.mark.parametrize(("status", "state"), [("busy", "working"), ("busy", "blocked"), ("idle", "working")])
+def test_given_a_prompt_waits_and_the_copy_is_mid_turn_when_resolving_then_the_relaunch_holds(
+    workdir, fake_tools, capsys, status, state
+):
+    """Never type into a copy that is mid-turn."""
+    fake_tools([_live(workdir, status=status, state=state)])
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == ("", 75)
+    assert "mid-turn" in err
+
+
+def test_given_no_prompt_waits_and_the_copy_is_mid_turn_when_resolving_then_it_still_attaches(
+    workdir, fake_tools, capsys
+):
+    fake_tools([_live(workdir, status="busy", state="working")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def test_given_the_copy_is_idle_when_a_prompt_waits_then_the_prompt_is_pasted_once_and_submitted(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path)])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("Resume after an update restart\nsecond line", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=lambda _seconds: None)
+
+    assert failure is None
+    assert fake_tools.tmux == [
+        ("load-buffer", "Resume after an update restart\nsecond line"),
+        ("paste-buffer", ""),
+        ("send-keys", ""),
+    ]
+    assert not prompt.exists()
+    assert not prompt.with_name("prompt.undelivered").exists()
+
+
+def test_given_the_copy_is_mid_turn_then_idle_when_delivering_then_it_waits_for_the_idle_row(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    answers = iter([[_live(tmp_path, status="busy", state="working")]] * 3 + [[_live(tmp_path)]])
+    fake_tools(lambda: next(answers))
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+    waits: list[float] = []
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=waits.append)
+
+    assert failure is None
+    assert len(waits) == 3
+    assert [call for call, _ in fake_tools.tmux] == ["load-buffer", "paste-buffer", "send-keys"]
+
+
+def test_given_the_copy_never_goes_idle_when_delivering_then_nothing_is_typed_and_the_prompt_is_kept(
+    fake_tools, tmp_path
+):
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path, status="busy", state="working")])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt(
+        "c-myproject-1", LIVE_ID, prompt, wait_seconds=0, sleep=lambda _seconds: None
+    )
+
+    assert failure is not None and "never became idle" in failure
+    assert fake_tools.tmux == []  # nothing typed into a mid-turn copy
+    assert not prompt.exists()  # a later relaunch cannot replay it beside the live copy
+    assert prompt.with_name("prompt.undelivered").read_text(encoding="utf-8") == "go"
+    assert "prompt.undelivered" in failure
+
+
+def test_given_the_copy_is_gone_when_delivering_then_nothing_is_typed(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    fake_tools([])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt(
+        "c-myproject-1", LIVE_ID, prompt, wait_seconds=0, sleep=lambda _seconds: None
+    )
+
+    assert failure is not None and "no longer listed" in failure
+    assert fake_tools.tmux == []
