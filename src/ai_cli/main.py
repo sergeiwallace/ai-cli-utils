@@ -544,6 +544,11 @@ def _find_cc_session_candidates_by_title(cwd: Path, title: str) -> list[Path]:
     "newest transcript with this title" pick lands on the bridge instead
     (AI-CLI-p3fg — root cause of ``ai c`` attaching to an unfamiliar
     transcript when a ``/remote-control`` bridge shared the session name).
+
+    A transcript titled ``title (N)`` also matches: it is a background copy
+    Claude Code numbered because the original still held the bare name. Once
+    that copy is stopped it is usually the newest transcript, so it is the one
+    resumed, not the stale original it forked from (AI-CLI-qe0c).
     """
     project_dir = _cc_project_dir(cwd)
     if not project_dir.is_dir():
@@ -554,7 +559,7 @@ def _find_cc_session_candidates_by_title(cwd: Path, title: str) -> list[Path]:
         return []
     matches = []
     for path in candidates:
-        if _cc_transcript_current_title(path) != title:
+        if not _background_attach.is_copy_title(_cc_transcript_current_title(path), title):
             continue
         if _cc_registered_kind(path.stem) == "bg":
             continue
