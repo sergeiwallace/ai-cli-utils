@@ -571,6 +571,111 @@ class TestGetEngineScript:
         assert "Relaunch parked" not in out and "gave_up=false target=" in out
 
     @_POSIX_SHELL_ONLY
+    def test_given_working_and_recent_idle_copies_when_relaunching_then_loop_stops_at_configured_attempts(
+        self, tmp_path
+    ):
+        """Drive the generated loop and real resolver with a fake ``claude`` executable."""
+        script = self._make_script()
+        start = script.index("    # BEGIN BACKGROUND ATTACH resolution")
+        parked = script.index("    # BEGIN BACKGROUND ATTACH parked", start)
+        end = script.index("    # END BACKGROUND ATTACH", parked) + len("    # END BACKGROUND ATTACH\n")
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        ai = fake_bin / "ai"
+        ai.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" -c \'from ai_cli.main import cli; cli()\' "$@"\n',
+            encoding="utf-8",
+        )
+        claude = fake_bin / "claude"
+        claude.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = agents ] && [ "$2" = --json ]; then\n'
+            '  echo agents >> "$CALL_LOG"\n'
+            '  printf "%s\\n" "$AGENTS_JSON"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = stop ]; then echo "$2" >> "$STOP_LOG"; exit 0; fi\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        ai.chmod(0o755)
+        claude.chmod(0o755)
+        config_home = tmp_path / "config" / "ai-cli-utils"
+        config_home.mkdir(parents=True)
+        (config_home / "config.toml").write_text(
+            "[machine]\n"
+            'host_id = "test-host"\n'
+            'os_type = "linux"\n'
+            "[relaunch]\n"
+            "background_hold_max_attempts = 2\n"
+            "background_hold_timeout_seconds = 20\n"
+            "background_exit_copy_window_seconds = 30\n",
+            encoding="utf-8",
+        )
+        exit_at = int(time.time())
+        live_id = "aaaa1111"
+        other_id = "bbbb2222"
+        session_name = "myproject-1"
+        rows = [
+            {
+                "id": other_id,
+                "name": session_name,
+                "cwd": str(tmp_path),
+                "kind": "background",
+                "state": "working",
+            },
+            {
+                "id": live_id,
+                "name": f"{session_name} (2)",
+                "cwd": str(tmp_path),
+                "kind": "background",
+                "status": "idle",
+                "state": "blocked",
+                "pid": 12345,
+                "startedAt": (exit_at - 1) * 1000,
+            },
+        ]
+        harness = tmp_path / "relaunch.sh"
+        harness.write_text(
+            "\n".join(
+                [
+                    f'export PATH="{fake_bin}:$PATH"',
+                    f'export XDG_CONFIG_HOME="{tmp_path / "config"}"',
+                    f'export CALL_LOG="{tmp_path / "agents.log"}"',
+                    f'export STOP_LOG="{tmp_path / "stop.log"}"',
+                    f"export AGENTS_JSON='{json.dumps(rows)}'",
+                    f"engine=c; ai_name={session_name}; tmux_session=c-{session_name}; resolve_status=0",
+                    "matched_file=/t/session.jsonl",
+                    f"prompt_file={tmp_path}/none",
+                    f"_bg_relaunch_started_at={exit_at}",
+                    f"clock={tmp_path}/clock; echo 1000 > $clock",
+                    "date() { n=$(cat $clock); echo $((n+5)) > $clock; echo $n; }",
+                    '_ai_emit() { echo "EMIT: $*"; }',
+                    '_ai_persist_exit() { echo "PERSIST: $*"; }',
+                    "sleep() { :; }",
+                    "for _once in 1; do",
+                    script[start:end],
+                    "echo LAUNCH_REACHED",
+                    "done",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        done = subprocess.run(
+            ["bash", str(harness)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False
+        )
+
+        assert done.returncode == 0, done.stderr
+        agents_calls = (tmp_path / "agents.log").read_text(encoding="utf-8").splitlines()
+        assert len(agents_calls) == 2
+        assert not (tmp_path / "stop.log").exists()
+        assert "LAUNCH_REACHED" not in done.stdout
+        for background_id in (live_id, other_id):
+            assert done.stderr.count(f"claude attach {background_id}") == 1
+            assert done.stderr.count(f"claude stop {background_id}") == 1
+
+    @_POSIX_SHELL_ONLY
     def test_given_an_idle_live_copy_then_the_script_attaches_with_the_prompt_waiting(self, tmp_path):
         out = self._run_attach_blocks(tmp_path, ai_body="echo aaaa1111", resume=True)
 
