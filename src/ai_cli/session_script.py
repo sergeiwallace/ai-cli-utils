@@ -1397,9 +1397,9 @@ with open(path, 'w') as f:
       # while a resume would start a second writer and the live copy cannot be
       # told from none, or while a waiting prompt would land on a copy that is
       # mid-turn. A hold is bounded: it re-checks every few seconds, and once it
-      # has lasted relaunch.background_hold_timeout_seconds (read by the lookup
-      # on each call) the lookup exits 76, writes a UR line and this script
-      # parks. It never resumes beside the live copy either way.
+      # reaches either configured bound (elapsed seconds or attempt count, both
+      # read by the lookup on each call) the lookup exits 76, writes a UR line
+      # and this script parks. It never resumes beside the live copy either way.
       _bg_gave_up=false
       if [[ "$engine" == "c" ]]; then
         _bg_resume=""
@@ -1408,16 +1408,21 @@ with open(path, 'w') as f:
         if [[ -f "$prompt_file" ]]; then _bg_prompted="--prompted"; fi
         _bg_warned=false
         _bg_hold_start=$(date +%s)
+        _bg_relaunch_started_at=$_bg_hold_start
+        _bg_attempt=0
         while true; do
           _bg_status=0
+          _bg_attempt=$((_bg_attempt + 1))
           _bg_held=$(( $(date +%s) - _bg_hold_start ))
-          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} "--held-seconds=$_bg_held") || _bg_status=$?
+          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} "--held-seconds=$_bg_held" "--hold-attempt=$_bg_attempt" "--relaunch-started-at=$_bg_relaunch_started_at" --defer-hold-warning) || _bg_status=$?
           if [[ $_bg_status -eq 76 ]]; then _bg_gave_up=true; fi
           # A lookup that crashed cannot say there is no live copy: when a resume
-          # would follow, hold on any failure, not only 75, up to a fixed cap (the
-          # lookup is the one that reads the configured limit, and it is down).
+          # would follow, hold on any failure, not only 75. Ask a separate config
+          # read for the attempt limit so even a broken resolver cannot loop forever.
           if [[ -n "$_bg_resume" && $_bg_status -ne 0 && $_bg_status -ne 73 && $_bg_status -ne 75 && $_bg_status -ne 76 ]]; then
-            if (( _bg_held >= 300 )); then _bg_gave_up=true; else _bg_status=75; fi
+            _bg_max_attempts=$(ai internal background-hold-attempt-limit 2>/dev/null) || _bg_max_attempts=2
+            [[ "$_bg_max_attempts" =~ ^[1-9][0-9]*$ ]] || _bg_max_attempts=2
+            if (( _bg_attempt >= _bg_max_attempts )); then _bg_gave_up=true; else _bg_status=75; fi
           fi
           [[ $_bg_status -eq 75 ]] || break
           bg_target=""

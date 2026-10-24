@@ -409,6 +409,12 @@ RELAUNCH_DEFAULTS = {
     # How long a relaunch holds, rather than resume beside a live background copy, before
     # it parks and says why. Read on every call, so a change applies to the next relaunch.
     "background_hold_timeout_seconds": 300,
+    # The attempt bound is independent of wall-clock progress, so a stuck or replaced clock
+    # cannot leave the relaunch retrying forever. The resolver reads it on every attempt.
+    "background_hold_max_attempts": 12,
+    # A background row created just before relaunch resolution can be the copy made by the
+    # exiting client. Keep this window narrow so older same-title copies stay ambiguous.
+    "background_exit_copy_window_seconds": 30,
     "host_refresh_timeout_seconds": 5,
     # Where a parked relaunch appends its one-line record. Empty: relaunch-hold.log in the
     # launcher's own state directory. A fleet that watches another log names it here.
@@ -430,6 +436,17 @@ def read_relaunch_config(config: dict) -> dict:
     hold = result["background_hold_timeout_seconds"]
     if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not math.isfinite(hold) or hold <= 0:
         raise ValueError("invalid relaunch.background_hold_timeout_seconds")
+    attempts = result["background_hold_max_attempts"]
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts <= 0:
+        raise ValueError("invalid relaunch.background_hold_max_attempts")
+    copy_window = result["background_exit_copy_window_seconds"]
+    if (
+        isinstance(copy_window, bool)
+        or not isinstance(copy_window, (int, float))
+        or not math.isfinite(copy_window)
+        or copy_window <= 0
+    ):
+        raise ValueError("invalid relaunch.background_exit_copy_window_seconds")
     host = result["host_refresh_timeout_seconds"]
     if isinstance(host, bool) or not isinstance(host, (int, float)) or not math.isfinite(host) or host <= 0:
         raise ValueError("invalid relaunch.host_refresh_timeout_seconds")
@@ -474,6 +491,12 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Seconds a relaunch holds instead of resuming beside a live background copy (a busy
 ## copy, several matches, an unreadable agents list) before it parks and says why.
 # background_hold_timeout_seconds = 300
+## Maximum resolver attempts before the same hold parks. With the five-second retry
+## interval, the default normally parks within one minute even if the clock stalls.
+# background_hold_max_attempts = 12
+## Seconds before relaunch resolution in which an idle row with a pid can be recognized
+## as the copy created by the exiting client. Older matching rows remain ambiguous.
+# background_exit_copy_window_seconds = 30
 ## Seconds allowed for each fresh AI_HOST lookup (login shell, then tmux).
 ## Read at every agent launch; unavailable values leave the inherited host in place.
 # host_refresh_timeout_seconds = 5
