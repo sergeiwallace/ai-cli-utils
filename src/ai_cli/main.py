@@ -3399,7 +3399,9 @@ def _session_migrate_variants(name: str) -> set[str]:
 
 
 def _manual_migration(old: str, new: str, repo_root: Path) -> str:
-    return f"ai migrate-session {old} {new} -r {shlex.quote(str(repo_root))}"
+    # POSIX quoting wraps a backslash path in single quotes, which a Windows shell does not unwrap.
+    root = subprocess.list2cmdline([str(repo_root)]) if os.name == "nt" else shlex.quote(str(repo_root))
+    return f"ai migrate-session {old} {new} -r {root}"
 
 
 def _auto_migrate_legacy_launch(
