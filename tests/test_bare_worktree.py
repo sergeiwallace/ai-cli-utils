@@ -188,6 +188,35 @@ def test_given_two_eligible_titled_transcripts_when_searched_then_candidates_lis
     assert _find_cc_session_by_title(cwd, "ai-cli-1") == newer
 
 
+def test_given_a_stopped_numbered_background_copy_when_searched_then_it_wins_over_the_stale_original(
+    tmp_path, monkeypatch
+):
+    """AI-CLI-qe0c: Claude Code titled a background copy "ai-cli-1 (2)" because the original
+    still held the bare name. After the copy was stopped, resolving by the bare name picked the
+    stale original, and the hours of work in the copy's transcript were left behind."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    original = _write_transcript(project_dir, "eeeeeeee-0000-4000-8000-00000000000e", "ai-cli-1")
+    copy = _write_transcript(project_dir, "ffffffff-0000-4000-8000-00000000000f", "ai-cli-1 (2)")
+    os.utime(original, (1, 1))
+    os.utime(copy, (2, 2))
+
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") == copy
+    assert _find_cc_session_candidates_by_title(cwd, "ai-cli-1") == [copy, original]
+
+
+@pytest.mark.parametrize("title", ["ai-cli-1 (x)", "ai-cli-1 2", "ai-cli-12 (2)"])
+def test_given_a_title_that_only_resembles_a_numbered_copy_when_searched_then_it_does_not_match(
+    tmp_path, monkeypatch, title
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    _write_transcript(_cc_project_dir(cwd), "abababab-0000-4000-8000-00000000000a", title)
+
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") is None
+
+
 # --- bare argv construction ----------------------------------------------------
 
 

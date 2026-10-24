@@ -78,15 +78,20 @@ def is_idle(row: dict) -> bool:
     return _word(row, "state") in _IDLE_STATES and _word(row, "status") in _IDLE_STATUSES
 
 
-def is_moved_copy(row: dict, name: str, cwd: Path) -> bool:
-    """Whether a background row is the copy of session ``name`` in ``cwd``.
+def is_copy_title(title: object, name: str) -> bool:
+    """Whether ``title`` is session ``name`` or a copy Claude Code numbered ``name (N)``.
 
     Claude Code numbers a new background copy " (N)" when an older copy already holds
-    the bare name, so the moved copy is named ``name`` or ``name (N)``.
+    the bare name, and the copy's transcript keeps that numbered title after it stops.
     """
+    return isinstance(title, str) and re.fullmatch(rf"{re.escape(name)}( \(\d+\))?", title) is not None
+
+
+def is_moved_copy(row: dict, name: str, cwd: Path) -> bool:
+    """Whether a background row is the copy of session ``name`` in ``cwd``."""
     if not _same_directory(row.get("cwd"), cwd):
         return False
-    return re.fullmatch(rf"{re.escape(name)}( \(\d+\))?", str(row.get("name") or "")) is not None
+    return is_copy_title(row.get("name"), name)
 
 
 def list_live_background_sessions() -> list[dict] | None:
