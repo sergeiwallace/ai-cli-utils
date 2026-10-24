@@ -3372,6 +3372,169 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
             reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
 
 
+def _legacy_launch_name(repo_alias: str, name: str) -> str | None:
+    """The explicit old-form slot named by ``name``, if it has a numeric index."""
+    clean = _session._slot_name(name, repo_alias)
+    if not clean.isdigit():
+        return None
+    return _session_naming.compose_session_name(repo_alias, clean)
+
+
+def _migration_target_is_occupied(repo_root: Path, name: str) -> bool:
+    """Whether ``name`` already belongs to an on-disk or live session."""
+    from .cc_migrate import cc_project_dir
+
+    worktree = repo_root / ".worktrees" / name
+    if os.path.lexists(worktree) or cc_project_dir(worktree, Path.home() / ".claude").exists():
+        return True
+    try:
+        sessions = _session._tmux_session_names()
+    except OSError:
+        sessions = []
+    return any(session in _session_migrate_variants(name) for session in sessions)
+
+
+def _session_migrate_variants(name: str) -> set[str]:
+    return {f"{engine}{remote}-{name}" for engine in ("c", "g", "p", "cx") for remote in ("", "-r")}
+
+
+def _manual_migration(old: str, new: str, repo_root: Path) -> str:
+    return f"ai migrate-session {old} {new} -r {shlex.quote(str(repo_root))}"
+
+
+def _auto_migrate_legacy_launch(
+    *,
+    engine: str,
+    name: str,
+    session_id: str,
+    ai_name: str,
+    repo_alias: str,
+    launch_naming: _session_naming.LaunchNaming,
+    config: dict,
+    interactive: bool,
+    replay: bool,
+    is_remote: bool,
+    reporter: LaunchReporter,
+) -> tuple[str, str]:
+    """Migrate one stopped old-form slot reached by a fresh interactive launch."""
+    if engine != "c" or replay or not interactive:
+        return session_id, ai_name
+    old = _legacy_launch_name(repo_alias, name)
+    if old is None:
+        return session_id, ai_name
+    repo_root = Path(_session.detect_repo_root() or Path.cwd()).resolve()
+    old_path = repo_root / ".worktrees" / old
+    old_exists = os.path.lexists(old_path) or ai_name == old
+    if not old_exists:
+        return session_id, ai_name
+    settings = _config.read_naming_config(config)
+    host_alias = launch_naming.host_alias
+    if not host_alias:
+        with contextlib.suppress(_session_naming.HostAliasError):
+            host_alias = _session_naming.resolve_host_alias()
+    if not host_alias:
+        reporter.warning(
+            "migrate",
+            f"kept legacy session {old}: no host alias resolves, so the alias-form target and manual "
+            "`ai migrate-session OLD NEW` command are not yet known",
+        )
+        return session_id, ai_name
+    suffix = old.removeprefix(f"{repo_alias.lower()}-")
+    target_prefix = _session_naming.naming_prefix(repo_alias, host_alias)
+    same_index = int(suffix.rsplit("-", 1)[-1])
+    target = _session_naming.compose_session_name(target_prefix, same_index)
+    from .session_migrate import migrate_session, migration_recorded
+
+    if migration_recorded(old, target):
+        manual = _manual_migration(old, target, repo_root)
+        reporter.warning(
+            "migrate",
+            f"kept legacy session {old}: {old} -> {target} is already recorded; finish with `{manual} --finish -y`",
+        )
+        if os.path.lexists(repo_root / ".worktrees" / target):
+            return _session_id(engine, target, is_remote), target
+        return session_id, ai_name
+    for candidate_index in range(same_index, same_index + 10_000):
+        candidate = _session_naming.compose_session_name(target_prefix, candidate_index)
+        if not _migration_target_is_occupied(repo_root, candidate):
+            target = candidate
+            break
+    else:
+        reporter.warning("migrate", f"kept legacy session {old}: no free alias slot was found")
+        return session_id, ai_name
+    manual = _manual_migration(old, target, repo_root)
+    if not settings["alias_convention"]:
+        reporter.warning(
+            "migrate", f"kept legacy session {old}: naming.alias_convention = false; migrate manually with `{manual}`"
+        )
+        return session_id, ai_name
+    if settings["legacy_convention"] == "off":
+        reporter.warning(
+            "migrate", f'kept legacy session {old}: naming.legacy_convention = "off"; migrate manually with `{manual}`'
+        )
+        return session_id, ai_name
+    if not settings["auto_migrate"]:
+        reporter.warning(
+            "migrate", f"kept legacy session {old}: naming.auto_migrate = false; migrate manually with `{manual}`"
+        )
+        return session_id, ai_name
+    if migration_recorded(old, target):
+        reporter.warning(
+            "migrate",
+            f"kept legacy session {old}: {old} -> {target} is already recorded; finish with `{manual} --finish -y`",
+        )
+        return session_id, ai_name
+    try:
+        plan = migrate_session(repo_root, old, target, dry_run=True, regenerate_script=_engine_script_from_meta)
+    except Exception as exc:
+        reason = " ".join(str(exc).split()) or type(exc).__name__
+        reporter.warning("migrate", f"kept legacy session {old}: {reason}; migrate manually with `{manual}`")
+        return session_id, ai_name
+    if plan.failed:
+        reason = " ".join("; ".join([*plan.kept, *plan.warnings]).split())
+        reporter.warning(
+            "migrate", f"kept legacy session {old}: plan refused: {reason}; migrate manually with `{manual}`"
+        )
+        return session_id, ai_name
+    try:
+        result = migrate_session(repo_root, old, target, regenerate_script=_engine_script_from_meta)
+    except Exception as exc:
+        reason = " ".join(str(exc).split()) or type(exc).__name__
+        reporter.warning("migrate", f"automatic migration {old} -> {target} failed: {reason}; retry with `{manual}`")
+        if os.path.lexists(repo_root / ".worktrees" / target):
+            return _session_id(engine, target, is_remote), target
+        return session_id, ai_name
+    if result.failed:
+        reason = " ".join("; ".join([*result.kept, *result.warnings]).split())
+        reporter.warning(
+            "migrate",
+            f"automatic migration {old} -> {target} was incomplete: {reason}; retry with `{manual} --finish -y`",
+        )
+    else:
+        moved = (
+            " (the same index was occupied)"
+            if target != _session_naming.compose_session_name(target_prefix, same_index)
+            else ""
+        )
+        reporter.phase("migrate").outcome(f"auto-migrated {old} -> {target}{moved}")
+    return _session_id(engine, target, is_remote), target
+
+
+def _queue_migration_context(ai_name: str, session_id: str, reporter: LaunchReporter) -> None:
+    """Queue any unannounced rename context without making launch depend on it."""
+    from .session_migrate import queue_migration_context
+
+    try:
+        queued, warnings = queue_migration_context(ai_name, session_id)
+    except Exception as exc:
+        reporter.warning("migrate", f"migration context for {ai_name} was not queued: {exc}")
+        return
+    if queued:
+        reporter.detail("migrate", f"queued migration context for {ai_name}")
+    for warning in warnings:
+        reporter.warning("migrate", warning)
+
+
 @dataclass(frozen=True)
 class _NamingRequest:
     """The launch flags that decide how a new session is named."""
@@ -4600,9 +4763,24 @@ def _do_session_launch(
     except _session.SessionSlotAmbiguityError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
+    session_id, ai_name = _auto_migrate_legacy_launch(
+        engine=engine,
+        name=name,
+        session_id=session_id,
+        ai_name=ai_name,
+        repo_alias=project_prefix,
+        launch_naming=launch_naming,
+        config=config,
+        interactive=attach,
+        replay=replay_recipe is not None,
+        is_remote=is_remote,
+        reporter=reporter,
+    )
     reporter.phase("session").outcome(f"resolved {ai_name}")
     if replay_recipe is None:
         _finish_recorded_migrations(ai_name, reporter)
+    if engine == "c":
+        _queue_migration_context(ai_name, session_id, reporter)
 
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
