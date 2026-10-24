@@ -1399,7 +1399,7 @@ with open(path, 'w') as f:
           # A lookup that crashed cannot say there is no live copy: when a resume
           # would follow, hold on any failure, not only 75, up to a fixed cap (the
           # lookup is the one that reads the configured limit, and it is down).
-          if [[ -n "$_bg_resume" && $_bg_status -ne 0 && $_bg_status -ne 75 && $_bg_status -ne 76 ]]; then
+          if [[ -n "$_bg_resume" && $_bg_status -ne 0 && $_bg_status -ne 73 && $_bg_status -ne 75 && $_bg_status -ne 76 ]]; then
             if (( _bg_held >= 300 )); then _bg_gave_up=true; else _bg_status=75; fi
           fi
           [[ $_bg_status -eq 75 ]] || break
@@ -1411,6 +1411,12 @@ with open(path, 'w') as f:
           sleep 5
         done
         if [[ $_bg_status -ne 0 ]]; then bg_target=""; fi
+        # 73: the lookup stopped a copy hosted in another session's environment. Its
+        # conversation is now the newest transcript, so resolve the resume target again.
+        if [[ $_bg_status -eq 73 ]]; then
+          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
+          resolve_status=$?
+        fi
       fi
     # END BACKGROUND ATTACH
     # BEGIN BACKGROUND ATTACH parked

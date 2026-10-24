@@ -2010,6 +2010,8 @@ def _handle_internal(argv: list[str]) -> None:
         if resolution.timed_out:
             _background_attach.record_hold_timeout(config, argv[2], resolution.warning or "", held_seconds)
             sys.exit(_background_attach.HOLD_TIMEOUT_EXIT_STATUS)
+        if resolution.stopped:
+            sys.exit(_background_attach.STOPPED_FOREIGN_EXIT_STATUS)
         # 75 (EX_TEMPFAIL) tells the supervisor script to hold: no attach, no resume.
         sys.exit(_background_attach.HOLD_EXIT_STATUS if resolution.hold else 0)
     elif action == "deliver-resume-prompt":

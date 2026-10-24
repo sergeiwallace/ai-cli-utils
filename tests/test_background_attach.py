@@ -6,15 +6,22 @@ for ``subprocess.run`` (the suite forbids spawning a real ``claude``); the resol
 command is a real script, run as a subprocess exactly as the supervisor runs it.
 """
 
+import contextlib
+import hashlib
 import json
+import os
 import shutil
 import stat
 import subprocess
 import sys
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
+import psutil
 import pytest
+from process_ownership import owned_process
 
 from ai_cli.main import _handle_internal
 
@@ -60,7 +67,7 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
     Everything else, notably the resolver command under test, runs as a real subprocess.
     Returns a function that sets the agents list; if it is never called, ``claude`` exits 1.
     """
-    state: dict = {"rows": None, "tmux": [], "pane": COMPOSER}
+    state: dict = {"rows": None, "tmux": [], "pane": COMPOSER, "stopped": [], "stop_status": 0}
     real_run = subprocess.run
 
     def run(command, *args, **kwargs):
@@ -70,6 +77,9 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
             if rows is None:
                 return subprocess.CompletedProcess(command, 1, "", "no agents list")
             return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
+        if program == "claude" and command[1] == "stop":
+            state["stopped"].append(command[2])
+            return subprocess.CompletedProcess(command, state["stop_status"], "", "")
         if program == "tmux" and command[1] in ("load-buffer", "paste-buffer", "send-keys"):
             text = Path(command[-1]).read_text(encoding="utf-8") if command[1] == "load-buffer" else ""
             state["tmux"].append((command[1], text))
@@ -87,7 +97,9 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
         state["rows"] = rows
 
     set_agents.tmux = state["tmux"]
+    set_agents.stopped = state["stopped"]
     set_agents.set_pane = lambda text: state.__setitem__("pane", text)
+    set_agents.fail_stop = lambda: state.__setitem__("stop_status", 1)
     return set_agents
 
 
@@ -477,6 +489,103 @@ def test_given_no_prompt_waits_and_the_copy_is_mid_turn_when_resolving_then_it_s
     out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
 
     assert (out, code) == (LIVE_ID, 0)
+
+
+@contextlib.contextmanager
+def _host(tmp_path: Path, **environment: str | None) -> Iterator[str]:
+    """A real process standing in for the host of a background copy; yields the copy's id.
+
+    Claude Code's host names the copy's socket, ``.../pty/<id>.sock``, in its arguments, and
+    runs with the environment of the session whose daemon forked it. ``None`` drops a variable.
+    The id is unique to the test, because the suite runs in parallel and every test's lookup
+    scans the same process table.
+    """
+    host_id = hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]
+    env = {**os.environ, **{key: value for key, value in environment.items() if value is not None}}
+    for key in (key for key, value in environment.items() if value is None):
+        env.pop(key, None)
+    socket = str(tmp_path / "cc-daemon" / "pty" / f"{host_id}.sock")
+    with owned_process([sys.executable, "-c", "import time; time.sleep(60)", socket], env=env) as proc:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not psutil.Process(proc.pid).cmdline():
+            time.sleep(0.01)
+        yield host_id
+
+
+def test_given_the_copy_runs_in_another_sessions_environment_when_resolving_then_it_is_stopped_not_attached(
+    workdir, tmp_path, fake_tools, capsys
+):
+    """AI-CLI-qe0c: a daemon spare forked from another session's environment carried that
+    session's task list, and attaching to it ran this session on the other's task list."""
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 73)
+    assert fake_tools.stopped == [host_id]
+    assert "other-session-1" in err and "resuming its conversation instead" in err
+
+
+def test_given_a_foreign_copy_is_mid_turn_when_resolving_then_the_relaunch_holds_without_stopping_it(
+    workdir, tmp_path, fake_tools, capsys
+):
+    """Stopping a copy mid-turn would cut its work short, so the relaunch waits until it is idle."""
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        fake_tools([_live(workdir, row_id=host_id, status="busy", state="working")])
+        out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert fake_tools.stopped == []
+    assert "until it is idle" in err
+
+
+def test_given_a_foreign_copy_will_not_stop_when_resolving_then_the_relaunch_holds(
+    workdir, tmp_path, fake_tools, capsys
+):
+    fake_tools.fail_stop()
+
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert f"claude stop {host_id}" in err
+
+
+def test_given_the_copy_runs_with_its_own_task_list_when_resolving_then_it_is_attached(
+    workdir, tmp_path, fake_tools, capsys
+):
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID=SESSION) as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (host_id, 0)
+    assert fake_tools.stopped == []
+
+
+def test_given_an_unpinned_copy_started_in_another_directory_when_resolving_then_it_is_stopped(
+    workdir, tmp_path, fake_tools, capsys
+):
+    """Without a task-list id, the directory the host was started from says whose environment it is."""
+    elsewhere = tmp_path / "other-worktree"
+    elsewhere.mkdir()
+
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID=None, PWD=str(elsewhere)) as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 73)
+    assert fake_tools.stopped == [host_id]
+
+
+def test_given_an_unpinned_copy_started_in_this_directory_when_resolving_then_it_is_attached(
+    workdir, tmp_path, fake_tools, capsys
+):
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID=None, PWD=str(workdir)) as host_id:
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == (host_id, 0)
 
 
 def _hold_config(seconds: float | str, log: Path | None = None) -> dict:
