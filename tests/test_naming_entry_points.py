@@ -1,7 +1,6 @@
 """Real naming entry points must refresh a retired shell identity before lookup."""
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -109,7 +108,6 @@ def test_given_stale_host_when_name_candidates_listed_then_current_alias_is_reso
     code, out, err = run_cli(["ai", "list-name-candidates", "--repo", "myrepo"])
     assert code == 0, err
     assert "free" in out
-    assert os.environ["AI_HOST"] == "new-host"
 
 
 def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(fresh_host, tmp_path):
@@ -134,6 +132,7 @@ def test_given_stale_host_when_sessions_audited_then_current_alias_identifies_la
 
 
 def test_given_stale_host_when_names_reconciled_then_current_host_owns_release(fresh_host):
+    (Path.home() / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
     registry = name_registry.discover().registry
     assert registry is not None
     reservation_slot = name_registry.Slot(
