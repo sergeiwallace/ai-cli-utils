@@ -2091,12 +2091,11 @@ def _handle_internal(argv: list[str]) -> None:
         naming, project = _naming_from_internal_args(argv[4:])
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
-            naming_prefix = _session_naming.naming_prefix(
-                project_prefix, _session_naming.resolve_or_prompt_host_alias()
-            )
+            launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
         except _session_naming.HostAliasError as exc:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
+        naming_prefix = launch_naming.prefix
         # The remote host names and reserves the session, so the row's machine is the
         # host that can see the worktree and release the name.
         session_id, ai_name = _resolve_session_identity(
@@ -2106,11 +2105,11 @@ def _handle_internal(argv: list[str]) -> None:
             config,
             is_remote=True,
             use_tmux=use_tmux,
-            legacy_prefix=project_prefix,
+            legacy_prefix=launch_naming.legacy_prefix,
             naming=naming,
             repo=project or _config.get_current_project_name(),
             repo_alias=project_prefix,
-            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            host_alias=launch_naming.host_alias,
             worktree=bool(config.get("worktree", {}).get("enabled", True)),
             dry_run=False,
             reporter=_launch_reporter.active(),
@@ -4365,11 +4364,16 @@ def _do_session_launch(
         remote_session_exists = False
         if name and not bare:
             try:
-                remote_naming_prefix = _session_naming.naming_prefix(
-                    project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
+                remote_naming = _session_naming.resolve_launch_naming(
+                    project_prefix, config, prompt=True, dry_run=dry_run
                 )
                 remote_session_id, remote_ai_name = _session.build_session_name(
-                    engine, remote_naming_prefix, name, config, is_remote=True, legacy_prefix=project_prefix
+                    engine,
+                    remote_naming.prefix,
+                    name,
+                    config,
+                    is_remote=True,
+                    legacy_prefix=remote_naming.legacy_prefix,
                 )
             except (_session_naming.HostAliasError, _session.SessionSlotAmbiguityError) as exc:
                 reporter.error("session", str(exc))
@@ -4471,16 +4475,15 @@ def _do_session_launch(
     # registry names, a terminal is asked for the alias; a dry run asks and plans with
     # the answer but writes no registry, which keeps it above every write.
     try:
-        naming_prefix = (
-            project_prefix
+        launch_naming = (
+            _session_naming.LaunchNaming(project_prefix, project_prefix, project_prefix.rsplit("-", 1)[-1], False)
             if replay_recipe is not None
-            else _session_naming.naming_prefix(
-                project_prefix, _session_naming.resolve_or_prompt_host_alias(dry_run=dry_run)
-            )
+            else _session_naming.resolve_launch_naming(project_prefix, config, prompt=True, dry_run=dry_run)
         )
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
+    naming_prefix = launch_naming.prefix
     prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
 
     worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
@@ -4493,11 +4496,11 @@ def _do_session_launch(
             config,
             is_remote=is_remote,
             use_tmux=not bare,
-            legacy_prefix=project_prefix,
+            legacy_prefix=launch_naming.legacy_prefix,
             naming=naming or _NamingRequest(),
             repo=_config.get_current_project_name(),
             repo_alias=project_prefix,
-            host_alias=naming_prefix.rsplit("-", 1)[-1],
+            host_alias=launch_naming.host_alias,
             worktree=worktree_wanted,
             dry_run=plan_only,
             reporter=reporter,
@@ -5430,9 +5433,15 @@ def _restart_launch_target(target, check, options, *, json_output=False):
             else _session.get_project_prefix()
         )
     )
-    naming = _session_naming.naming_prefix(prefix, _session_naming.resolve_host_alias())
+    loaded = _config.load_config()
+    launch_naming = _session_naming.resolve_launch_naming(prefix, loaded)
     session, _ = _session.build_session_name(
-        "c", naming, name, _config.load_config(), is_remote=options.get("is_remote", False), legacy_prefix=prefix
+        "c",
+        launch_naming.prefix,
+        name,
+        loaded,
+        is_remote=options.get("is_remote", False),
+        legacy_prefix=launch_naming.legacy_prefix,
     )
     return session
 

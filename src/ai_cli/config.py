@@ -403,6 +403,37 @@ def read_restart_config(config: dict) -> dict:
     return result
 
 
+LEGACY_CONVENTION_LEVELS = ("off", "reach", "full")
+
+NAMING_DEFAULTS = {
+    # The {repo-alias}-{host-alias}-{slug?}-{N} form. Off: no session is named or reached that way.
+    "alias_convention": True,
+    # The old {repo-alias}-{N} form. "off": never reached or created. "reach": an existing
+    # old-named slot is still reached by `ai c N`, nothing is created that way. "full": also
+    # reached, and a new session takes the old name when the alias form is off or no host
+    # alias resolves. Cutover default: "full", so a launch is never blocked by a missing alias.
+    "legacy_convention": "full",
+}
+
+
+def read_naming_config(config: dict) -> dict:
+    """Validate a fresh naming section; every launch reads it, so a change applies to the next one."""
+    section = config.get("naming", {})
+    if not isinstance(section, dict):
+        raise ValueError("naming must be a table")
+    result = NAMING_DEFAULTS | section
+    if not isinstance(result["alias_convention"], bool):
+        raise ValueError("invalid naming.alias_convention: use true or false")
+    if result["legacy_convention"] not in LEGACY_CONVENTION_LEVELS:
+        raise ValueError(f"invalid naming.legacy_convention: use one of {', '.join(LEGACY_CONVENTION_LEVELS)}")
+    if not result["alias_convention"] and result["legacy_convention"] == "reach":
+        raise ValueError(
+            'naming.alias_convention = false with naming.legacy_convention = "reach" can name nothing new: '
+            'set naming.legacy_convention to "full" or "off"'
+        )
+    return result
+
+
 RELAUNCH_DEFAULTS = {
     "background_session_resolver": "",
     "background_session_resolver_timeout_seconds": 10,
@@ -456,6 +487,18 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # compaction_wait_seconds = 1800
 # auto = false
 # auto_interval_seconds = 600
+
+[naming]
+## Which session-name conventions `ai` accepts, read on every launch. During a cutover
+## both work; retire the old form by setting legacy_convention = "off".
+## alias_convention: the {repo-alias}-{host-alias}-{slug?}-{N} form.
+## legacy_convention: the old {repo-alias}-{N} form, including a bare `ai c N`:
+##   "off"   never reached or created
+##   "reach" an existing old-named slot is still reached, nothing new is named that way
+##   "full"  also reached, and a launch with no host alias (or alias_convention = false)
+##           names the session the old way instead of refusing
+# alias_convention = true
+# legacy_convention = "full"
 
 [relaunch]
 ## When a Claude Code session exits with "Move to background and exit", the
