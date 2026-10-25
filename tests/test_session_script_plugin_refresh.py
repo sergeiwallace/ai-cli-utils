@@ -14,6 +14,7 @@ if sys.platform == "win32":
 import json
 import os
 import shlex
+import shutil
 from pathlib import Path
 
 from test_reload_progress import Session, session_factory  # noqa: F401
@@ -68,7 +69,10 @@ def refresh_session(monkeypatch, tmp_path, session_factory):  # noqa: F811
         monkeypatch.setattr(Session, "_fakes", staticmethod(fakes))
         import ai_cli.session_script as scripts
 
-        monkeypatch.setattr(scripts, "resolve_session_shell", lambda: shell)
+        shell_path = shutil.which(shell)
+        if shell_path is None:
+            pytest.skip(f"{shell} is not installed on this runner")
+        monkeypatch.setattr(scripts, "resolve_session_shell", lambda: shell_path)
         if absent:
             # System utilities remain available, but the user's Claude installation cannot be found.
             monkeypatch.setenv("PATH", os.pathsep.join(("/usr/bin", "/bin")))
