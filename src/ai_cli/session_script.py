@@ -7,6 +7,7 @@ import json
 import re
 import shlex
 import shutil
+import sys
 
 from . import config as _config
 from .launch_logging import LAUNCH_LOG_ENV
@@ -962,9 +963,10 @@ def get_engine_script(
     # END RUN STATE
         exit 77
       fi
-      # Read configuration after direnv, before every Claude start (fresh or restarted).
+    # BEGIN PLUGIN REFRESH preflight
+      # Use the launcher's interpreter: a system python3 may not have this package.
       if [[ "$1" == claude ]] && command -v claude >/dev/null 2>&1; then
-        _plugin_records=$(python3 -c 'from ai_cli.plugin_refresh import refresh_plugins; refresh_plugins()' 2>/dev/null)
+        _plugin_records=$({shlex.quote(sys.executable)} -c 'from ai_cli.plugin_refresh import refresh_plugins; refresh_plugins()' 2>/dev/null)
         if [[ $? -ne 0 ]]; then
           _ai_emit warning refresh "Plugin refresh helper failed; continuing launch"
         else
@@ -973,6 +975,7 @@ def get_engine_script(
           done <<< "$_plugin_records"
         fi
       fi
+    # END PLUGIN REFRESH
       # Non-interactive shells redirect a background job's stdin from /dev/null.
       # Bash honors <&0, but zsh performs that redirect after the fd duplication;
       # reopening the controlling terminal works for both while preserving the

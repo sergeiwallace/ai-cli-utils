@@ -63,6 +63,6 @@ def test_given_missing_claude_when_refresh_runs_then_it_is_silent(monkeypatch, c
     from ai_cli import plugin_refresh
 
     monkeypatch.setattr(plugin_refresh.shutil, "which", lambda _: None)
-    monkeypatch.setattr(plugin_refresh, "load_config", lambda **_: pytest.fail("should skip config as well"))
+    monkeypatch.setattr(config, "load_config", lambda **_: pytest.fail("should skip config as well"))
     plugin_refresh.refresh_plugins()
     assert capsys.readouterr() == ("", "")

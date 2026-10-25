@@ -8,7 +8,9 @@ import shutil
 import subprocess
 from collections.abc import Callable
 
-from .config import load_config, read_launch_config
+from . import config as _config
+from . import output as _out
+from .output import Untagged
 
 _COMMAND_TIMEOUT_SECONDS = 10
 
@@ -19,7 +21,7 @@ def _run(claude: str, args: list[str], plugin: str, emit: Callable[[str, str], N
             subprocess.run(
                 [claude, "plugin", *args],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE if args[0] == "list" else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
@@ -61,7 +63,7 @@ def _version(claude: str, plugin: str, emit: Callable[[str, str], None]) -> str:
 
 
 def _print_record(level: str, message: str) -> None:
-    print(f"{level}\t{message}", flush=True)
+    _out.raw(Untagged.INTERNAL_REPLY, f"{level}\t{message}")
 
 
 def refresh_plugins(emit: Callable[[str, str], None] = _print_record) -> None:
@@ -74,7 +76,7 @@ def refresh_plugins(emit: Callable[[str, str], None] = _print_record) -> None:
     if claude is None:
         return
     try:
-        plugins = read_launch_config(load_config(read_only=True))["refresh_plugins"]
+        plugins = _config.read_launch_config(_config.load_config(read_only=True))["refresh_plugins"]
     except (ValueError, OSError):
         emit("warning", "Plugin refresh: invalid launch config; continuing launch")
         return

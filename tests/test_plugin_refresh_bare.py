@@ -89,7 +89,7 @@ def test_given_failed_commands_when_bare_refresh_runs_then_warnings_are_emitted_
     from ai_cli.main import _refresh_claude_plugins
 
     monkeypatch.setattr(plugin_refresh.shutil, "which", lambda _: "claude")
-    monkeypatch.setattr(plugin_refresh, "load_config", lambda **_: {"launch": {"refresh_plugins": [PLUGIN]}})
+    monkeypatch.setattr(config, "load_config", lambda **_: {"launch": {"refresh_plugins": [PLUGIN]}})
     monkeypatch.setattr(
         plugin_refresh.subprocess,
         "run",

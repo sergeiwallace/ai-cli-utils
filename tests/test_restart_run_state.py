@@ -58,6 +58,15 @@ def test_given_program_launched_before_host_refresh_when_compared_then_it_is_com
     assert session_restart._compatible(current, before_feature)
 
 
+def test_given_program_launched_before_plugin_refresh_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN PLUGIN REFRESH[^\n]*\n.*?^    # END PLUGIN REFRESH\n"
+    before_feature = re.sub(bracket, "", current)
+    assert before_feature != current
+    assert session_restart._compatible(before_feature, current)
+    assert session_restart._compatible(current, before_feature)
+
+
 @pytest.mark.parametrize("program", ["legacy", "current"])
 def test_given_outside_insertion_edit_when_ac_i_2_compared_then_program_is_rejected(programs, program):
     legacy, current = programs
