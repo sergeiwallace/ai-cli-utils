@@ -15,6 +15,7 @@ import pytest
 from conftest import TEST_HOST_ALIAS, run_cli
 
 import ai_cli.session_naming as session_naming
+from ai_cli.host_env import refresh_host_env as _REAL_REFRESH_HOST_ENV
 
 # Captured before the suite-wide fixture swaps them for a temp file, so the tests of
 # resolution itself can put the real lookup back.
@@ -98,6 +99,8 @@ def test_given_no_legacy_session_when_a_slot_is_named_then_it_is_created_in_the_
 @pytest.fixture
 def real_alias_lookup(monkeypatch, tmp_path):
     """The real lookup, pointed at a temp projects dir and a temp config home."""
+    monkeypatch.setattr("ai_cli.host_env.resolve_host_env", lambda config: ("inherited", os.environ.get("AI_HOST", "")))
+    monkeypatch.setattr("ai_cli.host_env.refresh_host_env", _REAL_REFRESH_HOST_ENV)
     monkeypatch.setattr(session_naming, "host_id", _REAL_HOST_ID)
     monkeypatch.setattr(session_naming, "alias_sources", _REAL_ALIAS_SOURCES)
     projects = tmp_path / "projects"

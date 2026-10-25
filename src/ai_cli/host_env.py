@@ -53,3 +53,10 @@ def resolve_host_env(config: dict) -> tuple[str, str]:
     inherited = os.environ.get("AI_HOST", "")
     # Preserve unusual inherited values in the caller without breaking the one-line reply.
     return "inherited", inherited if re.fullmatch(r"[A-Za-z0-9._-]+", inherited) else ""
+
+
+def refresh_host_env(config: dict) -> None:
+    """Install a fresh identity before naming; failed probes preserve inherited AI_HOST."""
+    source, host = resolve_host_env(config)
+    if source in ("login-shell", "tmux"):
+        os.environ["AI_HOST"] = host

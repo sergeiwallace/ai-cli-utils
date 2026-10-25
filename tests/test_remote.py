@@ -10,6 +10,7 @@ from conftest import _run_cli_with_args, remote_allocation_reply, run_cli
 
 import ai_cli.config as config_module
 import ai_cli.session_naming as session_naming
+from ai_cli.host_env import refresh_host_env as _REAL_REFRESH_HOST_ENV
 from ai_cli.main import (
     _REMOTE_SHELL_PROBE_CMD,
     _request_remote_session_allocation,
@@ -45,6 +46,7 @@ def remote_host_allocation(tmp_path, monkeypatch):
     config_home = tmp_path / "config"
     login_shell = tmp_path / "login-shell"
 
+    monkeypatch.setattr("ai_cli.host_env.refresh_host_env", _REAL_REFRESH_HOST_ENV)
     monkeypatch.setattr(session_naming, "host_id", _REAL_HOST_ID)
     monkeypatch.setattr(session_naming, "alias_sources", _REAL_ALIAS_SOURCES)
     monkeypatch.setattr(config_module, "get_environment_repo", lambda: "environment")

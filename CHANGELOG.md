@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Session naming now refreshes host identity before alias lookup across engine and chief
+  launches, migrations, audits and name commands, using the existing bounded login-shell,
+  tmux, then inherited source order. `ai cos` and `--chief` honor `[naming]` legacy fallback
+  and reachability. Both conventions remain enabled by default (`alias_convention = true`,
+  `legacy_convention = "full"`); alias only uses `true`/`"off"`, legacy only uses
+  `false`/`"full"`, and neither uses `false`/`"off"` and refuses new launches.
+- Reconnect suggestions preserve the complete remote session title and registered project,
+  including host aliases, labels and human names.
+
 ### Added
 
 - A `[naming]` config section chooses which session-name conventions `ai` accepts,

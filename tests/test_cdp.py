@@ -737,8 +737,8 @@ def _security_agent_windows() -> set[int]:
 
 
 # On macOS every launch of the installed Edge, headless or not, leaves a phantom Edge tile in
-# the Dock's recent applications when it quits (measured on acn-mac on 2026-10-24, ai-harness
-# AIH-85o3cu). The opt-in is the one fleet-testkit uses for the same refusal.
+# the Dock's recent applications when it quits (measured on macOS on 2026-10-24).
+# An explicit opt-in permits this installed-application integration test.
 _INSTALLED_APP_OPT_IN = "FLEET_TESTKIT_ALLOW_INSTALLED_APP_LAUNCH"
 
 

@@ -117,12 +117,34 @@ session of that name on the remote host whichever way it was launched, so a sess
 remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
 `c-r-` session; only a slot with no live session is allocated as `c-r-`.
 
-The remote host refreshes its identity before that allocation. The single source order is:
+Every alias lookup refreshes the local host identity before naming, including engine
+launches, `ai cos`, remote allocation, migration, audit labels and name commands.
+The single source order is:
 a fresh login shell run without inherited `AI_HOST`, then the global tmux environment, then
 the inherited `AI_HOST` only when neither fresh source answers. Each fresh probe is bounded
 by `[relaunch] host_refresh_timeout_seconds`. If the remaining identity has no host alias,
 `[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
-a refusal names the host id it tried.
+a refusal names the host id it tried and, when replaced, the inherited id.
+
+The user config file (`$XDG_CONFIG_HOME/ai-cli-utils/config.toml`, defaulting to
+`~/.config/ai-cli-utils/config.toml`; `%APPDATA%/ai-cli-utils/config.toml` on Windows)
+is read on every launch; no restart is needed.
+Choose the conventions per machine in its `[naming]` table:
+
+| Mode | `alias_convention` | `legacy_convention` |
+| --- | --- | --- |
+| Both (default) | `true` | `"full"` |
+| Alias only | `true` | `"off"` |
+| Legacy only | `false` | `"full"` |
+| Neither (refuse new launches) | `false` | `"off"` |
+
+With aliases enabled, `"reach"` reaches existing legacy slots but requires an alias for a
+new name. `alias_convention = false` with `legacy_convention = "reach"` is invalid;
+change the latter to `"full"` or `"off"`. Invalid values and disabled naming report the
+config keys to change. `ai cos` and `--chief` use the same policy as ordinary engine
+launches, including legacy fallback when no alias resolves. `auto_migrate` controls only
+fresh interactive legacy-slot migration; automatic restarts and recipe replay retain the
+recorded identity without a migration or alias prompt.
 
 Before a remote launch, when this machine's `ai` is an editable install, the launcher
 fetches `origin/main` into that checkout (bounded by a 20 s timeout) and fast-forwards a
