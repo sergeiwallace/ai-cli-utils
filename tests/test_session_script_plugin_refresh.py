@@ -32,6 +32,11 @@ def refresh_session(monkeypatch, tmp_path, session_factory):  # noqa: F811
     launch_log = tmp_path / "launch log.txt"
 
     def start(*, plugins=(PLUGIN,), failure="", restart=False, shell="bash", absent=False, reconfigure=False):
+        # Probe before building anything: a runner without this shell cannot run the case.
+        shell_path = shutil.which(shell)
+        if shell_path is None:
+            pytest.skip(f"{shell} is not installed on this runner")
+
         def fakes(bin_dir, *args):
             original(bin_dir, *args)
             (bin_dir / "claude").write_text(
@@ -69,9 +74,6 @@ def refresh_session(monkeypatch, tmp_path, session_factory):  # noqa: F811
         monkeypatch.setattr(Session, "_fakes", staticmethod(fakes))
         import ai_cli.session_script as scripts
 
-        shell_path = shutil.which(shell)
-        if shell_path is None:
-            pytest.skip(f"{shell} is not installed on this runner")
         monkeypatch.setattr(scripts, "resolve_session_shell", lambda: shell_path)
         if absent:
             # System utilities remain available, but the user's Claude installation cannot be found.
