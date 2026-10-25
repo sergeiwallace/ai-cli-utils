@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Managed by project-template: formatting is off so every consumer holds the same bytes.
+# ruff: noqa: RUF100
+# fmt: off
 """Session broker — generates cross-project context for cc session startup.
 
 Called by ai-lib.sh before launching Claude. Writes session-context.md
@@ -10,7 +13,7 @@ Usage: python scripts/session-broker.py [--project PROJECT_NAME] [--config CONFI
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -32,11 +35,14 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
         init_db()
         sync_all_project_roadmaps(cfg.projects, era=cfg.current_era)
         index_project_memories(cfg.projects)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 any ai_core import or setup failure becomes a context note, never a crash at startup
         return f"# Session Context\n\n> Failed to generate: {e}\n"
 
-    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    sections = [f"# Session Context\n\n> Generated: {now}\n> Project: {project or 'all'}\n"]
+    # timezone.utc, not datetime.UTC (3.11+): consumers may run this under python3 3.10.
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")  # noqa: UP017
+    sections = [
+        f"# Session Context\n\n> Generated: {now}\n> Project: {project or 'all'}\n"
+    ]
 
     # P0/P1 priorities across all projects
     try:
@@ -52,7 +58,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
                         prefix = f"**{display}** " if display else ""
                         sections.append(f"- [{t['priority']}] {prefix}{t['title']}{due}")
                     sections.append("")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 optional section; any ai_core failure omits it and the rest still renders
         pass
 
     # Daily digest (top signals)
@@ -67,7 +73,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
                 )
                 sections.append(line)
             sections.append("")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 optional section; any ai_core failure omits it and the rest still renders
         pass
 
     # Curated queue
@@ -95,7 +101,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
             snoozed = queue.get("SNOOZED", [])
             if snoozed:
                 sections.append(f"### Snoozed ({len(snoozed)} items)\n")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 optional section; any ai_core failure omits it and the rest still renders
         pass
 
     # Priority Guidance
@@ -111,7 +117,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
             sections.append("## Priority Guidance\n")
             sections.append(focus_text)
             sections.append("")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 optional section; any ai_core failure omits it and the rest still renders
         pass
 
     return "\n".join(sections)
@@ -121,7 +127,9 @@ def main():
     parser = argparse.ArgumentParser(description="Generate session context for AI startup")
     parser.add_argument("--project", help="Current project name")
     parser.add_argument("--config", help="Path to platform config file")
-    parser.add_argument("--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)")
+    parser.add_argument(
+        "--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)"
+    )
     parser.add_argument("--output", help="Output file path (default based on engine)")
     args = parser.parse_args()
 

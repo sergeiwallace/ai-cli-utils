@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +23,13 @@ _UNCONSTRAINED_MEMORY_MARKER = "unconstrained_memory"
 _CONTROLLER_LIMIT_ATTRIBUTE = "_pytest_memory_guard_controller_limit"
 _NOTICE_DIRECTORY_ATTRIBUTE = "_pytest_memory_guard_notice_directory"
 _PREVIOUS_NOTICE_FILE_ATTRIBUTE = "_pytest_memory_guard_previous_notice_file"
-_LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE = "_pytest_memory_guard_linux_address_space_limit"
 _WATCHDOG_ATTRIBUTE = "_pytest_memory_guard_watchdog"
 _WATCHDOG_LIMIT_ATTRIBUTE = "_pytest_memory_guard_watchdog_limit"
+_WATCHDOG_READY = b"r"
+_WATCHDOG_READY_TIMEOUT_S = 30.0
+_RSS_SETTLE_TIMEOUT_S = 10.0
+# Reads the watched process's resident bytes (None once it is gone), and kills it.
+_Probe = tuple[Callable[[], int | None], Callable[[], None]]
 
 
 def _memory_limit_bytes() -> int:
@@ -82,33 +89,53 @@ def _cleanup_controller_notice_file(config: Any) -> None:
         os.environ.pop(_NOTICE_FILE_ENV, None)
 
 
-def _apply_linux_address_space_limit(limit_bytes: int) -> int:
-    # RLIMIT_AS is a kernel-enforced ceiling on Linux. Import resource only on
-    # the platform where this path is used because the module is absent on Windows.
-    import resource
-
-    _, hard_limit = resource.getrlimit(resource.RLIMIT_AS)
-    effective_limit = limit_bytes
-    if hard_limit != resource.RLIM_INFINITY:
-        effective_limit = min(effective_limit, hard_limit)
-    # Preserve the inherited hard limit so a marked test can temporarily remove
-    # this guard's soft ceiling and restore it afterwards.
-    resource.setrlimit(resource.RLIMIT_AS, (effective_limit, hard_limit))
-    return effective_limit
-
-
 def _start_rss_watchdog(limit_bytes: int) -> subprocess.Popen[bytes]:
-    """Start the portable RSS fallback used where RLIMIT_AS is unavailable."""
-    return subprocess.Popen(
+    """Start a separate process that kills this one past its RSS ceiling."""
+    probe = "proc" if sys.platform.startswith("linux") else "psutil"
+    watchdog = subprocess.Popen(
         [
             sys.executable,
             str(Path(__file__).resolve()),
             "--watch-parent",
             str(os.getpid()),
             str(limit_bytes),
+            probe,
         ],
         stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         close_fds=True,
+    )
+    _wait_for_first_sample(watchdog)
+    return watchdog
+
+
+def _wait_for_first_sample(watchdog: subprocess.Popen[bytes]) -> None:
+    # The ceiling is enforced only once the watchdog has sampled this process.
+    # On a loaded host its interpreter can take longer to start than the next
+    # test takes to run, so wait for its first sample rather than returning.
+    stdout = watchdog.stdout
+    if stdout is None:
+        return
+    received: list[bytes] = []
+
+    # A thread bounds the wait on every platform; select() cannot poll a pipe
+    # on Windows.
+    def read_marker() -> None:
+        received.append(stdout.read(1))
+
+    reader = threading.Thread(target=read_marker, daemon=True)
+    reader.start()
+    reader.join(_WATCHDOG_READY_TIMEOUT_S)
+    if received and received[0] == _WATCHDOG_READY:
+        stdout.close()
+        return
+    if received:
+        reason = f"exited before its first sample (exit code {watchdog.poll()})"
+    else:
+        reason = f"took no sample within {_WATCHDOG_READY_TIMEOUT_S:g} s"
+    os.write(
+        2,
+        f"pytest memory guard: the RSS watchdog {reason}; not guarded until it does\n".encode(),
     )
 
 
@@ -130,17 +157,10 @@ def pytest_configure(config: Any) -> None:
             f"pytest memory guard: limiting this process to {limit_mb} MiB\n".encode(),
         )
 
-    if sys.platform.startswith("linux"):
-        setattr(
-            config,
-            _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE,
-            _apply_linux_address_space_limit(limit_bytes),
-        )
-        return
-
-    # macOS processes map a very large shared address space, making RLIMIT_AS
-    # unusable as an RSS ceiling. Windows has no resource module. A separate
-    # psutil process remains schedulable if a runaway test monopolizes the GIL.
+    # RLIMIT_AS is not used anywhere: it caps reserved address space, which
+    # children inherit, so Go (gitleaks) and Chromium die reserving gigabytes
+    # they never touch. A separate process stays schedulable if a runaway test
+    # monopolizes the GIL.
     setattr(config, _WATCHDOG_LIMIT_ATTRIBUTE, limit_bytes)
     setattr(config, _WATCHDOG_ATTRIBUTE, _start_rss_watchdog(limit_bytes))
 
@@ -158,38 +178,53 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 @pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+def pytest_runtest_protocol(item: pytest.Item):
     """Lift this process's memory limit only while a marked test executes."""
     if item.get_closest_marker(_UNCONSTRAINED_MEMORY_MARKER) is None:
         yield
         return
 
     watchdog_limit = getattr(item.config, _WATCHDOG_LIMIT_ATTRIBUTE, None)
-    if watchdog_limit is not None:
-        _stop_rss_watchdog(item.config)
-        try:
-            yield
-        finally:
-            setattr(
-                item.config,
-                _WATCHDOG_ATTRIBUTE,
-                _start_rss_watchdog(watchdog_limit),
-            )
-        return
-
-    limit_bytes = getattr(item.config, _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE, None)
-    if limit_bytes is None:
+    if watchdog_limit is None:
         yield
         return
 
-    import resource
-
-    _, hard_limit = resource.getrlimit(resource.RLIMIT_AS)
-    resource.setrlimit(resource.RLIMIT_AS, (hard_limit, hard_limit))
+    _stop_rss_watchdog(item.config)
     try:
         yield
     finally:
-        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, hard_limit))
+        _wait_for_rss_below(watchdog_limit)
+        setattr(
+            item.config,
+            _WATCHDOG_ATTRIBUTE,
+            _start_rss_watchdog(watchdog_limit),
+        )
+
+
+def _own_resident_bytes() -> int | None:
+    if sys.platform.startswith("linux"):
+        try:
+            with Path("/proc/self/statm").open("rb") as statm:
+                return int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        except OSError:
+            return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil.Process().memory_info().rss
+
+
+def _wait_for_rss_below(limit_bytes: int) -> None:
+    # macOS keeps a large freed allocation in this process's RSS for about two
+    # seconds, so a watchdog restarted straight after an unconstrained test
+    # would kill the process for memory that test already released.
+    deadline = time.monotonic() + _RSS_SETTLE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        resident_bytes = _own_resident_bytes()
+        if resident_bytes is None or resident_bytes < limit_bytes:
+            return
+        time.sleep(0.05)
 
 
 def _stop_rss_watchdog(config: Any) -> None:
@@ -244,17 +279,78 @@ def _write_termination_notice(notice: bytes) -> None:
         return
 
 
-def _watch_parent(parent_pid: int, limit_bytes: int) -> int:
-    # Linux uses RLIMIT_AS and does not need psutil. Import it only in the
-    # portable watchdog process so Linux repositories can adopt the guard
-    # without adding a dependency they never execute.
+def _proc_resident_bytes(parent_pid: int) -> int | None:
+    # The watchdog is the parent's direct child, so a changed parent id means
+    # the parent exited and its pid may already belong to another process.
+    if os.getppid() != parent_pid:
+        return None
+    try:
+        with Path(f"/proc/{parent_pid}/statm").open("rb") as statm:
+            resident_pages = int(statm.read().split()[1])
+    except OSError as exc:
+        if os.getppid() == parent_pid:
+            reason = f"cannot read {exc.filename}: {exc.strerror}"
+            os.write(2, f"pytest memory guard: {reason}; not guarding\n".encode())
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
+def _proc_probe(parent_pid: int) -> _Probe:
+    # Linux reads procfs, so Linux repositories adopt the guard without
+    # psutil, a dependency only macOS and Windows need. A pidfd names this
+    # exact process, so a reused pid is never signalled.
+    try:
+        parent_fd = os.pidfd_open(parent_pid)
+    except OSError:
+        parent_fd = None
+
+    def resident_bytes() -> int | None:
+        return _proc_resident_bytes(parent_pid)
+
+    def kill_parent() -> None:
+        if parent_fd is None:
+            os.kill(parent_pid, signal.SIGKILL)
+        else:
+            signal.pidfd_send_signal(parent_fd, signal.SIGKILL)
+
+    return resident_bytes, kill_parent
+
+
+def _psutil_probe(parent_pid: int) -> _Probe:
     import psutil
 
     parent = psutil.Process(parent_pid)
-    while True:
+
+    def resident_bytes() -> int | None:
         try:
-            rss_bytes = parent.memory_info().rss
-        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+            return parent.memory_info().rss
+        except psutil.Error:
+            return None
+
+    return resident_bytes, parent.kill
+
+
+def _report_first_sample() -> None:
+    # The parent waits on this byte; closing stdout afterwards leaves the pipe
+    # with nothing more to carry.
+    try:
+        os.write(1, _WATCHDOG_READY)
+        os.close(1)
+    except OSError:
+        return
+
+
+def _watch_parent(
+    parent_pid: int,
+    limit_bytes: int,
+    probe: str,
+    on_first_sample: Callable[[], None] | None = None,
+) -> int:
+    make_probe = _proc_probe if probe == "proc" else _psutil_probe
+    resident_bytes, kill_parent = make_probe(parent_pid)
+    while True:
+        rss_bytes = resident_bytes()
+        if rss_bytes is None:
             return 0
         if rss_bytes >= limit_bytes:
             limit_mb = limit_bytes // 1024 // 1024
@@ -262,15 +358,18 @@ def _watch_parent(parent_pid: int, limit_bytes: int) -> int:
             ceiling = f"process exceeded its {limit_mb} MiB RSS ceiling"
             notice = f"pytest memory guard: {ceiling} ({rss_mb} MiB); terminating it\n"
             _write_termination_notice(notice.encode())
-            parent.kill()
+            kill_parent()
             return 0
+        if on_first_sample is not None:
+            on_first_sample()
+            on_first_sample = None
         time.sleep(0.05)
 
 
 def _main(argv: list[str]) -> int:
-    if len(argv) != 3 or argv[0] != "--watch-parent":
+    if len(argv) != 4 or argv[0] != "--watch-parent":
         return 2
-    return _watch_parent(int(argv[1]), int(argv[2]))
+    return _watch_parent(int(argv[1]), int(argv[2]), argv[3], _report_first_sample)
 
 
 if __name__ == "__main__":

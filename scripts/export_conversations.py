@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Managed by project-template: formatting is off so every consumer holds the same bytes.
+# ruff: noqa: PTH123, RUF100
+# fmt: off
 """
 Export Claude Code conversation JSONL files to human-readable markdown.
 
@@ -183,7 +186,7 @@ def _output_subdir_and_stem(conv: dict, project: str, base_dir: Path) -> tuple[P
     is_stub = user_turns < STUB_THRESHOLD
 
     try:
-        dt = datetime.fromisoformat(first_ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(first_ts.replace("Z", "+00:00"))  # noqa: FURB162 3.10 rejects a "Z" suffix; consumers may run python3 3.10
         date_str = dt.strftime("%Y-%m-%d")
     except (ValueError, AttributeError):
         date_str = "0000-00-00"
