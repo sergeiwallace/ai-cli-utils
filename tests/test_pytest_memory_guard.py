@@ -30,10 +30,17 @@ _requires_xdist = pytest.mark.skipif(
 @pytest.fixture(
     params=("native", "watchdog") if sys.platform.startswith("linux") else ("native",),
 )
-def memory_guard_mode(request: pytest.FixtureRequest) -> str:
+def memory_guard_mode(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> str:
     """Exercise Linux's procfs watchdog plus the psutil watchdog on Linux."""
     if request.param == "watchdog" and not _HAS_PSUTIL:
         pytest.skip(_NO_PSUTIL)
+    if sys.platform.startswith("linux"):
+        # Reproduce allocators that retain freed heap pages, as on macOS.
+        monkeypatch.setenv("MALLOC_MMAP_MAX_", "0")
+        monkeypatch.setenv("MALLOC_TRIM_THRESHOLD_", "-1")
     return str(request.param)
 
 
@@ -250,6 +257,7 @@ def test_given_unconstrained_memory_marker_when_limit_is_reached_then_allocation
     unconstrained_test = tmp_path / "test_synthetic_unconstrained_memory.py"
     unconstrained_test.write_text(
         f"""
+import mmap
 import time
 
 import pytest
@@ -257,9 +265,13 @@ import pytest
 
 @pytest.mark.unconstrained_memory
 def test_synthetic_unconstrained_allocation():
-    chunks = [bytearray(8 * 1024 * 1024) for _ in range({_ALLOCATION_CHUNKS})]
-    print(f"allocation completed: {{len(chunks)}} chunks")
-    time.sleep(1)
+    # Closing a mapping releases its RSS; freeing heap objects need not.
+    with mmap.mmap(-1, {_ALLOCATION_MB} * 1024 * 1024) as allocation:
+        for offset in range(0, len(allocation), mmap.PAGESIZE):
+            allocation[offset] = 1
+        chunk_count = len(allocation) // (8 * 1024 * 1024)
+        print(f"allocation completed: {{chunk_count}} chunks")
+        time.sleep(1)
 """,
         encoding="utf-8",
     )
@@ -305,6 +317,7 @@ def test_given_unconstrained_memory_marker_when_next_test_runs_then_guard_is_res
     mixed_test = tmp_path / "test_synthetic_memory_scoping.py"
     mixed_test.write_text(
         f"""
+import mmap
 import time
 
 import pytest
@@ -312,8 +325,11 @@ import pytest
 
 @pytest.mark.unconstrained_memory
 def test_unconstrained_allocation():
-    chunks = [bytearray(8 * 1024 * 1024) for _ in range({_ALLOCATION_CHUNKS})]
-    print(f"unconstrained allocation completed: {{len(chunks)}} chunks")
+    with mmap.mmap(-1, {_ALLOCATION_MB} * 1024 * 1024) as allocation:
+        for offset in range(0, len(allocation), mmap.PAGESIZE):
+            allocation[offset] = 1
+        chunk_count = len(allocation) // (8 * 1024 * 1024)
+        print(f"unconstrained allocation completed: {{chunk_count}} chunks")
 
 
 def test_guarded_allocation():
@@ -370,6 +386,7 @@ def test_given_slow_watchdog_start_when_guard_is_restored_then_next_test_is_stil
     mixed_test = tmp_path / "test_synthetic_slow_watchdog.py"
     mixed_test.write_text(
         f"""
+import mmap
 import time
 
 import pytest
@@ -377,8 +394,11 @@ import pytest
 
 @pytest.mark.unconstrained_memory
 def test_unconstrained_allocation():
-    chunks = [bytearray(8 * 1024 * 1024) for _ in range({_ALLOCATION_CHUNKS})]
-    print(f"unconstrained allocation completed: {{len(chunks)}} chunks")
+    with mmap.mmap(-1, {_ALLOCATION_MB} * 1024 * 1024) as allocation:
+        for offset in range(0, len(allocation), mmap.PAGESIZE):
+            allocation[offset] = 1
+        chunk_count = len(allocation) // (8 * 1024 * 1024)
+        print(f"unconstrained allocation completed: {{chunk_count}} chunks")
 
 
 def test_guarded_allocation():
