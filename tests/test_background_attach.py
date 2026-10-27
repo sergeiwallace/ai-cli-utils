@@ -487,8 +487,7 @@ def test_given_a_live_copy_and_a_resume_follows_when_resolving_then_it_attaches_
     [
         ("idle", "working"),
         ("busy", "working"),
-        ("idle", "blocked"),
-        (None, "blocked"),
+        ("busy", "blocked"),
         ("idle", "thinking"),
         ("idle", ""),
     ],
@@ -496,7 +495,7 @@ def test_given_a_live_copy_and_a_resume_follows_when_resolving_then_it_attaches_
 def test_given_a_prompt_waits_and_the_copy_is_not_between_turns_when_resolving_then_the_relaunch_holds(
     workdir, fake_tools, capsys, status, state
 ):
-    """Idle is an allowlist: a mid-turn copy, one waiting on a dialog and an unknown word all hold."""
+    """Idle is an allowlist: a mid-turn copy, a busy one and an unknown word all hold."""
     fake_tools([_live(workdir, status=status, state=state)])
 
     out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
@@ -819,11 +818,11 @@ def test_given_the_copy_is_mid_turn_then_idle_when_delivering_then_it_waits_for_
     assert [call for call, _ in fake_tools.tmux] == ["load-buffer", "paste-buffer", "send-keys"]
 
 
-@pytest.mark.parametrize("state", ["working", "blocked", "thinking"])
+@pytest.mark.parametrize("state", ["working", "thinking"])
 def test_given_the_copy_never_goes_idle_when_delivering_then_nothing_is_typed_and_the_prompt_is_kept(
     fake_tools, tmp_path, state
 ):
-    """Never type into a copy that is mid-turn or waiting on a dialog."""
+    """Never type into a copy that is mid-turn."""
     from ai_cli import background_attach
 
     fake_tools([_live(tmp_path, status="idle", state=state)])
@@ -853,4 +852,117 @@ def test_given_the_copy_is_gone_when_delivering_then_nothing_is_typed(fake_tools
     )
 
     assert failure is not None and "no longer listed" in failure
+    assert fake_tools.tmux == []
+
+
+def _daemon(
+    monkeypatch, tmp_path: Path, *, supervisor: int | None, workers: dict[str, int], jobs: tuple[str, ...]
+) -> None:
+    """Write Claude Code's daemon roster and the jobs it lists, as ``claude agents --json`` reads them.
+
+    ``supervisor`` and each worker are process ids; a job's ``state.json`` names the daemon backend.
+    """
+    config = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    (config / "daemon").mkdir(parents=True)
+    roster = {
+        "proto": 1,
+        "supervisorPid": supervisor if supervisor is not None else 0,
+        "updatedAt": 0,
+        "workers": {short: {"pid": pid} for short, pid in workers.items()},
+    }
+    (config / "daemon" / "roster.json").write_text(json.dumps(roster), encoding="utf-8")
+    for short in jobs:
+        (config / "jobs" / short).mkdir(parents=True)
+        (config / "jobs" / short / "state.json").write_text(
+            json.dumps({"state": "blocked", "backend": "daemon"}), encoding="utf-8"
+        )
+
+
+def _dead_pid() -> int:
+    """A process id that names no live process: a child that has already been reaped."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def test_given_a_prompt_waits_and_the_copy_is_blocked_waiting_on_the_user_when_resolving_then_it_attaches(
+    workdir, fake_tools, capsys, monkeypatch, tmp_path
+):
+    """AI-CLI-h330: Claude Code 2.1.311 reports a copy that finished its turn and waits on the
+    user as `blocked`, so holding on it parked every update-restart relaunch."""
+    _daemon(monkeypatch, tmp_path, supervisor=os.getpid(), workers={LIVE_ID: os.getpid()}, jobs=(LIVE_ID,))
+    fake_tools([_live(workdir, status="idle", state="blocked")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == (LIVE_ID, 0)
+
+
+def test_given_a_blocked_record_no_daemon_worker_backs_when_resolving_then_the_relaunch_does_not_hold(
+    workdir, fake_tools, capsys, monkeypatch, tmp_path
+):
+    """AI-CLI-h330: the daemon's idle retire of a blocked job never writes a terminal state, so
+    `claude agents --json` keeps listing a copy no worker hosts; it must not hold the relaunch."""
+    _daemon(monkeypatch, tmp_path, supervisor=os.getpid(), workers={}, jobs=(LIVE_ID,))
+    fake_tools([_live(workdir, status="idle", state="blocked")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == ("", 0)
+
+
+def test_given_a_record_whose_daemon_is_gone_when_resolving_then_it_is_not_a_live_copy(
+    workdir, fake_tools, capsys, monkeypatch, tmp_path
+):
+    gone = _dead_pid()
+    _daemon(monkeypatch, tmp_path, supervisor=gone, workers={LIVE_ID: gone}, jobs=(LIVE_ID,))
+    fake_tools([_live(workdir, status="idle", state="working")])
+
+    out, _err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == ("", 0)
+
+
+def test_given_a_listed_copy_with_no_daemon_job_record_when_resolving_then_it_is_still_treated_as_live(
+    workdir, fake_tools, capsys, monkeypatch, tmp_path
+):
+    """Only a record the daemon owns can be proved stale; anything else keeps the safe hold."""
+    _daemon(monkeypatch, tmp_path, supervisor=os.getpid(), workers={}, jobs=())
+    fake_tools([_live(workdir, status="idle", state="working")])
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows", "--prompted")
+
+    assert (out, code) == ("", 75)
+    assert "not between turns" in err
+
+
+def test_given_the_copy_is_blocked_waiting_on_the_user_when_delivering_then_the_prompt_is_pasted(fake_tools, tmp_path):
+    from ai_cli import background_attach
+
+    fake_tools([_live(tmp_path, status="idle", state="blocked")])
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt("c-myproject-1", LIVE_ID, prompt, sleep=lambda _s: None)
+
+    assert failure is None
+    assert [call for call, _ in fake_tools.tmux] == ["load-buffer", "paste-buffer", "send-keys"]
+
+
+def test_given_a_numbered_dialog_is_drawn_when_delivering_then_nothing_is_typed(fake_tools, tmp_path):
+    """A blocked copy can be showing a choice; its selected option starts with the same marker."""
+    from ai_cli import background_attach
+
+    dialog = "─" * 40 + "\n Do you want to proceed?\n❯ 1. Yes\n  2. No\n" + "─" * 40 + "\n"
+    fake_tools([_live(tmp_path, status="idle", state="blocked")])
+    fake_tools.set_pane(dialog)
+    prompt = tmp_path / "prompt"
+    prompt.write_text("go", encoding="utf-8")
+
+    failure = background_attach.deliver_resume_prompt(
+        "c-myproject-1", LIVE_ID, prompt, wait_seconds=0, sleep=lambda _s: None
+    )
+
+    assert failure is not None and "never became idle" in failure
     assert fake_tools.tmux == []

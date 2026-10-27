@@ -75,8 +75,9 @@ lower-risk choice.
 The resolver now recognizes exactly one exit-created candidate only when it has
 an idle status, a positive PID, and a millisecond start time inside a configured
 30-second relaunch window. It adopts that candidate only when every sibling is
-strictly between turns. A working, blocked, or unknown sibling keeps the guard
-closed and is never stopped or signalled.
+strictly between turns. A working or unknown sibling keeps the guard closed and
+is never stopped or signalled. (A `blocked` sibling now counts as between turns;
+see [relaunch-hold-blocked-and-stale-records.md](relaunch-hold-blocked-and-stale-records.md).)
 
 Holds now also stop at `relaunch.background_hold_max_attempts`, default 12 and
 read on every resolver call. Intermediate details are suppressed by the
