@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[launch] refresh_plugins` optionally refreshes configured Claude Code plugins before
+  the initial start and every wrapper auto-restart, including bare and one-shot launches.
+  The default list is empty. Marketplace and plugin updates have a 10-second timeout
+  per command; failures warn and launch continues. Launch logs record versions before
+  and after each refresh, and an absent Claude executable skips the refresh silently.
 - A `[naming]` config section chooses which session-name conventions `ai` accepts,
   read on every launch. `alias_convention` (default on) is the
   `{repo-alias}-{host-alias}-{slug?}-{N}` form; `legacy_convention` (default `full`) is

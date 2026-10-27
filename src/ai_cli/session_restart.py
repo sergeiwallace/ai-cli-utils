@@ -929,7 +929,7 @@ def _compatible(source: str, expected: str) -> bool:
     # are bracketed so the one supported pre-feature program can be certified too.
     def normalize(text: str) -> str:
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )

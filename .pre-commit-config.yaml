@@ -33,7 +33,13 @@ repos:
       - id: check-json
       - id: check-merge-conflict
       - id: end-of-file-fixer
+        # A Founding Ask Record under docs/asks/ stores a human's exact words and binds
+        # them with a body_sha256 and a content_sha256 over the whole file, so a fixer
+        # that normalizes one byte leaves a record that no longer hashes to its own
+        # digest. Verbatim means verbatim (same exclusion as ai-harness).
+        exclude: ^docs/asks/
       - id: trailing-whitespace
+        exclude: ^docs/asks/
       - id: check-added-large-files
         # uv.lock is an expected, deterministic large generated artifact (AIH-v6kf9
         # T-2.2 requires tracking it fleet-wide) -- exempt it rather than raising the
@@ -275,3 +281,32 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # Every blocked Beads issue carries its timestamped [blocked ...] transition
+      # comment, written by bd-block (ai-harness goal amendment riders design, the
+      # blocked-status contract). The checker lives in ai-harness and is resolved
+      # via PATH (~/.claude/bin/bd-blocked-check), like bd-precommit-validate.
+      # Issues already blocked when the hook arrived are exempt through
+      # .beads/blocked-legacy.tsv, written once by
+      # `bd-blocked-check --current-repo --capture-baseline`. `--stage` stages that
+      # file when a run shrinks it. Exit 2 (store unreadable) becomes 0 here, so a
+      # repo with no Beads store commits as before; a hand run still sees the 2.
+      - id: bd-blocked-comment
+        name: every blocked Beads issue carries its transition comment
+        entry: bash -c 'bd-blocked-check --current-repo --stage; rc=$?; if [ "$rc" -eq 2 ]; then exit 0; fi; exit "$rc"'
+        language: system
+        stages: [pre-commit]
+        pass_filenames: false
+        always_run: true
+
+      # A public repo never names employer infrastructure (gateways, credential
+      # variables, internal tools). The checker and its name list live in
+      # ai-harness, resolved via PATH (~/.claude/bin/public-repo-name-check) like
+      # bd-blocked-check, so this repo never carries the list. docs/asks/ is
+      # skipped: a founding ask is recorded byte for byte.
+      - id: public-repo-name-check
+        name: no employer infrastructure names in a public repo
+        entry: public-repo-name-check
+        language: system
+        stages: [pre-commit]
+        types: [text]
+        exclude: ^docs/asks/

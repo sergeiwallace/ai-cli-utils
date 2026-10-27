@@ -146,6 +146,25 @@ launches, including legacy fallback when no alias resolves. `auto_migrate` contr
 fresh interactive legacy-slot migration; automatic restarts and recipe replay retain the
 recorded identity without a migration or alias prompt.
 
+**Plugin refresh before Claude Code starts.** Configure the plugins to refresh in
+the same machine config file:
+
+```toml
+[launch]
+refresh_plugins = ["example-plugin@example-marketplace"]
+```
+
+The default is `refresh_plugins = []`, which runs no plugin commands. The launcher
+reads this list before each Claude Code start, including every wrapper auto-restart,
+so changing it takes effect at the next start. For each `name@marketplace`, it runs
+`claude plugin list --json` to record the installed version, then
+`claude plugin marketplace update marketplace`, `claude plugin update name@marketplace`,
+and another list to record the resulting version. The launch log contains
+`Plugin refresh name@marketplace: before -> after`; an unavailable version reads `unknown`.
+Each command has a 10-second timeout. A failed command or timeout logs one warning
+and launch continues with the available installation. Missing `claude` skips the
+refresh silently. This also applies to bare and one-shot launches.
+
 Before a remote launch, when this machine's `ai` is an editable install, the launcher
 fetches `origin/main` into that checkout (bounded by a 20 s timeout) and fast-forwards a
 checkout that is behind, then restarts itself on the new code. The remote host's copy
