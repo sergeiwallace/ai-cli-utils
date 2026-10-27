@@ -361,6 +361,22 @@ def get_xdg_data_home() -> Path:
 
 # --- Configuration Management ---
 
+
+def read_launch_config(config: dict) -> dict:
+    """Validate plugin IDs without shell syntax; callers read fresh config each start."""
+    section = config.get("launch", {})
+    if not isinstance(section, dict):
+        raise ValueError("launch must be a table")
+    plugins = section.get("refresh_plugins", [])
+    if not isinstance(plugins, list) or any(
+        not isinstance(plugin, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9_.-]*", plugin)
+        for plugin in plugins
+    ):
+        raise ValueError("invalid launch.refresh_plugins: use a list of name@marketplace IDs")
+    return {"refresh_plugins": plugins}
+
+
 RESTART_SESSION_DEFAULTS = {
     "context_threshold_pct": 20,
     "compaction_fresh_turns": 1,
@@ -491,6 +507,12 @@ def read_relaunch_config(config: dict) -> dict:
 
 
 DEFAULT_CONFIG = """## ai-cli-utils configuration
+
+[launch]
+## Refresh these Claude Code plugins before every start, including automatic restarts.
+## Each command has a 10-second timeout; failures warn and never prevent launch.
+## Example: ["example-plugin@example-marketplace"]. Empty refreshes nothing.
+# refresh_plugins = []
 
 [restart_session]
 ## Safe restart defaults, read on every call. External commands belong in

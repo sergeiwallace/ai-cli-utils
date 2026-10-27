@@ -346,6 +346,15 @@ def _exec_handoff(file: str, args: list[str]) -> NoReturn:
     os.execvp(file, args)
 
 
+def _refresh_claude_plugins() -> None:
+    from .plugin_refresh import refresh_plugins
+
+    def emit(level: str, text: str) -> None:
+        _out.emit(Tag.SESSION, "refresh", text, err=True, level=_EMIT_LEVELS[level])
+
+    refresh_plugins(emit)
+
+
 def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
     """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
 
@@ -5066,6 +5075,8 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             _register_run_state(new_start=True)
+            if engine == "c":
+                _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
             _exec_with_direnv(
@@ -5086,6 +5097,8 @@ def _do_session_launch(
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
         _register_run_state(new_start=True)
+        if engine == "c":
+            _refresh_claude_plugins()
         target_root = worktree_path or Path.cwd()
         cd_prefix = f"cd {shlex.quote(str(target_root))} && "
         # Resolved once for the whole --once branch: the pane interpreter must
