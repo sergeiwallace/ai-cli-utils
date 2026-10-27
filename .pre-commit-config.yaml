@@ -297,3 +297,16 @@ repos:
         stages: [pre-commit]
         pass_filenames: false
         always_run: true
+
+      # A public repo never names employer infrastructure (gateways, credential
+      # variables, internal tools). The checker and its name list live in
+      # ai-harness, resolved via PATH (~/.claude/bin/public-repo-name-check) like
+      # bd-blocked-check, so this repo never carries the list. docs/asks/ is
+      # skipped: a founding ask is recorded byte for byte.
+      - id: public-repo-name-check
+        name: no employer infrastructure names in a public repo
+        entry: public-repo-name-check
+        language: system
+        stages: [pre-commit]
+        types: [text]
+        exclude: ^docs/asks/
