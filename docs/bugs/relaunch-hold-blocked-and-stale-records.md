@@ -46,10 +46,18 @@ Two separate faults:
 
 Name collisions (`<name> (2)`) were already matched by `is_copy_title`.
 
+Follow-up: with agent view turned off (the `disableAgentView` setting or
+`CLAUDE_CODE_DISABLE_AGENT_VIEW`), Claude Code runs no background sessions, and
+`claude agents --json` exits 1 with `'claude agents --json' is disabled by ...`
+(measured on 2.1.312). That refusal now reads as an empty list. Any other
+failure is still an unreadable list and still holds a relaunch that a resume
+follows.
+
 ## Verification
 
 - Frozen RED: four new tests failed on the unfixed code (a blocked copy with a
   live worker held; a blocked or working record with no live worker held; a
   blocked copy was never typed into).
 - The numbered-dialog test fails when its guard is removed.
-- `tests/test_background_attach.py`: 67 passed.
+- `tests/test_background_attach.py`: 67 passed; 70 with the agent-view-off
+  follow-up, whose two refusal cases failed before the change.

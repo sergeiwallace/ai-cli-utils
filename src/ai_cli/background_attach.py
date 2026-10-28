@@ -32,6 +32,8 @@ from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
 _DIALOG_OPTION = re.compile(r"❯\s*\d+\.")
+# Claude Code's refusal when the `disableAgentView` setting or its environment variable is on.
+_AGENT_VIEW_OFF = re.compile(r"is disabled by (?:CLAUDE_CODE_DISABLE_AGENT_VIEW|the 'disableAgentView' setting)")
 _AGENTS_LIST_TIMEOUT_SECONDS = 15
 _PANE_CAPTURE_TIMEOUT_SECONDS = 10
 _TMUX_TIMEOUT_SECONDS = 10
@@ -174,7 +176,9 @@ def list_live_background_sessions() -> list[dict] | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
-        return None
+        # With agent view turned off Claude Code runs no background sessions at all, so its
+        # refusal is an empty list, not an unreadable one that holds the relaunch.
+        return [] if _AGENT_VIEW_OFF.search(completed.stderr or "") else None
     try:
         rows = json.loads(completed.stdout)
     except json.JSONDecodeError:

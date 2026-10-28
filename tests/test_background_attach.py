@@ -76,6 +76,8 @@ def fake_tools(monkeypatch: pytest.MonkeyPatch):
             rows = state["rows"]() if callable(state["rows"]) else state["rows"]
             if rows is None:
                 return subprocess.CompletedProcess(command, 1, "", "no agents list")
+            if isinstance(rows, str):  # Claude Code's own refusal text, verbatim
+                return subprocess.CompletedProcess(command, 1, "", rows)
             return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
         if program == "claude" and command[1] == "stop":
             state["stopped"].append(command[2])
@@ -470,6 +472,38 @@ def test_given_no_resume_follows_and_an_unreadable_list_when_resolving_then_a_fr
 
     assert (out, code) == ("", 0)
     assert "resuming by title instead" in err
+
+
+# What Claude Code 2.1.312 prints, with exit status 1, when agent view is turned off.
+AGENT_VIEW_OFF = [
+    "'claude agents --json' is disabled by CLAUDE_CODE_DISABLE_AGENT_VIEW.\n",
+    "'claude agents --json' is disabled by the 'disableAgentView' setting.\n",
+]
+
+
+@pytest.mark.parametrize("refusal", AGENT_VIEW_OFF)
+def test_given_agent_view_is_off_and_a_resume_follows_when_resolving_then_the_resume_goes_ahead(
+    workdir, fake_tools, capsys, refusal
+):
+    """With agent view off no background copy can exist, so its refusal is not an unreadable list."""
+    fake_tools(refusal)
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 0)
+    assert "holding the relaunch" not in err
+    assert "could not read" not in err
+
+
+def test_given_an_unrelated_agents_failure_and_a_resume_follows_when_resolving_then_the_relaunch_still_holds(
+    workdir, fake_tools, capsys
+):
+    fake_tools("error: something else went wrong\n")
+
+    out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 75)
+    assert "holding the relaunch" in err
 
 
 def test_given_a_live_copy_and_a_resume_follows_when_resolving_then_it_attaches_instead_of_resuming(
