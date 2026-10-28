@@ -1167,7 +1167,10 @@ def _install_js_dependencies(wt_dir: Path) -> str | None:
             output = (result.stderr.strip() or result.stdout.strip())[-2000:]
             return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
         ignored = subprocess.run(
-            ["git", "-C", str(wt_dir), "check-ignore", "-q", "node_modules"], env=_git_env(), check=False
+            ["git", "-C", str(wt_dir), "check-ignore", "-q", "node_modules"],
+            env=_git_env(),
+            capture_output=True,
+            check=False,
         )
         if ignored.returncode != 0:
             return "dependency install: node_modules is not git-ignored, so the commit would stage it"
