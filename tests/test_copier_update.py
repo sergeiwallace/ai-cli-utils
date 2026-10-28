@@ -1015,6 +1015,141 @@ def test_given_pre_commit_hook_that_fails_without_rewriting_when_committing_upda
     assert (project / ".git" / "hook-count").read_text().count("x") == 1
 
 
+_NEEDS_DEV_TOOL_HOOK = (
+    "echo x >> .git/hook-count\n"
+    '[ -x node_modules/.bin/lint-tool ] || { echo "sh: 1: lint-tool: not found" >&2; exit 127; }\n'
+)
+
+
+def _js_consumer_update(
+    tmp_path: Path,
+    lockfile: str | None = "package-lock.json",
+    install_returncode: int = 0,
+    installers_on_path: bool = True,
+    ignore_node_modules: bool = True,
+    with_package_json: bool = True,
+) -> tuple[str, str, Path, list[tuple[list[str], str | None]]]:
+    """Update a consumer whose pre-commit hook needs a dev tool only a dependency install provides."""
+    _, project = _project_with_added_skill(tmp_path)
+    if with_package_json:
+        (project / "package.json").write_text('{"name": "myproject", "devDependencies": {"lint-tool": "1.0.0"}}\n')
+    if lockfile is not None:
+        (project / lockfile).write_text("lockfile\n")
+    if ignore_node_modules:
+        (project / ".gitignore").write_text("node_modules/\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "add package files"], cwd=project, check=True, capture_output=True)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\n" + _NEEDS_DEV_TOOL_HOOK)
+    hook.chmod(0o755)
+    installs: list[tuple[list[str], str | None]] = []
+    real_run = subprocess.run
+    real_which = shutil.which
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "skills" / "lint").mkdir(parents=True)
+            (project / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0].startswith("/opt/fake-bin/"):
+            cwd = kwargs.get("cwd")
+            installs.append((command, None if cwd is None else str(cwd)))
+            if install_returncode == 0:
+                tool = project / "node_modules" / ".bin" / "lint-tool"
+                tool.parent.mkdir(parents=True)
+                tool.write_text("#!/bin/sh\n")
+                tool.chmod(0o755)
+            return MagicMock(returncode=install_returncode, stdout="", stderr="npm ERR! network unreachable")
+        return real_run(command, **kwargs)
+
+    def which(name, *args, **kwargs):
+        if name in ("npm", "pnpm", "yarn"):
+            return f"/opt/fake-bin/{name}" if installers_on_path else None
+        return real_which(name, *args, **kwargs)
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=which),
+    ):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+    return status, str(detail), project, installs
+
+
+def _head_subject(project: Path) -> str:
+    return subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+@pytest.mark.parametrize(
+    ("lockfile", "expected"),
+    [
+        ("package-lock.json", ["/opt/fake-bin/npm", "ci"]),
+        ("pnpm-lock.yaml", ["/opt/fake-bin/pnpm", "install", "--frozen-lockfile"]),
+        ("yarn.lock", ["/opt/fake-bin/yarn", "install", "--frozen-lockfile"]),
+    ],
+)
+def test_given_js_lockfile_and_hook_needing_dev_dependency_when_committing_update_then_it_installs_and_commits(
+    tmp_path, lockfile, expected
+):
+    """The isolated tree has no node_modules; the lockfile's installer fills it so the hook finds its tool."""
+    status, detail, project, installs = _js_consumer_update(tmp_path, lockfile=lockfile)
+    assert (status, detail) == ("ok", "")
+    assert installs == [(expected, str(project))]
+    assert _head_subject(project) != "add package files"
+    tracked = subprocess.run(
+        ["git", "ls-files", "node_modules"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout
+    assert tracked == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_dependency_install_fails_when_committing_update_then_project_fails_naming_command_without_commit(
+    tmp_path,
+):
+    """A failed install is reported as such, not as the hook's later "not found", and nothing is committed."""
+    status, detail, project, _ = _js_consumer_update(tmp_path, install_returncode=1)
+    assert status == "failed"
+    assert "npm ci" in detail
+    assert "exit status 1" in detail
+    assert "network unreachable" in detail
+    assert not (project / ".git" / "hook-count").exists()
+    assert _head_subject(project) == "add package files"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_installer_not_on_path_when_committing_update_then_project_fails_naming_installer(tmp_path):
+    """A lockfile whose installer is missing fails the project before any commit attempt."""
+    status, detail, project, installs = _js_consumer_update(
+        tmp_path, lockfile="pnpm-lock.yaml", installers_on_path=False
+    )
+    assert status == "failed"
+    assert "pnpm" in detail and "not found" in detail
+    assert installs == []
+    assert not (project / ".git" / "hook-count").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_node_modules_not_gitignored_when_committing_update_then_project_fails_without_committing_it(
+    tmp_path,
+):
+    """Installed dependencies are never staged: an unignored node_modules fails the project instead."""
+    status, detail, project, _ = _js_consumer_update(tmp_path, ignore_node_modules=False)
+    assert status == "failed"
+    assert "node_modules" in detail and "ignored" in detail
+    assert _head_subject(project) == "add package files"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_no_package_json_when_committing_update_then_nothing_is_installed(tmp_path):
+    """Without a package.json the update behaves as before: no installer runs."""
+    status, detail, _, installs = _js_consumer_update(tmp_path, lockfile=None, with_package_json=False)
+    assert installs == []
+    assert status == "failed"
+    assert "lint-tool: not found" in detail
+
+
 def _probe_runner(ssh_reachable: bool):
     calls: list[list[str]] = []
 
