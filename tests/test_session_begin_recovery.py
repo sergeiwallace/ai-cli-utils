@@ -11,6 +11,7 @@ import time
 
 import pytest
 from click.testing import CliRunner
+from process_wait import scaled
 
 from ai_cli import config
 from ai_cli import session_registry as registry
@@ -149,20 +150,20 @@ def test_given_old_supervisor_when_begin_exhausts_or_is_interrupted_then_launche
         start_new_session=True,
     )
     try:
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + scaled(2)
         if interrupt:
             while not (tmp_path / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert (tmp_path / "ready").exists()
             os.killpg(process.pid, signal.SIGINT)
-        out, err = process.communicate(timeout=2)
+        out, err = process.communicate(timeout=scaled(2))
         assert process.returncode == 0, err
         assert "agent-started" not in out
         assert (tmp_path / "calls").read_text() == "call"
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
-            process.communicate(timeout=2)
+            process.communicate(timeout=scaled(2))
 
 
 @pytest.mark.real_tmux
@@ -202,7 +203,7 @@ def test_given_tmux_legacy_supervisor_when_begin_stops_then_pane_accepts_shell_i
 
         try:
             tmux("new-session", "-d", "-s", "session-1", shell, "-c", command)
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + scaled(5)
             if interrupt:
                 while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
@@ -213,7 +214,7 @@ def test_given_tmux_legacy_supervisor_when_begin_stops_then_pane_accepts_shell_i
             assert done.exists(), tmux("capture-pane", "-p", "-t", "=session-1:").stdout
             assert (tmp_path / "calls").read_text() == "call"
             tmux("send-keys", "-t", "=session-1:", f"printf usable > {shlex.quote(str(usable))}", "Enter")
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + scaled(5)
             while time.monotonic() < deadline:
                 if usable.exists() and usable.read_text() == "usable":
                     break

@@ -24,6 +24,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli import launch_reporter, tmux_ownership, tmux_setup
 from ai_cli.canonical_worktrees import register_canonical_worktree
@@ -42,7 +43,7 @@ _LIVE_CHILD_COMMAND = "sleep 600"
 
 #: Bounds a genuine failure to die, not the scheduler. See the reaper suite's
 #: _PROCESS_WAIT_SECONDS for the measurement behind the generous value.
-_DEAD_PANE_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_DEAD_PANE_WAIT_SECONDS = process_wait_seconds()
 
 pytestmark = [
     pytest.mark.real_tmux,

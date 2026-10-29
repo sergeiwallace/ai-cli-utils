@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 from conftest import tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli.session_script import get_engine_script
 
@@ -36,7 +37,7 @@ _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="the session supervisor is a POSIX shell script")
 
-_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_OBSERVE_SECONDS = process_wait_seconds()
 # The loop stops on its first quick exit, or, when child startup takes longer than
 # three seconds, on the breaker's third consecutive exit. Measured on an idle macOS
 # host, each child body took 16-20 s to reach the agent, so three relaunches under a

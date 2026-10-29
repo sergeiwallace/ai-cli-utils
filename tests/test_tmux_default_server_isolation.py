@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from conftest import TMUX_ISOLATION_PARENT, TMUX_ISOLATION_PREFIX
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 pytestmark = [
     pytest.mark.real_tmux,
@@ -29,7 +30,7 @@ pytestmark = [
 
 _TESTS_DIR = Path(__file__).resolve().parent
 
-_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_WAIT_SECONDS = process_wait_seconds()
 
 
 def _tmux(socket: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -27,6 +27,7 @@ import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
 from process_ownership import reap, reap_tree, spawn_owned_sleeper, watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
@@ -155,7 +156,7 @@ _POSIX_HOST = os.name == "posix"
 # its predicate holds, so the fast path is unchanged and a real hang is still caught --
 # it simply never exits. The worst case is a genuinely broken build taking a minute
 # longer to say so. Overridable so a slow runner can raise it without a code change.
-_PROCESS_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_PROCESS_WAIT_SECONDS = process_wait_seconds()
 
 
 def isolated_tmux_socket() -> Iterator[str]:

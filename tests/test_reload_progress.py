@@ -41,13 +41,14 @@ from pathlib import Path
 
 import psutil
 import pyte
+from process_wait import process_wait_seconds
 
 from ai_cli.session_script import get_engine_script, resolve_session_shell
 
 REPO = Path(__file__).resolve().parents[1]
 COLUMNS, ROWS = 240, 48  # wide enough that no record wraps
 SESSION = "test-session"
-_CEILING_SECONDS = max(float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60")), 240.0)
+_CEILING_SECONDS = max(process_wait_seconds(), 240.0)
 
 # Run on the slave as a session leader: take it as the controlling terminal, then become the shell.
 _CONTROLLING_EXEC = (
