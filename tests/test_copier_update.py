@@ -1150,6 +1150,128 @@ def test_given_no_package_json_when_committing_update_then_nothing_is_installed(
     assert "lint-tool: not found" in detail
 
 
+_NEEDS_PYTHON_DEV_DEPENDENCY_HOOK = (
+    "echo x >> .git/hook-count\n"
+    "[ -x .venv/bin/dev-tool ] || "
+    "{ echo \"ModuleNotFoundError: No module named 'yaml'\" >&2; exit 1; }\n"
+)
+
+
+def _uv_consumer_update(
+    tmp_path: Path,
+    with_lockfile: bool = True,
+    sync_returncode: int = 0,
+    uv_on_path: bool = True,
+    venv_self_ignored: bool = True,
+) -> tuple[str, str, Path, list[tuple[list[str], str | None]]]:
+    """Update a uv consumer whose pre-commit hook needs a dev dependency only a sync installs."""
+    _, project = _project_with_added_skill(tmp_path)
+    (project / "pyproject.toml").write_text('[project]\nname = "myproject"\nversion = "0.1.0"\n')
+    if with_lockfile:
+        (project / "uv.lock").write_text("version = 1\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "add python project files"], cwd=project, check=True, capture_output=True)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\n" + _NEEDS_PYTHON_DEV_DEPENDENCY_HOOK)
+    hook.chmod(0o755)
+    syncs: list[tuple[list[str], str | None]] = []
+    real_run = subprocess.run
+    real_which = shutil.which
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "skills" / "lint").mkdir(parents=True)
+            (project / "skills" / "lint" / "SKILL.md").write_text("skill\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[0] == "/opt/fake-bin/uv":
+            cwd = kwargs.get("cwd")
+            syncs.append((command, None if cwd is None else str(cwd)))
+            if sync_returncode == 0:
+                tool = project / ".venv" / "bin" / "dev-tool"
+                tool.parent.mkdir(parents=True)
+                tool.write_text("#!/bin/sh\n")
+                tool.chmod(0o755)
+                if venv_self_ignored:
+                    # uv writes this into every virtual environment it creates.
+                    (project / ".venv" / ".gitignore").write_text("*\n")
+            return MagicMock(
+                returncode=sync_returncode, stdout="", stderr="error: Failed to fetch: `https://example.com/simple/`"
+            )
+        return real_run(command, **kwargs)
+
+    def which(name, *args, **kwargs):
+        if name == "uv":
+            return "/opt/fake-bin/uv" if uv_on_path else None
+        return real_which(name, *args, **kwargs)
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=which),
+    ):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+    return status, str(detail), project, syncs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_uv_lock_and_hook_needing_python_dev_dependency_when_committing_update_then_it_syncs_and_commits(
+    tmp_path,
+):
+    """The isolated tree has no synced .venv; a frozen uv sync fills it so the hook finds its dependency."""
+    status, detail, project, syncs = _uv_consumer_update(tmp_path)
+    assert (status, detail) == ("ok", "")
+    assert syncs == [(["/opt/fake-bin/uv", "sync", "--frozen"], str(project))]
+    assert _head_subject(project) != "add python project files"
+    tracked = subprocess.run(
+        ["git", "ls-files", ".venv"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout
+    assert tracked == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_uv_not_on_path_when_committing_update_then_project_fails_naming_uv_before_any_commit(tmp_path):
+    """A uv.lock whose installer is missing fails the project with that cause, not the hook's import error."""
+    status, detail, project, syncs = _uv_consumer_update(tmp_path, uv_on_path=False)
+    assert status == "failed"
+    assert "uv not found" in detail and "uv.lock" in detail
+    assert "ModuleNotFoundError" not in detail
+    assert syncs == []
+    assert not (project / ".git" / "hook-count").exists()
+    assert _head_subject(project) == "add python project files"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_uv_sync_fails_when_committing_update_then_project_fails_naming_command_without_commit(tmp_path):
+    """A failed sync is reported as such, with uv's own output, and nothing is committed."""
+    status, detail, project, _ = _uv_consumer_update(tmp_path, sync_returncode=2)
+    assert status == "failed"
+    assert "uv sync --frozen" in detail
+    assert "exit status 2" in detail
+    assert "Failed to fetch" in detail
+    assert not (project / ".git" / "hook-count").exists()
+    assert _head_subject(project) == "add python project files"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_synced_venv_not_gitignored_when_committing_update_then_project_fails_without_committing_it(
+    tmp_path,
+):
+    """A synced environment is never staged: a .venv the commit would pick up fails the project instead."""
+    status, detail, project, _ = _uv_consumer_update(tmp_path, venv_self_ignored=False)
+    assert status == "failed"
+    assert ".venv" in detail and "ignored" in detail
+    assert not (project / ".git" / "hook-count").exists()
+    assert _head_subject(project) == "add python project files"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_pyproject_without_uv_lock_when_committing_update_then_nothing_is_synced(tmp_path):
+    """Without a uv.lock the update behaves as before: uv never runs and the hook's own result stands."""
+    status, detail, _, syncs = _uv_consumer_update(tmp_path, with_lockfile=False)
+    assert syncs == []
+    assert status == "failed"
+    assert "ModuleNotFoundError" in detail
+
+
 def _probe_runner(ssh_reachable: bool):
     calls: list[list[str]] = []
 
