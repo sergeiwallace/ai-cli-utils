@@ -34,6 +34,7 @@ import psutil
 import pytest
 from conftest import tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli.session_script import get_engine_script
 
@@ -45,7 +46,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 #: Generous because these run real shells under `-n auto`; every wait returns as soon as it is satisfied.
-_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_OBSERVE_SECONDS = process_wait_seconds()
 #: How long a stopped session may stay stopped before the test calls it frozen. The
 #: watchdog polls once a second; this leaves room for a loaded scheduler.
 _RESUME_BOUND_SECONDS = 15.0

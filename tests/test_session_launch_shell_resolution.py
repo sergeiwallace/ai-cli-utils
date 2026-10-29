@@ -37,6 +37,7 @@ from unittest.mock import patch
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli.main import _do_session_launch
 from ai_cli.session_script import SESSION_SHELL_PREFERENCE, get_engine_script
@@ -188,7 +189,7 @@ def _drive_launch_against_real_tmux(sock: str, tmp_path: Path, name: str, script
 #: False surfaced as "zsh was on PATH but the pane was not started with it" -- a
 #: portability contract appearing broken because ten seconds was not enough CPU.
 #: Every wait returns the moment its file appears, so a generous bound costs nothing.
-_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_OBSERVE_SECONDS = process_wait_seconds()
 
 
 def _wait_for_file(path: Path, timeout: float | None = None) -> bool:

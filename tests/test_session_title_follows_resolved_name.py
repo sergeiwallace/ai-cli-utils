@@ -38,6 +38,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from conftest import tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli import session_naming as _session_naming
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, cli
@@ -48,7 +49,7 @@ if sys.platform != "win32":
     import pty
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
-_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_OBSERVE_SECONDS = process_wait_seconds()
 
 #: The remote host's alias, which its allocator joins into every session name.
 _REMOTE_HOST_ALIAS = "host"
