@@ -595,7 +595,7 @@ def test_repo_root_non_git(tmp_path):
     assert _repo_root(tmp_path) is None
 
 
-def _wt_runner(*, porcelain="", copier_rc=0, push_rc=0):
+def _wt_runner(*, porcelain="", copier_rc=0, push_rc=0, push_stdout=""):
     """Build a subprocess.run side_effect for _do_update_in_worktree calls."""
 
     calls = []
@@ -613,6 +613,7 @@ def _wt_runner(*, porcelain="", copier_rc=0, push_rc=0):
             r.stdout = porcelain
         elif "push" in cmd:
             r.returncode = push_rc
+            r.stdout = push_stdout if push_rc else ""
             r.stderr = "! [rejected]" if push_rc else ""
         return r
 
@@ -1691,6 +1692,22 @@ def test_do_update_pushfail(tmp_path):
                 status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "pushfail"
     assert isinstance(detail, str)
+    assert "rejected" in detail
+
+
+def test_given_a_failing_pre_push_hook_when_push_fails_then_its_stdout_reaches_the_detail(tmp_path):
+    """The repo's test gate prints on stdout; stderr alone hides why the push was refused."""
+    runner = _wt_runner(porcelain=" M file\n", push_rc=1, push_stdout="test gate (mise-aware)....Failed")
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
+    assert status == "pushfail"
+    assert isinstance(detail, str)
+    assert "test gate (mise-aware)....Failed" in detail
     assert "rejected" in detail
 
 
