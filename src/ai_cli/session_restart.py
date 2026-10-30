@@ -1834,7 +1834,7 @@ def exec_replacement(session: str, argv: list[str]) -> int:
 
 
 def _read_start(connection: socket.socket, deadline: float) -> dict:
-    """Read a bounded line and exec EOF within the same absolute deadline."""
+    """Read a bounded receipt line before authentication."""
 
     def receive(size: int) -> bytes:
         remaining = deadline - time.monotonic()
@@ -1854,7 +1854,7 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
         if not chunk:
             raise ValueError("incomplete receipt")
         data.extend(chunk)
-    if not data.endswith(b"\n") or b"\n" in data[:-1] or receive(1) != b"":
+    if not data.endswith(b"\n") or b"\n" in data[:-1]:
         raise ValueError("exec failed")
     # Receipts are flat objects. Bound parser work before touching untrusted JSON.
     line = data.strip()
@@ -1863,47 +1863,71 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
     return json.loads(data)
 
 
-def _receive_start(listener: socket.socket, request: dict, settings: dict, *, deadline: float | None = None) -> dict:
+def _receive_start(
+    listener: socket.socket,
+    request: dict,
+    settings: dict,
+    *,
+    deadline: float | None = None,
+    line_deadline: float | None = None,
+    wait_eof: Callable[[socket.socket], bool] | None = None,
+) -> dict:
     """Read one exec receipt, never sample the replacement's session registry."""
-    try:
-        if deadline is None:
-            deadline = time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"])
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        listener.settimeout(remaining)
-        connection, _ = listener.accept()
-        with connection:
-            receipt = _read_start(connection, deadline)
-        pid = receipt["replacement_pid"]
-        birth = receipt["replacement_start_time"]
-        event = request["event_completion"]
-        if not isinstance(receipt.get("secret"), str) or not hmac.compare_digest(receipt["secret"], event["secret"]):
-            raise ValueError("receipt authentication failed")
-        launch = _object(_launch_path(_pane(request)[0], request))
-        if (
-            receipt["request_id"] != request["request_id"]
-            or launch["request_id"] != request["request_id"]
-            or pid != launch["replacement_pid"]
-            or birth != launch["replacement_start_time"]
-            or psutil.Process(launch["wrapper_pid"]).create_time() != launch["wrapper_start_time"]
-            or (
-                pid != launch["wrapper_pid"]
-                and (sys.platform != "win32" or psutil.Process(pid).ppid() != launch["wrapper_pid"])
-            )
-            or type(pid) is not int
-            or pid <= 1
-            or pid == request["old_agent_pid"]
-            or not _number(birth)
-            or psutil.Process(pid).create_time() != birth
-            or request["supervisor_pid"] not in [parent.pid for parent in psutil.Process(pid).parents()]
-            or probe_for().has_ended(pid)
-        ):
-            raise ValueError("replacement ownership unavailable")
-    except (Refusal, OSError, ValueError, KeyError, TypeError, RecursionError, MemoryError, psutil.Error):
-        return _report(
-            "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
-        )
+    failed = _report("verification-failed", detail="replacement or local bridge verification timed out", local="FAILED")
+    with contextlib.ExitStack() as resources:
+        try:
+            if deadline is None:
+                deadline = time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"])
+            read_deadline = min(deadline, line_deadline) if line_deadline is not None else deadline
+            remaining = read_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            listener.settimeout(remaining)
+            connection, _ = listener.accept()
+            resources.enter_context(connection)
+            receipt = _read_start(connection, read_deadline)
+            pid = receipt["replacement_pid"]
+            birth = receipt["replacement_start_time"]
+            event = request["event_completion"]
+            if not isinstance(receipt.get("secret"), str) or not hmac.compare_digest(
+                receipt["secret"], event["secret"]
+            ):
+                raise ValueError("receipt authentication failed")
+            launch = _object(_launch_path(_pane(request)[0], request))
+            if (
+                receipt["request_id"] != request["request_id"]
+                or launch["request_id"] != request["request_id"]
+                or pid != launch["replacement_pid"]
+                or birth != launch["replacement_start_time"]
+                or psutil.Process(launch["wrapper_pid"]).create_time() != launch["wrapper_start_time"]
+                or (
+                    pid != launch["wrapper_pid"]
+                    and (sys.platform != "win32" or psutil.Process(pid).ppid() != launch["wrapper_pid"])
+                )
+                or type(pid) is not int
+                or pid <= 1
+                or pid == request["old_agent_pid"]
+                or not _number(birth)
+                or psutil.Process(pid).create_time() != birth
+                or request["supervisor_pid"] not in [parent.pid for parent in psutil.Process(pid).parents()]
+                or probe_for().has_ended(pid)
+            ):
+                raise ValueError("replacement ownership unavailable")
+        except (Refusal, OSError, ValueError, KeyError, TypeError, RecursionError, MemoryError, psutil.Error):
+            return failed
+        # Keep escalation refusals outside the unauthenticated-input handler.
+        # An authenticated line retains its connection across the TERM deadline.
+        if wait_eof is not None and not wait_eof(connection):
+            return failed
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            connection.settimeout(remaining)
+            if connection.recv(1) != b"" or time.monotonic() >= deadline:
+                raise ValueError("exec failed")
+        except (OSError, ValueError):
+            return failed
     event = request["event_completion"]
     return _report(
         "started",
@@ -1917,12 +1941,43 @@ def _receive_start(listener: socket.socket, request: dict, settings: dict, *, de
     )
 
 
-def _wait_start(listener: socket.socket, request: dict, settings: dict, deadline: float) -> dict:
+def _wait_start(
+    listener: socket.socket,
+    request: dict,
+    settings: dict,
+    deadline: float,
+    *,
+    term_deadline: float | None = None,
+    on_term: Callable[[], None] | None = None,
+) -> dict:
     """Block for authenticated completion; unrelated connections consume no new budget."""
-    while (remaining := deadline - time.monotonic()) > 0:
-        if not select.select([listener], [], [], remaining)[0]:
-            break
-        report = _receive_start(listener, request, settings, deadline=deadline)
+
+    def wait(connection: socket.socket) -> bool:
+        nonlocal term_deadline
+        while True:
+            now = time.monotonic()
+            if term_deadline is not None and now >= term_deadline:
+                term_deadline = None
+                if on_term is not None:
+                    on_term()
+                continue
+            remaining = deadline - now
+            if remaining <= 0:
+                return False
+            if term_deadline is not None:
+                remaining = min(remaining, term_deadline - now)
+            ready = select.select([connection], [], [], remaining)[0]
+            if term_deadline is not None and time.monotonic() >= term_deadline:
+                term_deadline = None
+                if on_term is not None:
+                    on_term()
+            if ready:
+                return time.monotonic() < deadline
+
+    while wait(listener):
+        report = _receive_start(
+            listener, request, settings, deadline=deadline, line_deadline=term_deadline, wait_eof=wait
+        )
         if report["reason"] == "started":
             return report
     return _report("verification-failed", detail="replacement or local bridge verification timed out", local="FAILED")
@@ -2046,26 +2101,35 @@ def _act(
         return None
     deadline = time.monotonic() + settings["term_grace_seconds"]
     probe = probe_for()
+
+    def finish_term() -> None:
+        if not probe.has_ended(record["pid"]):
+            # Escalate only to that same birth identity, after all gates still pass.
+            current = _fresh(record_path, record)
+            assess(current, settings, commands, prepared=managed)
+            _validate_request(request, session, child=False)
+            if (
+                probe.start_time_match(record["pid"], normalize_proc_start(record.get("procStart")))
+                is not StartTimeMatch.MATCH
+            ):
+                raise Refusal("identity")
+            rows = transcript_tail(transcript_path(current))
+            idle_gate(_fresh(record_path, record), rows, settings)
+            os.kill(record["pid"], signal.SIGKILL)
+
     if start_listener is None:
         while not probe.has_ended(record["pid"]) and time.monotonic() < deadline:
             time.sleep(POLL_SECONDS)
     else:
-        report = _wait_start(start_listener, request, settings, deadline)
-        if report["reason"] == "started":
-            return report
-    if not probe.has_ended(record["pid"]):
-        # Escalate only to that same birth identity, after all gates still pass.
-        current = _fresh(record_path, record)
-        assess(current, settings, commands, prepared=managed)
-        _validate_request(request, session, child=False)
-        if (
-            probe.start_time_match(record["pid"], normalize_proc_start(record.get("procStart")))
-            is not StartTimeMatch.MATCH
-        ):
-            raise Refusal("identity")
-        rows = transcript_tail(transcript_path(current))
-        idle_gate(_fresh(record_path, record), rows, settings)
-        os.kill(record["pid"], signal.SIGKILL)
+        return _wait_start(
+            start_listener,
+            request,
+            settings,
+            deadline + max(0.001, settings["relaunch_timeout_seconds"]),
+            term_deadline=deadline,
+            on_term=finish_term,
+        )
+    finish_term()
     return None
 
 

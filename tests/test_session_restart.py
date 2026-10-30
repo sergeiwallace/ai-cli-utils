@@ -799,8 +799,84 @@ def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_gen
     code, report, err = world.cli("-X", SESSION_ID, "-E")
     assert (code, report["reason"], err) == (0, "started", "")
     assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
-    assert waits == [10, 8, 10]
+    # The last wait observes exec EOF on the authenticated connection.
+    assert waits == [10, 8, 10, 10]
     assert world.listener.accept.call_count == 2
+
+
+@pytest.mark.parametrize("term_ignored", [False, True])
+@pytest.mark.parametrize("completion", ["eof", "failure", "timeout"])
+def test_given_authenticated_receipt_when_exec_crosses_term_deadline_then_preserves_deadlines_and_result(
+    event_world, monkeypatch, term_ignored, completion
+):
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=0.1, relaunch_timeout_seconds=5)
+    clock = [100.0]
+    signals = []
+    waits = []
+    genuine = world.connection.makefile.side_effect
+    eof_at = 106.0 if completion == "timeout" else 100.2
+    closed = []
+
+    def accept():
+        assert not closed, "the one-shot receipt cannot be recovered after closing"
+        stream = genuine()
+
+        def receive(size):
+            if stream.tell() < len(stream.getvalue()):
+                return stream.read(size)
+            timeout = world.connection.settimeout.call_args.args[0]
+            if clock[0] + timeout < eof_at:
+                clock[0] += timeout
+                raise TimeoutError
+            clock[0] = max(clock[0], eof_at)
+            return b"!" if completion == "failure" else b""
+
+        world.connection.recv.side_effect = receive
+        return world.connection, ("127.0.0.1", 12346)
+
+    def wait(readers, writers, errors, timeout):
+        waits.append((clock[0], timeout))
+        ready_at = (106.0 if closed else 100.05) if world.listener in readers else eof_at
+        if clock[0] + timeout < ready_at:
+            clock[0] += timeout
+            return [], [], []
+        clock[0] = max(clock[0], ready_at)
+        return readers, [], []
+
+    def kill(pid, sig):
+        signals.append((pid, sig, clock[0]))
+        world.signals.append((pid, sig))
+        if not term_ignored or sig == signal.SIGKILL:
+            world.replace()
+
+    world.listener.accept.side_effect = accept
+    world.connection.__exit__.side_effect = lambda *args: closed.append(True)
+    monkeypatch.setattr(restart, "select", _ModuleView(select, select=wait))
+    monkeypatch.setattr(
+        restart, "time", _ModuleView(time, monotonic=lambda: clock[0], sleep=Mock(side_effect=AssertionError))
+    )
+    monkeypatch.setattr(restart, "os", _ModuleView(os, kill=kill))
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    success = completion == "eof"
+    expected = (0, "started", "") if success else (1, "verification-failed", "")
+    assert (code, report["reason"], err) == expected
+    assert world.listener.accept.call_count == 1
+    assert closed == [True]
+    assert clock[0] == pytest.approx(eof_at if success else 105.1)
+    assert signals[0] == (101, signal.SIGTERM, 100.0)
+    if term_ignored:
+        assert signals[1:] == [(101, signal.SIGKILL, pytest.approx(100.1))]
+    else:
+        assert len(signals) == 1
+    assert any(start < 100.1 and start + timeout == pytest.approx(100.1) for start, timeout in waits)
+    _, result_path, request_path = restart.state_paths(world.session)
+    request = restart._object(request_path)
+    assert request["status"] == ("complete" if success else "failed")
+    assert request["result"] == report["reason"]
+    assert restart._object(result_path)["failed"] is not success
+    if success:
+        assert restart.child_pin(world.session, world.record["name"]) == (3, "")
 
 
 @pytest.mark.parametrize("flag", ["-E", "--event-completion"])
