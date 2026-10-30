@@ -6,7 +6,12 @@ Two modes:
   worktree off fresh ``origin/main``, run ``copier update`` there, commit, push
   ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
-  are actively working in a repo. Conflicts and semantic failures are saved under
+  are actively working in a repo. Before committing, the worktree gets the repo's
+  dependency environment so its own commit and push hooks run as they would in the
+  main tree: ``uv sync --frozen`` when it has ``pyproject.toml`` and ``uv.lock``, and
+  the frozen install its JS lockfile names when it has ``package.json``. A missing
+  installer, a failed install or an environment directory that is not git-ignored
+  fails the project before any commit. Conflicts and semantic failures are saved under
   verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
   A rejected push is anchored (and copied to origin when its gate allows), filed as a
   recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
@@ -1141,6 +1146,72 @@ def _resolve_unchanged_conflicts(
     return [conflict for conflict in conflicts if conflict not in resolved]
 
 
+# Lockfile -> frozen install. A fresh worktree has no node_modules, so a consumer's npm-backed
+# commit hooks cannot find their dev tools until the lockfile's dependencies are installed.
+_JS_INSTALLERS = (
+    ("package-lock.json", "npm", ("ci",)),
+    ("pnpm-lock.yaml", "pnpm", ("install", "--frozen-lockfile")),
+    ("yarn.lock", "yarn", ("install", "--frozen-lockfile")),
+)
+
+
+def _install_js_dependencies(wt_dir: Path) -> str | None:
+    """Install the consumer's JS dependencies in wt_dir; return an error message or None."""
+    if not (wt_dir / "package.json").is_file():
+        return None
+    for lockfile, tool, args in _JS_INSTALLERS:
+        if not (wt_dir / lockfile).is_file():
+            continue
+        display = " ".join((tool, *args))
+        # shutil.which resolves npm.cmd/pnpm.cmd/yarn.cmd on Windows.
+        tool_bin = shutil.which(tool)
+        if tool_bin is None:
+            return f"dependency install: {tool} not found in PATH (needed for {lockfile}); `{display}` not run"
+        result = subprocess.run([tool_bin, *args], cwd=wt_dir, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
+        ignored = subprocess.run(
+            ["git", "-C", str(wt_dir), "check-ignore", "-q", "node_modules"],
+            env=_git_env(),
+            capture_output=True,
+            check=False,
+        )
+        if ignored.returncode != 0:
+            return "dependency install: node_modules is not git-ignored, so the commit would stage it"
+        return None
+    return None
+
+
+def _sync_python_dependencies(wt_dir: Path) -> str | None:
+    """Sync the consumer's locked uv environment in wt_dir; return an error message or None.
+
+    A fresh worktree has no .venv, so a hook run through `uv run --no-sync` gets an empty environment.
+    `--frozen` installs exactly what uv.lock pins, with uv's default groups (`dev` included).
+    """
+    if not ((wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()):
+        return None
+    display = "uv sync --frozen"
+    # shutil.which resolves uv.exe on Windows.
+    uv_bin = shutil.which("uv")
+    if uv_bin is None:
+        return f"dependency install: uv not found in PATH (needed for uv.lock); `{display}` not run"
+    result = subprocess.run([uv_bin, "sync", "--frozen"], cwd=wt_dir, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+        return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
+    staged = subprocess.run(
+        ["git", "-C", str(wt_dir), "status", "--porcelain", "--untracked-files=all", "--", ".venv"],
+        env=_git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if staged.returncode != 0 or staged.stdout.strip():
+        return "dependency install: .venv is not git-ignored, so the commit would stage it"
+    return None
+
+
 def _do_update_in_worktree(
     wt_dir: Path,
     root: Path,
@@ -1206,6 +1277,11 @@ def _do_update_in_worktree(
     if parity_error is not None:
         return "parityfail", parity_error
 
+    # Installed after Copier so the dependencies match the updated manifests and lockfiles.
+    install_error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir)
+    if install_error is not None:
+        return "failed", install_error
+
     # A pre-commit hook that rewrites files (a formatter) aborts the commit but leaves the fixes in the
     # tree. That is not a failed update: stage the fixes and commit once more, still through the hooks.
     for attempt in range(2):
@@ -1248,7 +1324,10 @@ def _do_update_in_worktree(
             check=False,
         )
         if pr.returncode != 0:
-            return "pushfail", (pr.stderr.strip() or "push failed")
+            # A pre-push hook (the repo's test gate) reports on stdout, so stderr alone
+            # shows only git's closing "failed to push some refs" line.
+            report = "\n".join(part for part in (pr.stdout.strip(), pr.stderr.strip()) if part)
+            return "pushfail", (report or "push failed")
         # Keep the repo's main working tree in sync with what we just shipped.
         subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
         repair_bare_worktree_config(root)

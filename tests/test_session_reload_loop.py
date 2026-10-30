@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 from conftest import tmux_runnable
 from process_ownership import watch_tmux_directory
+from process_wait import process_wait_seconds
 
 from ai_cli.session_script import get_engine_script
 
@@ -39,7 +40,7 @@ _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="the session supervisor is a POSIX shell script")
 
-_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_OBSERVE_SECONDS = process_wait_seconds()
 # The agent starts only after the whole generated startup has run: ~20 s on a
 # lightly loaded 10-core host, and past 60 s with eight copies of this file running
 # at once (AI-CLI-h17u, measured 2026-10-14). So startup is waited on by its two real

@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `false`/`"full"`, and neither uses `false`/`"off"` and refuses new launches.
 - Reconnect suggestions preserve the complete remote session title and registered project,
   including host aliases, labels and human names.
+- `ai copier-update` in isolated mode installs a consumer's JS dependencies before it
+  commits, so pre-commit hooks that run npm scripts find their tools. A `package.json`
+  with `package-lock.json` runs `npm ci`, `pnpm-lock.yaml` runs
+  `pnpm install --frozen-lockfile` and `yarn.lock` runs `yarn install --frozen-lockfile`.
+  A failed install, a missing installer or a `node_modules` that is not git-ignored fails
+  the project with a message naming the cause, and nothing is committed. A project with no
+  `package.json` is updated as before.
+- `ai copier-update` in isolated mode runs `uv sync --frozen` before it commits when the
+  project has both `pyproject.toml` and `uv.lock`, so hooks that run through
+  `uv run --no-sync` find the project's locked dependencies, `dev` group included, instead
+  of an empty environment. A missing `uv`, a failed sync or a `.venv` that the commit
+  would stage fails the project with a message naming the cause, and nothing is committed.
+  A project without `uv.lock` is updated as before.
 
 ### Added
 

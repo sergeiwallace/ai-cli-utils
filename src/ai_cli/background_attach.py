@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -30,6 +31,9 @@ import psutil
 from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
+_DIALOG_OPTION = re.compile(r"❯\s*\d+\.")
+# Claude Code's refusal when the `disableAgentView` setting or its environment variable is on.
+_AGENT_VIEW_OFF = re.compile(r"is disabled by (?:CLAUDE_CODE_DISABLE_AGENT_VIEW|the 'disableAgentView' setting)")
 _AGENTS_LIST_TIMEOUT_SECONDS = 15
 _PANE_CAPTURE_TIMEOUT_SECONDS = 10
 _TMUX_TIMEOUT_SECONDS = 10
@@ -37,10 +41,12 @@ _TMUX_TIMEOUT_SECONDS = 10
 # not one of them: it is a live copy whose turn ended and which waits for input (its pid is
 # alive and its status is idle). A `stopped` row is over, and the default list drops it.
 _OVER = frozenset({"finished", "failed", "stopped", "exited", "killed"})
-# The one state in which a copy is between turns and can take a typed prompt. `working` is
-# mid-turn and `blocked` is waiting on a dialog: typing into either answers the wrong thing.
-# Any word not listed is treated as not idle.
-_IDLE_STATES = frozenset({"done"})
+# The states in which a copy is between turns and can take a typed prompt. Claude Code 2.1.311
+# reports a copy that finished its turn and waits on the user as `blocked`, with a `needs` text
+# on its job record, and a copy holding only a shell sits there too. `working` is mid-turn, and
+# typing into it answers the wrong thing. A blocked copy can still be showing a choice, which is
+# why delivery also waits for the input box. Any word not listed is treated as not idle.
+_IDLE_STATES = frozenset({"done", "blocked"})
 _IDLE_STATUSES = frozenset({"idle", ""})
 # Seconds between the paste and the Enter that submits it, so the TUI has taken the paste in.
 PASTE_SETTLE_SECONDS = 0.4
@@ -107,8 +113,58 @@ def is_moved_copy(row: dict, name: str, cwd: Path) -> bool:
     return is_copy_title(row.get("name"), name)
 
 
+def _claude_config_dir() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
+def _pid_alive(pid: object) -> bool:
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and psutil.pid_exists(pid)
+
+
+def _read_json(path: Path) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _daemon_hosted(config_dir: Path) -> frozenset[str] | None:
+    """Short ids of the copies a live daemon worker hosts, or None when the roster cannot be read.
+
+    ``claude agents --json`` reads job records, and the daemon's idle retire of a blocked job
+    never writes a terminal state, so a record can outlive both its worker and its daemon.
+    The daemon's roster names its own pid and each worker's pid.
+    """
+    roster = _read_json(config_dir / "daemon" / "roster.json")
+    if not isinstance(roster, dict) or not isinstance(roster.get("workers"), dict):
+        return None
+    if not _pid_alive(roster.get("supervisorPid")):
+        return frozenset()
+    return frozenset(
+        short
+        for short, worker in roster["workers"].items()
+        if isinstance(worker, dict) and _pid_alive(worker.get("pid"))
+    )
+
+
+def _is_stale_daemon_record(row: dict, config_dir: Path, hosted: frozenset[str] | None) -> bool:
+    """Whether ``row`` is a daemon job that no live daemon worker hosts.
+
+    Only a record the daemon owns can be proved stale; an unreadable roster or job record
+    leaves the row live, so the relaunch keeps its safe hold.
+    """
+    if hosted is None or row["id"] in hosted:
+        return False
+    job = _read_json(config_dir / "jobs" / row["id"] / "state.json")
+    return isinstance(job, dict) and job.get("backend") == "daemon"
+
+
 def list_live_background_sessions() -> list[dict] | None:
-    """Live background rows from ``claude agents --json``, or None when the list is unreadable."""
+    """Live background rows from ``claude agents --json``, or None when the list is unreadable.
+
+    A daemon job record that no live daemon worker hosts is dropped (AI-CLI-h330).
+    """
     try:
         completed = subprocess.run(
             ["claude", "agents", "--json"],
@@ -120,14 +176,16 @@ def list_live_background_sessions() -> list[dict] | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
-        return None
+        # With agent view turned off Claude Code runs no background sessions at all, so its
+        # refusal is an empty list, not an unreadable one that holds the relaunch.
+        return [] if _AGENT_VIEW_OFF.search(completed.stderr or "") else None
     try:
         rows = json.loads(completed.stdout)
     except json.JSONDecodeError:
         return None
     if not isinstance(rows, list):
         return None
-    return [
+    listed = [
         row
         for row in rows
         if isinstance(row, dict)
@@ -136,6 +194,9 @@ def list_live_background_sessions() -> list[dict] | None:
         and _word(row, "state") not in _OVER
         and _BACKGROUND_ID.fullmatch(str(row.get("id", "")))
     ]
+    config_dir = _claude_config_dir()
+    hosted = _daemon_hosted(config_dir)
+    return [row for row in listed if not _is_stale_daemon_record(row, config_dir, hosted)]
 
 
 def _capture_pane(tmux_session: str, destination: Path) -> bool:
@@ -487,11 +548,17 @@ def _tmux(*args: str) -> subprocess.CompletedProcess | None:
 
 
 def _composer_drawn(tmux_session: str) -> bool:
-    """Whether the pane shows Claude's input box: its prompt line between two rules."""
+    """Whether the pane shows Claude's input box: its prompt line between two rules.
+
+    A choice dialog marks its selected option with the same ``❯``, followed by a number,
+    and a pane showing one is not taking a prompt.
+    """
     captured = _tmux("capture-pane", "-p", "-t", tmux_session)
     if captured is None or captured.returncode != 0:
         return False
     lines = [line.strip() for line in captured.stdout.splitlines() if line.strip()][-_COMPOSER_LINES:]
+    if any(_DIALOG_OPTION.match(line) for line in lines):
+        return False
     rules = sum(1 for line in lines if len(line) >= 10 and set(line) <= {"─"})
     return rules >= 2 and any(line.startswith("❯") for line in lines)
 

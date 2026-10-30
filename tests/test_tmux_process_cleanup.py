@@ -14,6 +14,7 @@ from pathlib import Path
 import process_ownership
 import psutil
 import pytest
+from process_wait import process_wait_seconds
 from test_session_recovery_shell import _STOP_SECONDS
 from test_tmux_default_server_isolation import stand_in_server as sibling_server
 
@@ -21,7 +22,7 @@ stand_in_server = sibling_server
 
 pytestmark = [pytest.mark.real_tmux, pytest.mark.skipif(os.name != "posix", reason="tmux requires POSIX")]
 
-_WAIT = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+_WAIT = process_wait_seconds()
 # The inner test waits up to _STOP_SECONDS for the stop line and again for the banner
 # before it publishes; the outer must not give up first, or it times out a healthy run.
 _READY_WAIT = 2 * _STOP_SECONDS + _WAIT
