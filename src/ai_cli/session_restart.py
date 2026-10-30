@@ -2161,8 +2161,8 @@ def restart(
             if event_completion and os.name == "posix":
                 request_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 request_path.parent.chmod(0o700)
-            request = prepare_request(record, managed, settings)
             start_listener = None
+            event = None
             if event_completion:
                 from .iterm2_restore import LAUNCH_REASON_VAR
 
@@ -2172,12 +2172,15 @@ def restart(
                 start_listener.listen(1)
                 reason = os.environ.get(LAUNCH_REASON_VAR, "")
                 launch_id = reason.removeprefix("remote-inbox:") if reason.startswith("remote-inbox:") else None
-                request["event_completion"] = {
+                event = {
                     "secret": secrets.token_hex(32),
                     "port": start_listener.getsockname()[1],
                     "engine_start_time": psutil.Process(os.getpid()).create_time(),
                     "launch_id": launch_id,
                 }
+            request = prepare_request(record, managed, settings)
+            if event is not None:
+                request["event_completion"] = event
                 _atomic_json(request_path, request)
             result = {
                 "session_id": record["sessionId"],

@@ -949,6 +949,33 @@ def test_given_invalid_receipt_when_read_then_rejects_with_bounded_bytes(payload
     assert stream.tell() <= 8193
 
 
+@pytest.mark.parametrize("failure", ["socket", "bind", "listen"])
+def test_given_listener_setup_failure_when_restarting_then_no_fence_and_later_restart_succeeds(
+    event_world, monkeypatch, failure
+):
+    world = event_world
+    original_socket = restart.socket.socket
+
+    def create(family, *args):
+        if family == socket.AF_INET and failure == "socket":
+            raise OSError("listener unavailable")
+        return original_socket(family, *args)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(restart, "socket", _ModuleView(restart.socket, socket=create))
+        if failure != "socket":
+            patcher.setattr(getattr(world.listener, failure), "side_effect", OSError("listener unavailable"))
+        code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == (1, "unavailable", "")
+    assert not world.signals
+    assert not restart.state_paths(world.session)[2].exists()
+    assert restart.child_pin(world.session, world.record["name"]) == (3, "")
+    if failure != "socket":
+        world.listener.close.assert_called_once()
+    code, report, err = world.cli("-X", SESSION_ID)
+    assert (code, report["reason"], err) == (0, "restarted", "")
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 def test_given_default_restart_when_completed_then_output_is_unchanged(world, json_output):
     code, out, err = run_cli(["ai", "-X", SESSION_ID, *(["-j"] if json_output else [])], config=world.settings)
