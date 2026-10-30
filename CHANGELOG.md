@@ -104,6 +104,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ai list-names [-j/--json]` lists every held name; `ai list-name-candidates
   [-r/--repo ALIAS] [-L/--max-length N]` counts the free names per length and letter
   tier.
+- `[messaging] tunnel_hosts` lists the machine ids that open an SSH tunnel to the configured
+  remote machine when the local message port is unreachable. It is read on every connect
+  and ships empty, so no machine opens a tunnel unless it is listed; an invalid value
+  never opens one.
 - `ai sessions enrol -a/--all` registers validated live sessions on the current host
   without restarting them. `-d/--dry-run` previews changes and `-j/--json` reports
   registrations, existing records and skips. Update refresh, supervisor start and
