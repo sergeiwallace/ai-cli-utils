@@ -1856,6 +1856,10 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
         data.extend(chunk)
     if not data.endswith(b"\n") or b"\n" in data[:-1] or receive(1) != b"":
         raise ValueError("exec failed")
+    # Receipts are flat objects. Bound parser work before touching untrusted JSON.
+    line = data.strip()
+    if not line.startswith(b"{") or not line.endswith(b"}") or line.count(b"{") + line.count(b"[") > 8:
+        raise ValueError("invalid receipt shape")
     return json.loads(data)
 
 
@@ -1896,7 +1900,7 @@ def _receive_start(listener: socket.socket, request: dict, settings: dict, *, de
             or probe_for().has_ended(pid)
         ):
             raise ValueError("replacement ownership unavailable")
-    except (Refusal, OSError, ValueError, KeyError, TypeError, psutil.Error):
+    except (Refusal, OSError, ValueError, KeyError, TypeError, RecursionError, MemoryError, psutil.Error):
         return _report(
             "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
         )

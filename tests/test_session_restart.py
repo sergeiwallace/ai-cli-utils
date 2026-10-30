@@ -741,7 +741,18 @@ def event_world(world, monkeypatch):
     return world
 
 
-@pytest.mark.parametrize("stranger", [b"", b'{"request_id":"other"}\n', b"invalid\n"])
+@pytest.mark.parametrize(
+    "stranger",
+    [
+        b"",
+        b'{"request_id":"other"}\n',
+        b"invalid\n",
+        pytest.param(b"[" * 1500 + b"]" * 1500 + b"\n", id="nested-arrays"),
+        pytest.param(b'{"nested":' + b"[" * 1500 + b"]" * 1500 + b"}\n", id="nested-object"),
+        RecursionError,
+        MemoryError,
+    ],
+)
 def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_genuine_receipt(
     event_world, monkeypatch, stranger
 ):
@@ -750,6 +761,17 @@ def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_gen
     clock = [100.0]
     waits = []
     genuine = world.connection.makefile.side_effect
+    if stranger in (RecursionError, MemoryError):
+        failure = stranger
+        loads = json.loads
+
+        def parse(data, *args, **kwargs):
+            if data == b"{}\n":
+                raise failure
+            return loads(data, *args, **kwargs)
+
+        monkeypatch.setattr(restart, "json", _ModuleView(json, loads=parse))
+        stranger = b"{}\n"
     replies = iter([io.BytesIO(stranger), None])
     world.connection.makefile.side_effect = lambda *args: next(replies) or genuine()
 
@@ -939,7 +961,10 @@ def test_given_dripping_receipt_when_deadline_passes_then_rejects_within_total_b
     assert connection.closed
 
 
-@pytest.mark.parametrize("payload", [b"x" * 9000, b'{"partial":', b"{}\n!", b"{}\n{}\n"])
+@pytest.mark.parametrize(
+    "payload",
+    [b"x" * 9000, b'{"partial":', b"{}\n!", b"{}\n{}\n", b'{"nested":' + b"[" * 20 + b"]" * 20 + b"}\n"],
+)
 def test_given_invalid_receipt_when_read_then_rejects_with_bounded_bytes(payload):
     connection = MagicMock()
     stream = io.BytesIO(payload)
