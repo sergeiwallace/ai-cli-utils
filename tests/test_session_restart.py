@@ -10,6 +10,7 @@ import os
 import select
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -33,6 +34,13 @@ _REAL_PROCESS = psutil.Process
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
+
+
+class _ModuleView(SimpleNamespace):
+    """Override a module only as seen by the restart implementation."""
+
+    def __init__(self, module, **overrides):
+        super().__init__(**(vars(module) | overrides))
 
 
 @pytest.fixture
@@ -423,7 +431,7 @@ def world(tmp_path, monkeypatch):
 
     state_obj.subprocess_run = subprocess_run
     connection = MagicMock()
-    monkeypatch.setattr(restart.socket, "socket", lambda *a: connection)
+    monkeypatch.setattr(restart, "socket", _ModuleView(restart.socket, socket=lambda *a: connection))
     state_obj.connection = connection
 
     def replace():
@@ -437,7 +445,7 @@ def world(tmp_path, monkeypatch):
         state_obj.signals.append((pid, sig))
         replace()
 
-    monkeypatch.setattr(restart.os, "kill", kill)
+    monkeypatch.setattr(restart, "os", _ModuleView(os, kill=kill))
     monkeypatch.setattr(restart, "load_commands", lambda: {"observer": ["observer"]})
     state_obj.commands = lambda value: monkeypatch.setattr(restart, "load_commands", lambda: value)
 
@@ -687,7 +695,6 @@ def test_given_alias_when_restart_then_one_pid(world, target, flag):
 @pytest.fixture
 def event_world(world, monkeypatch):
     """Exercise the real restart gates with a one-shot child exec receipt."""
-    original_socket = restart.socket.socket
     monkeypatch.setattr(restart.psutil.Process, "create_time", lambda self: 1234.5)
     listener = MagicMock()
     listener.getsockname.return_value = ("127.0.0.1", 12345)
@@ -704,16 +711,52 @@ def event_world(world, monkeypatch):
 
     connection.makefile.side_effect = reply
     listener.accept.return_value = (connection, ("127.0.0.1", 12346))
-    monkeypatch.setattr(
-        restart.socket,
-        "socket",
-        lambda family, *args: listener if family == restart.socket.AF_INET else original_socket(family, *args),
-    )
+    monkeypatch.setattr(restart, "socket", _ModuleView(socket, socket=lambda *args: listener))
     # The kernel wait is the only asynchronous boundary in this fixture.
-    monkeypatch.setattr(select, "select", lambda *args: ([listener], [], []))
+    monkeypatch.setattr(restart, "select", _ModuleView(select, select=lambda *args: ([listener], [], [])))
     world.listener = listener
     world.connection = connection
     return world
+
+
+@pytest.mark.parametrize("stranger", [b"", b'{"request_id":"other"}\n', b"invalid\n"])
+def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_genuine_receipt(
+    event_world, monkeypatch, stranger
+):
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=10, relaunch_timeout_seconds=10)
+    clock = [100.0]
+    waits = []
+    genuine = world.connection.makefile.side_effect
+    replies = iter([io.BytesIO(stranger), None])
+    world.connection.makefile.side_effect = lambda *args: next(replies) or genuine()
+
+    def wait(readers, writers, errors, timeout):
+        waits.append(timeout)
+        if len(waits) == 1:
+            clock[0] += 2
+            return readers, [], []
+        if len(waits) == 2:
+            clock[0] += timeout
+            return [], [], []
+        assert world.signals[-1] == (101, signal.SIGKILL)
+        return readers, [], []
+
+    def kill(pid, sig):
+        world.signals.append((pid, sig))
+        if sig == signal.SIGKILL:
+            world.replace()
+
+    monkeypatch.setattr(restart, "select", _ModuleView(select, select=wait))
+    monkeypatch.setattr(
+        restart, "time", _ModuleView(time, monotonic=lambda: clock[0], sleep=Mock(side_effect=AssertionError))
+    )
+    monkeypatch.setattr(restart, "os", _ModuleView(os, kill=kill))
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == (0, "started", "")
+    assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
+    assert waits == [10, 8, 10]
+    assert world.listener.accept.call_count == 2
 
 
 @pytest.mark.parametrize("flag", ["-E", "--event-completion"])
@@ -1400,14 +1443,14 @@ def test_given_failed_request_when_replacement_unproven_then_fence_and_files_pre
         world.result_path.write_text("{", encoding="utf-8")
     before = world.request_path.read_bytes(), world.result_path.read_bytes()
     if fault == "request-inaccessible":
-        original_stat = restart.os.stat
+        original_stat = Path.stat
 
         def stat(path, *args, **kwargs):
             if path == world.request_path:
                 raise PermissionError("fixture request inaccessible")
             return original_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(restart.os, "stat", stat)
+        monkeypatch.setattr(Path, "stat", stat)
     if flag == "-X":
         # A manual retry keeps its own same-conversation rule; it never counts as reconciliation.
         with contextlib.suppress(Exception):

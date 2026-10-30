@@ -1783,13 +1783,18 @@ def exec_replacement(session: str, argv: list[str]) -> int:
     return 1
 
 
-def _receive_start(listener: socket.socket, request: dict, settings: dict) -> dict:
+def _receive_start(listener: socket.socket, request: dict, settings: dict, *, deadline: float | None = None) -> dict:
     """Read one exec receipt, never sample the replacement's session registry."""
     try:
-        listener.settimeout(max(0.001, settings["relaunch_timeout_seconds"]))
+        remaining = (
+            max(0.001, settings["relaunch_timeout_seconds"]) if deadline is None else deadline - time.monotonic()
+        )
+        if remaining <= 0:
+            raise TimeoutError
+        listener.settimeout(remaining)
         connection, _ = listener.accept()
         with connection:
-            connection.settimeout(max(0.001, settings["relaunch_timeout_seconds"]))
+            connection.settimeout(remaining)
             with connection.makefile("rb") as stream:
                 receipt = json.loads(stream.readline(8192))
                 if stream.read(1) != b"":
@@ -1822,6 +1827,17 @@ def _receive_start(listener: socket.socket, request: dict, settings: dict) -> di
         replacement_pid=pid,
         replacement_start_time=birth,
     )
+
+
+def _wait_start(listener: socket.socket, request: dict, settings: dict, deadline: float) -> dict:
+    """Block for authenticated completion; unrelated connections consume no new budget."""
+    while (remaining := deadline - time.monotonic()) > 0:
+        if not select.select([listener], [], [], remaining)[0]:
+            break
+        report = _receive_start(listener, request, settings, deadline=deadline)
+        if report["reason"] == "started":
+            return report
+    return _report("verification-failed", detail="replacement or local bridge verification timed out", local="FAILED")
 
 
 def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
@@ -1894,7 +1910,7 @@ def _act(
     commands: dict,
     *,
     start_listener: socket.socket | None = None,
-) -> None:
+) -> dict | None:
     session, _ = _pane(record)
     _, _, request_path = state_paths(session)
     request["status"] = "acting"
@@ -1917,7 +1933,7 @@ def _act(
         rows = transcript_tail(transcript_path(current))
         idle_gate(_fresh(record_path, record), rows, settings)
         _inject_exit(record, commands)
-        return
+        return None
     try:
         if (
             probe_for().start_time_match(record["pid"], normalize_proc_start(current.get("procStart")))
@@ -1939,14 +1955,16 @@ def _act(
         rows = transcript_tail(transcript_path(current))
         idle_gate(_fresh(record_path, record), rows, settings)
         _inject_exit(record, commands)
-        return
+        return None
     deadline = time.monotonic() + settings["term_grace_seconds"]
     probe = probe_for()
     if start_listener is None:
         while not probe.has_ended(record["pid"]) and time.monotonic() < deadline:
             time.sleep(POLL_SECONDS)
-    elif select.select([start_listener], [], [], settings["term_grace_seconds"])[0]:
-        return
+    else:
+        report = _wait_start(start_listener, request, settings, deadline)
+        if report["reason"] == "started":
+            return report
     if not probe.has_ended(record["pid"]):
         # Escalate only to that same birth identity, after all gates still pass.
         current = _fresh(record_path, record)
@@ -1960,6 +1978,7 @@ def _act(
         rows = transcript_tail(transcript_path(current))
         idle_gate(_fresh(record_path, record), rows, settings)
         os.kill(record["pid"], signal.SIGKILL)
+    return None
 
 
 def _inject_exit(record: dict, commands: dict) -> None:
@@ -2094,8 +2113,16 @@ def restart(
                     _act(record_path, record, managed, request, settings, commands)
                     report = _verify_replacement(record, settings, commands)
                 else:
-                    _act(record_path, record, managed, request, settings, commands, start_listener=start_listener)
-                    report = _receive_start(start_listener, request, settings)
+                    report = _act(
+                        record_path, record, managed, request, settings, commands, start_listener=start_listener
+                    )
+                    if report is None:
+                        report = _wait_start(
+                            start_listener,
+                            request,
+                            settings,
+                            time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"]),
+                        )
             except Refusal as exc:
                 report = _report(exc.reason, detail=exc.detail)
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
