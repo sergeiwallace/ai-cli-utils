@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
+import select
 import shlex
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -679,6 +682,217 @@ def test_given_alias_when_restart_then_one_pid(world, target, flag):
     assert world.signals == [(101, signal.SIGTERM)]
     assert world.connection.__enter__.return_value.connect.call_count == 2
     assert restart._object(restart.state_paths(world.session)[2])["status"] == "complete"
+
+
+@pytest.fixture
+def event_world(world, monkeypatch):
+    """Exercise the real restart gates with a one-shot child exec receipt."""
+    original_socket = restart.socket.socket
+    monkeypatch.setattr(restart.psutil.Process, "create_time", lambda self: 1234.5)
+    listener = MagicMock()
+    listener.getsockname.return_value = ("127.0.0.1", 12345)
+    connection = MagicMock()
+
+    def reply(*args):
+        request = restart._object(restart.state_paths(world.session)[2])
+        return io.BytesIO(
+            json.dumps(
+                {"request_id": request["request_id"], "replacement_pid": 201, "replacement_start_time": 1234.5}
+            ).encode()
+            + b"\n"
+        )
+
+    connection.makefile.side_effect = reply
+    listener.accept.return_value = (connection, ("127.0.0.1", 12346))
+    monkeypatch.setattr(
+        restart.socket,
+        "socket",
+        lambda family, *args: listener if family == restart.socket.AF_INET else original_socket(family, *args),
+    )
+    # The kernel wait is the only asynchronous boundary in this fixture.
+    monkeypatch.setattr(select, "select", lambda *args: ([listener], [], []))
+    world.listener = listener
+    world.connection = connection
+    return world
+
+
+@pytest.mark.parametrize("flag", ["-E", "--event-completion"])
+@pytest.mark.parametrize("command", [[], ["c"]])
+def test_given_event_completion_when_restarting_then_emits_identity_without_polling(
+    event_world, monkeypatch, flag, command
+):
+    world = event_world
+    monkeypatch.setattr(restart, "resolve_target", lambda target: (world.registry, world.record))
+    monkeypatch.setattr(restart, "records", Mock(side_effect=AssertionError("record scan")))
+    monkeypatch.setattr(restart.time, "sleep", Mock(side_effect=AssertionError("sleep")))
+    monkeypatch.setattr(restart, "_verify_replacement", Mock(side_effect=AssertionError("verification loop")))
+    monkeypatch.setenv(main._LAUNCH_REASON_VAR, "remote-inbox:33333333-3333-4333-8333-333333333333")
+    # These values force the old termination wait to sleep if it is reached.
+    world.settings["restart_session"]["term_grace_seconds"] = 10
+    world.probe.has_ended = lambda pid: False
+    code, out, err = run_cli(["ai", *command, "-X", SESSION_ID, flag], config=world.settings)
+    report = json.loads(out)
+    assert (code, report["reason"], err) == (0, "started", "")
+    assert report["session_id"] == report["restart_session_id"] == SESSION_ID
+    assert report["replacement_pid"] == 201
+    assert report["replacement_start_time"] == 1234.5
+    assert report["engine_pid"] == os.getpid()
+    assert report["engine_start_time"] == 1234.5
+    assert report["launch_id"] == "33333333-3333-4333-8333-333333333333"
+    assert world.signals == [(101, signal.SIGTERM)]
+    request = restart._object(restart.state_paths(world.session)[2])
+    assert request["status"] == "complete" and request["result"] == "started"
+    assert request["session_id"] == SESSION_ID
+    assert restart.child_pin(world.session, world.record["name"]) == (3, "")
+    world.listener.close.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exec", "identity"])
+def test_given_event_completion_when_start_fails_then_preserves_failure_report(event_world, failure):
+    world = event_world
+    if failure == "timeout":
+        world.listener.accept.side_effect = TimeoutError
+    elif failure == "exec":
+        reply = world.connection.makefile.side_effect
+        world.connection.makefile.side_effect = lambda *args: io.BytesIO(reply().getvalue() + b"!")
+    else:
+        world.connection.makefile.side_effect = lambda *args: io.BytesIO(b'{"request_id":"other"}\n')
+    code, report, err = world.cli("-X", SESSION_ID, "--event-completion")
+    assert (code, err) == (1, "")
+    assert report == restart._report(
+        "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
+    )
+    request = restart._object(restart.state_paths(world.session)[2])
+    assert request["status"] == "failed"
+    world.listener.close.assert_called_once()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_given_default_restart_when_completed_then_output_is_unchanged(world, json_output):
+    code, out, err = run_cli(["ai", "-X", SESSION_ID, *(["-j"] if json_output else [])], config=world.settings)
+    assert (code, err) == (0, "")
+    if json_output:
+        assert out == (
+            '{"detail": "", "local": "VERIFIED", "message_delivery": "UNVERIFIED", '
+            '"mobile": "UNVERIFIED", "peer": "VERIFIED", "reason": "restarted", "replacement_pid": 201}\n'
+        )
+    else:
+        assert out == (
+            "[session] session: restart; reason=restarted; detail=; local=VERIFIED; peer=VERIFIED; "
+            "mobile=UNVERIFIED; message_delivery=UNVERIFIED; replacement_pid=201\n"
+        )
+
+
+@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("platform", ["native", "windows"])
+def test_given_exec_handoff_when_launched_then_only_exec_success_closes_without_failure(tmp_path, failure, platform):
+    # Keep a real exec boundary even in sandboxes that prohibit local sockets.
+    # The socket fixture records sends; the successful exec must bypass finally.
+    script = """
+import json, os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from ai_cli import session_restart as restart
+receipt_path, launched_path, failure, platform = sys.argv[1:]
+if platform == "windows": restart.sys = SimpleNamespace(platform="win32")
+class Connection:
+    def settimeout(self, timeout): pass
+    def set_inheritable(self, value): assert value is False
+    def connect(self, endpoint): assert endpoint == ("127.0.0.1", 12345)
+    def sendall(self, data):
+        with Path(receipt_path).open("ab") as stream: stream.write(data)
+    def close(self): pass
+restart.socket.socket = lambda *args: Connection()
+restart._object = lambda path: {"request_id": "test-request", "event_completion": {"port": 12345}}
+restart._validate_request = lambda *args, **kwargs: None
+def forbidden(*args): raise AssertionError("unexpected polling")
+restart.time.sleep = forbidden
+restart.records = forbidden
+argv = [sys.executable, "-c", "import os, sys; from pathlib import Path; Path(sys.argv[1]).write_text(str(os.getpid()))", launched_path]
+if failure == "True": argv = [str(Path(launched_path).with_name("missing-command"))]
+sys.exit(restart.exec_replacement("test-session", argv))
+"""
+    receipt_path, launched_path = tmp_path / "receipt", tmp_path / "launched"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(receipt_path), str(launched_path), str(failure), platform],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (1 if failure else 0, "", "")
+    if failure and platform == "windows":
+        assert receipt_path.read_bytes() == b"!" and not launched_path.exists()
+        return
+    first, rest = receipt_path.read_bytes().split(b"\n", 1)
+    receipt = json.loads(first)
+    assert receipt["request_id"] == "test-request"
+    assert receipt["replacement_pid"] > 1 and receipt["replacement_start_time"] > 0
+    if failure:
+        assert rest == b"!" and not launched_path.exists()
+    else:
+        assert rest == b"" and int(launched_path.read_text()) == receipt["replacement_pid"]
+
+
+@pytest.mark.parametrize("args", [["--event-completion"], ["-Y", SESSION_ID, "-E"], ["c", "-E"]])
+def test_given_event_completion_without_restart_when_parsed_then_usage_refuses(world, args):
+    code, out, err = run_cli(["ai", *args], config=world.settings)
+    assert code == 1 and "--event-completion requires --restart-session" in err
+    assert not out and not world.signals
+
+
+@pytest.mark.parametrize("gate", ["busy", "context"])
+def test_given_event_completion_when_waiting_would_be_required_then_gate_refuses_without_polling(
+    event_world, monkeypatch, gate
+):
+    world = event_world
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(restart.time, "sleep", Mock(side_effect=AssertionError("sleep")))
+    monkeypatch.setattr(restart, "context_pre_step", Mock(side_effect=AssertionError("compaction wait")))
+    with patch.object(restart.subprocess, "Popen", Mock(side_effect=AssertionError("detached helper"))):
+        if gate == "busy":
+            world.record["status"] = "busy"
+        else:
+            world.settings["restart_session"].update(pre_step=True, context_threshold_pct=1)
+        world.write()
+        code, report, _ = world.cli("-X", SESSION_ID, "-E")
+    assert code == 1 and report["reason"] == gate
+    assert not world.signals
+
+
+def test_given_remote_event_completion_when_restarting_then_mode_and_json_are_forwarded(world, monkeypatch):
+    monkeypatch.setattr(main._config, "get_remote_machine", lambda *args: {"host": "example.com", "user": "user"})
+    monkeypatch.setattr(main, "_resolve_remote_shell", lambda ssh: "bash")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout='{"reason":"started","session_id":"test-session"}')
+
+    with patch.object(main.subprocess, "run", run):
+        code, out, err = run_cli(["ai", "c", "1", "-R", "-p", "myproject", "-X", "-E"], config=world.settings)
+    assert (code, json.loads(out), err) == (0, {"reason": "started", "session_id": "test-session"}, "")
+    assert len(calls) == 1
+    assert "--event-completion" in calls[0][-1] and "-j" in calls[0][-1]
+    assert not world.signals
+
+
+def test_given_event_request_when_child_pins_then_exact_transcript_and_exec_mode_are_returned(world, monkeypatch):
+    settings = config.read_restart_config(world.settings)
+    with restart.session_lock(world.session):
+        managed = restart.managed_gate(world.record, settings)
+        request = restart.prepare_request(world.record, managed, settings)
+        request.update(status="acting", event_completion={"port": 12345})
+        restart._atomic_json(restart.state_paths(world.session)[2], request)
+        world.probe.has_ended = lambda pid: pid in (101, 102)
+        monkeypatch.setattr(restart.os, "getppid", lambda: 104)
+        monkeypatch.chdir(world.cwd)
+        assert restart.child_pin(world.session, world.record["name"]) == (
+            0,
+            str(world.transcript) + "\nevent-completion",
+        )
+        assert restart.child_pin(world.session, world.record["name"])[0] == 1
 
 
 @pytest.mark.parametrize("check", [False, True])

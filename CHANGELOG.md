@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai -X/--restart-session` accepts `-E/--event-completion` to return a JSON
+  receipt after starting the pinned replacement, without polling for registration.
+  The receipt preserves the conversation UUID and includes process birth identities
+  and the existing launch identity for a later bind event. Default restart behavior
+  and output are unchanged.
 - `[launch] refresh_plugins` optionally refreshes configured Claude Code plugins before
   the initial start and every wrapper auto-restart, including bare and one-shot launches.
   The default list is empty. Marketplace and plugin updates have a 10-second timeout

@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -1342,7 +1343,10 @@ def child_pin(session: str, title: str) -> tuple[int, str]:
         if request.get("status") == "complete":
             if (
                 request.get("version") != 1
-                or request.get("result") != "restarted"
+                or not (
+                    request.get("result") == "restarted"
+                    or (request.get("result") == "started" and request.get("event_completion"))
+                )
                 or request.get("title") != title
                 or _pane({"tmux": request["tmux"]})[0] != session
                 or str(uuid.UUID(request["session_id"])) != request["session_id"]
@@ -1357,7 +1361,8 @@ def child_pin(session: str, title: str) -> tuple[int, str]:
             output.write(request["request_id"])
             output.flush()
             os.fsync(output.fileno())
-        return 0, request["transcript"]
+        suffix = "\nevent-completion" if request.get("event_completion") else ""
+        return 0, request["transcript"] + suffix
     except (Refusal, OSError, KeyError, TypeError, ValueError):
         return 1, ""
 
@@ -1732,6 +1737,93 @@ def _fresh(record_path: Path, original: dict) -> dict:
     return current
 
 
+def exec_replacement(session: str, argv: list[str]) -> int:
+    """A pinned child reports exec success through a close-on-exec connection."""
+    from .main import _exec_handoff
+
+    connection = None
+    try:
+        request = _object(state_paths(session)[2])
+        _validate_request(request, session, child=True)
+        event = request["event_completion"]
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.settimeout(5)
+        connection.connect(("127.0.0.1", event["port"]))
+        connection.set_inheritable(False)
+        # Windows starts a new PID rather than replacing this one through exec.
+        # Keep its foreground wrapper waiting on the native child-exit event.
+        child = subprocess.Popen(argv) if sys.platform == "win32" else None
+        pid = child.pid if child is not None else os.getpid()
+        connection.sendall(
+            json.dumps(
+                {
+                    "request_id": request["request_id"],
+                    "replacement_pid": pid,
+                    "replacement_start_time": psutil.Process(pid).create_time(),
+                }
+            ).encode("utf-8")
+            + b"\n"
+        )
+        if child is not None:
+            connection.close()
+            connection = None
+            return child.wait()
+        # The OS closes the connection only after a successful exec. An exec error
+        # sends a failure byte instead; neither path waits for session registration.
+        _exec_handoff(argv[0], argv)
+    except (Refusal, OSError, ValueError, KeyError, TypeError, IndexError, psutil.Error):
+        pass
+    finally:
+        if connection is not None:
+            # A successful exec cannot reach finally, even when another failure
+            # (including interruption) occurs after the identity was sent.
+            with contextlib.suppress(OSError):
+                connection.sendall(b"!")
+            connection.close()
+    return 1
+
+
+def _receive_start(listener: socket.socket, request: dict, settings: dict) -> dict:
+    """Read one exec receipt, never sample the replacement's session registry."""
+    try:
+        listener.settimeout(max(0.001, settings["relaunch_timeout_seconds"]))
+        connection, _ = listener.accept()
+        with connection:
+            connection.settimeout(max(0.001, settings["relaunch_timeout_seconds"]))
+            with connection.makefile("rb") as stream:
+                receipt = json.loads(stream.readline(8192))
+                if stream.read(1) != b"":
+                    raise ValueError("exec failed")
+        pid = receipt["replacement_pid"]
+        birth = receipt["replacement_start_time"]
+        if (
+            receipt["request_id"] != request["request_id"]
+            or type(pid) is not int
+            or pid <= 1
+            or pid == request["old_agent_pid"]
+            or not _number(birth)
+            or psutil.Process(pid).create_time() != birth
+            or request["supervisor_pid"] not in [parent.pid for parent in psutil.Process(pid).parents()]
+            or probe_for().has_ended(pid)
+        ):
+            raise ValueError("replacement ownership unavailable")
+    except (OSError, ValueError, KeyError, TypeError, psutil.Error):
+        return _report(
+            "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
+        )
+    event = request["event_completion"]
+    return _report(
+        "started",
+        session_id=request["session_id"],
+        restart_session_id=request["session_id"],
+        engine_pid=request["owner_pid"],
+        engine_start_time=event["engine_start_time"],
+        launch_id=event["launch_id"],
+        replacement_pid=pid,
+        replacement_start_time=birth,
+    )
+
+
 def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
     deadline = time.monotonic() + settings["relaunch_timeout_seconds"]
     while True:
@@ -1793,7 +1885,16 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
         time.sleep(POLL_SECONDS)
 
 
-def _act(record_path: Path, record: dict, managed: Managed, request: dict, settings: dict, commands: dict) -> None:
+def _act(
+    record_path: Path,
+    record: dict,
+    managed: Managed,
+    request: dict,
+    settings: dict,
+    commands: dict,
+    *,
+    start_listener: socket.socket | None = None,
+) -> None:
     session, _ = _pane(record)
     _, _, request_path = state_paths(session)
     request["status"] = "acting"
@@ -1841,8 +1942,11 @@ def _act(record_path: Path, record: dict, managed: Managed, request: dict, setti
         return
     deadline = time.monotonic() + settings["term_grace_seconds"]
     probe = probe_for()
-    while not probe.has_ended(record["pid"]) and time.monotonic() < deadline:
-        time.sleep(POLL_SECONDS)
+    if start_listener is None:
+        while not probe.has_ended(record["pid"]) and time.monotonic() < deadline:
+            time.sleep(POLL_SECONDS)
+    elif select.select([start_listener], [], [], settings["term_grace_seconds"])[0]:
+        return
     if not probe.has_ended(record["pid"]):
         # Escalate only to that same birth identity, after all gates still pass.
         current = _fresh(record_path, record)
@@ -1901,6 +2005,7 @@ def restart(
     detached: bool = False,
     automatic: bool = False,
     expected_tmux_session: str | None = None,
+    event_completion: bool = False,
 ) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
     try:
@@ -1912,7 +2017,7 @@ def restart(
             raise Refusal("target", "automatic target moved to another tmux session")
         if check:
             return _check(record, settings, commands)
-        if not detached and pane == os.environ.get("TMUX_PANE"):
+        if not event_completion and not detached and pane == os.environ.get("TMUX_PANE"):
             # Pin the target as the conversation id across detachment, not its mutable title.
             subprocess.Popen(
                 [sys.executable, "-m", "ai_cli.main", "internal", "restart-detached", record["sessionId"]],
@@ -1922,7 +2027,7 @@ def restart(
                 start_new_session=True,
             )
             return _report("detached")
-        with session_lock(session) as check_lock:
+        with session_lock(session) as check_lock, contextlib.ExitStack() as resources:
             _, result_path, request_path = state_paths(session)
             _reconcile_failed_request(record, check_lock)
             previous = _object(result_path) if result_path.exists() else {}
@@ -1938,7 +2043,7 @@ def restart(
                 )
             ):
                 raise Refusal("previous-verification-failed")
-            if detached:
+            if detached and not event_completion:
                 deadline = time.monotonic() + settings["compaction_wait_seconds"]
                 while True:
                     record = _fresh(record_path, record)
@@ -1949,10 +2054,33 @@ def restart(
                         if exc.reason != "busy" or time.monotonic() >= deadline:
                             raise
                     time.sleep(POLL_SECONDS)
-            managed = assess(record, settings, commands, pre_step=True, record_path=record_path, check_lock=check_lock)
+            managed = assess(
+                record,
+                settings,
+                commands,
+                pre_step=not event_completion,
+                record_path=record_path,
+                check_lock=check_lock,
+            )
             if (settings["mechanism"] == "exit" or not _signal_supported()) and not commands.get("inject"):
                 raise Refusal("no-mechanism")
             request = prepare_request(record, managed, settings)
+            start_listener = None
+            if event_completion:
+                from .iterm2_restore import LAUNCH_REASON_VAR
+
+                start_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                resources.callback(start_listener.close)
+                start_listener.bind(("127.0.0.1", 0))
+                start_listener.listen(1)
+                reason = os.environ.get(LAUNCH_REASON_VAR, "")
+                launch_id = reason.removeprefix("remote-inbox:") if reason.startswith("remote-inbox:") else None
+                request["event_completion"] = {
+                    "port": start_listener.getsockname()[1],
+                    "engine_start_time": psutil.Process(os.getpid()).create_time(),
+                    "launch_id": launch_id,
+                }
+                _atomic_json(request_path, request)
             result = {
                 "session_id": record["sessionId"],
                 "last_restart": time.time(),
@@ -1962,15 +2090,20 @@ def restart(
             # Durable attempt precedes action. A crash never permits an automatic retry.
             _atomic_json(result_path, result)
             try:
-                _act(record_path, record, managed, request, settings, commands)
-                report = _verify_replacement(record, settings, commands)
+                if start_listener is None:
+                    _act(record_path, record, managed, request, settings, commands)
+                    report = _verify_replacement(record, settings, commands)
+                else:
+                    _act(record_path, record, managed, request, settings, commands, start_listener=start_listener)
+                    report = _receive_start(start_listener, request, settings)
             except Refusal as exc:
                 report = _report(exc.reason, detail=exc.detail)
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                 report = _report("verification-failed", detail="replacement evidence became unavailable")
-            result.update(reason=report["reason"], failed=report["reason"] != "restarted")
+            succeeded = report["reason"] == "restarted" or (event_completion and report["reason"] == "started")
+            result.update(reason=report["reason"], failed=not succeeded)
             _atomic_json(result_path, result)
-            request["status"] = "complete" if report["reason"] == "restarted" else "failed"
+            request["status"] = "complete" if succeeded else "failed"
             request["result"] = report["reason"]
             _atomic_json(request_path, request)
             return report

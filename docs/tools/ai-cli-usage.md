@@ -108,6 +108,20 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   after config and the tmux preflight, the worktree path and branch. It returns above
   every write, so it creates no worktree or branch, registers no workspace trust, reaps
   no stale sessions, and does not auto-update the CLI.
+- `-X`/`--restart-session [TARGET]` — restart an existing idle managed Claude Code
+  session by title, conversation UUID or tmux session name; also available at the top level.
+- `-Y`/`--restart-check [TARGET]` — check the restart gates without acting.
+- `-j`/`--json` — print the restart report as JSON.
+- `-E`/`--event-completion` — with `-X`, always print a JSON launch receipt to stdout
+  and return after successful replacement exec, leaving readiness to a later bind event.
+  There is no session-record polling, registration wait, detached idle wait or compaction
+  pre-step in this mode. It returns 0 with `reason: "started"`; launch failure retains
+  exit 1 and the existing `verification-failed` report. The receipt carries the preserved
+  UUID as `session_id` and `restart_session_id`, the replacement's `replacement_pid` and
+  `replacement_start_time`, the restart actor's `engine_pid` and `engine_start_time`,
+  and the existing remote `launch_id` or `null`. Birth times are Unix epoch seconds.
+  Local and peer verification remain `UNVERIFIED`. Without this flag, the usual restart
+  verification, output and exit codes apply. Remote `ai c -R -X -E` forwards the mode.
 
 Session naming convention: the title is `{repo-alias}-{host-alias}-[{label}-]{N}`, or with
 human names `{repo-alias}-{host-alias}-[{label}-]{name}`; its tmux session is `c-<title>` (local) or

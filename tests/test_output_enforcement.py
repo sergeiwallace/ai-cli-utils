@@ -45,6 +45,10 @@ INHERITED_TERMINAL_ALLOWLIST = {
         "the bare-path agent's own interactive session: it writes to a launcher-owned pty, which "
         "is relayed to the terminal byte for byte; that output is the agent's, not a launcher line"
     ),
+    ("session_restart.py", "exec_replacement"): (
+        "the pinned interactive engine owns the existing pane terminal; Windows needs a foreground "
+        "child because exec cannot preserve its PID"
+    ),
 }
 
 # Rich may be imported only by the renderer and by the live-display owner.
