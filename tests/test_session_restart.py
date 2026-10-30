@@ -247,6 +247,13 @@ def missing_sigkill(monkeypatch):
 
 
 @pytest.fixture
+def direct_python():
+    # Windows venv python.exe redirects to another process and retains pipe handles.
+    # The stdlib-only payloads below need one PID that owns its own stdout.
+    return _REAL_PROCESS(os.getpid()).exe() if sys.platform == "win32" else sys.executable
+
+
+@pytest.fixture
 def world(tmp_path, monkeypatch):
     # Process probes and signals below simulate POSIX independently of the host.
     # Platform routing is exercised separately, including Windows injection.
@@ -1344,7 +1351,9 @@ def test_given_default_restart_when_completed_then_output_is_unchanged(world, js
 
 @pytest.mark.parametrize("failure", [False, True])
 @pytest.mark.parametrize("platform", ["native", "windows"])
-def test_given_exec_handoff_when_launched_then_only_exec_success_closes_without_failure(tmp_path, failure, platform):
+def test_given_exec_handoff_when_launched_then_only_exec_success_closes_without_failure(
+    tmp_path, direct_python, failure, platform
+):
     # Keep a real exec boundary even in sandboxes that prohibit local sockets.
     # The socket fixture records sends; the successful exec must bypass finally.
     script = """
@@ -1352,7 +1361,7 @@ import json, os, sys
 from pathlib import Path
 from types import SimpleNamespace
 from ai_cli import session_restart as restart
-receipt_path, launched_path, failure, platform = sys.argv[1:]
+receipt_path, launched_path, failure, platform, direct_python = sys.argv[1:]
 if platform == "windows": restart.sys = SimpleNamespace(platform="win32")
 class Connection:
     def settimeout(self, timeout): pass
@@ -1373,13 +1382,13 @@ restart._validate_request = lambda *args, **kwargs: None
 def forbidden(*args): raise AssertionError("unexpected polling")
 restart.time.sleep = forbidden
 restart.records = forbidden
-argv = [sys.executable, "-c", "import os, sys; from pathlib import Path; Path(sys.argv[1]).write_text(str(os.getpid()))", launched_path]
+argv = [direct_python, "-c", "import os, sys; from pathlib import Path; Path(sys.argv[1]).write_text(str(os.getpid()))", launched_path]
 if failure == "True": argv = [str(Path(launched_path).with_name("missing-command"))]
 sys.exit(restart.exec_replacement("test-session", argv))
 """
     receipt_path, launched_path = tmp_path / "receipt", tmp_path / "launched"
     result = subprocess.run(
-        [sys.executable, "-c", script, str(receipt_path), str(launched_path), str(failure), platform],
+        [sys.executable, "-c", script, str(receipt_path), str(launched_path), str(failure), platform, direct_python],
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
         capture_output=True,
         text=True,
@@ -1387,7 +1396,8 @@ sys.exit(restart.exec_replacement("test-session", argv))
         timeout=30,
     )
     assert (result.returncode, result.stdout, result.stderr) == (1 if failure else 0, "", "")
-    if failure and platform == "windows":
+    windows = platform == "windows" or sys.platform == "win32"
+    if failure and windows:
         assert receipt_path.read_bytes() == b"!" and not launched_path.exists()
         return
     first, rest = receipt_path.read_bytes().split(b"\n", 1)
@@ -1398,7 +1408,9 @@ sys.exit(restart.exec_replacement("test-session", argv))
     assert launch["replacement_pid"] == receipt["replacement_pid"]
     assert launch["replacement_start_time"] == receipt["replacement_start_time"]
     assert "secret" not in launch
-    if platform == "native":
+    if windows:
+        assert launch["wrapper_pid"] != receipt["replacement_pid"]
+    else:
         assert launch["wrapper_pid"] == receipt["replacement_pid"]
         assert launch["wrapper_start_time"] == receipt["replacement_start_time"]
     if failure:
