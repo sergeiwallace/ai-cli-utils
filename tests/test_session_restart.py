@@ -910,6 +910,122 @@ def test_given_event_completion_when_restarting_then_emits_identity_without_poll
     world.listener.close.assert_called_once()
 
 
+@pytest.mark.parametrize("change", ["none", "dead", "birth", "ancestry", "supervisor"])
+def test_given_authenticated_receipt_when_identity_changes_during_exec_wait_then_bookkeeping_matches_verification(
+    event_world, monkeypatch, change
+):
+    world = event_world
+    clock = [100.0]
+
+    def wait(readers, writers, errors, timeout):
+        if world.connection in readers:
+            if change == "dead":
+                world.probe.has_ended = lambda pid: pid in (101, 201)
+            elif change == "birth":
+                monkeypatch.setattr(restart.psutil.Process, "create_time", lambda self: 9999)
+            elif change == "ancestry":
+                monkeypatch.setattr(restart.psutil.Process, "parents", lambda self: [])
+            elif change == "supervisor":
+                world.identities[103] = ProcessIdentity("fake", 999)
+        elif world.listener.accept.called:
+            clock[0] += timeout
+            return [], [], []
+        return readers, [], []
+
+    monkeypatch.setattr(restart, "select", _ModuleView(select, select=wait))
+    monkeypatch.setattr(
+        restart, "time", _ModuleView(time, monotonic=lambda: clock[0], sleep=Mock(side_effect=AssertionError("sleep")))
+    )
+    monkeypatch.setattr(restart, "resolve_target", lambda target: (world.registry, world.record))
+    monkeypatch.setattr(restart, "records", Mock(side_effect=AssertionError("record scan")))
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    success = change == "none"
+    assert (code, report["reason"], err) == ((0, "started", "") if success else (1, "verification-failed", ""))
+    _, result_path, request_path = restart.state_paths(world.session)
+    request = restart._object(request_path)
+    assert request["status"] == ("complete" if success else "failed")
+    assert request["result"] == report["reason"]
+    assert restart._object(result_path)["failed"] is not success
+    assert world.listener.accept.call_count == 1
+
+
+@pytest.mark.parametrize("dies", [False, True], ids=["alive", "dies-before-exec"])
+def test_given_authenticated_wrapper_when_exec_wait_reaches_eof_then_requires_live_owned_replacement(
+    tmp_path, monkeypatch, dies
+):
+    # A real process and pipe reproduce abrupt closure without binding a socket.
+    script = """
+import json, os, sys, threading
+threading.Timer(30, os._exit, args=(1,)).start()
+receipt = json.loads(sys.stdin.readline())
+print(json.dumps(receipt), flush=True)
+sys.stdin.readline()
+if sys.argv[1] == "True": os._exit(0)
+os.close(sys.stdout.fileno())
+sys.stdin.readline()
+os._exit(0)
+"""
+    with owned_process(
+        [sys.executable, "-c", script, str(dies)], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    ) as child:
+        birth = psutil.Process(child.pid).create_time()
+        request = {
+            "request_id": "test-request",
+            "session_id": SESSION_ID,
+            "tmux": "test-session:@1.%1",
+            "old_agent_pid": 101,
+            "supervisor_pid": os.getpid(),
+            "owner_pid": os.getpid(),
+            "event_completion": {"secret": "test-secret", "engine_start_time": 1234.5, "launch_id": None},
+        }
+        marker = tmp_path / "binding.launched"
+        restart._atomic_json(
+            marker,
+            {
+                "request_id": request["request_id"],
+                "wrapper_pid": child.pid,
+                "wrapper_start_time": birth,
+                "replacement_pid": child.pid,
+                "replacement_start_time": birth,
+            },
+        )
+        monkeypatch.setattr(restart, "_launch_path", lambda *args: marker)
+        # Use the same supervisor birth helper as the restart actor.
+        identity = restart.probe_for().capture_identity(os.getpid())
+        request["supervisor_identity"] = {"backend": identity.backend, "marker": identity.marker}
+        child.stdin.write(
+            json.dumps(
+                {
+                    "request_id": request["request_id"],
+                    "secret": "test-secret",
+                    "replacement_pid": child.pid,
+                    "replacement_start_time": birth,
+                }
+            ).encode()
+            + b"\n"
+        )
+        child.stdin.flush()
+        connection = MagicMock()
+        connection.recv.side_effect = lambda size: child.stdout.readline() if size > 1 else child.stdout.read(size)
+        listener = MagicMock()
+        listener.accept.return_value = (connection, ("127.0.0.1", 12345))
+
+        def wait_eof(connection):
+            child.stdin.write(b"close\n")
+            child.stdin.flush()
+            if dies:
+                assert child.wait(timeout=5) == 0
+            return True
+
+        report = restart._receive_start(listener, request, {"relaunch_timeout_seconds": 5}, wait_eof=wait_eof)
+        assert report["reason"] == ("verification-failed" if dies else "started")
+        if not dies:
+            assert child.poll() is None
+            child.stdin.write(b"exit\n")
+            child.stdin.flush()
+            assert child.wait(timeout=5) == 0
+
+
 @pytest.mark.parametrize("failure", ["timeout", "exec", "identity"])
 def test_given_event_completion_when_start_fails_then_preserves_failure_report(event_world, failure):
     world = event_world

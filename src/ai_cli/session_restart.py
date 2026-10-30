@@ -1926,7 +1926,16 @@ def _receive_start(
             connection.settimeout(remaining)
             if connection.recv(1) != b"" or time.monotonic() >= deadline:
                 raise ValueError("exec failed")
-        except (OSError, ValueError):
+            # Abrupt wrapper death also closes the connection without a failure byte.
+            # Recheck ownership and liveness after the authenticated exec wait.
+            if (
+                not _same(request["supervisor_pid"], request["supervisor_identity"])
+                or psutil.Process(pid).create_time() != birth
+                or request["supervisor_pid"] not in [parent.pid for parent in psutil.Process(pid).parents()]
+                or probe_for().has_ended(pid)
+            ):
+                raise ValueError("replacement ownership changed")
+        except (OSError, ValueError, KeyError, TypeError, psutil.Error):
             return failed
     event = request["event_completion"]
     return _report(
