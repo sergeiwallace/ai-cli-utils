@@ -1324,7 +1324,10 @@ def _do_update_in_worktree(
             check=False,
         )
         if pr.returncode != 0:
-            return "pushfail", (pr.stderr.strip() or "push failed")
+            # A pre-push hook (the repo's test gate) reports on stdout, so stderr alone
+            # shows only git's closing "failed to push some refs" line.
+            report = "\n".join(part for part in (pr.stdout.strip(), pr.stderr.strip()) if part)
+            return "pushfail", (report or "push failed")
         # Keep the repo's main working tree in sync with what we just shipped.
         subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
         repair_bare_worktree_config(root)
