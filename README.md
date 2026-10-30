@@ -202,6 +202,8 @@ It returns 0 with `reason: "started"` after the pinned replacement successfully
 executes, without polling session records or waiting for bridge registration.
 Launch failure keeps exit 1 and the existing `verification-failed` report.
 The caller completes readiness through its session-start or bind event.
+On Windows, `started` means the replacement process was spawned. Readiness comes
+from the bind event, as on every platform.
 
 The receipt includes `session_id` and `restart_session_id` (the preserved
 conversation UUID), `replacement_pid` and `replacement_start_time` (the new
