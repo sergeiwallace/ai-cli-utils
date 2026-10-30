@@ -46,6 +46,7 @@ TAIL_LIMIT = 8 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
 POLL_SECONDS = 0.2
 RESTART_PIN_PROTOCOL = "restart-pin-v1"
+START_RECEIPT_READ_TIMEOUT_SECONDS = 0.25
 # These base windows match the existing statusline model table. Unknown models
 # require an explicit window; extended windows need a known tag or override.
 MODEL_WINDOWS = {
@@ -1885,7 +1886,9 @@ def _receive_start(
             listener.settimeout(remaining)
             connection, _ = listener.accept()
             resources.enter_context(connection)
-            receipt = _read_start(connection, read_deadline)
+            # A silent peer must not consume the shared receipt budget. Only
+            # unauthenticated input gets this cap; exec EOF keeps its own deadline.
+            receipt = _read_start(connection, min(read_deadline, time.monotonic() + START_RECEIPT_READ_TIMEOUT_SECONDS))
             pid = receipt["replacement_pid"]
             birth = receipt["replacement_start_time"]
             event = request["event_completion"]
@@ -2255,7 +2258,7 @@ def restart(
                 start_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 resources.callback(start_listener.close)
                 start_listener.bind(("127.0.0.1", 0))
-                start_listener.listen(1)
+                start_listener.listen(4)
                 reason = os.environ.get(LAUNCH_REASON_VAR, "")
                 launch_id = reason.removeprefix("remote-inbox:") if reason.startswith("remote-inbox:") else None
                 event = {

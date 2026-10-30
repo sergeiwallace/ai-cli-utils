@@ -741,6 +741,130 @@ def event_world(world, monkeypatch):
     return world
 
 
+@pytest.mark.parametrize("genuine", [False, True])
+def test_given_silent_stranger_when_receipt_waits_then_original_deadline_allows_only_genuine_start(
+    event_world, monkeypatch, genuine
+):
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=0, relaunch_timeout_seconds=2)
+    clock = [100.0]
+    accept = world.listener.accept.side_effect
+    stranger = MagicMock()
+    attempts = []
+
+    def receive(size):
+        clock[0] += stranger.settimeout.call_args.args[0]
+        raise TimeoutError
+
+    def accept_next():
+        attempts.append(None)
+        return (stranger, ("127.0.0.1", 12347)) if len(attempts) == 1 else accept()
+
+    def wait(readers, writers, errors, timeout):
+        if world.listener in readers and attempts and not genuine:
+            clock[0] += timeout
+            return [], [], []
+        return readers, [], []
+
+    stranger.recv.side_effect = receive
+    world.listener.accept.side_effect = accept_next
+    monkeypatch.setattr(restart, "select", _ModuleView(select, select=wait))
+    monkeypatch.setattr(
+        restart, "time", _ModuleView(time, monotonic=lambda: clock[0], sleep=Mock(side_effect=AssertionError))
+    )
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == ((0, "started", "") if genuine else (1, "verification-failed", ""))
+    assert clock[0] < 102 if genuine else clock[0] == pytest.approx(102)
+    assert len(attempts) == (2 if genuine else 1)
+    stranger.__exit__.assert_called_once()
+    _, result_path, request_path = restart.state_paths(world.session)
+    assert restart._object(result_path)["failed"] is not genuine
+    assert restart._object(request_path)["status"] == ("complete" if genuine else "failed")
+
+
+@pytest.mark.parametrize(("genuine", "eof_delay"), [(False, 0), (True, 0), (True, 0.6)])
+def test_given_silent_loopback_stranger_when_receipt_waits_then_only_genuine_start_meets_original_deadline(
+    event_world, monkeypatch, genuine, eof_delay
+):
+    # As in the supervisor tests, retain real TCP accept/recv and isolate only
+    # the bridge socket and process identities supplied by the restart fixture.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("sandbox prohibits local sockets required for the exec acknowledgement")
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=0, relaunch_timeout_seconds=2)
+    wait_start = restart._wait_start
+    timing = {}
+    errors = []
+    stop = threading.Event()
+    worker = None
+
+    def wait(*args, **kwargs):
+        timing["deadline"] = args[3]
+        result = wait_start(*args, **kwargs)
+        timing["finished"] = time.monotonic()
+        return result
+
+    with contextlib.ExitStack() as clients:
+
+        def kill(pid, sig):
+            nonlocal worker
+            world.signals.append((pid, sig))
+            world.replace()
+            request = restart._object(restart.state_paths(world.session)[2])
+            address = ("127.0.0.1", request["event_completion"]["port"])
+            clients.enter_context(socket.create_connection(address, timeout=2))
+            if genuine:
+                payload = world.connection.makefile().getvalue()
+
+                def send_receipt():
+                    try:
+                        with socket.create_connection(address, timeout=2) as connection:
+                            connection.sendall(payload)
+                            # Exec can take longer than the unauthenticated budget.
+                            if eof_delay:
+                                stop.wait(eof_delay)
+                            connection.shutdown(socket.SHUT_WR)
+                    except OSError as exc:
+                        errors.append(type(exc).__name__)
+
+                worker = threading.Thread(target=send_receipt)
+                worker.start()
+
+        monkeypatch.setattr(restart, "_wait_start", wait)
+        monkeypatch.setattr(restart, "os", _ModuleView(os, kill=kill))
+        monkeypatch.setattr(restart, "time", _ModuleView(time, sleep=Mock(side_effect=AssertionError)))
+        monkeypatch.setattr(restart, "select", select)
+        monkeypatch.setattr(
+            restart,
+            "socket",
+            _ModuleView(
+                socket,
+                socket=lambda family, *args: (
+                    socket.socket(family, *args) if family == socket.AF_INET else world.listener
+                ),
+            ),
+        )
+        try:
+            code, report, err = world.cli("-X", SESSION_ID, "-E")
+        finally:
+            stop.set()
+            if worker is not None:
+                worker.join(timeout=3)
+                assert not worker.is_alive()
+    assert not errors
+    assert (code, report["reason"], err) == ((0, "started", "") if genuine else (1, "verification-failed", ""))
+    if genuine:
+        assert timing["finished"] < timing["deadline"]
+    else:
+        assert timing["deadline"] <= timing["finished"] < timing["deadline"] + 0.5
+    _, result_path, request_path = restart.state_paths(world.session)
+    assert restart._object(result_path)["failed"] is not genuine
+    assert restart._object(request_path)["status"] == ("complete" if genuine else "failed")
+
+
 @pytest.mark.parametrize(
     "stranger",
     [
