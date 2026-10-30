@@ -1091,13 +1091,14 @@ def test_given_authenticated_receipt_when_identity_changes_during_exec_wait_then
 
 @pytest.mark.parametrize("dies", [False, True], ids=["alive", "dies-before-exec"])
 def test_given_authenticated_wrapper_when_exec_wait_reaches_eof_then_requires_live_owned_replacement(
-    tmp_path, monkeypatch, dies
+    tmp_path, monkeypatch, direct_python, dies
 ):
     # A real process and pipe reproduce abrupt closure without binding a socket.
     script = """
 import json, os, sys, threading
 threading.Timer(30, os._exit, args=(1,)).start()
 receipt = json.loads(sys.stdin.readline())
+receipt["replacement_pid"] = os.getpid()
 print(json.dumps(receipt), flush=True)
 sys.stdin.readline()
 if sys.argv[1] == "True": os._exit(0)
@@ -1106,7 +1107,7 @@ sys.stdin.readline()
 os._exit(0)
 """
     with owned_process(
-        [sys.executable, "-c", script, str(dies)], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        [direct_python, "-c", script, str(dies)], stdin=subprocess.PIPE, stdout=subprocess.PIPE
     ) as child:
         birth = psutil.Process(child.pid).create_time()
         request = {
@@ -1157,7 +1158,9 @@ os._exit(0)
                 assert child.wait(timeout=5) == 0
             return True
 
-        report = restart._receive_start(listener, request, {"relaunch_timeout_seconds": 5}, wait_eof=wait_eof)
+        authenticated_wait = Mock(side_effect=wait_eof)
+        report = restart._receive_start(listener, request, {"relaunch_timeout_seconds": 5}, wait_eof=authenticated_wait)
+        authenticated_wait.assert_called_once_with(connection)
         assert report["reason"] == ("verification-failed" if dies else "started")
         if not dies:
             assert child.poll() is None
