@@ -1057,6 +1057,35 @@ sys.exit(restart.exec_replacement("test-session", argv))
         assert rest == b"" and int(launched_path.read_text()) == receipt["replacement_pid"]
 
 
+@pytest.mark.parametrize("failure", ["create-time", "sendall"])
+def test_given_windows_spawn_when_receipt_fails_then_terminates_and_reaps_child(tmp_path, monkeypatch, failure):
+    child = Mock(pid=201)
+    connection = MagicMock()
+    marker = tmp_path / "test-request.launched"
+    request = {"request_id": "test-request", "event_completion": {"port": 12345, "secret": "test-secret"}}
+    launch = {"request_id": "test-request", "child_pid": os.getppid(), "child_start_time": 1234.5}
+
+    def process(pid):
+        if pid == child.pid and failure == "create-time":
+            raise psutil.NoSuchProcess(pid)
+        return SimpleNamespace(create_time=lambda: 1234.5)
+
+    monkeypatch.setattr(restart, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(restart, "psutil", _ModuleView(psutil, Process=process))
+    monkeypatch.setattr(restart, "subprocess", _ModuleView(subprocess, Popen=Mock(return_value=child)))
+    monkeypatch.setattr(restart, "socket", _ModuleView(socket, socket=lambda *args: connection))
+    monkeypatch.setattr(restart, "_validate_request", lambda *args, **kwargs: None)
+    monkeypatch.setattr(restart, "_launch_path", lambda *args: marker)
+    monkeypatch.setattr(restart, "_object", lambda path: launch if path == marker else request)
+    if failure == "sendall":
+        connection.sendall.side_effect = OSError("receipt unavailable")
+    assert restart.exec_replacement("test-session", ["example-engine"]) == 1
+    child.terminate.assert_called_once_with()
+    child.wait.assert_called_once_with()
+    assert [call[0] for call in child.method_calls] == ["terminate", "wait"]
+    connection.close.assert_called_once_with()
+
+
 @pytest.mark.parametrize("args", [["--event-completion"], ["-Y", SESSION_ID, "-E"], ["c", "-E"]])
 def test_given_event_completion_without_restart_when_parsed_then_usage_refuses(world, args):
     code, out, err = run_cli(["ai", *args], config=world.settings)

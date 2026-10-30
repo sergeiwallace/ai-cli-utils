@@ -1782,36 +1782,45 @@ def exec_replacement(session: str, argv: list[str]) -> int:
         # Windows starts a new PID rather than replacing this one through exec.
         # Keep its foreground wrapper waiting on the native child-exit event.
         child = subprocess.Popen(argv) if sys.platform == "win32" else None
-        pid = child.pid if child is not None else os.getpid()
-        birth = psutil.Process(pid).create_time()
-        _atomic_json(
-            marker_path,
-            {
-                **launch,
-                "wrapper_pid": os.getpid(),
-                "wrapper_start_time": psutil.Process(os.getpid()).create_time(),
-                "replacement_pid": pid,
-                "replacement_start_time": birth,
-            },
-        )
-        connection.sendall(
-            json.dumps(
+        try:
+            pid = child.pid if child is not None else os.getpid()
+            birth = psutil.Process(pid).create_time()
+            _atomic_json(
+                marker_path,
                 {
-                    "request_id": request["request_id"],
-                    "secret": event["secret"],
+                    **launch,
+                    "wrapper_pid": os.getpid(),
+                    "wrapper_start_time": psutil.Process(os.getpid()).create_time(),
                     "replacement_pid": pid,
                     "replacement_start_time": birth,
-                }
-            ).encode("utf-8")
-            + b"\n"
-        )
-        if child is not None:
-            connection.close()
-            connection = None
-            return child.wait()
-        # The OS closes the connection only after a successful exec. An exec error
-        # sends a failure byte instead; neither path waits for session registration.
-        _exec_handoff(argv[0], argv)
+                },
+            )
+            connection.sendall(
+                json.dumps(
+                    {
+                        "request_id": request["request_id"],
+                        "secret": event["secret"],
+                        "replacement_pid": pid,
+                        "replacement_start_time": birth,
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            )
+            if child is not None:
+                connection.close()
+                connection = None
+                result = child.wait()
+                child = None
+                return result
+            # The OS closes the connection only after a successful exec. An exec error
+            # sends a failure byte instead; neither path waits for session registration.
+            _exec_handoff(argv[0], argv)
+        finally:
+            if child is not None:
+                try:
+                    child.terminate()
+                finally:
+                    child.wait()
     except (Refusal, OSError, ValueError, KeyError, TypeError, IndexError, psutil.Error):
         pass
     finally:
