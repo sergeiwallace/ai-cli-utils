@@ -1953,9 +1953,11 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
-    if action in ("restart-pin", "restart-detached", "restart-auto", "restart-remedy"):
+    if action in ("restart-pin", "restart-detached", "restart-auto", "restart-remedy", "restart-exec"):
         from . import session_restart
 
+        if action == "restart-exec" and len(argv) >= 3:
+            sys.exit(session_restart.exec_replacement(argv[1], argv[2:]))
         if action == "restart-remedy" and len(argv) == 2:
             _out.raw(Untagged.INTERNAL_REPLY, session_restart.fenced_remedy(argv[1]))
             sys.exit(0)
@@ -5553,20 +5555,35 @@ def _restart_options(func):
         ("-Y", "--restart-check", "Check restart gates without acting; optional target"),
     ):
         func = click.option(short, long, is_flag=False, flag_value="", default=None, help=help_text)(func)
+    func = click.option(
+        "-E",
+        "--event-completion",
+        is_flag=True,
+        help="Return a JSON launch receipt without waiting for replacement registration (requires -X)",
+    )(func)
     return click.option("-j", "--json", "restart_json", is_flag=True, help="Print restart results as JSON")(func)
 
 
-def _restart_cli(restart_session, restart_check, restart_json, options=None):
+def _restart_cli(restart_session, restart_check, restart_json, options=None, *, event_completion=False):
     from . import session_restart as restart
 
     if restart_session is not None and restart_check is not None:
         raise click.UsageError("choose --restart-session or --restart-check")
+    if event_completion and restart_session is None:
+        raise click.UsageError("--event-completion requires --restart-session")
+    restart_json = restart_json or event_completion
     target = restart_check if restart_check is not None else restart_session
     check = restart_check is not None
     try:
         if options:
-            target = _restart_launch_target(target, check, options, json_output=restart_json)
-        report = restart.restart(target or None, check=check)
+            target = _restart_launch_target(
+                target, check, options, json_output=restart_json, event_completion=event_completion
+            )
+        report = (
+            restart.restart(target or None, check=check, event_completion=True)
+            if event_completion
+            else restart.restart(target or None, check=check)
+        )
     except (
         restart.Refusal,
         _config.ProjectPrefixError,
@@ -5580,10 +5597,15 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None):
         _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
     else:
         _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
-    raise SystemExit(0 if report["reason"] in ("restarted", "ready", "detached") else 1)
+    raise SystemExit(
+        0
+        if report["reason"] in ("restarted", "ready", "detached")
+        or (event_completion and report["reason"] == "started")
+        else 1
+    )
 
 
-def _restart_launch_target(target, check, options, *, json_output=False):
+def _restart_launch_target(target, check, options, *, json_output=False, event_completion=False):
     """Resolve only. Never enter launch, update, allocation or cleanup paths."""
     from .session_restart import Refusal
 
@@ -5602,6 +5624,8 @@ def _restart_launch_target(target, check, options, *, json_output=False):
         if target:
             argv.append(target)
         argv += ["-j"]
+        if event_completion:
+            argv.append("--event-completion")
         ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
         if remote.get("identity_file"):
             ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
@@ -5712,14 +5736,14 @@ class _ChiefAliasGroup(click.Group):
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
 @_restart_options
 @click.pass_context
-def _cli_group(ctx, version, restart_session, restart_check, restart_json):
+def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
     """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
     _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
         ctx.exit(0)
-    if restart_session is not None or restart_check is not None:
-        _restart_cli(restart_session, restart_check, restart_json)
+    if restart_session is not None or restart_check is not None or event_completion:
+        _restart_cli(restart_session, restart_check, restart_json, event_completion=event_completion)
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
@@ -6201,8 +6225,9 @@ def cmd_c(ctx, **options):
     restart_session = options.pop("restart_session")
     restart_check = options.pop("restart_check")
     restart_json = options.pop("restart_json")
-    if restart_session is not None or restart_check is not None:
-        _restart_cli(restart_session, restart_check, restart_json, options)
+    event_completion = options.pop("event_completion")
+    if restart_session is not None or restart_check is not None or event_completion:
+        _restart_cli(restart_session, restart_check, restart_json, options, event_completion=event_completion)
     _dispatch_session("c", ctx, options)
 
 

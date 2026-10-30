@@ -976,6 +976,11 @@ def get_engine_script(
         fi
       fi
     # END PLUGIN REFRESH
+    # BEGIN PINNED RESTART exec
+      if ${{_restart_event_completion:-false}}; then
+        set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
+      fi
+    # END PINNED RESTART
       # Non-interactive shells redirect a background job's stdin from /dev/null.
       # Bash honors <&0, but zsh performs that redirect after the fd duplication;
       # reopening the controlling terminal works for both while preserving the
@@ -1373,6 +1378,7 @@ with open(path, 'w') as f:
 
     # BEGIN PINNED RESTART resolution
       _restart_requested=false
+      _restart_event_completion=false
       bg_target=""
       _restart_fenced=false
       _restart_request="$_ai_state_dir/restart-session/$tmux_session.request.json"
@@ -1380,6 +1386,10 @@ with open(path, 'w') as f:
         matched_file=$(ai internal restart-pin "$tmux_session" "$ai_name")
         _pin_status=$?
         if [[ $_pin_status -eq 0 && -n "$matched_file" ]]; then
+          if [[ "$matched_file" == *$'\\nevent-completion' ]]; then
+            matched_file="${{matched_file%$'\\nevent-completion'}}"
+            _restart_event_completion=true
+          fi
           _restart_requested=true
           resolve_status=0
           break

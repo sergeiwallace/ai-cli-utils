@@ -196,6 +196,25 @@ target refuses. A self-restart returns immediately after starting a detached hel
 the helper owns the lock and applies the same gates after the current turn ends.
 Check mode never signals, injects, refreshes a script or publishes a restart request.
 
+Automation can add `-E/--event-completion` to `-X/--restart-session`, including on
+`ai c` and remote restarts. This mode always writes one JSON object to stdout.
+It returns 0 with `reason: "started"` after the pinned replacement successfully
+executes, without polling session records or waiting for bridge registration.
+Launch failure keeps exit 1 and the existing `verification-failed` report.
+The caller completes readiness through its session-start or bind event.
+On Windows, `started` means the replacement process was spawned. Readiness comes
+from the bind event, as on every platform.
+
+The receipt includes `session_id` and `restart_session_id` (the preserved
+conversation UUID), `replacement_pid` and `replacement_start_time` (the new
+engine process), `engine_pid` and `engine_start_time` (the restart actor, for bind
+provenance), and `launch_id` (the existing remote launch identity, or `null`).
+Birth times are Unix epoch seconds from the process creation clock. Local and
+peer verification remain `UNVERIFIED`. The existing gates still apply; a busy
+self-restart or a context gate requiring a compaction pre-step refuses immediately
+instead of starting a detached helper or waiting for compaction. Without `-E`,
+restart output and exit codes are unchanged.
+
 The command requires a live Claude Code process inside a compatible `ai c`
 supervisor, an idle registry and completed transcript turn, no pending background
 agents or shells, and no unexplained descendant processes. Configured MCP server

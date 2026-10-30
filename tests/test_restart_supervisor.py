@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -29,6 +30,29 @@ SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
 SESSION = "c-myproject-box-1"
 TITLE = "myproject-box-1"
+_REAL_SOCKET = socket.socket
+
+
+class _ModuleView:
+    """A module as one importer sees it, with a few attributes replaced."""
+
+    def __init__(self, module, **overrides):
+        self._module = module
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._module, name)
+
+
+@pytest.fixture
+def restart_ipc():
+    try:
+        with _REAL_SOCKET(socket.AF_INET, socket.SOCK_STREAM) as connection:
+            connection.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("sandbox prohibits local sockets required for the exec acknowledgement")
 
 
 def _wait_for(check, process, timeout=60):
@@ -471,3 +495,85 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     assert (root / "resolver-calls").read_text(encoding="utf-8").splitlines() == ["query"]
     calls = [json.loads(line) for line in (root / "tmux-calls").read_text(encoding="utf-8").splitlines()]
     assert not any("respawn-pane" in call for call in calls)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("missing_executable", [False, True])
+def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polling(
+    restart_ipc, supervisor_fixture, monkeypatch, missing_executable
+):
+    root, script, supervisor = supervisor_fixture
+    launches = root / "launches"
+    initial = _wait_for(
+        lambda: json.loads(launches.read_text(encoding="utf-8").splitlines()[0]) if launches.exists() else None,
+        supervisor,
+    )
+    observed = time.monotonic()
+    _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
+    original_kill = os.kill
+
+    def signal_owned(pid, sig):
+        assert pid == initial["pid"] and sig == signal.SIGTERM
+        if missing_executable:
+            executable = root / "bin" / "claude"
+            assert executable.is_file()
+            executable.rename(executable.with_name("unavailable-claude"))
+        original_kill(pid, sig)
+
+    def forbidden(*args):
+        raise AssertionError("event completion must not sleep or scan session records")
+
+    original_resolve = session_restart.resolve_target
+
+    def resolve(target):
+        result = original_resolve(target)
+        monkeypatch.setattr(session_restart, "records", forbidden)
+        return result
+
+    settings = {
+        "restart_session": {
+            "min_uptime_seconds": 0,
+            "settle_seconds": 0,
+            "term_grace_seconds": 5,
+            "relaunch_timeout_seconds": 60,
+            "cooldown_seconds": 0,
+        }
+    }
+    fixture_socket = session_restart.socket.socket
+    with monkeypatch.context() as patcher:
+        # Override these only as seen from session_restart. Patching the shared os, time or
+        # socket modules would also hit the standard library (subprocess polls with sleep and
+        # kills with os.kill, socket.accept rebuilds sockets), which is not what is under test.
+        # The fixture mocks socket.socket for every test; accept() needs the real class again.
+        patcher.setattr(socket, "socket", _REAL_SOCKET)
+        patcher.setattr(session_restart, "os", _ModuleView(os, kill=signal_owned))
+        patcher.setattr(session_restart, "time", _ModuleView(time, sleep=forbidden))
+        patcher.setattr(
+            session_restart,
+            "socket",
+            _ModuleView(
+                socket,
+                socket=lambda family, *args, **kwargs: (
+                    _REAL_SOCKET(family, *args, **kwargs)
+                    if family == socket.AF_INET
+                    else fixture_socket(family, *args, **kwargs)
+                ),
+            ),
+        )
+        patcher.setattr(session_restart, "resolve_target", resolve)
+        code, out, err = run_cli(["ai", "-X", SESSION_ID, "--event-completion"], config=settings)
+    report = json.loads(out)
+    assert (code, report["reason"]) == ((1, "verification-failed") if missing_executable else (0, "started")), (
+        report,
+        err,
+        (root / "supervisor.log").read_text(encoding="utf-8"),
+    )
+    if not missing_executable:
+        assert report["session_id"] == report["restart_session_id"] == SESSION_ID
+        replacement = psutil.Process(report["replacement_pid"])
+        assert replacement.create_time() == report["replacement_start_time"]
+        assert report["engine_pid"] == os.getpid()
+        assert report["engine_start_time"] == psutil.Process().create_time()
+        assert report["launch_id"] is None
+        assert supervisor.pid in [parent.pid for parent in replacement.parents()]
