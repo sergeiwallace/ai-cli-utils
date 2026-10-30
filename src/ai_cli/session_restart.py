@@ -1824,22 +1824,44 @@ def exec_replacement(session: str, argv: list[str]) -> int:
     return 1
 
 
+def _read_start(connection: socket.socket, deadline: float) -> dict:
+    """Read a bounded line and exec EOF within the same absolute deadline."""
+
+    def receive(size: int) -> bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        connection.settimeout(remaining)
+        data = connection.recv(size)
+        if time.monotonic() >= deadline:
+            raise TimeoutError
+        return data
+
+    data = bytearray()
+    while b"\n" not in data:
+        if len(data) >= 8192:
+            raise ValueError("receipt too large")
+        chunk = receive(8192 - len(data))
+        if not chunk:
+            raise ValueError("incomplete receipt")
+        data.extend(chunk)
+    if not data.endswith(b"\n") or b"\n" in data[:-1] or receive(1) != b"":
+        raise ValueError("exec failed")
+    return json.loads(data)
+
+
 def _receive_start(listener: socket.socket, request: dict, settings: dict, *, deadline: float | None = None) -> dict:
     """Read one exec receipt, never sample the replacement's session registry."""
     try:
-        remaining = (
-            max(0.001, settings["relaunch_timeout_seconds"]) if deadline is None else deadline - time.monotonic()
-        )
+        if deadline is None:
+            deadline = time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"])
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
         listener.settimeout(remaining)
         connection, _ = listener.accept()
         with connection:
-            connection.settimeout(remaining)
-            with connection.makefile("rb") as stream:
-                receipt = json.loads(stream.readline(8192))
-                if stream.read(1) != b"":
-                    raise ValueError("exec failed")
+            receipt = _read_start(connection, deadline)
         pid = receipt["replacement_pid"]
         birth = receipt["replacement_start_time"]
         event = request["event_completion"]

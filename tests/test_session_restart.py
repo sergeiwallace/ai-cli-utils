@@ -695,6 +695,7 @@ def test_given_alias_when_restart_then_one_pid(world, target, flag):
 @pytest.fixture
 def event_world(world, monkeypatch):
     """Exercise the real restart gates with a one-shot child exec receipt."""
+    world.settings["restart_session"]["relaunch_timeout_seconds"] = 0.1
     monkeypatch.setattr(restart.psutil.Process, "create_time", lambda self: 1234.5)
     listener = MagicMock()
     listener.getsockname.return_value = ("127.0.0.1", 12345)
@@ -725,7 +726,13 @@ def event_world(world, monkeypatch):
         )
 
     connection.makefile.side_effect = reply
-    listener.accept.return_value = (connection, ("127.0.0.1", 12346))
+
+    def accept():
+        stream = connection.makefile()
+        connection.recv.side_effect = stream.read
+        return connection, ("127.0.0.1", 12346)
+
+    listener.accept.side_effect = accept
     monkeypatch.setattr(restart, "socket", _ModuleView(socket, socket=lambda *args: listener))
     # The kernel wait is the only asynchronous boundary in this fixture.
     monkeypatch.setattr(restart, "select", _ModuleView(select, select=lambda *args: ([listener], [], [])))
@@ -869,6 +876,77 @@ def test_given_event_request_when_published_then_secret_is_private_and_absent_fr
         assert path.stat().st_mode & 0o777 == 0o600
         assert path.parent.stat().st_mode & 0o077 == 0
         assert markers[0].stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("delayed", ["line", "eof"])
+def test_given_dripping_receipt_when_deadline_passes_then_rejects_within_total_budget(
+    event_world, monkeypatch, delayed
+):
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=0, relaunch_timeout_seconds=3)
+    clock = [100.0]
+    genuine = world.connection.makefile.side_effect
+
+    class SlowConnection:
+        def __init__(self):
+            self.data = None
+            self.timeout = 3
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def makefile(self, *args):
+            return self
+
+        def recv(self, size):
+            if self.data is None:
+                self.data = genuine().getvalue()
+            delay = 0.4 if delayed == "line" else (2.5 if self.data else 1)
+            if delay >= self.timeout:
+                clock[0] += self.timeout
+                raise TimeoutError
+            clock[0] += delay
+            count = min(size, 1) if delayed == "line" else size
+            result, self.data = self.data[:count], self.data[count:]
+            return result
+
+        def readline(self, size):
+            line = b""
+            while len(line) < size:
+                byte = self.recv(1)
+                line += byte
+                if byte in (b"", b"\n"):
+                    break
+            return line
+
+        def read(self, size):
+            return self.recv(size)
+
+    connection = SlowConnection()
+    world.listener.accept.side_effect = None
+    world.listener.accept.return_value = (connection, ("127.0.0.1", 12346))
+    monkeypatch.setattr(restart, "time", _ModuleView(time, monotonic=lambda: clock[0]))
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == (1, "verification-failed", "")
+    assert clock[0] <= 103
+    assert connection.closed
+
+
+@pytest.mark.parametrize("payload", [b"x" * 9000, b'{"partial":', b"{}\n!", b"{}\n{}\n"])
+def test_given_invalid_receipt_when_read_then_rejects_with_bounded_bytes(payload):
+    connection = MagicMock()
+    stream = io.BytesIO(payload)
+    connection.recv.side_effect = stream.read
+    with pytest.raises(ValueError):
+        restart._read_start(connection, time.monotonic() + 10)
+    assert stream.tell() <= 8193
 
 
 @pytest.mark.parametrize("json_output", [False, True])
