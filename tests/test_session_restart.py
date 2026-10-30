@@ -241,10 +241,17 @@ def _is_restart_probe(argv, pane_ai):
 
 
 @pytest.fixture
+def missing_sigkill(monkeypatch):
+    """Exercise POSIX simulation on hosts without POSIX signal constants."""
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+
+
+@pytest.fixture
 def world(tmp_path, monkeypatch):
     # Process probes and signals below simulate POSIX independently of the host.
     # Platform routing is exercised separately, including Windows injection.
     monkeypatch.setattr(restart, "_signal_supported", lambda: True)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
     # These are simulated POSIX capabilities, including on hosts whose Python
     # has no Unix socket family or discovers shells with a .exe suffix.
     monkeypatch.setattr(restart.socket, "AF_UNIX", 1, raising=False)
@@ -865,6 +872,7 @@ def test_given_silent_loopback_stranger_when_receipt_waits_then_only_genuine_sta
     assert restart._object(request_path)["status"] == ("complete" if genuine else "failed")
 
 
+@pytest.mark.usefixtures("missing_sigkill")
 @pytest.mark.parametrize(
     "stranger",
     [
@@ -928,6 +936,7 @@ def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_gen
     assert world.listener.accept.call_count == 2
 
 
+@pytest.mark.usefixtures("missing_sigkill")
 @pytest.mark.parametrize("term_ignored", [False, True])
 @pytest.mark.parametrize("completion", ["eof", "failure", "timeout"])
 def test_given_authenticated_receipt_when_exec_crosses_term_deadline_then_preserves_deadlines_and_result(
