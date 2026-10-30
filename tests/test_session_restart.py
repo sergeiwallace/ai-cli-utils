@@ -702,9 +702,24 @@ def event_world(world, monkeypatch):
 
     def reply(*args):
         request = restart._object(restart.state_paths(world.session)[2])
+        restart._atomic_json(
+            restart._launch_path(world.session, request),
+            {
+                "request_id": request["request_id"],
+                "wrapper_pid": 201,
+                "wrapper_start_time": 1234.5,
+                "replacement_pid": 201,
+                "replacement_start_time": 1234.5,
+            },
+        )
         return io.BytesIO(
             json.dumps(
-                {"request_id": request["request_id"], "replacement_pid": 201, "replacement_start_time": 1234.5}
+                {
+                    "request_id": request["request_id"],
+                    "secret": request["event_completion"]["secret"],
+                    "replacement_pid": 201,
+                    "replacement_start_time": 1234.5,
+                }
             ).encode()
             + b"\n"
         )
@@ -810,6 +825,52 @@ def test_given_event_completion_when_start_fails_then_preserves_failure_report(e
     world.listener.close.assert_called_once()
 
 
+@pytest.mark.parametrize("forgery", ["wrong-secret", "missing-secret", "shell-pid"])
+def test_given_forged_receipt_when_received_then_rejects_before_accepting_wrapper(event_world, monkeypatch, forgery):
+    world = event_world
+    world.settings["restart_session"].update(term_grace_seconds=10, relaunch_timeout_seconds=10)
+    genuine = world.connection.makefile.side_effect
+    attempts = []
+
+    def reply(*args):
+        stream = genuine()
+        receipt = json.loads(stream.getvalue())
+        attempts.append(None)
+        if len(attempts) == 1:
+            if forgery == "wrong-secret":
+                receipt["secret"] = "incorrect"
+            elif forgery == "missing-secret":
+                receipt.pop("secret", None)
+            else:
+                # This live child shell has the correct supervisor ancestry and birth.
+                receipt.update(replacement_pid=104, replacement_start_time=1234.5)
+        return io.BytesIO(json.dumps(receipt).encode() + b"\n")
+
+    world.connection.makefile.side_effect = reply
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == (0, "started", "")
+    assert len(attempts) == 2
+    assert report["replacement_pid"] == 201
+
+
+def test_given_event_request_when_published_then_secret_is_private_and_absent_from_public_evidence(event_world):
+    world = event_world
+    code, report, err = world.cli("-X", SESSION_ID, "-E")
+    assert (code, report["reason"], err) == (0, "started", "")
+    path = restart.state_paths(world.session)[2]
+    request = restart._object(path)
+    secret = request.get("event_completion", {}).get("secret")
+    assert isinstance(secret, str) and len(secret) >= 32
+    assert secret not in repr(report)
+    markers = list(path.parent.glob("*.launched"))
+    assert len(markers) == 1
+    assert all(secret not in marker.name and secret not in marker.read_text() for marker in markers)
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert path.parent.stat().st_mode & 0o077 == 0
+        assert markers[0].stat().st_mode & 0o777 == 0o600
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 def test_given_default_restart_when_completed_then_output_is_unchanged(world, json_output):
     code, out, err = run_cli(["ai", "-X", SESSION_ID, *(["-j"] if json_output else [])], config=world.settings)
@@ -846,7 +907,13 @@ class Connection:
         with Path(receipt_path).open("ab") as stream: stream.write(data)
     def close(self): pass
 restart.socket.socket = lambda *args: Connection()
-restart._object = lambda path: {"request_id": "test-request", "event_completion": {"port": 12345}}
+marker_path = Path(launched_path).with_name("binding.launched")
+restart._atomic_json(marker_path, {"request_id": "test-request", "child_pid": os.getppid(),
+    "child_start_time": restart.psutil.Process(os.getppid()).create_time()})
+original_object = restart._object
+restart._object = lambda path: original_object(path) if path == marker_path else {
+    "request_id": "test-request", "event_completion": {"port": 12345, "secret": "test-secret"}}
+restart._launch_path = lambda *args: marker_path
 restart._validate_request = lambda *args, **kwargs: None
 def forbidden(*args): raise AssertionError("unexpected polling")
 restart.time.sleep = forbidden
@@ -872,6 +939,13 @@ sys.exit(restart.exec_replacement("test-session", argv))
     receipt = json.loads(first)
     assert receipt["request_id"] == "test-request"
     assert receipt["replacement_pid"] > 1 and receipt["replacement_start_time"] > 0
+    launch = json.loads((tmp_path / "binding.launched").read_text())
+    assert launch["replacement_pid"] == receipt["replacement_pid"]
+    assert launch["replacement_start_time"] == receipt["replacement_start_time"]
+    assert "secret" not in launch
+    if platform == "native":
+        assert launch["wrapper_pid"] == receipt["replacement_pid"]
+        assert launch["wrapper_start_time"] == receipt["replacement_start_time"]
     if failure:
         assert rest == b"!" and not launched_path.exists()
     else:

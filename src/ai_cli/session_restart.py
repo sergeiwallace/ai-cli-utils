@@ -11,10 +11,12 @@ import contextlib
 import errno
 import getpass
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -1329,6 +1331,10 @@ def _validate_request(request: dict, session: str, *, child: bool) -> None:
         raise Refusal("restart-fenced", "request identity or lifetime invalid") from exc
 
 
+def _launch_path(session: str, request: dict) -> Path:
+    return state_paths(session)[2].with_name(f"{session}.{request['request_id']}.launched")
+
+
 def child_pin(session: str, title: str) -> tuple[int, str]:
     """Internal child protocol: 3 ordinary launch, 0 exact transcript, 1 fenced.
 
@@ -1356,14 +1362,29 @@ def child_pin(session: str, title: str) -> tuple[int, str]:
         _validate_request(request, session, child=True)
         if request["title"] != title:
             raise Refusal("restart-fenced")
-        receipt = path.with_name(f"{session}.{request['request_id']}.launched")
-        with receipt.open("x", encoding="utf-8") as output:
-            output.write(request["request_id"])
+        receipt = _launch_path(session, request)
+        if request.get("event_completion"):
+            fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            output = os.fdopen(fd, "w", encoding="utf-8")
+        else:
+            output = receipt.open("x", encoding="utf-8")
+        with output:
+            if request.get("event_completion"):
+                json.dump(
+                    {
+                        "request_id": request["request_id"],
+                        "child_pid": os.getppid(),
+                        "child_start_time": psutil.Process(os.getppid()).create_time(),
+                    },
+                    output,
+                )
+            else:
+                output.write(request["request_id"])
             output.flush()
             os.fsync(output.fileno())
         suffix = "\nevent-completion" if request.get("event_completion") else ""
         return 0, request["transcript"] + suffix
-    except (Refusal, OSError, KeyError, TypeError, ValueError):
+    except (Refusal, OSError, KeyError, TypeError, ValueError, psutil.Error):
         return 1, ""
 
 
@@ -1746,6 +1767,14 @@ def exec_replacement(session: str, argv: list[str]) -> int:
         request = _object(state_paths(session)[2])
         _validate_request(request, session, child=True)
         event = request["event_completion"]
+        marker_path = _launch_path(session, request)
+        launch = _object(marker_path)
+        if (
+            launch["request_id"] != request["request_id"]
+            or launch["child_pid"] != os.getppid()
+            or launch["child_start_time"] != psutil.Process(os.getppid()).create_time()
+        ):
+            raise ValueError("pinned launch changed")
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection.settimeout(5)
         connection.connect(("127.0.0.1", event["port"]))
@@ -1754,12 +1783,24 @@ def exec_replacement(session: str, argv: list[str]) -> int:
         # Keep its foreground wrapper waiting on the native child-exit event.
         child = subprocess.Popen(argv) if sys.platform == "win32" else None
         pid = child.pid if child is not None else os.getpid()
+        birth = psutil.Process(pid).create_time()
+        _atomic_json(
+            marker_path,
+            {
+                **launch,
+                "wrapper_pid": os.getpid(),
+                "wrapper_start_time": psutil.Process(os.getpid()).create_time(),
+                "replacement_pid": pid,
+                "replacement_start_time": birth,
+            },
+        )
         connection.sendall(
             json.dumps(
                 {
                     "request_id": request["request_id"],
+                    "secret": event["secret"],
                     "replacement_pid": pid,
-                    "replacement_start_time": psutil.Process(pid).create_time(),
+                    "replacement_start_time": birth,
                 }
             ).encode("utf-8")
             + b"\n"
@@ -1801,8 +1842,20 @@ def _receive_start(listener: socket.socket, request: dict, settings: dict, *, de
                     raise ValueError("exec failed")
         pid = receipt["replacement_pid"]
         birth = receipt["replacement_start_time"]
+        event = request["event_completion"]
+        if not isinstance(receipt.get("secret"), str) or not hmac.compare_digest(receipt["secret"], event["secret"]):
+            raise ValueError("receipt authentication failed")
+        launch = _object(_launch_path(_pane(request)[0], request))
         if (
             receipt["request_id"] != request["request_id"]
+            or launch["request_id"] != request["request_id"]
+            or pid != launch["replacement_pid"]
+            or birth != launch["replacement_start_time"]
+            or psutil.Process(launch["wrapper_pid"]).create_time() != launch["wrapper_start_time"]
+            or (
+                pid != launch["wrapper_pid"]
+                and (sys.platform != "win32" or psutil.Process(pid).ppid() != launch["wrapper_pid"])
+            )
             or type(pid) is not int
             or pid <= 1
             or pid == request["old_agent_pid"]
@@ -1812,7 +1865,7 @@ def _receive_start(listener: socket.socket, request: dict, settings: dict, *, de
             or probe_for().has_ended(pid)
         ):
             raise ValueError("replacement ownership unavailable")
-    except (OSError, ValueError, KeyError, TypeError, psutil.Error):
+    except (Refusal, OSError, ValueError, KeyError, TypeError, psutil.Error):
         return _report(
             "verification-failed", detail="replacement or local bridge verification timed out", local="FAILED"
         )
@@ -2083,6 +2136,9 @@ def restart(
             )
             if (settings["mechanism"] == "exit" or not _signal_supported()) and not commands.get("inject"):
                 raise Refusal("no-mechanism")
+            if event_completion and os.name == "posix":
+                request_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                request_path.parent.chmod(0o700)
             request = prepare_request(record, managed, settings)
             start_listener = None
             if event_completion:
@@ -2095,6 +2151,7 @@ def restart(
                 reason = os.environ.get(LAUNCH_REASON_VAR, "")
                 launch_id = reason.removeprefix("remote-inbox:") if reason.startswith("remote-inbox:") else None
                 request["event_completion"] = {
+                    "secret": secrets.token_hex(32),
                     "port": start_listener.getsockname()[1],
                     "engine_start_time": psutil.Process(os.getpid()).create_time(),
                     "launch_id": launch_id,
