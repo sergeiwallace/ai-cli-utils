@@ -33,6 +33,19 @@ TITLE = "myproject-box-1"
 _REAL_SOCKET = socket.socket
 
 
+class _ModuleView:
+    """A module as one importer sees it, with a few attributes replaced."""
+
+    def __init__(self, module, **overrides):
+        self._module = module
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._module, name)
+
+
 @pytest.fixture
 def restart_ipc():
     try:
@@ -527,18 +540,28 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
             "cooldown_seconds": 0,
         }
     }
+    fixture_socket = session_restart.socket.socket
     with monkeypatch.context() as patcher:
-        patcher.setattr(session_restart.os, "kill", signal_owned)
-        patcher.setattr(session_restart.time, "sleep", forbidden)
-        patcher.setattr(session_restart, "resolve_target", resolve)
-        fixture_socket = session_restart.socket.socket
+        # Override these only as seen from session_restart. Patching the shared os, time or
+        # socket modules would also hit the standard library (subprocess polls with sleep and
+        # kills with os.kill, socket.accept rebuilds sockets), which is not what is under test.
+        # The fixture mocks socket.socket for every test; accept() needs the real class again.
+        patcher.setattr(socket, "socket", _REAL_SOCKET)
+        patcher.setattr(session_restart, "os", _ModuleView(os, kill=signal_owned))
+        patcher.setattr(session_restart, "time", _ModuleView(time, sleep=forbidden))
         patcher.setattr(
-            session_restart.socket,
+            session_restart,
             "socket",
-            lambda family, *args: (
-                _REAL_SOCKET(family, *args) if family == socket.AF_INET else fixture_socket(family, *args)
+            _ModuleView(
+                socket,
+                socket=lambda family, *args, **kwargs: (
+                    _REAL_SOCKET(family, *args, **kwargs)
+                    if family == socket.AF_INET
+                    else fixture_socket(family, *args, **kwargs)
+                ),
             ),
         )
+        patcher.setattr(session_restart, "resolve_target", resolve)
         code, out, err = run_cli(["ai", "-X", SESSION_ID, "--event-completion"], config=settings)
     report = json.loads(out)
     assert (code, report["reason"]) == ((1, "verification-failed") if missing_executable else (0, "started")), (
