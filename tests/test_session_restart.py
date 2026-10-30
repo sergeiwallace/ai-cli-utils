@@ -241,12 +241,6 @@ def _is_restart_probe(argv, pane_ai):
 
 
 @pytest.fixture
-def missing_sigkill(monkeypatch):
-    """Exercise POSIX simulation on hosts without POSIX signal constants."""
-    monkeypatch.delattr(signal, "SIGKILL", raising=False)
-
-
-@pytest.fixture
 def direct_python():
     # Windows venv python.exe redirects to another process and retains pipe handles.
     # The stdlib-only payloads below need one PID that owns its own stdout.
@@ -879,7 +873,6 @@ def test_given_silent_loopback_stranger_when_receipt_waits_then_only_genuine_sta
     assert restart._object(request_path)["status"] == ("complete" if genuine else "failed")
 
 
-@pytest.mark.usefixtures("missing_sigkill")
 @pytest.mark.parametrize(
     "stranger",
     [
@@ -943,7 +936,6 @@ def test_given_stranger_receipt_when_term_ignored_then_escalates_and_accepts_gen
     assert world.listener.accept.call_count == 2
 
 
-@pytest.mark.usefixtures("missing_sigkill")
 @pytest.mark.parametrize("term_ignored", [False, True])
 @pytest.mark.parametrize("completion", ["eof", "failure", "timeout"])
 def test_given_authenticated_receipt_when_exec_crosses_term_deadline_then_preserves_deadlines_and_result(
