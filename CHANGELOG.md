@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai quota sync` no longer needs the `sqlite3` command line tool on the remote host. The remote
+  query runs through Python's standard library `sqlite3` module (`python3` is required there) and
+  opens the remote quota database read-only, so a missing database fails instead of being created.
 - Session naming now refreshes host identity before alias lookup across engine and chief
   launches, migrations, audits and name commands, using the existing bounded login-shell,
   tmux, then inherited source order. `ai cos` and `--chief` honor `[naming]` legacy fallback
