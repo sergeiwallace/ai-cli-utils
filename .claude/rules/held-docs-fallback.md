@@ -28,6 +28,12 @@ project-template so that a host without ai-harness still loads it.
 - Every blocker needing owner input and every escalated decision reaches the repo owner only as a git-tracked held `decision` with `/format-decision` + a full `/explain`, shipped to main and listed in the session's compiled held doc before its absolute path is reported.
 - Run `scripts/held_decision_check.py check <item>` and the strict format checker. Keep an AI-mooted
   question open beside its `AI-superseded:` review. Update linked Beads notes and CC titles when a ruling arrives.
+- A session's to-review message, `docs/held/<host>--<slug>-to-review.md`, is reserved like the
+  aggregate held review doc and is written only by `held_cli.py to-review` (run by `/to-review`).
+  A session is in exactly one mode, `goal`, `to-review` or `idle`
+  (`~/projects/ai-harness/docs/procedures/to-review-mode.md`). Holding a `decision` or `blocker`
+  for an in-progress issue you own runs `bd-block` on it and applies its `[BLOCKED] ` TaskUpdate in
+  that same turn.
 - Hold with `held_cli.py add` from the kind's template in `config/held_kinds.toml`, then compile
   and ship, and merge or land the landing pad by its store's `land` mode. Reap a proved-stale
   landing pad or leaf worktree on sight with `/reap-worktree <path>`, and run `/sync-git` after
