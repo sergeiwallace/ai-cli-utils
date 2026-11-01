@@ -2793,6 +2793,100 @@ class TestQuotaSyncFromRemote:
         assert "could not load config" in out.err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the remote side of `ai quota sync` is a POSIX shell over ssh")
+class TestQuotaSyncRemoteWithoutSqliteCli:
+    """The remote side must not need the sqlite3 command line tool (Python's module is enough)."""
+
+    _SEED = (
+        (55.0, 10.0, 30.0, None, "2026-04-07T00:00:00Z", "2026-04-07T10:00:00Z"),
+        (60.0, None, None, 5.0, "2026-04-07T00:00:00Z", "2026-04-07T11:00:00Z"),
+    )
+
+    @pytest.fixture
+    def remote_home(self, tmp_path):
+        """A fake remote home holding a seeded quota DB, plus a PATH that has python3 but no sqlite3."""
+        import sqlite3
+
+        home = tmp_path / "remote-home"
+        db_path = home / ".local" / "state" / "ai-cli" / "quota.db"
+        db_path.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE quota_snapshots (usage_percent REAL, session_pct REAL, weekly_sonnet_pct REAL,"
+            " extra_pct REAL, week_start TEXT, snapshotted_at TEXT)"
+        )
+        conn.executemany("INSERT INTO quota_snapshots VALUES (?, ?, ?, ?, ?, ?)", self._SEED)
+        conn.commit()
+        conn.close()
+
+        bin_dir = tmp_path / "remote-bin"
+        bin_dir.mkdir()
+        (bin_dir / "python3").symlink_to(sys.executable)
+        assert shutil.which("sqlite3", path=str(bin_dir)) is None
+        return {"HOME": str(home), "PATH": str(bin_dir)}
+
+    @staticmethod
+    def _ssh_runs_remote_command_locally(env):
+        """A stand-in for `subprocess.run` that runs ssh's remote command under `env` instead of over ssh."""
+
+        real_run = subprocess.run  # bound now: `ai_cli.quota.subprocess.run` is patched while the fake runs
+
+        def fake_run(cmd, **kwargs):
+            return real_run(["/bin/sh", "-c", cmd[-1]], env=env, capture_output=True, text=True, check=False)
+
+        return fake_run
+
+    def test_given_no_sqlite3_cli_on_remote_when_syncing_then_rows_are_pulled(self, tmp_path, remote_home, capsys):
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "local-quota.db")
+        try:
+            with (
+                patch("ai_cli.quota.subprocess.run", side_effect=self._ssh_runs_remote_command_locally(remote_home)),
+                patch(
+                    "ai_cli.config.load_config",
+                    return_value={"remote": {"host": "remote.example.com", "user": "testuser", "port": 22}},
+                ),
+            ):
+                result = quota_sync_from_remote()
+
+            out = capsys.readouterr()
+            assert result == 0, out.err
+            assert "2 new snapshot" in out.out
+
+            conn = qdb._get_conn()
+            rows = conn.execute(
+                "SELECT usage_percent, session_pct, weekly_sonnet_pct, extra_pct, week_start, snapshotted_at"
+                " FROM quota_snapshots ORDER BY snapshotted_at"
+            ).fetchall()
+            conn.close()
+            assert [tuple(r) for r in rows] == list(self._SEED)
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_given_no_remote_quota_db_when_syncing_then_it_fails_without_creating_one(self, tmp_path, remote_home):
+        import ai_cli.quota_db as qdb
+
+        missing_home = tmp_path / "empty-home"
+        missing_home.mkdir()
+        env = {**remote_home, "HOME": str(missing_home)}
+        qdb.set_db_path(tmp_path / "local-quota.db")
+        try:
+            with (
+                patch("ai_cli.quota.subprocess.run", side_effect=self._ssh_runs_remote_command_locally(env)),
+                patch(
+                    "ai_cli.config.load_config",
+                    return_value={"remote": {"host": "remote.example.com", "user": "testuser", "port": 22}},
+                ),
+            ):
+                result = quota_sync_from_remote()
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+        assert result == EX_TEMPFAIL
+        assert not (missing_home / ".local").exists()
+
+
 # --- _maybe_trigger_background_scrape ---
 
 

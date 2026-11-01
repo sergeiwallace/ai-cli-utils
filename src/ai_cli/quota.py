@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import time
@@ -1241,6 +1242,25 @@ def quota_scrape() -> int:
         _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
 
+def _remote_quota_query_command(sql: str) -> str:
+    """Build the shell command that runs ``sql`` against the remote quota DB.
+
+    Uses Python's standard library ``sqlite3`` module on the remote side, so the
+    remote host needs ``python3`` but not the ``sqlite3`` command line tool, which
+    several platforms (for example Fedora) do not install by default.  The DB is
+    opened read-only so a missing file fails instead of being created.  Rows print
+    pipe-separated with NULL as an empty field, the format the caller parses.
+    """
+    script = (
+        "import os, pathlib, sqlite3\n"
+        'db = pathlib.Path(os.path.expanduser("~/.local/state/ai-cli/quota.db"))\n'
+        'conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)\n'
+        f"for row in conn.execute({sql!r}):\n"
+        '    print("|".join("" if v is None else str(v) for v in row))\n'
+    )
+    return f"python3 -c {shlex.quote(script)}"
+
+
 def quota_sync_from_remote() -> int:
     """Pull quota snapshots from the remote server's SQLite DB into the local DB.
 
@@ -1282,10 +1302,7 @@ def quota_sync_from_remote() -> int:
     ssh_cmd = ["ssh", "-p", port, "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if identity:
         ssh_cmd += ["-i", str(Path(identity).expanduser())]
-    ssh_cmd += [
-        f"{user}@{host}",
-        f'sqlite3 ~/.local/state/ai-cli/quota.db "{sql}"',
-    ]
+    ssh_cmd += [f"{user}@{host}", _remote_quota_query_command(sql)]
 
     try:
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15, check=False)
