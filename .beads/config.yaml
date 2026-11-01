@@ -93,6 +93,9 @@ export:
 # not a reason to untrack the policy: place the database directory under the server's
 # data dir and restart it once.
 dolt.shared-server: true
+# bd must never start a Dolt server of its own: the machine's supervisor owns it, and a
+# bd-started stray takes the store lock (ai-harness docs/procedures/beads-dolt-server-migration.md).
+dolt.auto-start: false
 
 # Retired 2026-09-16 (AIH-mssv2). The store on the shared Dolt server is authoritative and
 # `bd dolt push`/`pull` is the cross-machine transport (verified fast-forward d3c9ee98 -> 5900fafb).
