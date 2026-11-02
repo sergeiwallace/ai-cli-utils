@@ -803,6 +803,20 @@ def get_engine_script(
       fi
       exit 0
     fi
+    # BEGIN RUN STATE child-stderr-restore
+    # Restore from the descriptor the running supervisor holds, never from this script's own
+    # launch log: the supervisor lives for the whole session while each child is started from
+    # the script as an attaching `ai c` last rewrote it, so the two can disagree. Keyed on the
+    # log alone, a child against a supervisor that saved nothing printed `3: bad file
+    # descriptor` on every restart, and a child rendered without a log left its agent's stderr
+    # in the relay. With no saved descriptor, fd 2 already is the terminal; naming it 3 keeps
+    # the log-keyed restore below (which certifies running pre-feature programs) a no-op.
+    if {{ : >&3; }} 2>/dev/null; then
+      exec 2>&3
+    else
+      exec 3>&2
+    fi
+    # END RUN STATE
     if [[ -n "${{_ai_launch_log:-}}" ]]; then
       exec 2>&3
     fi

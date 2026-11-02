@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tmux session no longer prints `<session>.sh:<line>: 3: bad file descriptor` when its agent
+  restarts after an attaching `ai c` rewrote the session script. The child body now restores
+  stderr from the descriptor its running supervisor holds rather than from its own launch log
+  setting, so a supervisor and child rendered at different times always agree, and an agent's
+  stderr no longer lands in the launch-log relay. Live sessions pick this up when `ai update`
+  refreshes their scripts, with no supervisor restart.
 - The session run-state publisher and the stale-session reaper no longer log their routine,
   nothing-to-do outcomes as warnings once a minute. A debounced or clean publish tick and a live
   session or fresh heartbeat now log below WARNING, so the journal's warnings are the failed
