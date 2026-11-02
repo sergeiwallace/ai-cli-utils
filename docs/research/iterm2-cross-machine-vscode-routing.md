@@ -2,7 +2,8 @@
 title: iTerm2 Cross-Machine VS Code File Routing
 category: research
 tags: [research, iterm2, vscode, remote-ssh, macos]
-status: complete
+status: superseded
+superseded_by: ../../../ai-harness/docs/research/host-aware-clickable-file-links.md
 source: "codex-research-2026-09-16"
 template_version: "research-1.2.0"
 delegation_provenance:
@@ -15,6 +16,8 @@ delegation_provenance:
 <!-- Canonical Jinja source: STUB.md.jinja. This direct-copy stub is retained for consumers that have not migrated to rendering it. -->
 
 # iTerm2 Cross-Machine VS Code File Routing
+
+This report is superseded by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/research/host-aware-clickable-file-links.md)). The original research prompt below is preserved as provenance for this superseded report.
 
 ## Founding Ask Coverage
 

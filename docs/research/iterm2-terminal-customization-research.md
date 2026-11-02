@@ -14,6 +14,8 @@ prompt: R-50
 
 ## 1. iTerm2 Escape Sequence Mechanics
 
+Title-overwrite and transport limitations are now carried by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/research/host-aware-clickable-file-links.md)). Local pre-handoff configuration remains possible. Claims that terminal replacement fixes mosh filtering or that runtime mutation is universally impossible are not carried as facts. Visual configuration stays here.
+
 * **Tab Colors:** The official iTerm2 documentation for proprietary escape codes lists `\033]1337;SetColors=tab=RRGGBB\a` as the modern sequence for changing tab background colors. Alternatively, the older OSC 6 sequence (`\033]6;1;bg;red;brightness;255\a...`) is also supported. [VERIFIABLE FACT] (<https://iterm2.com/documentation-escape-codes.html>)
 * **SetProfile & Title Resetting:** The sequence `\033]1337;SetProfile=Name\a` applies a new profile dynamically. Because an iTerm2 profile acts as a container for all session settings (including default window/tab titles), switching profiles will immediately overwrite any title previously set via OSC 0 if the new profile has its own title rules defined in Preferences. [VERIFIABLE FACT] (<https://iterm2.com/documentation-escape-codes.html>)
 * **OSC 0/1/2 Semantics:** Based on the standard xterm control sequences, `OSC 0` sets both the icon name (tab title) and window title, `OSC 1` sets only the icon name, and `OSC 2` sets only the window title. [VERIFIABLE FACT] (<https://invisible-island.net/xterm/ctlseqs/ctlseqs.html>)
