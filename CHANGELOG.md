@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The session run-state publisher and the stale-session reaper no longer log their routine,
+  nothing-to-do outcomes as warnings once a minute. A debounced or clean publish tick and a live
+  session or fresh heartbeat now log below WARNING, so the journal's warnings are the failed
+  pushes and the sessions that need a look.
 - `ai quota sync` no longer needs the `sqlite3` command line tool on the remote host. The remote
   query runs through Python's standard library `sqlite3` module (`python3` is required there) and
   opens the remote quota database read-only, so a missing database fails instead of being created.

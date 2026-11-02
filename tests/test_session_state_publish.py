@@ -1,5 +1,6 @@
 """Real Git transport and durable publication retries."""
 
+import logging
 import plistlib
 import subprocess
 import tomllib
@@ -217,3 +218,28 @@ def test_publish_host_override_when_rendering_then_local_records_remain_visible(
     rendered = tomllib.loads(publish.render(doc, "host-alias"))
     assert rendered["host"] == "host-alias"
     assert set(rendered["sessions"]) == {"c-session-1"}
+
+
+def test_nothing_to_publish_when_ticks_run_then_routine_outcomes_log_below_warning(publishing, caplog):
+    _, _, _, clock = publishing
+    with caplog.at_level("DEBUG", logger="ai_cli.session_state_publish"):
+        assert publish.publish(tick=True).published
+        assert publish.publish(tick=True).reason == "no dirty session state"
+        clock[0] += 1
+        assert state.mark_exited("c-session-1", "manual_exit", {})
+        assert publish.publish(tick=True).reason == "publication debounced"
+
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING], caplog.text
+
+
+def test_push_refused_when_tick_runs_then_the_failure_stays_a_warning(publishing, caplog):
+    _, remote, _, _ = publishing
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    with caplog.at_level("DEBUG", logger="ai_cli.session_state_publish"):
+        result = publish.publish(tick=True)
+
+    assert not result.published
+    failures = [record for record in caplog.records if "session publication failed" in record.getMessage()]
+    assert failures and all(record.levelno == logging.WARNING for record in failures), caplog.text

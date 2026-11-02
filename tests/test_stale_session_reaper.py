@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import logging
 import os
 import re
 import shlex
@@ -2918,3 +2919,42 @@ def test_given_a_live_watcher_when_the_child_exit_trap_runs_then_it_is_still_ter
         f"a live watcher was not terminated: wait status {result.stdout!r}, stderr={result.stderr!r}"
     )
     assert not lock_file.exists(), "the trap skipped its lock-file cleanup"
+
+
+def test_given_a_live_session_when_evaluated_then_its_reason_is_logged_below_warning(
+    reaper_state: Path, candidate: SessionCandidate, caplog: pytest.LogCaptureFixture
+):
+    write_heartbeat(
+        reaper_state,
+        candidate.session_name,
+        candidate.generation_token,
+        boot_generation="boot-1",
+        monotonic_clock=lambda: 1,
+    )
+    probe = _Probe({9001: (True, "S", ProcessIdentity("procfs", 1))})
+
+    with caplog.at_level("DEBUG", logger="ai_cli.stale_session_reaper"):
+        assert _reaper(reaper_state, _ControlledTmux([candidate]), probe).evaluate_once() == []
+
+    routine = [record for record in caplog.records if "reason=process_live" in record.getMessage()]
+    assert routine, caplog.text
+    assert all(record.levelno < logging.WARNING for record in routine)
+
+
+def test_given_an_unreadable_process_when_evaluated_then_its_reason_stays_a_warning(
+    reaper_state: Path, candidate: SessionCandidate, caplog: pytest.LogCaptureFixture
+):
+    write_heartbeat(
+        reaper_state,
+        candidate.session_name,
+        candidate.generation_token,
+        boot_generation="boot-1",
+        monotonic_clock=lambda: 1,
+    )
+    probe = _Probe({9001: (True, None, None)})
+
+    with caplog.at_level("DEBUG", logger="ai_cli.stale_session_reaper"):
+        assert _reaper(reaper_state, _ControlledTmux([candidate]), probe).evaluate_once() == []
+
+    flagged = [record for record in caplog.records if "reason=process_unknown" in record.getMessage()]
+    assert flagged and all(record.levelno == logging.WARNING for record in flagged), caplog.text
