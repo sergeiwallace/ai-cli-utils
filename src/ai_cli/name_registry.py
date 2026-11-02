@@ -39,7 +39,7 @@ import subprocess
 import tempfile
 import tomllib
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -1509,6 +1509,31 @@ def local_policy(registry: Registry) -> dict:
         if isinstance(value, int) and not isinstance(value, bool):
             policy["limits"][key] = value
     return policy
+
+
+def dry_run_snapshot(registry: Registry, snapshot: Snapshot) -> tuple[Snapshot, list[str]]:
+    """``snapshot`` for a read-only plan, and what to tell the reader about it.
+
+    With no published generation it plans with the name list this version ships,
+    under the policy ``ai sync-names`` would publish (:func:`local_policy`), and
+    says so. A real run keeps refusing through :attr:`Snapshot.policy`.
+    """
+    if snapshot.generation is not None:
+        return snapshot, []
+    policy = local_policy(registry)
+    source = policy_source(registry)
+    notes = [
+        f"the registry has no {GENERATION_JSON}, so this plan uses the name list this version ships, under the "
+        f"policy in {source}; a real run needs `ai sync-names` to publish a list first"
+    ]
+    shipped = json.loads((name_list.DATA_DIR / name_list.GENERATION_FILE).read_text(encoding="utf-8"))
+    if shipped.get("policy_digest") != name_list.policy_digest(policy):
+        notes.append(
+            f"the shipped list was generated under a different policy than {source}, so the names "
+            "`ai sync-names` publishes may differ from this plan's"
+        )
+    names = name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
+    return replace(snapshot, names=names, generation={"policy": policy}), notes
 
 
 # --- release ---------------------------------------------------------------------------------

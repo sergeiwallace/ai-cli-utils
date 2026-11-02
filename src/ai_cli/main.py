@@ -7403,6 +7403,9 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
             client="claude-code",
         )
         snapshot = registry.snapshot()
+        notes: list[str] = []
+        if dry_run:
+            snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
         migrate_names.bounded_max_length(max_length, snapshot.policy)
     except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
@@ -7418,6 +7421,8 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
         except (_names.RegistryError, _session_naming.NamePoolExhaustedError) as exc:
             _out.error(Tag.MIGRATE, "migrate", f"{exc}")
             return 1
+        for note in notes:
+            _out.emit(Tag.MIGRATE, "migrate", f"dry run: {note}")
         _out.emit(
             Tag.MIGRATE, "migrate", f"dry run: {old} would become {slot.title_for(planned)}; nothing was reserved"
         )
@@ -7459,7 +7464,9 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
     return 0
 
 
-def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | None, over_limit: bool) -> int:
+def _migrate_all_to_names(
+    repo_root: Path, *, write: bool, dry_run: bool, max_length: int | None, over_limit: bool
+) -> int:
     """``ai migrate-session --all --to-names [-y]``: list, then migrate every stopped session to a name."""
     from . import migrate_names, session_clients
     from . import name_list as _name_list
@@ -7472,6 +7479,9 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
         stem = _migration_stem(repo_root)
         host = _session_naming.host_id()
         snapshot = registry.snapshot()
+        notes: list[str] = []
+        if dry_run:
+            snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
         high = migrate_names.bounded_max_length(max_length, snapshot.policy)
     except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
@@ -7511,6 +7521,8 @@ def _migrate_all_to_names(repo_root: Path, *, write: bool, max_length: int | Non
         if lines
         else f"no index-named session in {repo_root}",
     )
+    for note in notes:
+        _out.emit(Tag.MIGRATE, "migrate", f"dry run: {note}")
     if not write:
         _out.emit(Tag.MIGRATE, "migrate", "nothing was written; run again with -y to migrate the stopped ones")
         return 0
@@ -7650,7 +7662,9 @@ def cmd_migrate_session(
         if not (sweep and to_names):
             raise click.UsageError("-a/--all and -T/--to-names go together")
         sys.exit(
-            _migrate_all_to_names(repo_root, write=yes and not dry_run, max_length=max_length, over_limit=over_limit)
+            _migrate_all_to_names(
+                repo_root, write=yes and not dry_run, dry_run=dry_run, max_length=max_length, over_limit=over_limit
+            )
         )
     if to_name is not None:
         if not old or new:

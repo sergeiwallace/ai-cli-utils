@@ -455,6 +455,13 @@ the rename (`migrations/<old title>.json`), the session is migrated exactly as
 also releases a human-named old name. `-L/--max-length N` must lie between the configured
 limits, because a longer name would fail the next install's check.
 
+A dry run (`-n/--dry-run`) on a registry with no published name list
+(`available/generation.json`) still prints its plan. It plans with the name list this
+version ships, under the policy `ai sync-names` would publish, says so, and names
+`ai sync-names` as the step a real run needs first; it writes nothing. A real run with no
+published list refuses until `ai sync-names` publishes one. When the shipped list was
+generated under a different policy, the plan says the published names may differ.
+
 A migration that fails after its name is reserved is checked for anything left under the
 new title (the worktree, a tmux session, a client record). When nothing is, the name and
 its intent record are released together. When something is, the name stays held as

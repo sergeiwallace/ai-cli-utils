@@ -400,3 +400,67 @@ def test_given_a_session_adopted_with_a_name_when_adopted_then_the_name_is_reser
     assert code == 0, out + err
     assert fleet.rows()["dora"]["title"] == f"{STEM}-dora"
     assert (repo / ".worktrees" / f"{STEM}-dora").is_dir()
+
+
+@pytest.fixture
+def unpublished(tmp_path, monkeypatch, slot):  # noqa: F811
+    (tmp_path / "fleet").mkdir()
+    fleet = build_fleet(tmp_path / "fleet", monkeypatch, publish=False)
+    monkeypatch.setattr("ai_cli.session._tmux_session_names", list)
+    monkeypatch.setattr("ai_cli.main._migration_stem", lambda repo_root: STEM)
+    monkeypatch.setattr("ai_cli.session_naming.resolve_host_alias", lambda: "box")
+    fleet.slot = slot
+    return fleet
+
+
+def _registry_refs(fleet) -> tuple[str, str]:
+    return (
+        git(fleet.remote, "for-each-ref", "--format=%(refname) %(objectname)"),
+        git(fleet.repo, "for-each-ref", "--format=%(refname) %(objectname)"),
+    )
+
+
+def test_given_no_published_generation_when_the_host_sweep_dry_runs_then_it_plans_from_the_shipped_list(
+    unpublished,
+):
+    before = _registry_refs(unpublished)
+
+    code, out, err = sweep(unpublished, "-n")
+
+    assert code == 0, out + err
+    assert OLD in out
+    assert "shipped" in out and "`ai sync-names`" in out
+    assert _registry_refs(unpublished) == before
+
+
+def test_given_no_published_generation_when_one_session_dry_runs_to_a_name_then_a_shipped_name_is_planned(
+    unpublished,
+):
+    from ai_cli import name_list
+
+    shipped = set(name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE))
+    before = _registry_refs(unpublished)
+
+    code, out, err = migrate(unpublished, OLD, "--to-name", "-n")
+
+    assert code == 0, out + err
+    planned = out.split(f"would become {STEM}-", 1)[1].split(";", 1)[0]
+    assert planned in shipped
+    assert "shipped" in out and "`ai sync-names`" in out
+    assert _registry_refs(unpublished) == before
+    assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
+
+
+@pytest.mark.parametrize("args", [("--to-name",), ("--all", "--to-names")])
+def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_naming_sync_names(unpublished, args):
+    before = _registry_refs(unpublished)
+
+    if args[0] == "--all":
+        code, out, err = sweep(unpublished, "-y")
+    else:
+        code, out, err = migrate(unpublished, OLD, *args)
+
+    assert code == 1
+    assert "no available/generation.json; run `ai sync-names` to publish one" in out + err
+    assert _registry_refs(unpublished) == before
+    assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
