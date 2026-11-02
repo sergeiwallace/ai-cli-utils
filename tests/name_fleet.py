@@ -150,7 +150,12 @@ class Fleet:
 
 
 def build_fleet(
-    tmp_path: Path, monkeypatch, *, names: list[str] | None = None, policy_toml: str = POLICY_TOML
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    names: list[str] | None = None,
+    policy_toml: str = POLICY_TOML,
+    publish: bool = True,
 ) -> Fleet:
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -174,7 +179,8 @@ def build_fleet(
     monkeypatch.setattr(reg, "alias_words", lambda: frozenset())
     monkeypatch.setattr(reg, "common_words", lambda policy, **_: frozenset({"may", "art", "sun"}))
     registry = registry_for(repo)
-    publish_list(registry, list(names if names is not None else NAMES), policy_of(repo), policy_commit(repo))
+    if publish:
+        publish_list(registry, list(names if names is not None else NAMES), policy_of(repo), policy_commit(repo))
     return Fleet(tmp=tmp_path, projects=projects, remote=remote, repo=repo, registry=registry)
 
 
