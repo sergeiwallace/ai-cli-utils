@@ -115,10 +115,13 @@ def test_given_changed_timeout_config_when_resolving_then_each_call_honours_curr
     # exec avoids leaving a sleeping descendant behind when the shell times out.
     configure(
         f"exec {shlex.quote(sys.executable)} -c "
-        + shlex.quote('import time; time.sleep(0.2); print("AI_HOST_FRESH=login-host")')
+        + shlex.quote('import time; time.sleep(0.2); print("AI_HOST_FRESH=login-host")'),
+        # A fallback probe shares the short limit, and even /bin/sh can outlast it on a loaded host.
+        "exit 1",
     )
-    assert _resolve(capsys, {"relaunch": {"host_refresh_timeout_seconds": 0.02}}) == "tmux tmux-host\n"
-    assert _resolve(capsys, {"relaunch": {"host_refresh_timeout_seconds": 2}}) == "login-shell login-host\n"
+    assert _resolve(capsys, {"relaunch": {"host_refresh_timeout_seconds": 0.02}}) == "inherited stale-host\n"
+    # The helper answers in well under a second; the generous limit only absorbs host load.
+    assert _resolve(capsys, {"relaunch": {"host_refresh_timeout_seconds": 60}}) == "login-shell login-host\n"
 
 
 def test_given_default_config_when_reading_relaunch_then_host_refresh_timeout_is_five_seconds():

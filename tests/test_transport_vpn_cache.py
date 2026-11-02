@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -112,11 +113,12 @@ print(_is_vpn_active(ttl) if ttl else _is_vpn_active())
 def test_given_invalid_or_stale_cache_when_vpn_is_polled_then_current_state_replaces_it(vpn_probe, contents):
     counter, _, cache = vpn_probe
     cache.write_text(contents)
+    before = time.time()
     assert transport._is_vpn_active(3) is True
     assert counter.read_text().splitlines() == ["probe"]
     state = json.loads(cache.read_text())
     assert state["active"] is True
-    assert 0 <= time.time() - state["checked_at"] < 3
+    assert before <= state["checked_at"] <= time.time()
 
 
 def test_given_unreadable_cache_when_vpn_is_polled_then_detection_refreshes_it(vpn_probe):
@@ -212,8 +214,10 @@ def test_given_no_mullvad_when_cached_detection_runs_then_ifconfig_rule_is_prese
 def test_given_slow_vpn_probe_when_transport_starts_and_polls_then_event_loop_keeps_ticking(vpn_probe):
     counter, response, cache = vpn_probe
     response.write_text("Disconnected")
+    # The cache reads a controlled wall clock, so host load cannot expire an answer early.
+    wall = [time.time()]
     # An expired startup answer must not override the real current state.
-    cache.write_text(json.dumps({"active": True, "checked_at": time.time() - 10}))
+    cache.write_text(json.dumps({"active": True, "checked_at": wall[0] - 10}))
     mosh = MagicMock(pid=123, returncode=None)
     mosh.poll.return_value = None
     ssh = MagicMock(pid=456, returncode=0)
@@ -225,6 +229,8 @@ def test_given_slow_vpn_probe_when_transport_starts_and_polls_then_event_loop_ke
         if args == ["test-mosh"]:
             launches.append("mosh")
             response.write_text("Connected")
+            # The first answer expires while mosh runs; the reconnect then reuses the second.
+            wall[0] += 60
             return mosh
         if args == ["test-ssh"]:
             launches.append("ssh")
@@ -255,6 +261,7 @@ def test_given_slow_vpn_probe_when_transport_starts_and_polls_then_event_loop_ke
         patch("ai_cli.messaging.NATSClient", return_value=nc),
         patch("ai_cli.transport.subprocess.Popen", side_effect=launch),
         patch("ai_cli.transport._monotonic", side_effect=[0, 10, 0, 10]),
+        patch.object(transport, "time", SimpleNamespace(**(vars(time) | {"time": lambda: wall[0]}))),
     ):
         asyncio.run(asyncio.wait_for(run(), timeout=15))
     assert launches == ["mosh", "ssh"]

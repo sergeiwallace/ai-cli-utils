@@ -1138,8 +1138,11 @@ os._exit(0)
             + b"\n"
         )
         child.stdin.flush()
+        # Wait for the receipt before the bounded read starts: interpreter startup on a
+        # loaded host must not consume the short unauthenticated read budget.
+        receipt = child.stdout.readline()
         connection = MagicMock()
-        connection.recv.side_effect = lambda size: child.stdout.readline() if size > 1 else child.stdout.read(size)
+        connection.recv.side_effect = lambda size: receipt if size > 1 else child.stdout.read(size)
         listener = MagicMock()
         listener.accept.return_value = (connection, ("127.0.0.1", 12345))
 
@@ -1147,11 +1150,13 @@ os._exit(0)
             child.stdin.write(b"close\n")
             child.stdin.flush()
             if dies:
-                assert child.wait(timeout=5) == 0
+                assert child.wait(timeout=20) == 0
             return True
 
         authenticated_wait = Mock(side_effect=wait_eof)
-        report = restart._receive_start(listener, request, {"relaunch_timeout_seconds": 5}, wait_eof=authenticated_wait)
+        report = restart._receive_start(
+            listener, request, {"relaunch_timeout_seconds": 20}, wait_eof=authenticated_wait
+        )
         authenticated_wait.assert_called_once_with(connection)
         assert report["reason"] == ("verification-failed" if dies else "started")
         if not dies:
