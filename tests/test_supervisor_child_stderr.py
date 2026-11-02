@@ -45,7 +45,9 @@ def generation_swap(monkeypatch, tmp_path, session_factory):  # noqa: F811
 
         def fakes(bin_dir, *args):
             original(bin_dir, *args)
-            # The first agent runs until the test releases it; every later one reports on stderr.
+            # The first agent runs until the test releases it, and for at least 4 s: the child
+            # stops instead of restarting an agent that exits within 3 s. Every later agent
+            # reports on stderr.
             (bin_dir / "claude").write_text(
                 f"#!{sys.executable}\n"
                 "import os, sys, time\n"
@@ -54,7 +56,8 @@ def generation_swap(monkeypatch, tmp_path, session_factory):  # noqa: F811
                 "    log.write(f'{os.getpid()}\\n')\n"
                 "index = len(open(started).read().split())\n"
                 "if index == 1:\n"
-                f"    while not os.path.exists({str(release)!r}):\n"
+                "    begun = time.monotonic()\n"
+                f"    while not os.path.exists({str(release)!r}) or time.monotonic() - begun < 4:\n"
                 "        time.sleep(0.05)\n"
                 "    sys.exit(0)\n"
                 "sys.stderr.write(f'agent-stderr {index}\\n')\n"
