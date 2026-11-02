@@ -32,6 +32,8 @@ HEARTBEAT_VERSION = 1
 DEFAULT_MODE = "observe"
 DEFAULT_STALE_AFTER_SECONDS = 600
 REAPER_CADENCE_SECONDS = 60
+# Reasons every healthy session produces on every interval: it is alive, or its heartbeat is fresh.
+_ROUTINE_REASONS = frozenset({"process_live", "heartbeat_not_stale"})
 #: How a pane's life is identified when tmux no longer formats its pid.
 #:
 #: tmux 3.8's ``format_cb_pane_pid`` prints the pid only while ``wp->fd != -1``; 3.7
@@ -516,10 +518,14 @@ class StaleSessionReaper:
             self._log("tmux_read_failed", candidate)
 
     def _log(self, reason: str, candidate: SessionCandidate | None = None) -> None:
+        # A live session is skipped every interval; at WARNING that was one line per session
+        # per minute in the journal, burying the reasons that do need a look.
+        level = logging.DEBUG if reason in _ROUTINE_REASONS else logging.WARNING
         if candidate is None:
-            self._logger.warning("stale_session_reaper reason=%s", reason)
+            self._logger.log(level, "stale_session_reaper reason=%s", reason)
         else:
-            self._logger.warning(
+            self._logger.log(
+                level,
                 "stale_session_reaper reason=%s session_id=%s session_name=%s generation=%s",
                 reason,
                 candidate.session_id,

@@ -169,6 +169,12 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
         return _result(False, f"session publication failed ({detail})")
 
 
+# Outcomes a healthy once-a-minute tick reaches; only a failed or refused attempt warns.
+_ROUTINE_REASONS = frozenset(
+    {"publishing disabled: no repo configured", "no dirty session state", "publication debounced"}
+)
+
+
 def _result(published: bool, reason: str) -> PublishResult:
-    LOGGER.info(reason) if published else LOGGER.warning(reason)
+    LOGGER.log(logging.INFO if published or reason in _ROUTINE_REASONS else logging.WARNING, reason)
     return PublishResult(published, reason)
