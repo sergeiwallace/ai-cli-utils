@@ -13,6 +13,8 @@ task: AI-CLI-5abz
 
 # VS Code integrated-terminal tab naming under tmux
 
+Stale inherited environment, TERM_PROGRAM/LC_TERMINAL caveats, OSC/tmux interaction and the GUI-observation gap are now carried by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md). Direct and DCS probes exited successfully but did not prove visible titles. Naming settings and unrelated history hygiene stay here.
+
 ## Founding Ask Coverage
 
 `founding_ask_ref`: N/A — this was a Tier 1 dispatch with no `canonical_root_json`. The literal ask

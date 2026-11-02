@@ -47,7 +47,7 @@ The following index is non-authoritative; the raw dispatch governs.
 
 **Created:** 2026-09-21
 
-**Research:** [iTerm2 Cross-Machine VS Code File Routing](../research/iterm2-cross-machine-vscode-routing.md)
+**Research:** [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md)
 
 <!-- doc:region name="overview" kind="replaceable" -->
 
