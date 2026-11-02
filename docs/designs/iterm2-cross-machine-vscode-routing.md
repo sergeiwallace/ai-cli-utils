@@ -47,7 +47,7 @@ The following index is non-authoritative; the raw dispatch governs.
 
 **Created:** 2026-09-21
 
-**Research:** [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/research/host-aware-clickable-file-links.md))
+**Research:** [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md)
 
 <!-- doc:region name="overview" kind="replaceable" -->
 

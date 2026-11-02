@@ -17,7 +17,7 @@ delegation_provenance:
 
 # iTerm2 Cross-Machine VS Code File Routing
 
-This report is superseded by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/research/host-aware-clickable-file-links.md)). The original research prompt below is preserved as provenance for this superseded report.
+This report is superseded by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md). The original research prompt below is preserved as provenance for this superseded report.
 
 ## Founding Ask Coverage
 
