@@ -152,3 +152,14 @@ def test_given_stale_host_when_legacy_launch_migrates_then_current_alias_names_t
     assert code == 0, out + err
     assert [item["ai_name"] for item in launched] == ["myrepo-box-3"]
     assert not slot["wt"].exists()
+
+
+def test_given_stale_host_when_remote_allocator_names_slot_then_current_alias_names_session(fresh_host):
+    with (
+        patch("ai_cli.session.detect_repo_root", return_value="/tmp/myrepo"),
+        patch("ai_cli.session.is_current_project_resolved", return_value=True),
+    ):
+        code, out, err = run_cli(["ai", "internal", "allocate-session-name", "c", "myrepo", "3", "--project", "myrepo"])
+    assert code == 0, err
+    assert "no host alias is configured" not in err
+    assert json.loads(out)["ai_name"] == "myrepo-box-3"
