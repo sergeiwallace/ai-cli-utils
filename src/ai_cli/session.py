@@ -27,6 +27,7 @@ from .config import (
 )
 from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypassed
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
+from .process_probe import ProcessProbe, ProcfsProbe, normalize_proc_start, probe_for
 from .session_naming import compose_session_name
 
 
@@ -439,7 +440,6 @@ def find_recent_session(prefix: str) -> str:
 # Matches every current engine/project/name shape: the last segment is an index or a
 # human name (lowercase letters).
 _AI_SESSION_RE = re.compile(r"^(?:c|g|p|cx)(?:-r)?-.+-(?:\d+|[a-z]+)$")
-_PROCESS_START_TIME_TOLERANCE_SECONDS = 5
 
 
 def _claude_sessions_dir() -> Path:
@@ -465,31 +465,46 @@ def _has_live_tmux_session(session_name: object, active_sessions: set[str]) -> b
 
 
 def _sweep_stale_claude_session_state() -> None:
-    """Remove only records proven not to identify their original process."""
-    try:
-        import psutil
-    except Exception:
-        return
+    """Remove only records proven not to identify their original process.
 
+    A record is stale when its pid is gone, or, where procfs exists, when the pid is
+    now held by a process whose ``starttime`` differs from the recorded ``procStart``.
+    ``startedAt`` is never evidence: Claude Code writes it after its own startup, so a
+    launch under load drifts from the process start time by several seconds while
+    the record still names a live session.
+    """
     sessions_dir = _claude_sessions_dir()
     if not sessions_dir.exists():
         return
+    probe = probe_for()
     for state_file in sessions_dir.glob("*.json"):
         try:
             state = json.loads(state_file.read_text())
-            pid = state.get("pid")
-            started_at = state.get("startedAt")
-            if not isinstance(pid, int) or not isinstance(started_at, (int, float)):
-                continue
-            process = psutil.Process(pid)
-            if abs(process.create_time() - (started_at / 1000)) <= _PROCESS_START_TIME_TOLERANCE_SECONDS:
-                continue
-        except (OSError, ValueError, TypeError, json.JSONDecodeError, psutil.NoSuchProcess):
-            pass
-        except (psutil.AccessDenied, psutil.ZombieProcess):
+        except (OSError, ValueError):
+            continue
+        pid = state.get("pid") if isinstance(state, dict) else None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            continue
+        if probe.is_present(pid) and not _proc_start_refutes(probe, pid, state.get("procStart")):
             continue
         with contextlib.suppress(OSError):
             state_file.unlink(missing_ok=True)
+
+
+def _proc_start_refutes(probe: ProcessProbe, pid: int, recorded: object) -> bool:
+    """Whether a readable procfs ``starttime`` for ``pid`` differs from the recorded one.
+
+    Linux only: procfs ``starttime`` is an exact tick count, so a mismatch proves pid
+    reuse. psutil's ``create_time`` (macOS, Windows) is compared with a tolerance and
+    the recorded forms there vary, so off procfs a live pid's record is always kept.
+    """
+    if not isinstance(probe, ProcfsProbe):
+        return False
+    recorded = normalize_proc_start(recorded)
+    if not isinstance(recorded, int) or isinstance(recorded, bool):
+        return False
+    identity = probe.capture_identity(pid)
+    return identity is not None and identity.marker != recorded
 
 
 def cleanup_stale_sessions(config: dict) -> None:

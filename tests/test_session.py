@@ -14,6 +14,7 @@ from conftest import _make_list_panes_output
 from process_ownership import OWNED_PROCESS_LIFETIME, reap, spawn_owned_sleeper
 
 import ai_cli.session as _session_module
+from ai_cli import process_probe
 from ai_cli.main import (
     _checkpoint_to_chat_uuid,
     _convert_checkpoint_to_chat,
@@ -467,23 +468,47 @@ def bg_spare_stand_in():
     reap(process)
 
 
-def _write_claude_session_state(sessions_dir, process, *, name="test-1", started_at=None):
+def _write_claude_session_state(sessions_dir, process, *, name="test-1", started_at=None, proc_start=None):
     sessions_dir.mkdir()
     started_at = psutil.Process(process.pid).create_time() if started_at is None else started_at
     state_file = sessions_dir / f"{process.pid}.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "pid": process.pid,
-                "cwd": "/tmp/myproject",
-                "startedAt": int(started_at * 1000),
-                "updatedAt": int((time.time() - 61) * 1000),
-                "name": name,
-                "status": "idle",
-            }
-        )
-    )
+    record = {
+        "pid": process.pid,
+        "cwd": "/tmp/myproject",
+        "startedAt": int(started_at * 1000),
+        "updatedAt": int((time.time() - 61) * 1000),
+        "name": name,
+        "status": "idle",
+    }
+    if proc_start is not None:
+        record["procStart"] = proc_start
+    state_file.write_text(json.dumps(record))
     return state_file
+
+
+@pytest.fixture
+def fake_procfs(tmp_path, monkeypatch):
+    """Point the process probe at a synthetic procfs, so the Linux branch runs on any host.
+
+    Returns a writer that records ``starttime`` (stat field 22) for a pid.
+    """
+    root = tmp_path / "proc"
+    root.mkdir()
+    monkeypatch.setattr(process_probe, "_procfs_root", lambda: root)
+
+    def write(pid: int, starttime: int) -> None:
+        (root / str(pid)).mkdir()
+        (root / str(pid) / "stat").write_text(f"{pid} (claude) S {' '.join(['0'] * 18)} {starttime} 0 0\n")
+
+    return write
+
+
+def _run_launch_cleanup(sessions_dir):
+    with (
+        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
+        patch("ai_cli.session.subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
+    ):
+        cleanup_stale_sessions({})
 
 
 def test_given_orphaned_bg_spare_when_launch_cleanup_runs_then_preserves_process_and_state(tmp_path, bg_spare_stand_in):
@@ -545,15 +570,80 @@ def test_given_live_hyphenated_tmux_session_when_cleanup_runs_then_preserves_bg_
     assert _session_module._AI_SESSION_RE.fullmatch("c-my-project-1")
 
 
-def test_given_reused_pid_when_launch_cleanup_runs_then_removes_only_stale_state(tmp_path, bg_spare_stand_in):
+_STARTED_AT_DRIFT_SECONDS = 30
+
+
+def test_given_live_pid_with_started_at_drift_and_matching_proc_start_when_cleanup_runs_then_keeps_state(
+    tmp_path, bg_spare_stand_in
+):
+    """Claude Code writes ``startedAt`` after its own startup, so a loaded launch drifts past any tolerance."""
+    identity = process_probe.probe_for().capture_identity(bg_spare_stand_in.pid)
+    assert identity is not None
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(
+        sessions_dir,
+        bg_spare_stand_in,
+        started_at=psutil.Process(bg_spare_stand_in.pid).create_time() + _STARTED_AT_DRIFT_SECONDS,
+        proc_start=identity.marker,
+    )
+
+    _run_launch_cleanup(sessions_dir)
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+
+
+def test_given_procfs_live_pid_with_started_at_drift_and_matching_proc_start_when_cleanup_runs_then_keeps_state(
+    tmp_path, bg_spare_stand_in, fake_procfs
+):
+    fake_procfs(bg_spare_stand_in.pid, 15985)
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(
+        sessions_dir,
+        bg_spare_stand_in,
+        started_at=psutil.Process(bg_spare_stand_in.pid).create_time() + _STARTED_AT_DRIFT_SECONDS,
+        proc_start=15985,
+    )
+
+    _run_launch_cleanup(sessions_dir)
+
+    assert state_file.exists()
+
+
+def test_given_live_pid_with_started_at_drift_and_no_proc_start_when_cleanup_runs_then_keeps_state(
+    tmp_path, bg_spare_stand_in
+):
     sessions_dir = tmp_path / "sessions"
     state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, started_at=0)
 
-    with (
-        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
-        patch("ai_cli.session.subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
-    ):
-        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+    _run_launch_cleanup(sessions_dir)
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+
+
+def test_given_dead_pid_when_cleanup_runs_then_removes_state(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("bg-spare stand-in process teardown timing unverified on win32 (PR #37)")
+    exited = spawn_owned_sleeper(OWNED_PROCESS_LIFETIME)
+    reap(exited)
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, exited, started_at=time.time())
+
+    _run_launch_cleanup(sessions_dir)
+
+    assert not state_file.exists()
+
+
+def test_given_procfs_live_pid_with_different_proc_start_when_cleanup_runs_then_removes_reused_pid_state(
+    tmp_path, bg_spare_stand_in, fake_procfs
+):
+    """On procfs a differing ``starttime`` proves the pid now belongs to another process."""
+    fake_procfs(bg_spare_stand_in.pid, 20000)
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, proc_start=15985)
+
+    _run_launch_cleanup(sessions_dir)
 
     assert bg_spare_stand_in.poll() is None
     assert not state_file.exists()
