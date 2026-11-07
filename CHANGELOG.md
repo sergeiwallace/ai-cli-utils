@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A launch from an iTerm2 pane on macOS no longer waits on iTerm2's AppleScript bridge before it
+  hands off. The pane rename and the session-registry position refresh each used to block for up
+  to 5 seconds, so a busy host added about 10 seconds to the launch and printed `osascript did
+  not answer within 5s` and `refresh skipped (iTerm2 did not answer in 5s)`. Both now run in
+  background processes that finish after the hand-off, so the pane still gets its name and the
+  registry its positions when iTerm2 answers late.
 - A tmux session no longer prints `<session>.sh:<line>: 3: bad file descriptor` when its agent
   restarts after an attaching `ai c` rewrote the session script. The child body now restores
   stderr from the descriptor its running supervisor holds rather than from its own launch log

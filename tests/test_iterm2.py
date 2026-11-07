@@ -709,25 +709,25 @@ class TestSetIterm2NameInternalCommand:
 class TestEmitIterm2ProfileSetupRenamesByTty:
     """_emit_iterm2_profile_setup renames the launching pane by its own tty."""
 
-    def test_emit_calls_set_name_by_current_pane_tty(self):
+    def test_given_an_iterm2_pane_when_emitting_setup_then_the_rename_is_deferred_by_its_tty(self):
         env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
         with patch.dict(os.environ, env, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         with patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys002"):
-                            with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
+                            with patch("ai_cli.iterm2._defer_iterm2_name_by_tty") as mock_fn:
                                 _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
         mock_fn.assert_called_once_with("/dev/ttys002", "c-session-1")
 
-    def test_emit_passes_empty_tty_when_not_a_terminal(self):
+    def test_given_no_terminal_when_emitting_setup_then_the_deferred_rename_gets_an_empty_tty(self):
         env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
         with patch.dict(os.environ, env, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         with patch("ai_cli.iterm2._current_pane_tty", return_value=""):
-                            with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
+                            with patch("ai_cli.iterm2._defer_iterm2_name_by_tty") as mock_fn:
                                 _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
         mock_fn.assert_called_once_with("", "c-session-1")
 

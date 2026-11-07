@@ -1372,13 +1372,13 @@ class _DarwinSys:
         return getattr(sys, name)
 
 
-def _reattach_launch_with_rename(iterm_run, tmp_path):
+def _reattach_launch_with_rename(spawn, tmp_path):
     """Run a re-attaching launch for real through the iTerm2 pane rename.
 
     ``_emit_iterm2_profile_setup`` is deliberately NOT mocked — the rename is the
     code under test, and every other test in this file stubs the whole emit out.
-    ``iterm_run`` services the subprocess calls iterm2.py makes, so the caller
-    decides how osascript behaves. Returns the reporter's output.
+    ``spawn`` stands in for every detached process iterm2.py starts, so the caller
+    decides whether starting one succeeds. Returns the reporter's output.
     """
 
     class _OK:
@@ -1410,7 +1410,7 @@ def _reattach_launch_with_rename(iterm_run, tmp_path):
             # The rename is macOS-only. Report darwin to iterm2 alone: patching
             # sys.platform itself would also flip every other platform branch in the launch.
             patch("ai_cli.iterm2.sys", _DarwinSys()),
-            patch("ai_cli.iterm2.subprocess.run", side_effect=iterm_run),
+            patch("ai_cli.iterm2._spawn_detached", side_effect=spawn),
             patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
         ):
@@ -1423,65 +1423,47 @@ def _reattach_launch_with_rename(iterm_run, tmp_path):
     return stream.getvalue()
 
 
-def _osascript_calls(calls):
-    return [c for c in calls if c and c[0] == "osascript"]
+def _osascript_spawns(spawned):
+    return [argv for argv in spawned if argv and argv[0] == "osascript"]
 
 
-def test_given_the_iterm2_pane_rename_times_out_when_launching_then_the_launch_still_hands_off(tmp_path):
-    """A hung cosmetic rename must not take the launch down.
+def test_given_osascript_cannot_be_started_when_launching_then_it_hands_off_and_the_warning_says_what_the_tab_shows(
+    tmp_path,
+):
+    """A cosmetic rename that cannot even start must not take the launch down.
 
-    A reported launch crashed with ``TimeoutExpired`` out of the osascript
-    rename *after* ``[launch] worktree: ready`` — the work was done and then
-    thrown away from the user's point of view.
-    The required outcome is the one a failed worktree sync already produces:
-    warn, naming the cause, and continue to the hand-off.
+    The warning names the cause and what the user will see, so a silent swallow and a
+    reported failure stay distinguishable.
     """
+    spawned: list[list[str]] = []
 
-    class _OK:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    def spawn(argv):
+        spawned.append(list(argv))
+        if argv[0] == "osascript":
+            raise FileNotFoundError(2, "No such file or directory", "osascript")
 
-    calls: list[list[str]] = []
+    out = _reattach_launch_with_rename(spawn, tmp_path)
 
-    def iterm_run(cmd, *args, **kwargs):
-        calls.append(list(cmd))
-        if cmd[0] == "osascript":
-            raise subprocess.TimeoutExpired(cmd=list(cmd), timeout=5)
-        return _OK()
-
-    out = _reattach_launch_with_rename(iterm_run, tmp_path)
-
-    assert _osascript_calls(calls), f"the rename was never attempted: {calls!r}"
+    assert _osascript_spawns(spawned), f"the rename was never attempted: {spawned!r}"
     assert "handoff: ready, handing off to Claude Code (myproject-tst-1)" in out, out
-    # A silent swallow would also reach the hand-off, so the warning must name
-    # the cause for the two outcomes to be distinguishable.
-    assert "Warning: iTerm2 pane rename" in out, out
-    assert "osascript did not answer within 5s" in out, out
+    assert "Warning: iTerm2 pane rename to 'c-myproject-tst-1' not started: osascript could not be run" in out, out
+    assert "the tab keeps the name the terminal title sequence gave it" in out, out
 
 
-def test_given_the_iterm2_pane_rename_answers_when_launching_then_it_renames_and_nothing_warns(tmp_path):
-    """Negative control: the same launch path still performs the rename.
+def test_given_an_iterm2_pane_when_launching_then_the_rename_is_started_detached_for_its_tty_and_nothing_warns(
+    tmp_path,
+):
+    """Negative control: the launch still renames its pane, only without waiting for it.
 
-    Disabling or skipping the rename would satisfy the timeout test above on its
-    own; it cannot satisfy this one.
+    Disabling or skipping the rename would satisfy the test above on its own; it cannot
+    satisfy this one.
     """
+    spawned: list[list[str]] = []
 
-    class _OK:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
+    out = _reattach_launch_with_rename(lambda argv: spawned.append(list(argv)), tmp_path)
 
-    calls: list[list[str]] = []
-
-    def iterm_run(cmd, *args, **kwargs):
-        calls.append(list(cmd))
-        return _OK()
-
-    out = _reattach_launch_with_rename(iterm_run, tmp_path)
-
-    rename = _osascript_calls(calls)
-    assert len(rename) == 1, f"expected exactly one osascript rename, got {rename!r}"
+    rename = _osascript_spawns(spawned)
+    assert len(rename) == 1, f"expected exactly one detached osascript rename, got {rename!r}"
     assert "/dev/ttys000" in rename[0][2]
     assert 'set name of s to "c-myproject-tst-1"' in rename[0][2]
     assert "handoff: ready, handing off to Claude Code (myproject-tst-1)" in out, out

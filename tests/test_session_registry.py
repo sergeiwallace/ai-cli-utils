@@ -1,5 +1,6 @@
 """The iTerm2 session registry: launch records, liveness, refresh."""
 
+import contextlib
 import json
 import logging
 import os
@@ -158,11 +159,13 @@ def _remote_preflight(command, **_kwargs):
     return subprocess.CompletedProcess(command, 0, stdout="current", stderr="")
 
 
-def _launch_remote(argv, *, runner=None, ssh_exit_codes=None):
+def _launch_remote(argv, *, runner=None, ssh_exit_codes=None, real_iterm2_setup=False, run=None):
     """Drive ``ai c -R`` over the pure-ssh transport through ``cli()``.
 
     With ``runner``, it replaces ``run_ssh_with_reconnect``. With ``ssh_exit_codes``, the
-    real reconnect loop runs and each ssh attempt exits with the next code.
+    real reconnect loop runs and each ssh attempt exits with the next code. With
+    ``real_iterm2_setup``, the iTerm2 profile setup (and its pane rename) runs for real.
+    ``run`` answers every ``subprocess.run`` instead of the remote preflight.
     """
     handoff = (
         patch("ai_cli.transport.run_ssh_with_reconnect", side_effect=runner)
@@ -180,9 +183,9 @@ def _launch_remote(argv, *, runner=None, ssh_exit_codes=None):
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
-        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        contextlib.nullcontext() if real_iterm2_setup else patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._current_pane_tty", return_value=_PANE_TTY),
-        patch("ai_cli.main.subprocess.run", side_effect=_remote_preflight),
+        patch("ai_cli.main.subprocess.run", side_effect=run or _remote_preflight),
         patch("ai_cli.transport.time.sleep"),
         handoff,
     ):
@@ -433,34 +436,25 @@ def test_given_the_same_session_relaunched_when_recorded_again_then_it_still_has
     assert record["id"] != first_id
 
 
-def test_given_refresh_on_launch_when_launched_in_iterm2_then_other_records_get_current_positions(
+def test_given_refresh_on_launch_when_launched_in_iterm2_then_a_detached_refresh_skipping_the_new_record_starts(
     state_home, iterm2_toml, monkeypatch
 ):
     monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
     monkeypatch.setenv("ITERM_SESSION_ID", _ITERM_SESSION_ID)
     monkeypatch.setattr(session_registry.sys, "platform", "darwin")
-    session_registry.record_launch(
-        kind="local",
-        name="c-myproject-7",
-        relaunch_argv=["ai", "c", "7"],
-        cwd=None,
-        remote=None,
-        tty="",
-        iterm_session_id=None,
-        launcher_pid=0,
-        config=_PERSISTENCE_DEFAULTS,
-    )
-    panes = {"/dev/ttys077": {"session_uuid": "FEDCBA98-0000-0000-0000-000000000000", "window": 1, "tab": 0, "pane": 2}}
+    _seed("c-myproject-7")
 
     with (
-        patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session", return_value="/dev/ttys077"),
-        patch("ai_cli.iterm2._iterm2_panes_by_tty", return_value=panes) as lookup,
+        patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup,
+        patch("ai_cli.iterm2._spawn_detached") as spawn,
     ):
         _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert lookup.call_count == 1
-    other = next(r for r in _sessions(state_home) if r["name"] == "c-myproject-7")
-    assert other["iterm2"] == {**panes["/dev/ttys077"], "tty": "/dev/ttys077"}
+    assert lookup.call_count == 0, "the AppleScript pass must not run in the launcher"
+    new = next(r for r in _sessions(state_home) if r["name"] != "c-myproject-7")
+    spawn.assert_called_once_with(
+        [sys.executable, "-m", "ai_cli.main", "internal", "refresh-iterm2-sessions", new["id"]]
+    )
 
 
 def test_given_refresh_on_launch_disabled_when_launched_in_iterm2_then_no_applescript_pass_runs(
@@ -470,11 +464,137 @@ def test_given_refresh_on_launch_disabled_when_launched_in_iterm2_then_no_apples
     monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
     monkeypatch.setattr(session_registry.sys, "platform", "darwin")
 
-    with patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup:
+    with (
+        patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup,
+        patch("ai_cli.iterm2._spawn_detached") as spawn,
+    ):
         _launch_local(state_home, argv=["ai", "c", "1"])
         _launch_local(state_home, argv=["ai", "c", "2"])
 
     assert lookup.call_count == 0
+    assert [c for c in spawn.call_args_list if "refresh-iterm2-sessions" in c.args[0]] == []
+
+
+class _DarwinSys:
+    """``sys`` as one module sees it on macOS: ``platform`` is darwin, everything else is real."""
+
+    platform = "darwin"
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
+def _launch_remote_from_slow_iterm2(state_home, *, in_iterm2=True):
+    """``ai c -R 2`` from an iTerm2 pane on macOS whose AppleScript bridge never answers in time.
+
+    The real pane rename and the real launch-time refresh run. Every blocking osascript
+    call times out; a detached spawn is recorded instead of started. Returns
+    ``(events, records_at_handoff)`` where ``events`` is the ordered list of
+    ``("sync-osascript", script)``, ``("spawn", argv)`` and ``("handoff", None)``.
+    """
+    events: list[tuple[str, object]] = []
+    real_popen = subprocess.Popen
+
+    def iterm_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "osascript":
+            events.append(("sync-osascript", cmd[2]))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 5)
+        return _remote_preflight(cmd, **kwargs)
+
+    def popen(argv, *args, **kwargs):
+        argv = list(argv)
+        if argv[0] == "osascript" or "internal" in argv:
+            events.append(("spawn", argv))
+            return MagicMock(pid=0)
+        return real_popen(argv, *args, **kwargs)
+
+    seen: dict = {}
+
+    def runner(ssh_args, cleanup_cmd, **kwargs):
+        events.append(("handoff", None))
+        seen["records"] = _sessions(state_home)
+        return 0
+
+    terminal = {"LC_TERMINAL": "iTerm2"} if in_iterm2 else {}
+    with (
+        patch.dict(os.environ, terminal),
+        patch("ai_cli.iterm2.sys", _DarwinSys()),
+        patch("ai_cli.session_registry.sys", _DarwinSys()),
+        patch("subprocess.Popen", side_effect=popen),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.icon_generator.generate_session_icon", return_value=None),
+        patch("ai_cli.icon_generator.generate_dynamic_profile"),
+    ):
+        _launch_remote(["ai", "c", "-R", "2"], runner=runner, real_iterm2_setup=True, run=iterm_run)
+    return events, seen.get("records")
+
+
+def test_given_iterm2_does_not_answer_when_launching_remote_then_no_osascript_call_waits_before_the_handoff(
+    state_home, iterm2_toml, monkeypatch, capsys
+):
+    """A launch from a busy iTerm2 used to wait out two 5 s osascript deadlines before handoff.
+
+    The pane rename and the launch-time registry refresh each blocked on an Apple Event
+    that a loaded host answered late. Both are cosmetic or bookkeeping, so the launch
+    must hand both off to detached processes and reach the dial without waiting on either.
+    """
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.setenv("ITERM_SESSION_ID", _ITERM_SESSION_ID)
+    other = _seed("c-myproject-7", iterm_session_id="w1t0p0:00000000-0000-0000-0000-000000000007")
+
+    events, _ = _launch_remote_from_slow_iterm2(state_home)
+
+    handoff = events.index(("handoff", None))
+    before = events[:handoff]
+    assert [e for e in before if e[0] == "sync-osascript"] == [], before
+    spawns = [argv for kind, argv in before if kind == "spawn"]
+    renames = [argv for argv in spawns if argv[0] == "osascript"]
+    assert len(renames) == 1, spawns
+    assert f'if tty of s is "{_PANE_TTY}" then' in renames[0][2]
+    assert 'set name of s to "c-r-myproject-2"' in renames[0][2]
+    refreshes = [argv for argv in spawns if "refresh-iterm2-sessions" in argv]
+    assert len(refreshes) == 1, spawns
+    assert other["id"] not in refreshes[0], "only the new record is skipped"
+    err = capsys.readouterr().err
+    assert "did not answer" not in err, err
+    assert "refresh skipped" not in err, err
+
+
+def test_given_a_deferred_refresh_when_it_runs_then_other_records_get_positions_and_the_new_one_is_skipped(
+    state_home, iterm2_toml, monkeypatch
+):
+    """The detached refresh the launch spawns does the work the in-line refresh used to do."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    new = _seed("c-myproject-1", iterm_session_id="w0t0p0:00000000-0000-0000-0000-000000000001", tty="/dev/ttys001")
+    _seed("c-myproject-7", iterm_session_id="w0t0p1:00000000-0000-0000-0000-000000000007")
+    panes = {
+        "/dev/ttys077": {"session_uuid": "FEDCBA98-0000-0000-0000-000000000000", "window": 1, "tab": 0, "pane": 2},
+        "/dev/ttys011": {"session_uuid": "FEDCBA98-0000-0000-0000-000000000001", "window": 2, "tab": 0, "pane": 0},
+    }
+    clients = {"c-myproject-7": "/dev/ttys077", "c-myproject-1": "/dev/ttys011"}
+
+    with (
+        patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session", side_effect=lambda name: clients.get(name, "")),
+        patch("ai_cli.iterm2._iterm2_panes_by_tty", return_value=panes) as lookup,
+    ):
+        code, _, _ = run_cli(["ai", "internal", "refresh-iterm2-sessions", new["id"]])
+
+    assert code == 0
+    assert lookup.call_args.args[0] > session_registry.REFRESH_TIMEOUT_SECONDS
+    by_name = {r["name"]: r for r in _sessions(state_home)}
+    assert by_name["c-myproject-7"]["iterm2"] == {**panes["/dev/ttys077"], "tty": "/dev/ttys077"}
+    assert by_name["c-myproject-1"]["iterm2"]["tty"] == "/dev/ttys001"
+
+
+def test_given_a_launch_outside_iterm2_when_launching_remote_then_nothing_is_renamed_or_refreshed(
+    state_home, iterm2_toml, outside_iterm2
+):
+    _seed("c-myproject-7", iterm_session_id="w1t0p0:00000000-0000-0000-0000-000000000007")
+
+    events, records = _launch_remote_from_slow_iterm2(state_home, in_iterm2=False)
+
+    assert events == [("handoff", None)]
+    assert records is not None
 
 
 # --- T-1.4 clean-exit marking -----------------------------------------------------

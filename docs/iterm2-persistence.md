@@ -29,7 +29,7 @@ A key with the wrong type (for example `include = "c-*"` instead of `include = [
 | `include_remote` | `true` | Record `ai c -R` sessions. |
 | `include` | `[]` | Session-name globs (`fnmatch` syntax, case-sensitive). Empty records every session; otherwise only a session matching one glob is recorded. |
 | `exclude` | `[]` | Session-name globs applied after `include`; a match is not recorded. |
-| `refresh_on_launch` | `true` | After each launch from an iTerm2 pane on macOS, re-read every other record's window, tab and pane in one AppleScript pass. |
+| `refresh_on_launch` | `true` | After each launch from an iTerm2 pane on macOS, re-read every other record's window, tab and pane in one AppleScript pass. The pass runs in a background process the launch does not wait for, and allows iTerm2 up to 60 seconds to answer. |
 
 A launch that a rule filters out is logged at debug level with the rule that filtered it.
 
