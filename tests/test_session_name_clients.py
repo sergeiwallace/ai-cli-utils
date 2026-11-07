@@ -84,3 +84,52 @@ def test_given_naming_flags_when_forwarded_to_the_remote_allocator_then_they_rea
 
     assert read_back == naming
     assert project == REPO
+
+
+@pytest.mark.parametrize(
+    "naming",
+    [main._NamingRequest(session_names=True), main._NamingRequest(custom="cleo")],
+    ids=["session-names-flag", "custom-name"],
+)
+def test_given_index_names_on_the_remote_host_when_a_named_remote_launch_starts_its_reserved_title_then_no_index_is_appended(
+    fleet, monkeypatch, capsys, naming
+):
+    # This process plays the remote host, which keeps index names by default.
+    monkeypatch.setenv("AI_CLI_SESSION_NAMES", "0")
+    monkeypatch.setattr("ai_cli.session_naming.host_id", lambda: OTHER_HOST)
+    monkeypatch.setattr("ai_cli.session_naming.resolve_or_prompt_host_alias", lambda **_: "two")
+    monkeypatch.setattr("ai_cli.tmux_setup.config_opts_out", lambda config: False)
+    monkeypatch.setattr("ai_cli.host_env.resolve_host_env", lambda _config: ("inherited", OTHER_HOST))
+    with pytest.raises(SystemExit) as caught:
+        main._handle_internal(
+            ["allocate-session-name", "c", REPO, "", *main._naming_cli_args(naming), "--project", REPO]
+        )
+    assert caught.value.code == 0
+    reply = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    # The launch command the -R path runs on the remote host after allocating.
+    remote_naming, _ = main._naming_from_internal_args(main._remote_launch_naming_args(naming))
+    reporter, _stream = quiet_reporter()
+    session_id, title = main._resolve_session_identity(
+        "c",
+        f"{REPO}-two",
+        reply["session_id"],
+        {},
+        is_remote=True,
+        use_tmux=True,
+        legacy_prefix=REPO,
+        naming=remote_naming,
+        repo=REPO,
+        repo_alias=REPO,
+        host_alias="two",
+        worktree=True,
+        dry_run=False,
+        reporter=reporter,
+    )
+
+    assert (session_id, title) == (reply["session_id"], reply["ai_name"])
+
+
+def test_given_no_naming_choice_when_the_remote_launch_command_is_built_then_it_forwards_none():
+    assert main._remote_launch_naming_args(main._NamingRequest()) == []
+    assert main._remote_launch_naming_args(main._NamingRequest(session_names=False)) == ["--no-session-names"]
