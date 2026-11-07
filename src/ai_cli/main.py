@@ -3593,6 +3593,21 @@ def _naming_cli_args(naming: _NamingRequest) -> list[str]:
     return args
 
 
+def _remote_launch_naming_args(naming: _NamingRequest) -> list[str]:
+    """The naming flags of the launch the -R path runs on the remote host once it has allocated.
+
+    The allocator has already reserved the title, so ``--name`` and the label flags are
+    spent and are not repeated. The on/off choice is not: without it a host that keeps
+    index names reads the reserved title as an index prefix and starts ``<title>-1``.
+    A ``--name`` launch is a named launch, so it carries ``--session-names`` there.
+    """
+    if naming.session_names is True or naming.custom:
+        return ["--session-names"]
+    if naming.session_names is False:
+        return ["--no-session-names"]
+    return []
+
+
 def _naming_from_internal_args(args: list[str]) -> tuple[_NamingRequest, str]:
     """``_naming_cli_args``'s flags, plus ``--project``, read back on the remote host."""
     custom = project = None
@@ -4432,6 +4447,8 @@ def _do_session_launch(
                     sys.exit(1)
                 _session_phase.outcome(f"resolved {remote_session_id}")
         if remote_session_id:
+            for _naming_arg in _remote_launch_naming_args(naming or _NamingRequest()):
+                remote_cmd += f" {_naming_arg}"
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
