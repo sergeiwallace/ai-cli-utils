@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An unqualified `ai c` or `ai c --dry-run` in a registered project no longer exits 1 with
+  `unregistered project directories: ...` when other checkouts under the projects directory are
+  not in the project registry. Only the project being launched must be registered; the launch
+  prints one warning naming the other unregistered directories and continues. An unregistered
+  launch target is still prompted for on a terminal and refused without one.
 - The first human-named launch, `--name` launch or dry run in a checkout that has never fetched
   the session-name registry no longer exits 1 with `the registry has no available/generation.json`.
   `git clone` does not copy the registry ref, so a fresh clone read an empty registry. The launch

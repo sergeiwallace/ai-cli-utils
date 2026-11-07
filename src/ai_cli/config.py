@@ -1667,9 +1667,14 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
 
 def validate_registry_completeness(*, interactive: bool = True) -> bool:
-    """Check that all ~/projects/* directories are registered. Returns True if complete.
+    """Check that the launch target's ~/projects/* directory is registered.
 
-    If interactive=True and unregistered dirs found, prompts user to register.
+    The target is the project the current directory belongs to. Only it gates the
+    launch: an unregistered directory that is not the target cannot change the
+    session being planned, and its owner may have no prefix to give it, so it is
+    named in one warning instead of refusing the launch.
+
+    If interactive=True and the target is unregistered, prompts user to register.
     Returns False (and prints error) if user declines registration or stdin ends.
     A keyboard interrupt propagates so the caller can abort immediately; no
     registry changes are written unless every prompt completes successfully.
@@ -1692,6 +1697,16 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
             continue
         if d.name.lower() not in registered_names:
             unregistered.append(d)
+
+    target = get_current_project_name().lower()
+    unrelated = [d for d in unregistered if d.name.lower() != target]
+    if unrelated:
+        _out.warning(
+            Tag.CONFIG,
+            "register",
+            f"unregistered project directories (not the launch target): {', '.join(d.name for d in unrelated)}",
+        )
+    unregistered = [d for d in unregistered if d.name.lower() == target]
 
     if not unregistered:
         return True
