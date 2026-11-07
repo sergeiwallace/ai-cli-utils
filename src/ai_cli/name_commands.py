@@ -559,18 +559,24 @@ def probe_transcripts_command(allow_empty: bool, as_json: bool) -> None:
         executable = CLIENT_EXECUTABLES.get(client.client, client.client)
         installed = shutil.which(executable) is not None or client.store_root().exists()
         cases = []
-        if installed:
+        skipped = None
+        if not installed:
+            skipped = "not installed"
+        elif not client.store_root().exists():
+            # A missing store root only ever probes unknown, which holds every row, so it cannot release a name.
+            skipped = f"no {client.client} store on this host; its rows are held as unknown until one exists"
+        else:
             with tempfile.TemporaryDirectory(prefix="ai-probe-transcripts-") as scratch:
                 cases = _probe_cases(client, Path(scratch), allow_empty)
-        clients.append({"client": client.client, "installed": installed, "cases": cases})
+        clients.append({"client": client.client, "installed": installed, "skipped": skipped, "cases": cases})
     ok = all(case["ok"] for entry in clients for case in entry["cases"])
     if as_json:
         _out.raw(Untagged.JSON, json.dumps({"clients": clients, "ok": ok}, sort_keys=True))
         sys.exit(0 if ok else 1)
     lines = []
     for entry in clients:
-        if not entry["installed"]:
-            lines.append(f"{entry['client']} skipped: not installed")
+        if entry["skipped"]:
+            lines.append(f"{entry['client']} skipped: {entry['skipped']}")
             continue
         for case in entry["cases"]:
             verdict = "ok" if case["ok"] else "FAIL"

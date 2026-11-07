@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fresh directory with no record, and `unknown` when the store root is missing. It only reads the
   client stores, prints one line per client per case with the probe's reason, and exits 1 when any
   case fails. A client with no record yet fails the `present` case unless `-a/--allow-empty` is
-  given.
+  given. A client on `PATH` with no store on this host is skipped and passes: its rows can only
+  probe `unknown`, which holds them.
 
 ### Fixed
 

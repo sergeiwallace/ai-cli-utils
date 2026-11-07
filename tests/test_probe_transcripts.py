@@ -96,15 +96,39 @@ def test_given_no_client_installed_when_probed_then_each_is_skipped_and_it_exits
     assert code == 0 and all(entry["installed"] is False and entry["cases"] == [] for entry in report["clients"])
 
 
-def test_given_a_client_on_path_with_no_store_when_probed_then_it_counts_as_installed_and_fails(home, on_path):
+def test_given_a_client_on_path_with_no_store_when_probed_then_it_is_skipped_as_held_and_passes(home, on_path):
     on_path.add("codex")
+
+    result = _run()
+
+    assert result.exit_code == 0, result.output
+    assert "codex skipped: no codex store on this host; its rows are held as unknown until one exists" in result.output
+    assert "codex present" not in result.output and "codex absent" not in result.output
+    assert "claude-code skipped: not installed" in result.output
+
+
+def test_given_a_client_on_path_with_no_store_when_probed_as_json_then_it_is_installed_skipped_with_no_cases(
+    home, on_path
+):
+    on_path.add("codex")
+
+    code, report = _json()
+
+    [codex] = [entry for entry in report["clients"] if entry["client"] == "codex"]
+    assert code == 0 and report["ok"] is True
+    assert codex["installed"] is True and codex["cases"] == []
+    assert codex["skipped"].startswith("no codex store on this host")
+
+
+def test_given_a_client_on_path_with_a_store_whose_case_fails_when_probed_then_it_still_exits_1(home, on_path):
+    on_path.add("codex")
+    make_root("codex", home)
 
     result = _run()
 
     assert result.exit_code == 1, result.output
     assert "codex present: no record on this host to test (FAIL)" in result.output
-    assert "codex absent: expected absent, got unknown (FAIL)" in result.output
-    assert "claude-code skipped: not installed" in result.output
+    assert "codex skipped" not in result.output
 
 
 def test_given_an_empty_store_when_probed_then_present_is_not_proven_and_it_exits_1(home, on_path):
