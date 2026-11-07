@@ -12,7 +12,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
-from name_fleet import HOST, OTHER_HOST, REPO, STEM, build_fleet
+from name_fleet import HOST, NAMES, OTHER_HOST, REPO, STEM, build_fleet, git, policy_commit, policy_of, publish_list
 
 from ai_cli import main
 from ai_cli import name_registry as reg
@@ -231,3 +231,70 @@ def test_given_a_label_and_with_name_when_launched_then_the_label_is_followed_by
 
     assert ai_name.startswith(f"{STEM}-probe-")
     assert fleet.rows()[ai_name.rsplit("-", 1)[-1]]["label"] == "probe"
+
+
+def _fresh_clone_fleet(tmp_path, monkeypatch):
+    """A fleet whose list was published from another clone, so the launching clone has never fetched the ref."""
+    fleet = build_fleet(tmp_path, monkeypatch, publish=False)
+    publish_list(fleet.other_machine("publisher"), NAMES, policy_of(fleet.repo), policy_commit(fleet.repo))
+    assert git(fleet.repo, "rev-parse", "--verify", "--quiet", reg.PRIVATE_REF, check=False) == ""
+    return fleet
+
+
+def test_given_a_clone_that_never_fetched_the_registry_when_launching_then_it_fetches_and_reserves_a_pick(
+    tmp_path, monkeypatch, launch
+):
+    fleet = _fresh_clone_fleet(tmp_path, monkeypatch)
+
+    ai_name = named(launch)
+
+    token = ai_name.rsplit("-", 1)[-1]
+    assert ai_name == f"{STEM}-{token}"
+    assert fleet.rows()[token]["machine"] == HOST
+
+
+def test_given_a_clone_that_never_fetched_the_registry_when_a_name_is_asked_for_then_it_is_reserved(
+    tmp_path, monkeypatch, launch
+):
+    fleet = _fresh_clone_fleet(tmp_path, monkeypatch)
+
+    ai_name = named(launch, naming=main._NamingRequest(custom="cleo"))
+
+    assert ai_name == f"{STEM}-cleo"
+    assert fleet.rows()["cleo"]["machine"] == HOST
+
+
+def test_given_a_clone_that_never_fetched_the_registry_when_dry_running_then_it_plans_and_reserves_nothing(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = _fresh_clone_fleet(tmp_path, monkeypatch)
+    before = fleet.tip()
+
+    launch(dry_run=True)
+
+    output = capsys.readouterr()
+    assert "reserves nothing" in output.out + output.err
+    assert fleet.tip() == before
+
+
+@pytest.mark.parametrize(
+    ("naming", "dry_run"),
+    [(None, False), (main._NamingRequest(custom="cleo"), False), (None, True)],
+    ids=["picked", "custom", "dry-run"],
+)
+def test_given_a_clone_that_never_fetched_the_registry_and_it_unreachable_when_launching_then_it_exits_75_taking_nothing(
+    tmp_path, monkeypatch, launch, capsys, naming, dry_run
+):
+    fleet = _fresh_clone_fleet(tmp_path, monkeypatch)
+    before = fleet.tip()
+    fleet.offline()
+
+    with pytest.raises(SystemExit) as caught:
+        launch(naming=naming, dry_run=dry_run)
+
+    assert caught.value.code == 75
+    err = capsys.readouterr().err
+    assert "could not fetch" in err
+    assert "ai sync-names" not in err
+    assert fleet.tip() == before
+    assert reg.read_spool() == {}
