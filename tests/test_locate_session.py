@@ -32,8 +32,9 @@ ADDED = [
     "reconcile-names",
     "release-name",
     "reassign-name",
+    "probe-transcripts",
 ]
-VERBS = {"list", "locate", "add", "remove", "sync", "check", "show", "reconcile", "release", "reassign"}
+VERBS = {"list", "locate", "add", "remove", "sync", "check", "show", "reconcile", "release", "reassign", "probe"}
 
 
 @pytest.fixture
