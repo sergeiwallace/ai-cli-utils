@@ -499,6 +499,98 @@ def locate_session_command(query: str, as_json: bool) -> None:
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
 
 
+CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "gemini": "gemini"}
+
+
+def _most_recent_record(client):
+    """The newest readable record whose working directory is known, or None."""
+    candidates = [record for record in client.all_records() if not record.problem and record.cwd]
+    return max(candidates, key=lambda record: record.path.stat().st_mtime, default=None)
+
+
+def _probe_cases(client, scratch: Path, allow_empty: bool) -> list[dict]:
+    from . import session_clients as sc
+
+    def case(name: str, expected: str, probe) -> dict:
+        return {
+            "case": name,
+            "expected": expected,
+            "actual": probe.state,
+            "reason": probe.reason,
+            "ok": probe.state == expected,
+        }
+
+    cases = []
+    record = _most_recent_record(client) if client._root_problem() is None else None
+    if record is None:
+        cases.append(
+            {
+                "case": sc.PRESENT,
+                "expected": sc.PRESENT,
+                "actual": None,
+                "reason": "no record on this host to test",
+                "ok": allow_empty,
+            }
+        )
+    else:
+        cases.append(case(sc.PRESENT, sc.PRESENT, client.probe_transcript(Path(record.cwd), "")))
+    worktree = scratch / "worktree"
+    worktree.mkdir()
+    cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    missing_home = scratch / "missing-home"
+    cases.append(case(sc.UNKNOWN, sc.UNKNOWN, type(client)(missing_home).probe_transcript(worktree, "")))
+    return cases
+
+
+@click.command(
+    "probe-transcripts",
+    help="Session names: prove each installed client's transcript probe answers present, absent and unknown",
+)
+@click.option("-a", "--allow-empty", is_flag=True, help="Pass a client that has no record yet to probe as present")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the results as one JSON object")
+def probe_transcripts_command(allow_empty: bool, as_json: bool) -> None:
+    import shutil
+    import tempfile
+
+    from . import session_clients
+
+    clients = []
+    for client in session_clients.all_adapters():
+        executable = CLIENT_EXECUTABLES.get(client.client, client.client)
+        installed = shutil.which(executable) is not None or client.store_root().exists()
+        cases = []
+        skipped = None
+        if not installed:
+            skipped = "not installed"
+        elif not client.store_root().exists():
+            # A missing store root only ever probes unknown, which holds every row, so it cannot release a name.
+            skipped = f"no {client.client} store on this host; its rows are held as unknown until one exists"
+        else:
+            with tempfile.TemporaryDirectory(prefix="ai-probe-transcripts-") as scratch:
+                cases = _probe_cases(client, Path(scratch), allow_empty)
+        clients.append({"client": client.client, "installed": installed, "skipped": skipped, "cases": cases})
+    ok = all(case["ok"] for entry in clients for case in entry["cases"])
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps({"clients": clients, "ok": ok}, sort_keys=True))
+        sys.exit(0 if ok else 1)
+    lines = []
+    for entry in clients:
+        if entry["skipped"]:
+            lines.append(f"{entry['client']} skipped: {entry['skipped']}")
+            continue
+        for case in entry["cases"]:
+            verdict = "ok" if case["ok"] else "FAIL"
+            if case["actual"] is None:
+                lines.append(f"{entry['client']} {case['case']}: {case['reason']} ({verdict})")
+                continue
+            lines.append(
+                f"{entry['client']} {case['case']}: expected {case['expected']}, got {case['actual']} "
+                f"({verdict}): {case['reason']}"
+            )
+    _out.emit(Tag.NAMES, "probe", "\n".join(lines))
+    sys.exit(0 if ok else 1)
+
+
 COMMANDS = (
     sync_names_command,
     add_name_command,
@@ -511,4 +603,5 @@ COMMANDS = (
     list_names_command,
     list_name_candidates_command,
     locate_session_command,
+    probe_transcripts_command,
 )

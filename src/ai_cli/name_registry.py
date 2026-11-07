@@ -1641,36 +1641,49 @@ def reconcile(
 ) -> ReconcileReport:
     """This machine's reconcile pass: publish the spool, recover migrations, release, top up spares.
 
-    Holds ``spool.lock`` for the whole pass, from before the spool is read until the
-    release push lands or gives up, so an offline launch can never activate a spare
+    The spool is published and migrations recovered under ``spool.lock``, which is then
+    let go: the worktree and transcript probes read client stores and can take minutes,
+    and an offline launch waiting on the same lock must not wait on them. Each row the
+    probes find releasable is remembered with the blob it was tested at, and the
+    release deletes it only if the tip still holds that exact blob, so a row that
+    changed after its test is held until a later pass tests it again.
+
+    ``spool.lock`` is taken again from before the spool is read for the release until
+    the release push lands or gives up, so an offline launch can never activate a spare
     between the final check and its release. Only rows whose ``machine`` is this host
     are ever edited or deleted.
     """
     report = ReconcileReport()
-    with spool_lock(lock_wait(registry)):
-        if not dry_run:
+    if not dry_run:
+        with spool_lock(lock_wait(registry)):
             report.published = publish_spool(registry, machine)
             if recover is not None:
                 report.recovered = recover()
+    tested = registry.snapshot()
+    candidates: dict[str, str] = {}
+    for token, row in tested.rows.items():
+        if row.get("machine") != machine or row["kind"] == "spare":
+            continue
+        if title is not None and row.get("title") != title:
+            continue
+        if row.get("state") == "migration-incomplete":
+            report.held[token] = "migration-incomplete: run the same `ai migrate-session` command again"
+            continue
+        if _renaming(tested, row):
+            report.held[token] = "a recorded rename of this session has not completed"
+            continue
+        absence = probe_absence(row, projects_root, adapters)
+        if absence.releasable:
+            candidates[token] = tested.blobs.get(token, "")
+        else:
+            report.held[token] = absence.held_because()
+    with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot()
         spool = read_spool()
-        candidates: dict[str, str] = {}
-        for token, row in snapshot.rows.items():
-            if row.get("machine") != machine or row["kind"] == "spare":
-                continue
-            if title is not None and row.get("title") != title:
-                continue
-            if row.get("state") == "migration-incomplete":
-                report.held[token] = "migration-incomplete: run the same `ai migrate-session` command again"
-                continue
-            if _renaming(snapshot, row):
-                report.held[token] = "a recorded rename of this session has not completed"
-                continue
-            absence = probe_absence(row, projects_root, adapters)
-            if absence.releasable:
-                candidates[token] = snapshot.blobs.get(token, "")
-            else:
-                report.held[token] = absence.held_because()
+        for token, blob in list(candidates.items()):
+            if snapshot.blobs.get(token) != blob:
+                del candidates[token]
+                report.held[token] = "the row changed or was removed after its worktree and transcript were tested"
         spares: dict[str, str] = {}
         if title is None:
             policy = snapshot.policy

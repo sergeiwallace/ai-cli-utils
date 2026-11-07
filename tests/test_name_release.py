@@ -429,6 +429,109 @@ def test_given_a_spare_release_holding_the_lock_when_an_offline_launch_wants_a_s
     assert "lola" not in reg.read_spool()
 
 
+class _HeldProbe:
+    """A Claude Code store whose probe waits on ``release`` and then answers ``state``."""
+
+    def __init__(self, state: str = session_clients.ABSENT, during=None) -> None:
+        import threading
+
+        self.started, self.release = threading.Event(), threading.Event()
+        self.state, self.during = state, during
+
+    def probe_transcript(self, worktree, title):
+        self.started.set()
+        if self.during is not None:
+            self.during()
+        assert self.release.wait(60), "the test never let the probe finish"
+        return session_clients.Probe(self.state, "fixture")
+
+
+def _reconcile_in_thread(fleet, client) -> tuple[object, dict]:
+    import threading
+
+    outcome: dict = {}
+
+    def run():
+        try:
+            outcome["report"] = reg.reconcile(
+                fleet.registry,
+                HOST,
+                projects_root=fleet.projects,
+                adapters={"claude-code": client},
+                host_alias="box",
+            )
+        except Exception as exc:  # surfaced by the test's assertions
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def test_given_a_reconcile_probing_a_slow_store_when_an_offline_launch_wants_a_spare_then_it_takes_one_without_waiting(
+    fleet,
+):
+    import os
+
+    _repo(fleet)
+    _session(fleet, "cleo")
+    fleet.registry.transact(
+        lambda s: reg.Change(
+            {reg.row_path("lola"): reg.checked_row(reg.spare_row(name="lola", host_alias="box", machine=HOST))},
+            "spare (fixture)",
+        )
+    )
+    client = _HeldProbe(session_clients.PRESENT)
+    thread, outcome = _reconcile_in_thread(fleet, client)
+    assert client.started.wait(30), "the reconcile never probed"
+
+    try:
+        started = time.monotonic()
+        child = subprocess.run(
+            [sys.executable, "-c", _RELEASE_RACE_CHILD, str(fleet.repo), HOST],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ),
+            timeout=60,
+            check=False,
+        )
+        waited = time.monotonic() - started
+        probe_still_running = not client.release.is_set()
+    finally:
+        client.release.set()
+        thread.join(60)
+
+    assert probe_still_running
+    assert json.loads(child.stdout) == {"took": "lola"}, child.stderr
+    assert waited < 10, f"the offline launch waited {waited:.1f} s for the probe"
+    assert "error" not in outcome, outcome
+    assert "cleo" in fleet.rows()
+
+
+def test_given_a_row_rewritten_while_it_is_probed_when_reconciled_then_it_is_held_not_released(fleet):
+    _repo(fleet)
+    _session(fleet, "cleo")
+    other = fleet.other_machine("rewriter")
+
+    def rewrite():
+        other.transact(
+            lambda s: reg.Change(
+                {reg.row_path("cleo"): reg.checked_row({**s.rows["cleo"], "client": "codex"})}, "rewrite (fixture)"
+            )
+        )
+
+    client = _HeldProbe(session_clients.ABSENT, during=rewrite)
+    client.release.set()
+    thread, outcome = _reconcile_in_thread(fleet, client)
+    thread.join(60)
+
+    assert "error" not in outcome, outcome
+    report = outcome["report"]
+    assert "cleo" not in report.released
+    assert "changed or was removed after" in report.held["cleo"]
+    assert fleet.rows()["cleo"]["client"] == "codex"
+
+
 # --- T-3.3: release against the writes that can land first -------------------------------------
 
 
