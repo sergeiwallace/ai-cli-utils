@@ -1884,14 +1884,16 @@ class TestCliInternalMissingArgs:
 
 
 class TestCliRegistryValidation:
-    def test_cli_when_registry_incomplete_noninteractive_then_exits(self, tmp_path):
+    def test_cli_when_registry_incomplete_noninteractive_then_exits(self, tmp_path, monkeypatch):
         """A bare `ai c` (no name/project — AI-CLI-113 only skips discovery for a
-        *targeted* launch) still validates the registry and exits noninteractively."""
+        *targeted* launch) from an unregistered project still validates the registry
+        and exits noninteractively."""
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "unregistered").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "unregistered")
 
         with (
             patch("sys.argv", ["ai", "c"]),

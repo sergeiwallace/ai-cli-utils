@@ -397,12 +397,13 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=False) is True
 
-    def test_validate_when_unregistered_noninteractive_then_returns_false(self, tmp_path):
+    def test_validate_when_unregistered_noninteractive_then_returns_false(self, tmp_path, monkeypatch):
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
@@ -418,6 +419,7 @@ class TestValidateRegistryCompleteness:
         projects_dir = home / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
@@ -430,12 +432,13 @@ class TestValidateRegistryCompleteness:
         assert new_project["name"] == "newapp"
         assert new_project["path"] == "~/projects/newapp"
 
-    def test_validate_when_user_declines_then_returns_false(self, tmp_path):
+    def test_validate_when_user_declines_then_returns_false(self, tmp_path, monkeypatch):
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
@@ -443,12 +446,13 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=True) is False
 
-    def test_validate_when_eof_then_returns_false(self, tmp_path):
+    def test_validate_when_eof_then_returns_false(self, tmp_path, monkeypatch):
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
@@ -456,18 +460,19 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=True) is False
 
-    def test_validate_when_interrupted_then_preserves_registry_and_propagates_interrupt(self, tmp_path):
+    def test_validate_when_interrupted_then_preserves_registry_and_propagates_interrupt(self, tmp_path, monkeypatch):
         registry = tmp_path / "registry.toml"
         original = b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n'
         registry.write_bytes(original)
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         (projects_dir / "anotherapp").mkdir(parents=True)
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
-            patch("builtins.input", side_effect=["y", KeyboardInterrupt]),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
             pytest.raises(KeyboardInterrupt),
         ):
             validate_registry_completeness(interactive=True)
@@ -485,12 +490,13 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=False) is True
 
-    def test_validate_when_custom_prefix_then_uses_it(self, tmp_path):
+    def test_validate_when_custom_prefix_then_uses_it(self, tmp_path, monkeypatch):
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.chdir(projects_dir / "newapp")
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
