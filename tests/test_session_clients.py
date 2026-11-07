@@ -160,3 +160,156 @@ def test_given_a_rename_when_rolled_back_then_every_record_is_byte_for_byte_as_b
     after = {p: p.read_bytes() for p in adapter.store_root().parent.rglob("*") if p.is_file()}
     assert after == snapshot
     assert path.exists()
+
+
+# --- what a lookup reads -----------------------------------------------------------------
+
+
+@pytest.fixture
+def reads(monkeypatch) -> list[tuple[str, Path]]:
+    """Every file read through ``Path.read_bytes`` or opened through ``Path.open``, with which one."""
+    opened: list[tuple[str, Path]] = []
+    real_read_bytes, real_open = Path.read_bytes, Path.open
+
+    def read_bytes(self):
+        opened.append(("read_bytes", Path(self)))
+        return real_read_bytes(self)
+
+    def open_(self, *args, **kwargs):
+        opened.append(("open", Path(self)))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(Path, "open", open_)
+    return opened
+
+
+def _other_worktrees(worktree: Path, count: int = 30) -> list[Path]:
+    return [worktree.parent / f"other-{index}" for index in range(count)]
+
+
+def test_given_a_store_of_many_projects_when_a_claude_code_worktree_is_looked_up_then_only_its_own_directory_is_read(
+    home, worktree, reads
+):
+    for other in _other_worktrees(worktree):
+        seed("claude-code", home, other)
+    own = seed("claude-code", home, worktree)
+    adapter = sc.adapter("claude-code", home)
+    reads.clear()
+
+    records = adapter.records_for(worktree)
+    probe = adapter.probe_transcript(worktree, TITLE)
+
+    assert [record.path for record in records] == [own]
+    assert records[0].title == TITLE
+    assert probe.state == sc.PRESENT
+    assert {path.parent for _, path in reads} == {own.parent}
+
+
+def test_given_a_store_of_many_projects_when_an_absent_claude_code_worktree_is_probed_then_it_is_absent_reading_nothing(
+    home, worktree, reads
+):
+    for other in _other_worktrees(worktree):
+        seed("claude-code", home, other)
+    reads.clear()
+
+    probe = sc.adapter("claude-code", home).probe_transcript(worktree, TITLE)
+
+    assert probe.state == sc.ABSENT
+    assert reads == []
+
+
+def test_given_an_empty_claude_code_project_directory_when_probed_then_it_is_present(home, worktree):
+    cc_project_dir(worktree, home / ".claude").mkdir(parents=True)
+
+    assert sc.adapter("claude-code", home).probe_transcript(worktree, TITLE).state == sc.PRESENT
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="permission bits do not deny root or Windows")
+def test_given_an_unreadable_claude_code_transcript_when_probed_then_it_is_unknown(home, worktree):
+    path = seed("claude-code", home, worktree)
+    path.chmod(0)
+    try:
+        assert sc.adapter("claude-code", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
+    finally:
+        path.chmod(0o644)
+
+
+def test_given_a_title_written_after_the_working_directory_when_listed_then_the_last_custom_title_is_read(
+    home, worktree
+):
+    project = cc_project_dir(worktree, home / ".claude")
+    _jsonl(
+        project / "s.jsonl",
+        {"type": "user", "cwd": str(worktree)},
+        {"type": "assistant", "message": {"content": "x" * 64}},
+        {"type": "custom-title", "customTitle": "first-title"},
+        {"type": "custom-title", "customTitle": TITLE},
+    )
+
+    [record] = sc.adapter("claude-code", home).all_records()
+
+    assert (record.cwd, record.title) == (str(worktree), TITLE)
+
+
+def test_given_many_rollouts_when_a_codex_worktree_is_probed_then_reading_stops_at_its_rollout(home, worktree, reads):
+    own = seed("codex", home, worktree)
+    for index, other in enumerate(_other_worktrees(worktree)):
+        _jsonl(
+            own.parent / f"rollout-2026-10-23T01-00-{index:02d}-x.jsonl",
+            {"type": "session_meta", "payload": {"id": f"o{index}", "cwd": str(other)}},
+        )
+    reads.clear()
+
+    probe = sc.adapter("codex", home).probe_transcript(worktree, TITLE)
+
+    assert probe.state == sc.PRESENT
+    assert {path for _, path in reads} == {own}
+
+
+def test_given_an_unreadable_rollout_and_no_match_when_a_codex_worktree_is_probed_then_it_is_unknown(home, worktree):
+    path = seed("codex", home, worktree)
+    path.with_name("rollout-2026-10-23T09-00-00-bad.jsonl").write_text("not json\n")
+    path.unlink()
+
+    assert sc.adapter("codex", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
+
+
+def test_given_many_pi_sessions_when_a_worktree_is_looked_up_then_only_its_session_is_read_past_the_header(
+    home, worktree, reads
+):
+    for other in _other_worktrees(worktree):
+        seed("pi", home, other)
+    own = seed("pi", home, worktree)
+    reads.clear()
+
+    records = sc.adapter("pi", home).records_for(worktree)
+
+    assert [(record.path, record.title) for record in records] == [(own, TITLE)]
+    assert {path for kind, path in reads if kind == "read_bytes"} == {own}
+
+
+def test_given_an_unreadable_pi_session_in_another_directory_when_probed_then_it_does_not_hold_the_worktree(
+    home, worktree
+):
+    make_root("pi", home)
+    seed("pi", home, _other_worktrees(worktree, 1)[0]).write_text("not json\n")
+
+    assert sc.adapter("pi", home).probe_transcript(worktree, TITLE).state == sc.ABSENT
+
+
+def test_given_many_gemini_projects_when_a_worktree_is_looked_up_then_only_its_project_chats_are_read(
+    home, worktree, reads
+):
+    own = seed("gemini", home, worktree)
+    projects = {str(worktree): own.parent.parent.name}
+    for index, other in enumerate(_other_worktrees(worktree)):
+        _jsonl(home / ".gemini" / "tmp" / f"p{index}" / "chats" / "session-1.jsonl", {"sessionId": f"g{index}"})
+        projects[str(other)] = f"p{index}"
+    (home / ".gemini" / "projects.json").write_text(json.dumps({"projects": projects}))
+    reads.clear()
+
+    records = sc.adapter("gemini", home).records_for(worktree)
+
+    assert [record.path for record in records] == [own]
+    assert {path for _, path in reads if path.suffix == ".jsonl"} == {own}
