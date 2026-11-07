@@ -446,11 +446,64 @@ def _iterm2_session_type(engine: str) -> str:
     )
 
 
-#: Deadline for the pane-rename Apple Event. The script walks every window, tab
-#: and session, so its cost grows with the whole iTerm2 UI tree; a bigger number
-#: only widens the window in which a busy app still answers, and is paid by every
-#: launch that does hang. The deadline stays short and the timeout is survivable.
+#: Deadline for the pane-rename Apple Event that ``ai internal set-iterm2-name`` waits
+#: on (the session script uses its exit code to fall back to an escape sequence). The
+#: script walks every window, tab and session, so its cost grows with the whole iTerm2
+#: UI tree. The deadline stays short and the timeout is survivable. A launch does not
+#: wait at all: it uses ``_defer_iterm2_name_by_tty``.
 _RENAME_TIMEOUT_SECONDS = 5
+
+
+def _rename_by_tty_script(tty: str, name: str) -> str:
+    """The AppleScript that sets the Name of the iTerm2 session on ``tty``; prints ok or miss."""
+    safe_tty = tty.replace("\\", "\\\\").replace('"', '\\"')
+    safe_name = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f"""tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                try
+                    if tty of s is "{safe_tty}" then
+                        set name of s to "{safe_name}"
+                        return "ok"
+                    end if
+                end try
+            end repeat
+        end repeat
+    end repeat
+    return "miss"
+end tell"""
+
+
+def _spawn_detached(argv: list[str]) -> None:
+    """Start ``argv`` in its own session with no stdio and do not wait for it; raises OSError."""
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _defer_iterm2_name_by_tty(tty: str, name: str) -> None:
+    """Rename the iTerm2 pane on ``tty`` from a detached osascript the launch does not wait for (macOS only).
+
+    A loaded host answers this Apple Event in anything from 0.2 s to over 10 s (osascript
+    startup alone varies that much), so a launch that waited on it paid the slow tail on
+    its critical path. Detached, the rename lands whenever iTerm2 answers, under
+    AppleScript's own two-minute Apple Event timeout, after the launcher has handed off.
+    """
+    if sys.platform != "darwin" or not tty:
+        return
+    try:
+        _spawn_detached(["osascript", "-e", _rename_by_tty_script(tty, name)])
+    except OSError as exc:
+        launch_reporter.active().warning(
+            "terminal",
+            f"iTerm2 pane rename to {name!r} not started: osascript could not be run ({exc}). "
+            "Continuing the launch — the tab keeps the name the terminal title sequence gave it.",
+        )
 
 
 def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
@@ -467,23 +520,7 @@ def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
     """
     if sys.platform != "darwin" or not tty:
         return False
-    safe_tty = tty.replace("\\", "\\\\").replace('"', '\\"')
-    safe_name = name.replace("\\", "\\\\").replace('"', '\\"')
-    script = f"""tell application "iTerm2"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with s in sessions of t
-                try
-                    if tty of s is "{safe_tty}" then
-                        set name of s to "{safe_name}"
-                        return "ok"
-                    end if
-                end try
-            end repeat
-        end repeat
-    end repeat
-    return "miss"
-end tell"""
+    script = _rename_by_tty_script(tty, name)
     try:
         result = subprocess.run(
             ["osascript", "-e", script],
@@ -718,14 +755,14 @@ def _emit_iterm2_profile_setup(
     _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1337;SetColors=tab={color_no_hash}\007", nl=False)
     # OSC 1 sets the iTerm2 "Name" field — mosh does not intercept it
     _out.raw(Untagged.TERMINAL_CONTROL, f"\033]1;{session_name}\007", nl=False)
-    # AppleScript fallback: set the session Name directly via the iTerm2 API.
-    # This is the authoritative fix for local sessions where OSC 1 may be
-    # overridden by tmux rendering, process tracking, or nested-tmux passthrough
-    # failures. Runs synchronously here (before os.execvp) so the Name is set
-    # before the process is replaced by tmux/mosh/ssh.
+    # AppleScript fallback: set the session Name directly via the iTerm2 API, for
+    # local sessions where OSC 1 may be overridden by tmux rendering, process
+    # tracking, or nested-tmux passthrough failures. OSC 1 above has already named
+    # the pane, so the launch does not wait for this: it runs detached and lands
+    # after the hand-off to tmux/mosh/ssh, which keeps this process's tty.
     #
     # Resolve the pane by this process's controlling tty — the physical pane the
     # launcher runs in, which is exactly the pane tmux is about to take over.
     # tty matching can't collide across sessions the way an inherited/shared
     # ITERM_SESSION_ID GUID could (AI-CLI-59 root cause).
-    _set_iterm2_name_by_tty(_current_pane_tty(), session_name)
+    _defer_iterm2_name_by_tty(_current_pane_tty(), session_name)

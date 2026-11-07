@@ -436,34 +436,25 @@ def test_given_the_same_session_relaunched_when_recorded_again_then_it_still_has
     assert record["id"] != first_id
 
 
-def test_given_refresh_on_launch_when_launched_in_iterm2_then_other_records_get_current_positions(
+def test_given_refresh_on_launch_when_launched_in_iterm2_then_a_detached_refresh_skipping_the_new_record_starts(
     state_home, iterm2_toml, monkeypatch
 ):
     monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
     monkeypatch.setenv("ITERM_SESSION_ID", _ITERM_SESSION_ID)
     monkeypatch.setattr(session_registry.sys, "platform", "darwin")
-    session_registry.record_launch(
-        kind="local",
-        name="c-myproject-7",
-        relaunch_argv=["ai", "c", "7"],
-        cwd=None,
-        remote=None,
-        tty="",
-        iterm_session_id=None,
-        launcher_pid=0,
-        config=_PERSISTENCE_DEFAULTS,
-    )
-    panes = {"/dev/ttys077": {"session_uuid": "FEDCBA98-0000-0000-0000-000000000000", "window": 1, "tab": 0, "pane": 2}}
+    _seed("c-myproject-7")
 
     with (
-        patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session", return_value="/dev/ttys077"),
-        patch("ai_cli.iterm2._iterm2_panes_by_tty", return_value=panes) as lookup,
+        patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup,
+        patch("ai_cli.iterm2._spawn_detached") as spawn,
     ):
         _launch_local(state_home, argv=["ai", "c", "1"])
 
-    assert lookup.call_count == 1
-    other = next(r for r in _sessions(state_home) if r["name"] == "c-myproject-7")
-    assert other["iterm2"] == {**panes["/dev/ttys077"], "tty": "/dev/ttys077"}
+    assert lookup.call_count == 0, "the AppleScript pass must not run in the launcher"
+    new = next(r for r in _sessions(state_home) if r["name"] != "c-myproject-7")
+    spawn.assert_called_once_with(
+        [sys.executable, "-m", "ai_cli.main", "internal", "refresh-iterm2-sessions", new["id"]]
+    )
 
 
 def test_given_refresh_on_launch_disabled_when_launched_in_iterm2_then_no_applescript_pass_runs(
@@ -473,11 +464,15 @@ def test_given_refresh_on_launch_disabled_when_launched_in_iterm2_then_no_apples
     monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
     monkeypatch.setattr(session_registry.sys, "platform", "darwin")
 
-    with patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup:
+    with (
+        patch("ai_cli.iterm2._iterm2_panes_by_tty") as lookup,
+        patch("ai_cli.iterm2._spawn_detached") as spawn,
+    ):
         _launch_local(state_home, argv=["ai", "c", "1"])
         _launch_local(state_home, argv=["ai", "c", "2"])
 
     assert lookup.call_count == 0
+    assert [c for c in spawn.call_args_list if "refresh-iterm2-sessions" in c.args[0]] == []
 
 
 class _DarwinSys:

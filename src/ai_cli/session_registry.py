@@ -47,6 +47,9 @@ BOOT_ID_TIMEOUT_SECONDS = 5
 #: Bound on the one AppleScript pass a refresh makes; iTerm2 that does not answer in
 #: this long is skipped rather than waited on.
 REFRESH_TIMEOUT_SECONDS = 5
+#: The same bound for the refresh a launch hands to a detached process: nothing waits
+#: on it, so it can outlast the slow tail of a loaded host (measured above 10 s).
+DEFERRED_REFRESH_TIMEOUT_SECONDS = 60
 #: Bound on one ``--probe-remote`` dial.
 PROBE_TIMEOUT_SECONDS = 20
 
@@ -411,9 +414,19 @@ def track_launch(*, kind: str, name: str, relaunch_argv: list[str], remote: dict
     if config["tracking"]["refresh_on_launch"] and sys.platform == "darwin" and _iterm2._is_iterm2() and tty:
         # The new record is excluded: its session has no client yet, or (on a re-attach)
         # a client in the pane it is about to leave, so ITERM_SESSION_ID is the truth.
-        outcome = refresh(skip_ids={record["id"]})
-        return TrackOutcome(record["id"], outcome.skipped)
+        # The pass is an Apple Event a busy iTerm2 can take seconds to answer, so it runs
+        # in a detached process and the launch does not wait for it.
+        return TrackOutcome(record["id"], _defer_refresh(record["id"]))
     return TrackOutcome(record["id"])
+
+
+def _defer_refresh(skip_id: str) -> str | None:
+    """Start ``ai internal refresh-iterm2-sessions <skip_id>`` detached; a warning if it could not start."""
+    try:
+        _iterm2._spawn_detached([sys.executable, "-m", "ai_cli.main", "internal", "refresh-iterm2-sessions", skip_id])
+    except OSError as exc:
+        return f"position refresh not started ({exc}); run `ai iterm2 sessions --refresh` to update positions"
+    return None
 
 
 def _local_session_alive(name: str) -> bool | None:
@@ -545,7 +558,7 @@ class RefreshOutcome:
         return self.skipped or f"refreshed {self.updated} of {self.total} recorded position(s)"
 
 
-def refresh(skip_ids: Iterable[str] = ()) -> RefreshOutcome:
+def refresh(skip_ids: Iterable[str] = (), *, timeout: float = REFRESH_TIMEOUT_SECONDS) -> RefreshOutcome:
     """Update each record's window/tab/pane from the pane its session occupies now.
 
     One AppleScript pass maps every iTerm2 pane's tty to its position. A record whose
@@ -562,7 +575,7 @@ def refresh(skip_ids: Iterable[str] = ()) -> RefreshOutcome:
         return RefreshOutcome(0, len(records), "refresh skipped (iTerm2 is macOS-only)")
     current = {r["id"]: tty for r in records if (tty := _current_tty(r))}
     try:
-        panes = _iterm2._iterm2_panes_by_tty(REFRESH_TIMEOUT_SECONDS)
+        panes = _iterm2._iterm2_panes_by_tty(timeout)
     except _iterm2.Iterm2PaneLookupError as exc:
         return RefreshOutcome(0, len(records), f"refresh skipped ({exc})")
     positions = {record_id: {**panes[tty], "tty": tty} for record_id, tty in current.items() if tty in panes}

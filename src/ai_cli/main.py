@@ -2361,6 +2361,14 @@ def _handle_internal(argv: list[str]) -> None:
         # Non-zero when nothing was renamed (no iTerm2 API on this host, or no pane on
         # that tty), so the session script can fall back to an escape sequence.
         sys.exit(0 if _iterm2._set_iterm2_name_by_tty(tty, argv[2]) else 1)
+    elif action == "refresh-iterm2-sessions":
+        # Spawned detached by a launch from an iTerm2 pane; argv[1] is the launch's own
+        # record, which the pass leaves alone.
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal refresh-iterm2-sessions <record_id>", err=True)
+            sys.exit(1)
+        _session_registry.refresh(skip_ids={argv[1]}, timeout=_session_registry.DEFERRED_REFRESH_TIMEOUT_SECONDS)
+        sys.exit(0)
     elif action == "open-vscode-remote":
         if len(argv) not in (3, 4):
             _out.emit(
