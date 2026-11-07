@@ -1639,21 +1639,26 @@ def reconcile(
     dry_run: bool = False,
     recover: Callable[[], list[str]] | None = None,
 ) -> ReconcileReport:
-    """This machine's reconcile pass: probe, then publish the spool, recover migrations, release, top up spares.
+    """This machine's reconcile pass: publish the spool, recover migrations, release, top up spares.
 
-    The worktree and transcript probes run first, without ``spool.lock``, against a
-    snapshot of their own: they read client stores and can take minutes, and an offline
-    launch must not wait on them. Each row they find releasable is remembered with the
-    blob it was tested at, and the release deletes it only if the tip still holds that
-    exact blob, so a row that changed after its test, or a row the spool publishes
-    during this pass, is not released until a later pass tests it again.
+    The spool is published and migrations recovered under ``spool.lock``, which is then
+    let go: the worktree and transcript probes read client stores and can take minutes,
+    and an offline launch waiting on the same lock must not wait on them. Each row the
+    probes find releasable is remembered with the blob it was tested at, and the
+    release deletes it only if the tip still holds that exact blob, so a row that
+    changed after its test is held until a later pass tests it again.
 
-    ``spool.lock`` is then held from before the spool is read until the release push
-    lands or gives up, so an offline launch can never activate a spare between the
-    final check and its release. Only rows whose ``machine`` is this host are ever
-    edited or deleted.
+    ``spool.lock`` is taken again from before the spool is read for the release until
+    the release push lands or gives up, so an offline launch can never activate a spare
+    between the final check and its release. Only rows whose ``machine`` is this host
+    are ever edited or deleted.
     """
     report = ReconcileReport()
+    if not dry_run:
+        with spool_lock(lock_wait(registry)):
+            report.published = publish_spool(registry, machine)
+            if recover is not None:
+                report.recovered = recover()
     tested = registry.snapshot()
     candidates: dict[str, str] = {}
     for token, row in tested.rows.items():
@@ -1673,10 +1678,6 @@ def reconcile(
         else:
             report.held[token] = absence.held_because()
     with spool_lock(lock_wait(registry)):
-        if not dry_run:
-            report.published = publish_spool(registry, machine)
-            if recover is not None:
-                report.recovered = recover()
         snapshot = registry.snapshot()
         spool = read_spool()
         for token, blob in list(candidates.items()):
