@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The first human-named launch, `--name` launch or dry run in a checkout that has never fetched
+  the session-name registry no longer exits 1 with `the registry has no available/generation.json`.
+  `git clone` does not copy the registry ref, so a fresh clone read an empty registry. The launch
+  now fetches the ref once when it has no local copy. When that fetch cannot finish, the launch
+  exits 75 naming the failed fetch and creates nothing, because a checkout that never fetched the
+  registry holds no spare it could take.
 - A launch from an iTerm2 pane on macOS no longer waits on iTerm2's AppleScript bridge before it
   hands off. The pane rename and the session-registry position refresh each used to block for up
   to 5 seconds, so a busy host added about 10 seconds to the launch and printed `osascript did

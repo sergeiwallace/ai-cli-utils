@@ -1201,6 +1201,20 @@ def remove_name(registry: Registry, name: str) -> None:
     registry.transact(build)
 
 
+def last_known_snapshot(registry: Registry) -> Snapshot:
+    """The last fetched tip, fetched once first when this checkout has never fetched the registry.
+
+    A fresh clone carries no local registry ref, because ``git clone`` copies only
+    branches and tags. Raises :class:`RegistryUnreachableError` when that first fetch
+    cannot finish, so the caller takes its unreachable path rather than reading an
+    empty registry. Never call it under a lock others wait on.
+    """
+    snapshot = registry.snapshot(fetch=False)
+    if isinstance(registry, GitRegistry) and snapshot.tip is None:
+        return registry.snapshot()
+    return snapshot
+
+
 def known_names(registry: Registry | None) -> frozenset[str]:
     """The parser's name set, read without the network: the last known list and held names.
 
