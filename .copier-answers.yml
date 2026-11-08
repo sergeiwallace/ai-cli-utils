@@ -1,4 +1,4 @@
-_commit: v1.18.0-215-g35c1e98
+_commit: v1.18.0-216-g593a50c
 _src_path: git@github.com:sergeiwallace/project-template.git
 dev_branch: main
 include_ci: true
