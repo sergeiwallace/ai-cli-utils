@@ -80,8 +80,9 @@ def test_given_every_client_with_a_record_when_probed_as_json_then_the_object_na
         assert entry["installed"] is True
         assert [case["case"] for case in entry["cases"]] == [sc.PRESENT, sc.ABSENT, sc.UNKNOWN]
         for case in entry["cases"]:
-            assert set(case) == {"case", "expected", "actual", "reason", "ok"}
+            assert set(case) == {"case", "expected", "actual", "reason", "skipped", "ok"}
             assert case["actual"] == case["expected"] and case["ok"] is True and case["reason"]
+            assert case["skipped"] is False
     [unknown] = [case for case in report["clients"][0]["cases"] if case["case"] == sc.UNKNOWN]
     assert "is missing" in unknown["reason"]
 
@@ -120,43 +121,54 @@ def test_given_a_client_on_path_with_no_store_when_probed_as_json_then_it_is_ins
     assert codex["skipped"].startswith("no codex store on this host")
 
 
-def test_given_a_client_on_path_with_a_store_whose_case_fails_when_probed_then_it_still_exits_1(home, on_path):
+def test_given_a_client_on_path_with_an_empty_store_when_probed_then_present_is_skipped_and_it_exits_0(home, on_path):
     on_path.add("codex")
     make_root("codex", home)
 
     result = _run()
 
-    assert result.exit_code == 1, result.output
-    assert "codex present: no record on this host to test (FAIL)" in result.output
-    assert "codex skipped" not in result.output
-
-
-def test_given_an_empty_store_when_probed_then_present_is_not_proven_and_it_exits_1(home, on_path):
-    make_root("pi", home)
-
-    result = _run()
-
-    assert result.exit_code == 1, result.output
-    assert "pi present: no record on this host to test (FAIL)" in result.output
-    assert "pi absent: expected absent, got absent (ok)" in result.output
-
-
-def test_given_an_empty_store_and_allow_empty_when_probed_then_it_is_reported_and_passes(home, on_path):
-    make_root("pi", home)
-
-    result = _run("-a")
-
     assert result.exit_code == 0, result.output
-    assert "pi present: no record on this host to test (ok)" in result.output
-    code, report = _json("--allow-empty")
+    assert "codex present skipped: no codex record on this host to test present" in result.output
+    assert "codex absent: expected absent, got absent (ok)" in result.output
+    assert "codex unknown: expected unknown, got unknown (ok)" in result.output
+
+
+def test_given_an_empty_store_when_probed_as_json_then_present_is_a_passing_skip_and_absent_and_unknown_still_run(
+    home, on_path
+):
+    make_root("pi", home)
+
+    code, report = _json()
+
     [pi] = [entry for entry in report["clients"] if entry["client"] == "pi"]
-    assert code == 0 and pi["cases"][0] == {
+    assert code == 0 and report["ok"] is True
+    present, absent, unknown = pi["cases"]
+    assert present == {
         "case": sc.PRESENT,
         "expected": sc.PRESENT,
         "actual": None,
-        "reason": "no record on this host to test",
+        "reason": "no pi record on this host to test present",
+        "skipped": True,
         "ok": True,
     }
+    assert absent["actual"] == sc.ABSENT and absent["ok"] is True and absent["skipped"] is False
+    assert unknown["actual"] == sc.UNKNOWN and unknown["ok"] is True and unknown["skipped"] is False
+
+
+def test_given_a_store_root_that_cannot_be_read_when_probed_then_present_fails_naming_the_problem_and_it_exits_1(
+    home, on_path
+):
+    make_root("gemini", home)
+    (home / ".gemini" / "projects.json").write_text("not json")
+
+    code, report = _json()
+
+    [gemini] = [entry for entry in report["clients"] if entry["client"] == "gemini"]
+    [present] = [case for case in gemini["cases"] if case["case"] == sc.PRESENT]
+    assert code == 1 and report["ok"] is False
+    assert present["ok"] is False and present["skipped"] is False
+    assert "gemini project registry" in present["reason"] and "is not readable" in present["reason"]
+    assert "gemini present: gemini project registry" in _run().output
 
 
 def test_given_a_store_with_an_unreadable_record_when_probed_then_absent_fails_with_the_probe_reason(

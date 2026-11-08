@@ -508,7 +508,7 @@ def _most_recent_record(client):
     return max(candidates, key=lambda record: record.path.stat().st_mtime, default=None)
 
 
-def _probe_cases(client, scratch: Path, allow_empty: bool) -> list[dict]:
+def _probe_cases(client, scratch: Path) -> list[dict]:
     from . import session_clients as sc
 
     def case(name: str, expected: str, probe) -> dict:
@@ -517,19 +517,35 @@ def _probe_cases(client, scratch: Path, allow_empty: bool) -> list[dict]:
             "expected": expected,
             "actual": probe.state,
             "reason": probe.reason,
+            "skipped": False,
             "ok": probe.state == expected,
         }
 
     cases = []
-    record = _most_recent_record(client) if client._root_problem() is None else None
-    if record is None:
+    root_problem = client._root_problem()
+    record = _most_recent_record(client) if root_problem is None else None
+    if root_problem is not None:
+        # A store root that exists but cannot be read is a defect to see, not an empty store.
         cases.append(
             {
                 "case": sc.PRESENT,
                 "expected": sc.PRESENT,
                 "actual": None,
-                "reason": "no record on this host to test",
-                "ok": allow_empty,
+                "reason": root_problem,
+                "skipped": False,
+                "ok": False,
+            }
+        )
+    elif record is None:
+        # A readable store with no record owns no row on this host, so it cannot cause a wrong release.
+        cases.append(
+            {
+                "case": sc.PRESENT,
+                "expected": sc.PRESENT,
+                "actual": None,
+                "reason": f"no {client.client} record on this host to test present",
+                "skipped": True,
+                "ok": True,
             }
         )
     else:
@@ -546,9 +562,8 @@ def _probe_cases(client, scratch: Path, allow_empty: bool) -> list[dict]:
     "probe-transcripts",
     help="Session names: prove each installed client's transcript probe answers present, absent and unknown",
 )
-@click.option("-a", "--allow-empty", is_flag=True, help="Pass a client that has no record yet to probe as present")
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print the results as one JSON object")
-def probe_transcripts_command(allow_empty: bool, as_json: bool) -> None:
+def probe_transcripts_command(as_json: bool) -> None:
     import shutil
     import tempfile
 
@@ -567,7 +582,7 @@ def probe_transcripts_command(allow_empty: bool, as_json: bool) -> None:
             skipped = f"no {client.client} store on this host; its rows are held as unknown until one exists"
         else:
             with tempfile.TemporaryDirectory(prefix="ai-probe-transcripts-") as scratch:
-                cases = _probe_cases(client, Path(scratch), allow_empty)
+                cases = _probe_cases(client, Path(scratch))
         clients.append({"client": client.client, "installed": installed, "skipped": skipped, "cases": cases})
     ok = all(case["ok"] for entry in clients for case in entry["cases"])
     if as_json:
@@ -579,6 +594,9 @@ def probe_transcripts_command(allow_empty: bool, as_json: bool) -> None:
             lines.append(f"{entry['client']} skipped: {entry['skipped']}")
             continue
         for case in entry["cases"]:
+            if case["skipped"]:
+                lines.append(f"{entry['client']} {case['case']} skipped: {case['reason']}")
+                continue
             verdict = "ok" if case["ok"] else "FAIL"
             if case["actual"] is None:
                 lines.append(f"{entry['client']} {case['case']}: {case['reason']} ({verdict})")

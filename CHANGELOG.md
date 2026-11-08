@@ -9,13 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai probe-transcripts [-a/--allow-empty] [-j/--json]` checks, for every AI client installed on
+- `ai probe-transcripts [-j/--json]` checks, for every AI client installed on
   this host, that its transcript probe reads `present` for the newest real record, `absent` for a
   fresh directory with no record, and `unknown` when the store root is missing. It only reads the
   client stores, prints one line per client per case with the probe's reason, and exits 1 when any
-  case fails. A client with no record yet fails the `present` case unless `-a/--allow-empty` is
-  given. A client on `PATH` with no store on this host is skipped and passes: its rows can only
-  probe `unknown`, which holds them.
+  case fails. A client whose store exists but holds no record yet skips the `present` case and
+  passes, since it owns no row on this host to release wrongly; its `absent` and `unknown` cases
+  still run. A store root that exists but cannot be read fails `present` and names the problem. A
+  client on `PATH` with no store on this host is skipped and passes: its rows can only probe
+  `unknown`, which holds them.
 - `[restart_session] request_lifetime_floor_seconds` (default `1`, must be positive) sets the
   shortest life of a prepared restart request. A request expires
   `max(request_lifetime_floor_seconds, term_grace_seconds + relaunch_timeout_seconds)` seconds after

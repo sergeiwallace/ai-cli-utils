@@ -560,7 +560,7 @@ activation.
 | `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
-| `ai probe-transcripts [-a/--allow-empty] [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; exit 1 when a case fails. |
+| `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |
 
 `ai locate-session ada` reads the name's registry row, then on the host that holds it
 the tmux session, the worktree and the transcript. For a session on another host it runs
