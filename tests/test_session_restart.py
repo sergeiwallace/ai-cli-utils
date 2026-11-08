@@ -2109,7 +2109,8 @@ def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatc
             world.replace()
 
     monkeypatch.setattr(restart.os, "kill", kill)
-    assert world.cli("-X", SESSION_ID)[0] == 0
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 0, report
     if signal_supported:
         assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
         assert not world.injected

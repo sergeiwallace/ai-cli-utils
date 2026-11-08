@@ -369,7 +369,7 @@ def test_given_a_spare_activated_offline_before_the_limits_narrowed_when_reconci
 
 _RELEASE_RACE_CHILD = textwrap.dedent(
     """
-    import json, sys
+    import json, sys, time
     from pathlib import Path
     from ai_cli import name_registry as reg
     repo = Path(sys.argv[1])
@@ -377,8 +377,10 @@ _RELEASE_RACE_CHILD = textwrap.dedent(
                                policy_file=repo / reg.POLICY_MARKER, timeout_s=10, attempts=3)
     slot = reg.Slot(repo="myrepo", repo_alias="myrepo", host_alias="box", label=None, machine=sys.argv[2],
                     client="claude-code")
+    started = time.monotonic()
     try:
-        print(json.dumps({"took": reg.take_spare(registry, slot).name}))
+        took = reg.take_spare(registry, slot).name
+        print(json.dumps({"took": took, "take_s": time.monotonic() - started, "lock_wait": reg.lock_wait(registry)}))
     except reg.SparesExhaustedError as exc:
         print(json.dumps({"refused": str(exc)}))
     """
@@ -486,7 +488,6 @@ def test_given_a_reconcile_probing_a_slow_store_when_an_offline_launch_wants_a_s
     assert client.started.wait(30), "the reconcile never probed"
 
     try:
-        started = time.monotonic()
         child = subprocess.run(
             [sys.executable, "-c", _RELEASE_RACE_CHILD, str(fleet.repo), HOST],
             capture_output=True,
@@ -495,15 +496,21 @@ def test_given_a_reconcile_probing_a_slow_store_when_an_offline_launch_wants_a_s
             timeout=60,
             check=False,
         )
-        waited = time.monotonic() - started
         probe_still_running = not client.release.is_set()
     finally:
         client.release.set()
         thread.join(60)
 
     assert probe_still_running
-    assert json.loads(child.stdout) == {"took": "lola"}, child.stderr
-    assert waited < 10, f"the offline launch waited {waited:.1f} s for the probe"
+    outcome_of_take = json.loads(child.stdout)
+    assert set(outcome_of_take) == {"took", "take_s", "lock_wait"}, child.stderr
+    assert outcome_of_take["took"] == "lola"
+    # A take that queued on a lock the probe holds spends a whole lock wait on it, so
+    # finishing inside one is the line between "never waited" and "waited". Interpreter
+    # start and imports are timed out of it: they are not waiting for the probe.
+    assert outcome_of_take["take_s"] < outcome_of_take["lock_wait"], (
+        f"the offline launch spent {outcome_of_take['take_s']:.1f} s taking a spare while the probe ran"
+    )
     assert "error" not in outcome, outcome
     assert "cleo" in fleet.rows()
 

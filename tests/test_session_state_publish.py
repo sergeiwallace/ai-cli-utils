@@ -6,6 +6,7 @@ import subprocess
 import tomllib
 
 import pytest
+from process_wait import scaled
 
 from ai_cli import session_publish_timer as timer
 from ai_cli import session_registry as registry
@@ -161,7 +162,11 @@ def test_publisher_dies_when_restarted_then_unacknowledged_revision_retries(publ
 
 
 def test_remote_ref_moves_when_pushing_then_retry_is_parented_on_new_tip(publishing, monkeypatch):
-    _, remote, _, _ = publishing
+    _, remote, cfg, _ = publishing
+    # The first publisher's deadline (a quarter of the debounce) has to cover a whole
+    # competing publication as well as its own retry: the shipped debounce, stretched
+    # by how busy the host is, keeps that deadline derived from the configured value.
+    cfg["session_relaunch"]["publish"]["debounce_seconds"] = scaled(state.PUBLISH_DEFAULTS["debounce_seconds"])
     original = publish.Publisher.git
     moved = []
 
