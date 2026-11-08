@@ -6,11 +6,15 @@ costs on an idle one, so a fixed deadline that is generous on an idle host fails
 under load, and one raised to cover load makes every genuine failure slow
 (AI-CLI-4d7j).
 
-So the deadline scales with what an exec costs on this host right now. Once per
-test process, :func:`load_scale` times a few starts of a bare interpreter and
-divides the median by what one costs on an idle host, clamped to
+So the deadline scales with what an exec costs on this host right now. Each time a
+test asks for a deadline, :func:`load_scale` times a few starts of a bare
+interpreter and divides the median by what one costs on an idle host, clamped to
 ``[1, MAX_SCALE]``. Pinning the wait under xdist would not do it: the measured
-failures came from other sessions loading the host, which xdist cannot see.
+failures came from other sessions loading the host, which xdist cannot see. Nor
+would measuring once per test process: a worker lives for the whole run, and a
+scale taken in a quiet moment at its start left every later deadline unscaled
+when the load arrived. Three starts of an interpreter with no site packages cost
+well under a tenth of a second on an idle host, so the measurement stays cheap.
 
 ``AI_CLI_TEST_PROCESS_WAIT_SECONDS`` still sets the long observe windows
 explicitly and wins over the measurement.
@@ -21,7 +25,6 @@ the same thing on every platform.
 
 from __future__ import annotations
 
-import functools
 import os
 import statistics
 import subprocess
@@ -33,7 +36,7 @@ DEFAULT_WAIT_SECONDS = 60.0
 MAX_SCALE = 4.0
 # A bare `python -I -S -c ''` start on an idle developer machine.
 IDLE_SPAWN_SECONDS = 0.025
-_PROBE_RUNS = 5
+_PROBE_RUNS = 3
 
 
 def scale_for(spawn_seconds: float) -> float:
@@ -41,9 +44,8 @@ def scale_for(spawn_seconds: float) -> float:
     return min(max(spawn_seconds / IDLE_SPAWN_SECONDS, 1.0), MAX_SCALE)
 
 
-@functools.cache
 def load_scale() -> float:
-    """The deadline multiplier for this host, measured once per process."""
+    """The deadline multiplier for this host, measured now."""
     samples = []
     for _ in range(_PROBE_RUNS):
         started = time.perf_counter()
