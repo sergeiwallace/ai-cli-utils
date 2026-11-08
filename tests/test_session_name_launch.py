@@ -191,6 +191,24 @@ def test_given_the_registry_unreachable_and_no_spare_when_launching_then_it_exit
     assert "ai reconcile-names" in capsys.readouterr().err
 
 
+def test_given_a_failing_push_and_no_spare_when_launching_then_the_refusal_names_the_push(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch)
+    named(launch)
+    git(fleet.repo, "config", "remote.origin.pushurl", str(tmp_path / "missing.git"))
+    named(launch)  # the fetch still works; the push fails, so this takes the one spare
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    err = capsys.readouterr().err
+    assert caught.value.code == 75
+    assert "could not push" in err
+    assert "no unactivated spare" in err
+
+
 def test_given_a_registry_repo_that_predates_human_names_when_launching_then_index_names_are_kept_and_said(
     tmp_path, monkeypatch, launch, capsys
 ):
