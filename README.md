@@ -541,7 +541,9 @@ repository, the registry is a local directory seeded with the shipped list.
 `ai show-name-config` prints each setting with the layer that set it.
 
 Offline, a launch takes one of the spare names its machine reserved earlier and
-prints `offline: using reserved spare <name>`; with none left it refuses before
+prints `offline: using reserved spare <name> (<cause>)`, where the cause is the fetch or push
+failure or the lost race that sent it to the spares, to the terminal and the launch log; with
+none left it refuses before
 creating anything. The next `ai` command that reaches the registry publishes the
 activation.
 

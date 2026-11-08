@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config seeded by the older template, the first `ai` command after the upgrade comments out
   each of the four keys whose value is still the seeded one and keeps every other key and
   comment. With no shared policy setting `enabled`, a new machine now uses index names.
+- A launch no longer refuses a clean worktree as "stranded" because another worktree of the same
+  repository pushed a stash while the sync pull ran. The stash stack is shared by every worktree,
+  and the strand check counted every new entry as the pull's own autostash. It now counts an entry
+  only when git recorded it as an autostash for this worktree's branch and pre-pull commit.
+- A launch that falls back to a spare name now says why. The `offline: using reserved spare`
+  warning, on the terminal and in the launch log, now ends with the failure that sent it there:
+  a registry fetch or push that failed or timed out, or a reservation that lost every race to
+  another writer. Before, the cause was recorded only when no spare was left.
 - A launch no longer takes a spare, or refuses for want of one, because publishing a reserved
   name to a shared registry took longer than the registry's publish timeout. On a loaded host a
   push of one small commit to the registry ref was measured at 30 seconds against the 15-second

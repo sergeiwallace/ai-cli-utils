@@ -352,7 +352,7 @@ def test_t24_given_the_registry_lost_after_auto_with_a_spare_when_written_then_t
     reservation = run(fleet, "cleo", reader)
 
     assert reservation.offline and reservation.name == spare
-    assert reader.said[-1] == f"offline: using reserved spare {spare}"
+    assert reader.said[-1].startswith(f"offline: using reserved spare {spare} (could not ")
     assert set(reg.read_spool()) == {spare}
 
 

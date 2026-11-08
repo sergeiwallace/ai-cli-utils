@@ -273,6 +273,57 @@ def stash_entries(repo_root: Path) -> set[str]:
     return {line for line in out.split() if line}
 
 
+def _head_identity(repo_root: Path) -> tuple[str, str] | None:
+    """Return ``(head_commit, stash_branch_label)`` for this worktree, or ``None`` when unborn.
+
+    The label is the one ``git stash`` writes into an entry's subject: the short
+    branch name, or ``(no branch)`` on a detached HEAD. An unborn branch has no
+    commit to stash against, so nothing can be attributed to it. Raises
+    ``GitProbeError`` if git cannot answer.
+    """
+    try:
+        commit = _probe(repo_root, "rev-parse", "--verify", "-q", "HEAD").strip()
+    except GitProbeError:
+        _probe(repo_root, "rev-parse", "--git-dir")
+        return None
+    try:
+        symbolic = _probe(repo_root, "symbolic-ref", "-q", "HEAD").strip()
+    except GitProbeError:
+        symbolic = ""  # HEAD resolved above, so the only refusal left is a detached HEAD
+    label = symbolic.removeprefix("refs/heads/") if symbolic else "(no branch)"
+    return commit, label
+
+
+def own_autostash_entries(repo_root: Path, head: tuple[str, str] | None) -> set[str]:
+    """Return the stash entries that are this worktree's own autostash for ``head``.
+
+    The stash stack is shared by every worktree of a repository, so a new entry
+    after a pull is not necessarily the pull's. Git's autostash is recognisable
+    three ways at once, and all three must hold:
+
+    * its stash reflog message is the bare word ``autostash`` (``git stash push
+      -m autostash`` records ``On <branch>: autostash`` instead),
+    * its commit subject is ``On <branch>: autostash`` for THIS worktree's branch,
+      and two worktrees cannot have the same branch checked out,
+    * its first parent is the commit this worktree had checked out before the pull.
+
+    Raises ``GitProbeError`` if git cannot answer.
+    """
+    if head is None:
+        return set()
+    commit, label = head
+    out = _probe(repo_root, "stash", "list", "--format=%H%x00%gs%x00%s%x00%P")
+    own = set()
+    for line in out.splitlines():
+        fields = line.split("\0")
+        if len(fields) != 4:
+            continue
+        stash_id, reflog_subject, subject, parents = fields
+        if reflog_subject == "autostash" and subject == f"On {label}: autostash" and parents.split(" ", 1)[0] == commit:
+            own.add(stash_id)
+    return own
+
+
 def operation_in_progress(repo_root: Path) -> str | None:
     """Return the name of an in-flight git operation, or ``None``.
 
@@ -444,7 +495,9 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     from repo state either side of the call:
 
     * unmerged index paths that were not there before, or
-    * stash entries that were not there before (the autostash never popped),
+    * this worktree's own autostash entries that were not there before (the
+      autostash never popped). The stash stack is shared by every worktree, so
+      an entry another session pushes while this pull runs is not counted,
     * and NO git operation left in progress.
 
     That last clause matters. A plain rebase conflict also produces unmerged
@@ -471,8 +524,9 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     try:
         before_unmerged = unmerged_paths(repo_root)
         before_stashes = stash_entries(repo_root)
+        before_head = _head_identity(repo_root)
     except GitProbeError as e:
-        before_unmerged, before_stashes = None, None
+        before_unmerged, before_stashes, before_head = None, None, None
         probe_failure: str | None = str(e)
     else:
         probe_failure = None
@@ -492,7 +546,7 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     assert before_stashes is not None
     try:
         new_unmerged = unmerged_paths(repo_root) - before_unmerged
-        new_stashes = stash_entries(repo_root) - before_stashes
+        new_stashes = own_autostash_entries(repo_root, before_head) - before_stashes
         in_progress = operation_in_progress(repo_root)
     except GitProbeError as e:
         return result, f"repo state could not be verified after the pull — {e}"

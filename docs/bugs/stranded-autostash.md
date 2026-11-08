@@ -129,6 +129,12 @@ trusting the exit code, and reports a strand when *this* pull caused one:
 * unmerged index paths that were not present before, or
 * stash entries that were not present before (compared by commit id, not by count — a count cannot
   distinguish "this pull stranded one" from "another process dropped one and this pull added one"),
+  counting only this worktree's own autostash. The stash stack is shared by every worktree of a
+  repository, so a slow pull can see a named stash another session pushed while it ran. An entry
+  counts only when its stash reflog message is the bare word `autostash` (what git writes; a
+  `git stash push -m autostash` records `On <branch>: autostash`), its subject is
+  `On <branch>: autostash` for this worktree's branch (`(no branch)` when detached), and its first
+  parent is the commit checked out before the pull,
 * **and** no git operation left in progress.
 
 That last clause is the discriminator between the two ways a repo acquires conflict stages. Measured:
@@ -173,13 +179,13 @@ the user's work is in the stash and only they can say how to reconcile it.
 ### 2026-09-09 exception: regenerated Beads issues mirror
 
 The sole exception is a stranded pull whose newly unmerged paths are **exactly**
-`.beads/issues.jsonl`. After `bd doctor` confirms the live store is queryable,
+`.beads/issues.jsonl`. After `bd doctor` confirms the live store is queryable, <!-- gitignored-path-ok: names the file the code regenerates, not evidence -->
 `pull_rebase_autostash()` regenerates that generated mirror with
 `bd export --output .beads/issues.jsonl` and stages the result. It then drops a newly created stash
-only when that stash's own diff also touches exactly `.beads/issues.jsonl`; pre-existing stashes and
+only when that stash's own diff also touches exactly `.beads/issues.jsonl`; pre-existing stashes and <!-- gitignored-path-ok: names the file the code regenerates, not evidence -->
 new stashes with any other path remain untouched. The correction is logged visibly.
 
-`.beads/interactions.jsonl` is explicitly excluded, alone or alongside the issues mirror: it is an
+`.beads/interactions.jsonl` is explicitly excluded, alone or alongside the issues mirror: it is an <!-- gitignored-path-ok: names the file the code refuses to touch, not evidence -->
 append-only audit log, not a regenerable projection. Any strand involving it, any other path, an
 unavailable or unhealthy `bd` store, or a failed export/stage operation retains the existing fatal
 refusal unchanged.

@@ -358,6 +358,14 @@ def test_pull_rebase_autostash_when_clean_pull_then_no_strand(tmp_path):
     assert unmerged_paths(local) == set()
 
 
+_MOCK_HEAD = "c0ffee"
+
+
+def _own_autostash_records(stash_ids: str) -> str:
+    """Render ``stash list`` records in which every id is this worktree's own autostash."""
+    return "".join(f"{stash_id}\0autostash\0On main: autostash\0{_MOCK_HEAD} f00d\n" for stash_id in stash_ids.split())
+
+
 def test_given_beads_issues_only_strand_when_pull_completes_then_regenerates_and_clears_it(tmp_path, capsys):
     """The generated issues mirror is the one safe exception to the strand refusal."""
     repo = tmp_path / "repo"
@@ -375,6 +383,12 @@ def test_given_beads_issues_only_strand_when_pull_completes_then_regenerates_and
             return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
         if command[3:] == ["stash", "list", "--format=%H"]:
             return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H%x00%gs%x00%s%x00%P"]:
+            return MagicMock(returncode=0, stdout=_own_autostash_records(stash_results.pop(0)), stderr="")
+        if command[3:] == ["rev-parse", "--verify", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout=f"{_MOCK_HEAD}\n", stderr="")
+        if command[3:] == ["symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
@@ -451,6 +465,12 @@ def test_given_unsafe_beads_strand_when_pull_completes_then_retains_the_original
             return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
         if command[3:] == ["stash", "list", "--format=%H"]:
             return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H%x00%gs%x00%s%x00%P"]:
+            return MagicMock(returncode=0, stdout=_own_autostash_records(stash_results.pop(0)), stderr="")
+        if command[3:] == ["rev-parse", "--verify", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout=f"{_MOCK_HEAD}\n", stderr="")
+        if command[3:] == ["symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
@@ -488,6 +508,12 @@ def test_given_issues_only_strand_with_nonissues_autostash_when_repaired_then_re
             return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
         if command[3:] == ["stash", "list", "--format=%H"]:
             return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H%x00%gs%x00%s%x00%P"]:
+            return MagicMock(returncode=0, stdout=_own_autostash_records(stash_results.pop(0)), stderr="")
+        if command[3:] == ["rev-parse", "--verify", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout=f"{_MOCK_HEAD}\n", stderr="")
+        if command[3:] == ["symbolic-ref", "-q", "HEAD"]:
+            return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
@@ -534,6 +560,98 @@ def test_pull_rebase_autostash_when_repo_holds_unrelated_wip_stashes_then_clean_
     assert pull.returncode == 0
     assert stranded is None, "a pre-existing WIP stash is not this pull's doing"
     assert stash_entries(local) == before, "and it must be left untouched"
+
+
+@contextlib.contextmanager
+def _sibling_worktree_stashes_during_pull(local, sibling, message):
+    """Push a named stash from another worktree of the same repo while the pull runs.
+
+    The stash stack is shared by every worktree of a repository, so a slow pull on
+    a busy host can see entries that another session pushed mid-pull. Running the
+    sibling's stash right after the real pull returns lands it inside that window
+    deterministically.
+    """
+    _git(local, "worktree", "add", "-q", "-b", "sibling", str(sibling))
+    _git(sibling, "config", "user.email", "t@t")
+    _git(sibling, "config", "user.name", "t")
+    real_run = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        result = real_run(cmd, *args, **kwargs)
+        if list(cmd[3:5]) == ["pull", "--rebase"]:
+            (sibling / "f.txt").write_text("sibling work in progress\n")
+            pushed = real_run(
+                ["git", "-C", str(sibling), "stash", "push", "-q", "-m", message], capture_output=True, text=True
+            )
+            assert pushed.returncode == 0, pushed.stderr
+        return result
+
+    with patch("subprocess.run", side_effect=run):
+        yield
+
+
+def test_pull_rebase_autostash_when_sibling_worktree_stashes_during_clean_pull_then_no_strand(tmp_path):
+    """Another worktree's named stash, pushed while this pull runs, is not this
+    pull's autostash. Counting it refused a launch into a clean, up-to-date tree."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (remote / "g.txt").write_text("unrelated\n")
+    _git(remote, "add", "g.txt")
+    _git(remote, "commit", "-q", "-m", "unrelated remote change")
+
+    with _sibling_worktree_stashes_during_pull(local, tmp_path / "sibling", "sibling wip"):
+        pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode == 0
+    assert len(stash_entries(local)) == 1, "the sibling's stash really landed during the pull"
+    assert stranded is None, "a stash another worktree pushed is not this pull's strand"
+
+
+def test_pull_rebase_autostash_when_sibling_stashes_during_stranding_pull_then_counts_only_own_autostash(tmp_path):
+    """A genuine strand is still refused, and only this pull's own autostash is counted."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("local-change\n")
+    _remote_edits_same_line(remote)
+
+    with _sibling_worktree_stashes_during_pull(local, tmp_path / "sibling", "sibling wip"):
+        pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode == 0
+    assert len(stash_entries(local)) == 2
+    assert stranded is not None
+    assert "1 autostash entr(y/ies) left on the stash stack" in stranded
+
+
+def test_pull_rebase_autostash_when_detached_head_pop_conflicts_then_still_reports_own_autostash(tmp_path):
+    """Attribution must not fail open on a detached HEAD, where git labels the entry "(no branch)"."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "--detach")
+    (local / "f.txt").write_text("local-change\n")
+    _remote_edits_same_line(remote)
+    _git(local, "fetch", "-q", "origin")
+    with patch("ai_cli.git_repair._pull_refspec", return_value=["origin", "main"]):
+        pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode == 0
+    assert len(stash_entries(local)) == 1
+    assert stranded is not None
+    assert "1 autostash entr(y/ies) left on the stash stack" in stranded
+
+
+def test_pull_rebase_autostash_when_sibling_stash_is_named_autostash_then_not_attributed(tmp_path):
+    """A user stash whose message happens to be "autostash" is still not git's autostash:
+    the stash reflog records it as "On <branch>: autostash", not the bare word git writes."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+
+    with _sibling_worktree_stashes_during_pull(local, tmp_path / "sibling", "autostash"):
+        pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode == 0
+    assert len(stash_entries(local)) == 1
+    assert stranded is None
 
 
 def test_pull_rebase_autostash_when_index_already_conflicted_then_strand_not_attributed_to_this_pull(tmp_path):

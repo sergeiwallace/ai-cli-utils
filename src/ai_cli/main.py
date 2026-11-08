@@ -3927,7 +3927,7 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
         reservation = _names.reserve_picked(registry, slot, spool=spool, words=words)
     except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
         reservation = _names.take_spare(registry, slot, cause=str(failure))
-        reporter.warning("session", f"offline: using reserved spare {reservation.name}")
+        reporter.warning("session", f"offline: using reserved spare {reservation.name} ({failure})")
         return _session_id(engine, reservation.title, is_remote), reservation.title
     for warning in reservation.warnings:
         reporter.warning("session", warning)
