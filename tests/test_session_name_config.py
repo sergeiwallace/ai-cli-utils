@@ -226,17 +226,14 @@ def test_given_the_old_length_environment_variable_when_limits_resolve_then_it_h
     assert limits.high == 4
 
 
-def test_given_a_fresh_config_when_written_from_the_template_then_it_carries_the_session_names_table():
+def test_given_a_fresh_config_when_written_from_the_template_then_its_session_names_keys_are_commented_out():
     parsed = tomllib.loads(_config.DEFAULT_CONFIG)
 
-    assert parsed["session_names"] == {
-        "enabled": True,
-        "name_with_label": "keep",
-        "min_name_length": 3,
-        "max_name_length": 4,
-    }
+    assert parsed["session_names"] == {}
     section = _config.DEFAULT_CONFIG[_config.DEFAULT_CONFIG.index("[session_names]") :]
-    assert section.count("Used only where no shared name registry exists") == 1
+    for line in ("# enabled = true", '# name_with_label = "keep"', "# min_name_length = 3", "# max_name_length = 4"):
+        assert line in section
+    assert section.count("used only where no shared name registry exists") == 1
     assert "c-{project}-{n}" not in _config.DEFAULT_CONFIG
 
 

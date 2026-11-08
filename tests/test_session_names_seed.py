@@ -60,7 +60,7 @@ def config_home(tmp_path, monkeypatch):
 
 
 def _setting_line(output: str, key: str) -> str:
-    return next(line for line in output.splitlines() if line.startswith(key))
+    return next(line for line in output.splitlines() if line.removeprefix("[names] config: ").startswith(f"{key} "))
 
 
 def _session_names(path) -> dict:

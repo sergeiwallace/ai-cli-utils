@@ -220,6 +220,75 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
     return True
 
 
+# An older template seeded these four [session_names] keys active, which hid the shared
+# policy's [hosts.<id>] and [defaults] layers on every machine it seeded. Its length
+# comment, below, appears in no other template, so it marks a table as seeded.
+_OLD_SEEDED_SESSION_NAMES = {"enabled": True, "name_with_label": "keep", "min_name_length": 3, "max_name_length": 4}
+_OLD_SEEDED_LENGTH_COMMENT = (
+    "## Name length limits. Used only where no shared name registry exists; a shared\n",
+    "## registry's limits apply to every machine that uses it, and these are then ignored.\n",
+)
+_NEW_LENGTH_COMMENT = (
+    "## Name length limits, used only where no shared name registry exists. A shared\n",
+    "## registry's limits apply to every machine that uses it, and these then have no effect.\n",
+)
+_TABLE_HEADER_RE = re.compile(r"^\s*\[")
+_SESSION_NAMES_HEADER_RE = re.compile(r"^\s*\[\s*session_names\s*\]\s*(#.*)?$")
+
+
+def _is_old_seeded_value(line: str) -> bool:
+    try:
+        parsed = tomllib.loads(line)
+    except tomllib.TOMLDecodeError:
+        return False
+    if len(parsed) != 1:
+        return False
+    ((key, value),) = parsed.items()
+    seeded = _OLD_SEEDED_SESSION_NAMES.get(key)
+    return seeded is not None and type(value) is type(seeded) and value == seeded
+
+
+def drop_seeded_session_names(config_path: Path) -> bool:
+    """Comment out the [session_names] keys an older template seeded, where unchanged.
+
+    Runs only on a table that still carries that template's length comment, and rewrites
+    the comment, so it runs once: a key set to the old value afterwards is a choice and is
+    kept. A key whose value differs from the seed, and every other line, is left as it is.
+    Returns True if the file was modified (caller should reload config).
+    """
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if _SESSION_NAMES_HEADER_RE.match(line)), None)
+    if start is None:
+        return False
+    end = next((i for i in range(start + 1, len(lines)) if _TABLE_HEADER_RE.match(lines[i])), len(lines))
+    first = _OLD_SEEDED_LENGTH_COMMENT[0].rstrip("\n")
+    marker = next((i for i in range(start + 1, end) if lines[i].rstrip("\r\n") == first), None)
+    if marker is None:
+        return False
+
+    dropped: list[str] = []
+    for i in range(start + 1, end):
+        if _is_old_seeded_value(lines[i]):
+            dropped.append(lines[i].split("=", 1)[0].strip())
+            lines[i] = "# " + lines[i].lstrip()
+    for offset, (old, replacement) in enumerate(zip(_OLD_SEEDED_LENGTH_COMMENT, _NEW_LENGTH_COMMENT, strict=True)):
+        i = marker + offset
+        if i >= end or (text := lines[i].rstrip("\r\n")) != old.rstrip("\n"):
+            break
+        lines[i] = replacement.rstrip("\n") + lines[i][len(text) :]
+
+    _write_secure_config(config_path, "".join(lines))
+    if dropped:
+        _out.emit(
+            Tag.CONFIG,
+            "upgrade",
+            f"commented out {', '.join(dropped)} in {config_path} [session_names]: an older template "
+            "seeded these values, which hid the shared naming policy. Set a key again to override it here.",
+            err=True,
+        )
+    return True
+
+
 def get_xdg_config_home() -> Path:
     if sys.platform == "win32":
         base = resolve_base_dir("APPDATA", Path.home() / "AppData" / "Roaming")
@@ -700,19 +769,22 @@ stale_session_timeout = 15
 # use_pty = true
 
 [session_names]
+## Every key here ships commented out. Unset, a key comes from the shared name
+## registry's policy file: its [hosts.<host id>] table, then its [defaults]. A key
+## set here overrides that policy on this machine.
 ## Name each new session with a short human first name in place of an index:
 ## {repo-alias}-{host-alias}-[{label}-]{name}, for example myproject-box-ada.
 ## A name is unique on every machine that shares a name registry. Set false for
 ## index names ({repo-alias}-{host-alias}-[{label}-]{N}). -S/--session-names and
-## -I/--no-session-names override this for one launch.
-enabled = true
+## -I/--no-session-names override this for one launch. Built-in default: false.
+# enabled = true
 ## With a label (`ai c review`): "keep" names the session myproject-box-review-ada,
 ## "drop" names it myproject-box-review. -w/--with-name and -u/--no-name override it.
-name_with_label = "keep"
-## Name length limits. Used only where no shared name registry exists; a shared
-## registry's limits apply to every machine that uses it, and these are then ignored.
-min_name_length = 3
-max_name_length = 4
+# name_with_label = "keep"
+## Name length limits, used only where no shared name registry exists. A shared
+## registry's limits apply to every machine that uses it, and these then have no effect.
+# min_name_length = 3
+# max_name_length = 4
 
 [session_relaunch]
 on_boot = false
@@ -950,6 +1022,14 @@ def load_config(*, read_only: bool = False):
         if read_only and isinstance(e, FileNotFoundError):
             cfg = {}
         else:
+            _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
+            return {}
+
+    if not read_only and drop_seeded_session_names(config_path):
+        try:
+            with config_path.open("rb") as f:
+                cfg = tomllib.load(f)
+        except Exception as e:
             _out.warning(Tag.CONFIG, "load", f"Failed to load config from {config_path}: {e}")
             return {}
 

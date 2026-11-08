@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
+  `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
+  `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's
+  `[hosts.<host id>]` and `[defaults]`, so those layers never applied on a seeded machine,
+  `ai show-name-config` reported config.toml, and every launch with a shared registry warned
+  that the length limits had no effect. The template now ships the keys commented out. On a
+  config seeded by the older template, the first `ai` command after the upgrade comments out
+  each of the four keys whose value is still the seeded one and keeps every other key and
+  comment. With no shared policy setting `enabled`, a new machine now uses index names.
+
 - A session started by an older supervisor now stops when Ctrl-C or SIGTERM interrupts the
   back-off sleep after a failed generation acquisition. It used to relaunch instead, now and
   then, on macOS. There a process-group signal can kill `sleep` and the shell can reap it before
