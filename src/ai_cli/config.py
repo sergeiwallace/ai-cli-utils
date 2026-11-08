@@ -527,6 +527,23 @@ def read_naming_config(config: dict) -> dict:
     return result
 
 
+# A registry fetch's own budget, separate from the registry's publish timeout: in a
+# checkout with thousands of refs on a loaded host, fetching the one registry ref has
+# been measured taking 16 to 27 seconds.
+REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
+
+
+def read_registry_fetch_timeout(config: dict) -> float:
+    """``[session_names] registry_fetch_timeout_seconds``; every registry fetch reads it fresh."""
+    section = config.get("session_names", {})
+    if not isinstance(section, dict):
+        raise ValueError("session_names must be a table")
+    value = section.get("registry_fetch_timeout_seconds", REGISTRY_FETCH_TIMEOUT_DEFAULT_S)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise ValueError("invalid session_names.registry_fetch_timeout_seconds: use a positive number of seconds")
+    return value
+
+
 RELAUNCH_DEFAULTS = {
     "background_session_resolver": "",
     "background_session_resolver_timeout_seconds": 10,
@@ -785,6 +802,9 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
+## Seconds one fetch of a shared name registry may take before the registry counts as
+## unreachable, read on every fetch. Separate from the registry's publish timeout.
+# registry_fetch_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false

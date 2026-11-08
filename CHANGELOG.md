@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each of the four keys whose value is still the seeded one and keeps every other key and
   comment. With no shared policy setting `enabled`, a new machine now uses index names.
 
+- A shared name registry is no longer reported unreachable when fetching it takes longer than its
+  publish timeout. In a checkout with thousands of refs on a loaded host, the fetch of the one
+  registry ref ran past the 15-second publish timeout, so `ai c` refused once no spare was left
+  and `ai reconcile-names` failed. Fetches now offer only the last fetched registry tip during
+  negotiation and have their own `[session_names] registry_fetch_timeout_seconds` (default `60`,
+  must be positive), read on every fetch. Pushes keep the publish timeout.
 - A session started by an older supervisor now stops when Ctrl-C or SIGTERM interrupts the
   back-off sleep after a failed generation acquisition. It used to relaunch instead, now and
   then, on macOS. There a process-group signal can kill `sleep` and the shell can reap it before

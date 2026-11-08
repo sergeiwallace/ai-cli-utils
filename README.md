@@ -524,6 +524,7 @@ them on one machine:
 # name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
 # min_name_length = 3       # used only where no shared name registry exists
 # max_name_length = 4       # used only where no shared name registry exists
+# registry_fetch_timeout_seconds = 60  # one fetch of a shared registry; pushes keep its publish timeout
 ```
 
 An older release seeded these four keys active. The first `ai` command after an

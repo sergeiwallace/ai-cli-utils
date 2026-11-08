@@ -535,15 +535,26 @@ class GitRegistry(Registry):
         with contextlib.suppress(OSError, RegistryError):
             (self._git_dir() / f"{PRIVATE_REF}.lock").unlink(missing_ok=True)
 
+    def fetch_timeout_s(self) -> float:
+        """The fetch budget from config.toml, read on every fetch; publishes keep ``timeout_s``."""
+        try:
+            return _config.read_registry_fetch_timeout(_config.load_config(read_only=True))
+        except ValueError as exc:
+            raise RegistryError(str(exc)) from exc
+
     def _fetch(self) -> str | None:
+        # Offering only the last fetched tip keeps negotiation from walking every local ref,
+        # which in a checkout with thousands of refs measured at over a third of the fetch's time.
+        negotiation = [f"--negotiation-tip={PRIVATE_REF}"] if self._last_fetched() else []
         result = self._git(
             "fetch",
             "--no-tags",
             "--no-write-fetch-head",
             "--quiet",
+            *negotiation,
             self.remote,
             f"+{self.ref}:{PRIVATE_REF}",
-            timeout=self.timeout_s,
+            timeout=self.fetch_timeout_s(),
             check=False,
         )
         if result.returncode != 0:
@@ -1452,7 +1463,9 @@ def sync_names(
     commit = committed_at = None
     if isinstance(registry, GitRegistry):
         with contextlib.suppress(RegistryError):
-            registry._git("fetch", "--no-tags", "--quiet", registry.remote, timeout=registry.timeout_s, check=False)
+            registry._git(
+                "fetch", "--no-tags", "--quiet", registry.remote, timeout=registry.fetch_timeout_s(), check=False
+            )
         commit, committed_at = policy_revision(registry)
     generated: dict[str, name_list.Generation] = {}
 
