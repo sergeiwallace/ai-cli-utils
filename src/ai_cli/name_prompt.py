@@ -165,9 +165,9 @@ def _write_picked(
         return reg.reserve_picked(registry, slot, spool=reg.read_spool(), words=words, rng=rng)
     except session_naming.NamePoolExhaustedError as exc:
         raise PromptExit(1, str(exc)) from exc
-    except (reg.RegistryUnreachableError, reg.RegistryContendedError):
+    except (reg.RegistryUnreachableError, reg.RegistryContendedError) as failure:
         try:
-            reservation = reg.take_spare(registry, slot)
+            reservation = reg.take_spare(registry, slot, cause=str(failure))
         except reg.SparesExhaustedError as exc:
             raise PromptExit(EXIT_UNREACHABLE, str(exc)) from exc
         io.say(f"offline: using reserved spare {reservation.name}")

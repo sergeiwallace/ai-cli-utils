@@ -536,9 +536,16 @@ class GitRegistry(Registry):
             (self._git_dir() / f"{PRIVATE_REF}.lock").unlink(missing_ok=True)
 
     def fetch_timeout_s(self) -> float:
-        """The fetch budget from config.toml, read on every fetch; publishes keep ``timeout_s``."""
+        """The fetch budget from config.toml, read on every fetch."""
         try:
             return _config.read_registry_fetch_timeout(_config.load_config(read_only=True))
+        except ValueError as exc:
+            raise RegistryError(str(exc)) from exc
+
+    def push_timeout_s(self) -> float:
+        """The push budget from config.toml, read on every push."""
+        try:
+            return _config.read_registry_push_timeout(_config.load_config(read_only=True))
         except ValueError as exc:
             raise RegistryError(str(exc)) from exc
 
@@ -629,7 +636,13 @@ class GitRegistry(Registry):
     def _push(self, commit: str) -> bool:
         """True when the push landed; False when another writer won the race."""
         result = self._git(
-            "push", "--porcelain", "--quiet", self.remote, f"{commit}:{self.ref}", timeout=self.timeout_s, check=False
+            "push",
+            "--porcelain",
+            "--quiet",
+            self.remote,
+            f"{commit}:{self.ref}",
+            timeout=self.push_timeout_s(),
+            check=False,
         )
         if result.returncode == 0:
             self._git("update-ref", PRIVATE_REF, commit, check=False)
@@ -1334,12 +1347,13 @@ def lock_wait(registry: Registry) -> float:
     return registry.timeout_s * registry.attempts
 
 
-def take_spare(registry: Registry, slot: Slot) -> Reservation:
+def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> Reservation:
     """Activate this machine's shortest unactivated spare for ``slot`` while the registry is unreachable.
 
     Reads the last fetched tip, never the network. Holds ``spool.lock`` from reading the
     spool through the durable write of the activation, so two offline launches on one
-    machine can never take the same spare.
+    machine can never take the same spare. ``cause`` is the failure that sent the caller
+    here; a refusal for want of a spare quotes it.
     """
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
@@ -1349,8 +1363,10 @@ def take_spare(registry: Registry, slot: Slot) -> Reservation:
             key=lambda row: (len(row["token"]), row["token"]),
         )
         if not free:
+            because = f" ({cause})" if cause else ""
             raise SparesExhaustedError(
-                "the registry is unreachable and this machine has no unactivated spare name left; once online, "
+                f"the registry is unreachable{because} and this machine has no unactivated spare name left; "
+                "once online, "
                 "run `ai reconcile-names` to publish the activations and replenish the spares"
             )
         spare = free[0]

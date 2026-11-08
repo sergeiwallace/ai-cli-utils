@@ -3899,10 +3899,12 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
     from . import name_registry as _names
 
     spool = _names.read_spool()
+    fetch_failure: Exception | None = None
     try:
         snapshot = registry.snapshot()
-    except _names.RegistryUnreachableError:
+    except _names.RegistryUnreachableError as exc:
         snapshot = None
+        fetch_failure = exc
     words = None
     if snapshot is not None and snapshot.manual:
         with contextlib.suppress(_names.RegistryError):
@@ -3921,10 +3923,10 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
         return _session_id(engine, title, is_remote), title
     try:
         if snapshot is None:
-            raise _names.RegistryUnreachableError("the registry fetch did not complete")
+            raise fetch_failure or _names.RegistryUnreachableError("the registry fetch did not complete")
         reservation = _names.reserve_picked(registry, slot, spool=spool, words=words)
-    except (_names.RegistryUnreachableError, _names.RegistryContendedError):
-        reservation = _names.take_spare(registry, slot)
+    except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
+        reservation = _names.take_spare(registry, slot, cause=str(failure))
         reporter.warning("session", f"offline: using reserved spare {reservation.name}")
         return _session_id(engine, reservation.title, is_remote), reservation.title
     for warning in reservation.warnings:
