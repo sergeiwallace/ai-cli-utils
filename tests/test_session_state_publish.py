@@ -29,7 +29,15 @@ def publishing(tmp_path, monkeypatch):
     git(repo, "config", "user.name", "Example User")
     git(repo, "config", "user.email", "user@example.com")
     git(repo, "remote", "add", "origin", str(remote))
-    cfg = {"machine": {"host_id": "host-a"}, "session_relaunch": {"publish": {"repo": str(repo)}}}
+    # A publisher gets a quarter of the debounce to finish its calls, on the real
+    # clock, while the debounce gate itself runs on the fake one below. The shipped
+    # debounce, stretched by how busy the host is, keeps that deadline derived from
+    # the configured value; tests advance the fake clock in debounce intervals.
+    debounce = scaled(state.PUBLISH_DEFAULTS["debounce_seconds"])
+    cfg = {
+        "machine": {"host_id": "host-a"},
+        "session_relaunch": {"publish": {"repo": str(repo), "debounce_seconds": debounce}},
+    }
     monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: cfg)
     clock = [1000.0]
     monkeypatch.setattr(publish.time, "time", lambda: clock[0])
@@ -39,12 +47,16 @@ def publishing(tmp_path, monkeypatch):
     return repo, remote, cfg, clock
 
 
+def _debounce(cfg) -> float:
+    return cfg["session_relaunch"]["publish"]["debounce_seconds"]
+
+
 def snapshot(remote):
     return tomllib.loads(git(remote, "show", "refs/heads/fleet-sessions/host-a:sessions/host-a.toml"))
 
 
 def test_started_session_when_ticks_run_then_state_published_within_two_intervals(publishing):
-    repo, remote, _, clock = publishing
+    repo, remote, cfg, clock = publishing
     assert publish.publish(tick=True).published
     doc = snapshot(remote)
     assert doc["sessions"]["c-session-1"]["run_state"] == "running"
@@ -53,7 +65,7 @@ def test_started_session_when_ticks_run_then_state_published_within_two_interval
     clock[0] += 1
     assert state.mark_exited("c-session-1", "manual_exit", {})
     assert not publish.publish(tick=True).published
-    clock[0] += 60
+    clock[0] += _debounce(cfg)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["cause"] == "manual_exit"
     assert git(remote, "rev-parse", "refs/heads/fleet-sessions/host-a^") == previous
@@ -76,13 +88,13 @@ def test_final_push_failed_when_next_tick_recovers_then_dirty_state_retries(publ
     assert doc["sessions"][0]["run_state"] == "running"
     cfg["session_relaunch"]["publish"]["remote"] = "origin"
     git(remote, "config", "core.bare", "true")
-    clock[0] += 60
+    clock[0] += _debounce(cfg)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"
 
 
 def test_mutation_during_push_when_snapshot_acknowledged_then_later_revision_stays_dirty(publishing, monkeypatch):
-    _, remote, _, clock = publishing
+    _, remote, cfg, clock = publishing
     push = publish.Publisher.push
 
     def mutate_during_push(self, text):
@@ -94,7 +106,7 @@ def test_mutation_during_push_when_snapshot_acknowledged_then_later_revision_sta
     doc = registry.load_registry()
     assert doc["dirty_revision"] > doc["published_revision"]
     monkeypatch.setattr(publish.Publisher, "push", push)
-    clock[0] += 90
+    clock[0] += 1.5 * _debounce(cfg)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "exited"
 
@@ -107,7 +119,9 @@ def test_empty_repo_when_publishing_then_no_git_operations(monkeypatch):
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_boot_relaunch_off_when_timer_installed_then_trailing_worker_is_enabled(publishing, monkeypatch, platform):
-    _, _, _, _ = publishing
+    _, _, cfg, _ = publishing
+    # The timer interval follows the debounce; this checks the shipped one.
+    cfg["session_relaunch"]["publish"]["debounce_seconds"] = state.PUBLISH_DEFAULTS["debounce_seconds"]
     monkeypatch.setattr(timer.sys, "platform", platform)
     monkeypatch.setattr(timer.os, "getuid", lambda: 1000, raising=False)
     calls = []
@@ -145,7 +159,7 @@ def test_boot_relaunch_off_when_timer_installed_then_trailing_worker_is_enabled(
 
 
 def test_publisher_dies_when_restarted_then_unacknowledged_revision_retries(publishing, monkeypatch):
-    _, remote, _, clock = publishing
+    _, remote, cfg, clock = publishing
     original = publish.Publisher.push
 
     def die(*args):
@@ -156,17 +170,13 @@ def test_publisher_dies_when_restarted_then_unacknowledged_revision_retries(publ
         publish.publish(tick=True)
     assert registry.load_registry().get("published_revision", 0) == 0
     monkeypatch.setattr(publish.Publisher, "push", original)
-    clock[0] += 90
+    clock[0] += 1.5 * _debounce(cfg)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"
 
 
 def test_remote_ref_moves_when_pushing_then_retry_is_parented_on_new_tip(publishing, monkeypatch):
-    _, remote, cfg, _ = publishing
-    # The first publisher's deadline (a quarter of the debounce) has to cover a whole
-    # competing publication as well as its own retry: the shipped debounce, stretched
-    # by how busy the host is, keeps that deadline derived from the configured value.
-    cfg["session_relaunch"]["publish"]["debounce_seconds"] = scaled(state.PUBLISH_DEFAULTS["debounce_seconds"])
+    _, remote, _, _ = publishing
     original = publish.Publisher.git
     moved = []
 
@@ -196,7 +206,7 @@ def test_publisher_lock_held_when_tick_runs_then_returns_without_waiting(publish
 
 
 def test_publication_deadline_missed_when_push_returns_then_snapshot_is_not_acknowledged(publishing, monkeypatch):
-    _, remote, _, clock = publishing
+    _, remote, cfg, clock = publishing
     moment = [1000.0]
     monkeypatch.setattr(publish.time, "monotonic", lambda: moment[0])
     original = publish.Publisher.git
@@ -204,14 +214,15 @@ def test_publication_deadline_missed_when_push_returns_then_snapshot_is_not_ackn
     def slow_push(self, *args, **kwargs):
         result = original(self, *args, **kwargs)
         if args[0] == "push":
-            moment[0] += 16
+            # One second past the publisher's deadline, a quarter of the debounce.
+            moment[0] += _debounce(cfg) / 4 + 1
         return result
 
     monkeypatch.setattr(publish.Publisher, "git", slow_push)
     assert not publish.publish(tick=True).published
     doc = registry.load_registry()
     assert doc["dirty_revision"] > doc.get("published_revision", 0)
-    clock[0] += 90
+    clock[0] += 1.5 * _debounce(cfg)
     monkeypatch.setattr(publish.Publisher, "git", original)
     assert publish.publish(tick=True).published
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"

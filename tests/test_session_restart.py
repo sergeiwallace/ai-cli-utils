@@ -23,6 +23,7 @@ import psutil
 import pytest
 from conftest import run_cli
 from process_ownership import owned_process
+from process_wait import scaled
 
 from ai_cli import config, main
 from ai_cli import session_restart as restart
@@ -359,6 +360,10 @@ def world(tmp_path, monkeypatch):
             "settle_seconds": 0,
             "term_grace_seconds": 0,
             "relaunch_timeout_seconds": 0,
+            # With both waits at zero, the floor is all the time a request has for
+            # the simulated restart around them. Stretch it by how busy the host is,
+            # not the waits themselves, which tests that wait them out would use up.
+            "request_lifetime_floor_seconds": scaled(1),
             "cooldown_seconds": 0,
         }
     }
@@ -2117,6 +2122,55 @@ def test_given_ignored_term_when_grace_expires_then_exact_kill(world, monkeypatc
     else:
         assert not world.signals
         assert world.injected == [["inject", "%1", "/exit"]]
+
+
+@pytest.mark.parametrize("floor", [None, 60], ids=["default-floor", "configured-floor"])
+def test_given_a_slow_host_when_the_waits_are_zero_then_the_request_lives_for_the_configured_floor(
+    world, monkeypatch, floor
+):
+    """A request lives max(floor, term grace + relaunch timeout) seconds.
+
+    With both waits at zero only the floor covers the work around them. Here the
+    request is aged five seconds as soon as it is prepared, as on a host too busy to
+    finish within the one-second default: the default still fences the restart, and
+    a configured floor gives the request the slack to finish.
+    """
+    world.settings["restart_session"]["request_lifetime_floor_seconds"] = (
+        config.RESTART_SESSION_DEFAULTS["request_lifetime_floor_seconds"] if floor is None else floor
+    )
+    monkeypatch.setattr(restart, "_signal_supported", lambda: True)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    world.commands({"inject": ["inject", "{tmux_pane}", "{command}"], "observer": ["observer"]})
+
+    def kill(pid, sig):
+        world.signals.append((pid, sig))
+        if sig == signal.SIGKILL:
+            world.replace()
+
+    monkeypatch.setattr(restart.os, "kill", kill)
+    original = restart.prepare_request
+
+    def prepare(*args):
+        # Age the request as if five seconds of work had passed since it was written.
+        request = original(*args)
+        request["expires_at"] -= 5
+        restart._atomic_json(restart.state_paths(world.session)[2], request)
+        return request
+
+    monkeypatch.setattr(restart, "prepare_request", prepare)
+
+    code, report, _ = world.cli("-X", SESSION_ID)
+
+    if floor is None:
+        assert (code, report["reason"], report.get("detail")) == (
+            1,
+            "restart-fenced",
+            "request identity or lifetime invalid",
+        ), report
+        assert not world.signals
+    else:
+        assert code == 0, sorted(report.items())
+        assert world.signals == [(101, signal.SIGTERM), (101, signal.SIGKILL)]
 
 
 def test_given_reused_pid_when_escalating_then_no_kill(world, monkeypatch):

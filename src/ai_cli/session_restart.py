@@ -1168,7 +1168,11 @@ def prepare_request(record: dict, managed: Managed, settings: dict) -> dict:
         "owner_pid": os.getpid(),
         "owner_identity": asdict(_identity(os.getpid())),
         "script_digest": _digest(managed.script),
-        "expires_at": time.time() + max(1, settings["term_grace_seconds"] + settings["relaunch_timeout_seconds"]),
+        "expires_at": time.time()
+        + max(
+            settings["request_lifetime_floor_seconds"],
+            settings["term_grace_seconds"] + settings["relaunch_timeout_seconds"],
+        ),
     }
     _atomic_json(path, request)
     return request

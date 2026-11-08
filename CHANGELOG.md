@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case fails. A client with no record yet fails the `present` case unless `-a/--allow-empty` is
   given. A client on `PATH` with no store on this host is skipped and passes: its rows can only
   probe `unknown`, which holds them.
+- `[restart_session] request_lifetime_floor_seconds` (default `1`, must be positive) sets the
+  shortest life of a prepared restart request. A request expires
+  `max(request_lifetime_floor_seconds, term_grace_seconds + relaunch_timeout_seconds)` seconds after
+  it is written. The floor used to be a fixed one second, and the default leaves behaviour
+  unchanged.
 
 ### Fixed
 

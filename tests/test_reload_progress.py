@@ -41,7 +41,7 @@ from pathlib import Path
 
 import psutil
 import pyte
-from process_wait import process_wait_seconds
+from process_wait import process_wait_seconds, scaled
 
 from ai_cli.session_script import get_engine_script, resolve_session_shell
 
@@ -275,7 +275,7 @@ class Session:
             time.sleep(0.1)
         code = self.process.poll()
         assert code is not None, f"the session never ended; screen: {self.rows()}"
-        self._reader.join(timeout=10)
+        self._reader.join(timeout=scaled(10))
         return code
 
     def stopped(self) -> list[str]:
@@ -304,8 +304,8 @@ class Session:
         if self.process.poll() is None:
             with contextlib.suppress(OSError):
                 os.kill(self.process.pid, signal.SIGKILL)
-            self.process.wait(timeout=30)
-        self._reader.join(timeout=10)
+            self.process.wait(timeout=scaled(30))
+        self._reader.join(timeout=scaled(10))
         if self._master >= 0:
             with contextlib.suppress(OSError):
                 os.close(self._master)
@@ -387,7 +387,7 @@ def test_given_supervisor_fixture_when_sequence_requested_then_reply_is_numeric(
         [str(bin_dir / "ai"), "sessions", "_sequence"],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=scaled(10),
         check=False,
     )
     assert reply.returncode == 0, reply.stderr
@@ -534,7 +534,7 @@ def test_given_an_invalid_reload_threshold_when_ai_internal_progress_runs_then_d
         text=True,
         env=env,
         check=False,
-        timeout=60,
+        timeout=scaled(60),
     )
 
     assert result.returncode == 0, result.stderr
