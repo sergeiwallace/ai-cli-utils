@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from name_fleet import HOST, NAMES, OTHER_HOST, REPO, STEM, build_fleet, git, policy_commit, policy_of, publish_list
 
-from ai_cli import main
+from ai_cli import main, output
 from ai_cli import name_registry as reg
 
 
@@ -189,6 +189,35 @@ def test_given_the_registry_unreachable_and_no_spare_when_launching_then_it_exit
 
     assert caught.value.code == 75
     assert "ai reconcile-names" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        reg.RegistryUnreachableError("could not fetch the name registry: timed out after 20 s"),
+        reg.RegistryContendedError("lost the race to another writer after 5 attempts"),
+    ],
+    ids=["unreachable", "contended"],
+)
+def test_given_the_reserve_fails_with_a_spare_left_when_launching_then_the_warning_and_log_name_the_cause(
+    tmp_path, monkeypatch, launch, capsys, failure
+):
+    fleet = build_fleet(tmp_path, monkeypatch)
+    named(launch)
+    [spare] = [token for token, row in fleet.rows().items() if row["kind"] == "spare"]
+    logged: list[str] = []
+    previous_sink = output.attach_file_sink(logged.append)
+    try:
+        with patch("ai_cli.name_registry.reserve_picked", side_effect=failure):
+            ai_name = named(launch)
+    finally:
+        output.attach_file_sink(previous_sink)
+
+    assert ai_name == f"{STEM}-{spare}"
+    err = capsys.readouterr().err
+    assert f"offline: using reserved spare {spare}" in err
+    assert str(failure) in err
+    assert any(f"offline: using reserved spare {spare}" in line and str(failure) in line for line in logged)
 
 
 def test_given_a_failing_push_and_no_spare_when_launching_then_the_refusal_names_the_push(

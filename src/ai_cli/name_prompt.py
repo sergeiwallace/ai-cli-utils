@@ -170,5 +170,5 @@ def _write_picked(
             reservation = reg.take_spare(registry, slot, cause=str(failure))
         except reg.SparesExhaustedError as exc:
             raise PromptExit(EXIT_UNREACHABLE, str(exc)) from exc
-        io.say(f"offline: using reserved spare {reservation.name}")
+        io.say(f"offline: using reserved spare {reservation.name} ({failure})")
         return reservation
