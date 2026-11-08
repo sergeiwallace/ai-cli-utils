@@ -244,6 +244,111 @@ def test_given_a_reserve_when_it_publishes_then_nothing_is_forced_and_the_checko
     assert (fleet.repo / ".git" / "index").read_bytes() == index_before
 
 
+def _user_config(fleet, monkeypatch, text: str) -> None:
+    """Point config.toml at a file under ``tmp_path`` holding ``text``, on every OS."""
+    base = fleet.tmp / "user-config"
+    (base / "ai-cli-utils").mkdir(parents=True, exist_ok=True)
+    (base / "ai-cli-utils" / "config.toml").write_text(text)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base))
+    monkeypatch.setenv("APPDATA", str(base))
+
+
+def _recorded_git_calls(monkeypatch) -> list[tuple[list[str], float | None]]:
+    calls: list[tuple[list[str], float | None]] = []
+    real_run = subprocess.run
+
+    def recording_run(command, *args, **kwargs):
+        if command[:1] == ["git"]:
+            calls.append((list(command), kwargs.get("timeout")))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(reg.subprocess, "run", recording_run)
+    return calls
+
+
+def _fetches(calls: list[tuple[list[str], float | None]]) -> list[tuple[list[str], float | None]]:
+    return [(command, timeout) for command, timeout in calls if "fetch" in command]
+
+
+def test_given_a_previously_fetched_registry_when_reading_then_negotiation_offers_only_the_registry_ref(
+    fleet, monkeypatch
+):
+    _user_config(fleet, monkeypatch, "")
+    calls = _recorded_git_calls(monkeypatch)
+
+    snapshot = fleet.registry.snapshot()
+
+    [(command, _timeout)] = _fetches(calls)
+    assert f"--negotiation-tip={reg.PRIVATE_REF}" in command
+    assert snapshot.tip == _tip(fleet)
+
+
+def test_given_no_previously_fetched_registry_when_reading_then_no_negotiation_tip_is_passed(fleet, monkeypatch):
+    _user_config(fleet, monkeypatch, "")
+    git(fleet.repo, "update-ref", "-d", reg.PRIVATE_REF)
+    calls = _recorded_git_calls(monkeypatch)
+
+    snapshot = fleet.registry.snapshot()
+
+    [(command, _timeout)] = _fetches(calls)
+    assert not [arg for arg in command if arg.startswith("--negotiation-tip")]
+    assert snapshot.tip == _tip(fleet)
+
+
+def test_given_a_configured_fetch_timeout_when_reading_and_publishing_then_only_the_fetch_uses_it(fleet, monkeypatch):
+    _user_config(fleet, monkeypatch, "[session_names]\nregistry_fetch_timeout_seconds = 42\n")
+    calls = _recorded_git_calls(monkeypatch)
+
+    reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
+
+    assert {timeout for _command, timeout in _fetches(calls)} == {42}
+    assert {timeout for command, timeout in calls if "push" in command} == {fleet.registry.timeout_s}
+
+
+def test_given_no_configured_fetch_timeout_when_reading_then_the_fetch_gets_the_default_above_the_publish_timeout(
+    fleet, monkeypatch
+):
+    _user_config(fleet, monkeypatch, "")
+    calls = _recorded_git_calls(monkeypatch)
+
+    fleet.registry.snapshot()
+
+    [(_command, timeout)] = _fetches(calls)
+    assert timeout == _config.REGISTRY_FETCH_TIMEOUT_DEFAULT_S
+    assert timeout > fleet.registry.timeout_s
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "true", '"slow"'])
+def test_given_an_invalid_fetch_timeout_when_reading_then_it_refuses_naming_the_setting(fleet, monkeypatch, value):
+    _user_config(fleet, monkeypatch, f"[session_names]\nregistry_fetch_timeout_seconds = {value}\n")
+
+    with pytest.raises(reg.RegistryError, match=r"session_names\.registry_fetch_timeout_seconds"):
+        fleet.registry.snapshot()
+
+
+def test_given_a_fetch_slower_than_the_publish_timeout_when_reading_then_it_completes_within_the_fetch_timeout(
+    fleet, monkeypatch
+):
+    # The remote's upload-pack starts two seconds late: longer than the one-second publish
+    # timeout, well inside the fetch timeout. Git runs this through its own shell on every OS.
+    python = Path(sys.executable).as_posix()
+    git(
+        fleet.repo,
+        "config",
+        "remote.origin.uploadpack",
+        f'"{python}" -c "import time; time.sleep(2)" && git upload-pack',
+    )
+    _user_config(fleet, monkeypatch, "[session_names]\nregistry_fetch_timeout_seconds = 120\n")
+    registry = reg.GitRegistry(
+        fleet.repo, ref=REF, remote="origin", policy_file=fleet.repo / reg.POLICY_MARKER, timeout_s=1, attempts=1
+    )
+
+    snapshot = registry.snapshot()
+
+    assert snapshot.fetched
+    assert snapshot.tip == _tip(fleet)
+
+
 def test_given_a_successful_reserve_when_published_then_the_same_commit_tops_this_machines_spares_up(fleet):
     reservation = reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
 
