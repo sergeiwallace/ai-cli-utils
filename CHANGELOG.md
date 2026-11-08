@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A launch no longer takes a spare, or refuses for want of one, because publishing a reserved
+  name to a shared registry took longer than the registry's publish timeout. On a loaded host a
+  push of one small commit to the registry ref was measured at 30 seconds against the 15-second
+  publish timeout. Pushes now have their own `[session_names] registry_push_timeout_seconds`
+  (default `60`, must be positive), read on every push. When no spare is left, the refusal now
+  quotes the failure that sent the launch to the spares, such as a push that timed out, instead
+  of saying only that the registry is unreachable.
 - A shared name registry is no longer reported unreachable when fetching it takes longer than its
   publish timeout. In a checkout with thousands of refs on a loaded host, the fetch of the one
   registry ref ran past the 15-second publish timeout, so `ai c` refused once no spare was left

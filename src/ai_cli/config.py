@@ -462,17 +462,29 @@ def read_naming_config(config: dict) -> dict:
 # checkout with thousands of refs on a loaded host, fetching the one registry ref has
 # been measured taking 16 to 27 seconds.
 REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
+# A registry push's own budget, for the same reason: a push of one small commit to the
+# registry ref from such a checkout has been measured at 30 seconds.
+REGISTRY_PUSH_TIMEOUT_DEFAULT_S = 60
+
+
+def _read_registry_timeout(config: dict, key: str, default: float) -> float:
+    section = config.get("session_names", {})
+    if not isinstance(section, dict):
+        raise ValueError("session_names must be a table")
+    value = section.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"invalid session_names.{key}: use a positive number of seconds")
+    return value
 
 
 def read_registry_fetch_timeout(config: dict) -> float:
     """``[session_names] registry_fetch_timeout_seconds``; every registry fetch reads it fresh."""
-    section = config.get("session_names", {})
-    if not isinstance(section, dict):
-        raise ValueError("session_names must be a table")
-    value = section.get("registry_fetch_timeout_seconds", REGISTRY_FETCH_TIMEOUT_DEFAULT_S)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-        raise ValueError("invalid session_names.registry_fetch_timeout_seconds: use a positive number of seconds")
-    return value
+    return _read_registry_timeout(config, "registry_fetch_timeout_seconds", REGISTRY_FETCH_TIMEOUT_DEFAULT_S)
+
+
+def read_registry_push_timeout(config: dict) -> float:
+    """``[session_names] registry_push_timeout_seconds``; every registry push reads it fresh."""
+    return _read_registry_timeout(config, "registry_push_timeout_seconds", REGISTRY_PUSH_TIMEOUT_DEFAULT_S)
 
 
 RELAUNCH_DEFAULTS = {
@@ -730,9 +742,11 @@ name_with_label = "keep"
 ## registry's limits apply to every machine that uses it, and these are then ignored.
 min_name_length = 3
 max_name_length = 4
-## Seconds one fetch of a shared name registry may take before the registry counts as
-## unreachable, read on every fetch. Separate from the registry's publish timeout.
+## Seconds one fetch, and one push, of a shared name registry may take before the
+## registry counts as unreachable, each read on every call. Separate from the
+## registry's publish timeout.
 # registry_fetch_timeout_seconds = 60
+# registry_push_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false

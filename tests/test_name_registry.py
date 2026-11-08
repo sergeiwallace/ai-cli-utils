@@ -295,14 +295,33 @@ def test_given_no_previously_fetched_registry_when_reading_then_no_negotiation_t
     assert snapshot.tip == _tip(fleet)
 
 
-def test_given_a_configured_fetch_timeout_when_reading_and_publishing_then_only_the_fetch_uses_it(fleet, monkeypatch):
-    _user_config(fleet, monkeypatch, "[session_names]\nregistry_fetch_timeout_seconds = 42\n")
+def test_given_configured_fetch_and_push_timeouts_when_reading_and_publishing_then_each_uses_its_own(
+    fleet, monkeypatch
+):
+    _user_config(
+        fleet,
+        monkeypatch,
+        "[session_names]\nregistry_fetch_timeout_seconds = 42\nregistry_push_timeout_seconds = 43\n",
+    )
     calls = _recorded_git_calls(monkeypatch)
 
     reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
 
     assert {timeout for _command, timeout in _fetches(calls)} == {42}
-    assert {timeout for command, timeout in calls if "push" in command} == {fleet.registry.timeout_s}
+    assert {timeout for command, timeout in calls if "push" in command} == {43}
+
+
+def test_given_no_configured_push_timeout_when_publishing_then_the_push_gets_the_default_above_the_publish_timeout(
+    fleet, monkeypatch
+):
+    _user_config(fleet, monkeypatch, "")
+    calls = _recorded_git_calls(monkeypatch)
+
+    reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
+
+    [push_timeout] = {timeout for command, timeout in calls if "push" in command}
+    assert push_timeout == _config.REGISTRY_PUSH_TIMEOUT_DEFAULT_S
+    assert push_timeout > fleet.registry.timeout_s
 
 
 def test_given_no_configured_fetch_timeout_when_reading_then_the_fetch_gets_the_default_above_the_publish_timeout(
@@ -324,6 +343,39 @@ def test_given_an_invalid_fetch_timeout_when_reading_then_it_refuses_naming_the_
 
     with pytest.raises(reg.RegistryError, match=r"session_names\.registry_fetch_timeout_seconds"):
         fleet.registry.snapshot()
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "true", '"slow"'])
+def test_given_an_invalid_push_timeout_when_publishing_then_it_refuses_naming_the_setting(fleet, monkeypatch, value):
+    _user_config(fleet, monkeypatch, f"[session_names]\nregistry_push_timeout_seconds = {value}\n")
+    before = _tip(fleet)
+
+    with pytest.raises(reg.RegistryError, match=r"session_names\.registry_push_timeout_seconds"):
+        reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
+
+    assert _tip(fleet) == before
+
+
+def test_given_a_push_slower_than_the_publish_timeout_when_reserving_then_it_lands_within_the_push_timeout(
+    fleet, monkeypatch
+):
+    # The remote's receive-pack starts two seconds late: longer than the one-second publish
+    # timeout, well inside the push timeout. Git runs this through its own shell on every OS.
+    python = Path(sys.executable).as_posix()
+    git(
+        fleet.repo,
+        "config",
+        "remote.origin.receivepack",
+        f'"{python}" -c "import time; time.sleep(2)" && git receive-pack',
+    )
+    _user_config(fleet, monkeypatch, "[session_names]\nregistry_push_timeout_seconds = 120\n")
+    registry = reg.GitRegistry(
+        fleet.repo, ref=REF, remote="origin", policy_file=fleet.repo / reg.POLICY_MARKER, timeout_s=1, attempts=1
+    )
+
+    reservation = reg.reserve_picked(registry, _slot(), words=frozenset())
+
+    assert _remote_rows(fleet)[reservation.name]["machine"] == HOST
 
 
 def test_given_a_fetch_slower_than_the_publish_timeout_when_reading_then_it_completes_within_the_fetch_timeout(
