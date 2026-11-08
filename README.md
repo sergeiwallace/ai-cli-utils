@@ -321,12 +321,19 @@ min_uptime_seconds = 1800
 cooldown_seconds = 3600
 term_grace_seconds = 20
 relaunch_timeout_seconds = 180
+request_lifetime_floor_seconds = 1 # Shortest life of a prepared restart request
 mechanism = "kill"                 # "exit" uses the injection adapter
 pre_step = true
 compaction_wait_seconds = 1800
 auto = false                       # Opt in to automatic restart evaluation
 auto_interval_seconds = 600
 ```
+
+A prepared restart request expires `max(request_lifetime_floor_seconds,
+term_grace_seconds + relaunch_timeout_seconds)` seconds after it is written, and a
+restart that outlives its request is fenced. The floor must be positive. It only
+matters when both waits are near zero: it is then the only time left for the work
+around them.
 
 With `auto = true`, each supervisor heartbeat starts a detached
 `ai internal restart-auto <tmux session>` evaluator when that session's

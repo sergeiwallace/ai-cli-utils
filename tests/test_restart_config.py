@@ -11,6 +11,7 @@ def test_given_ac_4_3_default_config_when_read_then_automatic_restart_is_disable
     assert read_restart_config(tomllib.loads(DEFAULT_CONFIG)) == RESTART_SESSION_DEFAULTS
     assert read_restart_config({})["context_threshold_pct"] == 20
     assert read_restart_config({})["auto"] is False
+    assert read_restart_config({})["request_lifetime_floor_seconds"] == 1
 
 
 @pytest.mark.parametrize(
@@ -25,6 +26,8 @@ def test_given_ac_4_3_default_config_when_read_then_automatic_restart_is_disable
         ("auto", "true"),
         ("mechanism", "group"),
         ("compaction_fresh_turns", 1.5),
+        ("request_lifetime_floor_seconds", 0),
+        ("request_lifetime_floor_seconds", "1"),
     ],
 )
 def test_given_invalid_setting_when_read_then_restart_refuses(key, value):

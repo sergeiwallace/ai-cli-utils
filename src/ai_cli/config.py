@@ -386,6 +386,7 @@ RESTART_SESSION_DEFAULTS = {
     "cooldown_seconds": 3600,
     "term_grace_seconds": 20,
     "relaunch_timeout_seconds": 180,
+    "request_lifetime_floor_seconds": 1,
     "mechanism": "kill",
     "pre_step": True,
     "compaction_wait_seconds": 1800,
@@ -414,6 +415,9 @@ def read_restart_config(config: dict) -> dict:
                 valid = valid and isinstance(value, int)
             if key == "context_threshold_pct":
                 valid = valid and value <= 100
+            if key == "request_lifetime_floor_seconds":
+                # A zero floor lets a request with zero waits expire as it is written.
+                valid = valid and value > 0
         if not valid:
             raise ValueError(f"invalid restart_session.{key}")
     return result
@@ -540,6 +544,7 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # cooldown_seconds = 3600
 # term_grace_seconds = 20
 # relaunch_timeout_seconds = 180
+# request_lifetime_floor_seconds = 1
 # mechanism = "kill"
 # pre_step = true
 # compaction_wait_seconds = 1800
