@@ -513,18 +513,24 @@ is refused with the limits printed, and the question repeats until a valid answe
 end of input or Ctrl-C (exit 130, nothing created). Without a terminal there is no
 one to ask, so a refused or unknown name exits 2; `ai add-name NAME` adds one first.
 
-Settings live in `[session_names]` in `config.toml`; a new config file has
-`enabled = true`:
+Settings live in `[session_names]` in `config.toml`. A new config file ships every
+key there commented out, so the shared registry's `[hosts.<host id>]` and
+`[defaults]` decide, and with neither, names are off. Uncomment a key to override
+them on one machine:
 
 ```toml
 [session_names]
-enabled = true            # AI_CLI_SESSION_NAMES=1 or 0 overrides it
-name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
-min_name_length = 3       # used only where no shared name registry exists
-max_name_length = 4       # used only where no shared name registry exists
-registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
-registry_push_timeout_seconds = 60   # one push to a shared registry
+# enabled = true            # AI_CLI_SESSION_NAMES=1 or 0 overrides it
+# name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
+# min_name_length = 3       # used only where no shared name registry exists
+# max_name_length = 4       # used only where no shared name registry exists
+# registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
+# registry_push_timeout_seconds = 60   # one push to a shared registry
 ```
+
+An older release seeded these four keys active. The first `ai` command after an
+upgrade comments out each one that still holds its seeded value, says so on stderr,
+and keeps any key you changed. It does this once: a key you set again afterwards stays.
 
 The registry is the first repository under the projects directory that ships
 `config/session-names.toml`. That file names a git ref, and every machine reserves
