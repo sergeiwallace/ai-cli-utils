@@ -281,7 +281,7 @@ def drop_seeded_session_names(config_path: Path) -> bool:
     if dropped:
         _out.emit(
             Tag.CONFIG,
-            "upgrade",
+            "migrate",
             f"commented out {', '.join(dropped)} in {config_path} [session_names]: an older template "
             "seeded these values, which hid the shared naming policy. Set a key again to override it here.",
             err=True,
