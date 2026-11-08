@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session started by an older supervisor now stops when Ctrl-C or SIGTERM interrupts the
+  back-off sleep after a failed generation acquisition. It used to relaunch instead, now and
+  then, on macOS. There a process-group signal can kill `sleep` and the shell can reap it before
+  the signal is pending in the shell, so the shell reached its retry exit without running its
+  stop trap. The script now acts on the interrupted sleep's own exit status.
 - An unqualified `ai c` or `ai c --dry-run` in a registered project no longer exits 1 with
   `unregistered project directories: ...` when other checkouts under the projects directory are
   not in the project registry. Only the project being launched must be registered; the launch

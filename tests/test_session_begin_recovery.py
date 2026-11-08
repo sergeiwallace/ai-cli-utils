@@ -166,6 +166,38 @@ def test_given_old_supervisor_when_begin_exhausts_or_is_interrupted_then_launche
             process.communicate(timeout=scaled(2))
 
 
+@pytest.mark.parametrize("status", [130, 143], ids=["interrupt", "terminate"])
+def test_given_old_supervisor_when_the_delay_sleep_dies_of_a_signal_the_shell_has_not_seen_then_launcher_stops(
+    legacy_wrapper, tmp_path, status
+):
+    """A process-group signal is not delivered to every member at once on every kernel.
+
+    `sleep` can die of it and be reaped before the signal is pending in its shell, so
+    the shell reaches its retry exit without running the trap. Here `sleep` reports
+    that death while the shell is never signalled at all: the launcher must still stop
+    rather than retry until the failure limit.
+    """
+    shell, child, wrapper, env = legacy_wrapper
+    script = child.read_text()
+    sleep_line = next(line for line in script.splitlines() if line.startswith("sleep() {"))
+    child.write_text(script.replace(sleep_line, f"sleep() {{ return {status}; }}"))
+    (tmp_path / "session-begin-failures-c-session-1").write_text("0\n")
+
+    result = subprocess.run(
+        [shell, "-c", wrapper, "wrapper", shell, str(child)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=scaled(10),
+        check=False,
+        start_new_session=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "agent-started" not in result.stdout
+    assert (tmp_path / "calls").read_text() == "call"
+
+
 @pytest.mark.real_tmux
 @pytest.mark.parametrize("interrupt", [False, "delay", "acquire"])
 def test_given_tmux_legacy_supervisor_when_begin_stops_then_pane_accepts_shell_input(
