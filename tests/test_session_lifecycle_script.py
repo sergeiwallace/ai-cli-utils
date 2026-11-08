@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+from process_wait import scaled
 
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
@@ -51,7 +52,9 @@ def test_status_77_when_supervisor_returns_then_manual_exit_is_persisted(shell_e
         get_engine_script("c", "session-1", name, "c-session-", "myproject", worktree_dir=str(tmp_path)),
         encoding="utf-8",
     )
-    completed = subprocess.run([shell, str(script)], env=env, capture_output=True, text=True, check=False, timeout=20)
+    completed = subprocess.run(
+        [shell, str(script)], env=env, capture_output=True, text=True, check=False, timeout=scaled(20)
+    )
     assert completed.returncode == 0, completed.stderr
     record = registry.load_registry()["sessions"][0]
     assert record["run_state"] == "exited"
@@ -73,7 +76,9 @@ def test_persistence_fails_when_final_exit_retries_then_no_agent_is_started(shel
         SESSION_STATE_FUNCTIONS
         + f'\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n_ai_emit() {{ printf "%s\\n" "$*"; }}\n_ai_persist_exit manual_exit \'{{}}\'\nprintf shell-returned\n'
     )
-    completed = subprocess.run([shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=20)
+    completed = subprocess.run(
+        [shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=scaled(20)
+    )
     assert completed.returncode == 0, completed.stderr
     assert count.read_text() == "3"
     assert completed.stdout.count("retrying") == 2
@@ -84,7 +89,9 @@ def test_persistence_fails_when_final_exit_retries_then_no_agent_is_started(shel
 def test_missing_registration_when_running_mark_attempted_then_agent_start_is_refused(shell_environment):
     shell, env, _, _ = shell_environment
     body = SESSION_STATE_FUNCTIONS + "\ntmux_session=missing\n_ai_mark_running || exit 76\nprintf agent-started\n"
-    result = subprocess.run([shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=20)
+    result = subprocess.run(
+        [shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=scaled(20)
+    )
     assert result.returncode == 76
     assert "agent-started" not in result.stdout
 
@@ -105,7 +112,9 @@ def test_given_no_python_on_path_when_lifecycle_marks_then_state_is_persisted(sh
         + f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
         + ("_ai_mark_running" if status == "running" else "_ai_persist_exit manual_exit '{}' ")
     )
-    result = subprocess.run([shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=20)
+    result = subprocess.run(
+        [shell, "-c", body], env=env, capture_output=True, text=True, check=False, timeout=scaled(20)
+    )
     assert result.returncode == 0, result.stderr
     record = registry.load_registry()["sessions"][0]
     assert record["run_state"] == status
