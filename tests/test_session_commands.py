@@ -25,7 +25,7 @@ def runner():
 
 
 def test_registered_session_when_cli_marks_then_list_and_published_ref_show_state(publishing, runner):
-    _, remote, _, clock = publishing
+    _, remote, cfg, clock = publishing
     result = runner.invoke(
         _cli_group, ["sessions", "mark", "c-session-1", "exited", "-c", "manual_exit", "-e", '{"source":"test"}']
     )
@@ -37,7 +37,8 @@ def test_registered_session_when_cli_marks_then_list_and_published_ref_show_stat
     registry.record_exit("c-session-1", cause="manual_exit", evidence={"source": "hook"})
     assert runner.invoke(_cli_group, ["sessions", "mark", "c-session-1", "running"]).exit_code == 0
     assert registry.load_registry()["sessions"][0]["ended_at"] is None
-    clock[0] += 60
+    # Step past the fixture's debounce, which is stretched by how busy the host is.
+    clock[0] += cfg["session_relaunch"]["publish"]["debounce_seconds"]
     assert runner.invoke(_cli_group, ["sessions", "publish", "--tick"]).exit_code == 0
     assert snapshot(remote)["sessions"]["c-session-1"]["run_state"] == "running"
 
