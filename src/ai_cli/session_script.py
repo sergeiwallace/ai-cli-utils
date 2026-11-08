@@ -856,7 +856,14 @@ def get_engine_script(
           _begin_delay=$((_begin_delay * 2))
         done
         (( _begin_delay > 30 )) && _begin_delay=30
+        # The traps alone are not enough here: a group signal can reach `sleep` and be
+        # reaped before it is pending in this shell, which then reaches `exit 76` and
+        # never runs the trap. The interrupted sleep's own status says what happened.
         sleep "$_begin_delay"
+        case $? in
+          (130) exit 77 ;;
+          (143) exit 79 ;;
+        esac
         exit 76
       fi
       export AI_CLI_RUN_GENERATION
