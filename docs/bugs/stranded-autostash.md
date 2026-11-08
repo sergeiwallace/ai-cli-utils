@@ -129,6 +129,12 @@ trusting the exit code, and reports a strand when *this* pull caused one:
 * unmerged index paths that were not present before, or
 * stash entries that were not present before (compared by commit id, not by count — a count cannot
   distinguish "this pull stranded one" from "another process dropped one and this pull added one"),
+  counting only this worktree's own autostash. The stash stack is shared by every worktree of a
+  repository, so a slow pull can see a named stash another session pushed while it ran. An entry
+  counts only when its stash reflog message is the bare word `autostash` (what git writes; a
+  `git stash push -m autostash` records `On <branch>: autostash`), its subject is
+  `On <branch>: autostash` for this worktree's branch (`(no branch)` when detached), and its first
+  parent is the commit checked out before the pull,
 * **and** no git operation left in progress.
 
 That last clause is the discriminator between the two ways a repo acquires conflict stages. Measured:
