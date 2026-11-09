@@ -39,7 +39,7 @@ a GitHub-hosted runner rather than a self-hosted one.
 **Why that is the expected state.** GitHub Actions is free and unmetered for **public**
 repositories on standard GitHub-hosted runners, on every plan including Free. Minute allowances and
 spending limits apply to private repositories and to larger or specialised runners. This repository
-is public and `ci.yml` targets only `ubuntu-latest` and `windows-latest`.
+is public and `ci.yml` targets only `ubuntu-latest`, `windows-latest` and `macos-latest`.
 
 **What most likely happened.** CI was red because tests were failing. That was read as a billing
 block, and an account-level billing condition affecting private repositories was generalised to a
