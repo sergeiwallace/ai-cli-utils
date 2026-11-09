@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import psutil
 import pytest
-from process_ownership import owned_process
+from process_ownership import exited_pid, owned_process
 
 from ai_cli.main import _handle_internal
 
@@ -914,10 +914,8 @@ def _daemon(
 
 
 def _dead_pid() -> int:
-    """A process id that names no live process: a child that has already been reaped."""
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    child.wait()
-    return child.pid
+    """A process id that names no live process: a child that has already exited."""
+    return exited_pid()
 
 
 def test_given_a_prompt_waits_and_the_copy_is_blocked_waiting_on_the_user_when_resolving_then_it_attaches(

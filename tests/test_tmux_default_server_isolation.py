@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 from conftest import TMUX_ISOLATION_PARENT, TMUX_ISOLATION_PREFIX
-from process_ownership import watch_tmux_directory
+from process_ownership import exited_pid, watch_tmux_directory
 from process_wait import process_wait_seconds
 
 pytestmark = [
@@ -219,10 +219,7 @@ def test_given_a_test_starts_a_server_on_its_default_socket_when_the_test_ends_t
 
 
 def _dead_pid() -> int:
-    finished = subprocess.run(
-        [sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True
-    )
-    return int(finished.stdout)
+    return exited_pid()
 
 
 def test_given_a_killed_run_left_a_server_in_its_isolation_dir_when_the_next_run_starts_then_the_server_is_killed(
