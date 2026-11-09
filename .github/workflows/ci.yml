@@ -121,21 +121,22 @@ jobs:
         with:
           # Kept in sync with `.python-version` by the lint job's version-sync step.
           python-version: "3.14"
-      # MSYS2 setup survives a download outage of several minutes. The default
-      # `release: true` downloads the MSYS2 installer from GitHub Releases, and a
-      # 504 there failed this job before any test ran. `release: false` reuses the
-      # copy the runner image ships at C:\msys64, and `update: true` brings it to
-      # the same current packages a fresh install would get. pacman still needs
-      # its mirrors, and it moves to the next mirror on its own when one fails.
-      # A wider outage gets two more attempts, after 2 and then 4 minutes. The
-      # last attempt downloads a fresh installer, so it also covers a runner image
-      # that stops shipping MSYS2 or a C:\msys64 left broken by a failed upgrade.
+      # MSYS2 setup survives a download outage of several minutes. Each attempt
+      # but the last downloads the MSYS2 installer from GitHub Releases and
+      # installs it under RUNNER_TEMP on the D: drive, which is where the suite
+      # has always run. A 504 on that download used to fail this job before any
+      # test ran, so a failed attempt waits and tries again: after 2 minutes,
+      # into its own `location`, since the action refuses to install over the
+      # directory a failed attempt left behind. After 4 more minutes the last
+      # attempt sets `release: false`, which needs no download: it reuses the
+      # copy the runner image ships at C:\msys64, and `update: true` brings it
+      # to the same current packages. It is only a fallback because the suite
+      # ran slower from C: in two of three runs that tried it.
       - id: msys2-attempt-1
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         continue-on-error: true
-        with: &msys2-inputs
+        with:
           msystem: MSYS
-          release: false
           update: true
           # Default path-type (minimal) hides uv, installed on the native
           # Windows PATH by setup-uv above, from this MSYS2 shell.
@@ -150,17 +151,22 @@ jobs:
         if: steps.msys2-attempt-1.outcome == 'failure'
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         continue-on-error: true
-        with: *msys2-inputs
+        with:
+          msystem: MSYS
+          location: ${{ runner.temp }}\msys2-attempt-2
+          update: true
+          path-type: inherit
+          install: >-
+            tmux
+            python
       - name: Wait before MSYS2 setup attempt 3
         if: steps.msys2-attempt-2.outcome == 'failure'
         run: Start-Sleep -Seconds 240
       - if: steps.msys2-attempt-2.outcome == 'failure'
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
-        # The same inputs as the anchor above except `release`; Actions takes
-        # YAML anchors but not merge keys, so they are written out again.
         with:
           msystem: MSYS
-          release: true
+          release: false
           update: true
           path-type: inherit
           install: >-
