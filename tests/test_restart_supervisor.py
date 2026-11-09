@@ -99,7 +99,24 @@ def supervisor_fixture(tmp_path_factory, monkeypatch, request):
     monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
     monkeypatch.setenv("PATH", str(binaries))
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
+    python_path = [str(Path(__file__).resolve().parents[1] / "src")]
+    if getattr(request, "param", None) == "slow-disk":
+        # Every fsync in the session's processes takes longer than the engine gives an
+        # accepted connection to send its receipt, as on a shared CI runner's disk.
+        slow_disk = root / "slow-disk"
+        slow_disk.mkdir()
+        (slow_disk / "sitecustomize.py").write_text(
+            f"""import os, time
+real_fsync = os.fsync
+def fsync(fd):
+    time.sleep({session_restart.START_RECEIPT_READ_TIMEOUT_SECONDS * 2})
+    real_fsync(fd)
+os.fsync = fsync
+""",
+            encoding="utf-8",
+        )
+        python_path.insert(0, str(slow_disk))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_path))
     monkeypatch.setenv("RESTART_FIXTURE_ROOT", str(root))
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
@@ -499,7 +516,15 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
 @pytest.mark.real_tmux
-@pytest.mark.parametrize("missing_executable", [False, True])
+@pytest.mark.parametrize(
+    ("missing_executable", "supervisor_fixture"),
+    [
+        pytest.param(False, None, id="False"),
+        pytest.param(True, None, id="True"),
+        pytest.param(False, "slow-disk", id="slow-disk"),
+    ],
+    indirect=["supervisor_fixture"],
+)
 def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polling(
     restart_ipc, supervisor_fixture, monkeypatch, missing_executable
 ):

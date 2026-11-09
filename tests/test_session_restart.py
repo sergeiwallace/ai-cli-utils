@@ -1450,7 +1450,11 @@ def test_given_windows_spawn_when_receipt_fails_then_terminates_and_reaps_child(
     child.terminate.assert_called_once_with()
     child.wait.assert_called_once_with()
     assert [call[0] for call in child.method_calls] == ["terminate", "wait"]
-    connection.close.assert_called_once_with()
+    if failure == "create-time":
+        # The receipt connection opens only once the receipt is ready to send.
+        connection.connect.assert_not_called()
+    else:
+        connection.close.assert_called_once_with()
 
 
 @pytest.mark.parametrize("args", [["--event-completion"], ["-Y", SESSION_ID, "-E"], ["c", "-E"]])

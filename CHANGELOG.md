@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai --restart-session --event-completion` no longer reports a healthy restart as
+  `verification-failed` ("replacement or local bridge verification timed out") on a slow disk. The
+  replacement opened its receipt connection before writing its launch marker, and the engine drops
+  a connection that sends no receipt within 0.25 s; the marker's fsyncs could take longer. The
+  replacement now connects only once the receipt is ready to send.
 - `ai retire-session` no longer refuses a reissued session name. A name retired and then
   reissued reuses the same `wt-NAME` branch with a new tip, and the retirement refused because
   `refs/preserved/retire-session/wt-NAME` already preserved the first holder's tip. That anchor

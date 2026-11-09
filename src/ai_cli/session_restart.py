@@ -1780,10 +1780,6 @@ def exec_replacement(session: str, argv: list[str]) -> int:
             or launch["child_start_time"] != psutil.Process(os.getppid()).create_time()
         ):
             raise ValueError("pinned launch changed")
-        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connection.settimeout(5)
-        connection.connect(("127.0.0.1", event["port"]))
-        connection.set_inheritable(False)
         # Windows starts a new PID rather than replacing this one through exec.
         # Keep its foreground wrapper waiting on the native child-exit event.
         child = subprocess.Popen(argv) if sys.platform == "win32" else None
@@ -1800,6 +1796,13 @@ def exec_replacement(session: str, argv: list[str]) -> int:
                     "replacement_start_time": birth,
                 },
             )
+            # Connect only once the receipt is ready: the engine gives an accepted
+            # connection START_RECEIPT_READ_TIMEOUT_SECONDS to send it, and the
+            # marker's fsyncs can take longer than that on a slow disk.
+            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            connection.settimeout(5)
+            connection.connect(("127.0.0.1", event["port"]))
+            connection.set_inheritable(False)
             connection.sendall(
                 json.dumps(
                     {
