@@ -206,8 +206,10 @@ jobs:
         run: uv run --python 3.14 pytest --tb=short -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
 
   test-windows:
-    # The required check. It passes only when every shard passed, and `always()` makes
-    # it report a failure, rather than a skip, when a shard fails or is cancelled.
+    # The required check. A matrix job's result is `success` only when every shard
+    # succeeded, so comparing against `success` alone turns a failed, cancelled or
+    # skipped shard red. `always()` makes this job run in those cases too, rather than
+    # being skipped itself, since a skipped required check would let a merge through.
     if: always()
     needs: test-windows-shard
     runs-on: ubuntu-latest
