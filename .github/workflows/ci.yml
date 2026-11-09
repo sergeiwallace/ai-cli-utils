@@ -121,12 +121,47 @@ jobs:
         with:
           # Kept in sync with `.python-version` by the lint job's version-sync step.
           python-version: "3.14"
-      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
-        with:
+      # MSYS2 setup survives a download outage of several minutes. The default
+      # `release: true` downloads the MSYS2 installer from GitHub Releases, and a
+      # 504 there failed this job before any test ran. `release: false` reuses the
+      # copy the runner image ships at C:\msys64, and `update: true` brings it to
+      # the same current packages a fresh install would get. pacman still needs
+      # its mirrors, and it moves to the next mirror on its own when one fails.
+      # A wider outage gets two more attempts, after 2 and then 4 minutes. The
+      # last attempt downloads a fresh installer, so it also covers a runner image
+      # that stops shipping MSYS2 or a C:\msys64 left broken by a failed upgrade.
+      - id: msys2-attempt-1
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        continue-on-error: true
+        with: &msys2-inputs
           msystem: MSYS
+          release: false
           update: true
           # Default path-type (minimal) hides uv, installed on the native
           # Windows PATH by setup-uv above, from this MSYS2 shell.
+          path-type: inherit
+          install: >-
+            tmux
+            python
+      - name: Wait before MSYS2 setup attempt 2
+        if: steps.msys2-attempt-1.outcome == 'failure'
+        run: Start-Sleep -Seconds 120
+      - id: msys2-attempt-2
+        if: steps.msys2-attempt-1.outcome == 'failure'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        continue-on-error: true
+        with: *msys2-inputs
+      - name: Wait before MSYS2 setup attempt 3
+        if: steps.msys2-attempt-2.outcome == 'failure'
+        run: Start-Sleep -Seconds 240
+      - if: steps.msys2-attempt-2.outcome == 'failure'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        # The same inputs as the anchor above except `release`; Actions takes
+        # YAML anchors but not merge keys, so they are written out again.
+        with:
+          msystem: MSYS
+          release: true
+          update: true
           path-type: inherit
           install: >-
             tmux

@@ -3,7 +3,7 @@
 > GitHub Actions CI is **active** on this repository and its results are a real verification
 > signal. It is not billing-blocked.
 >
-> Last updated: 2026-09-10
+> Last updated: 2026-11-09
 
 ## Current state
 
@@ -105,6 +105,28 @@ Add rules by `PUT`ting the ruleset, which **replaces** it — send the existing 
 Repository admins keep `bypass_mode: always`. That is what preserves the direct-push path for
 commits touching only `.beads/`, and it means a flaky required check holds a merge rather than
 hard-locking the repo.
+
+## `test-windows` survives an MSYS2 download outage
+
+`test-windows` runs its tests in an MSYS2 shell set up by `msys2/setup-msys2`. Its default,
+`release: true`, downloads the MSYS2 installer from GitHub Releases on every run, and that download
+answered `Unexpected HTTP response: 504` on all three of the action's own retries (about 30 seconds
+in total) on 2026-11-09. The job failed before any test ran; a re-run passed.
+
+The setup step now uses `release: false`, which reuses the MSYS2 that the Windows runner image
+ships at `C:\msys64`, so no installer download happens. `update: true` upgrades that copy through
+pacman, so the tests run against the same current packages a fresh install gets. pacman moves to the
+next mirror on its own when one fails.
+
+For a wider outage the job tries again: a second attempt after a 2-minute wait, then a third after
+4 more minutes. The first two attempts carry `continue-on-error: true`, and each later step is gated
+on the previous attempt's `outcome == 'failure'`. The third attempt uses `release: true`, a fresh
+installer download, so it also covers a runner image that stops shipping MSYS2 and a `C:\msys64`
+left broken by a failed upgrade. Only a failure of the third attempt fails the job.
+
+A run that needed a retry still reports `test-windows` as passed. The retry shows up as a failed
+`msys2-attempt-1` step with an annotation on the run page, which is where to look when Windows runs
+start taking several minutes longer than usual.
 
 ## Session checklist
 
