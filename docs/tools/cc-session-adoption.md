@@ -625,7 +625,10 @@ Otherwise, in order:
 
 1. The tips of the checked-out branch and of `wt-NAME` are written to
    `refs/preserved/retire-session/<branch>` (`git update-ref <ref> <tip> ""`, so a
-   ref that appeared meanwhile fails the write and nothing is removed).
+   ref that appeared meanwhile fails the write and nothing is removed). When a
+   reissued name reuses a branch name whose anchor already preserves an earlier
+   holder's tip, that anchor is kept and the new tip goes to
+   `refs/preserved/retire-session/<branch>--<first 12 hex of the tip>` beside it.
 2. `git worktree remove` without `--force` removes the checkout.
 3. The canonical-registry entry for the slot is dropped under the registry's lock.
 4. One JSON line is appended to `session-retirements.jsonl` in the XDG state

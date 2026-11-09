@@ -287,10 +287,16 @@ def _plan_anchors(repo: Path, name: str, branch: str | None) -> list[Anchor]:
         ref = anchor_ref(candidate, ANCHOR_NAMESPACE)
         existing = _resolve(repo, ref)
         if existing is not None and existing != tip:
-            raise RetireError(
-                f"anchor {ref} already points at {existing}, not {candidate}'s tip {tip}; it preserves an "
-                f"earlier tip, so refusing to overwrite it"
-            )
+            # A reissued name reuses the branch name with a new tip. The plain anchor
+            # preserves the earlier holder's tip and is never moved, so this tip gets its
+            # own anchor beside it, named by the tip it preserves.
+            ref = f"{ref}--{tip[:12]}"
+            existing = _resolve(repo, ref)
+            if existing is not None and existing != tip:
+                raise RetireError(
+                    f"anchor {ref} already points at {existing}, not {candidate}'s tip {tip}; it preserves an "
+                    f"earlier tip, so refusing to overwrite it"
+                )
         anchors.append(Anchor(candidate, ref, tip, exists=existing is not None))
     return anchors
 

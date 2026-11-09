@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai retire-session` no longer refuses a reissued session name. A name retired and then
+  reissued reuses the same `wt-NAME` branch with a new tip, and the retirement refused because
+  `refs/preserved/retire-session/wt-NAME` already preserved the first holder's tip. That anchor
+  is now kept and the new tip is anchored beside it as `wt-NAME--<first 12 hex of the tip>`.
 - A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
   `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
   `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's
