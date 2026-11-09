@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tmux launch from a terminal already inside tmux refuses up front, before it reserves
   a name or synchronizes a worktree, instead of failing at the final attach and leaving
   the reserved name held by a session that never ran.
+- `-r/--resume <name>` relaunches a title this machine holds when no tmux session runs it,
+  and a positional name reaches a labelled title (`<stem>-<label>-<name>`) this machine
+  holds. Both used to refuse, leaving such a title no route back short of retiring it.
+  A name held by another machine is still refused.
 - A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
   `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
   `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's

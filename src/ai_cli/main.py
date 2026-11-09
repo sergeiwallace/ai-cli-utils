@@ -3774,6 +3774,50 @@ def _resolve_session_identity(
         _naming_exit(reporter, str(exc), name_prompt.EXIT_UNREACHABLE)
 
 
+def _title_held_here(snapshot, naming_prefix: str, positional, host: str) -> str | None:
+    """The title this machine holds for a bare positional name in this repository, or None.
+
+    A labelled title is ``{stem}-{label}-{name}``, so typing just the name composes
+    ``{stem}-{name}`` and misses it. The name's row settles which title it is: one this
+    machine holds under this repository's stem is the session the name refers to.
+    """
+    if positional.value != positional.name:
+        return None
+    row = snapshot.rows.get(positional.name) or {}
+    held = row.get("title") or ""
+    if row.get("machine") == host and held.startswith(f"{naming_prefix}-") and held.endswith(f"-{positional.name}"):
+        return held
+    return None
+
+
+def _held_title_without_session(naming_prefix: str, name: str) -> str | None:
+    """The title this machine holds for ``name`` here, for -r to relaunch when no session runs it."""
+    from . import name_registry as _names
+    from . import session_title
+
+    try:
+        registry = _names.discover().registry
+    except _names.RegistryError:
+        return None
+    if registry is None:
+        return None
+    try:
+        snapshot = registry.snapshot()
+    except _names.RegistryUnreachableError:
+        snapshot = registry.snapshot(fetch=False)
+    positional = session_title.classify_positional(
+        _session._slot_name(name, naming_prefix), _names.known_names(registry)
+    )
+    if positional.kind != "title" or positional.name is None:
+        return None
+    host = _session_naming.host_id()
+    title = _session_naming.compose_session_name(naming_prefix, positional.value)
+    row = snapshot.rows.get(positional.name) or {}
+    if row.get("title") == title and row.get("machine") == host:
+        return title
+    return _title_held_here(snapshot, naming_prefix, positional, host)
+
+
 def _reattach_title(
     engine: str,
     naming_prefix: str,
@@ -3808,6 +3852,9 @@ def _reattach_title(
     row = snapshot.rows.get(positional.name)
     if row and row.get("title") == title and row.get("machine") == host:
         return _session._new_session_display_name(engine, naming_prefix, positional.value, is_remote), title
+    held_title = _title_held_here(snapshot, naming_prefix, positional, host)
+    if held_title:
+        return _session_id(engine, held_title, is_remote), held_title
     holder = snapshot.holder(positional.name)
     held = f"{positional.name} is held by {holder}" if holder else f"no session on {host} is named {title}"
     _naming_exit(
@@ -4785,22 +4832,29 @@ def _do_session_launch(
         if not session:
             # Migration window: a session named before the host alias joined the name.
             session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
-        if not session:
+        # A title this machine holds with no session running it (the session died, or
+        # never started) is relaunched under the same title. A name held by another
+        # machine, or not held at all, is still refused.
+        held_title = None if session or not name else _held_title_without_session(naming_prefix, name)
+        if held_title:
+            reporter.detail("resume", f"no tmux session runs {held_title}; relaunching it under the title it holds")
+        elif not session:
             reporter.error(
                 "resume",
                 f"no running session to resume: '{_session.session_name_for(prefix, name) if name else prefix + '*'}' "
                 "is not a tmux session on this host; drop -r/--resume to start it",
             )
             sys.exit(1)
-        _session_launch_state.reattach(session)
-        if not is_remote:
-            _track_launch(reporter, kind="local", name=name, session_name=session)
-        reporter.handoff(engine=_engine_display_name(engine), session=session)
-        _resume_suspended_panes(session)
-        if not attach:
-            _report_detached_launch(session, reporter)
-            return
-        _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
+        else:
+            _session_launch_state.reattach(session)
+            if not is_remote:
+                _track_launch(reporter, kind="local", name=name, session_name=session)
+            reporter.handoff(engine=_engine_display_name(engine), session=session)
+            _resume_suspended_panes(session)
+            if not attach:
+                _report_detached_launch(session, reporter)
+                return
+            _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip

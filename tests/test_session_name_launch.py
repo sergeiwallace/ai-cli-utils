@@ -388,3 +388,45 @@ def test_given_a_terminal_inside_tmux_when_a_bare_launch_starts_then_it_is_named
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
 
     assert named(launch).startswith(f"{STEM}-")
+
+
+def _held_labelled_title(launch) -> str:
+    """Reserve a labelled title on this machine, as a --once launch that then died leaves it."""
+    return named(launch, "probe", naming=main._NamingRequest(with_name=True))
+
+
+def test_given_a_labelled_title_held_here_with_no_session_when_resumed_by_name_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_labelled_title(launch)
+    token = title.rsplit("-", 1)[-1]
+
+    assert named(launch, token, resume=True, bare=False) == title
+
+
+def test_given_a_labelled_title_held_here_with_no_session_when_named_positionally_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_labelled_title(launch)
+
+    assert named(launch, title.rsplit("-", 1)[-1]) == title
+
+
+def test_given_a_title_held_by_another_machine_when_resumed_by_name_then_it_is_still_refused(
+    tmp_path, monkeypatch, launch, capsys
+):
+    from ai_cli import session_naming
+
+    build_fleet(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_naming, "host_id", lambda: OTHER_HOST)
+    title = _held_labelled_title(launch)
+    monkeypatch.setattr(session_naming, "host_id", lambda: HOST)
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exited:
+        launch(title.rsplit("-", 1)[-1], resume=True, bare=False)
+
+    assert exited.value.code == 1
+    assert "no running session to resume" in capsys.readouterr().err
