@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from process_wait import scaled
 
 from ai_cli import transport
 
@@ -38,6 +39,9 @@ def vpn_probe(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "state"))
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
+    # The stand-in is an interpreter start, which a loaded host can stretch past the
+    # production probe timeout; a timed-out probe answers no VPN, not what the test reads.
+    monkeypatch.setattr(transport, "VPN_PROBE_TIMEOUT_SECONDS", scaled(transport.VPN_PROBE_TIMEOUT_SECONDS))
     state_dir = transport.get_xdg_state_home()
     state_dir.mkdir(parents=True, exist_ok=True)
     return counter, response, state_dir / "vpn-state.json"
