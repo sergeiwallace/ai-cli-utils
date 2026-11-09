@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from process_wait import scaled
 
 _FORCE_WATCHDOG_PLUGIN = "force_pytest_memory_guard_watchdog"
 _RUNAWAY_COMPLETED = "the runaway xdist worker completed past its memory ceiling"
@@ -140,7 +141,7 @@ def test_report_memory_baseline():
         env=measurement_env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=scaled(30),
         check=False,
     )
 
@@ -239,7 +240,7 @@ def test_synthetic_runaway_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=scaled(30),
         check=False,
     )
 
@@ -299,7 +300,7 @@ def test_synthetic_unconstrained_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=scaled(30),
         check=False,
     )
 
@@ -364,7 +365,7 @@ def test_guarded_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=scaled(30),
         check=False,
     )
 
@@ -449,7 +450,7 @@ if "--watch-parent" in sys.argv:
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=scaled(60),
         check=False,
     )
 
@@ -518,7 +519,7 @@ def test_child_reserves_address_space():
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=scaled(60),
         check=False,
     )
 
@@ -571,7 +572,7 @@ def test_synthetic_runaway_allocation():
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
-        timeout=30,
+        timeout=scaled(30),
         check=False,
     )
 
