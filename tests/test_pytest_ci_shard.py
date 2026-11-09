@@ -75,10 +75,11 @@ def test_given_a_shard_under_xdist_when_run_then_every_worker_runs_the_same_sele
 
     result = _run_pytest(synthetic_suite, "-p", "pytest_ci_shard", "--ci-shard=1/2", "-n", "2")
 
+    # Only the count that ran is checked: xdist workers deselect on their own, and the
+    # controller's summary never reports their deselections.
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert re.search(rf"\b{len(serial)} passed\b", output), output
-    assert re.search(rf"\b{TEST_COUNT - len(serial)} deselected\b", output), output
 
 
 @pytest.mark.parametrize("value", ["2", "0/2", "3/2", "1/0", "a/b"])
