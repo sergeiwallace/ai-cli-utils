@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import sys
 import time
 from contextlib import ExitStack
@@ -458,23 +459,82 @@ for _action in ("install", "uninstall", "status"):
     boot_unit.add_command(_boot_unit_command(_action))
 
 
+def _run_on_this_terminal(command: list[str]) -> int:
+    """Run the agent on the terminal this process was given, and return its status.
+
+    The agent inherits stdin, stdout and stderr untouched. An interactive agent decides
+    from them whether it is interactive: with stdout captured, Claude Code took the
+    launch as ``--print``, refused for want of a prompt and exited at once, so every
+    tmux --once session ended as a bare ``[exited]``.
+
+    Ctrl+C reaches the whole foreground process group, so this process ignores it
+    while the agent runs: the agent decides what an interrupt means, and this owner
+    stays alive to record the exit.
+    """
+    proc = subprocess.Popen(command)
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        return proc.wait()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _agent_program(command: list[str]) -> str:
+    """The agent's own program name, past a ``direnv exec <dir>`` prefix."""
+    if command[:2] == ["direnv", "exec"] and len(command) > 3:
+        command = command[3:]
+    return Path(command[0]).name
+
+
+def _exit_description(program: str, status: int, failure: OSError | None) -> str:
+    if failure is not None:
+        return f"{program} could not be started: {failure}"
+    if status < 0:
+        try:
+            signame = signal.Signals(-status).name
+        except ValueError:
+            signame = f"signal {-status}"
+        return f"{program} was ended by {signame}"
+    return f"{program} exited with status {status}"
+
+
+def _record_exit_cause(name: str, launch_log: str, description: str, status: int) -> None:
+    """Say why the agent ended, on the terminal and in the launch's log when it names one.
+
+    A detached session's pane closes with its agent, so the log is the only place the
+    reason survives.
+    """
+    from .launch_logging import open_launch_log
+
+    log = open_launch_log(launch_log) if launch_log else None
+    previous = output.attach_file_sink(log.write_line if log is not None and log.path is not None else None)
+    try:
+        level = output.Level.INFO if status == 0 else output.Level.WARNING
+        output.emit(output.Tag.SESSION, "exit", f"{name}: {description}", err=True, level=level)
+        output.flush_sinks()
+    finally:
+        output.attach_file_sink(previous)
+        if log is not None:
+            log.close()
+
+
 @sessions.command("_run", hidden=True, context_settings={"ignore_unknown_options": True})
+@click.option("-l", "--launch-log", default="", help="Launch log that records why the agent ended")
 @click.argument("name")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
-def run_once(name, command):
+def run_once(launch_log, name, command):
     """Keep a local lifecycle owner around bare and once-only agent processes."""
     generation = state.begin(name, command=list(command))
     sequence = time.monotonic_ns()
     if not state.mark_running(name, generation=generation, sequence=sequence):
         raise click.ClickException("startup persistence failed; agent was not started")
     cause = "manual_exit"
+    failure: OSError | None = None
     try:
-        result = output.run_relayed(output.Tag.SESSION, "session", list(command), check=False)
-        status = result.returncode
-    except OSError:
-        cause, status = "unknown", 1
-    except KeyboardInterrupt:
-        status = 130
+        status = _run_on_this_terminal(list(command))
+    except OSError as exc:
+        cause, status, failure = "unknown", 1, exc
+    _record_exit_cause(name, launch_log, _exit_description(_agent_program(list(command)), status, failure), status)
     while not state.mark_exited(
         name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=time.monotonic_ns()
     ):

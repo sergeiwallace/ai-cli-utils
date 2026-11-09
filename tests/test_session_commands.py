@@ -88,15 +88,9 @@ def test_forbidden_cause_when_config_loaded_then_loader_refuses_it(tmp_path, mon
 def test_single_run_when_agent_finishes_then_original_status_and_manual_exit_are_preserved(
     publishing, runner, monkeypatch, status
 ):
-    import subprocess
-
     from ai_cli import session_commands
 
-    monkeypatch.setattr(
-        session_commands.output,
-        "run_relayed",
-        lambda tag, op, argv, **kwargs: subprocess.CompletedProcess(argv, status),
-    )
+    monkeypatch.setattr(session_commands, "_run_on_this_terminal", lambda argv: status)
     result = runner.invoke(_cli_group, ["sessions", "_run", "c-session-1", "--", "example-command", "--argument"])
     assert result.exit_code == status
     record = registry.load_registry()["sessions"][0]
@@ -105,15 +99,16 @@ def test_single_run_when_agent_finishes_then_original_status_and_manual_exit_are
     assert record["boot_recipe"]["command"] == ["example-command", "--argument"]
 
 
-def test_given_child_output_when_single_run_finishes_then_output_is_tagged(publishing, runner):
+def test_given_a_child_when_single_run_finishes_then_its_exit_status_is_reported(publishing, runner):
     import sys
 
     result = runner.invoke(
         _cli_group,
-        ["sessions", "_run", "c-session-1", "--", sys.executable, "-c", "print('child-message')"],
+        ["sessions", "_run", "c-session-1", "--", sys.executable, "-c", "raise SystemExit(4)"],
     )
-    assert result.exit_code == 0, result.output
-    assert "[session] session: child-message" in result.output
+    assert result.exit_code == 4, result.output
+    assert "[session] exit:" in result.output
+    assert f"c-session-1: {Path(sys.executable).name} exited with status 4" in result.output
 
 
 @pytest.mark.parametrize("policy", ["auto", "never", "always"])

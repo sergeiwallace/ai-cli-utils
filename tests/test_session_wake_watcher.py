@@ -116,9 +116,13 @@ def launch(tmp_path, monkeypatch):
             patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
             patch("ai_cli.iterm2._rename_tmux_window", side_effect=lambda *args: state.renames.append(args)),
         ):
-            with pytest.raises(SystemExit) as exited:
+            if options.get("detached"):
+                # A detached launch returns once its session exists; it never exits.
                 main._do_session_launch(**options)
-        assert exited.value.code == 0
+            else:
+                with pytest.raises(SystemExit) as exited:
+                    main._do_session_launch(**options)
+                assert exited.value.code == 0
         return [argv for argv, _ in state.calls if argv[:2] == ["tmux", "new-window"]]
 
     state.invoke = invoke

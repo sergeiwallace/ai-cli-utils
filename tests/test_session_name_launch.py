@@ -9,7 +9,7 @@ proved to happen before anything exists.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from name_fleet import HOST, NAMES, OTHER_HOST, REPO, STEM, build_fleet, git, policy_commit, policy_of, publish_list
@@ -40,9 +40,29 @@ def _stop_after_naming(ai_name, reporter):
 def launch(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_CLI_SESSION_NAMES", "1")
 
-    def run(name: str = "", *, dry_run: bool = False, naming: main._NamingRequest | None = None):
+    def run(
+        name: str = "",
+        *,
+        dry_run: bool = False,
+        naming: main._NamingRequest | None = None,
+        resume: bool = False,
+        bare: bool = True,
+    ):
+        tmux_mode = [
+            ("ai_cli.tmux_setup.tmux_runs", {"return_value": True}),
+            ("ai_cli.tmux_setup.formats_expand", {"return_value": True}),
+            ("ai_cli.tmux_setup.probe", {"return_value": MagicMock(versions_disagree=False)}),
+            ("ai_cli.tmux_setup.report_lines", {"return_value": []}),
+            (
+                "ai_cli.compact_transport.resolve",
+                {"return_value": MagicMock(must_refuse=False, platform_limited=False, detail="tmux")},
+            ),
+            # No tmux session runs on this host.
+            ("ai_cli.session.resolve_session", {"return_value": ""}),
+        ]
         with ExitStack() as stack:
             for target, kwargs in [
+                *([] if bare else tmux_mode),
                 ("ai_cli.session.create_worktree", {"side_effect": _tripwire}),
                 ("ai_cli.main.os.execvp", {"side_effect": _tripwire}),
                 ("ai_cli.main._finish_recorded_migrations", {"side_effect": _stop_after_naming}),
@@ -61,9 +81,9 @@ def launch(tmp_path, monkeypatch):
             main._do_session_launch(
                 engine="c",
                 name=name,
-                resume=False,
+                resume=resume,
                 once=False,
-                bare=True,
+                bare=bare,
                 notify=False,
                 sandbox=False,
                 no_worktree=False,
@@ -345,3 +365,68 @@ def test_given_a_clone_that_never_fetched_the_registry_and_it_unreachable_when_l
     assert "ai sync-names" not in err
     assert fleet.tip() == before
     assert reg.read_spool() == {}
+
+
+def test_given_a_terminal_inside_tmux_when_a_tmux_launch_starts_then_it_refuses_before_reserving_anything(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+
+    with pytest.raises(SystemExit) as exited:
+        launch("probe", bare=False)
+
+    assert exited.value.code == 1
+    assert fleet.rows() == {}
+    assert "already inside a tmux session" in capsys.readouterr().err
+
+
+def test_given_a_terminal_inside_tmux_when_a_bare_launch_starts_then_it_is_named_as_usual(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+
+    assert named(launch).startswith(f"{STEM}-")
+
+
+def _held_labelled_title(launch) -> str:
+    """Reserve a labelled title on this machine, as a --once launch that then died leaves it."""
+    return named(launch, "probe", naming=main._NamingRequest(with_name=True))
+
+
+def test_given_a_labelled_title_held_here_with_no_session_when_resumed_by_name_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_labelled_title(launch)
+    token = title.rsplit("-", 1)[-1]
+
+    assert named(launch, token, resume=True, bare=False) == title
+
+
+def test_given_a_labelled_title_held_here_with_no_session_when_named_positionally_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_labelled_title(launch)
+
+    assert named(launch, title.rsplit("-", 1)[-1]) == title
+
+
+def test_given_a_title_held_by_another_machine_when_resumed_by_name_then_it_is_still_refused(
+    tmp_path, monkeypatch, launch, capsys
+):
+    from ai_cli import session_naming
+
+    build_fleet(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_naming, "host_id", lambda: OTHER_HOST)
+    title = _held_labelled_title(launch)
+    monkeypatch.setattr(session_naming, "host_id", lambda: HOST)
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exited:
+        launch(title.rsplit("-", 1)[-1], resume=True, bare=False)
+
+    assert exited.value.code == 1
+    assert "no running session to resume" in capsys.readouterr().err
