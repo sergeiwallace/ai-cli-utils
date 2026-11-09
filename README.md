@@ -576,8 +576,9 @@ activation.
 
 `ai locate-session ada` reads the name's registry row, then on the host that holds it
 the tmux session, the worktree and the transcript. For a session on another host it runs
-`fleet-liveness status --session <title>@<host> --json` and prints its word as given; only
-`live` reads as active. It also runs `message-transports resolve --target <title>@<host>
+`fleet-liveness status --session <title>@<host> --json` and prints the session's record as
+its word and rung, e.g. `liveness   live (via git-inbox)`. No record, a record it cannot
+read, or a probe that runs past 20 s prints `unknown:` and the reason. It also runs `message-transports resolve --target <title>@<host>
 --json` for the rung that reaches it. Both are separate tools; when one is not on `PATH`
 the command says so and still prints the row.
 

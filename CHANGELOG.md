@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai locate-session` for a session on another host prints its liveness record as the word and
+  rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
+  "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
+  runs past its 20 s bound now reads `unknown: fleet-liveness timed out after 20 s` rather than an
+  answer, and an empty or unreadable record says so.
 - `ai --restart-session --event-completion` no longer reports a healthy restart as
   `verification-failed` ("replacement or local bridge verification timed out") on a slow disk. The
   replacement opened its receipt connection before writing its launch marker, and the engine drops

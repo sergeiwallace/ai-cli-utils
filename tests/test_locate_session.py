@@ -53,15 +53,28 @@ def _hold(fleet, name: str, machine: str) -> dict:
     ).row
 
 
+def _liveness_report(status: str, rung: str = "heartbeat", identity: str = f"{STEM}-cleo@{OTHER_HOST}") -> dict:
+    """``fleet-liveness status --json``'s report: one record per matched identity."""
+    return {
+        "filters": {"machine": None, "session": identity},
+        "identities": [{"identity": identity, "rung": rung, "status": status, "liveness": "live", "age_s": 30}],
+        "rung_reasons": {},
+    }
+
+
 @pytest.fixture
 def tools(monkeypatch):
-    """Both fleet tools installed, answering with fixed JSON; ``calls`` records each command line."""
+    """Both fleet tools installed, answering with fixed JSON; ``calls`` records each command line.
+
+    A tool named in ``slow`` runs past the bound it was given, as on a loaded host.
+    """
     answers = {
-        "fleet-liveness": {"status": "live", "rung": "heartbeat"},
+        "fleet-liveness": _liveness_report("live"),
         "message-transports": {"rung": "git-inbox", "send": "git-inbox send --to x"},
     }
     calls: list[list[str]] = []
     installed = set(answers)
+    slow: set[str] = set()
     real_run = session_locate.subprocess.run
 
     def which(name):
@@ -72,11 +85,16 @@ def tools(monkeypatch):
         if tool not in answers:
             return real_run(command, *args, **kwargs)
         calls.append(list(command))
-        return SimpleNamespace(returncode=0, stdout=json.dumps(answers[tool]), stderr="")
+        if tool in slow:
+            raise session_locate.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        answer = answers[tool]
+        return SimpleNamespace(
+            returncode=0, stdout=answer if isinstance(answer, str) else json.dumps(answer), stderr=""
+        )
 
     monkeypatch.setattr(session_locate.shutil, "which", which)
     monkeypatch.setattr(session_locate.subprocess, "run", run)
-    return SimpleNamespace(answers=answers, calls=calls, installed=installed)
+    return SimpleNamespace(answers=answers, calls=calls, installed=installed, slow=slow)
 
 
 def locate(*args):
@@ -108,19 +126,80 @@ def test_given_a_name_held_on_another_host_when_located_then_both_tools_run_and_
     target = f"{STEM}-cleo@{OTHER_HOST}"
     assert ["/opt/tools/fleet-liveness", "status", "--session", target, "--json"] in tools.calls
     assert ["/opt/tools/message-transports", "resolve", "--target", target, "--json"] in tools.calls
-    assert "liveness   live (active)" in result.output
+    assert "liveness   live (via heartbeat)" in result.output
 
 
-@pytest.mark.parametrize("word", ["stale(3h)", "gone", "undetermined"])
-def test_given_a_liveness_word_other_than_live_when_located_then_it_is_printed_verbatim_and_not_active(
-    fleet, tools, word
-):
+def test_given_a_live_record_when_located_then_its_word_and_rung_are_printed_not_the_raw_json(fleet, tools):
     _hold(fleet, "cleo", OTHER_HOST)
-    tools.answers["fleet-liveness"] = {"status": word}
+    tools.answers["fleet-liveness"] = _liveness_report("live", rung="git-inbox")
 
     result = locate("cleo")
 
-    assert f"liveness   {word} (not known to be active)" in result.output
+    assert result.exit_code == 0, result.output
+    assert "liveness   live (via git-inbox)" in result.output
+    assert '"identities"' not in result.output
+    assert "not known to be active" not in result.output
+
+
+@pytest.mark.parametrize("word", ["stale(3h)", "gone", "undetermined", "live (machine)"])
+def test_given_a_liveness_word_other_than_live_when_located_then_it_is_printed_verbatim_with_its_rung(
+    fleet, tools, word
+):
+    _hold(fleet, "cleo", OTHER_HOST)
+    tools.answers["fleet-liveness"] = _liveness_report(word)
+
+    result = locate("cleo")
+
+    assert f"liveness   {word} (via heartbeat)" in result.output
+
+
+def test_given_records_for_other_identities_when_located_then_the_located_sessions_record_is_read(fleet, tools):
+    _hold(fleet, "cleo", OTHER_HOST)
+    report = _liveness_report("gone", rung="buzz", identity=f"other@{OTHER_HOST}")
+    report["identities"] += _liveness_report("live", rung="git-inbox")["identities"]
+    tools.answers["fleet-liveness"] = report
+
+    result = locate("cleo")
+
+    assert "liveness   live (via git-inbox)" in result.output
+
+
+def test_given_no_heartbeat_record_when_located_then_liveness_is_unknown_and_says_why(fleet, tools):
+    _hold(fleet, "cleo", OTHER_HOST)
+    tools.answers["fleet-liveness"] = {"filters": {}, "identities": [], "rung_reasons": {}}
+
+    result = locate("cleo")
+
+    assert f"liveness   unknown: fleet-liveness has no heartbeat record for {STEM}-cleo@{OTHER_HOST}" in result.output
+
+
+@pytest.mark.parametrize(
+    "answer", [{"identities": [{"identity": "x", "rung": "buzz"}]}, {"verdict": "fine"}, '["live"]', "not json"]
+)
+def test_given_a_record_without_a_liveness_word_when_located_then_it_says_the_record_is_unreadable(
+    fleet, tools, answer
+):
+    _hold(fleet, "cleo", OTHER_HOST)
+    tools.answers["fleet-liveness"] = answer
+
+    result = locate("cleo")
+
+    line = next(line for line in result.output.splitlines() if "liveness   " in line)
+    assert "liveness   unknown: " in line
+    assert "active" not in line
+
+
+def test_given_fleet_liveness_runs_past_its_bound_when_located_then_it_reports_a_timeout_not_an_answer(fleet, tools):
+    _hold(fleet, "cleo", OTHER_HOST)
+    tools.slow.add("fleet-liveness")
+
+    result = locate("cleo")
+
+    assert result.exit_code == 0, result.output
+    bound = session_locate.TOOL_TIMEOUT_S
+    assert f"liveness   unknown: fleet-liveness timed out after {bound} s" in result.output
+    assert "not known to be active" not in result.output
+    assert "reach      git-inbox" in result.output
 
 
 @pytest.mark.parametrize("missing", ["fleet-liveness", "message-transports"])
@@ -153,7 +232,7 @@ def test_given_json_when_located_then_one_object_carries_all_four_readings(fleet
     assert set(payload) == {"row", "local", "liveness", "reach"}
     assert payload["row"]["title"] == f"{STEM}-cleo"
     assert payload["local"] is None
-    assert payload["liveness"] == {"status": "live", "rung": "heartbeat"}
+    assert payload["liveness"] == _liveness_report("live")
 
 
 def test_given_json_for_a_local_session_when_located_then_liveness_is_null(fleet, tools):
