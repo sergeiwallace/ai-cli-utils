@@ -179,8 +179,17 @@ jobs:
       # they cannot drift away from `.python-version`.
       - shell: msys2 {0}
         run: uv sync --locked --dev --python 3.14
+      # `-n logical` overrides the `-n auto` in pyproject.toml's addopts. `auto` counts
+      # PHYSICAL cores, and the 4-vCPU Windows runner reports 2, so the suite ran on 2
+      # xdist workers ("created: 2/2 workers") while 2 vCPUs sat idle. Most of this
+      # suite's time is spent waiting on git, copier and other subprocesses rather than
+      # computing, so a worker per logical CPU roughly halves the run. Measured
+      # 2026-11-09: 34-39 minutes on 2 workers against the 40-minute cap below.
+      # docs/procedures/github-actions-status.md records the runs. No `-q`, so the log
+      # keeps xdist's "created: N/N workers" line, and `--durations` keeps the slowest
+      # tests visible for the next time this job approaches its cap.
       - shell: msys2 {0}
-        run: uv run --python 3.14 pytest --tb=short -q
+        run: uv run --python 3.14 pytest --tb=short -n logical --durations=15
 
   test-macos:
     runs-on: macos-latest
