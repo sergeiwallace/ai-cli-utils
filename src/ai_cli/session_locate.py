@@ -5,11 +5,12 @@ where the session lives. ``ai locate-session`` reads four things:
 
 1. the row: title, host, client, repo, kind and worktree;
 2. on the host that holds it, the tmux session, the worktree and the client transcript;
-3. on another host, the heartbeat reading of ``fleet-liveness status``, word for word;
+3. on another host, the heartbeat reading of ``fleet-liveness status``: its word and rung;
 4. the messaging rung ``message-transports resolve`` picks for ``title@host``.
 
 The last two are separate tools an environment may install. They are run only when
 they are on ``PATH`` and never imported, and their absence is said, not guessed around.
+A tool that runs past its bound reads as a timeout, never as an answer.
 """
 
 from __future__ import annotations
@@ -50,7 +51,9 @@ def _run_tool(tool: str, *args: str) -> dict | None:
         return None
     try:
         result = subprocess.run([path, *args], capture_output=True, text=True, timeout=TOOL_TIMEOUT_S, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        return {"error": f"{tool} timed out after {TOOL_TIMEOUT_S} s", "timed_out": True}
+    except OSError as exc:
         return {"error": f"{tool} did not answer: {exc}"}
     try:
         value = json.loads(result.stdout)
@@ -124,15 +127,26 @@ def locate(registry: reg.Registry, query: str, host: str, *, projects_root: Path
     return Located(row, local, liveness, reach, notes, stale_tip)
 
 
-def liveness_word(liveness: dict | None) -> str | None:
-    """The heartbeat reader's word, verbatim: ``live``, ``stale(<age>)``, ``gone`` or ``undetermined``."""
-    if not liveness:
-        return None
-    for key in ("status", "state", "liveness", "word"):
-        value = liveness.get(key)
-        if isinstance(value, str):
-            return value
-    return None
+def liveness_reading(liveness: dict, target: str) -> str:
+    """The located session's record as ``<word> (via <rung>)``, or ``unknown: <why>``.
+
+    ``fleet-liveness status --json`` answers ``{"identities": [record, ...]}``; a record's
+    ``status`` is its word as the tool prints it (``live``, ``stale(<age>)``, ``gone``,
+    ``undetermined``), and ``rung`` is the channel that carried the heartbeat.
+    """
+    if "error" in liveness:
+        return f"unknown: {liveness['error']}"
+    records = liveness.get("identities")
+    if isinstance(records, list):
+        if not records:
+            return f"unknown: {LIVENESS_TOOL} has no heartbeat record for {target}"
+        dicts = [record for record in records if isinstance(record, dict)]
+        record = next((r for r in dicts if r.get("identity") == target), dicts[0] if dicts else {})
+        word = record.get("status") or record.get("liveness")
+        if isinstance(word, str) and word:
+            rung = record.get("rung")
+            return f"{word} (via {rung})" if isinstance(rung, str) and rung else word
+    return f"unknown: unreadable {LIVENESS_TOOL} record: {json.dumps(liveness)}"
 
 
 def describe(located: Located) -> list[str]:
@@ -148,9 +162,7 @@ def describe(located: Located) -> list[str]:
         if local["transcript"]:
             lines.append(f"transcript {local['transcript']['state']}: {local['transcript']['reason']}")
     if located.liveness is not None:
-        word = liveness_word(located.liveness)
-        active = "active" if word == "live" else "not known to be active"
-        lines.append(f"liveness   {word or json.dumps(located.liveness)} ({active})")
+        lines.append(f"liveness   {liveness_reading(located.liveness, f'{title}@{machine}')}")
     if located.reach is not None:
         rung = located.reach.get("rung") or located.reach.get("transport") or located.reach.get("primary")
         lines.append(f"reach      {rung or json.dumps(located.reach)}")
