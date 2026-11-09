@@ -3,7 +3,7 @@
 > GitHub Actions CI is **active** on this repository and its results are a real verification
 > signal. It is not billing-blocked.
 >
-> Last updated: 2026-09-10
+> Last updated: 2026-11-09
 
 ## Current state
 
@@ -39,7 +39,7 @@ a GitHub-hosted runner rather than a self-hosted one.
 **Why that is the expected state.** GitHub Actions is free and unmetered for **public**
 repositories on standard GitHub-hosted runners, on every plan including Free. Minute allowances and
 spending limits apply to private repositories and to larger or specialised runners. This repository
-is public and `ci.yml` targets only `ubuntu-latest` and `windows-latest`.
+is public and `ci.yml` targets only `ubuntu-latest`, `windows-latest` and `macos-latest`.
 
 **What most likely happened.** CI was red because tests were failing. That was read as a billing
 block, and an account-level billing condition affecting private repositories was generalised to a
@@ -105,6 +105,33 @@ Add rules by `PUT`ting the ruleset, which **replaces** it — send the existing 
 Repository admins keep `bypass_mode: always`. That is what preserves the direct-push path for
 commits touching only `.beads/`, and it means a flaky required check holds a merge rather than
 hard-locking the repo.
+
+## `test-windows` survives an MSYS2 download outage
+
+`test-windows` runs its tests in an MSYS2 shell set up by `msys2/setup-msys2`. Its default,
+`release: true`, downloads the MSYS2 installer from GitHub Releases on every run, and that download
+answered `Unexpected HTTP response: 504` on all three of the action's own retries (about 30 seconds
+in total) on 2026-11-09. The job failed before any test ran; a re-run passed.
+
+A failed attempt now waits and tries again. Attempt 1 is the action's default: it downloads the
+installer and installs it under `RUNNER_TEMP` on the D: drive. After a 2-minute wait, attempt 2 does
+the same into its own `location`, because the action refuses to install over the directory a failed
+attempt leaves behind. After 4 more minutes, attempt 3 sets `release: false`. That reuses the MSYS2
+the Windows runner image ships at `C:\msys64` and needs no download, and `update: true` brings it to
+the same current packages through pacman, which moves to the next mirror on its own when one fails.
+The first two attempts carry `continue-on-error: true`, and each later step is gated on the previous
+attempt's `outcome == 'failure'`, so only a failure of attempt 3 fails the job.
+
+`C:\msys64` is the last resort rather than the first choice. An earlier version of this fix used it
+on every run, and two of the three runs that did hit the 40-minute job cap partway through pytest,
+reaching 80% of the suite after about 2,200 seconds where comparable runs from D: got there in about
+1,500. A direct benchmark in one job found no difference between the two drives in process start,
+MSYS2 fork or tmux server start-up, so the cause is not pinned down. Running from D: in the normal
+case keeps the job identical to what it was before the retries existed.
+
+A run that needed a retry still reports `test-windows` as passed. The retry shows up as a failed
+`msys2-attempt-1` step with an error annotation on the run page, which is where to look when
+Windows runs start taking several minutes longer than usual.
 
 ## Session checklist
 
