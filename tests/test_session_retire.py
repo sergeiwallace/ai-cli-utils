@@ -317,3 +317,32 @@ def test_given_a_binary_file_main_never_carried_when_retiring_then_it_is_refused
     _git("commit", "-qm", "add logo", cwd=squashed["wt"])
     err = _refused(squashed, "-y")
     assert "logo.bin adds `(binary content)`" in err
+
+
+def test_given_a_retired_name_reissued_with_a_new_tip_when_retired_again_then_both_tips_are_anchored(slot):
+    repo, wt = slot["repo"], slot["wt"]
+    first_tip = _ref(repo, f"refs/heads/{BRANCH}")
+    code, out, err = _retire(repo, "-y")
+    assert code == 0, out + err
+
+    # The name is reissued: main moves on, the same branch name gets a new tip and a new slot.
+    _land_on_main(repo, {"next.txt": "next\n"}, "next")
+    _git("fetch", "-q", "origin", cwd=repo)
+    _git("branch", "-f", BRANCH, "origin/main", cwd=repo)
+    _git("worktree", "add", "-q", str(wt), BRANCH, cwd=repo)
+    register_canonical_worktree(wt, engine="c", session_name=f"c-{NAME}")
+    second_tip = _ref(repo, f"refs/heads/{BRANCH}")
+    assert second_tip != first_tip
+
+    code, out, err = _retire(repo, "-y")
+    assert code == 0, out + err
+
+    assert not wt.exists()
+    assert _ref(repo, f"{ANCHORS}/{BRANCH}") == first_tip
+    second_anchor = f"{ANCHORS}/{BRANCH}--{second_tip[:12]}"
+    assert _ref(repo, second_anchor) == second_tip
+    rows = (slot["state"] / "session-retirements.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(r)["anchors"] for r in rows] == [
+        {f"{ANCHORS}/{BRANCH}": first_tip},
+        {second_anchor: second_tip},
+    ]
