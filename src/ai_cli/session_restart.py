@@ -1767,7 +1767,20 @@ def exec_replacement(session: str, argv: list[str]) -> int:
     """A pinned child reports exec success through a close-on-exec connection."""
     from .main import _exec_handoff
 
+    def connect(port: int) -> socket.socket:
+        opened = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            opened.settimeout(5)
+            opened.connect(("127.0.0.1", port))
+            opened.set_inheritable(False)
+        except OSError:
+            opened.close()
+            raise
+        return opened
+
     connection = None
+    # Set once the engine expects an answer: a receipt, or a failure byte.
+    port = None
     try:
         request = _object(state_paths(session)[2])
         _validate_request(request, session, child=True)
@@ -1780,6 +1793,7 @@ def exec_replacement(session: str, argv: list[str]) -> int:
             or launch["child_start_time"] != psutil.Process(os.getppid()).create_time()
         ):
             raise ValueError("pinned launch changed")
+        port = event["port"]
         # Windows starts a new PID rather than replacing this one through exec.
         # Keep its foreground wrapper waiting on the native child-exit event.
         child = subprocess.Popen(argv) if sys.platform == "win32" else None
@@ -1799,10 +1813,7 @@ def exec_replacement(session: str, argv: list[str]) -> int:
             # Connect only once the receipt is ready: the engine gives an accepted
             # connection START_RECEIPT_READ_TIMEOUT_SECONDS to send it, and the
             # marker's fsyncs can take longer than that on a slow disk.
-            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            connection.settimeout(5)
-            connection.connect(("127.0.0.1", event["port"]))
-            connection.set_inheritable(False)
+            connection = connect(port)
             connection.sendall(
                 json.dumps(
                     {
@@ -1816,7 +1827,7 @@ def exec_replacement(session: str, argv: list[str]) -> int:
             )
             if child is not None:
                 connection.close()
-                connection = None
+                connection = port = None
                 result = child.wait()
                 child = None
                 return result
@@ -1832,9 +1843,12 @@ def exec_replacement(session: str, argv: list[str]) -> int:
     except (Refusal, OSError, ValueError, KeyError, TypeError, IndexError, psutil.Error):
         pass
     finally:
+        # A successful exec cannot reach finally, even when another failure
+        # (including interruption) occurs after the identity was sent.
+        if connection is None and port is not None:
+            with contextlib.suppress(OSError):
+                connection = connect(port)
         if connection is not None:
-            # A successful exec cannot reach finally, even when another failure
-            # (including interruption) occurs after the identity was sent.
             with contextlib.suppress(OSError):
                 connection.sendall(b"!")
             connection.close()
