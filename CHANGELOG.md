@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reissued reuses the same `wt-NAME` branch with a new tip, and the retirement refused because
   `refs/preserved/retire-session/wt-NAME` already preserved the first holder's tip. That anchor
   is now kept and the new tip is anchored beside it as `wt-NAME--<first 12 hex of the tip>`.
+- A `-o/--once` tmux session no longer exits the moment it starts. The single-run
+  wrapper captured the agent's output to relay it, so the agent saw a pipe instead of a
+  terminal; Claude Code took that as `--print`, refused for want of a prompt, and the pane
+  closed with a bare `[exited]` and no transcript. The agent now runs on the pane's
+  terminal, and the wrapper ignores Ctrl+C while it runs so the agent decides what an
+  interrupt means.
+- A `-o/--once` session records why its agent ended (exit status, signal, or start
+  failure) in the launch log, so a detached session that dies leaves a reason.
 - A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
   `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
   `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's

@@ -5177,7 +5177,9 @@ def _do_session_launch(
             _session_shell,
             "-c",
             cd_prefix
-            + _session_launch_state.single_run_shell(session_id, command if replay_bare else [*_direnv, *command]),
+            + _session_launch_state.single_run_shell(
+                session_id, command if replay_bare else [*_direnv, *command], launch_log_path
+            ),
         ]
         if detached:
             if _session_registry._local_session_alive(session_id) is not False:
