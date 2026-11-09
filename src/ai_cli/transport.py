@@ -464,6 +464,11 @@ def _write_transport_outcome(path: Path, **fields) -> None:
         _atomic_json(path, record)
 
 
+#: Seconds one VPN probe (``mullvad status`` or ``ifconfig``) may take; past it, detection
+#: answers no VPN.
+VPN_PROBE_TIMEOUT_SECONDS = 2
+
+
 def _read_vpn_cache(path: Path, ttl: float) -> bool | None:
     """Read a fresh, well-formed answer; reject future timestamps after clock changes."""
     try:
@@ -543,7 +548,7 @@ def _detect_vpn_active() -> bool:
                 ["mullvad", "status"],
                 capture_output=True,
                 text=True,
-                timeout=2,
+                timeout=VPN_PROBE_TIMEOUT_SECONDS,
                 check=False,
             )
             return "Connected" in result.stdout
@@ -552,7 +557,7 @@ def _detect_vpn_active() -> bool:
             ["ifconfig"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=VPN_PROBE_TIMEOUT_SECONDS,
             check=False,
         )
         import re as _re
