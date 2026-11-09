@@ -20,8 +20,9 @@ from unittest.mock import patch
 import pytest
 from conftest import run_cli as _run_cli
 from conftest import snapshot_tree, with_environment_config
+from process_wait import scaled
 
-from ai_cli import session_registry
+from ai_cli import session_migrate, session_registry
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.config import get_xdg_config_home, get_xdg_state_home
@@ -670,7 +671,8 @@ with open(os.environ["FAKE_BD_LOG"], "a") as log:
 if data["fail"].get(store) == "error":
     sys.exit("Error: no beads database found")
 if data["fail"].get(store) == "hang":
-    time.sleep(20)
+    # Past any timeout the test sets: the migration must give up on this store, not wait it out.
+    time.sleep(3600)
 args = [a for a in sys.argv[1:] if a != "--sandbox"]
 actor = "tester"
 if args[0] == "--actor":
@@ -788,7 +790,10 @@ def test_given_an_unreadable_store_when_migrated_then_it_is_named_and_the_run_ex
     data["fail"][str(stores["workspace"])] = failure
     stores["db"].write_text(json.dumps(data), encoding="utf-8")
 
-    with patch("ai_cli.session_migrate._BD_TIMEOUT", 1):
+    # The bound covers every bd call, the healthy store's too, so it must outlast a healthy call
+    # on a loaded host. Only a hang needs a bound shorter than the production one to finish.
+    timeout = scaled(5) if failure == "hang" else session_migrate._BD_TIMEOUT
+    with patch("ai_cli.session_migrate._BD_TIMEOUT", timeout):
         code, out, err = _migrate(stores["repo"], "-y")
 
     assert code == 1, out + err
