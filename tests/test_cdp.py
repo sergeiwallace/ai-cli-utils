@@ -966,14 +966,20 @@ class TestCmdCdpStop:
             returncode = sibling.wait(timeout=30)
             assert returncode is not None, "cdp stop did not terminate the process it was given"
             # The return code above is the proof the kill landed. This only rules out the pid still
-            # running: on Windows the exited process lingers while a handle to it is open, so
-            # pid_exists() and is_running() can answer True for a process psutil already reports
-            # as gone (NoSuchProcess from status()).
-            try:
-                still_running = psutil.Process(sibling.pid).status() == psutil.STATUS_RUNNING
-            except psutil.NoSuchProcess:
-                still_running = False
-            assert not still_running, "the pid survived the stop, so the exact-process termination contract is broken"
+            # running, and only off Windows. There the exited process lingers while a handle to it
+            # is open, and `sibling` holds one, so pid_exists(), is_running() and even status() can
+            # still answer "running" after wait() returned: status() reads the system process list,
+            # where the process stays until the kernel finishes tearing it down. A loaded CI runner
+            # widened that window enough to fail this assertion with the process already dead.
+            # On Windows wait() returning is itself the kernel's exit signal for that handle.
+            if sys.platform != "win32":
+                try:
+                    still_running = psutil.Process(sibling.pid).status() == psutil.STATUS_RUNNING
+                except psutil.NoSuchProcess:
+                    still_running = False
+                assert not still_running, (
+                    "the pid survived the stop, so the exact-process termination contract is broken"
+                )
             assert not pid_file.exists()
         finally:
             # Reap the GROUP, through the shared helper rather than by hand here. The hand-rolled
