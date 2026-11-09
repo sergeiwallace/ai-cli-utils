@@ -113,20 +113,25 @@ hard-locking the repo.
 answered `Unexpected HTTP response: 504` on all three of the action's own retries (about 30 seconds
 in total) on 2026-11-09. The job failed before any test ran; a re-run passed.
 
-The setup step now uses `release: false`, which reuses the MSYS2 that the Windows runner image
-ships at `C:\msys64`, so no installer download happens. `update: true` upgrades that copy through
-pacman, so the tests run against the same current packages a fresh install gets. pacman moves to the
-next mirror on its own when one fails.
+A failed attempt now waits and tries again. Attempt 1 is the action's default: it downloads the
+installer and installs it under `RUNNER_TEMP` on the D: drive. After a 2-minute wait, attempt 2 does
+the same into its own `location`, because the action refuses to install over the directory a failed
+attempt leaves behind. After 4 more minutes, attempt 3 sets `release: false`. That reuses the MSYS2
+the Windows runner image ships at `C:\msys64` and needs no download, and `update: true` brings it to
+the same current packages through pacman, which moves to the next mirror on its own when one fails.
+The first two attempts carry `continue-on-error: true`, and each later step is gated on the previous
+attempt's `outcome == 'failure'`, so only a failure of attempt 3 fails the job.
 
-For a wider outage the job tries again: a second attempt after a 2-minute wait, then a third after
-4 more minutes. The first two attempts carry `continue-on-error: true`, and each later step is gated
-on the previous attempt's `outcome == 'failure'`. The third attempt uses `release: true`, a fresh
-installer download, so it also covers a runner image that stops shipping MSYS2 and a `C:\msys64`
-left broken by a failed upgrade. Only a failure of the third attempt fails the job.
+`C:\msys64` is the last resort rather than the first choice. An earlier version of this fix used it
+on every run, and two of the three runs that did hit the 40-minute job cap partway through pytest,
+reaching 80% of the suite after about 2,200 seconds where comparable runs from D: got there in about
+1,500. A direct benchmark in one job found no difference between the two drives in process start,
+MSYS2 fork or tmux server start-up, so the cause is not pinned down. Running from D: in the normal
+case keeps the job identical to what it was before the retries existed.
 
 A run that needed a retry still reports `test-windows` as passed. The retry shows up as a failed
-`msys2-attempt-1` step with an annotation on the run page, which is where to look when Windows runs
-start taking several minutes longer than usual.
+`msys2-attempt-1` step with an error annotation on the run page, which is where to look when
+Windows runs start taking several minutes longer than usual.
 
 ## Session checklist
 
