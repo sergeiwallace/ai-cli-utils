@@ -105,8 +105,25 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  test-windows:
+  # The Windows suite runs as two shards in parallel, and `test-windows` below is the
+  # one check that reports for both, so the required-check name did not change.
+  #
+  # Why shards: on 2 xdist workers the suite took 34-39 minutes on most runners
+  # against the 40-minute cap, and one PR run was cancelled mid-suite. The work is
+  # CPU-bound on this runner: `-n auto` gives 2 workers (2 physical cores), and
+  # `-n logical` (4 workers) doubled each test's time and saved about 5% overall.
+  # The same commit took 23.5 minutes on one runner and 35 on another, so the
+  # runner's speed is what moves the total. Splitting the suite halves the work per
+  # runner however fast the runner is. Measurements:
+  # docs/procedures/github-actions-status.md.
+  test-windows-shard:
+    name: test-windows (shard ${{ matrix.shard }}/2)
     runs-on: windows-latest
+    strategy:
+      # A failure in one shard should not cancel the other: both results are wanted.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # A real_tmux test spawning MSYS2's tmux for real hung an earlier run past
     # 30 minutes with no sign of progress (killed manually, PR #35) -- bound
     # the blast radius of any future hang instead of burning hours of CI time.
@@ -114,6 +131,8 @@ jobs:
     # 15-minute cap after passing (AI-CLI-nqf2), so the cap leaves headroom.
     # By 2026-10 the suite reached 24 minutes on a healthy run, so two PRs adding a
     # few tests were cancelled at the old 25-minute cap with every test passing.
+    # The cap stayed at 40 when the suite was split: each shard carries half the
+    # suite, so even the slowest runner measured leaves it well under the cap.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -179,17 +198,22 @@ jobs:
       # they cannot drift away from `.python-version`.
       - shell: msys2 {0}
         run: uv sync --locked --dev --python 3.14
-      # `-n logical` overrides the `-n auto` in pyproject.toml's addopts. `auto` counts
-      # PHYSICAL cores, and the 4-vCPU Windows runner reports 2, so the suite ran on 2
-      # xdist workers ("created: 2/2 workers") while 2 vCPUs sat idle. Most of this
-      # suite's time is spent waiting on git, copier and other subprocesses rather than
-      # computing, so a worker per logical CPU roughly halves the run. Measured
-      # 2026-11-09: 34-39 minutes on 2 workers against the 40-minute cap below.
-      # docs/procedures/github-actions-status.md records the runs. No `-q`, so the log
-      # keeps xdist's "created: N/N workers" line, and `--durations` keeps the slowest
-      # tests visible for the next time this job approaches its cap.
+      # `pytest_ci_shard` picks this shard's tests by a hash of each node id, so the two
+      # jobs run disjoint halves that together cover the suite. No `-q`, so the log keeps
+      # xdist's "created: N/N workers" line, and `--durations` names the slowest tests
+      # the next time this job nears its cap.
       - shell: msys2 {0}
-        run: uv run --python 3.14 pytest --tb=short -n logical --durations=15
+        run: uv run --python 3.14 pytest --tb=short -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
+
+  test-windows:
+    # The required check. It passes only when every shard passed, and `always()` makes
+    # it report a failure, rather than a skip, when a shard fails or is cancelled.
+    if: always()
+    needs: test-windows-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every Windows shard passed
+        run: test "${{ needs.test-windows-shard.result }}" = "success"
 
   test-macos:
     runs-on: macos-latest
