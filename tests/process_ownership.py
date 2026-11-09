@@ -344,3 +344,24 @@ def _watch_tmux_directory(directory: Path, tmux: str) -> None:
 
 if __name__ == "__main__":
     _watch_tmux_directory(Path(sys.argv[1]), sys.argv[2])
+
+
+# Exited children whose Popen objects must outlive the test that asked for their pid.
+_EXITED_CHILDREN: list[subprocess.Popen] = []
+
+
+def exited_pid() -> int:
+    """The pid of a process that has already exited, kept from being reused.
+
+    Windows hands a freed pid to a new process within moments, and on a busy runner one
+    did: a test wrote a "dead" pid into a lock file, an unrelated process took that pid,
+    and the code under test rightly saw a live holder. A pid stays reserved while any
+    handle to its process is open, so the exited child's Popen, which holds one, is kept
+    for the rest of the run. psutil.pid_exists() still reads it as gone, because it asks
+    for the exit code rather than for the pid's presence. POSIX keeps no such handle, but
+    its pids cycle through a far larger range before one comes back.
+    """
+    child = _REAL_POPEN([sys.executable, "-c", ""])
+    child.wait()
+    _EXITED_CHILDREN.append(child)
+    return child.pid

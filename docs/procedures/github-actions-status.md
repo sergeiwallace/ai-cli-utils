@@ -133,6 +133,48 @@ A run that needed a retry still reports `test-windows` as passed. The retry show
 `msys2-attempt-1` step with an error annotation on the run page, which is where to look when
 Windows runs start taking several minutes longer than usual.
 
+## Windows suite runtime: two shards
+
+`test-windows` used to be one job running the whole suite. By 2026-11 its pytest step took 34 to 39
+minutes against the job's 40-minute cap: 33m56s, 35m04s and 34m52s on three `main` runs, and 35m51s
+and 39m04s on a PR, where the second was cancelled mid-suite at 40m12s with no test failing. MSYS2
+setup took 35 to 45 seconds each time, so the suite itself was the cost.
+
+Measured on 2026-11-09, on `main`'s tree:
+
+| Configuration | xdist workers | Suite time |
+|---|---|---|
+| `-n auto` (probe run 42684654867) | 2 | 1413 s |
+| `-n auto` (`main` run 42585808128, same commit) | 2 | 2089 s |
+| `-n logical` (PR run 42700237036) | 4 | 1330 s |
+| `-n logical` (dispatch run 42700316295) | 4 | 1371 s |
+
+Three things follow from that table:
+
+- `-n auto` counts physical cores, and the 4-vCPU `windows-latest` runner reports 2.
+- Doubling the workers saved about 5%, because each test took about twice as long: the slowest copier
+  tests went from 17 s to 32-36 s. The suite is CPU-bound on this runner, not waiting on I/O.
+- The same commit and worker count took 1413 s on one runner and 2089 s on another. Runner speed is
+  what moves the total, and nothing in the suite controls it.
+
+The slowest areas were the copier-update tests (real git and copier subprocesses) and the
+session-name family, whose fixtures build a real bare git remote for every test. No test had a
+Windows-specific sleep or timeout to scale.
+
+So the job now runs as a two-job matrix, `test-windows (shard 1/2)` and `(shard 2/2)`. The
+repo-root plugin `pytest_ci_shard.py` (`-p pytest_ci_shard --ci-shard=INDEX/COUNT`) assigns each
+test to a shard by a CRC-32 of its node id, so the shards are disjoint, cover the suite and need no
+coordination. It is hand-rolled because pytest-split and pytest-test-groups split by position in
+the collected order when there is no stored durations file, and pytest-randomly shuffles that order
+with a different seed in each job. pytest-shard hashes too, but has had no release since 2020. A small `test-windows` job that `needs` both shards is what reports the required check,
+so the ruleset is unchanged. It runs under `always()`, so a failed or cancelled shard turns it red
+instead of leaving it skipped.
+
+The 40-minute cap stays. Each shard carries half the work, so even the slowest runner measured leaves
+it well under the cap. The cost is a second MSYS2 setup per run, which doubles the exposure to a
+transient MSYS2 download failure. The step also passes `--durations=15` and omits `-q`, so every log
+shows the worker count and the slowest tests.
+
 ## Session checklist
 
 1. Treat CI results as meaningful. A failure is a code or workflow problem.

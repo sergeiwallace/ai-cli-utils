@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 from conftest import run_cli as _run_cli
 from conftest import snapshot_tree, with_environment_config
+from process_ownership import exited_pid
 from process_wait import scaled
 
 from ai_cli import session_migrate, session_registry
@@ -49,9 +50,7 @@ def _jsonl(path: Path, records: list[dict]) -> None:
 
 def _dead_pid() -> int:
     """The pid of a process that has already exited."""
-    child = subprocess.Popen([sys.executable, "-c", ""])
-    child.wait()
-    return child.pid
+    return exited_pid()
 
 
 @pytest.fixture
