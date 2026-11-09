@@ -4243,6 +4243,20 @@ def _do_session_launch(
             )
             sys.exit(1)
 
+    # An attached tmux launch from inside a tmux pane ends in a tmux client that tmux
+    # refuses to nest ("sessions should be nested with care"). That refusal used to come
+    # at the very end, after a name was reserved and the worktree synchronized, leaving
+    # the name held by a session that never ran. Refuse here, above every write.
+    if not remote and not bare and attach and os.environ.get("TMUX"):
+        reporter.error(
+            "tmux",
+            "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"
+            "  Nothing was reserved or created. Either:\n"
+            "    - run the command from a terminal outside tmux (or detach this one first), or\n"
+            "    - launch with -b/--bare to run the agent in this pane without tmux.",
+        )
+        sys.exit(1)
+
     # The session's auto-compact prompt is submitted through the terminal that owns
     # the engine process, and a running process's controlling terminal cannot be
     # relocated afterwards -- so the transport is settled HERE, at launch, or never.

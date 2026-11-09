@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interrupt means.
 - A `-o/--once` session records why its agent ended (exit status, signal, or start
   failure) in the launch log, so a detached session that dies leaves a reason.
+- A tmux launch from a terminal already inside tmux refuses up front, before it reserves
+  a name or synchronizes a worktree, instead of failing at the final attach and leaving
+  the reserved name held by a session that never ran.
 - A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
   `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
   `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's

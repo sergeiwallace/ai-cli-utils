@@ -178,6 +178,10 @@ after confirming a live pane. Launch failures still return nonzero; attach later
 with `ai attach <session-name>`. With a terminal, launches attach as usual.
 Bare launches (`-b/--bare`) keep returning the engine's exit status.
 
+Run from a terminal that is already inside tmux, a tmux launch refuses before it reserves
+a name or touches a worktree, since tmux will not attach one session inside another.
+Launch from a terminal outside tmux, or use `-b/--bare` to run the agent in the current pane.
+
 A `-o/--once` session runs the agent on the pane's own terminal and, when the agent ends,
 records why (its exit status, the signal that ended it, or why it could not start) in the
 launch log, which is the only trace a detached session leaves.
