@@ -24,12 +24,12 @@ def synthetic_suite(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run_pytest(suite: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_pytest(suite: Path, *args: str, randomly: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("PYTEST_ADDOPTS", None)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPOSITORY_ROOT), env.get("PYTHONPATH")]))
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:randomly", *args],
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *([] if randomly else ["-p", "no:randomly"]), *args],
         cwd=suite,
         env=env,
         capture_output=True,
@@ -39,8 +39,10 @@ def _run_pytest(suite: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _collected_ids(suite: Path, shard: str) -> set[str]:
-    result = _run_pytest(suite, "-p", "pytest_ci_shard", f"--ci-shard={shard}", "--collect-only", "-q")
+def _collected_ids(suite: Path, shard: str, *extra: str) -> set[str]:
+    result = _run_pytest(
+        suite, "-p", "pytest_ci_shard", f"--ci-shard={shard}", "--collect-only", "-q", *extra, randomly=bool(extra)
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return {line for line in result.stdout.splitlines() if line.startswith("test_many.py::")}
 
@@ -51,6 +53,19 @@ def test_given_two_shards_when_each_collects_then_every_test_lands_in_exactly_on
 
     assert first, "shard 1/2 selected nothing, so the split is not a split"
     assert second, "shard 2/2 selected nothing, so the split is not a split"
+    assert first.isdisjoint(second)
+    assert len(first | second) == TEST_COUNT
+
+
+def test_given_jobs_shuffled_with_different_seeds_when_sharded_then_they_still_split_the_suite_exactly(
+    synthetic_suite,
+):
+    # Each CI job draws its own pytest-randomly seed, and randomly reorders the items before
+    # any other plugin sees them, so a split by position would differ from job to job.
+    first = _collected_ids(synthetic_suite, "1/2", "--randomly-seed=1")
+    second = _collected_ids(synthetic_suite, "2/2", "--randomly-seed=2")
+
+    assert first == _collected_ids(synthetic_suite, "1/2")
     assert first.isdisjoint(second)
     assert len(first | second) == TEST_COUNT
 

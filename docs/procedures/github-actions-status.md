@@ -164,7 +164,9 @@ Windows-specific sleep or timeout to scale.
 So the job now runs as a two-job matrix, `test-windows (shard 1/2)` and `(shard 2/2)`. The
 repo-root plugin `pytest_ci_shard.py` (`-p pytest_ci_shard --ci-shard=INDEX/COUNT`) assigns each
 test to a shard by a CRC-32 of its node id, so the shards are disjoint, cover the suite and need no
-coordination. A small `test-windows` job that `needs` both shards is what reports the required check,
+coordination. It is hand-rolled because pytest-split and pytest-test-groups split by position in
+the collected order when there is no stored durations file, and pytest-randomly shuffles that order
+with a different seed in each job. pytest-shard hashes too, but has had no release since 2020. A small `test-windows` job that `needs` both shards is what reports the required check,
 so the ruleset is unchanged. It runs under `always()`, so a failed or cancelled shard turns it red
 instead of leaving it skipped.
 

@@ -5,6 +5,13 @@ same tree selects the same tests without coordinating, every test lands in exact
 shard, and tests of one heavy module are spread across shards rather than all landing in
 one. The option exists only when this plugin is loaded, so a workflow that names the
 option but forgets the plugin fails at startup instead of quietly running everything.
+
+Why not pytest-split or pytest-test-groups: without a stored durations file both split
+the items by their position in the collected order. pytest-randomly, a dev dependency
+here, shuffles that order before any other plugin's hook runs, and each CI job draws its
+own seed, so position-based shards would overlap and drop tests from job to job. A hash
+of the node id does not depend on the order. pytest-shard does hash, but has had no
+release since 2020.
 """
 
 from __future__ import annotations
