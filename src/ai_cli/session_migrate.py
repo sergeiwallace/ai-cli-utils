@@ -165,11 +165,19 @@ class MigrationResult:
     warnings: list[str] = field(default_factory=list)
     #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
     kept: list[str] = field(default_factory=list)
+    parts: dict[str, str] = field(default_factory=dict)
 
     @property
     def failed(self) -> bool:
         """Whether the run left work undone: a kept slot or a ``FAILED`` warning."""
-        return bool(self.kept) or any("FAILED" in w for w in self.warnings)
+        return (
+            bool(self.kept)
+            or any("FAILED" in w or "NOT " in w for w in self.warnings)
+            or any(
+                move.action == "conflict" or move.action.startswith(("left alone", "left in place", "kept"))
+                for move in self.moves
+            )
+        )
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -489,6 +497,30 @@ def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] |
         raise MigrationError(str(exc)) from exc
     if report is not None:
         report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
+        report += [
+            PlannedMove(f"hook {hook.name}", "", "", "already done" if hook.status == "done" else "rewrite")
+            for hook in hooks
+        ]
+    if report is not None:
+        for hook, run in zip(hooks, runs, strict=True):
+            if not any(line.startswith("migrate-status: ") for line in run.lines):
+                report.append(
+                    PlannedMove(
+                        f"hook {hook.name} preflight warning",
+                        "no read-only completion status; idempotent apply will recheck remaining work",
+                        "",
+                        "report",
+                    )
+                )
+            if hook.name == "agent-mail":
+                report.append(
+                    PlannedMove(
+                        "agent-mail snapshot warning",
+                        "snapshot freshness can expire before apply; it must be rechecked at hook time",
+                        "",
+                        "report",
+                    )
+                )
     return hooks
 
 
@@ -1027,7 +1059,7 @@ def rekey_beads(
     return result
 
 
-def migrate_session(
+def _start_session(
     repo_root: Path,
     old: str,
     new: str,
@@ -1132,7 +1164,7 @@ def migrate_session(
         new_branch = None
     elif not branch_plan.ok:
         keeper = "the worktree keeps branch" if _current_branch(old_wt) == old_branch else "it keeps the name"
-        result.warnings.append(f"{branch_plan.error}, so {keeper} {old_branch}")
+        result.warnings.append(f"branch FAILED: {branch_plan.error}, so {keeper} {old_branch}")
         new_branch = None
     else:
         moves.append(PlannedMove("branch", old_branch, new_branch))
@@ -1213,7 +1245,7 @@ def migrate_session(
             relocate_venv(new_wt / ".venv", old_wt, new_wt)
         except OSError as exc:
             result.warnings.append(
-                f"{new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
+                f"virtual environment FAILED: {new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
                 f"with `uv sync --reinstall`"
             )
     if new_branch:
@@ -1221,7 +1253,7 @@ def migrate_session(
         if not renamed.ok:
             anchored = _git(repo_root, "rev-parse", "--verify", "--quiet", renamed.anchor).returncode == 0
             kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
-            result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
+            result.warnings.append(f"branch rename to {new_branch} FAILED: {renamed.error}{kept}")
             new_branch = None
     result.warnings += _agents.apply_worktree_ownership(home_ownership, new_branch or old_branch)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -1310,6 +1342,9 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -
 
 
 def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult) -> None:
+    result.moves += [
+        PlannedMove(f"hook {hook.name}", "", "", "already done") for hook in hooks if hook.status == "done"
+    ]
     for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
         result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
         if not run.ok:
@@ -1327,6 +1362,8 @@ def finish_session(
     proc_dir: Path | None = None,
     tmux_names: Callable[[], list[str]] | None = None,
     projects_dir: Path | None = None,
+    regenerate_script: Callable[[dict], str] | None = None,
+    record_finish: bool = True,
 ) -> MigrationResult:
     """Finish a migration whose slot already moved to ``new``: every leftover still named ``old``.
 
@@ -1389,8 +1426,13 @@ def finish_session(
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
     moves = result.moves
+    from .session_migrate_resume import apply_home, plan_home
+
+    home_plan = plan_home(repo_root, old_wt, new_wt, old, new, home)
+    moves += home_plan.moves
     markers = _session_home_markers(repo_root, old_wt.resolve(strict=False))
-    slot_renames = agent_plan.renames(repo_root)
+    home_renames = {f"wt-{old}": f"wt-{new}"} if any(move.kind == "branch" for move in home_plan.moves) else {}
+    slot_renames = {**agent_plan.renames(repo_root), **home_renames}
     for key, _value in markers:
         moves.append(
             PlannedMove("session-home marker", key, f"{_agents.renamed_key(key, slot_renames)} = {new_wt}", "rewrite")
@@ -1422,17 +1464,23 @@ def finish_session(
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
+    apply_home(home_plan, result)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
     result.warnings += agent_warnings
     for key, _value in markers:
-        _git(repo_root, "config", _agents.renamed_key(key, agent_renames.get(repo_root, {})), str(new_wt))
+        _git(
+            repo_root,
+            "config",
+            _agents.renamed_key(key, {**agent_renames.get(repo_root, {}), **home_renames}),
+            str(new_wt),
+        )
     for item in [m for m in held_moves if m.action == "move"]:
         source = Path(item.source)
         source.rename(source.with_name(Path(item.dest).name))
     _apply_memory(memory_moves, index_moves, result)
     _remove_stale_locks(lock_moves)
     _apply_task_rekey(old, new, home, result)
-    _apply_state(state_moves, old, new, old_wt, new_wt, None, result)
+    _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
@@ -1443,7 +1491,7 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
-        if not result.failed:
+        if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
             _append_ledger(state, old, new, repo_root, finished=True)
     return result
 
@@ -1474,6 +1522,10 @@ def _apply_state(
     for item in [m for m in moves if m.action == "move" and m.kind != "session meta"]:
         source, dest = Path(item.source), Path(item.dest)
         meta = metas.get(dest.stem) if item.kind == "wrapper script" else None
+        if item.kind == "wrapper script" and meta is None:
+            meta_path = dest.parent.parent / f"session-meta-{dest.stem}.json"
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
         if meta is not None and regenerate_script is not None:
             try:
                 dest.write_text(regenerate_script(meta), encoding="utf-8")
@@ -1610,3 +1662,10 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
         if isinstance(routes, dict) and routes.get("native_agent_name") == old:
             routes["native_agent_name"] = new
         _cos._write_private_json(_cos.registry_path(home), registry)
+
+
+def migrate_session(repo_root: Path, old: str, new: str, **kwargs) -> MigrationResult:
+    """Start or resume the same migration; current artifacts decide which parts remain."""
+    from .session_migrate_resume import run
+
+    return run(repo_root, old, new, **kwargs)

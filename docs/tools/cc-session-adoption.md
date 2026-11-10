@@ -666,3 +666,45 @@ worktree) and the `adopt-session` command in `src/ai_cli/main.py`. Tests:
 `src/ai_cli/session_migrate.py`, tested in `tests/test_session_migrate.py`.
 `ai retire-session` is `src/ai_cli/session_retire.py`, tested in
 `tests/test_session_retire.py`.
+
+### Repeating the original migration command
+
+Repeat `ai migrate-session OLD -t NAME -y` (or `OLD NEW -y`) after a failed,
+interrupted or completed attempt. The name registry's recorded pair is used even
+when its naming record is complete: naming completion alone does not prove that
+hooks finished. A different requested target is refused. No new reservation is
+made for a recorded pair. `-n` validates the requested name, spare ownership,
+word policy, worktree and registry rules, and every hook's read-only preflight.
+A preview never publishes a naming record.
+
+When OLD has gone, recovery requires the local migration ledger to bind the pair
+and repository, or OLD's original branch still checked out at NEW. An unrelated
+NEW is refused. Both project directories are refused rather than merged. Recovery
+checks and repairs the main branch, ownership and canonical registry, virtualenv
+paths, project directory and incomplete transcript rewrites as well as the
+old-name artifacts handled by `--finish`. Completed files are left untouched.
+The append-only ledger is evidence of intent; it never substitutes for inspecting
+current artifacts. If evidence is missing or ambiguous, the command names it and
+refuses rather than guessing.
+
+Every result ends with a `part | status` table. Statuses are `done earlier`,
+`done now`, `would do`, `skipped: reason` and `failed: reason`. Optional absent
+artifacts are skipped; on recovery an absent old-name artifact has no remaining
+work. Detailed artifact lines precede the table.
+
+| Exit | Meaning |
+|---|---|
+| 0 | The migration completed, or the read-only plan passed all available checks |
+| 1 | Partial migration; repeat the original command after resolving the named failure |
+| 2 | Refused before applying this attempt, or invalid command usage |
+
+Scripts that previously treated a named migration's exit 0 as success must now
+handle exit 1 when a hook fails: the naming row remains incomplete until the
+original command succeeds. Scripts that distinguished refusals by exit 1 must
+accept exit 2. `--finish` remains available, and launches still finish pending
+ledger pairs. No migration automatically publishes changed issue stores.
+
+A hook's time-sensitive checks can expire between planning and execution. The
+agent-mail snapshot warning explicitly names this limitation. See the
+[resumable hook contract](../reference/migrate-session-hooks.md) for completion
+status and legacy-hook limitations.
