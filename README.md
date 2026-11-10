@@ -163,7 +163,7 @@ ai c <name>            # Start/resume Claude Code session
 ai g <name>            # Start/resume Gemini CLI session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
-ai c -r/--resume       # Resume existing session explicitly
+ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
 ai c -b/--bare         # Run bare (no tmux wrapper)
 ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
@@ -186,9 +186,37 @@ A `-o/--once` session runs the agent on the pane's own terminal and, when the ag
 records why (its exit status, the signal that ended it, or why it could not start) in the
 launch log, which is the only trace a detached session leaves.
 
-`-r/--resume <name>` on a title this machine holds with no tmux session running it
-(the session died, or never started) relaunches that title. Typing the name alone
-positionally does the same. A name held by another machine is still refused.
+#### Resuming an existing session by name
+
+```bash
+ai c myrepo-box-ada -r          # the full title, first-name suffix
+ai c ada -r                     # the first name alone
+ai c myrepo-box-2 -r            # the full title, legacy index suffix (named before human names)
+ai c myrepo-box-chief-1 -r      # a labelled index title
+ai c myrepo-box-ada -R -r       # a session on the remote host; add -m MACHINE for another one
+ai cos -r                       # the chief of staff on this machine (`ai cos -R -r` on the remote one)
+```
+
+`-r/--resume NAME` reaches the session NAME names on the machine that runs it, whatever
+suffix its title uses. A running tmux session is attached. A stopped one, whose tmux
+session is gone but whose worktree or Claude Code transcript is still there, is
+relaunched under the same title, which resumes its worktree, branch and conversation. A
+session named before the name registry has no registry row and is found the same way,
+by its worktree. With `-R` the launcher asks the remote host for that session, and the
+remote host answers only with one that exists there.
+
+When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
+branch or transcript, or asks the remote host to allocate anything. The refusal lists
+the closest existing titles and the command that starts a new session instead. A name
+registry that cannot be read is a refusal with the read error, never a new name.
+`-d/--dry-run` with `-r` makes the same decision locally and plans an attach, a relaunch
+or the refusal; a remote dry run contacts no host, so the remote host decides at launch.
+
+Without `-r`, a positional NAME that is not an existing title is the label of a NEW
+session: `ai c cos` starts `myrepo-box-cos-rae`. The launch says so in its `new session`
+line before it creates a worktree or a tmux session, so a mistyped resume is visible.
+`ai locate-session TITLE` and `ai list-names` also report the sessions named before the
+registry, each with the command that resumes it.
 
 #### Restarting an idle Claude Code session
 
@@ -569,7 +597,7 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
-| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs. |
+| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
 | `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |
@@ -580,7 +608,10 @@ the tmux session, the worktree and the transcript. For a session on another host
 its word and rung, e.g. `liveness   live (via git-inbox)`. No record, a record it cannot
 read, or a probe that runs past 20 s prints `unknown:` and the reason. It also runs `message-transports resolve --target <title>@<host>
 --json` for the rung that reaches it. Both are separate tools; when one is not on `PATH`
-the command says so and still prints the row.
+the command says so and still prints the row. A title no row holds that names a session
+on this host from before the registry (an index title with a worktree under
+`<repo>/.worktrees/` or a live tmux session) is reported as an unregistered session with
+its state, worktree and resume command, and exits 0.
 
 A name is released by the machine that holds it, once the session's worktree and its
 client transcript are both proved gone. A store that cannot be read, or a session that

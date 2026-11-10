@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c NAME -r` (and `-R -r`) reaches the existing session NAME names, whether its title ends
+  in a first name or a legacy index, or exits 1 before reserving a name or creating anything. A
+  NAME no session held used to be reserved a fresh first name by the remote allocator, which the
+  remote side then "resumed" by creating its worktree. The refusal lists the closest existing
+  titles and the command that starts a new session; a stopped session is relaunched from its
+  worktree or transcript; `-r --dry-run` plans the attach, the relaunch or the refusal. Without
+  `-r`, a positional word that is not an existing title prints `new session <title>` first.
+- `ai locate-session` and `ai list-names` report sessions named before the session-name
+  registry, from this host's worktrees and tmux sessions, with the command that resumes each.
+
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
