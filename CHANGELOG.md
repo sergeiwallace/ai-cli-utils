@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
+  worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
+  instead of only warning. The rewrite is offline, atomic per file, leaves binary files and
+  similarly named sibling slots alone, and a second run changes nothing, so a project that pins
+  a machine-specific source path no longer needs a failing reinstall.
 - `ai probe-transcripts [-j/--json]` checks, for every AI client installed on
   this host, that its transcript probe reads `present` for the newest real record, `absent` for a
   fresh directory with no record, and `unknown` when the store root is missing. It only reads the
