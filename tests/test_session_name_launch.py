@@ -564,5 +564,5 @@ def test_given_only_an_unapproved_spare_when_launching_offline_then_it_refuses_r
         launch()
 
     assert caught.value.code == 75
-    assert "no unactivated approved spare" in capsys.readouterr().err
+    assert "no unactivated spare name left that is approved" in capsys.readouterr().err
     assert reg.read_spool() == {}

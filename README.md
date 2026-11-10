@@ -515,9 +515,26 @@ ai c 3              # an index slot, exactly as before
 
 A name is picked from the name database: a generated list of first names of 3 to 4
 letters with common English words removed, plus any name added by hand. The picker
-never hands out a held name, a name one typo away from a held name, or a name whose
-title would be a prefix of another session's. A name you choose with `-N` passes the
-same checks. If it is not in the database yet, `ai` asks
+hands out only names whose status is `approved`, and never a held name, a name one
+typo away from a held name, or a name whose title would be a prefix of another
+session's. A name you choose with `-N` passes the same checks.
+
+Every name in the database has one approval status, kept in `available/status.json`
+on the registry:
+
+| Status | Picked | Meaning |
+|---|---|---|
+| `approved` | yes | Someone approved it for new sessions. |
+| `needs-review` | no | The default for every name nobody has ruled on. |
+| `excluded` | no, and `-N` refuses it too | Ruled out, but kept in the list as a suggestion. |
+
+`ai set-name-status approved gus abe leo` approves names in one write and records who
+set them; a name not in the database is refused (add it with `ai add-name` first).
+`ai list-names --pool` lists every name with its status. When no approved name is
+free, a launch refuses and says how many are approved and what filtered each one out.
+A registry with no status record, or one that cannot be read, refuses every pick with
+the reason rather than treat any name as approved. A local registry is seeded with
+the approvals this package ships. If it is not in the database yet, `ai` asks
 `cleo is not in the name database. Add it? [y/n]`. Answering `n`, or choosing a name
 that is refused, leads to `Name to use instead, or "auto" to pick one:`, which takes
 another name (added without a second question) or `auto`. A value outside the limits
@@ -569,7 +586,8 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
-| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs. |
+| `ai set-name-status STATUS NAME...` | Set `approved`, `needs-review` or `excluded` on names in the database; refuses the whole call if one is not in it. |
+| `ai list-names [-j/--json] [-p/--pool]` | Every held name with its title, host, client, kind and status, and on this machine whether it runs; `--pool` lists every name in the database with its status and holder instead. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
 | `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |

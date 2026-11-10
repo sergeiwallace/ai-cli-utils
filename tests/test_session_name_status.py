@@ -7,6 +7,7 @@ The registry is a bare-remote fixture (``name_fleet``); a status lives in its
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from click.testing import CliRunner
@@ -82,7 +83,7 @@ def test_given_an_excluded_name_when_the_pool_is_listed_then_it_stays_listed_as_
     listed = cli("list-names", "--pool")
 
     assert listed.exit_code == 0, listed.output
-    assert any(line.split()[:2] == ["cleo", "excluded"] for line in listed.output.splitlines())
+    assert re.search(r"\bcleo\s+excluded\s", listed.output)
     assert _pool(cli("list-names", "-p", "-j"))["cleo"] == "excluded"
 
 

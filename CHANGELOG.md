@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and
   similarly named sibling slots alone, and a second run changes nothing, so a project that pins
   a machine-specific source path no longer needs a failing reinstall.
+- Session names now carry an approval status (`approved`, `needs-review` or `excluded`) in
+  `available/status.json` on the name registry, and a new session, a spare and an offline launch
+  take only approved names. A name nobody has ruled on needs review; an excluded name is never
+  used, not even with `-N`, but stays listed. `ai set-name-status STATUS NAME...` sets a status and
+  refuses a name not in the database, and `ai list-names` shows each held name's status, with
+  `-p/--pool` listing every name. With no approved name free, a launch refuses and names the
+  shortfall. A registry with no status record, or an unreadable one, refuses every pick with the
+  reason, so a shared registry must be seeded with `ai set-name-status approved ...` after
+  upgrading; a local registry is seeded with the approvals this package ships.
 - `ai probe-transcripts [-j/--json]` checks, for every AI client installed on
   this host, that its transcript probe reads `present` for the newest real record, `absent` for a
   fresh directory with no record, and `unknown` when the store root is missing. It only reads the
