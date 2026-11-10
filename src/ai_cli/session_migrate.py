@@ -130,6 +130,10 @@ class MigrationError(AdoptionError):
     """A refusal raised before ``migrate-session`` writes anything."""
 
 
+class PartialMigrationError(MigrationError):
+    """A failure after some migration artifacts became durable."""
+
+
 @dataclass
 class PlannedMove:
     """One artifact the migration moves or rewrites, or deliberately leaves."""
@@ -166,6 +170,7 @@ class MigrationResult:
     #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
     kept: list[str] = field(default_factory=list)
     parts: dict[str, str] = field(default_factory=dict)
+    task_intent: dict = field(default_factory=dict, repr=False)
 
     @property
     def failed(self) -> bool:
@@ -283,7 +288,12 @@ def _plan_state(old: str, new: str, state: Path) -> list[PlannedMove]:
         ]
         for kind, source, dest in pairs:
             if source.exists():
-                moves.append(PlannedMove(kind, str(source), str(dest), "conflict" if dest.exists() else "move"))
+                action = "conflict" if dest.exists() else "move"
+                if kind == "session meta" and dest.is_file():
+                    expected = _renamed_meta(source, old, new)
+                    if json.loads(dest.read_text(encoding="utf-8")) == expected:
+                        action = "finish source removal"
+                moves.append(PlannedMove(kind, str(source), str(dest), action))
         lock = state / f"ai-watcher-lock-{old_session}"
         if lock.exists():
             holder = _watcher_holder(lock)
@@ -319,8 +329,10 @@ def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[Plan
     for path in (home / "cc-sessions.json", state / "gemini_sessions.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             continue
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MigrationError(f"session map {path} cannot be read; refusing before any write") from exc
         if isinstance(data, dict) and old in data:
             action = "conflict" if new in data else "move"
             moves.append(PlannedMove("session map", f"{path} [{old}]", f"[{new}]", action))
@@ -390,9 +402,16 @@ def _plan_memory(
             name = f"{match['prefix']}{new}{match['suffix']}"
             action = "conflict" if (memory / name).exists() else "move"
             here.append(PlannedMove("memory file", str(source), str((after or project) / "memory" / name), action))
+        for target in sorted(memory.iterdir()):
+            match = _memory_pattern(new).fullmatch(target.name)
+            if not match or not target.is_file() or _names_another_session(match["prefix"], old, others):
+                continue
+            source = memory / f"{match['prefix']}{old}{match['suffix']}"
+            if not source.exists():
+                here.append(PlannedMove("memory file", str(source), str(target), "already done"))
         renames += here
         index = memory / "MEMORY.md"
-        moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action == "move"}
+        moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action in {"move", "already done"}}
         if moved and index.is_file():
             text = index.read_text(encoding="utf-8")
             named = sorted(name for name in moved if _rewrite_index(text, {name: moved[name]})[1])
@@ -425,7 +444,7 @@ def _apply_memory(renames: list[PlannedMove], rewrites: list[PlannedMove], resul
         moved = {
             Path(m.source).name: Path(m.dest).name
             for m in renames
-            if m.action == "move" and Path(m.source).parent == index.parent
+            if m.action in {"move", "already done"} and Path(m.source).parent == index.parent
         }
         before = index.read_text(encoding="utf-8")
         text, _hits = _rewrite_index(before, moved)
@@ -434,7 +453,7 @@ def _apply_memory(renames: list[PlannedMove], rewrites: list[PlannedMove], resul
         # Another live session may edit the shared index; replace it only if it is unchanged.
         if index.read_text(encoding="utf-8") != before:
             temp.unlink()
-            result.warnings.append(f"memory index {index} changed during the migration; re-run with --finish")
+            result.warnings.append(f"memory index {index} FAILED: changed during the migration; re-run with --finish")
             continue
         temp.replace(index)
 
@@ -892,6 +911,8 @@ def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: o
     row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
+        ledger.flush()
+        os.fsync(ledger.fileno())
 
 
 def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
@@ -1222,8 +1243,8 @@ def _start_session(
     lock_moves = _plan_slot_lock(repo_root, old)
     moves += lock_moves
 
-    _plan_task_rekey(old, new, home, result)
-    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    _plan_task_rekey(old, new, home, result, state)
+    hooks = _plan_hooks(old, new, repo_root, moves)
     beads = _plan_beads(old, _stores(projects, repo_root))
     _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
@@ -1231,6 +1252,9 @@ def _start_session(
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
+    # Record intent before Git can move a topic-branch checkout. Its branch alone
+    # cannot prove the original session after an interruption before the move receipt.
+    _append_ledger(state, old, new, repo_root, intent=True)
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
@@ -1279,7 +1303,7 @@ def _start_session(
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
 
-    _apply_task_rekey(old, new, home, result)
+    _apply_task_rekey(old, new, home, result, state)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1300,12 +1324,15 @@ def _start_session(
     return result
 
 
-def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
     """Plan the task-namespace and resume-tree rekey, and turn every planned conflict into a warning."""
     old_ns = home / "tasks" / old
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
     )
+    from .session_migrate_tasks import plan
+
+    result.task_moves, result.task_intent = plan(old, new, home, state, resuming=not result.old_worktree.exists())
     if old_ns.is_dir():
         leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
         if leftover:
@@ -1321,11 +1348,14 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult) ->
         result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
 
 
-def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
-    result.task_moves, result.resume_moves = rekey_name_artifacts(
-        new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=False
+    from .session_migrate_tasks import apply
+
+    apply(result.task_moves, result.task_intent, state)
+    _tasks, result.resume_moves = rekey_name_artifacts(
+        new, task_namespaces=[], resume_keys=[old], claude_home=home, dry_run=False
     )
     if result.task_moves or hwm:
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
@@ -1346,6 +1376,7 @@ def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Pat
         PlannedMove(f"hook {hook.name}", "", "", "already done") for hook in hooks if hook.status == "done"
     ]
     for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
+        result.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "apply"))
         result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
         if not run.ok:
             result.warnings.append(_hooks.failure_warning(run))
@@ -1440,9 +1471,10 @@ def finish_session(
     moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
     state_moves = _plan_state(old, new, state)
     map_moves = _plan_session_maps(old, new, home, state)
+    old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     project_dirs: list[tuple[Path, Path | None]] = [
         (cc_project_dir(repo_root, home), None),
-        (cc_project_dir(new_wt, home), None),
+        (old_pd, new_pd) if old_pd.is_dir() else (new_pd, None),
     ]
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
@@ -1451,8 +1483,8 @@ def finish_session(
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
-    _plan_task_rekey(old, new, home, result)
-    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    _plan_task_rekey(old, new, home, result, state)
+    hooks = _plan_hooks(old, new, repo_root, moves)
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
@@ -1464,9 +1496,13 @@ def finish_session(
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
-    apply_home(home_plan, result)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
     result.warnings += agent_warnings
+    for item in [m for m in held_moves if m.action == "move"]:
+        source = Path(item.source)
+        source.rename(source.with_name(Path(item.dest).name))
+    _apply_memory(memory_moves, index_moves, result)
+    apply_home(home_plan, result)
     for key, _value in markers:
         _git(
             repo_root,
@@ -1474,12 +1510,8 @@ def finish_session(
             _agents.renamed_key(key, {**agent_renames.get(repo_root, {}), **home_renames}),
             str(new_wt),
         )
-    for item in [m for m in held_moves if m.action == "move"]:
-        source = Path(item.source)
-        source.rename(source.with_name(Path(item.dest).name))
-    _apply_memory(memory_moves, index_moves, result)
     _remove_stale_locks(lock_moves)
-    _apply_task_rekey(old, new, home, result)
+    _apply_task_rekey(old, new, home, result, state)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1496,6 +1528,41 @@ def finish_session(
     return result
 
 
+def _write_migration_file(path: Path, data: bytes, *, expected: bytes | None = None, mode: int | None = None) -> None:
+    """Publish a complete file after checking its destination; never expose a torn write."""
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    temporary = Path(name)
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        if expected is None:
+            if path.exists():
+                raise MigrationError(f"destination {path} appeared during migration; refusing to overwrite")
+        elif path.read_bytes() != expected:
+            raise MigrationError(f"destination {path} changed during migration; refusing to overwrite")
+        temporary.chmod(mode if mode is not None else path.stat().st_mode if path.exists() else 0o600)
+        if expected is None:
+            os.link(temporary, path)  # Atomic create-if-absent; supported by Git worktree filesystems.
+        else:
+            temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _renamed_meta(source: Path, old: str, new: str) -> dict:
+    meta = json.loads(source.read_text(encoding="utf-8"))
+    old_session = source.name[len("session-meta-") : -len(".json")]
+    new_session = old_session[: -len(old)] + new
+    meta.update(ai_name=new, session=new_session, prefix=new_session.rsplit("-", 1)[0] + "-")
+    if meta.get("worktree_dir"):
+        old_wt = Path(meta["worktree_dir"])
+        if old_wt.name == old:
+            meta["worktree_dir"] = str(old_wt.with_name(new))
+    return meta
+
+
 def _apply_state(
     moves: list[PlannedMove],
     old: str,
@@ -1506,17 +1573,14 @@ def _apply_state(
     result: MigrationResult,
 ) -> None:
     metas: dict[str, dict] = {}
-    for item in [m for m in moves if m.kind == "session meta" and m.action == "move"]:
+    for item in [m for m in moves if m.kind == "session meta" and m.action in {"move", "finish source removal"}]:
         source, dest = Path(item.source), Path(item.dest)
-        meta = json.loads(source.read_text(encoding="utf-8"))
-        old_session = source.name[len("session-meta-") : -len(".json")]
-        new_session = old_session[: -len(old)] + new
-        meta["ai_name"] = new
-        meta["session"] = new_session
-        meta["prefix"] = new_session.rsplit("-", 1)[0] + "-"
-        if meta.get("worktree_dir") and Path(meta["worktree_dir"]).resolve(strict=False) == old_wt:
-            meta["worktree_dir"] = str(new_wt)
-        dest.write_text(json.dumps(meta), encoding="utf-8")
+        meta = _renamed_meta(source, old, new)
+        new_session = meta["session"]
+        if item.action == "move":
+            _write_migration_file(dest, json.dumps(meta).encode())
+        elif json.loads(dest.read_text(encoding="utf-8")) != meta:
+            raise MigrationError(f"metadata destination {dest} changed since planning")
         source.unlink()
         metas[new_session] = meta
     for item in [m for m in moves if m.action == "move" and m.kind != "session meta"]:
@@ -1528,21 +1592,22 @@ def _apply_state(
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
         if meta is not None and regenerate_script is not None:
             try:
-                dest.write_text(regenerate_script(meta), encoding="utf-8")
-                dest.chmod(0o700)
+                _write_migration_file(dest, regenerate_script(meta).encode(), mode=0o700)
                 source.unlink()
                 continue
             except Exception as exc:
-                result.warnings.append(f"could not regenerate {dest} ({exc}); moved the old one, `ai c` rewrites it")
+                result.warnings.append(f"wrapper script FAILED to regenerate {dest} ({exc}); re-run the same command")
+                continue
         shutil.move(str(source), str(dest))
 
 
 def _apply_session_maps(moves: list[PlannedMove], old: str, new: str, home: Path, state: Path) -> None:
     for item in [m for m in moves if m.action == "move"]:
         path = Path(item.source.rsplit(" [", 1)[0])
-        data = json.loads(path.read_text(encoding="utf-8"))
+        before = path.read_bytes()
+        data = json.loads(before)
         data[new] = data.pop(old)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_migration_file(path, json.dumps(data, indent=2).encode(), expected=before)
 
 
 def _apply_iterm2(old: str, new: str) -> None:
@@ -1619,13 +1684,17 @@ def _plan_chief(old: str, new: str, tmux: list[str], result: MigrationResult) ->
     for home in sorted(p for p in root.iterdir() if p.is_dir()) if root is not None and root.is_dir() else []:
         try:
             registration = _cos.read_registration(home)
-            _cos._read_json_object(_cos.registry_path(home), "chief registry")
+            registry = _cos._read_json_object(_cos.registry_path(home), "chief registry") or {}
         except _cos.ChiefOfStaffError as exc:
             raise MigrationError(f"{exc}; refusing before any write") from exc
-        if not registration or registration.get("native_agent_name") != old:
+        registry_old = (
+            str(registry.get("chief_of_staff_session", "")).startswith(f"{old}@")
+            or (registry.get("chief_routes") or {}).get("native_agent_name") == old
+        )
+        if (not registration or registration.get("native_agent_name") != old) and not registry_old:
             continue
         path = str(_cos.registration_path(home))
-        target = registration.get("tmux_target")
+        target = (registration or {}).get("tmux_target")
         if isinstance(target, str) and target in tmux:
             reason = f"its tmux target {target} is live, so the chief may be running"
             moves.append(PlannedMove("chief registration", path, reason, "kept"))
@@ -1647,13 +1716,14 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
     for item in [m for m in moves if m.kind == "chief registration" and m.action == "rewrite"]:
         home = Path(item.source).parent.parent
         registration = _cos.read_registration(home) or {}
-        target = registration.get("tmux_target")
-        registration.update(
-            native_agent_name=new,
-            session=renamed(registration.get("session")),
-            tmux_target=tmux.get(target, target) if isinstance(target, str) else target,
-        )
-        _cos._write_private_json(_cos.registration_path(home), registration)
+        if registration.get("native_agent_name") == old:
+            target = registration.get("tmux_target")
+            registration.update(
+                native_agent_name=new,
+                session=renamed(registration.get("session")),
+                tmux_target=tmux.get(target, target) if isinstance(target, str) else target,
+            )
+            _cos._write_private_json(_cos.registration_path(home), registration)
         registry = _cos._read_json_object(_cos.registry_path(home), "chief registry")
         if registry is None:
             continue

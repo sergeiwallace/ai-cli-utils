@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ PARTS = (
     "agent branch",
     "project dir",
     "transcript title",
-    "held-output",
+    "held output",
     "memory file",
     "memory index",
     "task namespace",
@@ -140,9 +141,25 @@ def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:
 
 def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
     parts = dict.fromkeys(PARTS, "done earlier" if resumed else "skipped: no matching artifact")
+
+    def assign(part: str, status: str):
+        def rank(value):
+            if value.startswith("failed:"):
+                return 5
+            if value.startswith("skipped:") and not any(
+                word in value for word in ("no matching", "informational", "missing", "unconfigured", "unreadable")
+            ):
+                return 4
+            return {"would do": 3, "done now": 2, "done earlier": 1}.get(value, 0)
+
+        if rank(status) >= rank(parts.get(part, "")):
+            parts[part] = status
+
     for move in result.moves:
-        if move.kind == "migration record" or move.kind == "branch anchor":
+        if move.kind in {"migration record", "branch anchor"} or move.kind.endswith("warning"):
             continue
+        if move.action == "report" and move.kind.startswith("hook "):
+            continue  # Hook status is carried by its explicit planned/applying step.
         if move.action == "already done":
             status = "done earlier"
         elif move.action.startswith(("skipped:", "left alone", "kept", "left in place")) or move.action == "conflict":
@@ -151,14 +168,14 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
             status = "skipped: informational"
         else:
             status = "would do" if result.dry_run else "done now"
-        parts[move.kind] = status
+        assign(move.kind, status)
     if result.task_moves:
-        parts["task namespace"] = "would do" if result.dry_run else "done now"
+        assign("task namespace", "would do" if result.dry_run else "done now")
     if result.resume_moves:
-        parts["resume"] = "would do" if result.dry_run else "done now"
+        assign("resume", "would do" if result.dry_run else "done now")
     for warning in result.warnings:
         if "FAILED" in warning or "NOT " in warning:
-            matched = next((part for part in parts if part in warning), "migration")
+            matched = next((part for part in sorted(parts, key=len, reverse=True) if part in warning), "migration")
             parts[matched] = f"failed: {m._one_line(warning)}"
     for kept in result.kept:
         parts["leftover slot"] = f"failed: {kept}"
@@ -178,6 +195,8 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
         kwargs = {key: value for key, value in kwargs.items() if key != "new_is_reserved"}
     else:
         call = m._start_session
+    interrupted = False
+    remaining = None
     if kwargs.get("dry_run"):
         result = call(repo, old, new, **kwargs)
     else:
@@ -190,8 +209,35 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
         except (Exception, KeyboardInterrupt) as exc:
             if not new_wt.exists():
                 raise
+            interrupted = True
+            # Inspect what remains after the interrupted write. If that preflight itself
+            # refuses, report uncertainty instead of claiming every planned write happened.
+            with contextlib.suppress(Exception, KeyboardInterrupt):
+                remaining = m.finish_session(
+                    repo,
+                    old,
+                    new,
+                    **{
+                        key: value
+                        for key, value in kwargs.items()
+                        if key not in {"new_is_reserved", "record_finish", "dry_run"}
+                    },
+                    dry_run=True,
+                    record_finish=False,
+                )
             result = preview
             result.dry_run = False
             result.warnings.append(f"migration FAILED: {type(exc).__name__}: {exc}; re-run the same command to finish")
     summarize(result, resumed=resumed)
+    if interrupted:
+        if remaining is not None:
+            summarize(remaining, resumed=True)
+            for part, status in remaining.parts.items():
+                if status == "would do":
+                    result.parts[part] = "failed: pending after interruption; re-run the same command"
+        else:
+            for part, status in result.parts.items():
+                if status == "done now":
+                    result.parts[part] = "failed: completion could not be verified after interruption"
+        result.parts["worktree"] = "done earlier" if resumed else "done now"
     return result

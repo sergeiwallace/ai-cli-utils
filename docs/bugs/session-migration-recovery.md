@@ -91,3 +91,23 @@ snapshot stays fresh until the hook applies it.
 <!-- /doc:region name="fix_log" -->
 <!-- doc:region name="appendix_evidence" kind="immutable" -->
 <!-- /doc:region name="appendix_evidence" -->
+
+## Interrupted part follow-up
+
+Command regressions also reproduced a copied task being allocated a second ID
+(`assert 4 == 3`), stale memory index links after their file rename, matching
+metadata copies being mistaken for a collision (`assert 1 == 0`), and a flat
+owned task worktree staying at its old path (`assert (False)`). An agent stopped
+between its move and branch rename retained its old owner; a chief stopped between
+registration and registry writes retained its old registry name.
+
+Task recovery now saves the ID mapping and before/after hashes before copying.
+The append-only task journal is intentionally limited to the non-derivable ID
+mapping; it cannot override artifact checks. Without it, ambiguous task copies
+are refused. Memory indexes and chief fields are detected independently from the
+files already moved. Agent recovery detects remaining branch/ownership updates
+at the new path, and flat paths require branch ownership evidence.
+Two further RED regressions found that a topic-branch checkout moved before its
+receipt had no usable pair evidence (`assert 2 == 0`), and explicit finishing
+omitted the parts table. Intent is now flushed before the move, every command
+result gets a table, and informational hook output cannot mask `done earlier`.

@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import name_list, session_clients
 from . import name_registry as reg
-from .session_migrate import MigrationError, migrate_session
+from .session_migrate import MigrationError, PartialMigrationError, migrate_session
 
 ENGINES = ("c", "g", "p", "cx")
 
@@ -135,7 +135,7 @@ def migrate_to_name(
             ) from exc
         reg.mark_migration_incomplete(registry, old, slot.machine, survivors)
         listed = ", ".join(f"{item['kind']} {item['identifier']}" for item in survivors)
-        raise MigrationError(
+        raise PartialMigrationError(
             f"the rename of {old} to {reservation.title} failed ({exc}) and left {listed} under the new name; "
             f"{reservation.name} stays held as migration-incomplete. Run the same command again to resume it."
         ) from exc
@@ -147,7 +147,7 @@ def migrate_to_name(
     try:
         complete(registry, old, slot.machine)
     except reg.RegistryError as exc:
-        raise MigrationError(
+        raise PartialMigrationError(
             f"{old} was renamed to {reservation.title}, but the completion could not be published ({exc}); "
             "the next `ai reconcile-names` or `ai migrate-session` publishes it"
         ) from exc

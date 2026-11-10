@@ -270,7 +270,7 @@ def apply_worktree_ownership(plan: WorktreeOwnership, branch: str | None) -> lis
         if reason:
             warnings.append(f"provenance owner for {plan.dest} was NOT rebound: {reason}")
     key = _agent_worktree_key(branch) if branch else None
-    if plan.stamp_value is not None and key:
+    if plan.stamp_value is not None and plan.stamp_value != str(plan.dest) and key:
         written = _git(plan.repo, "config", key, str(plan.dest))
         if written.returncode != 0:
             warnings.append(f"agent-worktree marker {key} FAILED to rewrite: {(written.stderr or '').strip()}")
@@ -321,14 +321,25 @@ def plan_agents(
 
         repo_entries: list[AgentEntry] = []
         for path, branch in worktrees:
-            if container not in path.parents:
+            flat = (
+                path.parent == container.parent
+                and path.name.startswith(f"{old}-")
+                and branch
+                and branch.startswith((prefix, new_prefix))
+            )
+            if container in path.parents:
+                dest = new_container / path.relative_to(container)
+            elif flat:
+                dest = path.with_name(new + path.name[len(old) :])
+            elif new_container in path.parents:
+                dest = path
+            else:
                 continue
-            dest = new_container / path.relative_to(container)
             entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
             if entry.new_branch is None:
                 entry.branch = None
             entry.held_by = _holder(path, live_cwds)
-            entry.conflict = os.path.lexists(dest) or _branch_exists(entry.new_branch)
+            entry.conflict = (dest != path and os.path.lexists(dest)) or _branch_exists(entry.new_branch)
             if entry.moves:
                 entry.ownership = plan_worktree_ownership(
                     repo,
@@ -336,9 +347,19 @@ def plan_agents(
                     dest,
                     old,
                     new,
-                    entry.branch,
-                    entry.new_branch,
+                    branch,
+                    entry.new_branch or branch,
                 )
+            if dest == path:
+                entry.worktree = None
+                if (
+                    entry.ownership
+                    and entry.ownership.provenance_state != "present"
+                    and entry.ownership.stamp_value in {None, str(dest)}
+                ):
+                    entry.ownership = None
+                if entry.branch is None and entry.ownership is None:
+                    continue
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
         for branch in branches:
@@ -385,8 +406,8 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
         if e.worktree:
             dest = "" if e.held_by is not None else str(e.dest)
             lines.append(("agent worktree", str(e.worktree), dest, action))
-            if e.ownership:
-                lines += describe_worktree_ownership(e.ownership)
+        if e.ownership:
+            lines += describe_worktree_ownership(e.ownership)
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -434,8 +455,8 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 current_branch = e.new_branch
             else:
                 warnings.append(f"agent branch {e.branch} in {e.repo} FAILED to rename: {renamed.error}")
-        if worktree_moved and e.ownership:
-            warnings += apply_worktree_ownership(e.ownership, current_branch)
+        if e.ownership and (worktree_moved or e.worktree is None):
+            warnings += apply_worktree_ownership(e.ownership, current_branch or e.ownership.new_branch)
     for m in plan.markers:
         key = renamed_key(m.key, done.get(m.repo, {}))
         res = _git(m.repo, "config", key, m.value)

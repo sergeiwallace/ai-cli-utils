@@ -69,3 +69,37 @@ def test_given_a_named_hook_refusal_when_previewed_then_no_name_is_reserved(flee
     assert code == 2, out + err
     assert "agent-mail" in out + err
     assert fleet.tip() == before
+
+
+def test_given_a_dry_run_when_offline_activations_exist_then_registry_publishing_is_not_called(fleet):
+    with patch("ai_cli.name_commands.publish_pending", side_effect=AssertionError("dry run tried to publish")):
+        code, out, err = migrate(fleet, OLD, "-t", "cleo", "-n")
+    assert code == 0, out + err
+
+
+def test_given_an_explicit_named_migration_without_yes_when_declined_then_nothing_is_reserved(fleet):
+    from click.testing import CliRunner
+
+    from ai_cli import main
+
+    before = fleet.tip()
+    with patch("ai_cli.config._get_projects_dir", return_value=fleet.projects):
+        result = CliRunner().invoke(
+            main._cli_group, ["migrate-session", OLD, "-t", "cleo", "-r", str(fleet.slot["repo"])], input="n\n"
+        )
+    assert result.exit_code != 0
+    assert fleet.tip() == before
+    assert fleet.slot["wt"].exists()
+
+
+def test_given_a_completed_name_with_a_new_failing_hook_when_retried_then_row_stays_incomplete_until_hook_passes(
+    fleet, hooks
+):
+    assert migrate(fleet, OLD, "-t", "cleo")[0] == 0
+    script = hooks("10-notes", "notes", fail="live")
+    assert migrate(fleet, OLD, "-t", "cleo")[0] == 1
+    assert fleet.rows()["cleo"]["state"] == "migration-incomplete"
+    script.write_text(script.read_text().replace("'live' ==", "'never' =="))
+    code, out, err = migrate(fleet, OLD, "-t", "cleo")
+    assert code == 0, out + err
+    assert fleet.rows()["cleo"]["state"] == "active"

@@ -79,8 +79,7 @@ Planning runs every hook before the first write, so a hook that cannot do its pa
 stops the migration while nothing has moved, and a hook extends the refuse-if-live
 guard to its own state. The core moves are not rolled back after a real-run
 failure: they are already durable. Hooks must therefore be idempotent, so that
-running the failed hook alone (the same argv, without `--dry-run`) completes the
-migration.
+repeating the original `ai migrate-session` command completes the migration.
 
 ## `ai adopt-session`
 

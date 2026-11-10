@@ -708,3 +708,31 @@ A hook's time-sensitive checks can expire between planning and execution. The
 agent-mail snapshot warning explicitly names this limitation. See the
 [resumable hook contract](../reference/migrate-session-hooks.md) for completion
 status and legacy-hook limitations.
+
+Recovery also covers interruptions within individual parts:
+
+- Task IDs and dependency remapping are recorded once, before any task copy, in
+  the append-only `session-migration-tasks.jsonl` under the same state directory.
+  Every remaining source and existing destination is checked against its saved
+  hash. A task copied before a stop is verified and its old copy removed; its ID
+  is never allocated again. A missing journal with tasks in both namespaces is
+  ambiguous and is refused with both paths named. A changed or missing artifact
+  is refused rather than overwritten. The journal records intent, not completion.
+- A renamed memory file whose index rewrite was interrupted supplies the verified
+  new filename for finishing only the stale links in `MEMORY.md`.
+- Matching old/new metadata copies finish source removal; differing copies remain
+  a conflict. New metadata, task and wrapper files are published atomically.
+- A moved agent worktree's old branch and ownership are repaired independently.
+  Flat `.worktrees/OLD-<task>` worktrees follow NEW when their branch proves the
+  OLD or NEW owner; a matching filename alone never grants ownership.
+- The chief registration and its registry fields are checked independently, so
+  stopping between those writes does not hide the second write.
+
+Named dry runs never publish offline activations or fetch the name-registry ref;
+they inspect its cached snapshot. A missing published generation retains the
+existing shipped-list warning. Registry availability and cached policy can change
+before a real reservation, whose transaction rechecks current naming rules.
+Without `-y`, a named migration asks for confirmation before reserving its name.
+The pair intent is appended before moving a worktree, so a stop before the move
+receipt can also recover a checkout that was using a topic branch. A completed
+hook's read-only output is informational and does not count as a new write.
