@@ -37,6 +37,36 @@ def migrate(fleet, *args):
         return run_cli(["ai", "migrate-session", *args, "-r", str(fleet.slot["repo"]), "-y"])
 
 
+@pytest.mark.parametrize("refusal", ["held", "unknown", "word", "destination", "live"])
+def test_given_a_refused_target_when_migration_dry_runs_then_real_refusal_is_reported(fleet, monkeypatch, refusal):
+    candidate = "cleo"
+    monkeypatch.setattr(reg, "common_words", lambda policy: frozenset({"cleo"}) if refusal == "word" else frozenset())
+    if refusal == "held":
+        row = reg.spare_row(name=candidate, host_alias="box", machine=HOST)
+        fleet.registry.transact(lambda snapshot: reg.Change({reg.row_path(candidate): reg.checked_row(row)}, "fixture"))
+    elif refusal == "unknown":
+        candidate = "zzzz"
+    elif refusal == "destination":
+        (fleet.slot["repo"] / ".worktrees" / f"{STEM}-{candidate}").mkdir()
+    elif refusal == "live":
+        monkeypatch.setattr("ai_cli.session._tmux_session_names", lambda: [f"c-{OLD}"])
+    tip = fleet.tip()
+
+    code, out, err = migrate(fleet, OLD, "--to-name", candidate, "--dry-run")
+
+    assert code != 0, f"dry run accepted {refusal}: {out}{err}"
+    expected = {
+        "held": "held",
+        "unknown": "name database",
+        "word": "common English word",
+        "destination": "already exists",
+        "live": "still hosts",
+    }
+    assert expected[refusal] in out + err
+    assert fleet.tip() == tip
+    assert fleet.slot["wt"].is_dir()
+
+
 def test_given_a_stopped_session_when_migrated_to_a_chosen_name_then_the_reserving_commit_carries_the_intent(fleet):
     code, out, err = migrate(fleet, OLD, "--to-name", "cleo")
 

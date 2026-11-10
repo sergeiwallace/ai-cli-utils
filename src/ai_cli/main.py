@@ -7513,9 +7513,17 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
     adapters = session_clients.all_adapters()
     if dry_run:
         try:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
-            planned = name or _session_naming.pick_name(request).name
-        except (_names.RegistryError, _session_naming.NamePoolExhaustedError) as exc:
+            words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
+            if name:
+                planned = name.lower()
+                verdict, reason = _names.check_hand_chosen(snapshot, planned, slot, words)
+                if verdict != "ok":
+                    raise _names.HandChosenRefusedError(verdict, reason)
+            else:
+                request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, words=words)
+                planned = _session_naming.pick_name(request).name
+            _migrate_session_for_names(repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True)
+        except (AdoptionError, _names.RegistryError, _session_naming.NamePoolExhaustedError) as exc:
             _out.error(Tag.MIGRATE, "migrate", f"{exc}")
             return 1
         for note in notes:
