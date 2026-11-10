@@ -401,8 +401,25 @@ def test_given_a_labelled_title_held_here_with_no_session_when_resumed_by_name_t
     build_fleet(tmp_path, monkeypatch)
     title = _held_labelled_title(launch)
     token = title.rsplit("-", 1)[-1]
+    # The worktree a session that ran and died leaves behind: a resume needs it, since a
+    # row alone is also what a reservation made seconds earlier looks like.
+    (tmp_path / "repo" / ".worktrees" / title).mkdir(parents=True)
 
     assert named(launch, token, resume=True, bare=False) == title
+
+
+def test_given_a_labelled_title_held_here_with_nothing_behind_it_when_resumed_then_it_is_refused(
+    tmp_path, monkeypatch, launch, capsys
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_labelled_title(launch)
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exited:
+        launch(title.rsplit("-", 1)[-1], resume=True, bare=False)
+
+    assert exited.value.code == 1
+    assert "Nothing was reserved or created" in capsys.readouterr().err
 
 
 def test_given_a_labelled_title_held_here_with_no_session_when_named_positionally_then_that_title_relaunches(
@@ -429,4 +446,4 @@ def test_given_a_title_held_by_another_machine_when_resumed_by_name_then_it_is_s
         launch(title.rsplit("-", 1)[-1], resume=True, bare=False)
 
     assert exited.value.code == 1
-    assert "no running session to resume" in capsys.readouterr().err
+    assert "no session named" in capsys.readouterr().err

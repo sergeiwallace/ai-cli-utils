@@ -11,6 +11,7 @@ first write it would make: ``create_worktree``.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from contextlib import ExitStack
 from unittest.mock import patch
@@ -22,6 +23,7 @@ from test_cli import tmux_available  # noqa: F401
 
 from ai_cli import name_registry as reg
 from ai_cli import session_naming
+from ai_cli.transport import REMOTE_LAUNCH_REFUSED_EXIT
 
 HOST = "test-host"
 STEM = f"{REPO}-tst"
@@ -244,8 +246,12 @@ REMOTE_CONFIG = {"remote": {"host": "remote.example", "user": "u", "transport": 
 
 
 def _remote_launch(env, argv, allocator_reply):
+    local_run = subprocess.run
+
     def fake_ssh(*args, **kwargs):
         command = list(args[0] if args else kwargs["args"])
+        if command[:1] != ["ssh"]:
+            return local_run(*args, **kwargs)
         env.allocator_commands.append(command[-1])
         return allocator_reply
 
@@ -263,12 +269,12 @@ def _remote_launch(env, argv, allocator_reply):
 def test_given_a_remote_resume_when_the_launcher_asks_the_remote_host_then_it_asks_to_resume_not_to_allocate(env):
     refusal = make_subprocess_result(1, "", f"no session named {REPO}-two-cos exists on box-two")
 
-    code, _out, err, handoff = _remote_launch(env, ["ai", "c", "cos", "-R", "-r", "-p", REPO], refusal)
+    code, _out, err, handoff = _remote_launch(env, ["ai", "c", "cos", "-R", "-r", "--project-prefix", REPO], refusal)
 
     assert code == 1
     assert not handoff.called
     [allocator] = [command for command in env.allocator_commands if "allocate-session-name" in command]
-    assert "--resume" in allocator.split()
+    assert "--resume" in shlex.split(shlex.split(allocator)[-1])
     assert "no session named" in err
 
 
@@ -294,7 +300,7 @@ def test_given_a_title_reserved_seconds_ago_when_the_remote_side_resumes_it_then
 
     code, _out, err = run_cli([*REMOTE_SIDE, "--resume", f"c-r-{STEM}-cos-ada"])
 
-    assert code == 1
+    assert code == REMOTE_LAUNCH_REFUSED_EXIT
     assert env.created == []
     assert "relaunching it under the title it holds" not in err
     assert f"no session named {STEM}-cos-ada" in err
@@ -350,7 +356,9 @@ def test_given_an_unreadable_registry_when_resumed_then_it_refuses_with_the_read
 def test_given_an_unreachable_remote_host_when_a_remote_resume_asks_it_then_it_refuses_and_allocates_nothing(env):
     unreachable = make_subprocess_result(255, "", "ssh: connect to host remote.example port 22: Connection refused")
 
-    code, _out, err, handoff = _remote_launch(env, ["ai", "c", "cos", "-R", "-r", "-p", REPO], unreachable)
+    code, _out, err, handoff = _remote_launch(
+        env, ["ai", "c", "cos", "-R", "-r", "--project-prefix", REPO], unreachable
+    )
 
     assert code == 1
     assert not handoff.called

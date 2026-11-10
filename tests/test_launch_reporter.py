@@ -493,6 +493,7 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
         patch("ai_cli.main._tmux_setup.report_lines", return_value=[]),
         patch("ai_cli.trust.ensure_workspace_trusted"),
         patch("ai_cli.session.resolve_session", return_value=None),
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
     ):
         with pytest.raises(SystemExit) as exc_info:
             _do_session_launch(
@@ -516,10 +517,8 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert (
-        "[launch] resume: Error: no running session to resume: 'c-myproject-tst-7' is not a tmux session"
-        in captured.err
-    )
+    assert "[launch] session: Error: no session named myproject-tst-7 exists on" in captured.err
+    assert "Nothing was reserved or created." in captured.err
 
 
 def test_given_quiet_session_command_when_it_starts_then_the_active_reporter_carries_the_policy(monkeypatch):
