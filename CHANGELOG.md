@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the old `agentName` and rewrite it, the post-migrate resolve check fails while the
   resolved transcript's current `agentName` is another name, and a host sweep's
   transcript-only rename rewrites both fields.
+- Session final-exit persistence now uses the launcher's installation with configurable
+  deadlines, command timeouts and bounded backoff under `[session_relaunch.exit_persistence]`.
+  Interrupts stop retries promptly; exhausted retries write a generation-scoped deny-boot
+  safety record and stop the agent, reporting failures even when safety storage is unavailable.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that

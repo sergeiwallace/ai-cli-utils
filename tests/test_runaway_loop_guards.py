@@ -155,6 +155,7 @@ def refresh_env(monkeypatch, tmp_path):
     """Isolated state dir with one live ai-cli session, plus a counting fake tmux."""
     state = tmp_path / "ai-cli-utils"
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
+    monkeypatch.setattr("ai_cli.session_registry.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
     _install_session_meta(state, "c-session-1", "session-1")
