@@ -12,7 +12,19 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
-from name_fleet import HOST, NAMES, OTHER_HOST, REPO, STEM, build_fleet, git, policy_commit, policy_of, publish_list
+from name_fleet import (
+    HOST,
+    NAMES,
+    OTHER_HOST,
+    REPO,
+    STEM,
+    build_fleet,
+    git,
+    policy_commit,
+    policy_of,
+    publish_list,
+    write_status,
+)
 
 from ai_cli import main, output
 from ai_cli import name_registry as reg
@@ -430,3 +442,127 @@ def test_given_a_title_held_by_another_machine_when_resumed_by_name_then_it_is_s
 
     assert exited.value.code == 1
     assert "no running session to resume" in capsys.readouterr().err
+
+
+# --- approval status (AI-CLI-opza) --------------------------------------------------------------
+
+
+def test_given_some_names_approved_when_a_session_launches_then_it_and_its_spare_are_approved_names(
+    tmp_path, monkeypatch, launch
+):
+    approved = {"milo", "nora"}
+    fleet = build_fleet(tmp_path, monkeypatch, statuses=dict.fromkeys(approved, "approved"))
+
+    token = named(launch).rsplit("-", 1)[-1]
+
+    assert token in approved
+    assert set(fleet.rows()) <= approved
+
+
+def test_given_every_approved_name_held_when_launching_then_it_refuses_naming_the_shortfall(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch, statuses={"milo": "approved"})
+    reg.reserve_hand_chosen(
+        fleet.other_machine(),
+        "milo",
+        reg.Slot(repo=REPO, repo_alias=REPO, host_alias="two", label=None, machine=OTHER_HOST, client="codex"),
+        add=False,
+        via="add-name",
+        added_by="o@two",
+        words=frozenset(),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    err = capsys.readouterr().err
+    assert caught.value.code == 1
+    assert "no approved session name is free" in err
+    assert "1 of the" in err and "ai set-name-status approved" in err
+    assert set(fleet.rows()) == {"milo"}
+
+
+def test_given_an_approved_name_one_edit_from_one_held_here_when_launching_then_it_is_never_picked(
+    tmp_path, monkeypatch, launch
+):
+    fleet = build_fleet(
+        tmp_path,
+        monkeypatch,
+        names=[*NAMES, "kai", "kay"],
+        statuses={"kai": "approved", "kay": "approved", "milo": "approved"},
+    )
+    reg.reserve_hand_chosen(
+        fleet.registry,
+        "kai",
+        reg.Slot(repo=REPO, repo_alias=REPO, host_alias="box", label=None, machine=HOST, client="claude-code"),
+        add=False,
+        via="add-name",
+        added_by="t@box",
+        words=frozenset(),
+    )
+
+    assert named(launch) == f"{STEM}-milo"
+
+
+def test_given_an_excluded_name_when_launching_then_it_is_never_picked_nor_taken_by_hand(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch, names=[*NAMES, "lee"], statuses={"lee": "excluded", "milo": "approved"})
+
+    assert named(launch) == f"{STEM}-milo"
+    with pytest.raises(SystemExit) as caught:
+        launch(naming=main._NamingRequest(custom="lee"))
+
+    assert caught.value.code == 2
+    assert "lee is excluded from use" in capsys.readouterr().err
+    assert "lee" not in fleet.rows()
+
+
+def test_given_no_status_record_when_launching_then_it_refuses_with_the_missing_file(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch)
+    write_status(fleet.registry, None)
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    assert caught.value.code == 1
+    assert "available/status.json" in capsys.readouterr().err
+    assert fleet.rows() == {}
+
+
+def test_given_an_unreadable_status_record_when_launching_then_it_refuses_with_the_read_error(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch)
+    write_status(fleet.registry, b"{not json")
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    err = capsys.readouterr().err
+    assert caught.value.code == 1
+    assert "available/status.json" in err and "Expecting property name" in err
+    assert fleet.rows() == {}
+
+
+def test_given_only_an_unapproved_spare_when_launching_offline_then_it_refuses_rather_than_take_it(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch, statuses={"milo": "approved"})
+    fleet.registry.transact(
+        lambda snapshot: reg.Change(
+            {reg.row_path("ada"): reg.checked_row(reg.spare_row(name="ada", host_alias="box", machine=HOST))},
+            "session-names: spare (fixture)",
+        )
+    )
+    fleet.offline()
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    assert caught.value.code == 75
+    assert "no unactivated approved spare" in capsys.readouterr().err
+    assert reg.read_spool() == {}

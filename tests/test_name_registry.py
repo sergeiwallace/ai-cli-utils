@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from name_fleet import status_bytes
 
 from ai_cli import config as _config
 from ai_cli import name_list, session_naming
@@ -103,6 +104,7 @@ def _publish_list(registry: reg.Registry, names: list[str], policy: dict, policy
             {
                 reg.NAMES_TXT: name_list.render_names(sorted(names)).encode(),
                 reg.GENERATION_JSON: name_list.render_record(record).encode(),
+                reg.STATUS_JSON: status_bytes(dict.fromkeys(names, "approved")),
             },
             "session-names: generate (fixture)",
         )
