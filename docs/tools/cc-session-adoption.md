@@ -595,8 +595,13 @@ inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent
 exit the session and end the tmux session first). A destination file that exists
 is reported and skipped, never overwritten.
 
-A `.venv` inside the worktree moves with it, but its console scripts name the old
-path; the command warns, and `uv sync --reinstall` in the new worktree fixes it.
+A `.venv` inside the worktree moves with it, and its console scripts, `pyvenv.cfg`,
+`.pth` files and `direct_url.json` name the old path. The command rewrites that path
+to the new one in those text files (offline, atomic, and a second run changes
+nothing); binary files and a sibling slot whose name merely starts with the old one
+are left alone. A reinstall is not used because it fails whenever the project pins
+a machine-specific source path. If the rewrite fails, the command warns and
+`uv sync --reinstall` in the new worktree is the fallback.
 
 ## Retiring a dead session's slot (`ai retire-session`)
 

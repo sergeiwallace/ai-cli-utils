@@ -106,6 +106,7 @@ from .session_adopt import (
     rekey_name_artifacts,
     retitle_transcript,
 )
+from .venv_relocate import relocate_venv
 from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
@@ -1119,11 +1120,9 @@ def migrate_session(
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
     moves = result.moves
     moves.append(PlannedMove("worktree", str(old_wt), str(new_wt)))
-    if (old_wt / ".venv").is_dir():
-        result.warnings.append(
-            f"{new_wt / '.venv'} moves with the worktree, and its console scripts name the old path in "
-            f"their shebangs -- recreate it (`uv sync --reinstall`) before running them"
-        )
+    has_venv = (old_wt / ".venv").is_dir()
+    if has_venv:
+        moves.append(PlannedMove("virtual environment", str(old_wt / ".venv"), str(new_wt / ".venv"), "rewrite"))
 
     # The canonical branch is renamed whether the slot has it checked out or parks it
     # while a topic branch is checked out: either way it still names the old session.
@@ -1206,6 +1205,17 @@ def migrate_session(
             raise MigrationError(f"git worktree move failed, nothing was migrated: {why}")
         raise MigrationError(f"the worktree moved but is not usable yet, so nothing else was migrated: {why}")
     _record_migration(state, old, new, repo_root, new_wt)
+    if has_venv:
+        # A moved environment still names the old path in its scripts and config; rewriting the
+        # path is offline and idempotent, unlike a reinstall, which fails on a pinned source path.
+        # A failure here is a warning only: the worktree itself moved, and re-running relocates it.
+        try:
+            relocate_venv(new_wt / ".venv", old_wt, new_wt)
+        except OSError as exc:
+            result.warnings.append(
+                f"{new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
+                f"with `uv sync --reinstall`"
+            )
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:

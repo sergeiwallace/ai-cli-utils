@@ -1065,3 +1065,68 @@ def test_given_the_chief_registration_targets_a_live_tmux_session_when_migrated_
     assert code == 1, "a claim left for --finish fails the run"
     assert chief["registration"].read_bytes() == before
     assert "tmux target cos-chief is live" in out + err
+
+
+def _fake_venv(wt: Path) -> Path:
+    """A virtual environment whose files name the worktree it was created in."""
+    venv = wt / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    script = venv / "bin" / "tool"
+    script.write_text(f"#!{venv}/bin/python3\nprint('hi')\n", encoding="utf-8")
+    script.chmod(0o755)
+    (venv / "bin" / "native").write_bytes(b"\x00\x01" + str(venv).encode())
+    # A sibling slot whose name merely starts with the old one must never be rewritten.
+    (venv / "bin" / "sibling").write_text(f"#!{wt}0/.venv/bin/python3\n", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text(f"home = /usr/bin\ncommand = python -m venv {venv}\n", encoding="utf-8")
+    site = venv / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "__editable__.pkg.pth").write_text(f"{wt}/src\n", encoding="utf-8")
+    return venv
+
+
+def test_given_a_slot_with_a_venv_when_migrated_then_the_venv_names_the_new_path(slot):
+    _fake_venv(slot["wt"])
+    old_wt = slot["wt"]
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    venv = new_wt / ".venv"
+    assert (venv / "bin" / "tool").read_text(encoding="utf-8") == f"#!{venv}/bin/python3\nprint('hi')\n"
+    assert str(new_wt) in (venv / "pyvenv.cfg").read_text(encoding="utf-8")
+    assert (venv / "lib" / "python3.12" / "site-packages" / "__editable__.pkg.pth").read_text(
+        encoding="utf-8"
+    ) == f"{new_wt}/src\n"
+    assert (venv / "bin" / "sibling").read_text(encoding="utf-8") == f"#!{old_wt}0/.venv/bin/python3\n"
+    assert (venv / "bin" / "native").read_bytes() == b"\x00\x01" + str(old_wt / ".venv").encode()
+    assert "recreate" not in out + err
+    if os.name != "nt":
+        assert os.access(venv / "bin" / "tool", os.X_OK)
+
+
+def test_given_a_slot_with_a_venv_when_dry_run_then_it_is_listed_and_nothing_changes(slot):
+    venv = _fake_venv(slot["wt"])
+    before = (venv / "bin" / "tool").read_text(encoding="utf-8")
+
+    code, out, err = _migrate(slot["repo"], "-n")
+
+    assert code == 0, out + err
+    assert "virtual environment" in out + err
+    assert (venv / "bin" / "tool").read_text(encoding="utf-8") == before
+
+
+def test_given_an_already_relocated_venv_when_relocated_again_then_no_file_changes(tmp_path):
+    from ai_cli.venv_relocate import relocate_venv
+
+    old_root, new_root = tmp_path / "slot-old", tmp_path / "slot-new"
+    venv = _fake_venv(old_root)
+    new_root.mkdir()
+    venv = old_root.rename(new_root / "x").joinpath(".venv")
+    moved_root = new_root / "x"
+
+    first = relocate_venv(venv, old_root, moved_root)
+    second = relocate_venv(venv, old_root, moved_root)
+
+    assert {p.name for p in first} == {"tool", "pyvenv.cfg", "__editable__.pkg.pth"}
+    assert second == []
