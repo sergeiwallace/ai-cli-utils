@@ -36,6 +36,12 @@ failed in all five cases before the patch (`5 failed in 1.65s`). The migration-n
 suite passed after it (`28 passed in 3.35s`). Each case asserts that the registry
 tip and source slot remain unchanged.
 
+The existing refreshed-host entry-point test used a repository with no source
+slot. Re-running it at the preview-fix commit reproduced
+`is not a registered worktree` because previews now run the real preflight.
+Its fixture now supplies the migrate suite's actual registered source slot;
+this preserves the host-refresh assertion while satisfying that preflight.
+
 ## Lessons Learned
 
 A preview must exercise the same refusal boundaries as execution. Printing a
