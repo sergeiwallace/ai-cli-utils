@@ -46,7 +46,7 @@ def _candidates(venv: Path):
 
 
 def _pattern(old_forms: list[str]) -> re.Pattern[bytes]:
-    # The old path must end at a path boundary, so ``/wt/sw-1`` never matches inside ``/wt/sw-10``.
+    # The old path must end at a path boundary, so ``/wt/session-1`` never matches inside ``/wt/session-10``.
     alternatives = b"|".join(re.escape(form.encode()) for form in old_forms)
     return re.compile(b"(?:" + alternatives + rb")(?![\w.-])")
 
