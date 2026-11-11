@@ -235,7 +235,7 @@ Register Claude Code workspace trust for every repo under a root (fixes 'workspa
 ai c [OPTIONS] [NAME]
 ```
 
-Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would; a finish that fails is reported and the launch continues.
+Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, and one recorded finished is re-planned. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway.
 
 Arguments:
 
@@ -254,6 +254,7 @@ Arguments:
 | `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
@@ -449,6 +450,7 @@ Arguments:
 | `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
@@ -486,6 +488,7 @@ Arguments:
 | `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
@@ -551,6 +554,7 @@ Arguments:
 | `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
@@ -882,6 +886,7 @@ Arguments:
 | `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
@@ -1469,6 +1474,8 @@ ai sessions relaunch [OPTIONS] [SLUG]
 
 Relaunch recorded sessions detached, without a terminal application.
 
+A session whose recorded migration is partial is refused, with the parts left and the command that finishes it; the others still relaunch, and the command exits 1.
+
 Arguments:
 
 - `[SLUG]`
@@ -1477,6 +1484,7 @@ Arguments:
 |---|---|---|---|
 | `-b` | `--boot` |  | Replay eligible owning-host sessions after boot |
 | `-d` | `--dry-run` |  | Print decisions without writing or launching |
+| `-P` | `--allow-partial-migration` |  | Relaunch a session even though a recorded migration to its name is partial; the parts left are written into its launch log |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai sessions stop
