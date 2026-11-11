@@ -5868,14 +5868,7 @@ def _restart_launch_target(target, check, options, *, json_output=False, event_c
         argv += ["-j"]
         if event_completion:
             argv.append("--event-completion")
-        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
-        if remote.get("identity_file"):
-            ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
-        ssh += [f"{remote.get('user', 'user')}@{remote['host']}"]
-        shell = _resolve_remote_shell(ssh)
-        result = subprocess.run(
-            [*ssh, f"{shell} -l -c {shlex.quote(shlex.join(argv))}"], capture_output=True, text=True, check=False
-        )
+        result = subprocess.run(_remote_ai_command(remote, argv), capture_output=True, text=True, check=False)
         # Pass through only structured results, never remote diagnostics.
         try:
             report = json.loads(result.stdout)
@@ -8055,6 +8048,11 @@ def _first_name(title: str, repo_root: Path) -> str | None:
     return parts.tail if parts else None
 
 
+def _names_pair(name: str, pair: tuple[str, str, Path]) -> bool:
+    """Whether ``name`` is the recorded pair's OLD, its NEW or the first name of its NEW."""
+    return name in pair[:2] or name == _first_name(pair[1], pair[2])
+
+
 def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) -> tuple[str, str, Path | None]:
     """The recorded ``(old, new, repo)`` a ``--finish`` given one name, or both, refers to.
 
@@ -8071,11 +8069,7 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
         hits = [pair for pair in pairs if pair[:2] == (old, new)]
         return old, new, repo or (hits[-1][2] if hits else None)
     names = [name for name in (old, to_name) if name]
-
-    def matches(name: str, pair: tuple[str, str, Path]) -> bool:
-        return name in pair[:2] or name == _first_name(pair[1], pair[2])
-
-    hits = [pair for pair in pairs if all(matches(name, pair) for name in names)]
+    hits = [pair for pair in pairs if all(_names_pair(name, pair) for name in names)]
     if len(hits) == 1:
         return hits[0][0], hits[0][1], repo or hits[0][2]
     searched = " and ".join(names)
@@ -8090,6 +8084,88 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
     _out.error(Tag.MIGRATE, "migrate", "\n".join(lines))
     _print_migration_refusal(f"{searched} names more than one recorded migration")
     sys.exit(2)
+
+
+def _migration_status(names: list[str], *, every: bool) -> int:
+    """``ai migrate-session -s/--status [NAME]``: each recorded pair, re-planned read-only; 1 if any is partial.
+
+    Without ``every`` a pair whose latest ledger row is a verified ``finished`` is not listed.
+    """
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+    from .session_migrate_status import finish_command, finish_state, replan
+
+    state = _config.get_xdg_state_home()
+    pairs = recorded_migrations()
+    if names:
+        pairs = [pair for pair in pairs if all(_names_pair(name, pair) for name in names)]
+        if not pairs:
+            searched = " and ".join(names)
+            _out.error(
+                Tag.MIGRATE,
+                "migrate",
+                f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in "
+                f"{state / MIGRATION_LEDGER})",
+            )
+            return 2
+    listed = [pair for pair in pairs if every or finish_state(pair[0], pair[1], state) != "verified"]
+    if not listed:
+        _out.emit(
+            Tag.MIGRATE,
+            "migrate",
+            f"{len(pairs)} recorded migration(s), each verified finished; -a/--all re-plans them too"
+            if pairs
+            else f"no migration recorded in {state / MIGRATION_LEDGER}",
+        )
+        return 0
+    partial = 0
+    _out.emit(Tag.MIGRATE, "migrate", "old | new | repo | state | parts left | finish with")
+    for old, new, repo in listed:
+        slot = repo / ".worktrees" / new
+        left = replan(repo, old, new) if slot.is_dir() else {"slot": f"missing: {slot} does not exist"}
+        if left:
+            partial += 1
+            parts = "; ".join(f"{part} ({status})" for part, status in left.items())
+            row = f"{old} | {new} | {repo} | partial | {parts} | {finish_command(old, new, repo)}"
+        else:
+            row = f"{old} | {new} | {repo} | complete | - | -"
+        _out.emit(Tag.MIGRATE, "migrate", row)
+    return 1 if partial else 0
+
+
+def _remote_ai_command(remote: dict, argv: list[str]) -> list[str]:
+    """The ssh command that runs ``argv`` non-interactively under the ``remote`` machine's login shell."""
+    ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
+    if remote.get("identity_file"):
+        ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
+    ssh += [f"{remote.get('user', 'user')}@{remote['host']}"]
+    shell = _resolve_remote_shell(ssh)
+    return [*ssh, f"{shell} -l -c {shlex.quote(shlex.join(argv))}"]
+
+
+def _remote_migration_status(names: list[str], *, every: bool) -> int:
+    """``ai migrate-session -s -R``: the same status on the default remote machine, its output relayed."""
+    try:
+        remote = _config.get_remote_machine(_config.load_config())
+    except _config.RemoteMachineError as exc:
+        _out.error(Tag.MIGRATE, "migrate", str(exc))
+        return 2
+    if not remote.get("host"):
+        _out.error(Tag.MIGRATE, "migrate", "-R/--remote needs a remote machine; none is configured")
+        return 2
+    argv = ["ai", "migrate-session", "--status", *names, *(["--all"] if every else [])]
+    try:
+        done = subprocess.run(_remote_ai_command(remote, argv), capture_output=True, text=True, check=False)
+    except OSError as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"could not start ssh to {remote['host']}: {exc}")
+        return 2
+    _out.relay(Tag.MIGRATE, "migrate", done.stdout, err=False)
+    _out.relay(Tag.MIGRATE, "migrate", done.stderr, err=True)
+    if done.returncode in (0, 1, 2):
+        return done.returncode
+    _out.error(
+        Tag.MIGRATE, "migrate", f"`{shlex.join(argv)}` on {remote['host']} exited {done.returncode}; no status read"
+    )
+    return 2
 
 
 @_cli_group.command(
@@ -8114,6 +8190,11 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
         "nothing left records the migration finished (verified); otherwise the run names each part "
         "left as NOT finished and exits 1. A hook is done only when its --dry-run prints "
         "`migrate-status: done`.\n\n"
+        "-s/--status [NAME] lists, read-only, each migration this host records that is not verified "
+        "finished (-a/--all: every one), re-planned as complete or partial with the parts left and "
+        "the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, "
+        "and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default "
+        "remote machine.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -8157,12 +8238,25 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
     default=None,
     help="Reserve a first name (this one, or the shortest free one) and migrate OLD to it",
 )
-@click.option("-a", "--all", "sweep", is_flag=True, help="With -T/--to-names: every index-named session here")
+@click.option(
+    "-s",
+    "--status",
+    is_flag=True,
+    help="List each recorded migration not verified finished as complete or partial, read-only",
+)
+@click.option("-R", "--remote", is_flag=True, help="With -s/--status: run it on the default remote machine")
+@click.option(
+    "-a",
+    "--all",
+    "sweep",
+    is_flag=True,
+    help="With -T/--to-names: every index-named session here; with -s/--status: every recorded migration",
+)
 @click.option("-T", "--to-names", is_flag=True, help="With -a/--all: migrate each one to a picked first name")
 @click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
 @click.option("-O", "--over-limit", is_flag=True, help="With -a -T: only names longer than max_name_length")
 def cmd_migrate_session(
-    old, new, repo, dry_run, yes, finish, beads_only, to_name, sweep, to_names, max_length, over_limit
+    old, new, repo, dry_run, yes, finish, beads_only, to_name, status, remote, sweep, to_names, max_length, over_limit
 ):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
@@ -8192,6 +8286,14 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if remote or status:
+        # Exit 2, not the CLI's usage exit 1, which --status already means "a pair is partial".
+        others = (repo, dry_run, yes, finish, beads_only, to_name is not None, to_names, max_length, over_limit)
+        if not status or any(other not in (None, False) for other in others):
+            _out.error(Tag.MIGRATE, "migrate", "-s/--status takes NAME, -a/--all and -R/--remote only")
+            sys.exit(2)
+        names = [name for name in (old, new) if name]
+        sys.exit(_remote_migration_status(names, every=sweep) if remote else _migration_status(names, every=sweep))
     if finish and not (sweep or to_names or over_limit) and (old or to_name):
         if to_name and new:
             raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")
