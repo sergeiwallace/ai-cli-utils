@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: audit-converged; round 3` |
+| Stage cursor | `doc-audit active; round 5` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** audit-converged — NOT promotion ready
+**Loop state:** active — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 3 | sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6 | 0 | 0 | 0 | — | verify | yes |
+| doc-audit | 5 | sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676 | 0 | 2 | 0 | round5:IC-2, round5:JA-2 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1362,5 +1362,245 @@ of absence; its filing assertions are outside this verification round's sole bac
     "kind": "verify"
   },
   "source_event_id": "round-3-audit"
+}
+```
+
+## Round 5 — Verification
+
+**Round 5 auditor:** `gpt-5`
+
+**Round 5 date:** 2026-11-11
+
+**Round 5 scope:** Re-audit the post-convergence wiki-coverage change at target digest
+`sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676`, verify the
+artifact-drift backlog item, and inspect the changed coverage and group-index contracts against the
+tracked repository tree. Append-only; no target edits.
+
+### R5 Summary
+
+The artifact-drift backlog item is fixed as a verification condition: the changed design has now
+received an independent diff-focused audit and did not change again during this round. The change
+is not promotion-ready, however. Two new `MAJOR` findings are open-blocking. The wiki coverage
+still omits seven tracked documentation files while claiming to carry every repository document,
+and the required group-index title algorithm has no result for three files already matched by its
+globs.
+
+### R5.1 Open MUST-fix backlog verification
+
+| Backlog item | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| Post-convergence artifact drift | PASS | fixed | Commit `960e5fe8` changed the target after Round 3; the complete target diff was inspected, the current SHA-256 equals the driver-provided digest, and `git diff -- docs/designs/single-source-cli-docs.md` is empty. `CONFIRMED`. |
+
+### R5.2 AD-N decisions verification
+
+No AD-N decision is in scope or was introduced by this change.
+
+### R5.3 NEW issues surfaced
+
+#### JA-2: “Every document” coverage still excludes tracked documentation — `MAJOR`
+
+**Location:** `docs/designs/single-source-cli-docs.md:25,77-86,212-224,516-520`
+
+**Evidence:**
+
+The founding-ask row promises a wiki “with everything about this repository,” and the Executive
+Summary strengthens that to:
+
+> “the project's GitHub wiki, which also carries the README and every other document in the
+> repository.”
+
+The enforceable scope is narrower:
+
+> “every tracked Markdown file under `docs/` and every top-level Markdown file”
+
+A read-only `git ls-files` inventory finds 212 tracked Markdown files, of which the stated rule
+covers 206. Six tracked Markdown documents are outside both locations:
+`.beads/README.md`, `.claude/rules/held-docs-fallback.md`, `.claude/skills/lint-md/SKILL.md`,
+`.github/pull_request_template.md`, `assets/README.md`, and
+`src/ai_cli/data/icons/README.md`. The rule also excludes the tracked, linked documentation artifact
+`docs/bugs/aih-jpnd-2026-09-21-live-linux-repro.txt`; it is linked from
+`docs/bugs/terminal-promotion-failure-hang.md` but is neither Markdown nor a top-level file.
+
+**Why it matters:** Implemented literally, the generated wiki is incomplete while both the ask
+coverage and the reader-facing summary say it is complete. The omission is reachable on the first
+build and repeats on every publication.
+
+**Verification command:**
+
+```bash
+python -c 'import subprocess; fs=subprocess.check_output(["git","ls-files"],text=True).splitlines(); md=[f for f in fs if f.endswith(".md")]; covered=[f for f in md if "/" not in f or f.startswith("docs/")]; print(len(md),len(covered)); print(*sorted(set(md)-set(covered)),sep="\\n")'
+rg -n 'aih-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md
+```
+
+**Verification note:** `CONFIRMED` at commit `4603da33a5c01514a69526b1e8cfc3aca156a4d9`:
+the inventory printed `212 206`, the six paths above, and the `.txt` link at line 28. This finding
+asserts only the observed scope mismatch, not that every non-Markdown repository file is a document.
+
+**Recommendation:** Derive the coverage set from tracked human-authored documentation rather than
+from only two path/extension predicates. Add every tracked document to a page or an explicit,
+reviewed exclusion with a reason, include linked non-Markdown documentation artifacts, and make the
+test compare the rendered assignment against that complete set. Any intentional narrowing of
+“everything” requires a human-authored re-scope rather than a silent exclusion.
+
+#### IC-2: The group-index title contract is undefined for three matched documents — `MAJOR`
+
+**Location:** `docs/designs/single-source-cli-docs.md:285-299,521-524`
+
+**Evidence:**
+
+The Phase 3 AC requires each group index to list every member page:
+
+> “with the document's first `#` title”
+
+The current tree contains three files inside the required `docs/**/*.md` coverage with no `# `
+heading: `docs/plans/ai-cli-46-programmatic-api-plan.md`,
+`docs/plans/archive/gemini-deep-research-oauth-plan.md`, and
+`docs/research/iterm2-terminal-customization-research.md`. Each has a frontmatter `title`, but the
+data model specifies no frontmatter or filename fallback and no validation error for a missing H1.
+
+**Why it matters:** A literal implementation has no title value for these reachable group members.
+It must either emit blank index labels, fail a build the design says should succeed, or invent an
+unstated fallback; those outcomes are observably different and the acceptance criteria cannot select
+one.
+
+**Verification command:**
+
+```bash
+for f in $(git ls-files 'docs/**/*.md' 'docs/*.md'); do rg -q '^# ' "$f" || echo "$f"; done
+sed -n '285,299p;516,524p' docs/designs/single-source-cli-docs.md
+```
+
+**Verification note:** `CONFIRMED`; the first command printed exactly the three paths above, and the
+second reproduced the group schema and first-H1 requirement without a fallback.
+
+**Recommendation:** Specify one deterministic title chain, for example frontmatter `title`, then the
+first H1, then a normalized filename, and test all three branches. If a title is mandatory instead,
+make missing titles a named manifest/build validation error and repair the three current sources
+before implementation.
+
+### R5 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| Artifact drift — current digest | `sha256sum docs/designs/single-source-cli-docs.md` | Driver digest | `f6c6bc63...7676`, exact match | ✅ |
+| Artifact drift — no later target edit | `git diff -- docs/designs/single-source-cli-docs.md` | No output | No output | ✅ |
+| JA-2 — Markdown coverage | Read-only `git ls-files` classifier from the finding | No omitted tracked docs if “every document” is literal | 212 tracked Markdown files; 206 satisfy the stated predicate; six do not | ✅ reproduced |
+| JA-2 — linked non-Markdown document | `rg -n 'aih-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md` | Linked documentation is covered or explicitly excluded | The tracked `.txt` artifact is linked at line 28 but outside the coverage predicate | ✅ reproduced |
+| IC-2 — matched files without H1 | H1 inventory command from the finding | Every matched document supplies the required first H1 | Exactly three matched files have no H1 | ✅ reproduced |
+| IC-2 — no fallback contract | `sed -n '285,299p;516,524p' docs/designs/single-source-cli-docs.md` | A deterministic title fallback or failure path | Schema and AC specify only the nonexistent first H1 | ✅ reproduced |
+
+**Verified: 6/6 checks reproduce at repository commit
+`4603da33a5c01514a69526b1e8cfc3aca156a4d9`; target digest
+`sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676`.**
+
+### R5 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- JA-2: make wiki document coverage match the literal ask and reader-facing completeness claim, or
+  obtain an explicit human re-scope.
+- IC-2: define and test title extraction for every currently matched document.
+
+**SHOULD be fixed before the design-doc PR merges:** none beyond the blocking items.
+
+**Can be folded into a follow-up:** none.
+
+### R5 Already-Correct Items
+
+- ✅ The drift change correctly reverses the earlier categorical exclusion of designs, plans,
+  research, audits, and other Markdown under `docs/`.
+- ✅ The new assignment AC detects both uncovered and multiply assigned files.
+- ✅ Page names are required to derive from repository paths, addressing same-basename collisions in
+  GitHub's flat wiki namespace.
+- ✅ The change preserves the shared command source, full-description help, generated CLI reference,
+  deterministic generation, main-only publication, and programmatic-first requirements.
+
+### R5 Files Read and Commands Run
+
+Read in full: the canonical audit `TEMPLATE.md`, the target design, this audit's prior history, and
+the target's invariant register. Diff-focused reads covered commit `960e5fe8`, the wiki sections and
+Phase 3 ACs, the tracked document inventory, the seven omitted files, and the headers of every
+matched file lacking an H1. Commands were the `git show`, `git diff`, `git log`, `git ls-files`,
+`sha256sum`, `rg`, `sed`, and read-only Python inspections recorded above. The private task-store
+counts added by the same commit could not be independently reached from this confined route and
+were not used as evidence for either finding; inability to query that external state was not treated
+as repository absence. No target edit or outward action was performed.
+
+### R5 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 5 | Artifact drift re-audited and fixed as a backlog condition; two new `MAJOR` open-blocking findings; target unchanged. |
+
+### R5 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": null,
+        "subsystem": "audit-loop",
+        "violation_kind": "artifact-drift"
+      },
+      "disposition": "fixed",
+      "finding_key": "boundary:4:artifact-drift",
+      "fingerprint": "boundary-artifact-drift:sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6",
+      "id": "artifact-drift",
+      "reachable_behavior": "The post-convergence target change has now received an independent diff-focused audit at its unchanged current digest.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "ask-drift"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round5:JA-2",
+      "fingerprint": "fp:wiki-every-document-scope-incomplete",
+      "id": "JA-2",
+      "reachable_behavior": "The generated wiki omits seven tracked documentation files while claiming to carry every repository document.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "missing-precondition"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round5:IC-2",
+      "fingerprint": "fp:wiki-group-title-missing-h1",
+      "id": "IC-2",
+      "reachable_behavior": "Three matched documents have no H1, so the required group index title is undefined.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 2,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "boundary:4:artifact-drift"
+    ],
+    "diff_since": "sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676",
+    "diff_summary": {
+      "changed": false,
+      "from": "sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676",
+      "to": "sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-5-audit"
 }
 ```
