@@ -3449,7 +3449,7 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
     for old, repo in pending_finishes(ai_name):
         retry = f"`ai migrate-session {old} {ai_name} -r {repo} --finish -y`"
         try:
-            result = finish_session(repo, old, ai_name)
+            result = finish_session(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
         except Exception as exc:  # a finish failure must never block the launch
             reason = " ".join(str(exc).split()) or type(exc).__name__
             reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
@@ -7927,7 +7927,7 @@ def cmd_migrate_session(
         if beads_only:
             return rekey_beads(repo_root, old, new, dry_run=preview)
         if finish:
-            return finish_session(repo_root, old, new, dry_run=preview)
+            return finish_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
         return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
 
     try:
