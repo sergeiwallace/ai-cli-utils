@@ -3,9 +3,8 @@ title: "Session-name registry on Dolt"
 category: design
 tags: [design, name-registry, dolt, sqlite]
 status: draft
-source: "claude-opus-5-5-2026-11-11"
+source: "design-review"
 template_version: "design-1.0.0"
-task: AI-CLI-6xud
 delegation_provenance:
   version: 2
   contributors: []
@@ -15,34 +14,27 @@ delegation_provenance:
 
 ## Founding Ask Coverage
 
-Tier 3. `founding_ask_ref_sha256`
-`6b5df6dc0d9aef7bd45832af903ad5d8f4439221b051da5e1969a4f4d92dd9fb`, record content sha256
-`c68b87eddcba35b45a9a82b768a42dacd14f4c6b8cf2826318db02829b490646`, entry `A001`, generation 1.
-The record's `canonical_root_json` names the operator's private configuration repository and the
-record carries private session and host names, so neither is reproduced in this public
-repository; the digests above bind it. This index is non-authoritative; the raw record governs.
+The authoritative request contains private names and infrastructure identifiers, so this public
+design records only generic requirements. The private cutover runbook binds the exact seed data as
+described in T-3.2 and T-4.2. This index is non-authoritative; the raw request governs.
 
 | Authoritative raw entry | Coverage and disposition |
 |---|---|
-| A001, ask 1: a status for general approval, a separate status for approval in a specific session, and columns for reserved, migrated and in-use | [Data Model](#data-model): `names.status`, the `verdicts` table with `session` scope, and the `holds` and `migrations` tables; [D-3](#d-3) |
-| A001, ask 2: never reviewed, rejected in general, approved in general but not yet for a session, and rejections per repository, host or session; "maybe can store a json"; "whatever is robust" | The four states are derived exactly in [Status model](#status-model). Scoped rejections and approvals are `verdicts` rows. The JSON suggestion is answered in [D-3](#d-3): a normalized table, chosen over a JSON column |
-| A001, ask 3: "what is the name database", "is it git tracked? it should be" | [Problem Statement](#problem-statement) answers the first. The Dolt database lives on a ref of the private fleet repository ([D-2](#d-2)). The reading of "git tracked" is stated in [Open Questions](#open-questions) item 1 for the owner to confirm |
-| A001, ask 4: one replacement name for another; those names are approved to migrate | Seed verdicts in [Phase 3](#phase-3-import-seed-and-queries) (T-3.2) |
-| A001, ask 5: "what is the best git tracked database system to use? dolt? if so, let's use dolt" | Answered by the research doc's Recommendation; this design builds on Dolt |
-| A001, ask 6: "i don't like the git ref json etc system"; best fit "for schema etc and searching" | The JSON-files-on-a-branch store is replaced outright ([Phase 4](#phase-4-fleet-cutover)); engine-checked schema in [Data Model](#data-model); search in T-3.4 |
-| A001, ask 7: "what about sqlite? or maybe some other database system?"; "i'm fine with having a dependency for ai-cli-utils to install" | The research doc compared them. SQLite serves only public installs with no fleet ([D-5](#d-5)). The `dolt` binary is the accepted dependency ([D-6](#d-6)) |
-| A001, ask 8: tell the other sessions it is changing; track down the feedback given to another session | The cutover runbook announces the freeze ([Phase 4](#phase-4-fleet-cutover), T-4.3). The earlier feedback becomes seed rows (T-3.2) |
-| A001, ask 9: "they should use opus 5.5, not codex ofc" | Process: authored by an Opus orchestrator; the implementation leaf is Opus. Codex is cross-family review only |
-| A001, ask 10: "so yeah, then let's do dolt" | This design |
-| A001, earlier message: approved and needs-review statuses, a seed of the owner's pre-approved names plus one more, and "if we need to add a status label ... then let's add that" | `unreviewed` is the needs-review status; the seed is T-3.2; the status label is the `status` column |
-| A001, amendment: full breadth and depth research, "including any we're not currently considering" | Satisfied by the research doc, converged before this design |
-| A001, routing message: run it on a fully migrated session | Process |
+| General approval, separate session approval, and reserved, migrated and in-use tracking | [Data Model](#data-model): `names.status`, session-scoped `verdicts`, `holds` and `migrations`; [D-3](#d-3) |
+| Never reviewed, generally rejected, generally approved but not approved for a session, and approvals or rejections per repository, host or session | The four states are derived in [Status model](#status-model). Scoped decisions are normalized `verdicts` rows, as resolved in [D-3](#d-3) |
+| The database must be git tracked | The canonical Dolt database and its row history live on a git remote ref ([D-2](#d-2)); this is a requirement, not an open question |
+| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 requires the exact private 21-entry seed manifest, including the replacement and excluding the superseded entry; T-4.2 binds it by a canonical digest before the flip |
+| Use the best git-tracked database, with Dolt selected after research | Answered by the research recommendation; this design builds on Dolt |
+| Replace the JSON-ref system with a robust schema and searchable data | The old store is retired in [Phase 4](#phase-4-fleet-cutover), constraints are in [Data Model](#data-model), and T-3.4 supplies SQL-backed search |
+| A package dependency is acceptable; compare SQLite and other candidates | The research compared the candidates. Dolt is the fleet dependency ([D-6](#d-6)); SQLite is the no-fleet fallback with the same logical schema ([D-5](#d-5)) |
+| Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 binds the earlier feedback into the exact seed manifest |
+| Authoring and routing constraints | Handled by the orchestration outside this public product design; they do not change runtime behaviour |
+| Provide approved and needs-review statuses and seed the 20 pre-approved names plus one replacement | `unreviewed` is needs-review, `approved` is approved, and T-3.2/T-4.2 require the exact 21-entry private seed |
+| Research candidates beyond the initially suggested stores | Satisfied by the converged research document |
 
 **Status:** DRAFT
 
 **Created:** 2026-11-11
-
-**Task:** AI-CLI-6xud
 
 **Research:** [📄 ai-cli-utils/docs/research/session-name-registry-storage.md](../research/session-name-registry-storage.md)
 
@@ -133,7 +125,11 @@ under eight conditions; this design carries each condition into the build.
 
 ## Design Overview
 
-**Status:** stub; to be filled during/after implementation.
+`Registry` remains the package-facing boundary. Fleet configuration selects `DoltRegistry`, while
+standalone installs select `SqliteRegistry`; both consume DDL rendered from one logical schema and
+return the same row-backed `Snapshot`. Dolt writes use guarded conditional DML, compare-and-swap
+pushes and operation-specific remote read-back. The cutover holds both backends closed until old
+offline spares are inventoried and quarantined, then enables Dolt in one gated commit.
 
 ## Registry on Dolt
 
@@ -196,10 +192,12 @@ A row in `holds` is a held token; a token is held exactly while its row exists, 
 
 States: `absent`, `spare-reserved` (`kind = 'spare'`, `state = 'reserved'`), `session-active`
 (`kind = 'session'`, `state = 'active'`), `session-migrating` (`kind = 'session'`,
-`state = 'migration-incomplete'`)
+`state = 'migration-incomplete'`), `label-active` (`kind = 'label'`, `state = 'active'`), and
+`cutover-quarantined` (`kind = 'spare'`, `state = 'cutover-quarantined'`)
 Initial state: `absent`
 Event alphabet: `top-up`, `claim`, `migration-intent`, `activate-spare`, `migrate-to-own-spare`,
-`migration-complete`, `release`, `spare-release`, `foreign-edit`
+`migration-complete`, `label-claim`, `reassign`, `release`, `spare-release`,
+`quarantine-spare`, `reconcile-quarantine`, `foreign-edit`
 Terminal states: none. A released token returns to `absent` and can be held again.
 
 | Transition | Source | Event | Guard | Target | Observable outcome |
@@ -210,15 +208,21 @@ Terminal states: none. A released token returns to `absent` and can be held agai
 | T4 | spare-reserved | activate-spare | the activating host is the spare's `machine` | session-active | the row's activation fields set; nothing else changes |
 | T5 | spare-reserved | migrate-to-own-spare | the migrating host is the spare's `machine` | session-active | as T4; the dry run reports the same plan |
 | T6 | session-migrating | migration-complete | true | session-active | the `migrations` row moves to `complete` in the same commit |
-| T7 | session-active | release | both absence tests pass and the row is unchanged since the test | absent | the `holds` row deleted; its history kept in `dolt_history_holds` |
-| T8 | spare-reserved | spare-release | the spare-release test passes under the spool lock | absent | the `holds` row deleted |
-| T9 | any state but absent | foreign-edit | the editing host is not the row's `machine` | unchanged | refused with exit 2; nothing written |
-| T10 | spare-reserved | activate-spare or migrate-to-own-spare | the host is not the spare's `machine` | unchanged | refused as held |
-| T11 | any | any event not listed for that state (for example `release` on `absent`) | true | unchanged | reject with an invalid-transition refusal (exit 2); nothing written |
+| T7 | absent | label-claim | the label token passes the label-token validator and the claim protocol wins | label-active | a label hold carrying its label metadata and this attempt's claimant |
+| T8 | session-active, session-migrating or label-active | reassign | the target host is known and the row still equals the version read | same state | only `machine`, `host_alias` and `writer` change; the token never becomes free |
+| T9 | session-active or label-active | release | both absence tests pass and the row is unchanged since the test | absent | the `holds` row is deleted; its history remains in `dolt_history_holds` |
+| T10 | spare-reserved | spare-release | the spare-release test passes under the spool lock | absent | the `holds` row is deleted |
+| T11 | spare-reserved | quarantine-spare | cutover import is running with Dolt writes disabled | cutover-quarantined | the imported spare remains held but cannot be activated or released by ordinary lifecycle commands |
+| T12 | cutover-quarantined | reconcile-quarantine | every registered host has installed the new client and its old spool and cached spare inventory was reconciled | spare-reserved or session-active | the row becomes the reconciled old spare or activation; the runbook records the source evidence |
+| T13 | any state but absent | foreign-edit | the editing host is not the row's `machine` and the event is not an authorized `reassign` | unchanged | refused with exit 2; nothing written |
+| T14 | spare-reserved | activate-spare or migrate-to-own-spare | the host is not the spare's `machine` | unchanged | refused as held |
+| T15 | cutover-quarantined | activate-spare, migrate-to-own-spare, release or spare-release | true | unchanged | refused as quarantined with exit 2 |
+| T16 | any | any event not listed for that state (for example `release` on `absent`) | true | unchanged | reject with an invalid-transition refusal (exit 2); nothing written |
 
-Guard exclusivity: T4 and T10, and T5 and T10, share a source and event with complementary guards
+Guard exclusivity: T4 and T14, and T5 and T14, share a source and event with complementary guards
 (the host is, or is not, the spare's machine). No other source and event pair has more than one
-row. Invalid transitions: T9 to T11. Coverage requirement: exercise T1 to T11.
+row. Invalid transitions: T13 to T16. Coverage requirement: exercise T1 to T16, including label
+claim, ownership reassignment without release, and every forbidden quarantine exit.
 
 <!-- /ac-format -->
 
@@ -238,24 +242,31 @@ already reads.
 
 ### Claim protocol
 
-Every write follows one loop. It is today's `transact` loop with Dolt in place of the git tree, and
-the research doc's five rules made concrete:
+Every write follows one publish loop. It is today's `transact` loop with Dolt in place of the git
+tree, and the research doc's five rules made concrete:
 
 1. Take the package's host file lock for the database directory, so one process writes at a time.
 2. `dolt fetch` the registry ref, then `dolt reset --hard origin/main`, so the write starts from
    the remote tip.
-3. Run the guard and the write as one `dolt sql` script: the guard queries, then plain `INSERT`,
-   `UPDATE` or `DELETE` statements, never an upsert, then `call dolt_commit(...)`. A claim row
-   carries `claimant = <host>:<session>:<nonce>`, a value unique to this attempt.
-4. Confirm the commit exists in `dolt_log`. A write that did not commit (a read-only open, a
-   constraint failure, a guard refusal) raises and pushes nothing.
+3. Express the complete guard in the mutation itself, never in a preceding `SELECT`: claims use
+   `INSERT ... SELECT ... WHERE NOT EXISTS (...)`; updates and deletes put ownership, state and
+   expected-old-value predicates in their `WHERE` clauses. Run that conditional DML, read
+   `ROW_COUNT()`, and call `dolt_commit` only when the exact expected count was changed. A zero or
+   unexpected count resets the working set and refuses without a commit. Never use an upsert. A
+   claim row carries `claimant = <host>:<session>:<nonce>`, unique to this attempt.
+4. Confirm the new commit exists in `dolt_log`. A write that did not commit (a read-only open, a
+   constraint failure, a guard refusal or an unexpected affected-row count) resets the working
+   set, raises and pushes nothing.
 5. `dolt push origin main`. The client never passes `--force` and never pushes any other way.
 6. On a rejected push: reset to the fetched remote tip and go back to step 2, never `dolt pull`
    and never a merge. After `publish_attempts` losses, raise `RegistryContendedError`, and the
    launch falls back to a spare as it does today.
-7. On a successful push: fetch again and read the row back from `origin/main`. Only a row carrying
-   this attempt's `claimant` counts as a win. A row with another claimant means another host won;
-   the picker picks again and a hand-chosen name is refused with the winner named.
+7. On a successful push: fetch again and verify the operation-specific postcondition on
+   `origin/main`. A claim succeeds only when the row carries this attempt's `claimant`; a row with
+   another claimant means another host won, even when every other value is identical. An update
+   must equal all intended values. A delete must find the guarded row
+   absent. Status, verdict, migration and policy writes verify their complete intended row set;
+   they do not apply the claim-only `claimant` rule.
 
 Any other failure (timeout, authentication, a missing `dolt` binary) raises
 `RegistryUnreachableError`, as today, and no pick is made from unverified data.
@@ -269,9 +280,12 @@ host file lock (`portalocker`, already a dependency) serializes the package's ow
 CLI processes never open the database for writing together. Reads take the same lock for the short
 time a read runs, because Dolt's own lock falls back silently to read-only for a second opener.
 
-Each call has a timeout taken from the existing `publish_timeout_s` policy value. A `dolt` binary
-older than the version floor, or a database whose `meta.min_reader_version` is above the package's,
-refuses with a message naming the upgrade.
+Every `dolt fetch` reads and uses `registry_fetch_timeout_seconds`; every `dolt push` reads and uses
+`registry_push_timeout_seconds`. These remain independent of the shorter transaction/lock budget
+derived from `publish_timeout_s`, so a normal remote operation does not consume offline capacity
+merely because it outlasts that local budget. A `dolt` binary older than the version floor, or a
+database whose `meta.min_reader_version` is above the package's, refuses with a message naming the
+upgrade.
 
 ### Behaviour kept from the current registry
 
@@ -334,12 +348,12 @@ create table meta (
   k varchar(64) primary key,
   v varchar(256) not null
 );
--- rows: schema_version, min_reader_version, min_dolt_version
+-- rows: schema_version, min_reader_version, min_dolt_version, writes_enabled
 
 create table policy_snapshot (
   revision varchar(64) primary key,     -- the policy commit the snapshot came from
   generated_at varchar(20) not null,
-  body json not null                    -- today's generation.json content
+  body json not null                    -- valid JSON; today's generation.json content
 );
 
 create table names (
@@ -372,7 +386,7 @@ create table verdicts (
 create table holds (
   token varchar(16) primary key,
   kind enum('session','spare','label') not null,
-  state enum('reserved','active','migration-incomplete') not null,
+  state enum('reserved','active','migration-incomplete','cutover-quarantined') not null,
   machine varchar(64) not null,
   host_alias varchar(64),
   repo varchar(128),
@@ -403,11 +417,18 @@ create table migrations (
 
 The `holds` fields are today's 19 row fields plus `claimant`; the field rules `row_problem` checks
 today (per-kind non-null and null fields, `recovery` set exactly while `migration-incomplete`, no
-absolute paths) stay in the package's validator and also become `check` constraints where the
-dialect can express them. `holds.token` has no foreign key to `names`, because a label's last
-token can be held without being in the pool, as today. The SQLite form replaces `enum` with a
-`check (... in (...))`, `json` with `text`, and the `regexp` checks with
-`name glob '[a-z]*' and name not glob '*[^a-z]*'`.
+absolute paths) stay in the package's validator and also become database `check` constraints.
+`holds.token` has no foreign key to `names`, because a label's last token can be held without being
+in the pool, as today.
+
+`name_schema.py` defines one logical schema and renders only the syntax differences. The SQLite
+connection executes `PRAGMA foreign_keys = ON` and verifies that it reads back as `1` before any
+schema or data operation. Its enum types become `check (... in (...))`; its JSON columns become
+`text` with `check (json_valid(body))` and
+`check (recovery is null or json_valid(recovery))`; its token checks use
+`token glob '[a-z]*' and token not glob '*[^a-z]*'`. Dolt's native `json`, enum, foreign-key and
+regular-expression constraints enforce the same accepted and rejected value sets. A backend may
+not omit a logical constraint merely because its DDL spelling differs.
 
 History needs no table of its own: `dolt_history_names`, `dolt_history_verdicts` and
 `dolt_history_holds` hold every row's value at every commit, with the committer and time. The
@@ -456,19 +477,47 @@ those tests as not run, never as passed.
   - **T-1.1 Schema** — one module emits both dialects.
     - [ ] When the schema is applied to an empty Dolt database and to an empty SQLite file, the system shall create the six tables with the constraints in [Data Model](#data-model).
     - [ ] If a `names` or `holds` insert carries a token outside `[a-z]+` (for example `Ava` or `ava2`), then the system shall refuse it at the database on both backends.
+    - [ ] If a `verdicts` insert names no existing `names` row, then both backends shall reject it with a foreign-key violation; the SQLite test shall also assert `PRAGMA foreign_keys = 1` on every opened connection.
+    - [ ] If `policy_snapshot.body` or a non-null `holds.recovery` is malformed JSON, then both backends shall reject the row at the database.
+    - [ ] For every enum, nullability, foreign-key, JSON and token constraint in the logical schema, a generated valid/invalid fixture matrix shall produce the same result on Dolt and SQLite.
   - **T-1.2 Claim protocol** — the seven-step loop.
     - [ ] When two hosts claim the same free name at the same moment over a local bare remote, repeated 20 times, the system shall give exactly one winner in each trial, and the loser's caller shall see the winner's claimant.
     - [ ] When two hosts claim the same name with otherwise identical row values, the system shall still give exactly one winner, because each claimant value is unique.
+    - [ ] If a claim's `NOT EXISTS` guard is false, or an update/delete ownership, state or expected-value predicate is false, then its conditional DML shall affect zero rows, create no Dolt commit and push nothing.
+    - [ ] A test shall fail if an implementation evaluates a write guard only with `SELECT` and then issues unconditional DML; every mutating statement shall carry the complete guard and assert its affected-row count before commit.
     - [ ] If a push is rejected, then the system shall reset to the remote tip and re-run the whole guard, and shall never run `dolt pull` or a merge.
     - [ ] If every one of `publish_attempts` attempts is rejected, then the system shall raise `RegistryContendedError` and leave the remote unchanged by this caller.
     - [ ] If the `dolt sql` write does not produce a commit in `dolt_log`, then the system shall push nothing and raise.
+    - [ ] When a status, verdict, migration, policy update or guarded delete pushes successfully, the system shall verify its operation-specific postcondition after fetching the remote tip and shall not require a claim-only `claimant` value.
     - [ ] The system shall start no `dolt` process without `DOLT_REMOTE_INFO_BRANCH` set to empty and `metrics.disabled` set, and a test shall observe that the bare remote gains no `__dolt_remote_info__` branch.
   - **T-1.3 Access path**
     - [ ] When two package processes on one host write at once, the system shall serialize them through the host file lock, and both writes shall land.
     - [ ] If the `dolt` binary is missing, then the system shall raise `RegistryUnreachableError` with a message naming the install step.
     - [ ] If `dolt version` reports a version below the floor in [D-6](#d-6), or `meta.min_reader_version` is above the package's, then the system shall refuse every read and write with a message naming the upgrade.
-  - **T-1.4 Parity** — every behaviour in [Behaviour kept from the current registry](#behaviour-kept-from-the-current-registry).
-    - [ ] For each listed behaviour, the existing test that covers it shall pass against `DoltRegistry` and `SqliteRegistry`, or the test shall be ported with the same assertion.
+    - [ ] When fetch and push timeouts are configured to distinct values above `publish_timeout_s`, every `dolt fetch` shall receive only `registry_fetch_timeout_seconds`, every `dolt push` shall receive only `registry_push_timeout_seconds`, and a fetch or push completing between the old shared budget and its configured budget shall succeed without taking an offline spare.
+    - [ ] If either registry timeout setting is invalid, then the system shall refuse while naming that setting; it shall not silently fall back to `publish_timeout_s`.
+  - **T-1.4 Allocation and transaction parity**
+    - [ ] When any session, spare or label token is held, every allocation path shall treat it as occupied in the one shared namespace on both backends.
+    - [ ] When reserve and spare top-up, reserve and manual add, reserve and migration intent, or migration completion and old-row release are requested together, each pair shall appear in one commit or neither change shall appear.
+    - [ ] If a picked claim loses a publish race, then the picker shall re-read and pick again; if a hand-chosen claim loses, then it shall refuse with the fresh tip's holder; after `publish_attempts` losses either path shall raise `RegistryContendedError`.
+    - [ ] If a policy snapshot has an unknown schema or key, then every allocation shall refuse with "update ai-cli-utils".
+    - [ ] When `sync-names` sees a policy revision newer than the published snapshot, it shall regenerate the pool; for an equal or older revision it shall make no registry change.
+    - [ ] If the registry is unreachable during automatic allocation, then the system shall activate one approved same-machine spare under `spool.lock` and durably record the activation in the spool.
+    - [ ] If the registry is unreachable during a hand-chosen launch, then the launch shall refuse without taking or spooling any name.
+    - [ ] When the next online command publishes a spooled activation, it shall update only the unchanged same-machine spare and remove the spool entry only after the remote postcondition is verified.
+    - [ ] If either absence test fails, then release and reconcile shall keep the held row.
+    - [ ] If the held row changes after both absence tests, then release and reconcile shall keep the changed row; no force-release path shall exist.
+    - [ ] If a proposed row contains an absolute path, then both backends shall refuse it before commit.
+    - [ ] If a host other than the row owner attempts an ordinary edit or delete, then the system shall refuse it without a commit.
+    - [ ] When `reassign-name` targets a known host and the row is unchanged, it shall change ownership atomically without making the token absent at any point.
+    - [ ] When `check-names` sees an over-limit, grandfathered, migration-incomplete or stale-intent row, it shall report the matching category and preserve exit codes 2 for refusal, 3 for unreadable data and 75 for an unreachable registry.
+    - [ ] When the registry is unavailable, `known_names` shall return the shipped seed without a network or database read.
+  - **T-1.5 Migration recovery parity**
+    - [ ] When migration starts, the new hold and `migrations.state = 'intent'` row shall land atomically before filesystem changes; rerunning the same intent shall be idempotent.
+    - [ ] If migration fails after any artifact moves, then the new hold shall remain `migration-incomplete` with the exact survivor recovery data and the old hold shall remain held; no spare or session name shall be released or leaked.
+    - [ ] When the same migration command resumes an incomplete migration, it shall consume the stored survivor data, complete idempotently, set the migration row to `complete`, make the new hold active and release the unchanged old row in one commit.
+    - [ ] If a resume request disagrees with the stored old title, new name, machine or survivor data, then it shall refuse with exit 2 and change neither rows nor recovery data.
+    - [ ] A backend-parametrized interrupted-migration test shall stop after each durable boundary and prove that the next identical invocation reaches the same completed rows on Dolt and SQLite.
 - **Exit gate:** all Phase 1 ACs green; `uv run pytest` passes on Linux and in CI on macOS and Windows with `dolt` installed; a fresh-context diff review against these ACs.
 
 ### Phase 2: Status model and the picker
@@ -486,12 +535,17 @@ those tests as not run, never as passed.
   - **T-2.2 `set-name-status`** — `ai set-name-status -a/--actor ACTOR -r/--reason TEXT STATUS NAME...`
     - [ ] When given several names, the system shall set them all in one commit, each with actor, recorder and time.
     - [ ] If any name is outside the pool, then the system shall refuse the whole call and write nothing.
+    - [ ] When status is set to the legacy meanings `excluded` or `needs-review` during import, the system shall store `rejected` or `unreviewed`, respectively; the public command shall accept only the three canonical status values.
   - **T-2.3 `set-name-verdict`** — `ai set-name-verdict -s/--scope repo|host|session -v/--value VALUE -a/--actor ACTOR VERDICT NAME...`, and `-d/--delete` to remove a verdict.
     - [ ] When a verdict is set, the system shall write one `verdicts` row per name, keyed by name and scope.
     - [ ] If the scope kind is not one of `repo`, `host`, `session`, then the system shall refuse with exit 2.
   - **T-2.4 Held spares**
     - [ ] When `migrate-session --to-name` names an unactivated spare of the same machine, the system shall activate that spare, and the dry run shall report the same plan.
     - [ ] If the spare belongs to another machine, then the system shall refuse it as held.
+  - **T-2.5 Approval-status parity**
+    - [ ] When `list-names` is run, it shall show each name's general status and apply the requested pool filter on Dolt and SQLite.
+    - [ ] If status data is unusable during reconcile, then reconcile shall skip only spare top-up, shall still perform guarded releases, and shall report that no unverified spare was created.
+    - [ ] When seed metadata says the same seed revision was already applied, a second seed invocation shall make no commit; if the same revision has different content, it shall refuse.
 - **Exit gate:** all Phase 2 ACs green; the ported #494 tests pass; `uv run pytest` green; a fresh-context diff review against these ACs.
 
 <!-- ac-format: decision-table id="AC-DT-ELIG" coverage="all-feasible-rules" verifier="uv run pytest tests/test_session_name_verdicts.py -q" -->
@@ -532,10 +586,11 @@ asserting both the pick result and the hand-choice result.
     - [ ] When run against a registry tree, the system shall write one Dolt commit holding every pool name, manual name, held row and migration record from that tree, and a second run shall report nothing to import.
     - [ ] When the import completes, the system shall print counts that match the tree: names, manual names, held rows by kind, migrations by state.
     - [ ] If the tree has a row that fails today's validator, then the system shall refuse the whole import and name the row.
-  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package.
-    - [ ] When seeded, the system shall apply every listed general status and scoped verdict with the file's actor, and the denylisted names shall become `rejected`.
+  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. The private manifest contains exactly the 20 previously approved entries plus the one approved replacement (21 approved entries total), omits the superseded entry, carries all recorded scoped verdicts, and records a canonical SHA-256 over sorted normalized rows plus the authoritative requirement-record digest it was derived from.
+    - [ ] When seeded, the system shall verify the manifest's canonical digest, apply all 21 exact general approvals and every listed scoped verdict with the file's actor, omit the superseded entry, and convert every denylisted name to `rejected` in one commit.
     - [ ] When a denylisted name is held, the system shall keep the hold and add a session-scoped `approved` verdict for its holder.
     - [ ] If the seed file names a name outside the pool, then the system shall refuse the whole seed.
+    - [ ] If the manifest has any missing, extra, substituted or duplicate approved entry, does not attest to the authoritative requirement record, or its recomputed digest differs, then the cutover validation shall fail before any seed row is written.
   - **T-3.3 `list-migrations`** — `ai list-migrations -j/--json`.
     - [ ] When run, the system shall list every migration row with its state, as JSON with `--json`.
   - **T-3.4 `find-names`** — `ai find-names -s/--status S -k/--scope KIND -v/--value VALUE -m/--machine M -t/--state STATE -j/--json`.
@@ -552,15 +607,22 @@ asserting both the pick result and the hand-choice result.
     changed per [Integration](#integration), and the cutover runbook.
   - This repository: a release carrying Phases 1 to 3.
 - **Tasks + acceptance criteria:**
-  - **T-4.1 Freeze** — publish a policy snapshot with `schema = 2` to the old registry branch.
-    - [ ] When the frozen snapshot is published, every client older than this release shall refuse every allocation with "update ai-cli-utils", and the old branch shall receive no further commit.
-  - **T-4.2 Import and flip** — on one host: `import-names` from the frozen tip, `seed-name-verdicts`, then merge the schema 2 policy into the fleet repository.
-    - [ ] When the flip lands, `check-names` on that host shall exit 0 and `list-names` shall show the imported counts.
-  - **T-4.3 Roll out** — each host installs the release, runs `check-names`, and launches one session. Sessions are told before the freeze and after the last host.
-    - [ ] When every host has run `check-names` with exit 0 and launched one named session, the cutover shall be recorded complete in the runbook.
-  - **T-4.4 Rollback** — revert the schema 2 policy commit and the frozen snapshot; the old branch is unchanged since the freeze. Holds created in Dolt after the flip are listed with `find-names` and re-created on the old store by hand.
-    - [ ] When the rollback is rehearsed on a scratch copy before the real cutover, old clients shall allocate again and the listed holds shall be re-created.
-  - **T-4.5 Close the old system** — after a week without rollback, delete the old registry branch (its tip anchored first) and close #494 as superseded.
+  - **T-4.1 Drain and freeze** — announce the freeze, quiesce allocation processes and hold both registry and spool locks on every registered host, drain the old spools, then publish a policy snapshot with `schema = 2` to the old registry branch. Keep the Dolt `meta.writes_enabled` gate at `0` throughout.
+    - [ ] While all registered hosts remain quiesced and locked, the cutover shall inventory every host's last-fetched spare rows and pending spool, publish every valid pending activation to the old store, record its resulting tip, and only then publish the schema-2 snapshot as the frozen tip.
+    - [ ] When the frozen snapshot is published, every connected old client shall refuse every allocation with "update ai-cli-utils", the old branch shall receive no further commit, and every Dolt mutation except import, seed and quarantine reconciliation shall refuse while `writes_enabled = 0`; each host shall install the new release before its cutover locks are released.
+    - [ ] If any registered host cannot be locked, inventoried and upgraded, or if the old branch changes after the recorded frozen tip, then the cutover shall stop with Dolt writes disabled.
+  - **T-4.2 Import, quarantine and seed** — on one host, import from the exact frozen tip, import every spare token in the union of the frozen tree and all host cache inventories as `cutover-quarantined`, and seed verdicts while Dolt writes remain disabled.
+    - [ ] When import completes, every old session and label hold shall exist unchanged, every token an old offline client could activate shall still be occupied by a quarantined Dolt hold, and no ordinary Dolt allocation shall yet be accepted.
+    - [ ] Before seed writes, the runbook shall independently derive the expected private 21-entry approved set from the authoritative requirement record, recompute the manifest digest, and record equality with the manifest's attested digest; any count, membership, replacement or digest mismatch shall block the flip.
+    - [ ] When validation succeeds, `check-names` in cutover mode shall exit 0 and `list-names` shall show counts equal to the frozen tree plus the attested seed and cache-only quarantines.
+  - **T-4.3 Enable and roll out** — after every registered host is upgraded, reconcile each quarantine from its captured cache/spool evidence, verify no old registry process is running, switch policy to the Dolt backend, and set `meta.writes_enabled = 1` in the enabling Dolt commit. Sessions are told before the freeze and after the last host.
+    - [ ] At every cutover checkpoint, an integration test shall attempt an old online write, an old cached offline-spare activation and a new Dolt write; zero stores shall accept ordinary allocation before the enabling commit, and only Dolt shall accept it afterward.
+    - [ ] When `writes_enabled` becomes `1`, every registered host shall already have the new release and schema-2 policy, the old ref shall still equal its frozen tip, and every old cached spare token shall remain held as reconciled or quarantined in Dolt; otherwise the enabling commit shall refuse.
+    - [ ] When every host has run `check-names` with exit 0 and launched one named session through Dolt, the cutover shall be recorded complete in the runbook and the post-cutover notice shall be sent.
+  - **T-4.4 Rollback** — quiesce and lock every host, set `meta.writes_enabled = 0`, export every post-flip Dolt hold, recreate those holds on the unchanged frozen old store, and only then switch the policy back to the old backend and restore its supported schema snapshot.
+    - [ ] At each rehearsed rollback checkpoint, an integration test shall attempt a Dolt allocation and an old-store allocation: before the policy switch neither shall succeed, and after it only the old store shall succeed with every exported hold present.
+    - [ ] If any Dolt hold cannot be represented on the old store, any host cannot be quiesced and locked, or the old ref differs from its frozen tip before hold recreation, then rollback shall stop with both allocation paths disabled.
+  - **T-4.5 Close the old system** — after a week without rollback, anchor and retire the old registry branch and close #494 as superseded. A quarantined token is released only after the runbook proves its source host was inventoried and upgraded; an unresolved quarantine remains held.
 - **Exit gate:** every host passes T-4.3; the fleet repository's readers pass their own tests on schema 2; the rollback rehearsal is recorded.
 
 > **Feedback Round 1:** Does the phasing feel right: too big, too small? Should anything move earlier or later?
@@ -590,7 +652,7 @@ asserting both the pick result and the hand-choice result.
 | 4 | A hosted push takes about 4.7 s, against about 1.2 s today | Slower named launches | Spares take most launches off the network; refill after the session starts |
 | 5 | Telemetry spool growth | Disk filled on a host | `metrics.disabled` set by the package on every call |
 | 6 | The registry and the issue tracker interfere in one repository | One overwrites the other's info branch or ref | Separate ref; info branch off; separate clone; no shared server (D-2) |
-| 7 | The cutover window stalls launches | Sessions cannot get new names | Old clients fail closed; spares cover offline launches; the window is minutes; rehearsed rollback |
+| 7 | The cutover window stalls launches | Sessions cannot get new names | Both stores reject ordinary writes until every host is upgraded; old cached spares are quarantined; the window is announced and rollback is rehearsed |
 | 8 | A hand edit in SQL bypasses the client | A case twin or invalid row | Constraints in the table itself, not only in the client |
 
 <!-- /doc:region name="overview" -->
@@ -660,8 +722,8 @@ launch path of every host".
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) `dolt` CLI subprocess per call
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-1; decision-topic=registry-dolt-access-path; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=the-package-reaches-dolt-through-the-cli-only; applicability=scope:fleet-registry; outcome-id=cli-subprocess; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-1; decision-topic=registry-dolt-access-path; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=the-package-reaches-dolt-through-the-cli-only; applicability=scope:fleet-registry; outcome-id=cli-subprocess; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The CLI keeps the launch path free of a server, which answers the earlier design's main objection,
 and adds no dependency. Its read-only fallback is covered by the host file lock and the commit
@@ -708,8 +770,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) its own ref in the fleet repository
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-2; decision-topic=registry-dolt-placement; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=registry-on-own-dolt-ref-of-fleet-repository; applicability=scope:fleet-registry; outcome-id=own-ref; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-2; decision-topic=registry-dolt-placement; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=registry-on-own-dolt-ref-of-fleet-repository; applicability=scope:fleet-registry; outcome-id=own-ref; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The registry keeps the access it has today and is isolated by ref, clone and the info-branch
 setting. The cost is knowing which of two Dolt refs is which, which the policy file names.
@@ -756,8 +818,8 @@ cell cleanly.
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) a `status` column on `names` plus a `verdicts` table
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-3; decision-topic=registry-status-storage; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=status-column-plus-normalized-verdicts-table; applicability=scope:fleet-registry; outcome-id=normalized; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-3; decision-topic=registry-status-storage; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=status-column-plus-normalized-verdicts-table; applicability=scope:fleet-registry; outcome-id=normalized; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The owner asked for "whatever is robust", and offered JSON as one possibility. A normalized table
 keeps every verdict's who and when checked by the engine and searchable by plain SQL. The extra
@@ -795,8 +857,8 @@ ref per name would give one winner by construction.
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) Dolt alone, under the claim protocol
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-4; decision-topic=registry-claim-uniqueness; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-claim-protocol; applicability=scope:fleet-registry; outcome-id=protocol; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-4; decision-topic=registry-claim-uniqueness; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-claim-protocol; applicability=scope:fleet-registry; outcome-id=protocol; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The protocol is cheaper than a second store at a few claims a day, and the spare path takes most
 launches off the network. T-1.2 pins the identical-value case so a regression fails a test.
@@ -840,8 +902,8 @@ may not have `dolt`. Today such installs keep the JSON tree in a local directory
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) a local SQLite database with the same schema
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-5; decision-topic=registry-public-fallback; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=public-installs-use-sqlite-with-shared-schema; applicability=scope:public-install; outcome-id=sqlite; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-5; decision-topic=registry-public-fallback; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=public-installs-use-sqlite-with-shared-schema; applicability=scope:public-install; outcome-id=sqlite; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 SQLite gives public users the same model with nothing to install. The second dialect is held in
 step by generating both from one module and running every registry test on both backends.
@@ -886,8 +948,8 @@ Release 2.4.1 made the git-remote history cap a setting; 2.7.0 changed merge sto
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) 2.3.4
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-6; decision-topic=registry-dolt-version-floor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=dolt-floor-equals-fleet-version; applicability=scope:fleet-registry; outcome-id=2.3.4; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-6; decision-topic=registry-dolt-version-floor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=dolt-floor-equals-fleet-version; applicability=scope:fleet-registry; outcome-id=2.3.4; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The floor matches what every fleet host already runs, so the cutover needs no binary upgrade. The
 floor is a value in `meta`, so raising it later is one migration.
@@ -905,11 +967,12 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 
 **Pros:**
 - One store accepts writes at any moment.
-- Old clients fail closed by the existing policy check, with no new code in them.
+- Connected old clients fail closed by the existing policy check, and every spare visible in an old
+  host cache remains held in Dolt quarantine.
 
 **Cons:**
-- Named launches pause for the minutes between the freeze and each host's install; spares cover
-  offline launches.
+- Named launches pause while all hosts are quiesced, inventoried and upgraded; offline activation
+  is deliberately disabled during that window.
 
 ##### (b) A dual-write period
 
@@ -931,12 +994,13 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) one frozen window
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-7; decision-topic=registry-cutover-shape; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-frozen-cutover-window; applicability=scope:fleet-registry; outcome-id=frozen-window; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-7; decision-topic=registry-cutover-shape; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-gated-frozen-window; applicability=scope:fleet-registry; outcome-id=frozen-window; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-A short pause is the price of never having two stores accept writes, and the existing policy
-check makes the freeze safe without touching old clients. The rollback is rehearsed before the
-real window.
+A short pause is the price of never having two stores accept writes. The policy freeze stops
+connected old clients, the all-host locks and inventory close the cached-offline path, quarantine
+keeps every old spare token occupied, and the Dolt write gate stays closed until all hosts run the
+new client. The rollback is rehearsed before the real window.
 
 ---
 
@@ -966,8 +1030,8 @@ cutover those files stop changing.
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) through the `ai` CLI's JSON output
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-8; decision-topic=registry-external-readers; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=external-readers-use-cli-json; applicability=scope:fleet-registry; outcome-id=cli-json; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-8; decision-topic=registry-external-readers; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=external-readers-use-cli-json; applicability=scope:fleet-registry; outcome-id=cli-json; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Keeping one access path means the Dolt-specific settings live in one place.
 
@@ -999,8 +1063,8 @@ verdicts usually arrive through an agent session relaying them.
 ##### Recommendation
 
 > **Decision:** ✅ Resolved — (a) separate `actor` and `recorded_by`
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=n/a; ai-profile=interactive -->
-<!-- decision-lineage: decision-id=AI-CLI-6xud/D-9; decision-topic=registry-verdict-actor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=actor-and-recorder-stored-separately; applicability=scope:fleet-registry; outcome-id=two-fields; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-9; decision-topic=registry-verdict-actor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=actor-and-recorder-stored-separately; applicability=scope:fleet-registry; outcome-id=two-fields; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 `--actor` is required for `set-name-status` and `set-name-verdict`; `recorded_by` is filled from
 the session automatically.
@@ -1014,15 +1078,10 @@ the session automatically.
 
 ## Open Questions
 
-1. Does "git tracked" mean stored in a git repository with history, or readable in a git diff? The
-   owner named Dolt as a candidate "git tracked database system", which reads as the first, and
-   this design proceeds on it. The owner is asked to confirm. If the second is meant, a readable
-   export of the tables committed to a branch on each write can be added without changing the
-   store.
-2. Which names does the seed approve, reject or scope? The owner's recorded verdicts and the
-   earlier pre-approved list are in the fleet's private records; part of the list is still owed by
-   another session. The seed file is written from them in T-3.2, and names without a verdict start
-   `unreviewed`.
+None. "Git tracked" is satisfied by the canonical Dolt database and row history stored on a git
+remote ref. The exact private seed is not discretionary: T-3.2 fixes its 21 approved entries and
+replacement rule, and T-4.2 requires count, membership and digest equality with the authoritative
+record before cutover.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
@@ -1045,6 +1104,6 @@ the session automatically.
 
 | Date | Decision | Notes |
 |------|----------|-------|
-| 2026-11-11 | D-1 to D-9 | Resolved by the orchestrating session (Claude Opus 5.5) in automated mode through the decision framework; none escalated |
+| 2026-11-11 | D-1 to D-9 | Resolved during automated design review; none required owner input |
 
 <!-- /doc:region name="approval_log" -->
