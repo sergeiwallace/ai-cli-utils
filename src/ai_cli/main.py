@@ -7817,6 +7817,54 @@ def _migrate_all_to_names(
     return 1 if refused else 0
 
 
+def _first_name(title: str, repo_root: Path) -> str | None:
+    """The first name ending ``title`` (``ivy`` in ``myrepo-box-ivy``), read under the repo's stem."""
+    from . import migrate_names
+
+    try:
+        parts = migrate_names.split_title(title, _migration_stem(repo_root))
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError):
+        return None
+    return parts.tail if parts else None
+
+
+def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) -> tuple[str, str, Path | None]:
+    """The recorded ``(old, new, repo)`` a ``--finish`` given one name, or both, refers to.
+
+    One name matches a pair this host's ledger records when it is the pair's OLD, its NEW
+    or the first name of its NEW; ``-t NAME`` and a positional name must both match. Both
+    names given positionally keep the cwd's repo when the ledger does not record them, so a
+    migration from before the ledger still finishes. ``-r`` always wins over the record's repo.
+    Zero or several matching pairs exit 2 with what was searched.
+    """
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+
+    pairs = recorded_migrations()
+    if old and new:
+        hits = [pair for pair in pairs if pair[:2] == (old, new)]
+        return old, new, repo or (hits[-1][2] if hits else None)
+    names = [name for name in (old, to_name) if name]
+
+    def matches(name: str, pair: tuple[str, str, Path]) -> bool:
+        return name in pair[:2] or name == _first_name(pair[1], pair[2])
+
+    hits = [pair for pair in pairs if all(matches(name, pair) for name in names)]
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], repo or hits[0][2]
+    searched = " and ".join(names)
+    ledger = _config.get_xdg_state_home() / MIGRATION_LEDGER
+    if not hits:
+        reason = f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in {ledger})"
+        _out.error(Tag.MIGRATE, "migrate", reason)
+        _print_migration_refusal(reason)
+        sys.exit(2)
+    lines = [f"{searched} matches {len(hits)} recorded migrations in {ledger}; run the one you mean:"]
+    lines += [f"  ai migrate-session {o} {n} --finish -r {r}" for o, n, r in hits]
+    _out.error(Tag.MIGRATE, "migrate", "\n".join(lines))
+    _print_migration_refusal(f"{searched} names more than one recorded migration")
+    sys.exit(2)
+
+
 @_cli_group.command(
     "migrate-session",
     help=(
@@ -7832,6 +7880,9 @@ def _migrate_all_to_names(
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
         "runs while NEW is live.\n\n"
+        "--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the "
+        "pair and its repo in this host's migration record, from any directory; a name matching no "
+        "pair, or several, is refused with exit 2 and what it matched.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -7907,6 +7958,11 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if finish and not (sweep or to_names or over_limit) and (old or to_name):
+        if to_name and new:
+            raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")
+        old, new, repo = _resolve_finish(old, new, to_name, repo)
+        to_name = None
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
     if sweep or to_names or over_limit:
         if not (sweep and to_names):

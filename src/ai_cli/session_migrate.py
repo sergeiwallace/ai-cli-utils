@@ -963,6 +963,20 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
     )
 
 
+def recorded_migrations(state_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """``(old, new, repo)`` for each pair this host's ledger records, with the pair's latest repo.
+
+    A row without a string ``old``, ``new`` and ``repo`` names no slot and is skipped.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    pairs: dict[tuple[str, str], Path] = {}
+    for row in _ledger_rows(state):
+        old, new, repo = row.get("old"), row.get("new"), row.get("repo")
+        if isinstance(old, str) and isinstance(new, str) and isinstance(repo, str):
+            pairs[(old, new)] = Path(repo)
+    return [(old, new, repo) for (old, new), repo in pairs.items()]
+
+
 def _pending_context_rows(new: str, state: Path) -> list[dict]:
     """Initial migration rows for ``new`` without a later context-announcement row."""
     pending: dict[tuple[str, str], dict] = {}
