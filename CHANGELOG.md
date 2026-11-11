@@ -41,8 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transcript also titled NEW that a relaunch started before the migration finished. Before, the
   resume took the most recently active transcript titled NEW, so that short stray won and the
   migrated conversation was lost. The migration now records the session ids of the transcripts it
-  moves in `session-migrations.jsonl`, `--finish` records any it retitles that no row names yet
-  (a pair already finished included), and the resume note names each transcript it skipped. A
+  moves in `session-migrations.jsonl`, `--finish` records any that no row names yet and that it
+  retitles or that began before the pair's migration (a pair already finished and fully retitled
+  included), and the resume note names each transcript it skipped. A
   session with no migration on record resumes as before.
 
 - `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker

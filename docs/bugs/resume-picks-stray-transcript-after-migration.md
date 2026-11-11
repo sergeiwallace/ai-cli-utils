@@ -40,7 +40,10 @@ and then writes a transcript titled NEW into the moved project directory:
   the stray. With the migrated transcript more recently active it printed the right one, but its
   note did not say a transcript was skipped.
 - For a pair whose ledger names no transcript and already has a `finished` row, a re-run
-  `ai migrate-session OLD NEW --finish -y` recorded nothing, so the resume kept the stray.
+  `ai migrate-session OLD NEW --finish -y` recorded nothing, so the resume kept the stray. This
+  held both when the migrated transcript still carried OLD and when it was already fully
+  retitled to NEW, as on the real host, where the re-run's `transcript title` part read
+  `done earlier`.
 
 ## Root Cause
 
@@ -66,10 +69,17 @@ computes its own (the `transcript title` part of `plan_home`).
   active transcript titled NEW. When several are titled NEW, the note names the transcript it
   resumes and each one it skipped because no migration moved it.
 
+- A finish also records each transcript in NEW's project directory whose first record predates
+  the pair's first migration row (the row that carries `worktree`). The migration refuses while
+  NEW's project directory exists, so such a transcript came from OLD's, while a stray started by a
+  relaunch under NEW begins after the row. This is what reaches a pair already finished and fully
+  retitled, where the `transcript title` part has nothing left to do (`done earlier`) and an old
+  title or path no longer marks the moved transcript. A row written by hand carries no `worktree`
+  and is not used, and a transcript whose start cannot be read is not counted.
+
 No transcript is renamed, retitled, moved or deleted by this change; a stray stays readable. A
 slot with no migration on record resumes exactly as before.
 
-A finish records only the transcripts its `transcript title` part retitles, that is, the ones
-still carrying OLD or the old path. A pair whose transcripts were all fully retitled before this
-change has nothing left to retitle, so a re-run `--finish` records no id for it and its resume
-keeps the most recently active transcript.
+One case stays open: when a pair has no ledger row of its own, the recovery path of
+`ai migrate-session` writes one when it resumes, after the worktree moved. A stray started between
+the move and that recovery would begin before the row and be recorded as moved.

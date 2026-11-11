@@ -893,35 +893,6 @@ def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
     return candidate
 
 
-def _utc_instant(value: object):
-    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
-    from datetime import UTC, datetime
-
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
-def _cc_transcript_started(path: Path):
-    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
-    try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
-                    return _utc_instant(record["timestamp"])
-    except OSError:
-        pass
-    return None
-
-
 def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> "Path | None":
     """The transcript a recorded migration to ``title`` left under its old name, when it should be resumed.
 
@@ -936,11 +907,11 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
     started before it, or whose start cannot be read, is the session's own retitled history and
     keeps winning, so ``None`` is returned.
     """
-    from .session_migrate import _ledger_rows
+    from .session_migrate import _ledger_rows, transcript_started, utc_instant
 
     migrated_at: dict[str, Any] = {}
     for row in _ledger_rows(_config.get_xdg_state_home()):
-        old, at = row.get("old"), _utc_instant(row.get("time"))
+        old, at = row.get("old"), utc_instant(row.get("time"))
         # Only the migration's own row carries ``worktree``; finish and announce rows do not.
         if row.get("new") != title or not isinstance(old, str) or old == title or at is None:
             continue
@@ -959,7 +930,7 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
         if old is None or _cc_registered_kind(path.stem) == "bg":
             continue
         for candidate in candidates:
-            started = _cc_transcript_started(candidate)
+            started = transcript_started(candidate)
             if started is None or started <= migrated_at[old]:
                 return None
         return path

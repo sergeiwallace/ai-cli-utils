@@ -980,6 +980,54 @@ def moved_transcripts(new: str, state_dir: Path | None = None, *, old: str | Non
     return moved
 
 
+def utc_instant(value: object) -> datetime | None:
+    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def transcript_started(path: Path) -> datetime | None:
+    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                    return utc_instant(record["timestamp"])
+    except OSError:
+        pass
+    return None
+
+
+def _started_before_migration(project: Path, old: str, new: str, state: Path) -> list[str]:
+    """Session ids of the transcripts in ``project`` that began before the pair's first migration row.
+
+    A migration refuses while NEW's project directory exists, so a transcript there that began
+    before the migration was carried from OLD's, and one a relaunch under NEW started began after
+    it. Unlike an old title or path, the start survives a completed retitle. A row written by hand
+    names no ``worktree`` and is not used; a transcript whose start cannot be read is not counted.
+    """
+    times = [
+        utc_instant(row.get("time"))
+        for row in _ledger_rows(state)
+        if (row.get("old"), row.get("new")) == (old, new) and isinstance(row.get("worktree"), str)
+    ]
+    known = [at for at in times if at is not None]
+    if not known or not project.is_dir():
+        return []
+    migrated_at = min(known)
+    started = {path.stem: transcript_started(path) for path in sorted(project.glob("*.jsonl"))}
+    return [stem for stem, at in started.items() if at is not None and at < migrated_at]
+
+
 def _record_moved_transcripts(state: Path, old: str, new: str, repo_root: Path, transcripts: list[str]) -> None:
     unrecorded = sorted(set(transcripts) - moved_transcripts(new, state, old=old))
     if unrecorded:
@@ -1481,8 +1529,9 @@ def finish_session(
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
     A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
     as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
-    On that same record, each transcript it retitles that no ledger row names yet is recorded in
-    a ``transcripts_recorded`` row, a finished pair included, so the resume prefers it.
+    On that same record, each transcript it retitles, or that began before the pair's migration
+    row (:func:`_started_before_migration`), and that no ledger row names yet is recorded in a
+    ``transcripts_recorded`` row, a finished pair included, so the resume prefers it.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1601,7 +1650,8 @@ def finish_session(
     if evidence:
         _apply_beads(old, new, beads, result)
         retitled = [Path(move.source).stem for move in home_plan.moves if move.kind == "transcript title"]
-        _record_moved_transcripts(state, old, new, repo_root, retitled)
+        carried = _started_before_migration(new_pd, old, new, state)
+        _record_moved_transcripts(state, old, new, repo_root, retitled + carried)
         if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
             _append_ledger(state, old, new, repo_root, finished=True)
     return result
