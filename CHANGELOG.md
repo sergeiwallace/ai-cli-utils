@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-commit hook run that comparison. A test also checks every `ai ...` example in the README,
   `docs/tools/` and `docs/guides/` against the command tree. `docs/tools/ai-cli-usage.md` is now
   the narrative CLI guide and links to the reference instead of copying flag tables.
+- The project wiki is generated from the repository. `docs/wiki/pages.toml` lists the user
+  pages (the README split into Home, Installation, Quick Start, Usage and Configuration, the CLI
+  reference, the CLI guide, the architecture doc, CONTRIBUTING, SECURITY, the changelog and the
+  license) and the groups that publish every other Markdown file and every file under `docs/`,
+  each with an index page. Links are rewritten to wiki pages, or to the file on GitHub, and every
+  page names its source. A tracked file that is neither published nor excluded as a non-document
+  fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
+  `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and

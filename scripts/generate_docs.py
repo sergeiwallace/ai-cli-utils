@@ -9,10 +9,12 @@ renders it into ``docs/reference/cli.md`` (every byte generated) and into the re
 Usage:
   uv run python scripts/generate_docs.py           # rewrite both files
   uv run python scripts/generate_docs.py -c        # check only
+  uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO   # check, then build the wiki
 """
 
 import argparse
 import difflib
+import os
 import re
 import sys
 from collections.abc import Iterator
@@ -20,6 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+
+if __package__:
+    from . import wiki_build
+else:  # run as `python scripts/generate_docs.py`
+    import wiki_build
 
 REPO = Path(__file__).resolve().parents[1]
 REFERENCE = "docs/reference/cli.md"
@@ -208,10 +215,29 @@ def write(repo: Path, root: click.Group) -> list[str]:
     return changed
 
 
+def build_wiki(repo: Path, root: click.Group, out_dir: Path, repository: str) -> list[Path]:
+    """Build the wiki tree from ``docs/wiki/pages.toml`` into ``out_dir``."""
+    return wiki_build.build_wiki(
+        repo / wiki_build.MANIFEST,
+        repo,
+        out_dir,
+        repository,
+        generated={"cli-reference": lambda: (REFERENCE, render_reference(root))},
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "-c", "--check", action="store_true", help="write nothing; exit 1 with a diff when a file is stale"
+    )
+    parser.add_argument("-w", "--wiki-out", metavar="DIR", type=Path, help="also build the wiki tree into DIR")
+    parser.add_argument(
+        "-R",
+        "--repository",
+        metavar="OWNER/REPO",
+        default=os.environ.get("GITHUB_REPOSITORY", ""),
+        help="repository the wiki's absolute links point at (default: $GITHUB_REPOSITORY)",
     )
     args = parser.parse_args(argv)
     root = _root()
@@ -222,10 +248,13 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stdout.write(diff)
                 print(f"\nGenerated docs are stale. Run: {REGENERATE}", file=sys.stderr)
                 return 1
-            return 0
-        for rel in write(REPO, root):
-            print(f"wrote {rel}")
-    except GenerateError as exc:
+        else:
+            for rel in write(REPO, root):
+                print(f"wrote {rel}")
+        if args.wiki_out is not None:
+            pages = build_wiki(REPO, root, args.wiki_out, args.repository)
+            print(f"wiki: {len(pages)} pages in {args.wiki_out}")
+    except (GenerateError, wiki_build.WikiError) as exc:
         print(f"generate_docs: {exc}", file=sys.stderr)
         return 1
     return 0
