@@ -43,11 +43,12 @@ ledger-version: 1
 | Decisions | `resolve_decisions: true` (source: default) |
 | Doc approval | `require_doc_approval: false` (source: default) |
 | Integration mode | this coordinator lands each stage on `main` by pull request |
-| Founding ask | Tier 3. Record `docs/asks/AI-CLI-single-source-cli-help-usage-lels.md` in the operator's private harness repository at capture commit `1e65faf1fd58`; `founding_ask_ref_sha256` `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`; content sha256 `7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9`; entry `A001`, generation 1 |
+| Founding ask | Tier 3. The record is held in the operator's private configuration repository; root digest `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`; content digest `7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9`; entry `A001`, generation 1 |
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/<session>-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `research converged (round 1)`; research doc `docs/research/cli-docs-generation-tools.md`; doc stage next |
+| Stage cursor | `doc-audit audit-stabilized` (8 rounds, two spec freezes); boundary `doc-audit->implement` finalized and the implement gate passed for design sha256 `1c5c7a5a`; implement next |
+| Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -56,6 +57,7 @@ ledger-version: 1
 |---|---:|---|---|---|---|---|
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked to "see what open source packages / tools / repos etc there are" and "what existing documentaiton there is for auto-generating documentation programmatically and / or with agentic AI". R1 and R2 also fire. | `session` | `d301960c` |
 | `research->doc` | 1 | `converged` | `rubric` | none | `session` | `e3aa819c` |
+| `doc-audit->implement` | 8 | `advance` | `fold` | none | `session` | `HEAD` |
 
 ## Children dispatched
 
@@ -77,5 +79,49 @@ ledger-version: 1
   run, so no critic finding is open. Both legs reported that general web search was unavailable;
   the host's search service was not loadable from the coordinator either, and the remaining
   search gap does not bear on a decision. `research->doc` round 1 recorded `converged`.
+
+- 2026-11-11 ~06:00Z: design doc authored by the coordinator (eight Decisions, each resolved
+  through the Authority test; no Open Questions); `scripts/far_fidelity.py check` reported 0
+  findings against the raw record. Doc-stage boundary run through `flow_dispatch_doc.py` prepare
+  and complete with lineage root `docs/tools/ai-cli-usage.md` (the hand-written usage doc this
+  design supersedes in part); a first prepare with the design itself as lineage root refused
+  `pinned-target-absent`, correctly, since that file is new.
+
+- 2026-11-11 ~06:10Z: doc-audit round 1 (codex audit, Sol, high) returned 7 MAJOR, 0 CRITICAL,
+  among them a founding-ask fidelity point (root help must show complete descriptions, not a
+  first sentence). The in-loop fix pass (codex implement, medium) applied all seven in `9f816f1d`,
+  including a docs-scoped hygiene test for this design. Per-round sanity check: clear. Round 2
+  (verify) returned one MAJOR, round2:N-1 (sync flags missing from the parity inventory), the same
+  missing-parity-coverage class as round1:F-2, and the loop terminated `halted-recurrence`.
+  Diagnosis under the Authority test: a bounded systematic fix (read the inventory from the parser
+  source and list it in full, every row tested) is permitted to the coordinator; applied in
+  `fa1886ff`; invariant register drafted for the freeze.
+
+- 2026-11-11 ~06:20Z: the register's dimension challenge (codex review, Sol, medium) returned
+  REJECT with one inventory error (repair-worktree arguments) and two omissions (caller
+  compatibility; the two epics' disposition). All accepted and applied in `b28bb410`. Spec frozen
+  (standard tier, no ratification needed); round 3 conformance returned no new finding and the
+  loop terminated `audit-converged`. A hygiene failure on the scaffolded audit doc (a private
+  tool name in its frontmatter) was fixed in `5681888f` and the scaffold defect filed in the
+  harness task store.
+
+- 2026-11-11 ~06:30Z: boundary alignment for `doc-audit->implement` (codex review, Sol, medium,
+  non-author) returned MISMATCH: the wiki scope excluded design, plan, research and audit records,
+  narrowing "everything about this repo", and the two epics' dispositions lacked evidence. Both
+  fixed in `960e5fe8` (every document published; measured epic state recorded). Finalize recorded
+  the artifact drift; rounds 4 to 6 re-audited it, and round 6 halted on fingerprint recurrence of
+  the wiki-coverage finding (LICENSE outside the enumerated locations). Systematic fix: coverage
+  by publish-unless-excluded with publication precedence (`bdf9a4c0`, `aca5af21`); register
+  generation 2 reviewed (codex review, REJECT, all items applied) and frozen. The launcher
+  confirmed the Discussions epic's task-panel entry exists.
+
+- 2026-11-11 ~07:20Z: rounds 7 and 8 converged after one more fix pass (`f5461940`). The audit
+  budget (8 rounds at the standard tier) is now spent, so any further design change would halt at
+  the cap. Boundary alignment, second attempt: MISMATCH on a brief contradiction (the audit
+  authority's `push: false` against the leaf's own push and PR) and on the deliberate rejection
+  of unknown `ai ps` flags. The brief was clarified; the third attempt, given the scope definition
+  and the recorded rationale for the `ps` change, returned ALIGNED. Its two scope-change `kind`
+  values were lower-case; they were upper-cased to the schema's enum with no other edit. Finalize
+  returned `audit-stabilized`; `check_auto_flow_implement_gate.py` passed.
 
 <!-- /doc:region name="run_history" -->
