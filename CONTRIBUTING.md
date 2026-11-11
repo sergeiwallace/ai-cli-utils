@@ -106,6 +106,12 @@ timeout fires, or when an xdist worker dies, which is why the helper's spawned c
 sleep for a bounded time and exit by themselves. Never clean up with a pattern-matched
 `pkill`: it matches processes the suite does not own.
 
+A child that cannot have a bounded lifetime, such as a session wrapper that respawns its
+own children, goes under `watch_session(proc)` instead. It starts a detached watcher that
+ends every process in the child's session when the test process closes its pipe, however
+the test process exits. Real tmux servers get the same treatment from
+`watch_tmux_directory`.
+
 A spawn whose *subject* is the process group — one asserting that a child shares the runner's
 group, or whose payload calls `os.setsid()` itself — is the exception, and says so in a
 comment at the call site.
