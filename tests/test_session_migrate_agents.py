@@ -228,7 +228,7 @@ def test_given_a_live_process_in_one_agent_worktree_when_migrated_then_it_is_lef
 
     code, out, err = _migrate(fleet, "-y")
 
-    assert code == 0, out + err
+    assert code == 1, out + err
     other = fleet["other"]
     assert f"agent worktree: {fleet['leaf_a']} (left alone: held by pid {os.getpid()})" in out
     assert fleet["leaf_a"].is_dir()
@@ -254,7 +254,7 @@ def test_given_a_destination_branch_exists_when_migrated_then_that_entry_is_skip
 
     code, out, err = _migrate(fleet, "-y")
 
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert f"agent branch: wt/{OLD}/leaf-b ({other}) -> wt/{NEW}/leaf-b SKIPPED (target exists)" in out
     assert _git("rev-parse", f"wt/{OLD}/leaf-b", cwd=other).strip() == fleet["tips"]["leaf-b"]
     assert f"wt/{NEW}/leaf-a" in _branches(other)
@@ -278,7 +278,7 @@ def test_given_the_session_itself_is_live_when_migrated_then_no_agent_worktree_i
 
     code, out, err = _migrate(fleet, "-y")
 
-    assert code == 1
+    assert code == 2
     assert "still running" in out + err
     assert snapshot_tree(fleet["other"]) == before
     assert _branches(fleet["other"]) == before_refs
@@ -490,7 +490,7 @@ def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_g
 
     code, out, err = _run_in(leftover, leftover["second"], "-y")
 
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert not empty.exists()
     assert f"agent container: {empty} (removed: empty)" in out
     assert (full / "notes.txt").read_text() == "keep me\n"
@@ -503,6 +503,6 @@ def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_th
 
     code, out, err = _run_in(leftover, leftover["second"], "-y")
 
-    assert code == 1
+    assert code == 2
     assert "still running" in out + err
     assert snapshot_tree(leftover["second"]) == before

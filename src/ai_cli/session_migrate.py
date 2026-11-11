@@ -125,6 +125,10 @@ class MigrationError(AdoptionError):
     """A refusal raised before ``migrate-session`` writes anything."""
 
 
+class PartialMigrationError(MigrationError):
+    """A failure after some migration artifacts became durable."""
+
+
 @dataclass
 class PlannedMove:
     """One artifact the migration moves or rewrites, or deliberately leaves."""
@@ -160,11 +164,20 @@ class MigrationResult:
     warnings: list[str] = field(default_factory=list)
     #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
     kept: list[str] = field(default_factory=list)
+    parts: dict[str, str] = field(default_factory=dict)
+    task_intent: dict = field(default_factory=dict, repr=False)
 
     @property
     def failed(self) -> bool:
         """Whether the run left work undone: a kept slot or a ``FAILED`` warning."""
-        return bool(self.kept) or any("FAILED" in w for w in self.warnings)
+        return (
+            bool(self.kept)
+            or any("FAILED" in w or "NOT " in w for w in self.warnings)
+            or any(
+                move.action == "conflict" or move.action.startswith(("left alone", "left in place", "kept"))
+                for move in self.moves
+            )
+        )
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -198,16 +211,17 @@ def _refuse_live(
 ) -> None:
     for session in live_sessions(home, proc_dir):
         cwd = Path(session.cwd).resolve(strict=False) if session.cwd else None
-        inside = cwd is not None and (cwd in (old_wt, new_wt) or old_wt in cwd.parents)
+        inside = cwd is not None and any(cwd == root or root in cwd.parents for root in (old_wt, new_wt))
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
                 f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
             )
-    hosting = sorted(set(tmux) & set(_session_variants(old)))
+    hosting = sorted(set(tmux) & set(_session_variants(old) + _session_variants(new)))
     if hosting:
+        hosted = ", ".join(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
         raise LiveSessionError(
-            f"tmux session {', '.join(hosting)} still hosts {old}, and its wrapper restarts the agent on "
+            f"tmux session {', '.join(hosting)} still hosts {hosted}, and its wrapper restarts the agent on "
             f"exit. Exit the session and end the tmux session (`tmux kill-session -t {hosting[0]}`) first."
         )
 
@@ -270,7 +284,12 @@ def _plan_state(old: str, new: str, state: Path) -> list[PlannedMove]:
         ]
         for kind, source, dest in pairs:
             if source.exists():
-                moves.append(PlannedMove(kind, str(source), str(dest), "conflict" if dest.exists() else "move"))
+                action = "conflict" if dest.exists() else "move"
+                if kind == "session meta" and dest.is_file():
+                    expected = _renamed_meta(source, old, new)
+                    if json.loads(dest.read_text(encoding="utf-8")) == expected:
+                        action = "finish source removal"
+                moves.append(PlannedMove(kind, str(source), str(dest), action))
         lock = state / f"ai-watcher-lock-{old_session}"
         if lock.exists():
             holder = _watcher_holder(lock)
@@ -306,8 +325,10 @@ def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[Plan
     for path in (home / "cc-sessions.json", state / "gemini_sessions.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             continue
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MigrationError(f"session map {path} cannot be read; refusing before any write") from exc
         if isinstance(data, dict) and old in data:
             action = "conflict" if new in data else "move"
             moves.append(PlannedMove("session map", f"{path} [{old}]", f"[{new}]", action))
@@ -377,9 +398,16 @@ def _plan_memory(
             name = f"{match['prefix']}{new}{match['suffix']}"
             action = "conflict" if (memory / name).exists() else "move"
             here.append(PlannedMove("memory file", str(source), str((after or project) / "memory" / name), action))
+        for target in sorted(memory.iterdir()):
+            match = _memory_pattern(new).fullmatch(target.name)
+            if not match or not target.is_file() or _names_another_session(match["prefix"], old, others):
+                continue
+            source = memory / f"{match['prefix']}{old}{match['suffix']}"
+            if not source.exists():
+                here.append(PlannedMove("memory file", str(source), str(target), "already done"))
         renames += here
         index = memory / "MEMORY.md"
-        moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action == "move"}
+        moved = {Path(m.source).name: Path(m.dest).name for m in here if m.action in {"move", "already done"}}
         if moved and index.is_file():
             text = index.read_text(encoding="utf-8")
             named = sorted(name for name in moved if _rewrite_index(text, {name: moved[name]})[1])
@@ -412,7 +440,7 @@ def _apply_memory(renames: list[PlannedMove], rewrites: list[PlannedMove], resul
         moved = {
             Path(m.source).name: Path(m.dest).name
             for m in renames
-            if m.action == "move" and Path(m.source).parent == index.parent
+            if m.action in {"move", "already done"} and Path(m.source).parent == index.parent
         }
         before = index.read_text(encoding="utf-8")
         text, _hits = _rewrite_index(before, moved)
@@ -421,7 +449,7 @@ def _apply_memory(renames: list[PlannedMove], rewrites: list[PlannedMove], resul
         # Another live session may edit the shared index; replace it only if it is unchanged.
         if index.read_text(encoding="utf-8") != before:
             temp.unlink()
-            result.warnings.append(f"memory index {index} changed during the migration; re-run with --finish")
+            result.warnings.append(f"memory index {index} FAILED: changed during the migration; re-run with --finish")
             continue
         temp.replace(index)
 
@@ -484,6 +512,30 @@ def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] |
         raise MigrationError(str(exc)) from exc
     if report is not None:
         report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
+        report += [
+            PlannedMove(f"hook {hook.name}", "", "", "already done" if hook.status == "done" else "rewrite")
+            for hook in hooks
+        ]
+    if report is not None:
+        for hook, run in zip(hooks, runs, strict=True):
+            if not any(line.startswith("migrate-status: ") for line in run.lines):
+                report.append(
+                    PlannedMove(
+                        f"hook {hook.name} preflight warning",
+                        "no read-only completion status; idempotent apply will recheck remaining work",
+                        "",
+                        "report",
+                    )
+                )
+            if hook.name == "agent-mail":
+                report.append(
+                    PlannedMove(
+                        "agent-mail snapshot warning",
+                        "snapshot freshness can expire before apply; it must be rechecked at hook time",
+                        "",
+                        "report",
+                    )
+                )
     return hooks
 
 
@@ -684,7 +736,7 @@ def clean_leftovers(
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
     result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
-    beads = _plan_beads(old, _stores(projects_dir, repo_root))
+    beads = _plan_beads(old, new, _stores(projects_dir, repo_root), state)
     _describe_beads(old, new, beads, result)
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
@@ -752,6 +804,9 @@ class _Store:
     path: Path
     issues: list[str] = field(default_factory=list)
     error: str | None = None
+    comments: list[str] = field(default_factory=list)
+    completed: list[str] = field(default_factory=list)
+    state: Path | None = None
 
 
 def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
@@ -764,11 +819,14 @@ def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
     return found
 
 
-def _plan_beads(old: str, stores: list[Path]) -> list[_Store]:
+def _plan_beads(old: str, new: str, stores: list[Path], state: Path) -> list[_Store]:
     """Read each store's issues held by ``old``: exactly that name, any status but closed."""
+    from .session_migrate_issues import inspect_comments, intents
+
+    recorded = intents(state, old, new)
     planned: list[_Store] = []
-    for path in stores:
-        store = _Store(path)
+    for path in dict.fromkeys([*stores, *recorded]):
+        store = _Store(path, state=state)
         planned.append(store)
         try:
             listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
@@ -791,6 +849,10 @@ def _plan_beads(old: str, stores: list[Path]) -> list[_Store]:
             for row in rows
             if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
         ]
+        try:
+            inspect_comments(store, old, new, recorded.get(path, set()))
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            store.error = _one_line(str(exc))
     return planned
 
 
@@ -805,6 +867,11 @@ def _describe_beads(old: str, new: str, stores: list[_Store], result: MigrationR
         for issue in store.issues:
             action = f"left alone: {held}" if held else "move"
             result.moves.append(PlannedMove("beads issue", f"{issue} [{old}] ({store.path})", new, action))
+        for issue in store.comments:
+            action = f"left alone: {held}" if held else "finish comment"
+            result.moves.append(PlannedMove("beads issue", f"{issue} comment ({store.path})", new, action))
+        for issue in store.completed:
+            result.moves.append(PlannedMove("beads issue", f"{issue} ({store.path})", new, "already done"))
     if held and any(store.issues for store in stores):
         result.warnings.append(f"beads issues on {old} were NOT re-keyed to {new}: {held}")
 
@@ -816,8 +883,14 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
     moves without ``--force`` (which bd refuses beside ``--if-assignee`` anyway), and
     ``--if-assignee`` keeps it from touching an issue anyone else picked up meanwhile.
     """
-    for store in [s for s in stores if s.error is None and s.issues]:
+    from .session_migrate_issues import note, remember
+
+    for store in [s for s in stores if s.error is None and (s.issues or s.comments)]:
+        if store.state is None:
+            raise MigrationError(f"missing issue migration intent directory for {store.path}")
+        remember(store.state, store.path, old, new, store.issues)
         changed = 0
+        comments = list(store.comments)
         for issue in store.issues:
             where = f"beads issue {issue} in {store.path}"
             try:
@@ -832,14 +905,16 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
                 result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
                 continue
             changed += 1
-            note = f"Re-keyed from {old} to {new} by `ai migrate-session`."
+            comments.append(issue)
+        for issue in comments:
+            where = f"beads issue {issue} in {store.path}"
             try:
-                noted = _bd(store.path, "comments", "add", issue, note)
+                noted = _bd(store.path, "comments", "add", issue, note(old, new))
             except (OSError, subprocess.TimeoutExpired) as exc:
                 noted = subprocess.CompletedProcess([], 1, "", str(exc))
             if noted.returncode != 0:
                 result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
-        if changed:
+        if changed or comments:
             result.moves.append(
                 PlannedMove(
                     "beads store",
@@ -855,6 +930,8 @@ def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: o
     row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
+        ledger.flush()
+        os.fsync(ledger.fileno())
 
 
 def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
@@ -1014,7 +1091,7 @@ def rekey_beads(
     evidence = _migration_evidence(old, new, state)
     if evidence:
         result.moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
     if evidence and not dry_run:
@@ -1022,7 +1099,7 @@ def rekey_beads(
     return result
 
 
-def migrate_session(
+def _start_session(
     repo_root: Path,
     old: str,
     new: str,
@@ -1131,7 +1208,7 @@ def migrate_session(
         new_branch = None
     elif not branch_plan.ok:
         keeper = "the worktree keeps branch" if _current_branch(old_wt) == old_branch else "it keeps the name"
-        result.warnings.append(f"{branch_plan.error}, so {keeper} {old_branch}")
+        result.warnings.append(f"branch FAILED: {branch_plan.error}, so {keeper} {old_branch}")
         new_branch = None
     else:
         moves.append(PlannedMove("branch", old_branch, new_branch))
@@ -1189,21 +1266,26 @@ def migrate_session(
     lock_moves = _plan_slot_lock(repo_root, old)
     moves += lock_moves
 
-    _plan_task_rekey(old, new, home, result)
-    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    _plan_task_rekey(old, new, home, result, state)
+    hooks = _plan_hooks(old, new, repo_root, moves)
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
         return result
 
+    # Record intent before Git can move a topic-branch checkout. Its branch alone
+    # cannot prove the original session after an interruption during the move.
+    from .session_migrate_tasks import remember
+
+    remember(result.task_intent, state)
+    _record_migration(state, old, new, repo_root, new_wt)
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
             raise MigrationError(f"git worktree move failed, nothing was migrated: {why}")
         raise MigrationError(f"the worktree moved but is not usable yet, so nothing else was migrated: {why}")
-    _record_migration(state, old, new, repo_root, new_wt)
     if has_venv:
         # A moved environment still names the old path in its scripts and config; rewriting the
         # path is offline and idempotent, unlike a reinstall, which fails on a pinned source path.
@@ -1212,7 +1294,7 @@ def migrate_session(
             relocate_venv(new_wt / ".venv", old_wt, new_wt)
         except OSError as exc:
             result.warnings.append(
-                f"{new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
+                f"virtual environment FAILED: {new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
                 f"with `uv sync --reinstall`"
             )
     if new_branch:
@@ -1220,7 +1302,7 @@ def migrate_session(
         if not renamed.ok:
             anchored = _git(repo_root, "rev-parse", "--verify", "--quiet", renamed.anchor).returncode == 0
             kept = f"; the tip stays anchored at {renamed.anchor}" if anchored else ""
-            result.warnings.append(f"branch rename to {new_branch} failed: {renamed.error}{kept}")
+            result.warnings.append(f"branch rename to {new_branch} FAILED: {renamed.error}{kept}")
             new_branch = None
     result.warnings += _agents.apply_worktree_ownership(home_ownership, new_branch or old_branch)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -1246,7 +1328,7 @@ def migrate_session(
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
 
-    _apply_task_rekey(old, new, home, result)
+    _apply_task_rekey(old, new, home, result, state)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1267,12 +1349,15 @@ def migrate_session(
     return result
 
 
-def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
     """Plan the task-namespace and resume-tree rekey, and turn every planned conflict into a warning."""
     old_ns = home / "tasks" / old
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
     )
+    from .session_migrate_tasks import plan
+
+    result.task_moves, result.task_intent = plan(old, new, home, state, resuming=not result.old_worktree.exists())
     if old_ns.is_dir():
         leftover = _namespace_leftovers(old_ns, {m.source.name for m in result.task_moves})
         if leftover:
@@ -1288,11 +1373,14 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult) ->
         result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
 
 
-def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -> None:
+def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
-    result.task_moves, result.resume_moves = rekey_name_artifacts(
-        new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=False
+    from .session_migrate_tasks import apply
+
+    apply(result.task_moves, result.task_intent, state)
+    _tasks, result.resume_moves = rekey_name_artifacts(
+        new, task_namespaces=[], resume_keys=[old], claude_home=home, dry_run=False
     )
     if result.task_moves or hwm:
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
@@ -1309,7 +1397,11 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult) -
 
 
 def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult) -> None:
+    result.moves += [
+        PlannedMove(f"hook {hook.name}", "", "", "already done") for hook in hooks if hook.status == "done"
+    ]
     for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
+        result.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "apply"))
         result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
         if not run.ok:
             result.warnings.append(_hooks.failure_warning(run))
@@ -1326,6 +1418,8 @@ def finish_session(
     proc_dir: Path | None = None,
     tmux_names: Callable[[], list[str]] | None = None,
     projects_dir: Path | None = None,
+    regenerate_script: Callable[[dict], str] | None = None,
+    record_finish: bool = True,
 ) -> MigrationResult:
     """Finish a migration whose slot already moved to ``new``: every leftover still named ``old``.
 
@@ -1388,8 +1482,13 @@ def finish_session(
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
     moves = result.moves
+    from .session_migrate_resume import apply_home, plan_home
+
+    home_plan = plan_home(repo_root, old_wt, new_wt, old, new, home)
+    moves += home_plan.moves
     markers = _session_home_markers(repo_root, old_wt.resolve(strict=False))
-    slot_renames = agent_plan.renames(repo_root)
+    home_renames = {f"wt-{old}": f"wt-{new}"} if any(move.kind == "branch" for move in home_plan.moves) else {}
+    slot_renames = {**agent_plan.renames(repo_root), **home_renames}
     for key, _value in markers:
         moves.append(
             PlannedMove("session-home marker", key, f"{_agents.renamed_key(key, slot_renames)} = {new_wt}", "rewrite")
@@ -1397,9 +1496,10 @@ def finish_session(
     moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
     state_moves = _plan_state(old, new, state)
     map_moves = _plan_session_maps(old, new, home, state)
+    old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     project_dirs: list[tuple[Path, Path | None]] = [
         (cc_project_dir(repo_root, home), None),
-        (cc_project_dir(new_wt, home), None),
+        (old_pd, new_pd) if old_pd.is_dir() else (new_pd, None),
     ]
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
@@ -1408,12 +1508,12 @@ def finish_session(
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
-    _plan_task_rekey(old, new, home, result)
-    hooks = _plan_hooks(old, new, repo_root, moves if dry_run else None)
+    _plan_task_rekey(old, new, home, result, state)
+    hooks = _plan_hooks(old, new, repo_root, moves)
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
@@ -1423,15 +1523,21 @@ def finish_session(
 
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
     result.warnings += agent_warnings
-    for key, _value in markers:
-        _git(repo_root, "config", _agents.renamed_key(key, agent_renames.get(repo_root, {})), str(new_wt))
     for item in [m for m in held_moves if m.action == "move"]:
         source = Path(item.source)
         source.rename(source.with_name(Path(item.dest).name))
     _apply_memory(memory_moves, index_moves, result)
+    apply_home(home_plan, result)
+    for key, _value in markers:
+        _git(
+            repo_root,
+            "config",
+            _agents.renamed_key(key, {**agent_renames.get(repo_root, {}), **home_renames}),
+            str(new_wt),
+        )
     _remove_stale_locks(lock_moves)
-    _apply_task_rekey(old, new, home, result)
-    _apply_state(state_moves, old, new, old_wt, new_wt, None, result)
+    _apply_task_rekey(old, new, home, result, state)
+    _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
@@ -1442,9 +1548,44 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
-        if not result.failed:
+        if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
             _append_ledger(state, old, new, repo_root, finished=True)
     return result
+
+
+def _write_migration_file(path: Path, data: bytes, *, expected: bytes | None = None, mode: int | None = None) -> None:
+    """Publish a complete file after checking its destination; never expose a torn write."""
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    temporary = Path(name)
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        if expected is None:
+            if path.exists():
+                raise MigrationError(f"destination {path} appeared during migration; refusing to overwrite")
+        elif path.read_bytes() != expected:
+            raise MigrationError(f"destination {path} changed during migration; refusing to overwrite")
+        temporary.chmod(mode if mode is not None else path.stat().st_mode if path.exists() else 0o600)
+        if expected is None:
+            os.link(temporary, path)  # Atomic create-if-absent; supported by Git worktree filesystems.
+        else:
+            temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _renamed_meta(source: Path, old: str, new: str) -> dict:
+    meta = json.loads(source.read_text(encoding="utf-8"))
+    old_session = source.name[len("session-meta-") : -len(".json")]
+    new_session = old_session[: -len(old)] + new
+    meta.update(ai_name=new, session=new_session, prefix=new_session.rsplit("-", 1)[0] + "-")
+    if meta.get("worktree_dir"):
+        old_wt = Path(meta["worktree_dir"])
+        if old_wt.name == old:
+            meta["worktree_dir"] = str(old_wt.with_name(new))
+    return meta
 
 
 def _apply_state(
@@ -1457,39 +1598,41 @@ def _apply_state(
     result: MigrationResult,
 ) -> None:
     metas: dict[str, dict] = {}
-    for item in [m for m in moves if m.kind == "session meta" and m.action == "move"]:
+    for item in [m for m in moves if m.kind == "session meta" and m.action in {"move", "finish source removal"}]:
         source, dest = Path(item.source), Path(item.dest)
-        meta = json.loads(source.read_text(encoding="utf-8"))
-        old_session = source.name[len("session-meta-") : -len(".json")]
-        new_session = old_session[: -len(old)] + new
-        meta["ai_name"] = new
-        meta["session"] = new_session
-        meta["prefix"] = new_session.rsplit("-", 1)[0] + "-"
-        if meta.get("worktree_dir") and Path(meta["worktree_dir"]).resolve(strict=False) == old_wt:
-            meta["worktree_dir"] = str(new_wt)
-        dest.write_text(json.dumps(meta), encoding="utf-8")
+        meta = _renamed_meta(source, old, new)
+        new_session = meta["session"]
+        if item.action == "move":
+            _write_migration_file(dest, json.dumps(meta).encode())
+        elif json.loads(dest.read_text(encoding="utf-8")) != meta:
+            raise MigrationError(f"metadata destination {dest} changed since planning")
         source.unlink()
         metas[new_session] = meta
     for item in [m for m in moves if m.action == "move" and m.kind != "session meta"]:
         source, dest = Path(item.source), Path(item.dest)
         meta = metas.get(dest.stem) if item.kind == "wrapper script" else None
+        if item.kind == "wrapper script" and meta is None:
+            meta_path = dest.parent.parent / f"session-meta-{dest.stem}.json"
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
         if meta is not None and regenerate_script is not None:
             try:
-                dest.write_text(regenerate_script(meta), encoding="utf-8")
-                dest.chmod(0o700)
+                _write_migration_file(dest, regenerate_script(meta).encode(), mode=0o700)
                 source.unlink()
                 continue
             except Exception as exc:
-                result.warnings.append(f"could not regenerate {dest} ({exc}); moved the old one, `ai c` rewrites it")
+                result.warnings.append(f"wrapper script FAILED to regenerate {dest} ({exc}); re-run the same command")
+                continue
         shutil.move(str(source), str(dest))
 
 
 def _apply_session_maps(moves: list[PlannedMove], old: str, new: str, home: Path, state: Path) -> None:
     for item in [m for m in moves if m.action == "move"]:
         path = Path(item.source.rsplit(" [", 1)[0])
-        data = json.loads(path.read_text(encoding="utf-8"))
+        before = path.read_bytes()
+        data = json.loads(before)
         data[new] = data.pop(old)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_migration_file(path, json.dumps(data, indent=2).encode(), expected=before)
 
 
 def _apply_iterm2(old: str, new: str) -> None:
@@ -1566,13 +1709,17 @@ def _plan_chief(old: str, new: str, tmux: list[str], result: MigrationResult) ->
     for home in sorted(p for p in root.iterdir() if p.is_dir()) if root is not None and root.is_dir() else []:
         try:
             registration = _cos.read_registration(home)
-            _cos._read_json_object(_cos.registry_path(home), "chief registry")
+            registry = _cos._read_json_object(_cos.registry_path(home), "chief registry") or {}
         except _cos.ChiefOfStaffError as exc:
             raise MigrationError(f"{exc}; refusing before any write") from exc
-        if not registration or registration.get("native_agent_name") != old:
+        registry_old = (
+            str(registry.get("chief_of_staff_session", "")).startswith(f"{old}@")
+            or (registry.get("chief_routes") or {}).get("native_agent_name") == old
+        )
+        if (not registration or registration.get("native_agent_name") != old) and not registry_old:
             continue
         path = str(_cos.registration_path(home))
-        target = registration.get("tmux_target")
+        target = (registration or {}).get("tmux_target")
         if isinstance(target, str) and target in tmux:
             reason = f"its tmux target {target} is live, so the chief may be running"
             moves.append(PlannedMove("chief registration", path, reason, "kept"))
@@ -1594,13 +1741,14 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
     for item in [m for m in moves if m.kind == "chief registration" and m.action == "rewrite"]:
         home = Path(item.source).parent.parent
         registration = _cos.read_registration(home) or {}
-        target = registration.get("tmux_target")
-        registration.update(
-            native_agent_name=new,
-            session=renamed(registration.get("session")),
-            tmux_target=tmux.get(target, target) if isinstance(target, str) else target,
-        )
-        _cos._write_private_json(_cos.registration_path(home), registration)
+        if registration.get("native_agent_name") == old:
+            target = registration.get("tmux_target")
+            registration.update(
+                native_agent_name=new,
+                session=renamed(registration.get("session")),
+                tmux_target=tmux.get(target, target) if isinstance(target, str) else target,
+            )
+            _cos._write_private_json(_cos.registration_path(home), registration)
         registry = _cos._read_json_object(_cos.registry_path(home), "chief registry")
         if registry is None:
             continue
@@ -1609,3 +1757,13 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
         if isinstance(routes, dict) and routes.get("native_agent_name") == old:
             routes["native_agent_name"] = new
         _cos._write_private_json(_cos.registry_path(home), registry)
+
+
+def migrate_session(repo_root: Path, old: str, new: str, **kwargs) -> MigrationResult:
+    """Start or resume the same migration; current artifacts decide which parts remain."""
+    from .session_migrate_resume import run
+
+    try:
+        return run(repo_root, old, new, **kwargs)
+    except (OSError, ValueError) as exc:
+        raise MigrationError(f"cannot inspect migration artifacts: {type(exc).__name__}: {exc}") from exc

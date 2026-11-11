@@ -71,6 +71,17 @@ def _rewrite(path: Path, pattern: re.Pattern[bytes], new_bytes: bytes) -> bool:
     return True
 
 
+def needs_relocation(venv: Path, old_root: Path) -> bool:
+    """Whether any supported text artifact still names ``old_root``; read-only."""
+    pattern = _pattern(_forms(old_root))
+    for path in _candidates(venv):
+        if path.stat().st_size <= _MAX_BYTES:
+            data = path.read_bytes()
+            if b"\0" not in data and pattern.search(data):
+                return True
+    return False
+
+
 def relocate_venv(venv: Path, old_root: Path, new_root: Path) -> list[Path]:
     """Rewrite ``old_root`` to ``new_root`` inside ``venv``; return the files changed.
 

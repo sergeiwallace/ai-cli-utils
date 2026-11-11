@@ -566,7 +566,7 @@ activation.
 | `ai remove-name NAME` | Remove a name that was added by hand, unless it is held. |
 | `ai sync-names [-d/--dry-run]` | Regenerate the list when this checkout's naming policy is newer than the published one. |
 | `ai reconcile-names [-t/--title T] [-d/--dry-run] [-j/--json]` | Publish offline activations, release names whose worktree and transcript are both gone, and top up spares. |
-| `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. |
+| `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. An unactivated spare has no worktree or transcript to test, so it is released when no offline launch has taken it and only by the host that holds it. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
 | `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs. |
