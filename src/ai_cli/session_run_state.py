@@ -42,7 +42,7 @@ def settings() -> dict:
 
 
 def run_state(record: dict) -> str:
-    return record.get("run_state") or ("exited" if record.get("ended_at") else "running")
+    return record.get("run_state") or ("exited" if record.get("ended_at") else "unknown")
 
 
 def cause(record: dict, boot_id: str | None = None) -> str:
@@ -156,6 +156,7 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
             existing["boot_recipe"] = recipe
             existing["cwd"] = recipe["cwd"]
             existing["relaunch_argv"] = recipe["argv"]
+            existing.update(launcher_pid=os.getpid(), launched_at=registry._now())
         else:
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)

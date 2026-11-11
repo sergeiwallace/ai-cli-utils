@@ -224,9 +224,10 @@ def detached_launch(boot_record, monkeypatch):
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        text, code = "", 0
+        text, error, code = "", "", 0
         if argv[:2] == ["tmux", "has-session"]:
             code = 0 if existing[0] else 1
+            error = "" if existing[0] else "can't find session"
         elif argv[:2] == ["tmux", "new-session"]:
             text = "$1\n"
             existing[0] = True
@@ -234,7 +235,7 @@ def detached_launch(boot_record, monkeypatch):
             marker[0] = argv[-1]
         elif argv[:2] == ["tmux", "display-message"]:
             text = f"$1\t{boot_record['name']}\t{marker[0]}"
-        return subprocess.CompletedProcess(argv, code, text, "")
+        return subprocess.CompletedProcess(argv, code, text, error)
 
     monkeypatch.setattr(main.subprocess, "run", run)
     monkeypatch.setattr(main, "_exec_handoff", Mock(side_effect=AssertionError("must not attach or exec")))
@@ -268,6 +269,16 @@ def detached_launch(boot_record, monkeypatch):
     for variable in ("ITERM_SESSION_ID", "TERM_PROGRAM", "TMUX"):
         monkeypatch.delenv(variable, raising=False)
     return calls, script
+
+
+def test_given_detached_replay_when_launched_then_periodic_observer_is_scheduled(
+    detached_launch, boot_record, monkeypatch
+):
+    start = Mock()
+    monkeypatch.setattr(main._process_manager, "_start_stale_session_reaper_for_launch", start)
+    session_commands._launch_recipe(boot_record)
+    start.assert_called_once_with()
+    assert any(argv[:2] == ["tmux", "new-session"] for argv, _kwargs in detached_launch[0])
 
 
 @pytest.mark.parametrize("mode", ["ordinary", "indexed-reattach", "named-reattach", "remote", "once", "bare"])

@@ -47,8 +47,8 @@ def test_final_exit_when_delayed_start_arrives_then_exit_retained(registered):
     assert state.cause(record(), "next-boot") == "manual_exit"
 
 
-def test_legacy_records_when_read_then_state_uses_end_marker():
-    assert state.run_state({}) == "running"
+def test_given_legacy_records_when_read_then_state_requires_evidence():
+    assert state.run_state({}) == "unknown"
     assert state.run_state({"ended_at": "time"}) == "exited"
 
 
@@ -148,15 +148,17 @@ def test_transition_when_written_then_file_and_directory_are_synced(registered, 
     assert synced == ([False] if os.name == "nt" else [False, True])
 
 
-def test_reattach_then_new_start_when_recipe_changes_then_only_new_start_replaces_recipe(registered):
+def test_reattach_then_new_start_when_recipe_changes_then_only_new_start_replaces_recipe(registered, monkeypatch):
     original = record()["boot_recipe"]
     replacement = {"argv": ["ai", "c", "1", "--once"], "cwd": "/work/other"}
     state.register("c-session-1", recipe=replacement, host="host-a")
     assert record()["boot_recipe"] == original
     assert record()["generation"] == registered
+    monkeypatch.setattr(state.os, "getpid", lambda: 42)
     state.register("c-session-1", recipe=replacement, host="host-a", new_start=True)
     assert record()["boot_recipe"] == replacement
     assert record()["generation"] == registered
+    assert record()["launcher_pid"] == 42
 
 
 @pytest.mark.parametrize("generation", [False, True])

@@ -12,7 +12,7 @@ import click
 import portalocker
 import psutil
 
-from . import config, output
+from . import config, output, session_reconcile
 from . import session_registry as registry
 from . import session_run_state as state
 from .output import Untagged
@@ -148,6 +148,8 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
         raise ValueError("session name check failed: expected a c-, g-, p- or cx- session name")
     engine = name.split("-", 1)[0]
 
+    if not dry_run:
+        session_reconcile.reconcile(names={name})
     snapshot = registry.load_registry()
     matches = [r for r in snapshot["sessions"] if r.get("name") == name]
     if len(matches) > 1 or (matches and matches[0].get("kind") != "local"):

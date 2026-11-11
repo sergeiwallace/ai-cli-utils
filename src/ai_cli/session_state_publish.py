@@ -10,6 +10,7 @@ from pathlib import Path
 
 import portalocker
 
+from . import session_reconcile
 from . import session_registry as registry
 from . import session_run_state as state
 
@@ -131,6 +132,7 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
     """Snapshot and acknowledge only the revision pushed; writers never call this."""
     del tick  # Explicit entry point for installed timers; the same durable rules apply.
     try:
+        session_reconcile.reconcile()
         cfg = state.settings()["publish"]
         if not cfg["repo"]:
             return _result(False, "publishing disabled: no repo configured")

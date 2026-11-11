@@ -88,7 +88,7 @@ class FakeSystem:
 
     def __call__(self, cmd, *args, **kwargs):
         program = Path(cmd[0]).name
-        stdout, returncode = "", 0
+        stdout, stderr, returncode = "", "", 0
         if program == "osascript":
             kind, stdout = self._osascript(cmd[2])
             self.calls.append((kind, cmd[2]))
@@ -96,6 +96,7 @@ class FakeSystem:
                 raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
         elif program == "tmux" and cmd[1] == "has-session":
             returncode = 1 if cmd[3].lstrip("=") in self.gone else 0
+            stderr = "can't find session" if returncode else ""
         elif program == "tmux" and cmd[1] == "list-clients":
             stdout = self.attached.get(cmd[3], "")
         elif program == "ps":
@@ -113,7 +114,7 @@ class FakeSystem:
                 stdout = "Saved arrangements:\n" + "".join(f"  - {name}\n" for name in self.it2_saved)
             elif cmd[1:4] == ["window", "arrange", "restore"]:
                 returncode = 0 if cmd[4] in self.it2_saved else 1
-        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
 
     def kinds(self) -> list[str]:
         return [kind for kind, _ in self.calls]

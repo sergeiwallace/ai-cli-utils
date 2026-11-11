@@ -194,7 +194,8 @@ class TestCliGroupNoSubcommand:
 
 
 class TestClaudeSessionReaperAutoStart:
-    def test_given_claude_session_launch_when_dispatched_then_reaper_start_is_scheduled(self):
+    @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
+    def test_given_local_session_launch_when_dispatched_then_reaper_start_is_scheduled(self, engine):
         with (
             patch("ai_cli.main._ensure_dolt_server"),
             patch("ai_cli.main.trigger_background_update"),
@@ -203,7 +204,7 @@ class TestClaudeSessionReaperAutoStart:
             patch("ai_cli.main._do_session_launch"),
             patch("ai_cli.process_manager._start_stale_session_reaper_for_launch") as start_reaper,
         ):
-            exit_code, _, _ = run_cli(["ai", "c", "session-1"])
+            exit_code, _, _ = run_cli(["ai", engine, "session-1"])
 
         assert exit_code == 0
         start_reaper.assert_called_once_with()
