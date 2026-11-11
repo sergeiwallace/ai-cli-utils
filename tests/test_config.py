@@ -545,3 +545,24 @@ class TestProjectPrefixRegistry:
         with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
             with pytest.raises(ProjectPrefixError, match=r"ai register -p .* -x PREFIX"):
                 resolve_project_prefix(repo)
+
+
+def _relaunch_causes_config(tmp_path, monkeypatch, causes: str) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    config_dir = tmp_path / "xdg" / "ai-cli-utils"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(f"[session_relaunch]\ncauses = {causes}\n")
+
+
+def test_given_profile_relaunching_wound_down_sessions_when_loading_then_config_loads(tmp_path, monkeypatch):
+    causes = '["host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"]'
+    _relaunch_causes_config(tmp_path, monkeypatch, causes)
+    cfg = load_config(read_only=True)
+    assert cfg["session_relaunch"]["causes"][-1] == "maintenance_wind_down"
+
+
+@pytest.mark.parametrize("cause", ["manual_exit", "unknown", "not_a_cause"])
+def test_given_relaunch_cause_that_must_never_relaunch_when_loading_then_refused(tmp_path, monkeypatch, cause):
+    _relaunch_causes_config(tmp_path, monkeypatch, f'["host_reboot", "{cause}"]')
+    with pytest.raises(ValueError, match=r"session_relaunch\.causes"):
+        load_config(read_only=True)
