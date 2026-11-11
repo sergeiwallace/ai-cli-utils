@@ -796,6 +796,14 @@ def _clean_other_repos(
 #: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
 MIGRATION_LEDGER = "session-migrations.jsonl"
 
+#: The migration record format this build writes, stamped as ``format`` on every
+#: :data:`MIGRATION_LEDGER` row. A build reporting a lower number (``ai internal
+#: get-migration-format``; a build from before that probe answers none, read as 0) predates a
+#: step the migrated session's relaunch depends on: format 1 is the boot-recipe rename. Raise it
+#: whenever what a migration writes needs a newer installed ``ai`` to read it. A launch meeting a
+#: row whose ``format`` is higher than this build's is running a build too old for that record.
+MIGRATION_FORMAT = 1
+
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
 
@@ -951,7 +959,14 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
+    row = {
+        "time": datetime.now(UTC).isoformat(),
+        "old": old,
+        "new": new,
+        "repo": str(repo_root),
+        "format": MIGRATION_FORMAT,
+        **fields,
+    }
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
         ledger.flush()
