@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
   `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
   finished. Every other resume artifact found under both names is still reported and left alone.
+- `ai migrate-session` records a migration `finished` only when a read-only re-plan of the
+  pair, run after every writing full migration, `--finish` and `--to-name`, finds nothing
+  left. The row then carries `"verified": true`. Otherwise the run names each part left in a
+  `NOT finished` warning, marks it failed, records nothing and exits 1, and `--to-name` marks
+  the registry entry incomplete. A hook counts as done only when its `--dry-run` prints
+  `migrate-status: done`, so a hook without a status line keeps a migration unfinished. Before,
+  `finished` came from the run's own warnings and was written while parts were still on disk.
 - `ai migrate-session --finish -n` now plans a migration whose session is live instead of
   refusing it, so a running session can be checked read-only. Its first line names the live
   session and says a writing run refuses until it is stopped with `ai sessions stop NAME`; the
