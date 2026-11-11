@@ -211,6 +211,20 @@ def test_given_links_in_a_source_when_built_then_they_point_at_wiki_pages_github
     assert "[guide](docs-guide)" in text
 
 
+@pytest.mark.parametrize("fence", ["`", "~"])
+def test_given_a_long_outer_fence_when_sections_are_split_then_short_inner_fences_remain_code(fence):
+    text = (
+        f"{fence * 4}text\ninside\n{fence * 3}\n## Still code\n"
+        f"[coded](missing.md)\n{fence * 4}\n## Real\n[guide](docs/guide.md)\n"
+    )
+
+    preamble, sections = wiki.split_sections(text)
+
+    assert sections == {"Real": "## Real\n[guide](docs/guide.md)"}
+    assert "## Still code" in preamble
+    assert re.findall(r"\[[^]]+\]\(([^)]+)\)", sections["Real"]) == ["docs/guide.md"]
+
+
 def _relative_links(out: Path) -> list[tuple[str, str]]:
     """Every link target outside code that is not a URL or an in-page anchor."""
     links = []
@@ -333,6 +347,40 @@ def test_given_the_same_commit_when_the_wiki_is_built_twice_then_the_trees_are_b
 
     assert first == second
     assert all(b"\r" not in content for content in first.values())
+
+
+def test_given_an_obsolete_generated_page_when_the_wiki_is_rebuilt_then_only_the_expected_tree_remains(tmp_path):
+    _, out, first = _build(tmp_path)
+    expected = {path.name: path.read_bytes() for path in first}
+    (out / "Obsolete.md").write_text("old\n", encoding="utf-8")
+
+    _, _, rebuilt = _build(tmp_path, out="out")
+
+    assert not (out / "Obsolete.md").exists()
+    assert {path.name: path.read_bytes() for path in rebuilt} == expected
+
+
+def test_given_a_published_source_with_private_metadata_when_built_then_it_fails_with_safe_counts(tmp_path):
+    private_reference = "historical " + "CORE" + "-example"
+
+    message = _fails(tmp_path, BASE_MANIFEST, files={"docs/private.md": private_reference + "\n"})
+
+    assert "docs/private.md" in message
+    assert "private tracker references: 1" in message
+    assert private_reference not in message
+
+
+def test_given_a_machine_receipt_with_private_metadata_when_built_then_the_published_copy_is_sanitized(tmp_path):
+    private_reference = "historical " + "CORE" + "-example"
+
+    _, out, _ = _build(
+        tmp_path,
+        files={"docs/example.receipt.jsonl": '{"source": "' + private_reference + '"}\n'},
+    )
+
+    published = (out / "docs-example.receipt.jsonl.md").read_text(encoding="utf-8")
+    assert private_reference not in published
+    assert "private-tracker-reference" in published
 
 
 def test_given_no_repository_when_the_wiki_is_built_then_it_fails_rather_than_guess(tmp_path, monkeypatch, capsys):

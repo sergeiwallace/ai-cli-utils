@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+try:
+    from .publication_hygiene import publication_violations, sanitize_machine_receipt
+except ImportError:  # run as `python scripts/wiki_build.py`
+    from publication_hygiene import publication_violations, sanitize_machine_receipt
+
 MANIFEST = "docs/wiki/pages.toml"
 RESERVED = {"_Sidebar", "_Footer"}
 _PAGE_KEYS = {"name", "source", "sections", "preamble", "generated"}
@@ -103,15 +108,15 @@ def anchor(heading: str) -> str:
 
 
 def _lines_outside_fences(text: str) -> list[tuple[str, bool]]:
-    fence = ""
+    fence: tuple[str, int] | None = None
     out = []
     for line in text.split("\n"):
         match = _FENCE.match(line)
         if match and not fence:
-            fence = match.group(1)[0] * 3
+            fence = (match.group(1)[0], len(match.group(1)))
             out.append((line, True))
-        elif fence and line.strip().startswith(fence) and not line.strip().strip(fence[0]):
-            fence = ""
+        elif fence and re.fullmatch(rf"\s*{re.escape(fence[0])}{{{fence[1]},}}\s*", line):
+            fence = None
             out.append((line, True))
         else:
             out.append((line, bool(fence)))
@@ -382,6 +387,8 @@ def _body(page: Page, repo: Path, links: _Links) -> str:
         raw = _read(repo, page.source)
         if raw is None:
             return f"# {page.source}\n\n[Download {page.source}]({links.blob}{page.source})"
+        if page.source.endswith(".receipt.jsonl"):
+            raw = sanitize_machine_receipt(raw)
         if not page.source.endswith(".md"):
             return _as_text_page(page.source, raw)
         text = raw
@@ -407,6 +414,25 @@ def build_wiki(
         raise WikiError(f"{manifest}: {exc}") from exc
     made = {key: make() for key, make in (generated or {}).items()}
     result = plan(data, repo_root, made)
+    violations = []
+    published = {page.source for page in result.pages}
+    published.update(page.source for _, members in result.groups for page in members)
+    for source in sorted(published):
+        text = _read(repo_root, source)
+        if text is None:
+            continue
+        if source.endswith(".receipt.jsonl"):
+            text = sanitize_machine_receipt(text)
+        counts = publication_violations(text)
+        if counts:
+            details = []
+            if counts.private_tracker_references:
+                details.append(f"private tracker references: {counts.private_tracker_references}")
+            if counts.private_environment_references:
+                details.append(f"private environment references: {counts.private_environment_references}")
+            violations.append(f"{source} ({', '.join(details)})")
+    if violations:
+        raise WikiError("published sources fail public-content policy: " + "; ".join(violations))
     links = _Links(result, repo_root, repository)
     files: dict[str, str] = {}
     footer = f"Source: [`{{source}}`]({links.blob}{{source}}). Generated from the repository; edits made here are overwritten."
@@ -423,6 +449,10 @@ def build_wiki(
         "Each page names its source file; edit that file, not the wiki, since wiki edits are overwritten.\n"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    expected = {f"{stem}.md" for stem in files}
+    for stale in sorted(out_dir.glob("*.md")):
+        if stale.name not in expected:
+            stale.unlink()
     written = []
     for stem, content in files.items():
         path = out_dir / f"{stem}.md"

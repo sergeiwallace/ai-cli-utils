@@ -6911,8 +6911,10 @@ def cmd_copier_update(dry_run, project, inspect_output, no_isolate, no_push):
 class _LayoutGroup(HelpGroup):
     """``ai layout NAME`` applies the layout NAME unless NAME is one of the group's commands."""
 
+    _PUBLIC_COMMANDS = frozenset({"list", "profiles", "validate"})
+
     def resolve_command(self, ctx, args):
-        if args and args[0] not in self.commands and not args[0].startswith("-"):
+        if args and args[0] not in self._PUBLIC_COMMANDS and not args[0].startswith("-"):
             return "_apply", self.commands["_apply"], args
         return super().resolve_command(ctx, args)
 

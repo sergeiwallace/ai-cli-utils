@@ -17,6 +17,13 @@ from pathlib import Path
 
 import pytest
 
+from scripts.publication_hygiene import (
+    _PRIVATE_ENVIRONMENT_NAMES,
+    _PRIVATE_ENVIRONMENT_PREFIX,
+    _PRIVATE_TRACKER_ID,
+    line_has_private_environment_name,
+)
+
 _SCANNED_PATHS = (
     "src",
     "tests",
@@ -62,6 +69,7 @@ _EXEMPTION_PATHS = frozenset(
         Path("pyproject.toml"),
         Path(".github"),
         Path("docs"),
+        Path("scripts") / "publication_hygiene.py",
         Path("tests") / "test_public_repo_hygiene.py",
     }
 )
@@ -206,6 +214,15 @@ def _scanned_text_files(
     deliberately narrower set than the name guard, and defaults to the full set so
     every existing caller is unchanged.
     """
+    tracked: set[str] | None = None
+    if (root / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            tracked = {path for path in result.stdout.decode("utf-8").split("\0") if path}
     for scanned_path in scanned_paths:
         candidate = root / scanned_path
         if not candidate.exists():
@@ -214,11 +231,14 @@ def _scanned_text_files(
         for path in sorted(paths):
             if not path.is_file():
                 continue
+            relative_path = path.relative_to(root)
+            if tracked is not None and relative_path.as_posix() not in tracked:
+                continue
             try:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            yield path, path.relative_to(root), text
+            yield path, relative_path, text
 
 
 def scan_for_private_names(root: Path) -> list[str]:
@@ -250,18 +270,6 @@ def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_na
 # ``branch.<b>.<prefix>-session-home``). They sat in ``src/`` as load-bearing values -- the
 # project a chief launches into, its registry key, git-config marker keys -- so forbidding
 # them needed those values moved into configuration first, not a scrub (AI-CLI-nout).
-_PRIVATE_ENVIRONMENT_NAMES = ("ai-harness", "firstmate")  # public-hygiene: allow
-_PRIVATE_ENVIRONMENT_PREFIX = "aih"  # public-hygiene: allow
-
-# Unbounded: the chief name reaches code as an identifier fragment (``_prepare_<name>_launch``,
-# ``--<name>``), where a word boundary would miss it, and neither token is an English word.
-_ENVIRONMENT_NAME = re.compile("|".join(re.escape(name) for name in _PRIVATE_ENVIRONMENT_NAMES), re.IGNORECASE)
-# The prefix in the same two shapes as the personal session prefix above, for the same
-# reasons: case-sensitive with a separator, so the uppercase tracker ids that share the
-# letters stay with the tracker-id guard, and case-insensitive as a bare quoted literal.
-_ENVIRONMENT_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}-")
-_ENVIRONMENT_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}[\"']", re.IGNORECASE)
-
 # Everything the name guard scans except ``docs``. Measured 2026-10-21 with `grep -rniE`:
 # ``docs`` holds about 150 lines naming the repository and about 200 carrying the prefix,
 # across design records, audits and the archived roadmap, where a name is often the only
@@ -271,11 +279,7 @@ _ENVIRONMENT_NAME_SCANNED_PATHS = tuple(path for path in _SCANNED_PATHS if path 
 
 
 def _line_has_environment_name(line: str) -> bool:
-    return bool(
-        _ENVIRONMENT_NAME.search(line)
-        or _ENVIRONMENT_SESSION_NAME.search(line)
-        or _ENVIRONMENT_PREFIX_LITERAL.search(line)
-    )
+    return line_has_private_environment_name(line)
 
 
 def scan_for_private_environment_names(root: Path) -> list[str]:
@@ -316,20 +320,9 @@ _WORKTREE_SESSION_PLACEHOLDER = re.compile(r"<[^<>/]+>(?:-<[^<>/]+>)*")
 # scrubbed file has to leave the set.
 _PROVENANCE_DOC_BASELINE = frozenset(
     {
-        Path("docs/audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md"),
-        Path("docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md"),
-        Path("docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md"),
-        Path("docs/audits/ai-cli-208-session-naming-casing-audit.md"),
         Path("docs/audits/ai-cli-6xud-name-registry-run-ledger.md"),
-        Path("docs/audits/stale-session-reaper-audit.md"),
-        Path("docs/designs/cc-statusline.md"),
-        Path("docs/designs/cc-sync-phase2.md"),
-        Path("docs/designs/claude-usage-telemetry.md"),
-        Path("docs/designs/event-driven-platform.md"),
         Path("docs/designs/iterm2-cross-machine-vscode-routing.md"),
-        Path("docs/designs/notification-system.md"),
         Path("docs/designs/user-behavior-telemetry.md"),
-        Path("docs/designs/vpn-transport-switching.md"),
         Path("docs/designs/vscode-terminal-tab-naming.md"),
     }
 )
@@ -406,12 +399,14 @@ def _public_provenance_scan_targets(root: Path) -> list[tuple[Path, list[tuple[i
     does not make its old ids the editor's problem. Without ``origin/main`` baseline files
     stay skipped.
     """
+    tracked_output = _git_stdout(root, "ls-files", "-z")
+    tracked = None if tracked_output is None else {path for path in tracked_output.split("\0") if path}
     every_doc = {
         path.relative_to(root)
         for directory in _PUBLIC_PROVENANCE_DOC_DIRS
         if (root / directory).is_dir()
         for path in (root / directory).rglob("*.md")
-        if path.is_file()
+        if path.is_file() and (tracked is None or path.relative_to(root).as_posix() in tracked)
     }
     changed = _branch_changed_provenance_docs(root)
     targets: list[tuple[Path, list[tuple[int, str]]]] = []
@@ -611,8 +606,6 @@ class TestTheEnvironmentNameGuardCanActuallyFail:
 # `AI-CLI-` is deliberately absent from the pattern: it is this repository's own prefix, its
 # issues ship in `.beads/issues.jsonl`, and the ids already appear in merged commit messages.
 # Forbidding them would delete references a reader can actually follow.
-_PRIVATE_TRACKER_ID = re.compile(r"\b(?:AIH|SW|CORE)-[0-9A-Za-z]{2,}\b")  # public-hygiene: allow
-
 # `src`, `scripts` and now `tests`. The omission of `docs` remains a measured scope
 # decision rather than an oversight -- the mistake the `scripts` gap above taught.
 #

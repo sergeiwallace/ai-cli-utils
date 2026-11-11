@@ -50,6 +50,7 @@ LAYOUT_ROWS = [
     (["layout", "profiles", "mylayout"], "cmd_layout_profiles", ("mylayout",)),
     (["layout", "mylayout"], "cmd_layout_apply", ("mylayout",)),
     (["layout", "dev-work"], "cmd_layout_apply", ("dev-work",)),
+    (["layout", "_apply"], "cmd_layout_apply", ("_apply",)),
 ]
 
 
