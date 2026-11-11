@@ -254,6 +254,17 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # The CLI reference and the README command index are generated from the command
+      # declarations. A changed help string, command or option leaves them stale; the
+      # check writes nothing and prints the diff and the command that regenerates them.
+      # It imports the command tree (about a second), so it runs only when a file it
+      # reads changes. `uv run --no-sync` for the reason python-version-sync gives.
+      - id: generate-docs
+        name: generated CLI reference and README index are current
+        entry: uv run --no-sync python scripts/generate_docs.py --check
+        language: system
+        pass_filenames: false
+        files: ^(src/|README\.md$|docs/|scripts/generate_docs\.py$)
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: test-gate

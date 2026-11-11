@@ -109,7 +109,7 @@ Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4d
   Searched for sessions in ~/.gemini/tmp/session-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.
 Resuming... (Ctrl-C to exit)
-```text
+```
 
 The error repeats indefinitely. The session is never resumed.
 
@@ -181,7 +181,7 @@ bugs I've noticed:
    2b. `c-ai-cli-3` became yellow with black claude logo
    2c. `c-session-5` became turqoise with a black claude logo. this is the only instance where i've seen a non-standard color.
    2d. `c-session-6` and `c-session-7` became blue with an orange claude logo
-3. for remote cc sessions, the tab title formatting is wrong. it shows the terminal icon and the text "[mosh] * {PLAY_SYMBOL} {CC_TMUX_SESSION_NAME}". the tab/session color is always grey (the actual color, not no color). it should have the claude logo icon instead of the terminal and no "[mosh]" and no "*" unless it's a tab with split panes. that * is for the pane title, not the tab title. the tab title should already have the claude etc logo icon which should be sufficient. and we don't need to worry about signaling multiple types of terminal sessions with a single title. i asked for the previously but we can scrap that.
+3. for remote cc sessions, the tab title formatting is wrong. it shows the terminal icon and the text "[mosh] *{PLAY_SYMBOL} {CC_TMUX_SESSION_NAME}". the tab/session color is always grey (the actual color, not no color). it should have the claude logo icon instead of the terminal and no "[mosh]" and no "*" unless it's a tab with split panes. that * is for the pane title, not the tab title. the tab title should already have the claude etc logo icon which should be sufficient. and we don't need to worry about signaling multiple types of terminal sessions with a single title. i asked for the previously but we can scrap that.
 4. for local gemini sessions, there are couple issues:
    4a. if you're in the correct directory and use or don't use the `-p {PROJECT_NAME`, then it's able to start and the tab color appears as a custom color lighter blue with a white gemini logo icon but no tab/session title. it just says "Default". it's able to start a new gemini session conversation or successfully resume an existing one.
    4b. if you're in a different directory than the project root you want to open gemini session from (e.g. running `ai g 1 -p myproject` from a different project directory) and there's an existing gemini session to resume in the target project's git worktree (e.g. `c-proj-1` and `wt-proj-1`), then you get this error on repeat and can't resume the existing gemini session if there is one:
@@ -198,7 +198,7 @@ Detected terminal name: tmux 3.6a
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
   Searched for sessions in ~/.gemini/tmp/session-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.Resuming... (Ctrl-C to exit)
-```text
+```
    4c. if you're in a different directory than the target directory you want to launch a gemini session (e.g. `ai g 2 -p myproject` from a different project directory) and there's no existing git worktree or gemini session conversation to resume, then you just get a blank screen that never even gets to the `session context written to .gemini/signals/session-context.md` text. it just stays blank black screen indefinitely until you ctrl + C out of it. if you ctrl + C quickly enough, it's take you back to local machine shell. if you wait a bit, it'll start doing the same failure to resume existing gemini session error above in 4b. also, sometimes the custom light blue tab color and "Default" tab title persist and sometimes it goes back to terminal logo with "Default" title.
 5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `session-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
 
@@ -297,7 +297,7 @@ c-ai-cli-1: ITERM_SESSION_ID=w0t0p15:C37C7927...  ← correct owner
 c-hm-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
 g-myproject-1: ITERM_SESSION_ID=w0t0p15:C37C7927... ← stale
 g-session-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
-```text
+```
 
 **Root cause:** Multiple tmux sessions accumulate the same `ITERM_SESSION_ID` GUID in their environments. This happens because `_do_session_launch` writes the current pane's GUID into the target session's tmux env (via `_iterm_env_flags` on new-session, or `tmux set-environment` on re-attach) but never removes it from other sessions that already hold the same GUID. Over time, every session that was ever attached from the same physical pane retains that pane's GUID forever.
 
@@ -473,7 +473,7 @@ AI-CLI-84's underlying assumption — that atomicity requires the temp file to s
 the target's directory — is the reopening cause: POSIX rename atomicity requires
 only the same filesystem (`st_dev`), not the same parent directory.
 
-**Fix Round 2 (2026-07-27, AIH-478):** Stage the temp file in
+**Fix Round 2 (2026-07-27, historical-task):** Stage the temp file in
 `_dynamic_profile_dir().parent` (`~/Library/Application Support/iTerm2/`) instead of
 inside `DynamicProfiles/` itself. Confirmed via the same source read that iTerm2's
 `pathsToWatch` only ever adds the `DynamicProfiles` directory (and any per-file
@@ -504,10 +504,10 @@ cleanup after.
 
 **File changed:** `src/ai_cli/icon_generator.py` — `generate_dynamic_profile()`
 
-**Tracked:** `AIH-478` (ai-harness Beads store, per explicit user request — this is
+**Tracked:** `historical-task` (automation framework Beads store, per explicit user request — this is
 an ai-cli-utils defect, tracked cross-repo).
 
-**Shipped:** 2026-07-27 (AIH-478)
+**Shipped:** 2026-07-27 (historical-task)
 
 ---
 

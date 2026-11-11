@@ -37,9 +37,9 @@ They are independent — neither causes the other.
 
 ```text
 Error: could not create or reuse the isolated session worktree; refusing to launch in the
-repository root. create_worktree: <repo>\.worktrees\aih-1 exists but is not a worktree of
+repository root. create_worktree: <repo>\.worktrees\app-1 exists but is not a worktree of
 <repo> — refusing to delete it. Remove or relocate it only after verifying it contains no
-needed files; if it is empty, run `rmdir <repo>\.worktrees\aih-1` and re-run. Re-run after
+needed files; if it is empty, run `rmdir <repo>\.worktrees\app-1` and re-run. Re-run after
 resolving the git worktree error, or explicitly use --no-worktree.
 ```
 
@@ -47,7 +47,7 @@ The directory named in the error was empty. The error told the human to remove a
 `git worktree add` would have written into unaided, and the advice it gave (`rmdir`) was the
 launcher's own job.
 
-Two slots were in this state in the same repository (`aih-1`, `session-1`), so the state recurs
+Two slots were in this state in the same repository (`app-1`, `session-1`), so the state recurs
 rather than being a one-off.
 
 ### D2 — no symptom at the point of failure
@@ -58,8 +58,8 @@ standing in. git still writes the checkout to the requested path, so the directo
 holds real files. The launch dies several steps later:
 
 ```text
-RuntimeError: create_worktree: failed to set upstream=origin/main on branch 'wt-aih-1' after
-retry (AI-CLI-128 …). git stderr: fatal: branch 'wt-aih-1' does not exist
+RuntimeError: create_worktree: failed to set upstream=origin/main on branch 'wt-app-1' after
+retry (AI-CLI-128 …). git stderr: fatal: branch 'wt-app-1' does not exist
 ```
 
 A message about a branch, with nothing pointing at the repository mix-up that caused it.
@@ -198,8 +198,8 @@ D1, in widening rings:
 3. Guard reverted in isolation → RED again at the same assertion. Restored → GREEN.
 4. `tests/test_worktree_container_collision.py tests/test_session.py
    tests/test_session_launch_locality.py` → 167 passed, 3 skipped.
-5. Real end-to-end against the reporting repository: `create_worktree("aih-1",
-   repo_root=<ai-harness>)` on the real empty slot. Unpatched source raised the reported
+5. Real end-to-end against the reporting repository: `create_worktree("app-1",
+   repo_root=<automation framework>)` on the real empty slot. Unpatched source raised the reported
    error; patched source passed the guard and reached `git worktree add`. This is what
    exposed D2.
 6. `ruff check` and `ruff format --check` clean on both changed files.
@@ -330,14 +330,14 @@ dir contents: ['f.txt']
 
 ```text
 before: exists = True | entries = []      ← the slot is genuinely empty
-before: registered = ['<ai-harness>']
-RuntimeError: create_worktree: <ai-harness>\.worktrees\aih-1 exists but is not a worktree of
-<ai-harness> — refusing to delete it. …
+before: registered = ['<automation framework>']
+RuntimeError: create_worktree: <automation framework>\.worktrees\app-1 exists but is not a worktree of
+<automation framework> — refusing to delete it. …
 ```
 
 ### Evidence — D2, measured on the real repositories
 
-`create_worktree("aih-1", repo_root=<ai-harness>)` run from a checkout of this project. From
+`create_worktree("app-1", repo_root=<automation framework>)` run from a checkout of this project. From
 this project's repository root afterwards:
 
 ```text
@@ -345,13 +345,13 @@ $ git worktree list
 <ai-cli-utils>                       6aea208 [main]
 <ai-cli-utils>/.worktrees/ai-cli-1   6aea208 [wt-ai-cli-1]
 <ai-cli-utils>/.worktrees/ai-cli-2   6aea208 [wt-ai-cli-2]
-<ai-harness>/.worktrees/aih-1        6aea208 [wt-aih-1]   ← another project's path
+<automation framework>/.worktrees/app-1        6aea208 [wt-app-1]   ← another project's path
 
-$ cat <ai-harness>/.worktrees/aih-1/.git
-gitdir: <ai-cli-utils>/.git/worktrees/aih-1
+$ cat <automation framework>/.worktrees/app-1/.git
+gitdir: <ai-cli-utils>/.git/worktrees/app-1
 
-$ git -C <ai-harness> worktree list
-<ai-harness> 9fcf5c31 [main]                              ← the target knows nothing about it
+$ git -C <automation framework> worktree list
+<automation framework> 9fcf5c31 [main]                              ← the target knows nothing about it
 ```
 
 <!-- /doc:region name="appendix_evidence" -->

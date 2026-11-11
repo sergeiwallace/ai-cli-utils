@@ -101,7 +101,7 @@ Two separable problems:
    bypass-permissions-mode relaunch) or a genuine leak. A companion CC-native
    `/bug-report` for this half was discussed but not yet filed by the user as
    of this writing (the `/bug-report` skill is locked from model-invocation
-   per AIH-876 — only the user can trigger it).
+   per historical-task — only the user can trigger it).
 
 <!-- /doc:region name="root_cause" -->
 

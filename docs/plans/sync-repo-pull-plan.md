@@ -57,7 +57,7 @@ This feature adds a `sync_repos()` step at the end of `sync_pull` that identifie
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -65,7 +65,7 @@ This feature adds a `sync_repos()` step at the end of `sync_pull` that identifie
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options | Status |
 |---|----------|---------|--------|
@@ -74,7 +74,7 @@ This feature adds a `sync_repos()` step at the end of `sync_pull` that identifie
 | D3 | CC session state check | (a) skip only, (b) state affects log severity | `APPROVED: (b)` |
 | D4 | memories-only mode | (a) skip sync_repos, (b) still run | `APPROVED: (a)` |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder

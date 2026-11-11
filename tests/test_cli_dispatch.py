@@ -369,7 +369,7 @@ class TestCmdSync:
         ):
             exit_code, _, stderr = run_cli(["ai", "sync", "badaction"])
         assert exit_code == 1
-        assert "Unknown sync action" in stderr
+        assert "No such command 'badaction'" in stderr
 
 
 # --- `cli()` error paths ---
