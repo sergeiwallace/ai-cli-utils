@@ -1791,6 +1791,37 @@ def reconcile(
     return report
 
 
+def _release_spare(registry: Registry, name: str, machine: str) -> None:
+    """Release an unactivated spare by its own test: no offline launch has taken it.
+
+    A spare has no repository, worktree, client or transcript, so the worktree and transcript
+    tests have nothing to probe and would refuse every spare. What can still use a spare is an
+    offline launch that took it into the host-local spool before the registry was reachable;
+    that is checked under the spool lock, the lock a launch holds while it takes one.
+    """
+    with spool_lock(lock_wait(registry)):
+        if name in read_spool():
+            raise WriteRefusedError(
+                f"{name} was taken by an offline launch that has not been published yet; "
+                "run `ai reconcile-names` to publish it, then release the session it became"
+            )
+        seen = registry.snapshot()
+        blob = seen.blobs.get(name)
+
+        def build(tip: Snapshot) -> Change:
+            current = tip.rows.get(name)
+            if (
+                current is None
+                or current.get("kind") != "spare"
+                or current.get("machine") != machine
+                or tip.blobs.get(name) != blob
+            ):
+                raise WriteRefusedError(f"the row for {name} changed since it was tested; nothing was released")
+            return Change({row_path(name): None}, f"session-names: release spare {name} ({machine})")
+
+        registry.transact(build)
+
+
 def release_name(
     registry: Registry, name: str, machine: str, *, projects_root: Path, adapters: dict[str, object]
 ) -> None:
@@ -1805,6 +1836,9 @@ def release_name(
         )
     if row.get("state") == "migration-incomplete":
         raise WriteRefusedError(f"{name} is migration-incomplete; run the same `ai migrate-session` command again")
+    if row.get("kind") == "spare":
+        _release_spare(registry, name, machine)
+        return
     absence = probe_absence(row, projects_root, adapters)
     if not absence.releasable:
         raise WriteRefusedError(f"{name} is still held: {absence.held_because()}")
