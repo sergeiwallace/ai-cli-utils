@@ -2,7 +2,8 @@
 
 The planner that does the work also judges it. :func:`replan` runs ``--finish`` as a dry run
 for the pair and :func:`parts_left` reads its parts table, so a writing run, ``ai
-migrate-session --status`` and the launch guard all ask the same question of the disk.
+migrate-session --status``, the ``--finish --all`` sweep and the launch guard all ask the same
+question of the disk.
 """
 
 from __future__ import annotations
@@ -47,12 +48,17 @@ def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]
     A plan that refuses or raises is one part left, :data:`UNPLANNED`, carrying the reason:
     a migration is never called finished on a part nobody could read.
     """
+    return replan_live(repo_root, old, new, **kwargs)[0]
+
+
+def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str]:
+    """:func:`replan`, and the live-session refusal a writing run would raise, or ``""``."""
     passed = {key: value for key, value in kwargs.items() if key in _REPLAN_KWARGS}
     try:
         plan = m.finish_session(repo_root, old, new, dry_run=True, record_finish=False, **passed)
     except Exception as exc:  # any failure to plan leaves the pair unverified
-        return {UNPLANNED: f"failed: could not re-plan: {m._one_line(str(exc)) or type(exc).__name__}"}
-    return parts_left(plan)
+        return {UNPLANNED: f"failed: could not re-plan: {m._one_line(str(exc)) or type(exc).__name__}"}, ""
+    return parts_left(plan), plan.live
 
 
 def _bookkeeping(row: dict) -> bool:

@@ -671,6 +671,30 @@ non-interactive ssh route `ai c -R -X` (restart) uses (`BatchMode=yes`, the remo
 login shell), and prints its rows and exit code. An unreachable host, or one whose
 `ai` exits with any other code, exits 2 saying so.
 
+`ai migrate-session --finish -a/--all` finishes every partial migration this host
+records whose sessions are stopped, so a migration recorded before a fix landed, or
+one a hook refused before the hook was fixed, needs no hand run. It re-plans every
+recorded pair the way `--status -a` does, verified or not, so a pair whose only
+`finished` row carries no `verified` is re-planned like an unfinished one. Each
+partial pair whose sessions are stopped is finished by the same writing run as
+`--finish -y` for that pair, verified-finished rule included, and then re-planned
+again for its row. A pair with a live session is skipped, and its row's state names
+the session; so is a pair that goes live between the plan and its finish. A pair it
+cannot plan (its slot gone, or a plan that raises) reads `skipped: could not plan`.
+The installed `ai` is checked once for the whole sweep. Without `-y` it prints the
+rows, each partial stopped pair reading `would finish`, and asks; `-n/--dry-run`
+prints the same rows and writes nothing. It ends with one row per pair, in the
+`--status` columns:
+
+```text
+old | new | repo | state | parts left | finish with
+myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | complete | - | -
+other-1 | other-box-1 | /home/user/projects/other | skipped: live (tmux session c-other-box-1 hosts other-box-1; ...) | slot lock (would do) | ai migrate-session other-1 other-box-1 --finish -r /home/user/projects/other
+```
+
+It exits 0 when every pair reads `complete`, 1 when any is left partial or skipped
+(or the prompt is declined), and 2 on a usage error: `-f -a` takes only `-n` and `-y`.
+
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
 directory, and another repo holds the registered `.worktrees/NEW`), the command,
