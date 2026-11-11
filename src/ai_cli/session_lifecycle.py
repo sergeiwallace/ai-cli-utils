@@ -47,7 +47,9 @@ def pinned_python(code: str) -> list[str]:
 
 def _stop(process: subprocess.Popen) -> None:
     # Each CLI owns a fresh process group on POSIX, including any helpers it spawns.
-    with contextlib.suppress(ProcessLookupError):
+    # macOS answers EPERM, not ESRCH, when every process left in the group is a zombie:
+    # a CLI that exited after the last poll must not abort the deny-boot write.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         if os.name == "nt":
             process.kill()
         else:
