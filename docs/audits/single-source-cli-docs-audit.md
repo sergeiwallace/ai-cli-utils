@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 1` |
+| Stage cursor | `doc-audit done: halted-recurrence; round 2` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** halted-recurrence — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 1 | sha256:3a33745810c7b8e536380cc3798119c55f64a8475147104dbad0d2569ea0c367 | 0 | 7 | 0 | round1:DV-1, round1:F-1, round1:F-2, round1:F-3, round1:F-4, round1:IC-1, round1:JA-1 | full | no |
+| doc-audit | 2 | sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11 | 0 | 1 | 0 | round2:N-1 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -935,5 +935,298 @@ options, missing help, explicit `short_help`, and group classes from `ai_cli.mai
     "kind": "full"
   },
   "source_event_id": "round-1-audit"
+}
+```
+
+## Round 2 — Verification
+
+**Round 2 auditor:** `gpt-5`
+
+**Round 2 date:** 2026-11-11
+
+**Round 2 scope:** Verify all seven Round 1 blocking findings against target digest
+`sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11`, inspect the
+related parser and hygiene code, and surface gaps introduced or missed by the fix. Append-only; no
+target edits.
+
+### R2 Summary
+
+All seven Round 1 findings are fixed in the revised design and related hygiene guard. One new
+`MAJOR` parity gap, N-1, remains open-blocking: the supposedly explicit self-parser inventory still
+omits meaningful `ai sync` flags that the current implementation parses and uses. The design is not
+ready for implementation until that inventory and its parity ACs are complete.
+
+### R2.1 Round 1 IC/JA/DV verification
+
+| ID | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| IC-1 | PASS | fixed | `docs/designs/single-source-cli-docs.md:357-370` now enumerates valid forms, separately says the old unknown-`ps` and ignored-trailing-token tolerance is intentionally dropped, and gives a reason. This removes the literal parity/rejection contradiction. `CONFIRMED`; N-1 is a separate incompleteness in the revised inventory. |
+| JA-1 | PASS | fixed | The source is now `command_description(command, context)` and root/group help must print every sentence and paragraph (`docs/designs/single-source-cli-docs.md:159-169,335-342`), while the reference uses the same full description (`:175-183`). `CONFIRMED` against Click 8.5.0's installed `Group.format_commands`, `Command.format_help_text`, and `HelpFormatter.write_dl`. |
+| DV-1 | PASS | fixed | The design now calls default-token wiki push an unverified capability and requires failure to stop for maintainer direction without adding a credential (`docs/designs/single-source-cli-docs.md:225-227,478-481,855-858,925-929`). This matches the unresolved evidence in `docs/research/cli-docs-generation-tools.md:327-332,409-413`. `CONFIRMED`. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| F-1 | PASS | fixed | The publication job must require `github.ref == 'refs/heads/main'`, check out trusted main before repository code, and skip a non-main dispatch (`docs/designs/single-source-cli-docs.md:218-227,471-485`). `CONFIRMED`. |
+| F-2 | PASS | fixed | The valid-form inventory explicitly includes `layout <name>`, and a dedicated AC routes each non-reserved name to `cmd_layout_apply(name)` (`docs/designs/single-source-cli-docs.md:357-364`), matching `src/ai_cli/layout.py:393-425`. `CONFIRMED`. |
+| F-3 | PASS | fixed | T-2.4 now classifies tokens as local, intentional pass-through, or invalid and preserves pass-through on `c`, `g`, `p`, and `cx` (`docs/designs/single-source-cli-docs.md:423-434`), matching `SESSION_CONTEXT` and the four launch commands (`src/ai_cli/main.py:5606-5610,6381-6433`). `CONFIRMED`. |
+| F-4 | PASS | fixed | The carrier fields and run-ledger link are absent from the design, and the focused guard returns zero findings while retaining a positive control (`tests/test_public_repo_hygiene.py:264-333`). `CONFIRMED` by executing `scan_public_docs_for_private_workflow_metadata(Path.cwd())`, which printed `public provenance findings: 0`. |
+
+### R2.3 AD-N decisions verification
+
+No AD-N decisions were created in Round 1, so there is nothing to verify.
+
+### R2.4 NEW issues surfaced
+
+#### N-1: The revised self-parser inventory still drops meaningful sync flags — `MAJOR`
+
+**Location:** `docs/designs/single-source-cli-docs.md:357-372,1033-1043`;
+`src/ai_cli/sync.py:345-353,2493-2496,2560-2569,2856-2873`;
+`src/ai_cli/session_script.py:1170-1174`
+
+**What the Round 1 fix claims:**
+
+> "The parsing Con is mitigated by an explicit valid-form inventory and parity ACs for every listed
+> action, dynamic layout name, option spelling, no-argument behavior, and required-argument failure."
+
+D-8 also says the change "keeps every accepted form."
+
+**Actual state:** T-1.3 names the sync actions but delegates their surface to "each action's
+currently documented short and long options." The current parser explicitly recognizes
+`--prefer-remote`, passes its boolean to `apply_pull_files`, and tests it; the revised inventory
+never names it. The parser also gives `sync watch --auto` distinct behavior and a shipped session
+script invokes it. These are meaningful recognized forms, not the unknown `ps` tolerance the design
+explicitly drops.
+
+**Why it matters:** Implemented literally with the new unknown-option rejection, `ai sync pull
+--prefer-remote` can become a usage error and lose its requested conflict-resolution behavior. The
+design would therefore repeat the replacement-parity omission that its revised inventory claims to
+eliminate.
+
+**Verification command:**
+
+```bash
+sed -n '354,372p;1027,1043p' docs/designs/single-source-cli-docs.md
+sed -n '345,353p;2493,2497p;2560,2570p;2856,2873p' src/ai_cli/sync.py
+sed -n '1168,1176p' src/ai_cli/session_script.py
+rg -n -- '--prefer-remote|--auto' src/ai_cli/sync.py src/ai_cli/session_script.py tests/test_sync.py
+```
+
+**Verification note:** `CONFIRMED`. The command reproduced the omission and the two behaviors;
+`--prefer-remote` is parsed at `src/ai_cli/sync.py:352`, consumed at `:2495,2568`, and covered at
+`tests/test_sync.py:1787`; `--auto` gates watch startup at `src/ai_cli/sync.py:2869-2873` and is
+invoked at `src/ai_cli/session_script.py:1174`.
+
+**Recommended fix (Round 3):** Replace "currently documented" with an action-by-action option
+matrix derived from the parsers. Preserve `--prefer-remote` on `pull` with an unused short form such
+as `-P`, declare `--auto` as a hidden internal Click option under the repository's long-only hidden
+flag exception, and add CLI-entry parity tests for both semantic paths. Explicitly classify any
+remaining accepted token as preserved or intentionally dropped with a reason.
+
+### R2 Verification Matrix
+
+| Finding | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| JA-1 | `sed -n '154,183p;322,350p' docs/designs/single-source-cli-docs.md` | Shared full description feeds help and reference | `command_description()` is shared; AC requires every sentence and paragraph | ✅ |
+| F-1 | `sed -n '218,227p;471,485p' docs/designs/single-source-cli-docs.md` | Main-only write job and trusted checkout | Exact ref guard, trusted-main checkout, and non-main skip are required | ✅ |
+| IC-1 | `sed -n '354,372p' docs/designs/single-source-cli-docs.md` plus `sed -n '775,796p' src/ai_cli/process_hygiene.py` | Valid parity separated from accidental tolerance | Valid forms are bounded; old unknown-flag tolerance is explicitly dropped | ✅ |
+| F-2 | `sed -n '357,364p' docs/designs/single-source-cli-docs.md; sed -n '393,425p' src/ai_cli/layout.py` | Dynamic named layout preserved | AC routes a non-reserved name to `cmd_layout_apply(name)` | ✅ |
+| F-3 | `sed -n '423,434p' docs/designs/single-source-cli-docs.md; sed -n '5606,5610p;6381,6433p' src/ai_cli/main.py` | Pass-through is a valid distinct class | Four launcher contexts and the classifier agree | ✅ |
+| DV-1 | `sed -n '225,227p;478,481p;855,858p;925,929p' docs/designs/single-source-cli-docs.md` | Unverified capability has a stop gate | Design stops and requests direction without credential fallback | ✅ |
+| F-4 | `PYTHONDONTWRITEBYTECODE=1 python` calling `scan_public_docs_for_private_workflow_metadata(Path.cwd())` | Zero target findings | `public provenance findings: 0` | ✅ |
+| N-1 | `rg -n -- '--prefer-remote|--auto' src/ai_cli/sync.py src/ai_cli/session_script.py tests/test_sync.py` plus the T-1.3 read | Every meaningful current form is inventoried | Source and tests contain both flags; the design inventory names neither | ✅ reproduced |
+
+**Verified: 8/8 assertions reproduce on target digest
+`sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11`.**
+
+### R2 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- N-1: complete the self-parser option inventory and parity ACs.
+
+**SHOULD be fixed before the design-doc PR merges:** none beyond the blocking item.
+
+**Can be folded into a follow-up:** none.
+
+### R2 Already-Correct Items
+
+- ✅ The literal full-description requirement now governs root and nested group help.
+- ✅ Wiki publication is main-ref-only and the unresolved token capability is a live stop gate.
+- ✅ Dynamic layouts and provider pass-through tokens now have explicit parity behavior.
+- ✅ The public design no longer contains the private workflow carrier, and a positive-control guard
+  protects this document.
+
+### R2 Files Read and Commands Run
+
+Read in full: the canonical audit `STUB.md` and `TEMPLATE.md`,
+`docs/designs/single-source-cli-docs.md`, and this audit's Round 1 history. Targeted ground-truth
+reads covered `docs/research/cli-docs-generation-tools.md:300-430`,
+`src/ai_cli/main.py:5588-5620,6368-6445,8180-8310`,
+`src/ai_cli/process_hygiene.py:720-825`, `src/ai_cli/layout.py:380-425`,
+`src/ai_cli/sync.py:330-360,2470-2575,2850-2880`,
+`src/ai_cli/session_script.py:1168-1176`, `tests/test_session_dry_run.py:1-30`, and
+`tests/test_public_repo_hygiene.py:1-400`. Commands were the `sed`, `rg`, `git diff`, `git log`,
+`git blame`, `sha256sum`, and read-only Python inspections recorded in the matrix; no target edits
+or live outward actions were performed.
+
+### R2 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 2 | Seven Round 1 findings fixed; one new `MAJOR` open-blocking parity finding (N-1); target unchanged. |
+
+### R2 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "unverified-precondition"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:DV-1",
+      "fingerprint": "fp:wiki-token-capability-unverified",
+      "id": "DV-1",
+      "reachable_behavior": "The design now stops wiki publication and requests maintainer direction when default-token capability fails.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "unsafe-workflow"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-1",
+      "fingerprint": "fp:wiki-dispatch-non-main-write",
+      "id": "F-1",
+      "reachable_behavior": "The write-capable wiki job now requires the main ref and checks out trusted main before repository code runs.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "missing-parity-coverage"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-2",
+      "fingerprint": "fp:layout-dynamic-name-omitted",
+      "id": "F-2",
+      "reachable_behavior": "The revised AC preserves dynamic named-layout application through cmd_layout_apply.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-3",
+      "fingerprint": "fp:docs-validator-rejects-passthrough",
+      "id": "F-3",
+      "reachable_behavior": "The revised validator classifies provider pass-through tokens separately and does not reject them as local-option errors.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "public-metadata-exposure"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-4",
+      "fingerprint": "fp:public-design-private-metadata",
+      "id": "F-4",
+      "reachable_behavior": "The public design no longer carries private workflow metadata and a focused positive-control guard protects it.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "contradictory-requirements"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:IC-1",
+      "fingerprint": "fp:parser-parity-versus-rejection",
+      "id": "IC-1",
+      "reachable_behavior": "The revised AC separates enumerated valid forms from accidental unknown-token tolerance that is intentionally dropped.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "ask-drift"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:JA-1",
+      "fingerprint": "fp:full-description-narrowed-to-summary",
+      "id": "JA-1",
+      "reachable_behavior": "Root and nested group help are now required to show every command's complete formatted help description.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "missing-parity-coverage"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:sync-meaningful-flags-omitted",
+      "id": "N-1",
+      "reachable_behavior": "A user invoking ai sync pull --prefer-remote can receive a usage error and lose the requested conflict-resolution behavior after migration.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 1,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round1:DV-1",
+      "round1:F-1",
+      "round1:F-2",
+      "round1:F-3",
+      "round1:F-4",
+      "round1:IC-1",
+      "round1:JA-1"
+    ],
+    "diff_since": "sha256:3a33745810c7b8e536380cc3798119c55f64a8475147104dbad0d2569ea0c367",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:3a33745810c7b8e536380cc3798119c55f64a8475147104dbad0d2569ea0c367",
+      "to": "sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-2-audit"
 }
 ```
