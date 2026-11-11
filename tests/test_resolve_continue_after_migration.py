@@ -22,7 +22,7 @@ from ai_cli import config as _config
 from ai_cli.main import _bare_engine_command, _cc_project_dir
 
 OLD = "myproject-1"
-NEW = "myproject-alice"
+NEW = "myproject-renamed"
 MIGRATED_AT = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
 
 REAL = "aaaaaaaa-0000-4000-8000-000000000001"
