@@ -745,7 +745,7 @@ def detect_repo_root():
     res = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env(), check=False
     )
-    if res.returncode != 0:
+    if res.returncode != 0 or not res.stdout.strip():
         return None
     git_common = Path(res.stdout.strip())
     if not git_common.is_absolute():
