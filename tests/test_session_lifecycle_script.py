@@ -85,7 +85,7 @@ def test_given_persistence_failure_when_final_exit_retries_then_no_agent_is_star
         + f'n=$(cat {shlex.quote(str(count))} 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf "%s" "$n" > {shlex.quote(str(count))}\n'
         + f'if [ "$n" -lt 3 ]; then exit 1; fi\nexec {shlex.quote(sys.executable)} -m ai_cli.main "$@"\n'
     )
-    monkeypatch.setattr("ai_cli.session_lifecycle_script.lifecycle_command", lambda _path: [str(ai)])
+    monkeypatch.setattr("ai_cli.session_lifecycle_script.lifecycle_command", lambda _path: [ai.as_posix()])
     body = (
         session_state_functions(name)
         + f'\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n_ai_emit() {{ printf "%s\\n" "$*"; }}\n_ai_persist_exit manual_exit \'{{}}\'\nprintf shell-returned\n'
