@@ -4960,8 +4960,8 @@ def _do_session_launch(
         reporter=reporter,
     )
     reporter.phase("session").outcome(f"resolved {ai_name}")
-    if replay_recipe is None:
-        _finish_recorded_migrations(ai_name, reporter)
+    # A recipe replay starts NEW's tmux session too, so it is the same safe moment.
+    _finish_recorded_migrations(ai_name, reporter)
     if engine == "c":
         _queue_migration_context(ai_name, session_id, reporter)
 
