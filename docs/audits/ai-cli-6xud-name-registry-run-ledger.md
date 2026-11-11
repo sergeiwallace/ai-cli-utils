@@ -47,8 +47,8 @@ ledger-version: 1
 | Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
 | Orchestrator worktree | the orchestrating session's own session worktree |
 | Orchestrator branch | that worktree's session branch |
-| Stage cursor | `research converged (round 1 plus critic fold); doc stage next`; research doc `docs/research/session-name-registry-storage.md` at `35a96b40` |
-| Last completed integration boundary | none |
+| Stage cursor | `doc done`; design doc `docs/designs/session-name-registry-dolt.md`; research doc on main at `aadd96ac` (PR #500) |
+| Last completed integration boundary | research, landed on main as `aadd96ac` (PR #500) |
 
 ## Transition verdicts
 
@@ -93,5 +93,11 @@ ledger-version: 1
   history-cap setting is 2.4.1+, the lock-fallback issue closed by documentation, JSON keys merge
   cleanly). G1 to G6 re-run over the whole doc: none open. `research->doc` round 1 recorded
   `converged` at `35a96b40`.
+
+- 2026-11-11 ~04:15Z: research landed on main through PR #500 (`aadd96ac`, squash tree
+  verified). The doc stage's prepare ran against that snapshot, the orchestrator authored the
+  design doc (nine decisions resolved in automated mode, none escalated; two open questions for
+  the owner, neither blocking Phases 1 to 3), and complete passed. Validator, markdown lint,
+  decision-coverage ToC and founding-ask fidelity checks all clean.
 
 <!-- /doc:region name="run_history" -->
