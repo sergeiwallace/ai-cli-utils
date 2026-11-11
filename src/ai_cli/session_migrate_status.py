@@ -154,6 +154,10 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
             f"run `{finish_command(result.old, result.new, repo_root)}` once they are resolved"
         )
         return
+    if any(status.startswith("failed:") for status in result.parts.values()):
+        # A part this run failed that a re-plan cannot see, such as a Beads store re-keyed
+        # locally whose publish failed, still leaves the pair unfinished.
+        return
     if m._migration_evidence(result.old, result.new, state) and finish_state(result.old, result.new, state) != (
         "verified"
     ):
