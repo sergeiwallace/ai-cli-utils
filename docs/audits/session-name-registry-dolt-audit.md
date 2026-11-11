@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 1` |
+| Stage cursor | `doc-audit done: halted-recurrence; round 2` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** halted-recurrence — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 1 | sha256:464fe03d6180c5ffdc936d6a43c12e7174d4e69e3a4be1262b76cf2a3872c164 | 1 | 7 | 1 | round1:DV-1, round1:DV-2, round1:DV-3, round1:F-1, round1:IC-1, round1:IC-2, round1:JA-1, round1:JA-2, round1:JA-3 | full | no |
+| doc-audit | 2 | sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf | 0 | 1 | 0 | round1:IC-2, round1:JA-2, round1:JA-3, round2:N-1 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -910,5 +910,279 @@ safety violation.
     "kind": "full"
   },
   "source_event_id": "round-1-audit"
+}
+```
+
+## Round 2 — Verification
+
+**Round 2 auditor:** Codex independent verification (the wrapper did not expose a concrete model ID)
+
+**Round 2 date:** 2026-11-11
+
+**Round 2 scope:** Verify the complete nine-item Round 1 blocking backlog against target digest
+`sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf`, and inspect the
+changed cutover, lifecycle, schema, timeout, migration and seed text for new contradictions. This
+was append-only; the target was not edited.
+
+### R2 Summary
+
+Six Round 1 findings are fixed. Three remain open-blocking: IC-2 still rejects digit-bearing label
+tokens that the current registry accepts, JA-2 still omits the clean failed-migration release path,
+and JA-3 misstates the authoritative approved seed by conflating the replacement with the separately
+added approval. One new MAJOR contradiction, N-1, leaves stale cached-spare collisions undefined
+during import. Promotion remains blocked on those four findings.
+
+### R2 Rubric Verdicts
+
+| Rubric row | Verdict | Evidence |
+|---|---|---|
+| Current-registry and approval-branch parity is carried into ACs | **FAIL (CONFIRMED)** | Label claim and reassignment now have transitions at `docs/designs/session-name-registry-dolt.md:198-225`, but T-1.1 rejects `ava2` at line 479 while `src/ai_cli/name_registry.py:92-94,298-301` accepts a digit-bearing label token. T-1.5 lines 515-520 has no clean-failure/no-survivor release AC corresponding to `src/ai_cli/migrate_names.py:128-136`. |
+| Claim protocol gives exactly one winner, including identical payloads | **PASS (CONFIRMED)** | The claim row carries an attempt-unique claimant, rejected pushes reset without merge, and successful claims require claimant read-back (`docs/designs/session-name-registry-dolt.md:251-269`). T-1.2 independently tests ordinary and otherwise-identical races at lines 483-491. |
+| Cutover cannot leave two stores accepting writes | **PASS (CONFIRMED)** | T-4.1 holds both locks on every registered host through upgrade and leaves Dolt `writes_enabled = 0`; T-4.3's checkpoint test requires zero accepting stores before the enabling commit and only Dolt afterward (`docs/designs/session-name-registry-dolt.md:610-624`). N-1 concerns contradictory row precedence inside the disabled import, not a second accepting writer. |
+| Dolt and SQLite share one schema | **PASS (CONFIRMED)** | One logical schema emits both dialects; SQLite must enable and verify foreign keys and add JSON-validity checks, and T-1.1 applies a generated valid/invalid constraint matrix to both backends (`docs/designs/session-name-registry-dolt.md:424-431,477-482`). |
+| Every stated AC is independently testable and falsifiable | **PASS for the stated ACs (CONFIRMED)** | The revised ACs name observable affected-row counts, commits, pushes, postconditions, timeout arguments, exit codes, exact seed membership/digests and cutover checkpoint probes (`docs/designs/session-name-registry-dolt.md:477-626`). The missing parity cases above are omissions, not non-falsifiable wording. |
+| Public document contains no private host, session, tool or project name | **PASS (CONFIRMED)** | `rg -n "AI-CLI|ai-core|aido|Opus|Codex|sem-kg|acn-|aih-" docs/designs/session-name-registry-dolt.md` returned no match. Generic product terms and public CLI names remain. |
+
+### R2.1 Round 1 IC/JA/DV verification
+
+| ID | Verdict | Disposition | Verification note |
+|---|---|---|---|
+| DV-2 | PASS | fixed | `docs/designs/session-name-registry-dolt.md:610-624` now quiesces and locks every host, drains spools, holds Dolt writes disabled, installs the new release before releasing locks, and checkpoint-tests old online, old cached-offline and new writes. |
+| DV-1 | PASS | fixed | Lines 251-259 put every guard in conditional DML, require the exact affected-row count, and forbid commit/push after zero or unexpected changes; T-1.2 lines 486-490 supplies negative tests. |
+| IC-1 | PASS | fixed | Lines 264-269 now distinguish claimant read-back for claims from full intended-row-set postconditions for status, verdict, migration and policy writes and absence for deletes. |
+| IC-2 | PARTIAL | open-blocking | Label claim and reassignment are now explicit, but `holds.token` still requires `^[a-z]+$` and T-1.1 explicitly rejects `ava2` (`docs/designs/session-name-registry-dolt.md:405,479`), contradicting `_LABEL_TOKEN_RE = [a-z0-9]*[a-z][a-z0-9]*` in `src/ai_cli/name_registry.py:92-94`. |
+| JA-1 | PASS | fixed | Lines 283-288 retain distinct, fresh-read fetch and push budgets; T-1.3 lines 497-498 verifies distinct values, the formerly failing time window, and invalid-setting refusal. |
+| JA-2 | PARTIAL | open-blocking | T-1.5 adds interrupted/resume ACs, but it only specifies failures “after any artifact moves” (`docs/designs/session-name-registry-dolt.md:515-520`). The reachable no-survivor path releases the new hold and intent at `src/ai_cli/migrate_names.py:128-136` via `src/ai_cli/name_registry.py:2032-2046`; no design event or AC permits it. |
+| JA-3 | FAIL | open-blocking | The authoritative record separately requires replacement of one entry and approval of the 20-name set “plus” one additional name (`~/projects/ai-harness/docs/asks/AI-CLI-6xud.md:22-24,37`). T-3.2 instead defines 21 as “20 previously approved entries plus the one approved replacement” while also omitting the superseded entry (`docs/designs/session-name-registry-dolt.md:589-593`), which does not encode both requirements. |
+| DV-3 | PASS | fixed | Lines 424-431 require verified SQLite foreign keys, JSON-valid TEXT checks and equivalent token checks; T-1.1 lines 480-482 tests FK, JSON and the complete logical-constraint matrix on both engines. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Disposition | Verification note |
+|---|---|---|---|
+| F-1 | PASS | fixed | The private task identifier, private project prefix and named model/orchestration prose are gone. The private-identifier `rg` verification returned no match. |
+
+### R2.3 AD-N decisions verification
+
+No AD-N decisions exist in Round 1, and no new team-choice decision is required. Each open item is
+controlled by current behavior, the authoritative ask, or two contradictory requirements in the
+target.
+
+### R2.4 NEW issues surfaced
+
+#### N-1: Cached-spare collision precedence is contradictory — `MAJOR`
+
+**Location:** `docs/designs/session-name-registry-dolt.md:610-620`
+
+**What the revised target requires:**
+
+> `import every spare token in the union of the frozen tree and all host cache inventories as cutover-quarantined`
+>
+> `every old session and label hold shall exist unchanged`
+
+A last-fetched host cache can still describe a token as an unactivated spare after an earlier
+activation of that token has reached the frozen old-store tip. The union rule then requires the
+same primary-key token to be both the unchanged active session row and a quarantined spare. The
+later count criterion's phrase “cache-only quarantines” suggests the safe precedence rule, but the
+normative import sentence and AC do not state it.
+
+**Why it matters:** One literal implementation overwrites an active session hold with stale cache
+data; another fails the import on the duplicate key and cannot complete the cutover. The design's
+current requirements cannot both be satisfied for this reachable stale-cache state.
+
+**Verification command:**
+
+```bash
+sed -n '610,620p' docs/designs/session-name-registry-dolt.md
+```
+
+**Recommended fix:** Define precedence by token: the frozen-tip row is authoritative whenever it
+exists; only a cache-only spare token becomes `cutover-quarantined`. Require a test whose stale
+cache says “spare” while the frozen tip says “active session”, and assert that the unchanged active
+row wins, no duplicate is inserted, and the token remains occupied.
+
+### R2 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- IC-2: preserve the current label-token language in the kind-aware database constraint and backend parity matrix.
+- JA-2: add clean no-survivor failure/release plus completion-publication failure events and ACs; keep the partial-survivor and resume ACs already added.
+- JA-3: bind the seed independently to the corrected 20-name set after replacement and to the separately added approval, yielding the authoritative 21 exact entries without exposing them publicly.
+- N-1: make frozen-tip rows authoritative over stale cache rows and quarantine only cache-only tokens.
+
+**SHOULD be fixed before the design-doc gate:** none beyond the blocking items.
+
+**Can be deferred:** none.
+
+### R2 Verification Matrix
+
+| Finding | Re-run command | Expected | Actual | Result |
+|---|---|---|---|---|
+| DV-2 | `sed -n '604,625p' docs/designs/session-name-registry-dolt.md` | Both stores fenced until one enabling commit | All-host locks, old-tip freeze, `writes_enabled = 0`, three-client checkpoint probe and rollback fencing are present | ✅ |
+| DV-1 | `sed -n '243,269p' docs/designs/session-name-registry-dolt.md` | Guards condition mutations | Text requires conditional DML, exact `ROW_COUNT()`, no commit on mismatch and no upsert | ✅ |
+| IC-1 | `sed -n '264,269p' docs/designs/session-name-registry-dolt.md` | Non-claim writes have applicable confirmation | Update equality, delete absence and complete row-set checks are separate from claimant read-back | ✅ |
+| IC-2 | `rg -n "token regexp|outside.*a-z|LABEL_TOKEN_RE" docs/designs/session-name-registry-dolt.md src/ai_cli/name_registry.py` | Current label-token language preserved | Design requires `[a-z]+` and rejects `ava2`; code accepts `[a-z0-9]*[a-z][a-z0-9]*` | ✅ open gap reproduced |
+| JA-1 | `rg -n "registry_fetch_timeout_seconds|registry_push_timeout_seconds" docs/designs/session-name-registry-dolt.md` | Separate budgets and AC | Runtime contract appears at 283-288 and distinct-value/failure ACs at 497-498 | ✅ |
+| JA-2 | `rg -n "release_failed_migration|If migration fails|durable boundary" docs/designs/session-name-registry-dolt.md src/ai_cli/migrate_names.py src/ai_cli/name_registry.py` | Every current failure path has an AC | Code has `release_failed_migration`; design only covers failure after an artifact moves and interrupted completion | ✅ open gap reproduced |
+| JA-3 | `sed -n '22,24p;37p' ~/projects/ai-harness/docs/asks/AI-CLI-6xud.md; sed -n '589,593p' docs/designs/session-name-registry-dolt.md` | Replacement and separate addition both bound | Ask states both; target derives 21 from the 20 plus replacement and never separately binds the added approval | ✅ open gap reproduced |
+| DV-3 | `sed -n '424,431p;477,482p' docs/designs/session-name-registry-dolt.md` | Equivalent enforced constraints | FK enable/read-back, JSON checks, dialect token checks and a two-backend fixture matrix are required | ✅ |
+| F-1 | `rg -n "AI-CLI|ai-core|aido|Opus|Codex|sem-kg|acn-|aih-" docs/designs/session-name-registry-dolt.md` | No private identifiers | No output; `rg` exited 1 | ✅ |
+| N-1 | `sed -n '610,620p' docs/designs/session-name-registry-dolt.md` | Deterministic stale-cache collision precedence | Text requires union spares quarantined and frozen sessions unchanged, but states no precedence | ✅ new gap reproduced |
+
+**Verified: 10/10 current dispositions reproduce at commit `81b4a6bb` against target digest
+`93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf`.**
+
+### R2 Already-Correct Items
+
+- **CONFIRMED:** The normalized `names` and `verdicts` model still covers general and repository,
+  host and session-scoped approvals/rejections with actor, recorder, time and reason
+  (`docs/designs/session-name-registry-dolt.md:152-182,359-384`).
+- **CONFIRMED:** `holds`, `migrations` and Dolt history cover reserved, in-use, migrated and
+  historical state and remain SQL-searchable (`docs/designs/session-name-registry-dolt.md:184-241,386-435,594-600`).
+- **CONFIRMED:** Claim races include the otherwise-identical-value case and exactly-one-winner
+  assertion (`docs/designs/session-name-registry-dolt.md:483-491`).
+- **CONFIRMED:** New public options retain both short and long forms (`docs/designs/session-name-registry-dolt.md:535-544,585,594-599`).
+- **CONFIRMED:** Git tracking is a hard requirement and the canonical Dolt data and row history live
+  on the git remote ref (`docs/designs/session-name-registry-dolt.md:25,136-150,1081-1084`).
+
+### R2 Files and Artifacts Read
+
+- Canonical `~/projects/ai-harness/docs/audits/TEMPLATE.md` (full), this audit history (full), and
+  the authoritative founding-ask record `~/projects/ai-harness/docs/asks/AI-CLI-6xud.md` (full).
+- `docs/designs/session-name-registry-dolt.md` and `docs/research/session-name-registry-storage.md`
+  (full), including the complete Round 1-to-current design diff and design git history.
+- Focused ground truth in `src/ai_cli/name_registry.py`, `src/ai_cli/migrate_names.py`,
+  `src/ai_cli/config.py`, and all `rg`-enumerated label, reassignment, timeout and migration callers
+  and tests relevant to the changed text.
+
+### R2 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "cutover", "violation_kind": "incorrect-behavior"},
+      "disposition": "fixed",
+      "finding_key": "round1:DV-2",
+      "fingerprint": "fp:cutover-offline-spool-dual-writer",
+      "id": "DV-2",
+      "reachable_behavior": "All registered hosts are locked and upgraded while both stores refuse ordinary allocation, then only Dolt is enabled.",
+      "severity": "critical",
+      "submitted_severity": "critical"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "dolt-write-protocol", "violation_kind": "incorrect-behavior"},
+      "disposition": "fixed",
+      "finding_key": "round1:DV-1",
+      "fingerprint": "fp:sql-select-does-not-guard-dml",
+      "id": "DV-1",
+      "reachable_behavior": "Guarded DML with affected-row validation now prevents a failed ownership or state guard from mutating data.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "transaction-protocol", "violation_kind": "incorrect-behavior"},
+      "disposition": "fixed",
+      "finding_key": "round1:IC-1",
+      "fingerprint": "fp:claimant-readback-not-general",
+      "id": "IC-1",
+      "reachable_behavior": "Every ordinary write now has an operation-specific remote postcondition instead of a claim-only claimant check.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "hold-lifecycle", "violation_kind": "incorrect-behavior"},
+      "disposition": "open-blocking",
+      "finding_key": "round1:IC-2",
+      "fingerprint": "fp:lifecycle-omits-label-reassign",
+      "id": "IC-2",
+      "reachable_behavior": "A currently valid digit-bearing label token is rejected by the literal shared database constraint.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "timeout-policy", "violation_kind": "incorrect-behavior"},
+      "disposition": "fixed",
+      "finding_key": "round1:JA-1",
+      "fingerprint": "fp:separate-timeouts-dropped",
+      "id": "JA-1",
+      "reachable_behavior": "Fetch and push retain distinct fresh-read budgets and no longer fall back to the obsolete shared budget.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "migration-recovery", "violation_kind": "incorrect-behavior"},
+      "disposition": "open-blocking",
+      "finding_key": "round1:JA-2",
+      "fingerprint": "fp:migration-recovery-parity-unpinned",
+      "id": "JA-2",
+      "reachable_behavior": "A migration that fails with no surviving artifact has no specified transition to release its new hold and intent.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": "A001", "spec_version": "audit-loop@schema-v1", "subsystem": "seed-alignment", "violation_kind": "ask-drift"},
+      "disposition": "open-blocking",
+      "finding_key": "round1:JA-3",
+      "fingerprint": "fp:authoritative-approved-seed-not-bound",
+      "id": "JA-3",
+      "reachable_behavior": "The cutover can omit the separately added approved entry while satisfying the target's conflated 21-entry formula.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "sqlite-backend", "violation_kind": "incorrect-behavior"},
+      "disposition": "fixed",
+      "finding_key": "round1:DV-3",
+      "fingerprint": "fp:sqlite-constraints-not-parity",
+      "id": "DV-3",
+      "reachable_behavior": "SQLite now enables foreign keys and enforces JSON and logical constraints through the same generated schema contract.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "public-document", "violation_kind": "public-artifact-hygiene"},
+      "disposition": "fixed",
+      "finding_key": "round1:F-1",
+      "fingerprint": "fp:public-design-private-workflow-identifiers",
+      "id": "F-1",
+      "reachable_behavior": "The public design no longer exposes the private task, project, host, session or model identifiers found in Round 1.",
+      "severity": "minor",
+      "submitted_severity": "minor"
+    },
+    {
+      "cluster": {"invariant_id": null, "spec_version": "audit-loop@schema-v1", "subsystem": "cutover-import", "violation_kind": "internal-contradiction"},
+      "disposition": "open-blocking",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:cutover-stale-cache-row-precedence",
+      "id": "N-1",
+      "reachable_behavior": "A stale cached spare colliding with an active frozen-tip row can overwrite the active hold or abort import because no precedence is specified.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {"critical": 0, "major": 1, "minor": 0},
+  "scope": {
+    "backlog": [
+      "round1:DV-1",
+      "round1:DV-2",
+      "round1:DV-3",
+      "round1:F-1",
+      "round1:IC-1",
+      "round1:IC-2",
+      "round1:JA-1",
+      "round1:JA-2",
+      "round1:JA-3"
+    ],
+    "diff_since": "sha256:464fe03d6180c5ffdc936d6a43c12e7174d4e69e3a4be1262b76cf2a3872c164",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:464fe03d6180c5ffdc936d6a43c12e7174d4e69e3a4be1262b76cf2a3872c164",
+      "to": "sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-2-audit"
 }
 ```
