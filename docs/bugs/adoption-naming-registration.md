@@ -37,6 +37,9 @@ numeric and human session homes already share the canonical-worktree registry.
 Focused regressions exercise real temporary Git worktrees, verify that a wrong
 alias preserves the source transcript in both modes, and check the resulting
 registry row. A successful preview must leave the registry absent.
+The audit/adoption integration fixtures declare real repository aliases and
+canonical titles, so preview tests reach adoption planning rather than a naming
+refusal. Their before/after filesystem snapshots remain the no-write assertion.
 
 ## Lessons Learned
 
