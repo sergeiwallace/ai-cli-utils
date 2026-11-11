@@ -600,15 +600,28 @@ plan. `--finish` refuses while either session runs; `ai migrate-session OLD NEW
 --beads-only` does only this re-key, under the same ledger rule, and runs while
 NEW is live, so a migrated session already back at work need not exit for it.
 
-A `--finish` that re-keyed on that row and left nothing undone appends a row with
-`"finished": true` for the pair; the ledger is append-only, so the migration's own
-row is never rewritten. The migration's row lists the session ids of the
-transcripts it moved (`"transcripts"`), and a `--finish` on that row appends a
+The migration's row lists the session ids of the transcripts it moved
+(`"transcripts"`), and a `--finish` on that row appends a
 `"transcripts_recorded": true` row for each transcript that no row names yet and
 that it retitles or that began (its first timestamped record) before the pair's
 first migration row, on a finished pair too. `ai c NEW` resumes a listed transcript ahead of a
 more recently active one also titled NEW, such as one a relaunch started before the
-migration finished. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
+migration finished.
+
+Every writing run, a full migration, `--finish` or `--to-name`, ends with a read-only
+re-plan of the pair: the `--finish -n` plan, read part by part. A part is done when
+it reads `done earlier`, or a skip that finds nothing to carry (`no matching
+artifact`, `informational`, `unconfigured`, `missing`, and the `direct rename` of
+the name registry); a hook is done only when its `--dry-run` prints
+`migrate-status: done`. Anything else, an unreadable store, a hook without a status
+line, or a plan that refuses, is a part left. When nothing is left and this host's
+ledger records the pair, the run appends a row with `"finished": true` and
+`"verified": true` for it. Otherwise it appends nothing, marks each part left
+`failed` in the table, warns `NOT finished` naming each one and the `--finish`
+command, and exits 1; `--to-name` then marks the name registry entry incomplete. A
+`finished` row written before this rule carries no `verified` and counts as
+unverified. The ledger is append-only, so the migration's own
+row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
 remote side of `-R`, and a detached replay of NEW's recorded recipe by
 `ai sessions relaunch`) checks the ledger once the session name is resolved and,
 before the worktree or the session exists, runs the finish of each pair migrated
