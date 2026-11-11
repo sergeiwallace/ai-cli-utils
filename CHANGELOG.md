@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page names its source. A tracked file that is neither published nor excluded as a non-document
   fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
   `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
+- `ai migrate-session -s/--status [NAME]` lists every migration this host records that is not
+  verified finished, one row each: OLD, NEW, repo, `complete` or `partial`, the parts left and
+  the `--finish` command that finishes it. Each pair is re-planned with the same read-only
+  `--finish` plan a writing run verifies against, so the listing works while NEW is live and
+  writes nothing, the migration ledger included. `-a/--all` re-plans verified pairs too, NAME
+  narrows it to the pair whose OLD, NEW or NEW's first name it is, and a pair whose slot is gone
+  reads `partial`. It exits 1 if any pair is partial and 2 on a usage error. `-R/--remote` runs
+  the same status on the default remote machine over ssh and prints its rows.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
