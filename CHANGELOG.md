@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session` now renames a transcript's `agent-name` records as well as its
+  `custom-title` records. Claude Code restores a resumed session's name from the last
+  `agent-name` record, so a migrated session used to come back under its old name and
+  recreate state keyed by it. `--finish` and a re-run now find a transcript still carrying
+  the old `agentName` and rewrite it, the post-migrate resolve check fails while the
+  resolved transcript's current `agentName` is another name, and a host sweep's
+  transcript-only rename rewrites both fields.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that

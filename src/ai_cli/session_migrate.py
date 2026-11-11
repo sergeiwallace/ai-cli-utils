@@ -12,8 +12,8 @@ tasks, memory and resume hand-off:
   naming the old path;
 * the canonical-session registry entry for the old path;
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
-  memory), with each transcript's recorded cwd repointed, its ``customTitle``
-  renamed and its stale worktree binding cleared;
+  memory), with each transcript's recorded cwd repointed, its ``customTitle`` and
+  ``agentName`` renamed and its stale worktree binding cleared;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
   and the slot's project directories (filename prefix only), and the memory files
   named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
@@ -93,7 +93,7 @@ from .canonical_worktrees import (
     get_canonical_worktree_registry_path,
     move_canonical_worktree,
 )
-from .cc_migrate import _rewrite_line, cc_project_dir, transcript_titles
+from .cc_migrate import _rewrite_line, cc_project_dir, transcript_agent_names, transcript_titles
 from .git_repair import _git_env
 from .session_adopt import (
     AdoptionError,
@@ -1243,9 +1243,10 @@ def _start_session(
 
     transcripts = sorted(old_pd.glob("*.jsonl")) if old_pd.is_dir() else []
     titled = [path for path in transcripts if old in transcript_titles(path)]
+    named = [path for path in transcripts if path in titled or old in transcript_agent_names(path)]
     if old_pd.is_dir():
         moves.append(PlannedMove("project dir", str(old_pd), str(new_pd)))
-        for path in titled:
+        for path in named:
             moves.append(PlannedMove("transcript title", path.name, f"{old} -> {new}", "rewrite"))
     else:
         result.warnings.append(f"no Claude Code project directory at {old_pd}; there is no transcript to carry")
@@ -1325,7 +1326,7 @@ def _start_session(
         old_pd.rename(new_pd)
         for path in sorted(new_pd.glob("*.jsonl")):
             _rewrite_transcript_cwd(path, str(old_wt), str(new_wt))
-            if path.name in {t.name for t in titled}:
+            if path.name in {t.name for t in named}:
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
 
