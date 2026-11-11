@@ -1514,3 +1514,120 @@ class TestChiefAliases:
         assert code == 1
         assert f"chief_of_staff.{key} must be a list of bare names" in err
         dispatch.assert_not_called()
+
+
+class TestRemoteChiefPaneName:
+    """An unnumbered ``-R`` chief names its local pane after the session the remote host runs.
+
+    The dispatching machine cannot compose that name (the remote host picks the chief and
+    joins its own alias into the name), so the pane title, colour lease and cleanup command
+    used to carry an invented one that matched no tmux session.
+    """
+
+    REMOTE_NAME = "c-r-hub-fw-chief-1"
+
+    def _dispatch(self, monkeypatch, tmp_path, remote_session):
+        from conftest import _run_cli_with_args
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        with (
+            patch("ai_cli.main.sys.platform", "linux"),
+            patch("ai_cli.main._request_remote_chief_session", return_value=remote_session),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None) as lease,
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup") as profile,
+        ):
+            runner = _run_cli_with_args(["ai", "cos", "-R", "-m", "fw"], REMOTE_CONFIG, capture_ssh_runner=True)
+        return runner, lease, profile
+
+    def test_given_remote_runs_a_chief_when_unnumbered_dispatch_then_pane_lease_and_cleanup_use_its_name(
+        self, monkeypatch, tmp_path
+    ):
+        runner, lease, profile = self._dispatch(monkeypatch, tmp_path, self.REMOTE_NAME)
+
+        assert profile.call_args[0][0] == self.REMOTE_NAME
+        assert lease.call_args[0][0] == self.REMOTE_NAME
+        assert runner.call_args[0][1] == ["ai", "internal", "cleanup-session-files", self.REMOTE_NAME]
+
+    def test_given_remote_runs_a_chief_when_unnumbered_dispatch_then_the_remote_still_picks_the_chief(
+        self, monkeypatch, tmp_path
+    ):
+        runner, _lease, _profile = self._dispatch(monkeypatch, tmp_path, self.REMOTE_NAME)
+
+        assert runner.call_args[0][0][-1].endswith("--chief chief'")
+        assert self.REMOTE_NAME not in runner.call_args[0][0][-1]
+
+    def test_given_remote_cannot_name_a_chief_when_unnumbered_dispatch_then_a_placeholder_titles_the_pane(
+        self, monkeypatch, tmp_path
+    ):
+        runner, _lease, profile = self._dispatch(monkeypatch, tmp_path, "")
+
+        title = profile.call_args[0][0]
+        assert title and title != self.REMOTE_NAME
+        assert runner.call_args[0][1][-1] == title
+
+    @pytest.mark.parametrize("reply", ["", "not json", "[]", '{"other": 1}', '{"session_id": 7}'])
+    def test_given_an_unusable_reply_when_remote_chief_asked_then_it_is_no_answer(self, reply):
+        from ai_cli.main import _request_remote_chief_session
+
+        with patch("ai_cli.main.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = reply
+            assert _request_remote_chief_session(["ssh", "host"], "zsh") == ""
+
+    def test_given_a_failed_command_when_remote_chief_asked_then_it_is_no_answer(self):
+        from ai_cli.main import _request_remote_chief_session
+
+        with patch("ai_cli.main.subprocess.run") as run:
+            run.return_value.returncode = 1
+            run.return_value.stdout = json.dumps({"session_id": self.REMOTE_NAME})
+            assert _request_remote_chief_session(["ssh", "host"], "zsh") == ""
+
+    def test_given_ssh_cannot_start_when_remote_chief_asked_then_it_is_no_answer(self):
+        from ai_cli.main import _request_remote_chief_session
+
+        with patch("ai_cli.main.subprocess.run", side_effect=OSError("no ssh")):
+            assert _request_remote_chief_session(["ssh", "host"], "zsh") == ""
+
+    def test_given_chief_home_options_when_remote_chief_asked_then_they_reach_the_remote_command(self):
+        import shlex
+
+        from ai_cli.main import _request_remote_chief_session
+
+        with patch("ai_cli.main.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps({"session_id": self.REMOTE_NAME})
+            answer = _request_remote_chief_session(
+                ["ssh", "host"], "zsh", ["--chief", "--machine-key", "key-x", "--fm-home", "~/chief home"]
+            )
+
+        assert answer == self.REMOTE_NAME
+        tokens = shlex.split(shlex.split(run.call_args[0][0][-1])[-1])
+        assert tokens[tokens.index("resolve-chief-session") + 1 :] == [
+            "--chief",
+            "--machine-key",
+            "key-x",
+            "--fm-home",
+            "~/chief home",
+        ]
+
+    def test_given_a_live_registered_chief_when_the_remote_side_resolves_then_it_prints_its_tmux_session(
+        self, seeded_home
+    ):
+        registration = {"schema_version": 1, "native_agent_name": "hub-fw-chief-1", "tmux_target": self.REMOTE_NAME}
+        cos.registration_path(seeded_home).write_text(json.dumps(registration))
+        with patch("ai_cli.chief_of_staff.tmux_has_session", return_value=True):
+            code, out, err = run_cli(["ai", "internal", "resolve-chief-session", "--chief"])
+
+        assert code == 0, err
+        assert json.loads(out) == {"session_id": self.REMOTE_NAME}
+        assert json.loads(cos.registration_path(seeded_home).read_text()) == registration
+
+    def test_given_no_chief_running_when_the_remote_side_resolves_then_it_exits_one_and_writes_nothing(
+        self, seeded_home
+    ):
+        with patch("ai_cli.session._tmux_session_names", return_value=[]):
+            code, out, _err = run_cli(["ai", "internal", "resolve-chief-session"])
+
+        assert code == 1
+        assert out.strip() == ""
+        assert not cos.registration_path(seeded_home).exists()

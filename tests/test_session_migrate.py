@@ -302,6 +302,20 @@ def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(s
     assert _everything(slot) == before
 
 
+def test_given_a_running_session_when_migrating_then_the_refusal_names_the_stop_verb(slot):
+    sessions = slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(slot["wt"]), "sessionId": UUID})
+    )
+    _code, _out, err = _migrate(slot["repo"], "-y")
+    assert f"ai sessions stop {OLD}" in err
+    (sessions / f"{os.getpid()}.json").unlink()
+    code, _out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{OLD}"])
+    assert code == 2
+    assert f"ai sessions stop {OLD}" in err
+
+
 def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
     (slot["repo"] / ".worktrees" / NEW).mkdir()
     code, _out, err = _migrate(slot["repo"], "-y")
@@ -599,6 +613,44 @@ def test_given_old_name_leftovers_when_dry_run_then_each_is_planned_and_nothing_
         f"watcher lock: {slot['state'] / f'ai-watcher-lock-c-{OLD}'} (removed: no live holder)",
     ):
         assert expected in out, f"{expected!r} missing from:\n{out}"
+
+
+def test_given_an_empty_old_agent_container_when_dry_run_then_its_removal_is_named_and_it_stays(slot):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    (container / "reaped-leaf").mkdir(parents=True)
+
+    code, out, err = _migrate(slot["repo"], "-n")
+
+    assert code == 0, out + err
+    assert f"agent container: {container} (would be removed: empty)" in out
+    assert (container / "reaped-leaf").is_dir()
+
+
+def test_given_an_old_agent_container_holding_a_moving_agent_worktree_when_dry_run_then_its_removal_is_named(slot):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    leaf = container / "leaf"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf", cwd=slot["repo"])
+
+    code, out, err = _migrate(slot["repo"], "-n")
+
+    assert code == 0, out + err
+    assert f"agent container: {container} (would be removed: empty)" in out
+    assert (leaf / "README.md").is_file()
+
+
+@pytest.mark.parametrize("flags", [("-n",), ("-y",)])
+def test_given_an_old_agent_container_holding_a_file_when_migrated_or_dry_run_then_both_name_it_kept_and_exit_1(
+    slot, flags
+):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    container.mkdir(parents=True)
+    (container / "notes.txt").write_text("keep me\n")
+
+    code, out, err = _migrate(slot["repo"], *flags)
+
+    assert code == 1, out + err
+    assert f"agent container: {container} (kept: holds notes.txt)" in out
+    assert (container / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
 
 
 def test_given_a_watcher_lock_naming_a_live_pid_when_migrated_then_it_is_left_alone(slot):

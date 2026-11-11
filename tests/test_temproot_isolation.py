@@ -145,6 +145,53 @@ def test_given_a_live_run_when_the_shared_root_is_swept_and_a_second_run_finishe
     assert live.returncode == 0, out[-3000:]
 
 
+# Loaded into an inner run with ``-p``. It plays the other run of the suite ending at the same
+# moment: just before this run unlinks its root's dead ``pytest-current`` link, the other run
+# has already unlinked it. pytest's own cleanup checks the link and then unlinks it, so two
+# runs ending together both pass the check and the slower unlink finds nothing.
+_COMPETING_CLEANUP_PLUGIN = """
+import os
+from pathlib import Path
+
+_MARKER = Path(os.environ["AI_CLI_TEMPROOT_COMPETITOR_FIRED"])
+_real_unlink = Path.unlink
+
+
+def _unlink_after_a_competing_run(self, missing_ok=False):
+    if self.name == "pytest-current" and self.is_symlink() and not self.resolve().exists():
+        os.unlink(self)
+        _MARKER.write_text("fired", encoding="utf-8")
+    return _real_unlink(self, missing_ok=missing_ok)
+
+
+Path.unlink = _unlink_after_a_competing_run
+"""
+
+
+def test_given_another_run_removed_the_dead_current_link_when_this_run_cleans_up_then_it_still_exits_zero(
+    sandbox, tmp_path
+):
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "competing_cleanup.py").write_text(_COMPETING_CLEANUP_PLUGIN, encoding="utf-8")
+    fired = tmp_path / "competitor-fired"
+    env = _inner_env(sandbox, tmp_path / "report")
+    env["AI_CLI_TEMPROOT_COMPETITOR_FIRED"] = str(fired)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(plugin_dir), env.get("PYTHONPATH")]))
+
+    result = _run(
+        _inner_argv(
+            "test_inner_given_a_fresh_run_when_tmp_path_is_requested_then_its_path_is_reported",
+            "-p",
+            "competing_cleanup",
+        ),
+        env,
+    )
+
+    assert fired.exists(), "the competing run never removed the link, so nothing was raced"
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+
+
 def test_given_an_explicit_basetemp_when_the_suite_runs_then_tmp_path_is_under_it(sandbox, tmp_path):
     report = tmp_path / "report"
     explicit = tmp_path / "explicit-basetemp"

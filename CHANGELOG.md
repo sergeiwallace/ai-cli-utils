@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
+  which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
+  tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
+  Code process once its record proves the pid, waits up to `-t/--timeout` seconds, and exits 1
+  naming whatever is still running. `ai migrate-session` and `--finish` now name it in their
+  live-session refusals instead of `tmux kill-session`.
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and
@@ -31,10 +37,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker
+  (`~/.claude/resume/pollers/<name>__<id>.notified`) exists under both the old and the new name.
+  Both copies hold one timestamp, so the rename keeps the later one under the new name and
+  removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
+  `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
+  finished. Every other resume artifact found under both names is still reported and left alone.
+
 - A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
   boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
   after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
+
+- `ai migrate-session OLD NEW --finish`, and the finish `ai c NEW` runs at launch, now regenerate
+  the session's wrapper script for NEW. They used to move it verbatim, so it still set the old name
+  and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
+  the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
+  or the next launch.
+- An unnumbered remote chief launch (`ai cos -R`) now titles the local pane, leases its colour and
+  names its cleanup command after the tmux session the remote host actually runs. The remote host
+  picks the chief, so the dispatching machine used to invent a name that matched no session. It now
+  asks the remote host (`ai internal resolve-chief-session`, read-only) and keeps the old
+  placeholder only when the remote has no running chief to name or predates the command.
+
+- `ai migrate-session OLD NEW --finish`, including the finish `ai c` runs at launch, no
+  longer stops when one external hook refuses its `--dry-run`. The slot has already moved, so
+  that hook is skipped and reported as pending, the core parts and the other hooks still run,
+  no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
+  fresh migration still refuses before its first write.
+
+- `ai migrate-session OLD NEW -n` now names the fate of each `OLD-agents` container the real
+  run sweeps: `would be removed: empty`, or `kept` with what it holds or the pid working in it,
+  and it exits 1 when the real run would keep one. The preview used to print only
+  `removed once empty` and exit 0 for a container the real run then kept, exiting 1.
 
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,

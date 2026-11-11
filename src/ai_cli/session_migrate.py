@@ -220,14 +220,15 @@ def _refuse_live(
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
-                f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
+                f"running in the slot being {verb} -- its transcript and task files are open. Stop it first "
+                f"with `ai sessions stop {session.name or old}`."
             )
     hosting = sorted(set(tmux) & set(_session_variants(old) + _session_variants(new)))
     if hosting:
-        hosted = ", ".join(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
+        hosted = list(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
         raise LiveSessionError(
-            f"tmux session {', '.join(hosting)} still hosts {hosted}, and its wrapper restarts the agent on "
-            f"exit. Exit the session and end the tmux session (`tmux kill-session -t {hosting[0]}`) first."
+            f"tmux session {', '.join(hosting)} still hosts {', '.join(hosted)}, and its wrapper restarts the "
+            f"agent on exit. Stop it first with `ai sessions stop {hosted[0]}`."
         )
 
 
@@ -506,15 +507,28 @@ def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
     return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
 
 
-def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] | None) -> list[_hooks.Hook]:
+def _plan_hooks(
+    old: str,
+    new: str,
+    repo_root: Path,
+    report: list[PlannedMove] | None,
+    pending: MigrationResult | None = None,
+) -> list[_hooks.Hook]:
     """Run every external hook with ``--dry-run``; any refusal refuses the migration.
 
-    The hooks' planned lines are appended to ``report`` when one is given.
+    The hooks' planned lines are appended to ``report`` when one is given. With
+    ``pending``, a hook that refuses is left out of the plan and recorded on it as pending
+    work instead, for a run whose slot has already moved.
     """
+    refused: list[_hooks.HookRun] | None = [] if pending is not None else None
     try:
-        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root)
+        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root, refused=refused)
     except _hooks.HookRefusal as exc:
         raise MigrationError(str(exc)) from exc
+    if pending is not None:
+        for run in refused or []:
+            pending.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "skipped: preflight refused"))
+            pending.warnings.append(_hooks.refusal_warning(run))
     if report is not None:
         report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
         report += [
@@ -688,21 +702,26 @@ def _containers(old: str, repos: list[Path]) -> list[Path]:
     return [c for c in ((r / ".worktrees" / f"{old}-agents").resolve() for r in repos) if c.is_dir()]
 
 
-def _holds_a_file(path: Path) -> bool:
+def _holds_a_file(path: Path, moving: Container[Path] = ()) -> bool:
+    if path in moving:
+        return False
     if path.is_symlink() or not path.is_dir():
         return True
-    return any(_holds_a_file(child) for child in path.iterdir())
+    return any(_holds_a_file(child, moving) for child in path.iterdir())
 
 
-def _sweep_containers(containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool) -> list[PlannedMove]:
+def _sweep_containers(
+    containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool, moving: Container[Path] = ()
+) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
-    A container already gone is not listed: the agent plan's own line covers it.
+    A container already gone is not listed: the agent plan's own line covers it. A preview
+    passes the agent worktrees the run ``moving`` out, so it names the fate the run reaches.
     """
     moves: list[PlannedMove] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
-        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child))
+        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
         elif held:
@@ -756,7 +775,7 @@ def clean_leftovers(
 def _clean_other_repos(
     result: MigrationResult,
     leftovers: list[_Leftover],
-    containers: list[Path],
+    agent_plan: _agents.AgentPlan,
     live_cwds: list[tuple[int, Path]],
     *,
     home: Path,
@@ -768,8 +787,8 @@ def _clean_other_repos(
     if not result.dry_run:
         result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, result.dry_run)
-    if not result.dry_run:
-        result.moves += _sweep_containers(containers, live_cwds, dry_run=False)
+    moving = {e.worktree for e in agent_plan.entries if e.worktree and e.moves} if result.dry_run else set()
+    result.moves += _sweep_containers(agent_plan.containers, live_cwds, dry_run=result.dry_run, moving=moving)
     _record_kept(leftovers, result)
 
 
@@ -1274,7 +1293,7 @@ def _start_session(
     _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     # Record intent before Git can move a topic-branch checkout. Its branch alone
@@ -1339,7 +1358,7 @@ def _start_session(
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     _apply_beads(old, new, beads, result)
 
     if titled:
@@ -1432,7 +1451,8 @@ def finish_session(
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
-    A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
+    A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
+    as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1511,7 +1531,7 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
     _plan_task_rekey(old, new, home, result, state)
-    hooks = _plan_hooks(old, new, repo_root, moves)
+    hooks = _plan_hooks(old, new, repo_root, moves, pending=result)
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
@@ -1520,7 +1540,7 @@ def finish_session(
     _describe_beads(old, new, beads, result, held=held)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -1547,7 +1567,7 @@ def finish_session(
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
         if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
