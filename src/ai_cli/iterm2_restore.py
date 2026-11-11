@@ -120,7 +120,7 @@ def _swept_exit(record: dict, reason: str, boot_id: str | None, now: str) -> dic
 
 def _relaunch_rule(cause: str, scenarios: dict) -> str | None:
     """Why a dead record with ``cause`` is not relaunched, or None when it is."""
-    toggle = "terminal_quit_or_crash" if cause == "unknown" else cause
+    toggle = {"unknown": "terminal_quit_or_crash", "maintenance_wind_down": "host_reboot"}.get(cause, cause)
     if scenarios[toggle]:
         return None
     label = f"cause={cause}" if toggle == cause else f"cause={cause} follows {toggle}"
