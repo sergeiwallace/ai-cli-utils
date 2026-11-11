@@ -767,8 +767,8 @@ A migration carries everything `ai` keys by the session's name or slot, listed
 first by `ai migrate-session -n` ([the full table](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-migrate-session)).
 State owned by other tools joins the same run through a hook file in
 `migrate-session.d/` under the config directory: each hook is planned with
-`--dry-run` before anything is written, can refuse the migration, and runs after
-the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
+`--dry-run` before anything is written, can refuse the migration (under `--finish`
+it is skipped and reported as pending instead), and runs after the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
 `ai adopt-session` that retitles the session runs the same hooks the same way.
 
 A session that is finished for good has its home slot retired by its owner with

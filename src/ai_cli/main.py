@@ -1895,6 +1895,38 @@ def _request_remote_session_allocation(
     return session_id, ai_name
 
 
+def _request_remote_chief_session(
+    ssh_args: list[str], remote_shell: str, remote_args: "list[str] | tuple[str, ...]" = ()
+) -> str:
+    """Return the tmux session of the chief the remote host is running, or ``""``.
+
+    An unnumbered chief request leaves the choice to the remote host, so this machine
+    cannot compose the session's name. The remote host answers from its own registration
+    and tmux sessions. Anything short of a clear answer (no chief running there, several
+    candidates, a remote ``ai`` that predates the command, an unreadable reply) returns
+    ``""`` and the caller keeps its own placeholder name.
+    """
+    remote_command = 'export PATH="$HOME/.local/bin:$PATH"; ai internal resolve-chief-session' + "".join(
+        f" {shlex.quote(arg)}" for arg in remote_args
+    )
+    try:
+        result = subprocess.run(
+            [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        session_id = json.loads(result.stdout)["session_id"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return ""
+    return session_id if isinstance(session_id, str) else ""
+
+
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
 _EMIT_LEVELS = {"info": _out.Level.INFO, "warning": _out.Level.WARNING, "error": _out.Level.ERROR}
@@ -2218,6 +2250,19 @@ def _handle_internal(argv: list[str]) -> None:
             reporter=_launch_reporter.active(),
         )
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
+        sys.exit(0)
+    elif action == "resolve-chief-session":
+        # Read-only: nothing is registered, named or reserved. Exit 1 with no reply when no
+        # chief is running here, so the dispatching machine keeps its own placeholder.
+        forwarded = argv[1:]
+
+        def forwarded_value(flag: str) -> str:
+            return forwarded[forwarded.index(flag) + 1] if flag in forwarded[:-1] else ""
+
+        session_id = _running_chief_session(forwarded_value("--machine-key"), forwarded_value("--fm-home"))
+        if not session_id:
+            sys.exit(1)
+        _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id}))
         sys.exit(0)
     elif action == "get-version":
         _out.raw(Untagged.INTERNAL_REPLY, _pkg_version_string())
@@ -4578,8 +4623,12 @@ def _do_session_launch(
         chief_unnumbered = "--chief" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
             _chief_of_staff.chief_slot(name)
         )
+        # The tmux session the pane is titled after. For an unnumbered chief only the remote
+        # host knows it, so it is asked; the placeholder below stands in when it cannot say.
+        remote_pane_session = ""
         if chief_unnumbered:
-            reporter.phase("session").outcome(f"{name} (the remote host selects its chief)")
+            remote_pane_session = _request_remote_chief_session(preflight_ssh_args, remote_shell, remote_args or [])
+            reporter.phase("session").outcome(f"{remote_pane_session or name} (the remote host selects its chief)")
         else:
             with reporter.phase("session", "allocating remote session") as _session_phase:
                 try:
@@ -4618,7 +4667,11 @@ def _do_session_launch(
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
-        _r_ai_name = remote_session_id or _session._new_session_display_name(engine, remote_prefix, name, True)
+        _r_ai_name = (
+            remote_session_id
+            or remote_pane_session
+            or _session._new_session_display_name(engine, remote_prefix, name, True)
+        )
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(
             _r_ai_name,
@@ -6076,6 +6129,32 @@ def _running_chief(registration: dict | None, naming_prefix: str, session_name: 
         )
         sys.exit(1)
     return (*found[0], False) if found else None
+
+
+def _running_chief_session(machine_key: str, fm_home: str) -> str:
+    """The tmux session of the chief running on this machine, or ``""``; nothing is written.
+
+    A dispatching machine asks for this when it launches an unnumbered chief here, so
+    its terminal title, colour lease and cleanup command name the session that exists
+    (``ai internal resolve-chief-session``). A live registration answers on its own; only
+    the fallback search of tmux session names needs this host's naming prefix, and with
+    none it finds nothing.
+    """
+    try:
+        chief_project = _chief_of_staff.required_setting("project")
+        chief_name = _chief_of_staff.required_setting("session_name").casefold()
+        home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
+        existing = _chief_of_staff.read_registration(home)
+    except _chief_of_staff.ChiefOfStaffError:
+        return ""
+    naming_prefix = ""
+    try:
+        prefix = _config.resolve_project_prefix_by_name(chief_project)
+        naming_prefix = _session_naming.resolve_launch_naming(prefix, _config.load_config(), dry_run=True).prefix
+    except (_config.ProjectPrefixError, _session_naming.HostAliasError, _session_naming.NamingConventionError):
+        pass
+    running = _running_chief(existing, naming_prefix, chief_name)
+    return running[1] if running is not None else ""
 
 
 def _prepare_chief_launch(

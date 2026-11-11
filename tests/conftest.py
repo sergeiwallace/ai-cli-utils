@@ -1873,6 +1873,9 @@ def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
         tokens = shlex.split(remote_command)
         if "update" in tokens and "ai" in tokens:
             return make_subprocess_result(stdout="current")
+        if "resolve-chief-session" in tokens:
+            # A remote host with no chief running answers nothing, so the caller keeps its placeholder.
+            return make_subprocess_result(returncode=1)
         allocation_index = tokens.index("allocate-session-name")
         engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
         session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
