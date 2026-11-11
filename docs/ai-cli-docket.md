@@ -3,7 +3,7 @@ title: "Docket"
 category: docket
 tags: [docket, review-queue, autonomous-batch]
 status: current
-source: "codex-implement, delegated by aih-2"
+source: "codex-implement, delegated by app-2"
 template_version: "docket-1.0.0"
 ---
 
@@ -86,7 +86,7 @@ derived `score`.
 | P2 | `AI-CLI-32` | **CLI ergonomics and first-run UX audit** | — (no open decision; ready to work) | — | — | `0.77` |
 | P2 | `AI-CLI-82` | **Auto-show task panel on CC session start and auto-restart** | — (no open decision; ready to work) | — | — | `0.77` |
 | P2 | `AI-CLI-52` | **Re-record demo video for README and portfolio** | — (no open decision; ready to work) | — | — | `0.75` |
-| P2 | `AI-CLI-105` | **`ai sync` reliability — root-cause the conflicts + observability + robust prevention (part of the CORE-46 deploy/sync program)** | — (no open decision; ready to work) | — | — | `0.62` |
+| P2 | `AI-CLI-105` | **`ai sync` reliability — root-cause the conflicts + observability + robust prevention (part of the historical-task deploy/sync program)** | — (no open decision; ready to work) | — | — | `0.62` |
 | P2 | `AI-CLI-111` | **Review + reconcile `ai` CLI vs core-cli's `core` CLI — scope, ownership, interaction, optional-dependency boundary** | — (no open decision; ready to work) | — | — | `0.6` |
 | P2 | `AI-CLI-93` | **Migrate the `ai` CLI to Typer — consolidate the existing click+argparse split (DESIGN-FIRST, feature-parity-gated)** | — (no open decision; ready to work) | — | — | `0.51` |
 | P3 | `AI-CLI-prune-authorises-delete-gpjh` | **Prune authorises a delete from Path.exists(), which cannot distinguish a gone pid from an unreadable /proc** | — (no open decision; ready to work) | — | — | `0.83*` |

@@ -63,7 +63,7 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 ## Documentation Maintenance
 
-- **Update docs when shipping features** — after any feature lands, update `docs/tools/ai-cli-usage.md` (usage reference), inline code comments in `main.py` for changed commands, and `README.md` if the CLI interface changed. Doc staleness is a bug.
+- **Update docs when shipping features** — a command's help in its Click declaration is the only source of its usage text. After changing a command or its help, run `uv run python scripts/generate_docs.py` to regenerate `docs/reference/cli.md` and the README command index; never edit either by hand. Then update the narrative guide `docs/tools/ai-cli-usage.md` and `README.md` prose if behaviour changed, and inline code comments in `main.py` for changed commands. Doc staleness is a bug.
 - **Same commit rule** — doc updates ship in the same commit as the feature, not as a follow-up.
 - **Plan docs are living docs** — update status, decisions, and approval log as work progresses.
 
@@ -89,7 +89,7 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 ```text
 Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR → Merge
-```text
+```
 
 ### Branch Strategy
 
@@ -143,7 +143,7 @@ When presenting for UAT, always use this template:
 ### Test results — [test output summary]
 ### How to verify — [steps the human can take to manually test]
 ### Acceptance criteria status — [x] Criterion 1 ...
-```text
+```
 
 ## Document Structure
 
@@ -189,7 +189,7 @@ Claude is the lead — it owns the conversation, writes code, uses tools, and ma
 
 ```text
 mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3.0-flash")
-```text
+```
 
 Models ranked by capability: `gemini-3.1-pro-preview` (preview, high quota risk) → `gemini-3.0-pro` (flagship, high) → `gemini-3.0-flash` (workhorse, low) → `gemini-2.5-pro` (previous gen, moderate) → `gemini-2.5-flash` (bulk, low) → `gemini-2.5-flash-lite` (simple extraction, minimal).
 

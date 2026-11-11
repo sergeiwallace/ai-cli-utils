@@ -53,7 +53,7 @@ uv run python scripts/check_python_version_sync.py
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 uv run pytest
-```text
+```
 
 ### Relock after changing a dependency
 
@@ -83,15 +83,15 @@ through a bare `subprocess.Popen`:
 ```python
 from process_ownership import owned_sleeper, reap, spawn_owned
 
-with owned_sleeper() as proc:      # spawned in its own group, reaped on the way out
+with owned_sleeper() as proc:  # spawned in its own group, reaped on the way out
     ...
 
 proc = spawn_owned([sys.executable, "-c", "..."])  # when you need the handle yourself
 try:
     ...
 finally:
-    reap(proc)                     # ends the GROUP, not just the direct child
-```text
+    reap(proc)  # ends the GROUP, not just the direct child
+```
 
 Two reasons it is a helper and not a convention. A child in a group of its own can be ended
 as a whole tree, where terminating the direct child leaves its own children running and
@@ -124,7 +124,7 @@ sudo apt-get install tmux
 
 # Windows: via MSYS2, which is what CI uses
 pacman -S tmux
-```text
+```
 
 Every CI job installs it explicitly, on all three platforms. That is deliberate rather than
 belt-and-braces: two runs of the same commit once differed only in whether the runner image
@@ -148,7 +148,7 @@ uv run pytest tests/test_main.py
 
 # Single test
 uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_sshs_to_host
-```text
+```
 
 ## Code Style
 
@@ -170,7 +170,7 @@ uv run ruff format --check src/ tests/
 
 # Auto-format
 uv run ruff format src/ tests/
-```text
+```
 
 ### Lint autofix is deliberate, never automatic
 
@@ -197,7 +197,7 @@ uv run ruff check --fix src/ tests/
 
 # 3. Review that diff on its own, then commit it separately from any feature work
 git diff
-```text
+```
 
 One reviewable mechanical commit is strictly better than the same edits dribbling through
 unrelated ones.
@@ -208,6 +208,39 @@ Name every command {verb}-{noun} (`migrate-session`, not `session-migrate`). A c
 group is a noun and its subcommands are verbs. A new command that does not fit this form
 is raised with the maintainer for review before it ships.
 
+## Generated Documentation
+
+A command's help, written in its Click declaration, is the only place its usage text lives.
+Three things are generated from it and from the repository's own docs; never edit any of them
+by hand.
+
+- `docs/reference/cli.md`, the CLI reference: every command's usage line, description and
+  options in both forms.
+- The command index in `README.md`, between the `cli-index` markers.
+- The [project wiki](../../wiki), rebuilt from `docs/wiki/pages.toml` on every push to `main`
+  by `.github/workflows/wiki.yml`. Each wiki page names its source file; an edit made in the
+  wiki itself is overwritten by the next push.
+
+After changing a command, an option or its help, regenerate the first two and commit them with
+the change:
+
+```bash
+uv run python scripts/generate_docs.py        # rewrite the reference and the README index
+uv run python scripts/generate_docs.py -c     # check only: exit 1 with a diff when stale
+```
+
+`pytest` and the pre-commit hook fail when either is stale. To preview the wiki locally:
+
+```bash
+uv run python scripts/generate_docs.py -c -w /tmp/wiki -R <owner>/<repo>
+```
+
+Every tracked file has to be published by a page or group in `docs/wiki/pages.toml`, or matched
+by one of its `[[exclude]]` classes of non-documents; the build fails naming any new file that is
+neither. Markdown files and everything under `docs/` are always published. A new document
+therefore needs no manifest change, and a new kind of non-document file outside `docs/` needs an
+exclusion with a reason.
+
 ## Hard Gate
 
 All contributions must pass this before merge:
@@ -215,7 +248,7 @@ All contributions must pass this before merge:
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ \
   && uv run pyright src/ && uv run pytest
-```text
+```
 
 **`pyright` is part of the gate, not an extra.** It used to be missing here while CI's
 lint job ran it, which meant type errors passed every local check and landed on `main`
@@ -283,7 +316,7 @@ tests/
   test_sync.py     # Sync tests
   test_messaging.py # NATS messaging tests
   ...
-```text
+```
 
 ## Reporting Issues
 

@@ -123,7 +123,7 @@ depth_presets:
     retries:
       cli_timeout_retries: 1
       step_node_retries: 2
-```text
+```
 
 ---
 
@@ -131,7 +131,7 @@ depth_presets:
 
 **Default:** Gemini native grounding — included in the Google AI Ultra subscription, no additional cost.
 
-**Optional providers** (not defaults — require separate API keys; implement as follow-up tasks SW-762, SW-763):
+**Optional providers** (not defaults — require separate API keys; implement as follow-up tasks historical-task, historical-task):
 
 | # | Provider | Cost | Notes |
 |---|----------|------|-------|
@@ -207,12 +207,12 @@ search_providers:
   - type: keyword        # Gemini native grounding or Serper (fast, named entities)
   - type: semantic       # Future: embedding-based search if provider supports it
   - type: direct_read    # Firecrawl — for known URLs or specific documents
-```text
+```
 
 Allow the planning model to select modality per query via structured JSON output:
 `{"tool": "keyword|semantic|direct_read", "query": "..."}`
 
-*Impact:* Better coverage on research tasks with mixed query types. Depends on SW-762/SW-763 (Tavily/Firecrawl providers) shipping first.
+*Impact:* Better coverage on research tasks with mixed query types. Depends on historical-task/historical-task (Tavily/Firecrawl providers) shipping first.
 
 ### P2-3: Token-Level Fault Tolerance (Once-More, ICLR 2026)
 
@@ -231,7 +231,7 @@ Capabilities: multimodal inputs, GCS bucket reads up to 100MB, private web data 
 
 *Impact:* Unlocks production-grade deep research via a single API call. Trade-offs: higher cost, async-only (no streaming), GCP dependency. Evaluate cost/quality vs `--depth deep` on DRACO benchmark tasks before committing.
 
-*Depends on:* researching current Interactions API pricing and quota model (add to SW-766 scope).
+*Depends on:* researching current Interactions API pricing and quota model (add to historical-task scope).
 
 ---
 
@@ -240,8 +240,8 @@ Capabilities: multimodal inputs, GCS bucket reads up to 100MB, private web data 
 | Date | Round | Decisions / Approvals |
 |------|-------|----------------------|
 | 2026-04-04 | Round 1 | Plan proposed |
-| 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (SW-762, SW-763). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror depth config structure. New OQ-4 added. |
+| 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (historical-task, historical-task). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror depth config structure. New OQ-4 added. |
 | 2026-04-05 | Round 3 | OQ-4 resolved: B + C — per-step JSON checkpointing + per-call OAuth→REST auto-fallback via `invoke_with_fallback()`. `--resume <run-id>` flag added. |
 | 2026-04-05 | Round 4 | Plan approved. Moved to ai-cli-utils project for implementation. |
 | 2026-04-06 | Round 5 | Phase 2 enhancements added based on companion R-22 / myproject R-66 (2026 gap analysis): P2-1 IEW voting for --depth deep, P2-2 hierarchical search provider, P2-3 token-level fault tolerance (confirmed no action — existing checkpointing is correct ceiling). |
-| 2026-04-06 | Round 6 | P2-4 added: --depth exhaustive via Gemini Interactions API (official async Deep Research harness). Pricing/quota research flagged as addition to SW-766 scope. |
+| 2026-04-06 | Round 6 | P2-4 added: --depth exhaustive via Gemini Interactions API (official async Deep Research harness). Pricing/quota research flagged as addition to historical-task scope. |

@@ -29,7 +29,7 @@ matters and the shape is unaltered.
 $ env -u AI_HOST python -c "from ai_cli.config import detect_machine_profile; print(detect_machine_profile())"
 {'host_id': 'ip-192-0-2-17', 'os_type': 'linux'}
 
-$ cat /etc/ai-harness/machine
+$ cat /etc/automation framework/machine
 <the machine's name>
 ```
 
@@ -89,7 +89,7 @@ All three outlive the lease whose name they would have recorded.
 ## Hypotheses rejected
 
 **That the hostname fallback is harmless because `AI_HOST` is always set.** Measured false on
-the affected host: in a non-interactive shell `AI_HOST` was unset while `/etc/ai-harness/machine`
+the affected host: in a non-interactive shell `AI_HOST` was unset while `/etc/automation framework/machine`
 held the answer. The fallback is reached exactly where it is least observed.
 
 **That `~/user-default-efs` in `canonical_worktrees` is the same bug.** It is not, and this was

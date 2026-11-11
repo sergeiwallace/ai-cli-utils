@@ -76,8 +76,8 @@ compatibility, current implementation compatibility, heuristic validity, and ind
 reliability/security/portability risks.
 
 Path notation below: `[target plan]` = `docs/plans/ai-cli-118-daemon-task-tool-self-healing-plan.md`,
-`[research]` = `~/projects/ai-harness/docs/research/claude-code-daemon-restart-task-tool-disconnect.md`,
-`[decision framework]` = `~/projects/ai-harness/docs/procedures/decision-framework.md`.
+`[research]` = `~/projects/automation framework/docs/research/claude-code-daemon-restart-task-tool-disconnect.md`,
+`[decision framework]` = `~/projects/automation framework/docs/procedures/decision-framework.md`.
 
 ### R1 Summary
 
@@ -174,7 +174,7 @@ session_id])`. The fresh client launch occurs only after the running client exit
 loops through `session_script.py`. The research doc also already said recovery was "not
 exercised." **Claude independently re-verified this directly against `main.py:1591` post-audit —
 confirmed correct, and corrected the upstream research doc's workaround section accordingly
-(`ai-harness` commit `e3823ac`).**
+(`automation framework` commit `e3823ac`).**
 
 **Why it matters:** a user who follows the notification is reattached to the same broken process.
 
@@ -368,7 +368,7 @@ audience.
 
 **Pros:** defensively conservative for a published package.
 **Cons:** inconsistent with the rest of the repo's docs (would need a repo-wide policy change to be
-coherent, not a one-doc fix); loses the AIH-148 divergence-tracking value this column exists for.
+coherent, not a one-doc fix); loses the historical-task divergence-tracking value this column exists for.
 
 **Recommendation:** (a) — this finding conflates package *code* publication (PyPI) with repo *docs*
 visibility; no other roadmap/plan entry in this repo has ever been scrubbed this way, and changing
@@ -381,7 +381,7 @@ convention)** — trivial, reversible, contained (one-liner resolution, scorer s
 framework). Every other doc in this repo uses `AI-CLI-N` IDs and the decision-framework's own
 `Chosen (Maintainer)` column; the projects-wide naming-hygiene rule targets outward-facing *writing*
 (PRs, posts, emails), not a package's internal `docs/` planning tree. Changing one doc without a
-repo-wide policy would be inconsistent and would lose the AIH-148 divergence-tracking value the column
+repo-wide policy would be inconsistent and would lose the historical-task divergence-tracking value the column
 exists for. No plan change required. (If the maintainer wants a repo-wide scrub policy, that is a separate
 fleet decision, not an AI-CLI-118 blocker.)
 
@@ -438,7 +438,7 @@ fleet decision, not an AI-CLI-118 blocker.)
 - Do not record automated recommendations in human-choice fields before a human has actually
   reviewed them.
 - Do not claim exact canonical-template compliance when the requested canonical files were
-  unavailable (this run hit the AIH-321 broken-worktree-symlink bug — the auditor correctly fell
+  unavailable (this run hit the historical-task broken-worktree-symlink bug — the auditor correctly fell
   back to reading the templates from elsewhere rather than skipping the check).
 
 ## Round 2 — Verification Pass (append-only)
@@ -576,7 +576,7 @@ matrix output and the complete Appendix: Files Read / Appendix: Commands Run lis
 
 | Date | Round | Notes |
 |------|-------|-------|
-| 2026-07-22 | Round 1 | Codex `cx review --effort high`, read-only. 16 findings (2 CRITICAL, 13 MAJOR, 1 MINOR), 4 AD-N decisions (AD-4 added by Claude during incorporation). Verdict: not ready for implementation. Claude independently re-verified DV-4 against `main.py:1591` (confirmed) and corrected the upstream research doc's workaround claim (`ai-harness` `e3823ac`). |
-| 2026-07-22 | Round 1 incorporation | AD-1..AD-4 resolved (AI recommendations via the AIH-139 decision framework; awaiting human ratification). AD-1 → reason-coded confidence model; AD-2 → truthful exit-and-relaunch + defer confirmed restart command; AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher; AD-4 → no doc-hygiene change. All 16 findings resolved or captured in the plan's Deferred section (sweep DV-3/F-1/F-2; confirmed restart command). Every DV-N re-verified directly against source (`main.py`, `notifications.py`, `quota.py`, `config.py`, `cc_usage.py`, a real `sessions/*.json`) before trusting the audit's quotes. |
+| 2026-07-22 | Round 1 | Codex `cx review --effort high`, read-only. 16 findings (2 CRITICAL, 13 MAJOR, 1 MINOR), 4 AD-N decisions (AD-4 added by Claude during incorporation). Verdict: not ready for implementation. Claude independently re-verified DV-4 against `main.py:1591` (confirmed) and corrected the upstream research doc's workaround claim (`automation framework` `e3823ac`). |
+| 2026-07-22 | Round 1 incorporation | AD-1..AD-4 resolved (AI recommendations via the historical-task decision framework; awaiting human ratification). AD-1 → reason-coded confidence model; AD-2 → truthful exit-and-relaunch + defer confirmed restart command; AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher; AD-4 → no doc-hygiene change. All 16 findings resolved or captured in the plan's Deferred section (sweep DV-3/F-1/F-2; confirmed restart command). Every DV-N re-verified directly against source (`main.py`, `notifications.py`, `quota.py`, `config.py`, `cc_usage.py`, a real `sessions/*.json`) before trusting the audit's quotes. |
 
 <!-- /doc:region name="audit_log" -->

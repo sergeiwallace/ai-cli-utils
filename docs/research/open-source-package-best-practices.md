@@ -13,7 +13,7 @@ registry_id: R-4
 
 **Created:** 2026-03-29
 
-**Task:** SW-672
+**Task:** historical-task
 **Prompt:** R-1 in `docs/research/prompts/research-prompt-registry.md`
 
 ## Summary
@@ -57,7 +57,7 @@ Place badges on a single line or two lines at most, immediately below the title.
 [![CI](https://img.shields.io/github/actions/workflow/status/user/ai-cli-utils/ci.yml?label=CI)](https://github.com/user/ai-cli-utils/actions)
 [![Downloads](https://img.shields.io/pypi/dm/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-```text
+```
 
 **Essential badges (in order of importance):**
 
@@ -215,7 +215,7 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           file: coverage.xml
-```text
+```
 
 #### publish.yml — PyPI Release (runs on tag push)
 
@@ -260,7 +260,7 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-```text
+```
 
 **Setup required:** Configure a Trusted Publisher on PyPI under your project settings (Project > Publishing > Add a new publisher). Specify the GitHub repository, workflow filename (`publish.yml`), and environment name (`release`).
 
@@ -317,7 +317,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [0.1.0] - 2026-03-15
 ### Added
 - Initial release with `ai c`, `ai handoff`, and `ai sync` commands
-```text
+```
 
 **Source:** [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver.org/)
 
@@ -343,7 +343,7 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-```text
+```
 
 ---
 
@@ -369,7 +369,7 @@ Homepage = "https://github.com/user/ai-cli-utils"
 Repository = "https://github.com/user/ai-cli-utils"
 Issues = "https://github.com/user/ai-cli-utils/issues"
 Changelog = "https://github.com/user/ai-cli-utils/blob/main/CHANGELOG.md"
-```text
+```
 
 **Key points:**
 - `keywords` improves PyPI search discoverability. [VERIFIABLE FACT — [PyPI search uses keywords](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/)]

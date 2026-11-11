@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai -h` and every group's help (`ai sessions -h`, `ai sync -h` and the rest) now print each
+  command's complete description, every sentence and paragraph, wrapped under the command name,
+  instead of a first sentence cut off with "...". Help uses up to 100 columns on a terminal wider
+  than 80. The `ai sessions` subcommands that had no help text now have it.
+- `ai ps -h`, `ai layout -h` and `ai sync -h` print their actions and options. Before, `ai ps -h`
+  ran the process listing and `ai sync -h` failed. Every form these commands accepted still
+  works. `ai sync pull --prefer-remote` gains `-p`, and `ai sync watch --auto` and `--verbose`
+  gain `-a` and `-v`. An unknown action, option or extra argument is now a usage error instead of
+  being ignored, so a mistyped `ai ps clean` flag can no longer pass unnoticed; put `-f` and `-r`
+  after the action (`ai ps clean -f`).
+- `docs/reference/cli.md` is a generated CLI reference: every command's usage line, complete
+  description, arguments and options, with each option's short and long form in its own column,
+  exactly as `-h` prints them. The README's Usage section gains a generated command index linking
+  into it. Both are regenerated with `uv run python scripts/generate_docs.py`; `-c/--check`
+  writes nothing and exits 1 with a diff when either is stale, and the test suite and a
+  pre-commit hook run that comparison. A test also checks every `ai ...` example in the README,
+  `docs/tools/` and `docs/guides/` against the command tree. `docs/tools/ai-cli-usage.md` is now
+  the narrative CLI guide and links to the reference instead of copying flag tables.
+- The project wiki is generated from the repository. `docs/wiki/pages.toml` lists the user
+  pages (the README split into Home, Installation, Quick Start, Usage and Configuration, the CLI
+  reference, the CLI guide, the architecture doc, CONTRIBUTING, SECURITY, the changelog and the
+  license) and the groups that publish every other Markdown file and every file under `docs/`,
+  each with an index page. Links are rewritten to wiki pages, or to the file on GitHub, and every
+  page names its source. A tracked file that is neither published nor excluded as a non-document
+  fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
+  `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
@@ -367,7 +393,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (off by default), applies the ordered vetoes (a session exited by hand or with an unknown cause never
   relaunches), refuses a second copy, reserves each attempt per boot so a retry cannot spawn twice, and
   `--dry-run` prints every decision with the winning veto.
-- Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
+- Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered automation framework
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and
   unsupported platforms. The new `[sidecar]` configuration defaults to disabled.
@@ -720,7 +746,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Lines are also coloured again after the per-launch log starts: its stderr mirror had
   made the terminal look like a pipe. Every exec now flushes output first.
 
-- `ai c firstmate-N -R` no longer loops on `no machine key`. The remote side runs in a
+- `ai c coordinator-N -R` no longer loops on `no machine key`. The remote side runs in a
   login shell that is not interactive, so a machine key exported in an rc file below its
   "not interactive: return" guard never reached it. With no key, the remote `ai` now uses
   the one chief home the installer seeded on that machine, and refuses, naming each one,
@@ -850,7 +876,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The pty carries the submission only: your terminal stays the terminal, and the
   pty path provides no detach/reattach and no scrollback.
 
-- `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
+- `-F/--coordinator` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
   shorthand. It resolves the chief home from `-k/--machine-key` (default
   `$AI_MACHINE_ID`) or `-H/--fm-home` — both refused without `-F` rather than
@@ -861,9 +887,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
   into the tmux pane. `--dry-run` registers nothing.
 
-  The session is named `{project-prefix}-{host-alias}-firstmate-[suffix-]{index}` (the
+  The session is named `{project-prefix}-{host-alias}-coordinator-[suffix-]{index}` (the
   positional NAME is the optional suffix) off the ordinary index allocator, and
-  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`:
+  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-coordinator-[suffix-]{index}`:
   with every main tree read-only under the worktree model, a chief running in a
   repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
 

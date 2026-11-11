@@ -4,7 +4,7 @@
 
 **Created:** 2026-03-29
 
-**Task:** AI-CLI-5 (SW-672)
+**Task:** AI-CLI-5 (historical-task)
 **Research:** [`docs/research/open-source-package-best-practices.md`](../research/open-source-package-best-practices.md)
 
 <!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,

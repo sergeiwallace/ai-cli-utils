@@ -80,7 +80,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -88,7 +88,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
@@ -103,7 +103,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 | 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons, (E) adaptive-width with color/bold | (E) adaptive-width | `Week`/`Son` when terminal wide enough; `W`/`S` when narrow; both styled with bold + distinct color as field headers | **Approved** |
 | 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show dimmed placeholder + background scrape, (b) omit until populated | (a) dimmed placeholder + scrape | Consistent with D6 and weekly pace behavior; prevents layout jitter | **Approved** |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder

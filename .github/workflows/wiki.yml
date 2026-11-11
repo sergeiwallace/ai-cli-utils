@@ -1,0 +1,92 @@
+name: Wiki
+
+# Rebuilds the project wiki from this repository on every push to main and pushes it to
+# the wiki's own git repository (<repo>.wiki.git). The pages come from
+# docs/wiki/pages.toml; see CONTRIBUTING.md. Nothing here runs for a pull request, and a
+# manual run is only a retry of main: both jobs refuse any other ref.
+#
+# Two jobs, so the write token never meets third-party or repository code. `build` runs
+# the repository's builder with a read-only token. `publish` holds `contents: write`
+# but runs only first-party actions and the git commands below, on files `build` made.
+#
+# GitHub creates the wiki repository only when its first page is saved in the web
+# interface. Until then `publish` fails and says so. If the default token cannot push to
+# the wiki, `publish` fails and stops for maintainer direction; it never tries another
+# credential.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+      - run: uv sync --locked --dev
+      # --check first: a stale reference on main fails here rather than being published.
+      - name: Build the wiki tree
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: uv run python scripts/generate_docs.py --check --wiki-out "$RUNNER_TEMP/wiki" --repository "$REPOSITORY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wiki
+          path: ${{ runner.temp }}/wiki
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wiki
+          path: built
+      - name: Push the built tree to the wiki repository
+        env:
+          REPOSITORY: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          public="https://github.com/${REPOSITORY}.wiki.git"
+          if ! git ls-remote "$public" HEAD >/dev/null 2>&1; then
+            echo "::error::The wiki repository ${REPOSITORY}.wiki.git does not exist yet. A maintainer must create the first wiki page once in the GitHub web interface (Wiki tab, Create the first page, Save); the next push to main then publishes."
+            exit 1
+          fi
+          remote="https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.wiki.git"
+          git clone --quiet --depth 1 "$remote" wiki
+          rsync --archive --delete --exclude .git built/ wiki/
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "The wiki already matches ${GITHUB_SHA}; nothing to push."
+            exit 0
+          fi
+          git commit --quiet -m "Update wiki from ${GITHUB_SHA}"
+          if ! git push --quiet origin HEAD; then
+            echo "::error::The default workflow token could not push to ${REPOSITORY}.wiki.git. Publication stops here for maintainer direction; no other credential is tried."
+            exit 1
+          fi

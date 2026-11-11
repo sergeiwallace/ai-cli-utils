@@ -53,9 +53,9 @@ async def _on_handoff(data):
         pending_dir.mkdir(parents=True, exist_ok=True)
         try:
             local_file.write_text(content)
-        except OSError:          # ← not covered
+        except OSError:  # ← not covered
             pass
-```text
+```
 
 Locate: search for `async def _on_handoff` inside the `action == "signal-watch"` block.
 
@@ -65,14 +65,14 @@ Locate: search for `async def _on_handoff` inside the `action == "signal-watch"`
 for f in sorted(pending_dir.glob("*.md")):
     try:
         fid = int(f.name.split("-")[0])
-    except ValueError:           # ← not covered
+    except ValueError:  # ← not covered
         continue
     try:
         raw = f.read_text()
         ...
-    except OSError:              # ← not covered
+    except OSError:  # ← not covered
         scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
-```text
+```
 
 Locate: inside the startup-scan `for f in sorted(pending_dir.glob(...))` loop,
 in the `action == "signal-watch"` block.
@@ -86,7 +86,7 @@ except Exception:
     # Not covered: subscribe_durable blocks indefinitely on success; exception
     # path requires a live NATS server to fail mid-subscription.
     pass
-```text
+```
 
 #### `_write_pending_if_claimed` closure — `ai internal handoff-drain` path
 
@@ -96,19 +96,19 @@ except Exception:
 def _write_pending_if_claimed(data):
     ...
     if not for_machine or for_machine != os.environ.get("AI_HOST", ""):
-        return False             # ← not covered via NATS path
+        return False  # ← not covered via NATS path
     if hd_handoff_dir is None or not handoff_id:
-        return False             # ← not covered via NATS path
+        return False  # ← not covered via NATS path
     if content and filename:
         ...
         try:
             local_file.write_text(content)
         except OSError:
-            return False         # ← not covered
+            return False  # ← not covered
     claimed = _claim_handoff_for_signal(...)
     if claimed is None:
-        return False             # ← not covered via NATS path
-```text
+        return False  # ← not covered via NATS path
+```
 
 #### Local-scan filesystem error — `ai internal handoff-drain` path
 
@@ -122,7 +122,7 @@ except Exception:
     # Not covered: requires filesystem error reading a pending handoff file
     # that exists and was just discovered by glob.
     pass
-```text
+```
 
 #### `_drain()` closure — `ai internal handoff-drain` path
 
@@ -130,7 +130,7 @@ except Exception:
 # Not covered: async closure requiring live NATS JetStream server.
 async def _drain():
     ...
-    if not hd_client.js:         # ← not covered
+    if not hd_client.js:  # ← not covered
         return
     ...
     try:
@@ -138,16 +138,16 @@ async def _drain():
         for msg in msgs:
             try:
                 data = json.loads(msg.data.decode())
-            except Exception:    # ← not covered
+            except Exception:  # ← not covered
                 data = {}
             await msg.ack()
             if _write_pending_if_claimed(data):  # ← not covered (True branch)
                 return
-    except Exception:            # ← not covered (inner fetch loop)
+    except Exception:  # ← not covered (inner fetch loop)
         break
-    except Exception as e:       # ← not covered (subscribe failure)
+    except Exception as e:  # ← not covered (subscribe failure)
         _log_handoff_event(...)
-```text
+```
 
 #### `asyncio.run(_drain())` exception
 
@@ -158,7 +158,7 @@ except Exception as e:
     # Not covered: requires asyncio.run() itself to raise — broken event loop
     # or NATS server in a specific failure state.
     _log_handoff_event("handoff.drain.nats_run_failed", ...)
-```text
+```
 
 ---
 
@@ -177,7 +177,7 @@ try:
 except Exception:
     # Not covered: requires CircusClient.send_message to raise mid-call.
     pass
-```text
+```
 
 #### `except Exception: pass` in `_run_transport_loop` NATS subscribe
 
@@ -187,7 +187,7 @@ try:
 except Exception:
     # Not covered: requires NATS subscribe to raise after connect succeeds.
     pass
-```text
+```
 
 #### `proc.kill()` after `subprocess.TimeoutExpired`
 
@@ -195,9 +195,9 @@ except Exception:
 try:
     proc.wait(timeout=2)
 except subprocess.TimeoutExpired:
-    proc.kill()       # ← not covered
-    proc.wait()       # ← not covered
-```text
+    proc.kill()  # ← not covered
+    proc.wait()  # ← not covered
+```
 
 #### SSH retry inner-loop edge cases (VPN changes during retry, SSH succeeds on retry)
 
@@ -206,18 +206,18 @@ for delay in (1, 2, 4):
     ...
     while proc2.poll() is None:
         if vpn_changed.is_set():
-            proc2.terminate()   # ← not covered (VPN change during retry)
-            proc2.wait()        # ← not covered
-            break               # ← not covered
+            proc2.terminate()  # ← not covered (VPN change during retry)
+            proc2.wait()  # ← not covered
+            break  # ← not covered
         ...
     if proc2.returncode == 0:
-        return                  # ← not covered (SSH retry succeeds)
+        return  # ← not covered (SSH retry succeeds)
     if vpn_changed.is_set():
-        print(...)              # ← not covered
-        break                   # ← not covered
+        print(...)  # ← not covered
+        break  # ← not covered
 if vpn_changed.is_set():
-    continue                    # ← not covered
-```text
+    continue  # ← not covered
+```
 
 #### `nc.close()` exception in transport loop finally
 
@@ -227,7 +227,7 @@ try:
 except Exception:
     # Not covered: requires NATS close to raise after connect succeeds.
     pass
-```text
+```
 
 ---
 
@@ -252,7 +252,7 @@ try:
     await nc.close()
 except Exception:
     pass  # ← not covered: requires NATS close to raise after connect
-```text
+```
 
 ---
 
@@ -268,6 +268,6 @@ async def _noop_error_cb(e):
     # Not covered: invoked by the NATS client library on connection error —
     # never called from application code directly. Requires a live NATS server.
     pass  # ← not covered
-```text
+```
 
 Locate: inside `NATSClient.connect()`, in the retry loop, before the `nats.connect()` call.
