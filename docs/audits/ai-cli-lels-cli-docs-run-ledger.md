@@ -43,7 +43,7 @@ ledger-version: 1
 | Decisions | `resolve_decisions: true` (source: default) |
 | Doc approval | `require_doc_approval: false` (source: default) |
 | Integration mode | this coordinator lands each stage on `main` by pull request |
-| Founding ask | Tier 3. Record `docs/asks/AI-CLI-single-source-cli-help-usage-lels.md` in the operator's private harness repository at capture commit `1e65faf1fd58`; `founding_ask_ref_sha256` `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`; content sha256 `7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9`; entry `A001`, generation 1 |
+| Founding ask | Tier 3. The record is held in the operator's private configuration repository; root digest `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`; content digest `7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9`; entry `A001`, generation 1 |
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/<session>-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
