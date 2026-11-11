@@ -73,10 +73,11 @@ def test_given_an_interruption_at_a_part_when_original_command_repeats_then_rema
     wt = slot["repo"] / ".worktrees" / NEW
     assert _git("symbolic-ref", "--short", "HEAD", cwd=wt).strip() == f"wt-{NEW}"
     assert transcript_title(cc_project_dir(wt, slot["claude"]) / f"{UUID}.jsonl") == NEW
-    assert str(slot["wt"]) not in (wt / ".venv" / "bin" / "tool").read_text()
+    assert str(slot["wt"]) not in (wt / ".venv" / "bin" / "tool").read_text(encoding="utf-8")
     assert not (slot["claude"] / "tasks" / OLD).exists()
-    assert f"ai_name={NEW}" in (slot["state"] / "sessions" / f"c-{NEW}.sh").read_text()
-    assert f"ai_name={OLD}" not in (slot["state"] / "sessions" / f"c-{NEW}.sh").read_text()
+    script = (slot["state"] / "sessions" / f"c-{NEW}.sh").read_text(encoding="utf-8")
+    assert f"ai_name={NEW}" in script
+    assert f"ai_name={OLD}" not in script
     before = _everything(slot)
     assert _migrate(slot["repo"], "-y")[0] == 0
     assert _everything(slot) == before
