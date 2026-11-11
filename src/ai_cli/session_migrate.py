@@ -506,15 +506,28 @@ def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
     return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
 
 
-def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] | None) -> list[_hooks.Hook]:
+def _plan_hooks(
+    old: str,
+    new: str,
+    repo_root: Path,
+    report: list[PlannedMove] | None,
+    pending: MigrationResult | None = None,
+) -> list[_hooks.Hook]:
     """Run every external hook with ``--dry-run``; any refusal refuses the migration.
 
-    The hooks' planned lines are appended to ``report`` when one is given.
+    The hooks' planned lines are appended to ``report`` when one is given. With
+    ``pending``, a hook that refuses is left out of the plan and recorded on it as pending
+    work instead, for a run whose slot has already moved.
     """
+    refused: list[_hooks.HookRun] | None = [] if pending is not None else None
     try:
-        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root)
+        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root, refused=refused)
     except _hooks.HookRefusal as exc:
         raise MigrationError(str(exc)) from exc
+    if pending is not None:
+        for run in refused or []:
+            pending.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "skipped: preflight refused"))
+            pending.warnings.append(_hooks.refusal_warning(run))
     if report is not None:
         report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
         report += [
@@ -1432,7 +1445,8 @@ def finish_session(
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
-    A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
+    A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
+    as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1511,7 +1525,7 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
     _plan_task_rekey(old, new, home, result, state)
-    hooks = _plan_hooks(old, new, repo_root, moves)
+    hooks = _plan_hooks(old, new, repo_root, moves, pending=result)
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))

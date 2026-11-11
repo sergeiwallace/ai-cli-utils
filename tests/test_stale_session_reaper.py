@@ -1646,7 +1646,8 @@ def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it
 def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | None = None) -> None:
     deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
-        if path.exists():
+        # The writer creates the file before it writes, so an empty file is not ready yet.
+        if path.exists() and path.stat().st_size:
             return
         if process.poll() is not None:
             stdout, stderr = _communicate_supervisor(process)

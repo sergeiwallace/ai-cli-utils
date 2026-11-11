@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
   the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
   or the next launch.
+
+- `ai migrate-session OLD NEW --finish`, including the finish `ai c` runs at launch, no
+  longer stops when one external hook refuses its `--dry-run`. The slot has already moved, so
+  that hook is skipped and reported as pending, the core parts and the other hooks still run,
+  no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
+  fresh migration still refuses before its first write.
+
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
