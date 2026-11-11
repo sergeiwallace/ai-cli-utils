@@ -2173,3 +2173,25 @@ def test_adopt_given_two_earlier_names_sharing_a_filename_when_dry_run_then_the_
     actions = Counter(m.action for m in result.resume_moves)
     assert actions["move"] == 4, actions
     assert actions["conflict"] == 4, actions
+
+
+def test_adopt_given_two_earlier_names_each_with_a_notified_marker_when_adopted_then_the_latest_epoch_is_kept(
+    world, adopt
+):
+    """Poller markers under every key merge onto the target, and the preview predicts each merge."""
+    _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+    pollers = world["home"] / "resume" / "pollers"
+    pollers.mkdir(parents=True)
+    marker = f"__{ATTEMPT}.notified"
+    for key, epoch in (("myproject-7", 1700200000), ("myproject-8", 1700000000), ("myproject-2", 1700100000)):
+        (pollers / f"{key}{marker}").write_text(f"{epoch}\n", encoding="utf-8")
+
+    preview = adopt(dry_run=True)
+    result = adopt()
+
+    plan = [(m.source.name, m.action, m.kept) for m in preview.resume_moves]
+    assert plan == [(f"myproject-7{marker}", "merge", 1700200000), (f"myproject-8{marker}", "merge", 1700200000)]
+    assert [(m.source.name, m.action, m.kept) for m in result.resume_moves] == plan
+    assert sorted(p.name for p in pollers.iterdir()) == [f"myproject-2{marker}"]
+    assert (pollers / f"myproject-2{marker}").read_text(encoding="utf-8") == "1700200000\n"
+    assert not any("NOT re-keyed" in w for w in result.warnings)
