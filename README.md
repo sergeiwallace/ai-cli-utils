@@ -250,6 +250,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions publish-timer uninstall`](docs/reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
+| [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
@@ -865,7 +866,7 @@ Relaunch is off by default; configure
 ```toml
 [session_relaunch]
 on_boot = true
-causes = ["host_reboot", "terminal_quit_or_crash"]
+causes = ["host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"]
 network_wait_seconds = 120
 network_probe = "api.anthropic.com:443" # Empty disables the network wait
 ```
@@ -877,6 +878,7 @@ ai sessions boot-unit status           # Check installed bytes and service-manag
 ai sessions boot-unit uninstall        # Disable and remove the unit; leave config.toml intact
 ai sessions relaunch -b -d             # --boot --dry-run: print each decision and winning veto
 ai sessions relaunch --boot            # Recreate eligible owning-host sessions detached
+ai sessions wind-down c-myproject-host-1  # Stop it for maintenance; the next relaunch brings it back
 ai sessions list -j                    # --json: inspect recorded run state
 ai attach c-myproject-host-1           # Attach later from a terminal
 ```
@@ -902,6 +904,8 @@ up to the timeout. It replays the exact stored session name and local launch rec
 destination-owned remote sessions, once-only sessions and bare commands hosted inside tmux.
 Incomplete legacy recipes are refused with a diagnostic. A session finally exited back to the
 shell by hand stays down; `manual_exit` and `unknown` veto every policy, including `always`.
+A session stopped by `ai sessions wind-down` records `maintenance_wind_down` and relaunches
+under policy `auto` or `always`, unless a profile's `causes` list leaves it out.
 The command also refuses foreign/remote records, deny-boot safety files, existing tmux sessions,
 disabled causes and policy `never`. Each boot attempt is durably reserved before launch and is
 never repeated in the same boot, even after launch failure. Decisions are logged and stored in
@@ -926,6 +930,18 @@ stopped and exits 1, naming what still runs, if the slot is not empty by then; a
 running is reported and exits 0. `ai migrate-session` names this command when it refuses a live
 session. From Python, `ai_cli.session_commands.stop_session(name)` does the same and returns a
 `StopReport`.
+
+A scheduled maintenance job ends a session with `ai sessions wind-down <slug>` instead, using
+the registry name that `ai sessions list` prints. It writes `maintenance_wind_down` to the
+session's record first, then stops it the way `ai sessions stop` does, so the wrapper saves state
+through its normal clean exit; that exit keeps the wind-down's cause instead of `manual_exit`.
+It waits up to `-t/--timeout` seconds (default 30) and exits 1 if the session is still running or
+its record ended with another cause. A session that is not running, unknown, foreign or remote,
+or has no complete boot recipe is refused with exit 1 and nothing written. `-d/--dry-run` runs
+the same checks and prints the plan without writing or stopping anything. The next
+`ai sessions relaunch --boot` brings the session back. The boot unit runs only at boot, so a
+window that ends without a reboot runs `ai sessions relaunch <slug>` for each session it wound
+down.
 
 ### Enrol an existing session
 

@@ -124,14 +124,15 @@ A registry written as schema 1 (before `exit` and `boot_id` existed) is still re
 | `launched_at`, `refreshed_at` | UTC timestamps of the launch and of the last time the position was confirmed. |
 | `launcher_pid` | The launching process. Locally it becomes the tmux client; for a remote session it is the process holding the ssh connection. `null` for a local session recorded by `--adopt`, which has no launcher. |
 | `ended_at` | Set when the remote ssh connection ended with exit status 0, which means the remote session was exited on purpose, and whenever an exit is recorded. |
-| `exit` | `null` while the session is live. Otherwise why it ended: `cause` (one of `manual_exit`, `terminal_quit_or_crash`, `host_reboot`, `unknown`), `at` (UTC) and a small `evidence` object. See [Exit causes](#exit-causes). |
+| `exit` | `null` while the session is live. Otherwise why it ended: `cause` (one of `manual_exit`, `terminal_quit_or_crash`, `host_reboot`, `maintenance_wind_down`, `unknown`), `at` (UTC) and a small `evidence` object. See [Exit causes](#exit-causes). |
 | `boot_id` | The machine's boot identity at launch: `/proc/sys/kernel/random/boot_id` on Linux, `kern.bootsessionuuid` on macOS (one read-only `sysctl` call), `null` elsewhere or when it cannot be read. |
 
 ### Exit causes
 
-An exit is recorded three ways:
+An exit is recorded four ways:
 
 - A clean remote exit (ssh exit status 0) records `manual_exit`.
+- `ai sessions wind-down` records `maintenance_wind_down` for a session a maintenance job stops.
 - `ai iterm2 sessions --record-exit` records whatever cause it is given; a session-end hook is the intended caller.
 - Restore's pre-relaunch sweep classifies every record whose session is proved gone (by the rules below) and has no `exit` yet. A record with `ended_at` set is `manual_exit`. A stored `boot_id` that differs from the current one is `host_reboot`, the same one is `terminal_quit_or_crash`, and a missing one on either side is `unknown`. The evidence holds the liveness reason and both boot identities.
 
@@ -197,7 +198,7 @@ A session that is relaunched because it was gone gets its cause in front of the 
 1. Reads `[iterm2.persistence]` from `iterm2.toml`. A switched-off run names the key that switched it off and exits 0: `restore disabled by [iterm2.persistence] enabled=false`, `... [iterm2.persistence.restore] enabled=false`, or, on demand, `... on_demand=false`. A `--startup` run with `on_startup = false` exits 0 without output.
 2. Sweeps the registry: every record whose session is proved gone by the liveness rules above and that has no `exit` gets one ([Exit causes](#exit-causes)), printed as `<name>: exit recorded (cause=<cause>; <reason>)`. A record whose session is alive is never classified. Remote hosts are not probed, so a remote session counts as alive and is re-dialled unless it ended cleanly. A dry run only prints what it would record; with `confirm = true` nothing is written until you answer yes.
 3. On `--startup` with `on_terminal_reopen = false`, prints `relaunch disabled: restore.relaunch.on_terminal_reopen = false` and exits 0, after the sweep and before touching iTerm2.
-4. Filters the gone records by cause: one whose `restore.relaunch.scenarios` key is `false` is listed as `skipped (cause=<cause>; restore.relaunch.scenarios.<cause> = false)` and removed from the registry; an `unknown` one says `cause=unknown follows terminal_quit_or_crash`. The others are relaunched alongside the live ones.
+4. Filters the gone records by cause: one whose `restore.relaunch.scenarios` key is `false` is listed as `skipped (cause=<cause>; restore.relaunch.scenarios.<cause> = false)` and removed from the registry; an `unknown` one says `cause=unknown follows terminal_quit_or_crash`, and a `maintenance_wind_down` one follows `host_reboot`. The others are relaunched alongside the live ones.
 5. Selects records: `include_local`/`include_remote`, `--only`, `include`/`exclude`, `remote_hosts`, then `max_sessions` (the most recently refreshed first). Selected sessions launch in their recorded window, tab and pane order, so tabs come back in the order they had.
 6. Opens the arrangement, on demand only, when `mode` includes `"arrangement"` and a name is set (`--arrangement` or `default_arrangement`). With `use_it2 = true` it asks iTerm2's bundled `it2` utility for the saved arrangements and restores the named one; a name that is not saved is reported and the run continues with sessions only. When `it2` is absent, raises a permission prompt that is not answered within 15 seconds, or `use_it2 = false`, it prints `arrangement: open it via Window > Restore Window Arrangement > <name>` and continues. On `--startup` it opens only on a cold start: when no selected session survived the restart. A session that survived means iTerm2's own window restoration brought its windows back, and the run prints `arrangement: '<name>' not opened: N sessions survived the restart, so iTerm2 restored its windows` instead of opening a duplicate set.
 7. Reads every iTerm2 pane once (one AppleScript pass). At startup an empty answer is retried once a second for up to 15 seconds while iTerm2 finishes opening its windows.

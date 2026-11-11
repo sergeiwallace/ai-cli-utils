@@ -94,6 +94,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions publish-timer uninstall`](#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
+| [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](#ai-spend) | Usage-cost reports |
@@ -612,7 +613,7 @@ List the sessions recorded for iTerm2 restore; prune or refresh them
 | `-a` | `--adopt` |  | Record live ai c sessions (local tmux, remote ai c -R launchers) that have no record yet |
 | `-d` | `--dry-run` |  | With --adopt, print what would be adopted and write nothing |
 | `-x` | `--record-exit` | `NAME` | Record why the session NAME (or record id) ended; needs --cause |
-| `-c` | `--cause` | `[manual_exit\|terminal_quit_or_crash\|host_reboot\|unknown]` | With --record-exit, the exit cause |
+| `-c` | `--cause` | `[manual_exit\|terminal_quit_or_crash\|host_reboot\|maintenance_wind_down\|unknown]` | With --record-exit, the exit cause |
 | `-e` | `--evidence` | `JSON` | With --record-exit, a JSON object stored as the exit's evidence |
 | `-h` | `--help` |  | Show this message and exit. |
 
@@ -1383,7 +1384,7 @@ Arguments:
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-c` | `--cause` | `[manual_exit\|terminal_quit_or_crash\|host_reboot\|unknown]` | Why the session exited; required with exited |
+| `-c` | `--cause` | `[manual_exit\|terminal_quit_or_crash\|host_reboot\|maintenance_wind_down\|unknown]` | Why the session exited; required with exited |
 | `-e` | `--evidence` | `TEXT` | Exit evidence as a JSON object |
 | `-h` | `--help` |  | Show this message and exit. |
 
@@ -1502,6 +1503,24 @@ Arguments:
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-t` | `--timeout` | `FLOAT RANGE` | Seconds to wait for the session to exit  [default: 30.0; x>=0] |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai sessions wind-down
+
+```text
+ai sessions wind-down [OPTIONS] SLUG
+```
+
+Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back
+
+Arguments:
+
+- `SLUG`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-t` | `--timeout` | `FLOAT RANGE` | Seconds to wait for the session to exit  [default: 30.0; x>=0] |
+| `-d` | `--dry-run` |  | Check the session and print the plan without writing or stopping |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai setup

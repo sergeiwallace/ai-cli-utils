@@ -40,7 +40,8 @@ SCHEMA_VERSION = 2
 _READABLE_SCHEMAS = (1, 2)
 REGISTRY_FILENAME = "iterm2-sessions.json"
 #: Why a session's previous run ended.
-EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "unknown")
+#: ``maintenance_wind_down`` is a clean exit a scheduled maintenance job asked for; it relaunches.
+EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "maintenance_wind_down", "unknown")
 LINUX_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 #: Bound on the one read-only ``sysctl`` call that reads the macOS boot identity.
 BOOT_ID_TIMEOUT_SECONDS = 5
