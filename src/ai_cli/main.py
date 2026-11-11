@@ -990,9 +990,10 @@ def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None"
     """
     candidates = _find_cc_session_candidates_by_title(cwd, title)
     moved = _find_moved_cc_session(title, candidates)
+    reverted = None if moved else _find_migrated_cc_session(cwd, title, candidates)
     if len(candidates) > 1:
-        _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved), err=True)
-    return moved or _find_migrated_cc_session(cwd, title, candidates) or (candidates[0] if candidates else None)
+        _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved, reverted), err=True)
+    return moved or reverted or (candidates[0] if candidates else None)
 
 
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
@@ -1023,14 +1024,18 @@ def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _cc_multi_candidate_warning(title: str, candidates: list[Path], moved: "Path | None" = None) -> str:
+def _cc_multi_candidate_warning(
+    title: str, candidates: list[Path], moved: "Path | None" = None, reverted: "Path | None" = None
+) -> str:
     """Warn that more than one eligible transcript currently carries ``title``.
 
     Without ``moved``, ``ai c`` resolves to ``candidates[0]`` (the newest by mtime — see
     :func:`_find_cc_session_candidates_by_title`). ``moved`` is the transcript a recorded
     migration moved, which is resumed instead, and every candidate no migration moved is named
-    as skipped. This is informational, not a block: it makes the AI-CLI-p3fg ambiguity visible
-    instead of silently picking one of several same-titled transcripts.
+    as skipped. ``reverted`` is the transcript a recorded migration left under its old title
+    (:func:`_find_migrated_cc_session`), resumed instead of every candidate. This is informational,
+    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of silently picking one of
+    several same-titled transcripts.
     """
     lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
     for path in candidates:
@@ -1038,6 +1043,9 @@ def _cc_multi_candidate_warning(title: str, candidates: list[Path], moved: "Path
         status = f"live (pid {pid})" if is_live else "not live"
         mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
         lines.append(f"  {path.stem}  last active {mtime}  {status}")
+    if moved is None and reverted is not None:
+        lines.append(f"Resuming {reverted.stem}, which the migration to '{title}' left under its old title")
+        return "\n".join(lines)
     if moved is None:
         lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
         return "\n".join(lines)
