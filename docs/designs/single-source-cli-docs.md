@@ -223,18 +223,22 @@ Page names are derived from the repository path, so two files with the same base
 in the wiki's flat namespace.
 
 The builder derives the coverage universe from `git ls-files`, and the universe is every tracked
-file; the manifest cannot narrow it. Each tracked file is either published, by exactly one page or
-group, or excluded by one entry of a short class list in the manifest. A class entry is a path
-pattern for files that are not documents, with a reviewable reason: package source and tests
-(`src/**/*.py`, `tests/**`), maintenance scripts and hooks (`scripts/**`, `.githooks/**`),
-configuration and data (`*.toml`, `*.yaml`, `*.yml`, `*.json`, `*.jsonl`, `*.lock`, dotfiles), and
-binary or generated assets (`assets/**` images, `demo/**` media, `src/ai_cli/data/**` non-Markdown
-files). A file that is a document but matches no page or group, such as the top-level `LICENSE`,
-therefore matches no exclusion either, and the build test fails naming it. The test also fails if a
-file is published twice, or is both published and excluded. Deciding coverage by "published unless
-excluded as a non-document class" instead of by a list of document locations means a new kind of
-document cannot be left out because nobody thought to name its location. The initial manifest
-publishes `LICENSE` as its own page.
+file; the manifest cannot narrow it. Assignment runs in a fixed order, so every file lands in exactly
+one place. First, explicit pages claim their sources. Then groups, in manifest order, claim the
+files they match that are still unclaimed; the `docs/**` group therefore publishes every file under
+`docs/`, whatever its suffix (a `.toml` reference file, an invariant register, an audit receipt).
+Last, exclusion classes apply only to files that no page or group claimed. An exclusion is a path
+pattern for a class of non-documents outside `docs/`, with a reviewable reason: Python and shell
+source anywhere (`**/*.py`, `**/*.sh`, `**/py.typed`), tests (`tests/**`), hooks
+(`.githooks/**`), configuration and data outside `docs/` (`*.toml`, `*.yaml`, `*.yml`, `*.json`,
+`*.json5`, `*.lock`, `.gitignore`-style dotfiles), and binary or generated assets (`assets/**`,
+`demo/**`, `src/ai_cli/data/**` non-Markdown files). No exclusion may match a Markdown file or any
+file under `docs/`, and the builder rejects one that does. A document outside `docs/` that is not
+Markdown and that no exclusion class describes, such as the top-level `LICENSE` or the documented
+configuration example `.env.example`, is then neither claimed nor excluded, and the coverage test
+fails naming it until the manifest gives it a page. The initial manifest publishes both. Deciding
+coverage this way, with publication taking precedence and exclusions limited to named non-document
+classes, means a new document cannot be left out because nobody thought to name its location.
 
 A workflow, `.github/workflows/wiki.yml`, runs on every push to `main` and allows manual dispatch
 only as a retry for `refs/heads/main`. The publication job has an explicit
@@ -314,14 +318,18 @@ glob = "docs/**/*"
 name = "License"
 source = "LICENSE"            # a document with no suffix; rendered as text
 
-# Non-document classes. Every tracked file is published unless one of these matches it.
+[[page]]
+name = "Configuration Example"
+source = ".env.example"       # documented environment example; rendered as text
+
+# Non-document classes, applied only to files no page or group claimed; never Markdown, never docs/.
 [[exclude]]
-pattern = "src/**/*.py"
-reason = "Package source code, documented through the generated CLI reference"
+pattern = "**/*.py"
+reason = "Python source, documented through the generated CLI reference"
 
 [[exclude]]
 pattern = "*.toml"
-reason = "Configuration and data files, not reader documentation"
+reason = "Project configuration outside docs/, not reader documentation"
 ```
 
 Each page has `name` and exactly one of `source` or `generated`; `sections` is valid only with
@@ -329,10 +337,12 @@ Each page has `name` and exactly one of `source` or `generated`; `sections` is v
 is not repeated by a later one. Group globs are matched against the tracked-file inventory,
 including dot-directories. Markdown sources render as Markdown; other UTF-8 sources render in a
 fenced block. Each exclusion has a `pattern` naming a class of non-document files and a
-non-empty `reason`. A Markdown file is a document by definition, so no exclusion may match a `.md`
-file. The generator rejects an unknown key, a duplicate name, a missing source file, a missing
+non-empty `reason`, and applies only to files no page or group claimed. A Markdown file is a document
+by definition and everything under `docs/` is published, so no exclusion may match a `.md` file or a
+path under `docs/`. The generator rejects an unknown key, a duplicate name, a missing source file, a missing
 section, an unknown `generated` value, a group or exclusion whose pattern matches no tracked file,
-an empty exclusion reason and an exclusion that matches a Markdown file, naming the entry.
+an empty exclusion reason and an exclusion that matches a Markdown file or a path under `docs/`,
+naming the entry.
 
 The description, summary and generator interfaces:
 
@@ -540,8 +550,9 @@ rollout is outside this design.
       non-zero naming the page and build nothing.
     - [ ] If a group's glob matches no file, or a group lacks `name` or `glob`, then the builder
       shall exit non-zero naming the group and build nothing.
-    - [ ] If an exclusion matches no tracked file, matches a Markdown file, or has an empty
-      reason, then the builder shall exit non-zero naming the exclusion and build nothing.
+    - [ ] If an exclusion matches no tracked file, matches a Markdown file or a path under
+      `docs/`, or has an empty reason, then the builder shall exit non-zero naming the exclusion
+      and build nothing.
   - **T-3.2 Page build**
     - [ ] When the wiki is built, it shall write one file per manifest page plus `_Sidebar.md` and
       `_Footer.md`, and the sidebar shall list the pages in manifest order.
@@ -553,9 +564,11 @@ rollout is outside this design.
       URL.
     - [ ] When the built tree is scanned, every relative link shall resolve to a built page, and the
       test shall fail naming any link that does not.
-    - [ ] When the wiki is built, every tracked file shall be either published by exactly one page
-      or group or matched by an exclusion class, and never both; the test shall fail naming any
-      file that is neither, published twice, or both. Focused fixtures shall cover a top-level
+    - [ ] When the wiki is built, every tracked file shall be claimed by exactly one page or group,
+      in the fixed order pages, then groups in manifest order, or else matched by an exclusion
+      class; an exclusion never applies to a claimed file. The test shall fail naming any file that
+      is neither claimed nor excluded, and shall assert that every non-Markdown file under `docs/`
+      (such as `docs/reference/iterm2-defaults.toml` and an audit receipt) is published. Focused fixtures shall cover a top-level
       document with no suffix (such as `LICENSE`), Markdown in a hidden directory, Markdown outside
       `docs/`, and a linked non-Markdown artifact under `docs/`.
     - [ ] When a group is built, it shall write one page per matched file, named from the file's
