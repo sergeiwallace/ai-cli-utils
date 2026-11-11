@@ -12,6 +12,7 @@ delegation_provenance:
     - {role: research-leg, family: claude, model: opus, persona: researcher, scope: "Dolt in depth"}
     - {role: research-leg, family: claude, model: opus, persona: researcher, scope: "non-Dolt storage landscape"}
     - {role: inventory-leg, family: claude, model: opus, persona: Explore, scope: "current registry, prior art, touch points"}
+    - {role: critic, family: claude, model: opus, persona: researcher, scope: "five-pass critique of round 1"}
 ---
 
 # Git-tracked storage for the session-name registry
@@ -29,15 +30,17 @@ This index is non-authoritative; the raw record governs.
 |---|---|
 | A001, ask 1: a general approval status per name, a separate status for approval in a specific session, and columns for reserved, migrated and in-use | Requirements R2 to R4 in [Context](#context); evidence in sections [2](#2-dolt-on-a-git-remote) and [3](#3-schema-validated-text-in-git-with-a-local-query-cache); the schema itself is the design doc's job |
 | A001, ask 2: statuses for never reviewed, rejected in general, approved in general but not yet for a session, plus rejections per repository, host or session, "whatever is robust" | R2 and R3; every option is scored on whether it can enforce them ([Comparison](#comparison)) |
+| A001, ask 2, continued: "maybe can store a json which can track white list / black list etc" | Answered in [2.2](#22-uniqueness-the-same-compare-and-swap-measured): Dolt merged two hosts' edits to different keys of one JSON cell cleanly, so a JSON column is workable. The [Recommendation](#recommendation) still keeps verdicts as rows of a normalized table, because each verdict then carries its own actor, time and per-row history (R3) and is searchable by plain SQL (R6) |
 | A001, ask 3: "what is the name database", "is it git tracked? it should be" | [Context](#context) answers the first; R1 is git tracked; [Open Questions](#open-questions) item 1 records which sense of the phrase each option meets |
 | A001, ask 4: kyle replaces glen; those names are approved to migrate | Seed data for the design, not a storage question; carried into the design doc |
 | A001, ask 5: "what is the best git tracked database system to use? dolt? if so, let's use dolt" | The whole document; [Recommendation](#recommendation) |
 | A001, ask 6: dislikes the git-ref JSON system; wants the best fit "for schema etc and searching" | R5 and R6; section [3](#3-schema-validated-text-in-git-with-a-local-query-cache) notes that its strongest rival is a refinement of that system, which is why it is not recommended |
 | A001, ask 7: "what about sqlite? or maybe some other database system?"; a dependency is acceptable | Sections [5](#5-a-sqlite-file-committed-to-git) and [7](#7-options-considered-and-excluded); dependencies are not scored as a cost |
-| A001, ask 8: coordinate with other sessions | Process, outside this document |
-| A001, ask 9: the work runs on the most capable model, orchestrated | Process: this run's legs and synthesis were Opus |
+| A001, ask 8: coordinate with other sessions, and track down the feedback the owner gave another session | The coordination is process. The feedback itself is schema content: its approvals, rejections and replacements become the design's seed rows |
+| A001, ask 9: "they should use opus 5.5, not codex ofc" | Process: this run's legs, critic and synthesis were Opus |
+| A001, earlier message: approved and needs-review statuses, a seed of the owner's 20 pre-approved names plus one more, and "if we need to add a status label ... then let's add that" | R2 carries both statuses; the seed and the status label are carried into the design doc |
 | A001, ask 10: "so yeah, then let's do dolt" | [Recommendation](#recommendation) confirms it, with conditions |
-| A001, amendment: full breadth and depth research on the best git-tracked storage, "including any we're not currently considering" | Sections 2 to 7 cover nine families; three were not in any earlier brief (one ref per name, Kart-style text, DoltLite) |
+| A001, amendment: full breadth and depth research on the best git-tracked storage, "including any we're not currently considering" | Sections 2 to 7 cover nine families and three hybrids; five were not in any earlier brief (one ref per name, Kart-style text, DoltLite, and two of the hybrids) |
 | A001, routing message: run it on a fully migrated session on a named host | Process, satisfied by the run that wrote this document |
 
 **Status:** complete
@@ -56,6 +59,7 @@ This index is non-authoritative; the raw record governs.
 - [2. Dolt on a git remote](#2-dolt-on-a-git-remote)
   - [2.1 What Dolt adds](#21-what-dolt-adds)
   - [2.2 Uniqueness: the same compare-and-swap, measured](#22-uniqueness-the-same-compare-and-swap-measured)
+  - [2.2a What Dolt writes to the git remote](#22a-what-dolt-writes-to-the-git-remote)
   - [2.3 Running Dolt from a CLI on four hosts](#23-running-dolt-from-a-cli-on-four-hosts)
   - [2.4 Install and Python access](#24-install-and-python-access)
   - [2.5 Schema migrations and version skew](#25-schema-migrations-and-version-skew)
@@ -65,6 +69,7 @@ This index is non-authoritative; the raw record governs.
 - [5. A SQLite file committed to git](#5-a-sqlite-file-committed-to-git)
 - [6. An append-only event log](#6-an-append-only-event-log)
 - [7. Options considered and excluded](#7-options-considered-and-excluded)
+  - [Hybrids](#hybrids)
 - [8. How other tools keep shared registries in git](#8-how-other-tools-keep-shared-registries-in-git)
 - [Gaps, blindspots and emergent findings](#gaps-blindspots-and-emergent-findings)
 - [Comparison](#comparison)
@@ -83,7 +88,7 @@ behind those names must keep each name unique across every machine that runs ses
 registry is one JSON file per name on a dedicated git branch, written by fast-forward push. The
 owner asked for a git-tracked database with a robust schema instead: a general approval status per
 name, approvals and rejections scoped to a repository, a host or a session, reserved, in-use and
-migrated state, and a history of changes, all searchable. He leans to Dolt and asked for a
+migrated state, and a history of changes, all searchable. The owner leans to Dolt and asked for a
 full-breadth comparison of git-tracked storage options, including ones nobody had named, before
 the design commits to one.
 
@@ -91,25 +96,34 @@ the design commits to one.
 
 <!-- doc:region name="body" kind="replaceable" -->
 
-The answer to "what is the name database today" is plain git: 50 rows as JSON files on one branch
-of a private repository, 620 generated pool names, 6 hand-added names and 38 migration records,
-written in 113 fast-forward commits with no merges (measured from the registry branch at
-`91e89d956b6` on 2026-11-11). There is no SQL engine and no schema beyond a Python validator.
-A public install with no fleet repository keeps the same tree as files in a per-user data
-directory, guarded by a file lock. [INFERENCE]
+The answer to "what is the name database today" is plain git: 52 rows as JSON files on one branch
+of a private repository, 620 generated pool names, 6 hand-added names and 39 migration records,
+written in 116 fast-forward commits with no merges, measured at the registry tip on 2026-11-11
+([evidence](evidence/session-name-registry-dolt-race-spike.md#registry-counts)). There is no SQL
+engine and no schema beyond a Python validator. A public install with no fleet repository keeps the
+same tree as files in a per-user data directory, guarded by a file lock. [INFERENCE]
 
-The requirements every option is scored against, all drawn from the founding ask:
+The current registry already splits its namespace. A row is "a session's name, a machine's spare,
+or the last token of a label whose name was dropped" (`src/ai_cli/name_registry.py`, module
+docstring), and `take_spare` will "Activate this machine's shortest unactivated spare ... while the
+registry is unreachable", reading only the last fetched tip under a local spool lock. Each machine
+holds a few spares (the fleet policy sets three), so a launch can take a name with no network round
+trip. That is the coordination-free "some unique ID" case of section 1 applied to a pre-assigned
+slice of the namespace. [INFERENCE]
 
-| Id | Requirement |
-|---|---|
-| R1 | Git tracked |
-| R2 | A general status per name: never reviewed, rejected, approved |
-| R3 | Approvals and rejections scoped to a repository, a host or a session, with who and when |
-| R4 | Reserved, in-use and migrated state with host, session, repository, worktree and times, plus history |
-| R5 | A robust schema that evolves through versioned migrations, where an older client fails safe |
-| R6 | Searchable and queryable |
-| R7 | One winner when two hosts race for one name; a missing or unreadable registry refuses every pick |
-| R8 | Works for this public, cross-platform package; a dependency is acceptable |
+The requirements every option is scored against. The source column says whether a requirement is
+the owner's words or was added by the research brief:
+
+| Id | Requirement | Source |
+|---|---|---|
+| R1 | Git tracked | Ask 3 |
+| R2 | A general status per name with four states: never reviewed, rejected in general, approved in general but not yet for a session, approved for a session | Ask 2 and the earlier message |
+| R3 | Approvals and rejections scoped to a repository, a host or a session, with who and when | Ask 1 and 2; "who and when" from the brief |
+| R4 | Reserved, in-use and migrated state with host, session, repository, worktree and times, plus history | Ask 1; the field list from the brief |
+| R5 | A robust schema that evolves through versioned migrations, where an older client fails safe | "Robust schema" from ask 6; fail-safe from the brief |
+| R6 | Searchable and queryable | Ask 6 |
+| R7 | One winner when two hosts race for one name. With the registry unreachable, only a machine's own pre-assigned spare may be taken; an unreadable registry refuses every other pick | Brief, reconciled with the existing spare path |
+| R8 | Works for this public package; a dependency is acceptable | Ask 7; cross-platform from the brief |
 
 ## Temporal Scope
 
@@ -122,21 +136,25 @@ beyond reftable (2024).
 
 1. Picking a specific human name is a specific-value uniqueness invariant, which needs a
    serialization point. Every git-tracked option, Dolt included, gets that point from one primitive:
-   the git server's compare-and-swap on a ref during push. Dolt does not make uniqueness stronger
-   than the current system. Its value is everything above that primitive.
+   the git server's compare-and-swap on a ref during push. Dolt's own source issues its data push as
+   a `--force-with-lease` compare-and-swap. Dolt does not make uniqueness stronger than the current
+   system; what it adds is the schema, query and history layer above that primitive.
 2. Dolt meets the schema, query, history and scoped-status requirements well, and the fleet already
-   runs it. A spike on the fleet's Dolt version confirmed the one-winner behaviour through a git
-   remote and found the hazard: two claims with identical values merge cleanly, so both hosts
-   believe they won.
+   runs it. Spikes on the fleet's Dolt version gave exactly one winner in 20 of 20 truly concurrent
+   two-host races, and found the hazard: two claims with identical values merge cleanly, so both
+   hosts believe they won.
 3. Dolt's costs are operational, not missing features. It is a roughly 100 MB native binary that pip
-   and uv cannot install, its Python package is deprecated, its release cadence brings frequent
-   behaviour changes, and it has documented lock, corruption and telemetry-spool hazards under
-   concurrent or long-running use.
-4. The strongest rival is schema-validated text files in git with a local SQLite query cache, on the
-   transport the registry already uses. It costs nothing to install and stays readable in git, but
-   it is a refinement of the git-ref JSON system the owner said he does not like.
-5. Recommendation: confirm Dolt, under explicit conditions on access path, claim protocol, version
-   floor and placement. Those conditions are listed in the [Recommendation](#recommendation).
+   and uv cannot install, its Python package is deprecated, and its releases change behaviour often.
+   It has documented lock, corruption and telemetry-spool hazards under concurrent or long-running
+   use. On a git remote it rewrites its data ref's git history and pushes a visible info branch by
+   default, and a hosted push took about 4.7 s against 1.2 s for a plain git ref push.
+4. Two rivals are strong on uniqueness and readability. Schema-validated text files with a local
+   SQLite query cache stay readable in git and cost nothing to install, but they are a refinement of
+   the git-ref JSON system the owner said they do not like. One ref per name gives one winner by
+   construction, with no merge path and no client protocol.
+5. Recommendation: confirm Dolt, under explicit conditions on placement, claim protocol, access
+   path, version floor, key constraints and the offline spare path. Those conditions are listed in
+   the [Recommendation](#recommendation), with where Dolt is weaker stated beside them.
 
 ## 1. The requirement that decides the comparison
 
@@ -158,6 +176,12 @@ per minute per repository", far above a registry written a few times a day. [VER
 The current registry already uses this primitive correctly: it builds a commit on the fetched tip,
 pushes without force, and on rejection re-fetches and re-runs the whole guard. The owner's
 objections are to the payload and the read path, not to the transport. [INFERENCE]
+
+The same paper names the way out for part of the namespace: "If replicas assign unique IDs within
+their respective portion of the ID namespace, then merging locally valid states will also be
+globally valid." [VERIFIABLE][^1] The registry's per-machine spares ([Context](#context)) are that
+case, which is why an offline launch can take one safely while every other pick still needs the
+push. [INFERENCE]
 
 ## 2. Dolt on a git remote
 
@@ -183,21 +207,30 @@ embedded in Golang applications but not other languages." [VERIFIABLE][^11]
 ### 2.2 Uniqueness: the same compare-and-swap, measured
 
 A normal push requires that "the current commit on the remote branch must be an ancestor of our
-local commit"; otherwise Dolt rejects it. [VERIFIABLE][^12] Data conflicts are cell level: "If two
-operations modify the same row, column pair to be different values, a conflict is detected."
-[VERIFIABLE][^13] Two consequences follow, and a spike on the fleet's Dolt version measured both
+local commit"; otherwise Dolt rejects it. [VERIFIABLE][^12] That check runs in the client, before
+the chunks transfer. The ref update itself is a server-side compare-and-swap: Dolt's git blobstore
+pushes with `git push --porcelain --force-with-lease=<dstRef>:<expectedOID>`, so the server refuses
+the update if the ref moved since the client read it. [VERIFIABLE][^41] Data conflicts are cell
+level: "If two operations modify the same row, column pair to be different values, a conflict is
+detected." [VERIFIABLE][^13] Spikes on the fleet's Dolt version measured what follows
 ([evidence](evidence/session-name-registry-dolt-race-spike.md)):
 
-- Two hosts insert the same name with different claimant values. The first push wins; the second
-  is rejected with `non-fast-forward` (exit 1); its pull reports `CONFLICT (content)` (exit 1).
-  Aborting the merge and resetting to the remote leaves the loser holding the winner's row.
+- Two hosts push at the same moment, each claiming the same name with its own claimant value. In
+  20 of 20 trials exactly one push succeeded; A won 13 and B won 7, and the remote always held the
+  winner's row. Every loser saw `non-fast-forward`, which does not say whether the client check or
+  the lease refused it. [INFERENCE]
+- Run one after the other with different claimant values, the second push is rejected (exit 1)
+  and its pull reports `CONFLICT (content)` (exit 1). Aborting the merge and resetting to the
+  remote leaves the loser holding the winner's row. [INFERENCE]
+- Run one after the other with identical values, the second push is rejected, but its pull merges
+  cleanly (exit 0) and the next push succeeds. Both hosts then believe they claimed the name.
   [INFERENCE]
-- Two hosts insert the same name with identical values. The second push is rejected, but its pull
-  merges cleanly (exit 0) and the next push succeeds. Both hosts then believe they claimed the
-  name. [INFERENCE]
+- Two hosts editing different keys of one JSON cell merged cleanly into a cell holding both edits.
+  [INFERENCE]
 
-Dolt's own concurrency write-up says the engine "is susceptible to the lost update problem".
-[VERIFIABLE][^14] Beads met these shapes in production: concurrent guarded deletes all succeeded
+Dolt's own concurrency write-up says the engine "is susceptible to the lost update problem"; that
+post concerns concurrent SQL transactions inside one server, not pushes between hosts.
+[VERIFIABLE][^14] Beads met the same shapes in production: concurrent guarded deletes all succeeded
 because the commit-time merge treated identical deletes as one, [VERIFIABLE][^15] and a retried
 `INSERT … ON DUPLICATE KEY UPDATE` overwrote a concurrent writer's row. [VERIFIABLE][^16]
 
@@ -205,23 +238,50 @@ So Dolt over a git remote gives exactly one winner only under a client protocol:
 a value unique to the attempt (host, session, nonce); a claim is a plain `INSERT`, never an upsert;
 a rejected push is never resolved by merging, but by aborting, resetting to the remote and
 replaying the whole guarded write; a win is declared only after the row reads back from the remote
-tip; and nothing ever force-pushes the registry ref. The current registry's `transact` loop already
-has this shape. [INFERENCE]
+tip; and the client never issues a force push of its own, so Dolt's lease push stays the only
+compare-and-swap. The current registry's `transact` loop already has this shape. [INFERENCE]
+
+### 2.2a What Dolt writes to the git remote
+
+Dolt's git remote does three things a reader of "git tracked" would not expect. All three were read
+from its source at the `v2.3.4` tag and checked on a bare remote in the spike. [VERIFIABLE][^42]
+
+- It rewrites the data ref's git history. After 64 parented commits it writes a parentless commit
+  "to sever the history chain" so `git gc` can prune old objects. In the spike, 92 Dolt commits left
+  10 git commits on the ref. A fresh clone still showed all 93 Dolt log entries and the full
+  per-row history, so the registry's history survives; only `git log` of the ref is not that
+  history. Release 2.4.1 made the limit a setting, where `0` means unlimited. [VERIFIABLE][^43]
+- After each data write it force-pushes a visible branch, `__dolt_remote_info__`. Setting the
+  `DOLT_REMOTE_INFO_BRANCH` environment variable to an empty value turns that off, which the spike
+  confirmed. The branch has one fixed name per repository, and the private repository that holds
+  the registry today already carries one for its issue-tracker database, so a second database
+  there with the branch on would overwrite it. [INFERENCE]
+- Its data ref is outside `refs/heads` and `refs/tags`, and GitHub rulesets "target branches or
+  tags in a repository", so no ruleset can forbid force pushes to it. [VERIFIABLE][^44] Uniqueness
+  therefore rests on every writer being a well-behaved Dolt client, which is also true of the
+  current registry's branch. [INFERENCE]
 
 ### 2.3 Running Dolt from a CLI on four hosts
 
 The storage lock is an advisory lock held for an opener's lifetime; a second opener waits 100 ms
 and "either errors with `ErrDatabaseLocked` or silently falls back to read-only". [VERIFIABLE][^17]
-A silent read-only open conflicts with R7 unless the client checks it can write before a pick.
-Concurrent writers have corrupted the journal in 2026 versions. [VERIFIABLE][^18] In the spike, two
-writers on one host on version 2.3.4 both succeeded; that is one observation, not a guarantee.
-[INFERENCE]
+That issue was closed on 2026-10-06 by a documentation change, not a behaviour change: the silent
+read-only open is still the default, and a `fail_on_journal_lock_timeout` open option makes it an
+error instead. [VERIFIABLE][^45] A silent read-only open conflicts with R7 unless the client checks
+it can write before a pick. Concurrent writers have corrupted the journal in 2026 versions.
+[VERIFIABLE][^18] In the spike, two writers on one host on version 2.3.4 both succeeded; that is one
+observation, not a guarantee. [INFERENCE]
 
-The CLI is fast enough for a launch path. Median timings on version 2.3.4: a read query 0.23 s, a
-write with commit 0.19 s, `dolt version` 0.17 s, and a push to a local git remote 0.81 s
-([evidence](evidence/session-name-registry-dolt-race-spike.md)). [INFERENCE] Pushes to a hosted git
-remote took 44 to 80 s for a tiny database until a fix brought them to "around ~15s per push".
-[VERIFIABLE][^19] No 2.7.x hosted-push timing was found. [NO SOURCE]
+Local operations are fast: median timings on version 2.3.4 were a read query 0.23 s, a write with
+commit 0.19 s, `dolt version` 0.17 s, and a push to a local git remote 0.81 s. A push to the hosted
+private repository that holds the registry today took a median 4.74 s over five runs, against
+1.21 s for a plain git ref push to the same remote, which is what the current registry's write
+costs. A clone of the database took 1.43 s and a pull with nothing new 1.08 s
+([evidence](evidence/session-name-registry-dolt-race-spike.md#hosted-push-latency)). [INFERENCE]
+Earlier versions took 44 to 80 s per hosted push for a tiny database until a fix brought them to
+"around ~15s per push". [VERIFIABLE][^19] So a claim that pushes adds about 3.5 s to a launch over
+today. A launch that takes one of its machine's spares makes no push at all, and can refill the
+spare after the session starts. [INFERENCE]
 
 Dolt collects anonymous usage metrics by default, and when uploads fail "it does not delete the
 files". [VERIFIABLE][^20] A Dolt-using host in this fleet had 6.7 GB of spooled telemetry
@@ -244,10 +304,11 @@ therefore either shell out to `dolt sql -r json` with no Python dependency, or t
 through PyMySQL. Either way the binary is an install step outside pip and uv. [INFERENCE]
 
 DoltLite, a SQLite fork with Dolt-style versioning installable with `pip install doltlite`, is a
-candidate no earlier brief named. It is in beta, ships no Windows wheel, and does not work on
-Python builds with a statically linked `_sqlite3` "such as python-build-standalone", [VERIFIABLE][^26]
-which is what uv installs by default. [VERIFIABLE][^27] It is not viable for this package today.
-[INFERENCE]
+candidate no earlier brief named. Its PyPI classifier is "3 - Alpha", its wheels cover Linux x86-64,
+Linux ARM64 and macOS ARM64 only (no Windows, no Intel macOS), and it does not work on Python builds
+whose `_sqlite3` is statically linked, naming "python-build-standalone interpreters" as one,
+[VERIFIABLE][^26] which is what uv installs by default. [VERIFIABLE][^27] Its page says nothing
+about remotes. It is not viable for this package today. [INFERENCE]
 
 ### 2.5 Schema migrations and version skew
 
@@ -261,6 +322,14 @@ A Dolt registry therefore needs two gates the engine does not provide: an applic
 row with a minimum reader version checked on every open, and a minimum Dolt feature version
 checked before any write. Migrations should be additive and run only when the local and remote
 heads match. [INFERENCE]
+
+Dolt's default collation is case-sensitive (`utf8mb4_0900_bin`), so a `varchar` primary key
+accepted both `ava` and `Ava` in the spike. A case-insensitive key collation refused the second
+insert as a duplicate key, and a `check (name regexp '^[a-z]+$')` constraint refused both `Ava`
+and `ava2` ([evidence](evidence/session-name-registry-dolt-race-spike.md#key-case-and-constraints)).
+The client already restricts names to `[a-z]+`, but a hand edit in SQL would bypass the client, so
+the table itself should carry the constraint. [INFERENCE] Cargo's registry makes the same call
+with "Case-insensitive collision detection". [VERIFIABLE][^33]
 
 ### 2.6 When to use
 
@@ -282,9 +351,13 @@ calls for "Case-insensitive collision detection" and rejecting reserved names "l
 [VERIFIABLE][^33]
 
 This option meets R1 in the strongest sense (rows readable in `git log` and diffs), R6 through SQL
-over the cache, R7 through the existing transport, and R8 with no new install. Its schema is
-enforced only in clients, so an old client cannot be refused by a server. It is also, in substance,
-the git-ref JSON system the owner rejected, with a schema and a query layer added. [INFERENCE]
+over the cache, R7 through the existing transport, and R8 with no new install. On R5 the difference
+from Dolt is smaller than it looks: neither has a server, since Dolt on a plain git remote also runs
+its constraints in each host's local binary. Dolt's schema is checked by an engine; this option's
+is checked by a validator the package ships. Either way an old client can write rows a newer rule
+forbids, which is why section 2.5 calls for an application schema row in Dolt too. It is also, in
+substance, the git-ref JSON system the owner rejected, with a schema and a query layer added.
+[INFERENCE]
 
 ### When to use
 
@@ -300,13 +373,19 @@ a hash of the ID, which "ensures that an external ID is used only once". [VERIFI
 added reftable, whose updates "scale with the size of the reference update, not the number of
 overall references". [VERIFIABLE][^36]
 
+The strength of this option is uniqueness by construction, not lower contention. A create with
+an expected-absent value fails whatever the content, so the identical-value merge of section 2.2
+cannot happen, and no merge path exists to get wrong. It needs no five-rule client protocol: one
+ref update either lands or does not. [INFERENCE]
+
 Gerrit validates pushes on its server; a four-peer fleet with a plain remote has no server-side
-check. Custom refs also need explicit fetch refspecs. At a few writes a day the contention this
-removes is small. [INFERENCE]
+check. Custom refs also need explicit fetch refspecs, and status, verdicts and search still need
+a data model on top: a per-name commit chain gives history but no schema or query. [INFERENCE]
 
 ### When to use
 
-When many writers contend on one registry ref. That is not this registry's load. [INFERENCE]
+When the uniqueness guarantee must not depend on client discipline, or as the claim layer of a
+hybrid (section 7). [INFERENCE]
 
 ## 5. A SQLite file committed to git
 
@@ -344,23 +423,56 @@ As the history layer of option 3, never as an independently merged file. [INFERE
 | cr-sqlite, Automerge, Yjs | CRDT merge accepts concurrent claims, the opposite of one winner (section 1) |
 | LiteFS, Litestream | Replication to FUSE or object storage, not git; LiteFS is Linux-only beta |
 | DVC, lakeFS, Oxen | Large-data versioning; git holds placeholders or nothing |
-| Fossil | Not git; its own docs say forks are possible whenever clones work without full coordination |
+| Fossil | Not git; it is its own version-control system |
 | DuckDB over git files | A query layer with no allocation mechanism; nothing over stdlib SQLite at hundreds of rows |
 | git notes | Adds nothing over files or refs; its automatic merge strategies lose one winner |
-| DoltLite | Viable shape, blocked today on Windows and on uv's default Python builds (section 2.4) |
+| DoltLite | Viable shape, blocked today on Windows, Intel macOS and uv's default Python builds (section 2.4) |
 
-Each exclusion is backed by the storage-landscape leg's fetched sources, summarized in the
-[Provenance Ledger](#appendix-provenance-ledger). [INFERENCE]
+Only the DoltLite row has a footnoted source in this document. The other rows rest on the
+storage-landscape leg's reading, which returned no quotes for them, so they are a heuristic
+screen: each fails a requirement by its basic shape (not git, a server, CRDT merge, or no
+allocation), and none was close enough to need a sourced comparison. [HEURISTIC]
+
+### Hybrids
+
+The single-family options above leave out combinations. Three are worth naming:
+
+| Hybrid | Shape | Strength | Cost |
+|---|---|---|---|
+| H1: claims as refs, data in Dolt | Each claim is a create-if-absent ref per name (section 4); status, verdicts and history live in Dolt | One winner by construction, with Dolt's schema and query for everything else | Two stores that must agree; a claim ref without its Dolt row, or the reverse, needs a repair rule |
+| H2: Dolt plus a readable export | Dolt is canonical; each write also commits a text dump of the tables to a branch | Meets both senses of "git tracked" (Gaps, bullet 2) | A second push per write and a dump that can lag the database; the export never authorizes a pick |
+| H3: SQL text dump as canonical | One `.sql` or per-table text file in git, loaded into SQLite on read | Readable diffs and real SQL, no new install | Same transport and merge behaviour as option 2; schema checked only by the client |
+
+H1 is the strongest on R7, since it removes the identical-value hazard without a protocol. It
+doubles the write path: a launch that claims a name pushes a ref and then a Dolt commit, and the
+two can disagree after a crash between them. Because the fleet's claim rate is a few a day and the
+spare path already takes most launches off the network, the protocol in section 2.2 is cheaper
+than a second store. H2 is a reasonable later addition if the owner wants rows readable in a pull
+request; it adds nothing to correctness. [INFERENCE]
 
 ## 8. How other tools keep shared registries in git
 
 Homebrew taps keep one file per formula in a git repository, though Homebrew 4.0 moved default
 reads to JSON from its website so updates "no longer need to perform the slow `git fetch`".
-[VERIFIABLE][^40] Cargo's index, the Nix flake registry and conda-forge's feedstocks all serialize
-writes through one writer: a server, a bot or pull-request review. No registry found relies on peer
-clients racing pushes for uniqueness; Gerrit comes closest, with a server-side validator.
-[INFERENCE] A peer-written registry is less common, which argues for testing the race and
-old-client behaviour rather than assuming them. [INFERENCE]
+[VERIFIABLE][^40] Cargo's index, the Nix flake registry and conda-forge's feedstocks are, as far as
+the authors know, written through one writer each: a server, a bot or pull-request review; this was
+not fetched. [HEURISTIC] No registry found relies on peer clients racing pushes for uniqueness;
+Gerrit comes closest, with a server-side validator. [INFERENCE] A peer-written registry is less
+common, which argues for testing the race and old-client behaviour rather than assuming them, as
+the spikes did. [INFERENCE]
+
+Older allocation systems point the same way, though none was fetched for this document: Unix
+account tools serialize writes to the password file behind one lock, NIS used a single master,
+the domain registry protocol's create fails when the name exists and holds released names in a
+grace period before reuse, and `pass` keeps one git file per entry. Sno, Kart's predecessor, was
+an early one-file-per-row store. [HEURISTIC]
+
+Adjacent fields answer the question this document's requirements leave open: how a name held by a
+crashed session comes back. Service discovery uses leases with a time to live, and distributed
+locks add fencing tokens so a stale holder cannot act after losing its lease; the read-back rule of
+section 2.2 is close to one. [HEURISTIC] The package already keeps per-session lease files
+(`src/ai_cli/session_script.py`, the `session-leases` directory), so the design can tie an in-use
+row to a lease it can check. [INFERENCE]
 
 ## Gaps, blindspots and emergent findings
 
@@ -369,9 +481,19 @@ old-client behaviour rather than assuming them. [INFERENCE]
   publication route to keep healthy; it called the choice a two-way door. The owner's later request
   for a database supersedes that decision; its three concerns become conditions in the
   [Recommendation](#recommendation). [INFERENCE]
-- "Git tracked" has two meanings. Dolt meets "stored in a git repository with history". It does not
-  meet "readable in a git diff or pull request": its rows are opaque table files under a custom ref.
+- "Git tracked" has two meanings. Dolt meets "stored in a git repository with history": its data
+  lives in the repository and its own history is complete, though the ref's git history is
+  rewritten (section 2.2a). It does not meet "readable in a git diff or pull request": its rows are
+  opaque table files under a custom ref. The owner's own question named Dolt as a candidate "git
+  tracked database system", which reads as the first meaning; hybrid H2 would meet both.
   [INFERENCE]
+- Dolt is a roughly 100 MB system binary that pip and uv cannot install, so it is not a package
+  dependency in the usual sense. This document reads the owner's "i'm fine with having a dependency
+  for ai-cli-utils to install" as covering it, and the design must make the install step and the
+  refusal when it is missing explicit. [INFERENCE]
+- No requirement says how an in-use name is freed when its session dies without releasing it.
+  Section 8's adjacent-fields paragraph gives the usual answer, a lease; the design must define
+  the reserved, in-use and reclaimed transitions. [INFERENCE]
 - The registry rows carry host names, repositories and session ids. On a public repository any
   custom ref is readable by anyone who can clone it, so the registry must stay in the private
   repository it lives in today. [HEURISTIC]
@@ -386,49 +508,80 @@ old-client behaviour rather than assuming them. [INFERENCE]
 
 ## Comparison
 
-| # | Option | R1 git tracked | R2-R4 statuses and history | R5 schema | R6 query | R7 one winner | R8 install | Key risk |
-|---:|---|---|---|---|---|---|---|---|
-| 1 | Dolt on a git remote | Stored in git; rows not readable by git tools | Tables plus per-row history | Engine-enforced; needs app and engine version gates | Full SQL | Ref compare-and-swap; needs the claim protocol | ~100 MB native binary plus git | Version skew, lock fallback, identical-value merge |
-| 2 | Schema-validated text plus SQLite cache | Fully readable | Files plus history records | Client-side only | SQL over cache | Ref compare-and-swap, proven here | None new | A refinement of the rejected system |
-| 3 | One ref per name | Readable | Per-name commit chain | Client-side only | Derived cache | Per-name compare-and-swap | None new | Custom refspecs, no server check |
-| 4 | SQLite file in git | Binary | Tables | In the file | Full SQL | Ref compare-and-swap, no merge on divergence | None new | Corruption on replace-while-open |
-| 5 | Event log plus view | Readable | Strongest history | Versioned events | Fold to SQLite | Only if events are compare-and-swap pushed | None new | Union merge breaks one winner |
-| 6 | DoltLite | Not on git remotes | Tables plus history | Engine-enforced | Full SQL | No git remote | No Windows or uv-Python support | Beta |
+Every option runs its schema checks on the client, since none has a server; R5 below says whether
+an engine or a shipped validator does the checking.
+
+| # | Option | R1 git tracked | R2 general status | R3 scoped verdicts, who and when | R4 lifecycle and history | R5 schema | R6 query | R7 one winner | R8 install | Key risk |
+|---:|---|---|---|---|---|---|---|---|---|---|
+| 1 | Dolt on a git remote | Stored in git with full Dolt history; rows not readable by git tools; ref history rewritten | Enum column with a CHECK | Verdict table with actor and time columns | Tables plus per-row history | Engine-checked; needs app and engine version gates | Full SQL | Ref compare-and-swap, 20 of 20 races; needs the claim protocol | ~100 MB native binary plus git | Version skew, lock fallback, identical-value merge |
+| 2 | Schema-validated text plus SQLite cache | Fully readable | Field in each file | Records in each file, actor and time by convention | Files plus history records | Validator-checked | SQL over cache | Ref compare-and-swap, proven here | None new | A refinement of the rejected system |
+| 3 | One ref per name | Readable | Needs a data model on top | Needs a data model on top | Per-name commit chain | Validator-checked | Derived cache | One winner by construction, no merge path | None new | Custom refspecs; status and search need another layer |
+| 4 | SQLite file in git | Binary | Tables | Tables | Tables, no merge | In the file | Full SQL | Ref compare-and-swap, no merge on divergence | None new | Corruption on replace-while-open |
+| 5 | Event log plus view | Readable | Folded from events | Events carry actor and time | Strongest history | Versioned events | Fold to SQLite | Only if events are compare-and-swap pushed | None new | Union merge breaks one winner |
+| 6 | DoltLite | No git remote documented | Tables | Tables | Tables plus history | Engine-checked | Full SQL | No git remote documented | No Windows, Intel macOS or uv-Python support | Alpha |
+| 7 | H1: claim refs plus Dolt | As option 1, plus readable claim refs | As option 1 | As option 1 | As option 1 | As option 1 | Full SQL | One winner by construction | As option 1 | Two stores that must agree |
 
 ## Recommendation
 
-Confirm Dolt as the registry's store. It is the owner's stated choice, it is the only option that
-gives an engine-enforced schema, SQL search and per-row history together, and no evidence found
-shows it unable to meet a requirement. Its gap is operational, and each operational risk has a
+Confirm Dolt as the registry's store, under the conditions below. The evidence, requirement by
+requirement:
+
+| Requirement | Dolt | Where Dolt is weaker |
+|---|---|---|
+| R1 git tracked | Stored in the repository with complete Dolt history | Rows are not readable in a git diff, and the ref's git history is rewritten; option 2 and the H2 export are readable |
+| R2 to R4 statuses, verdicts, lifecycle | Tables with constraints and per-row history, the best fit found | None found |
+| R5 schema | Engine-checked constraints | Still client-side, like option 2; needs app and engine version gates |
+| R6 query | Full SQL | None found |
+| R7 one winner | 20 of 20 concurrent races had one winner | Only under the claim protocol; one ref per name gets it by construction |
+| R8 install | Acceptable under the owner's dependency allowance | A 100 MB binary outside pip and uv; a hosted push costs about 3.5 s more than today's |
+
+It is the only option that gives an engine-checked schema, SQL search and per-row history
+together, and it is the choice the owner asked to have confirmed. Each of its weaknesses has a
 named mitigation that the design must carry:
 
-1. Placement: a dedicated Dolt database for the registry on its own ref of the private repository
-   that holds the registry today, never on the public package repository and never sharing a ref
-   with the issue tracker's store, whose writers would contend with it.
+1. Placement: a dedicated Dolt database for the registry on its own ref (`--ref`, never the
+   default `refs/dolt/data`) of the private repository that holds the registry today. Never the
+   public package repository, and never a ref shared with the issue tracker's store. Every Dolt
+   call sets `DOLT_REMOTE_INFO_BRANCH` to empty, so the registry adds no visible branch and does not
+   overwrite the issue tracker's info branch. `git log` of the ref is not the registry's history;
+   `dolt log` and the history tables are.
 2. Claim protocol: the five rules in [2.2](#22-uniqueness-the-same-compare-and-swap-measured), with
    a claimant value unique per attempt, no upserts, no merge on a lost push (abort, reset, replay),
-   read-back before declaring a win, and no force push.
+   read-back before declaring a win, and no force push issued by the client, so Dolt's lease push
+   stays the only compare-and-swap.
 3. Access path: one documented path per host, serialized by the package's existing host file lock,
-   so two CLI processes never open the database for writing at once, and a write probe before any
-   pick so a silent read-only open refuses rather than reads as free.
+   so two CLI processes never open the database for writing at once. A write probe runs before any
+   pick so a silent read-only open refuses rather than reads as free; use the
+   `fail_on_journal_lock_timeout` open option as well if the chosen access path can set it.
 4. Version floor: an application schema version and a minimum Dolt feature version, both checked
    on open, with additive migrations run only when local and remote heads match.
 5. Footprint: `metrics.disabled` set for every Dolt call the package makes, and a clear refusal
    naming the install step when the `dolt` binary is missing.
-6. Public installs: the package must still run where no fleet repository exists. Whether that
+6. Keys and verdicts: the name column carries a lowercase `[a-z]+` CHECK constraint or a
+   case-insensitive collation, so a hand edit cannot create a case twin. Verdicts are rows of a
+   normalized table keyed by name and scope, each with actor and time, not a JSON cell.
+7. Spares and liveness: the schema keeps per-machine spare rows and offline activation, the one
+   case where a pick needs no push, and defines how an in-use row is reclaimed from a dead session,
+   for example through the session lease the package already keeps.
+8. Public installs: the package must still run where no fleet repository exists. Whether that
    fallback is a local Dolt database or a local SQLite database with the same schema is a design
    decision, informed by section 2.4.
 
 The research does not support Dolt as a stronger uniqueness mechanism; it supports Dolt as a better
-data model on the same uniqueness mechanism. [INFERENCE]
+data model on the same uniqueness mechanism. If the owner later wants rows readable in a pull
+request, hybrid H2 adds that without changing the store. [INFERENCE]
 
 ## Open Questions
 
-1. Which sense of "git tracked" does the owner mean? Classified `design-choice`: Dolt meets the
-   storage sense, and readable review can be served by `dolt diff` or a list command. The design
-   records the reading it takes.
-2. A current hosted-push latency on Dolt 2.7.x. Researchable, deferred to the build: the
-   implementation's first live test on the fleet's remote measures it.
+1. Which sense of "git tracked" does the owner mean? This touches an explicit founding-ask
+   requirement, so the design does not settle it alone. The owner's own question named Dolt as a
+   candidate "git tracked database system", which reads as the storage sense, and the design
+   proceeds on that reading. The design doc states the reading in its founding-ask coverage, and
+   the run's final report puts it to the owner to confirm. If the owner meant "readable in git",
+   hybrid H2 meets it without changing the store.
+2. Hosted-push latency. Answered for Dolt 2.3.4: a median 4.74 s against 1.21 s for a plain git
+   push to the same remote (section 2.3). The pinned version the design chooses should be measured
+   again at build time.
 3. Whether the two macOS hosts are Intel or Apple Silicon, which decides whether Homebrew bottles
    cover them. Researchable from the hosts at install time; the install path handles both through
    the official release archive.
@@ -477,6 +630,11 @@ data model on the same uniqueness mechanism. [INFERENCE]
 [^38]: Git project. (n.d.). [gitattributes](https://git-scm.com/docs/gitattributes). Git documentation. Verified accessible 2026-11-11.
 [^39]: git-bug. (n.d.). [Data model](https://github.com/git-bug/git-bug/blob/trunk/doc/design/data-model.md). GitHub. Verified accessible 2026-11-11.
 [^40]: Homebrew. (2023). [Homebrew 4.0.0](https://brew.sh/2023/02/16/homebrew-4.0.0/). Verified accessible 2026-11-11. (Foundational.)
+[^41]: DoltHub. (2026). [go/store/blobstore/internal/git/impl.go at v2.3.4](https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/internal/git/impl.go). GitHub. Read through the GitHub API 2026-11-11.
+[^42]: DoltHub. (2026). [go/store/blobstore/git_blobstore.go at v2.3.4](https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/git_blobstore.go) and [git_refs.go](https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/git_refs.go). GitHub. Read through the GitHub API 2026-11-11.
+[^43]: DoltHub. (2026, October 1). [Add git-remote history settings (#11993)](https://github.com/dolthub/dolt/pull/11993). GitHub. Read through the GitHub API 2026-11-11; first release containing it, v2.4.1 (2026-10-02), checked by commit comparison.
+[^44]: GitHub. (n.d.). [About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets). GitHub Docs. Verified accessible 2026-11-11.
+[^45]: DoltHub. (2026, October 6). [docs: document the NBS storage lock contract (#12023)](https://github.com/dolthub/dolt/pull/12023). GitHub. Read through the GitHub API 2026-11-11; it closes issue #11262.
 
 <!-- /doc:region name="body" -->
 
@@ -493,7 +651,7 @@ data model on the same uniqueness mechanism. [INFERENCE]
 ## Appendix: Research Prompt
 
 **Registry ID:** run `ai-cli-6xud-name-registry-2026-11-11` (no prompt registry on this host)
-**Model:** Claude Opus 5.5 for all three legs and for this synthesis
+**Model:** Claude Opus 5.5 for all three legs, the critic and this synthesis
 **Date:** 2026-11-11
 
 Method: Claude ad-hoc web (research-doc skill), orchestrated. Three read-only legs ran in parallel;
@@ -598,8 +756,9 @@ say which one. Report any evidence that conflicts with the owner's Dolt lean pla
 
 ## Appendix: Provenance Ledger
 
-Quotes came back through a fetch tool that extracts them with a summarizing model. The four rows
-marked "re-checked" were fetched again by the author on 2026-11-11 and matched word for word.
+Quotes came back through a fetch tool that extracts them with a summarizing model. The rows
+marked "re-checked" were fetched again by the author on 2026-11-11 and matched word for word; rows
+marked "read at the pinned tag" were read from Dolt's source through the GitHub API.
 
 | Claim | Source URL | Verbatim quote | Verdict | Live? |
 |---|---|---|---|---|
@@ -619,7 +778,7 @@ marked "re-checked" were fetched again by the author on 2026-11-11 and matched w
 | Lost update | https://www.dolthub.com/blog/2026-02-17-dolt-concurrency/ | "Dolt is susceptible to the lost update problem" | SUPPORTED | 200, 2026-11-10 |
 | Identical concurrent deletes all succeed | https://github.com/steveyegge/beads/issues/7243 | "Dolt's commit-time merge treats two concurrent transactions that each delete the same row as identical" | SUPPORTED | 200, 2026-11-10 |
 | Upsert retry overwrites a concurrent row | https://github.com/steveyegge/beads/issues/7289 | "`INSERT … ON DUPLICATE KEY UPDATE`" | SUPPORTED | 200, 2026-11-10 |
-| 100 ms lock, silent read-only fallback | https://github.com/dolthub/dolt/issues/11262 | "either errors with `ErrDatabaseLocked` or silently falls back to read-only" | SUPPORTED | 200, 2026-11-10 |
+| 100 ms lock, silent read-only fallback | https://github.com/dolthub/dolt/issues/11262 | "either errors with `ErrDatabaseLocked` or silently falls back to read-only" | SUPPORTED; the issue is closed by a documentation change, see the #12023 row | 200, 2026-11-10 |
 | Concurrent-writer journal corruption | https://github.com/dolthub/dolt/issues/10331 | "writeCommitParentClosure: ReadManyValues: checksum error" | SUPPORTED | 200, 2026-11-10 |
 | Hosted git-remote push latency | https://github.com/dolthub/dolt/issues/10537 | "1.82.4 does show substantial speed up, down to around ~15s per push." | SUPPORTED | 200, 2026-11-10 |
 | Telemetry spool never cleaned | https://github.com/dolthub/dolt/issues/10021 | "If Dolt is running in an operational context where these uploads fail, it does not delete the files." | SUPPORTED | 200, 2026-11-10 |
@@ -643,6 +802,14 @@ marked "re-checked" were fetched again by the author on 2026-11-11 and matched w
 | Union merge warning | https://git-scm.com/docs/gitattributes | "Do not use this if you do not understand the implications." | SUPPORTED | 2xx, 2026-11-11 |
 | git-bug event model | https://github.com/git-bug/git-bug/blob/trunk/doc/design/data-model.md | "doesn't carry much meaning, but it's unbiased and hard to abuse" | SUPPORTED | 2xx, 2026-11-11 |
 | Homebrew 4 left git for reads | https://brew.sh/2023/02/16/homebrew-4.0.0/ | "rather than local homebrew/core" | SUPPORTED | 2xx, 2026-11-11 |
+| Partitioned ID namespace merges safely | https://arxiv.org/abs/1402.2237 | "If replicas assign unique IDs within their respective portion of the ID namespace, then merging locally valid states will also be globally valid" | SUPPORTED, re-checked from the PDF text | 2xx, 2026-11-11 |
+| Dolt's data push is a lease compare-and-swap | https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/internal/git/impl.go | `lease := "--force-with-lease=" + dstRef + ":" + expectedDstOID.String()` | SUPPORTED, read at the pinned tag | API 200, 2026-11-11 |
+| Dolt severs the ref's git history after 64 commits | https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/git_blobstore.go | "we create a parentless commit to sever the history chain"; `const maxParentedCommits = 64` | SUPPORTED, read at the pinned tag and measured | API 200, 2026-11-11 |
+| Info branch, disabled when empty | https://github.com/dolthub/dolt/blob/v2.3.4/go/store/blobstore/git_blobstore.go | "for a visible info branch pushed after each successful data write ... Empty means disabled." | SUPPORTED, read at the pinned tag and measured | API 200, 2026-11-11 |
+| History limit configurable from 2.4.1 | https://github.com/dolthub/dolt/pull/11993 | "A history limit of `0` means unlimited" | SUPPORTED | API 200, 2026-11-11 |
+| Rulesets target branches or tags only | https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets | "You can use rulesets to target branches or tags in a repository" | SUPPORTED | 2xx, 2026-11-11 |
+| Read-only fallback documented, not removed | https://github.com/dolthub/dolt/pull/12023 | "a silent read-only open by default, `ErrDatabaseLocked` with `fail_on_journal_lock_timeout`" | SUPPORTED | API 200, 2026-11-11 |
+| DoltLite status and wheels | https://pypi.org/project/doltlite/ | "3 - Alpha"; wheels "Linux glibc 2.17+ x86-64", "Linux glibc 2.17+ ARM64", "macOS 11.0+ ARM64" | SUPPORTED, re-checked | 200, 2026-11-11 |
 
 <!-- /doc:region name="appendix_provenance" -->
 
@@ -653,5 +820,12 @@ marked "re-checked" were fetched again by the author on 2026-11-11 and matched w
 - 2026-11-11, round 1: three read-only Opus legs (Dolt in depth, the non-Dolt landscape, a
   repository inventory), a local race-and-latency spike on Dolt 2.3.4, and a re-check of four
   load-bearing quotes. Synthesis by the orchestrating session.
+- 2026-11-11, round 2: a five-pass Opus critic reviewed round 1 and returned 21 findings, two high.
+  The orchestrator folded every one in, after spikes on Dolt 2.3.4: a 20-trial concurrent push
+  race, the git-ref layout (history cap, info branch), key collation, a JSON cell merge, and a
+  hosted push measured against a plain git push. It also read the pinned tag's source. Two
+  critic claims changed on that evidence: the history cap and info branch exist at 2.3.4 but the
+  setting for the cap arrived in 2.4.1, and the lock-fallback issue was closed by documentation,
+  not a fix. The JSON concern was tested and did not hold: different keys merge cleanly.
 
 <!-- /doc:region name="run_history" -->
