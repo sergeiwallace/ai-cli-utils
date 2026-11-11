@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker
+  (`~/.claude/resume/pollers/<name>__<id>.notified`) exists under both the old and the new name.
+  Both copies hold one timestamp, so the rename keeps the later one under the new name and
+  removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
+  `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
+  finished. Every other resume artifact found under both names is still reported and left alone.
+
 - A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
   boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
@@ -84,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that hook is skipped and reported as pending, the core parts and the other hooks still run,
   no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
   fresh migration still refuses before its first write.
+
+- `ai migrate-session OLD NEW -n` now names the fate of each `OLD-agents` container the real
+  run sweeps: `would be removed: empty`, or `kept` with what it holds or the pid working in it,
+  and it exits 1 when the real run would keep one. The preview used to print only
+  `removed once empty` and exit 0 for a container the real run then kept, exiting 1.
 
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,

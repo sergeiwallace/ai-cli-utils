@@ -372,7 +372,12 @@ Four rules, each of which is wrong in the other direction:
   `lsof`) leaves it **where it is** — not migrated, so it cannot block the new
   name, and not deleted, because nothing proved it dead.
 - **Never overwrite.** An existing target belongs to whoever already holds the
-  new name and may be its only copy, so it is reported and left alone.
+  new name and may be its only copy, so it is reported and left alone. The one
+  exception is a poller marker, `pollers/<name>__<id>.notified`, when both copies
+  hold one integer epoch. The marker only records that the poller's fault was
+  announced, so the two copies agree, and the rename keeps the later timestamp
+  under the new name and removes the old one (`... merged (keeps the later
+  timestamp N)`). A marker holding anything else is reported and left alone.
 
 `--dry-run` reports every rename it would make and renames nothing, including the
 lock removals.
@@ -516,7 +521,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `launch-logs/<name>-<stamp>-<pid>.log` for OLD and each of its tmux names (`c-OLD`, `c-r-OLD`, ...) | renamed for NEW, so NEW's 20-per-name retention prunes them; a log under the slot number alone (`3-<stamp>`) names no session and stays |
 | The chief-of-staff registration `ai cos` wrote, when it names OLD (`<chief home>/state/chief-session.json`, and `registry.json`'s `chief_of_staff_session` and `chief_routes.native_agent_name`) | rewritten for NEW, tmux target included; `vp_sessions` is left to its hook. Kept and named, exiting 1, while its tmux target is live; a file that cannot be read refuses the migration |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
-| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`) |
+| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`), and the command exits 1. `-n` names the same fate (`would be removed: empty` or `kept: ...`), counting the agent worktrees the run moves out as gone, and removes nothing |
 | A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai retire-session`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/retire-session/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
