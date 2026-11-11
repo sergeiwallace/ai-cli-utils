@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
   after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
 
+- `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
+  its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
+  so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
+  recipe", and neither a boot nor a manual relaunch could start it. `--finish` repairs a record
+  migrated before this fix.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
