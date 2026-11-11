@@ -86,7 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
   `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
   finished. Every other resume artifact found under both names is still reported and left alone.
-
+- `ai migrate-session --finish -n` now plans a migration whose session is live instead of
+  refusing it, so a running session can be checked read-only. Its first line names the live
+  session and says a writing run refuses until it is stopped with `ai sessions stop NAME`; the
+  writing `--finish` still refuses with exit 2 before its first write, now without asking first.
 - `ai migrate-session` now checks the `ai` on `PATH`, which the migrated session relaunches
   under, before it writes anything. A build older than the migration record format this one
   writes (it answers `ai internal get-migration-format` with a lower number, or not at all) is
