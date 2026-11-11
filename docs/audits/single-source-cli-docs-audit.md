@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 7` |
+| Stage cursor | `doc-audit done: audit-converged; round 8` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** audit-converged — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 7 | sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5 | 0 | 1 | 0 | round7:N-2 | verify | no |
+| doc-audit | 8 | sha256:1c5c7a5ace023073f0d17efa7175ab9a1fdf34ca8698bd97b282f33b380c9568 | 0 | 0 | 0 | — | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1952,5 +1952,135 @@ inspections. No test suite, target edit, filesystem write, or outward action was
     "kind": "verify"
   },
   "source_event_id": "round-7-audit"
+}
+```
+
+## Round 8 — Verification
+
+**Round 8 auditor:** `gpt-5`
+
+**Round 8 date:** 2026-11-11
+
+**Round 8 scope:** Verify `round7:N-2` against target digest
+`sha256:1c5c7a5ace023073f0d17efa7175ab9a1fdf34ca8698bd97b282f33b380c9568`, inspect the
+changed matcher, candidate-set, manifest-validation and invariant contracts, and surface defects
+introduced by those changes. Append-only; no target edits.
+
+### R8 Summary
+
+`round7:N-2` is fixed. The revised design defines one case-sensitive matcher over normalized
+repository-relative POSIX paths, freezes the unclaimed paths after page and group assignment, and
+matches every exclusion only against that fixed candidate set. It explicitly permits a suffix
+pattern to overlap a claimed `docs/` path in the full inventory while rejecting the same path if a
+publication regression leaves it unclaimed. A focused acceptance fixture selects both outcomes. No
+new finding was reproduced; implementation has not started, so this disposition verifies the design
+contract rather than shipped code.
+
+### R8.1 Open MUST-fix backlog verification
+
+| Finding key | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| `round7:N-2` | PASS | fixed | The matcher is now defined over normalized repository-relative POSIX paths with slashless-basename, component `*`, recursive `**`, and platform-independent case-sensitive semantics (`docs/designs/single-source-cli-docs.md:225-229`). After pages and groups claim files, the builder freezes the remaining paths and matches and validates every exclusion “only against that same set, never against the full tracked inventory or a progressively reduced set” (`:231-244`). T-3.1 exercises a claimed `docs/reference/example.toml` and unclaimed `config/tool.toml`, then removes the group claim and requires rejection naming the docs path (`:563-569`). An in-memory model of the stated matcher produced only `config/tool.toml` in the candidate match with the claim present, and both paths plus `forbidden docs match: True` without it. `CONFIRMED` against the target, its invariant register (`docs/designs/single-source-cli-docs.md.invariants.yaml:158-162`), and unchanged target content since fix commit `f5461940`. |
+
+### R8.2 AD-N decisions verification
+
+No AD-N decision is in scope or was introduced by this fix.
+
+### R8.3 NEW issues surfaced
+
+None.
+
+### R8 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| Target identity | `sha256sum docs/designs/single-source-cli-docs.md` | Driver target digest | `1c5c7a5a...c9568`, exact match | ✅ |
+| N-2 — matcher contract | Read `docs/designs/single-source-cli-docs.md:225-229` | One deterministic matcher defines suffix and recursive patterns across platforms | Normalized POSIX paths, slashless basename matching, component `*`, recursive `**`, and case-sensitive matching are explicit | ✅ |
+| N-2 — validation universe | Read `docs/designs/single-source-cli-docs.md:231-244,344-355` | Exclusion matching and forbidden-path validation inspect the same named set | Both operate only on the fixed unclaimed candidate set; full-inventory overlap is explicitly permitted | ✅ |
+| N-2 — overlap behavior | Run the in-memory matcher fixture for claimed `docs/reference/example.toml`, unclaimed `config/tool.toml`, and `*.toml` | Claimed docs path stays published; only config is excluded | Printed `candidate matches: config/tool.toml` | ✅ reproduced |
+| N-2 — regression behavior | Remove the docs claim in the same fixture | The exclusion sees the docs path and validation rejects it | Printed both paths and `forbidden docs match: True` | ✅ reproduced |
+| N-2 — acceptance coverage | Read `docs/designs/single-source-cli-docs.md:563-569,581-588` | Both overlap outcomes are independently testable | T-3.1 names both outcomes and T-3.2 carries the overlap into coverage fixtures | ✅ |
+| N-2 — frozen invariant | Read `docs/designs/single-source-cli-docs.md.invariants.yaml:158-162` and compare its revised digest | Register and design select the same behavior at the current target | Invariant names the fixed unclaimed set and claimed-path overlap; digest equals the target SHA-256 | ✅ |
+| N-2 — no later target drift | `git diff --exit-code f5461940 -- docs/designs/single-source-cli-docs.md docs/designs/single-source-cli-docs.md.invariants.yaml` | Exit 0 | Exit 0 | ✅ |
+
+**Verified: 8/8 checks reproduce at repository commit
+`b8ef9f97aa2f23299d07178c10fb07709afd19a5`; target digest
+`sha256:1c5c7a5ace023073f0d17efa7175ab9a1fdf34ca8698bd97b282f33b380c9568`.**
+
+### R8 Recommendations
+
+**MUST be fixed before implementation starts:** none.
+
+**SHOULD be fixed before the design-doc PR merges:** none in this verification scope.
+
+**Can be folded into a follow-up:** none.
+
+### R8 Already-Correct Items
+
+- ✅ The old full-inventory overlap still exists for the tracked TOML and YAML paths, but the design
+  now explicitly says that overlap is harmless after those paths are claimed for publication.
+- ✅ The same candidate set governs both exclusion matching and forbidden-document validation, so
+  the sample manifest no longer depends on an unstated matcher scope.
+- ✅ The matcher contract covers top-level and nested Markdown plus direct and nested `docs/` paths;
+  the reproduced samples matched `README.md`, `x/a.md`, `docs/a.md`, and `docs/x/a.md` as intended.
+- ✅ The fix preserves the shared command source, complete help descriptions, generated CLI
+  reference, exhaustive wiki coverage, main-only publication, and programmatic-first generation
+  requirements from the founding ask.
+
+### R8 Files Read and Commands Run
+
+Read in full: the canonical audit `STUB.md` and `TEMPLATE.md`, the 1,193-line target design, this
+audit's complete prior history, and the 236-line invariant register. Diff-focused reads covered fix
+commit `f5461940`, the matcher and candidate-set prose, the manifest example, Phase 3 ACs, and the
+two tracked `docs/` paths from N-2. Commands were `git status`, `git log`, `git show`, `git diff`,
+`git ls-files`, `sha256sum`, `rg`, `sed`, `nl`, and read-only in-memory Python matcher inspections.
+No test suite, target edit, filesystem write, or outward action was performed.
+
+### R8 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 8 | `round7:N-2` fixed; 0 new findings; target unchanged. |
+
+### R8 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "contradictory-requirements"
+      },
+      "disposition": "fixed",
+      "finding_key": "round7:N-2",
+      "fingerprint": "fp:wiki-exclusion-match-scope-undefined",
+      "id": "N-2",
+      "reachable_behavior": "The revised contract validates suffix exclusions only against the fixed unclaimed candidate set, so claimed docs paths remain published while an unclaimed docs match fails by name.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round7:N-2"
+    ],
+    "diff_since": "sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5",
+      "to": "sha256:1c5c7a5ace023073f0d17efa7175ab9a1fdf34ca8698bd97b282f33b380c9568"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-8-audit"
 }
 ```
