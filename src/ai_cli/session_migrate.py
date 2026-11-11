@@ -1764,4 +1764,7 @@ def migrate_session(repo_root: Path, old: str, new: str, **kwargs) -> MigrationR
     """Start or resume the same migration; current artifacts decide which parts remain."""
     from .session_migrate_resume import run
 
-    return run(repo_root, old, new, **kwargs)
+    try:
+        return run(repo_root, old, new, **kwargs)
+    except (OSError, ValueError) as exc:
+        raise MigrationError(f"cannot inspect migration artifacts: {type(exc).__name__}: {exc}") from exc

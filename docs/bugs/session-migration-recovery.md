@@ -129,3 +129,13 @@ pair also proves recovery. An incomplete named preview now returns 1 (`assert 0
 == 1` before the fix), with naming completion represented in the table. Target
 tmux sessions and processes nested under NEW are refused (`assert 0 == 2` before
 the guard fix).
+
+## Transcript inspection follow-up
+
+The permitted read-only live preview exposed a malformed JSON line that the new
+recovery planner parsed strictly. Frozen command regressions reproduced
+`JSONDecodeError: Unterminated string` and an uncaught `PermissionError` during
+preview. Recovery now streams records, preserves malformed lines under the
+existing rewriter policy, and converts unreadable-artifact errors into a precise
+refusal and parts table. This changes only inspection; transcript history remains
+untouched. The corresponding recovery and named-command gate passed all 48 cases.

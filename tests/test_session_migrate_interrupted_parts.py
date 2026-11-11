@@ -87,6 +87,39 @@ def test_given_migrated_tasks_updated_later_when_retried_then_completed_tasks_ar
     assert _everything(slot) == before
 
 
+def test_given_an_incomplete_transcript_line_when_original_command_repeats_then_it_is_preserved(slot):
+    from ai_cli.cc_migrate import cc_project_dir
+
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    transcript = next(cc_project_dir(slot["repo"] / ".worktrees" / NEW, slot["claude"]).glob("*.jsonl"))
+    with transcript.open("a") as out:
+        out.write('{"type":"assistant","message":"incomplete')
+    before = _everything(slot)
+    for flag in ("-n", "-y"):
+        code, out, err = _migrate(slot["repo"], flag)
+        assert code == 0, out + err
+        assert _everything(slot) == before
+
+
+def test_given_an_unreadable_transcript_when_previewed_then_refusal_has_a_parts_table(slot, monkeypatch):
+    from ai_cli.cc_migrate import cc_project_dir
+
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    transcript = next(cc_project_dir(slot["repo"] / ".worktrees" / NEW, slot["claude"]).glob("*.jsonl"))
+    real = Path.open
+
+    def unreadable(path, *args, **kwargs):
+        if path == transcript:
+            raise PermissionError("transcript is unreadable")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unreadable)
+    code, out, err = _migrate(slot["repo"], "-n")
+    assert code == 2, out + err
+    assert "part | status" in out
+    assert "transcript is unreadable" in out + err
+
+
 def test_given_a_task_copied_before_interruption_when_retried_then_no_duplicate_or_remapped_dependency(
     slot, monkeypatch
 ):

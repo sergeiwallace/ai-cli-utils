@@ -750,3 +750,6 @@ pairs can prove recovery even if the local pair ledger is lost. The final table
 includes the naming registry, and an incomplete dry-run plan returns 1.
 Liveness checks include either name's tmux session and processes below either
 worktree, including a process with a different title inside NEW.
+Recovery streams transcript records and preserves malformed lines verbatim, as
+the original transcript rewriters do. A file that cannot be read is a named
+preflight refusal with the same parts table; a parser traceback is not completion.

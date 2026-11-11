@@ -51,6 +51,27 @@ class HomePlan:
     actions: list[Callable[[], object]] = field(default_factory=list)
 
 
+def _stale_transcript(path: Path, old_wt: Path, new_wt: Path, old: str) -> bool:
+    # Match the existing line rewriters: malformed records remain verbatim.
+    # Stream transcripts so an already-complete large conversation needs no full copy.
+    with path.open(encoding="utf-8") as source:
+        for raw in source:
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if (
+                row.get("customTitle") == old
+                or m._rewrite_line(raw, str(old_wt), str(new_wt)) != raw
+                or (row.get("type") == "worktree-state" and row.get("worktreeSession") is not None)
+                or (row.get("type") == "relocated" and row.get("relocatedCwd") not in (None, str(new_wt)))
+            ):
+                return True
+    return False
+
+
 def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: Path) -> HomePlan:
     """Plan the steps a worktree move may have preceded, without changing any files."""
     plan = HomePlan()
@@ -99,14 +120,7 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
         add("project dir", old_pd, new_pd, lambda: old_pd.rename(new_pd))
     project = old_pd if old_pd.is_dir() else new_pd
     for path in sorted(project.glob("*.jsonl")):
-        text = path.read_text(encoding="utf-8")
-        records = [json.loads(line) for line in text.splitlines() if line.strip()]
-        stale = (
-            old in m.transcript_titles(path)
-            or any(m._rewrite_line(line, str(old_wt), str(new_wt)) != line for line in text.splitlines(keepends=True))
-            or any(row.get("type") == "worktree-state" and row.get("worktreeSession") is not None for row in records)
-        )
-        if stale:
+        if _stale_transcript(path, old_wt, new_wt, old):
             dest = new_pd / path.name
 
             def rewrite(dest=dest):
