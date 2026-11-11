@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from process_wait import scaled
@@ -76,16 +77,25 @@ def test_given_status_77_when_supervisor_returns_then_manual_exit_is_persisted(s
 
 def test_given_persistence_failure_when_final_exit_retries_then_no_agent_is_started(shell_environment, monkeypatch):
     shell, env, name, tmp_path = shell_environment
-    ai = tmp_path / "bin/ai"
+    fake = tmp_path / "bin" / "fake_ai.py"
     count = tmp_path / "attempts"
-    ai.write_text(
-        '#!/bin/sh\nif [ "$2" != mark ]; then exec '
-        + shlex.quote(sys.executable)
-        + ' -m ai_cli.main "$@"; fi\n'
-        + f'n=$(cat {shlex.quote(str(count))} 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf "%s" "$n" > {shlex.quote(str(count))}\n'
-        + f'if [ "$n" -lt 3 ]; then exit 1; fi\nexec {shlex.quote(sys.executable)} -m ai_cli.main "$@"\n'
+    # A Python helper runs on every platform; an extensionless shell script cannot be executed on Windows.
+    fake.write_text(
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        f"count = Path({count.as_posix()!r})\n"
+        "args = sys.argv[1:]\n"
+        'if len(args) > 1 and args[1] == "mark":\n'
+        "    attempts = (int(count.read_text()) if count.exists() else 0) + 1\n"
+        "    count.write_text(str(attempts))\n"
+        "    if attempts < 3:\n"
+        "        sys.exit(1)\n"
+        'sys.exit(subprocess.call([sys.executable, "-m", "ai_cli.main", *args]))\n'
     )
-    monkeypatch.setattr("ai_cli.session_lifecycle_script.lifecycle_command", lambda _path: [ai.as_posix()])
+    monkeypatch.setattr(
+        "ai_cli.session_lifecycle_script.lifecycle_command",
+        lambda _path: [Path(sys.executable).as_posix(), fake.as_posix()],
+    )
     body = (
         session_state_functions(name)
         + f'\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n_ai_emit() {{ printf "%s\\n" "$*"; }}\n_ai_persist_exit manual_exit \'{{}}\'\nprintf shell-returned\n'
