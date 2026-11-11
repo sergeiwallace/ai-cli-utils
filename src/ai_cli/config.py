@@ -1089,8 +1089,11 @@ def load_config(*, read_only: bool = False):
 
     cfg["sidecar"] = get_sidecar_config(cfg)
     causes = cfg.get("session_relaunch", {}).get("causes", ["host_reboot", "terminal_quit_or_crash"])
-    if not isinstance(causes, list) or any(c not in {"host_reboot", "terminal_quit_or_crash"} for c in causes):
-        raise ValueError("session_relaunch.causes permits only host_reboot and terminal_quit_or_crash")
+    relaunchable = {"host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"}
+    if not isinstance(causes, list) or any(c not in relaunchable for c in causes):
+        raise ValueError(
+            "session_relaunch.causes permits only host_reboot, terminal_quit_or_crash and maintenance_wind_down"
+        )
 
     return cfg
 
