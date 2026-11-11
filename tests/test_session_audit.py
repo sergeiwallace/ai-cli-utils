@@ -135,6 +135,8 @@ def _make_repo(tmp_path: Path, name: str) -> Path:
     _git("init", "-q", "-b", "main", str(repo), cwd=repo.parent)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
+    alias = {"myproject": "myrepo", "myapp": "app"}.get(name, name)
+    (repo / "pyproject.toml").write_text(f'[tool.ai-cli]\ntask_prefix = "{alias}"\n')
     (repo / "README.md").write_text("base\n")
     _git("add", "-A", cwd=repo)
     _git("commit", "-q", "-m", "init", cwd=repo)
@@ -171,11 +173,11 @@ def _snapshot(*roots: Path) -> dict[str, str]:
 def fleet(tmp_path):
     """A fake ~/.claude plus two repos holding sessions in every location that occurs.
 
-    * ``myproject-2`` ran at the repo root — the ordinary mistake to correct.
-    * ``myproject-5`` ran in a Claude Code AGENT worktree under
+    * ``myrepo-tst-2`` ran at the repo root — the ordinary mistake to correct.
+    * ``myrepo-tst-5`` ran in a Claude Code AGENT worktree under
       ``.claude/worktrees/<id>``, the location that was wrongly recorded as the
       repo root in the case that motivated this command.
-    * ``myapp-1`` already sits in its own ``.worktrees/myapp-1`` slot.
+    * ``app-tst-1`` already sits in its own ``.worktrees/app-tst-1`` slot.
     * one untitled transcript, which must never be reported.
     """
     home = tmp_path / "claude-home"
@@ -188,11 +190,11 @@ def fleet(tmp_path):
 
     agent_dir = myproject / ".claude" / "worktrees" / "agent-1234"
     agent_dir.mkdir(parents=True)
-    adopted_slot = _add_worktree(myapp, "myapp-1")
+    adopted_slot = _add_worktree(myapp, "app-tst-1")
 
-    root_session = _write_transcript(home, UUID_A, "myproject-2", myproject)
-    agent_session = _write_transcript(home, UUID_B, "myproject-5", agent_dir)
-    slot_session = _write_transcript(home, UUID_C, "myapp-1", adopted_slot)
+    root_session = _write_transcript(home, UUID_A, "myrepo-tst-2", myproject)
+    agent_session = _write_transcript(home, UUID_B, "myrepo-tst-5", agent_dir)
+    slot_session = _write_transcript(home, UUID_C, "app-tst-1", adopted_slot)
     _write_transcript(home, "dddddddd-2222-4333-8444-555555555555", None, myproject)
 
     return {
@@ -216,7 +218,7 @@ def _no_real_worktrees(tmp_path, monkeypatch):
     ``session.create_worktree`` takes only a name and derives the repo root from
     the *process's* cwd, so an adoption that needs a worktree would create one in
     this actual repository — a test writing real state. Observed for real: a
-    mutation-testing run left a registered ``.worktrees/myproject-2`` behind in
+    mutation-testing run left a registered ``.worktrees/myrepo-tst-2`` behind in
     the shared checkout. Binding it here means no test can reach the real tree
     even if the code under test changes, and the fake stays faithful enough that
     the dry-run snapshot, not a process guard, is what catches a dry run that
@@ -270,13 +272,13 @@ def _by_title(report):
 
 def test_survey_given_titled_sessions_when_surveyed_then_each_field_is_reported(audit, fleet):
     """AC-1: title, path, lines, repo, slot correctness, liveness, resolvability."""
-    record = _by_title(audit())["myproject-2"]
+    record = _by_title(audit())["myrepo-tst-2"]
     assert record.transcript == fleet["root_session"]
     assert record.lines == 2
     assert record.size > 0
     assert record.repo_root == fleet["myproject"]
     assert record.location == REPO_ROOT
-    assert record.in_correct_slot is False, "it ran at the repo root, not in .worktrees/myproject-2"
+    assert record.in_correct_slot is False, "it ran at the repo root, not in .worktrees/myrepo-tst-2"
     assert record.live is False
     assert record.resolves is None, "`ai c 2` cannot resolve it from the worktree slot yet"
     assert record.index == 2
@@ -293,7 +295,7 @@ def test_survey_given_an_untitled_transcript_when_surveyed_then_it_is_not_report
 
 def test_survey_given_a_session_already_in_its_slot_when_surveyed_then_reported_as_resolvable(audit, fleet):
     """AC-1: the report distinguishes an adopted session from an unadopted one."""
-    record = _by_title(audit())["myapp-1"]
+    record = _by_title(audit())["app-tst-1"]
     assert record.location == SESSION_WORKTREE
     assert record.in_correct_slot is True
     assert record.resolves == fleet["slot_session"]
@@ -301,8 +303,8 @@ def test_survey_given_a_session_already_in_its_slot_when_surveyed_then_reported_
 
 def test_survey_given_a_live_session_when_surveyed_then_its_pid_is_reported(audit, fleet):
     """AC-1: liveness is reported per session, with the pid."""
-    _mark_live(fleet, 4242, "myproject-2", fleet["myproject"])
-    record = _by_title(audit())["myproject-2"]
+    _mark_live(fleet, 4242, "myrepo-tst-2", fleet["myproject"])
+    record = _by_title(audit())["myrepo-tst-2"]
     assert record.live is True and record.live_pid == 4242
 
 
@@ -318,9 +320,9 @@ def test_survey_given_a_moved_transcript_when_surveyed_then_the_slug_mismatch_is
 
 def test_describe_given_a_record_when_rendered_then_the_flags_appear(audit, fleet):
     """AC-1: the human-readable line carries the same facts as the record."""
-    _mark_live(fleet, 4343, "myproject-2", fleet["myproject"])
-    text = _by_title(audit())["myproject-2"].describe()
-    assert "myproject-2" in text
+    _mark_live(fleet, 4343, "myrepo-tst-2", fleet["myproject"])
+    text = _by_title(audit())["myrepo-tst-2"].describe()
+    assert "myrepo-tst-2" in text
     assert "LIVE pid=4343" in text
     assert "not-in-slot" in text and "NOT-resolvable" in text
     assert REPO_ROOT in text
@@ -360,7 +362,7 @@ def test_owning_repo_given_non_repository_git_marker_in_ancestor_when_mapped_the
 
 def test_survey_given_a_session_in_an_agent_worktree_when_surveyed_then_attributed_to_the_owning_repo(audit, fleet):
     """AC-2: motivating case 1 — found and attributed with NO caller-supplied path."""
-    record = _by_title(audit())["myproject-5"]
+    record = _by_title(audit())["myrepo-tst-5"]
     assert record.location == AGENT_WORKTREE
     assert record.repo_root == fleet["myproject"], "an agent worktree belongs to the repo above .claude/"
     assert record.cwd == str(fleet["agent_dir"])
@@ -371,15 +373,15 @@ def test_survey_given_all_three_locations_when_surveyed_then_each_is_classified(
     """AC-2: repo root, session worktree and agent worktree are all discovered."""
     found = {r.title: r.location for r in audit().sessions}
     assert found == {
-        "myproject-2": REPO_ROOT,
-        "myproject-5": AGENT_WORKTREE,
-        "myapp-1": SESSION_WORKTREE,
+        "myrepo-tst-2": REPO_ROOT,
+        "myrepo-tst-5": AGENT_WORKTREE,
+        "app-tst-1": SESSION_WORKTREE,
     }
 
 
 def test_owning_repo_given_a_deleted_worktree_path_when_mapped_then_still_attributed(tmp_path):
     """AC-2: path shape decides, so a cleaned-up worktree is still attributed."""
-    gone = tmp_path / "projects" / "myproject" / ".worktrees" / "myproject-9"
+    gone = tmp_path / "projects" / "myproject" / ".worktrees" / "myrepo-tst-9"
     repo, location = owning_repo(gone)
     assert (repo, location) == (tmp_path / "projects" / "myproject", SESSION_WORKTREE)
 
@@ -412,13 +414,13 @@ def test_owning_repo_given_a_git_file_worktree_when_mapped_then_recognised_as_a_
 def test_survey_given_two_transcripts_claiming_one_title_when_surveyed_then_reported_as_a_collision(fleet, audit):
     """AC-3: the collision is named, with every claimant listed."""
     duplicate = _write_transcript(
-        fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2"
+        fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2"
     )
     report = audit()
-    assert "myproject-2" in report.collisions
-    claimants = {r.transcript for r in report.collisions["myproject-2"]}
+    assert "myrepo-tst-2" in report.collisions
+    claimants = {r.transcript for r in report.collisions["myrepo-tst-2"]}
     assert claimants == {fleet["root_session"], duplicate}
-    assert all(r.collides for r in report.collisions["myproject-2"])
+    assert all(r.collides for r in report.collisions["myrepo-tst-2"])
 
 
 def test_survey_given_no_duplicates_when_surveyed_then_no_collisions_reported(audit):
@@ -430,20 +432,20 @@ def test_survey_given_no_duplicates_when_surveyed_then_no_collisions_reported(au
 
 def test_triage_given_a_collision_when_triaged_then_skipped_before_any_adoption(fleet, audit):
     """AC-3: the collision is classified as un-adoptable before the adopter runs."""
-    _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
+    _write_transcript(fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2")
     ready, skipped = triage(audit())
-    assert "myproject-2" not in {r.title for r in ready}
-    reason = next(reason for record, reason in skipped if record.title == "myproject-2")
+    assert "myrepo-tst-2" not in {r.title for r in ready}
+    reason = next(reason for record, reason in skipped if record.title == "myrepo-tst-2")
     assert "collision" in reason
 
 
 def test_survey_given_a_cross_repo_duplicate_title_when_surveyed_then_still_a_collision(fleet, audit):
     """AC-3: a title is a worktree name and an `ai c` argument, so duplicates count fleet-wide."""
-    _write_transcript(fleet["home"], UUID_B[:-1] + "9", "myapp-1", fleet["myproject"])
+    _write_transcript(fleet["home"], UUID_B[:-1] + "9", "app-tst-1", fleet["myproject"])
     report = audit()
-    assert len(report.collisions["myapp-1"]) == 2
+    assert len(report.collisions["app-tst-1"]) == 2
     ready, _ = triage(report)
-    assert "myapp-1" not in {r.title for r in ready}
+    assert "app-tst-1" not in {r.title for r in ready}
 
 
 # ---- AC-4: adoption delegates to the shipped module -------------------------
@@ -471,14 +473,14 @@ def test_adopt_ready_given_an_adoptable_session_when_adopted_then_session_adopt_
 
 def test_adopt_ready_given_an_agent_worktree_session_when_adopted_then_it_resolves(fleet, audit, monkeypatch):
     """AC-2 + AC-4: motivating case 1 adopts end to end with no path supplied."""
-    _add_worktree(fleet["myproject"], "myproject-5")
-    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
+    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myrepo-tst-5")
     outcomes, skipped = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
     assert skipped == []
     (record, result) = outcomes[0]
     assert not isinstance(result, Exception), result
     assert result.resolved is not None, "`ai c 5` must resolve the adopted transcript"
-    assert result.resolved.parent == cc_project_dir(fleet["myproject"] / ".worktrees" / "myproject-5", fleet["home"])
+    assert result.resolved.parent == cc_project_dir(fleet["myproject"] / ".worktrees" / "myrepo-tst-5", fleet["home"])
 
 
 def test_adopt_ready_given_root_worktree_physical_and_legacy_sources_when_adopted_then_each_resolves(fleet, audit):
@@ -494,7 +496,7 @@ def test_adopt_ready_given_root_worktree_physical_and_legacy_sources_when_adopte
     _write_transcript_in_project_dir(
         physical_dir,
         "eeeeeeee-2222-4333-8444-555555555555",
-        "myproject-6",
+        "myrepo-tst-6",
         physical_cwd,
     )
     legacy_cwd = fleet["myproject"] / "legacy_name"
@@ -504,18 +506,18 @@ def test_adopt_ready_given_root_worktree_physical_and_legacy_sources_when_adopte
     _write_transcript_in_project_dir(
         legacy_dir,
         "ffffffff-2222-4333-8444-555555555555",
-        "myproject-7",
+        "myrepo-tst-7",
         legacy_cwd,
     )
 
-    for name in ("myproject-2", "myproject-5", "myproject-6", "myproject-7"):
+    for name in ("myrepo-tst-2", "myrepo-tst-5", "myrepo-tst-6", "myrepo-tst-7"):
         _add_worktree(fleet["myproject"], name)
 
     outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
-    assert {record.title for record, _ in skipped} == {"myapp-1"}
+    assert {record.title for record, _ in skipped} == {"app-tst-1"}
     results = {record.title: result for record, result in outcomes}
-    assert set(results) == {"myproject-2", "myproject-5", "myproject-6", "myproject-7"}
+    assert set(results) == {"myrepo-tst-2", "myrepo-tst-5", "myrepo-tst-6", "myrepo-tst-7"}
     assert all(not isinstance(result, Exception) and result.resolved is not None for result in results.values())
 
 
@@ -541,19 +543,19 @@ def test_adopt_ready_given_the_audit_flags_a_slug_mismatch_when_adopted_then_it_
     _write_transcript_in_project_dir(
         physical_dir,
         "12121212-2222-4333-8444-555555555555",
-        "myproject-1",
+        "myrepo-tst-1",
         fleet["myproject"],
     )
-    _add_worktree(fleet["myproject"], "myproject-1")
+    _add_worktree(fleet["myproject"], "myrepo-tst-1")
 
-    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-1")
+    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myrepo-tst-1")
     (record,) = report.sessions
     assert record.slug_matches is False, "the fixture must reproduce the audit's own slug-mismatch condition"
     assert record.project_dir == physical_dir
     assert cc_project_dir(Path(record.cwd), fleet["home"]) != physical_dir
 
     ready, skipped = triage(report)
-    assert [r.title for r in ready] == ["myproject-1"], skipped
+    assert [r.title for r in ready] == ["myrepo-tst-1"], skipped
 
     outcomes, _ = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
     ((_, result),) = outcomes
@@ -574,15 +576,15 @@ def test_adopt_ready_given_every_cleared_record_when_adopted_then_none_refuses_w
     _write_transcript_in_project_dir(
         physical_dir,
         "13131313-2222-4333-8444-555555555555",
-        "myproject-3",
+        "myrepo-tst-3",
         fleet["myproject"],
     )
-    for name in ("myproject-2", "myproject-3", "myproject-5"):
+    for name in ("myrepo-tst-2", "myrepo-tst-3", "myrepo-tst-5"):
         _add_worktree(fleet["myproject"], name)
 
     report = audit()
     ready, _ = triage(report)
-    assert {r.title for r in ready} == {"myproject-2", "myproject-3", "myproject-5"}
+    assert {r.title for r in ready} == {"myrepo-tst-2", "myrepo-tst-3", "myrepo-tst-5"}
 
     outcomes, _ = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
     refusals = [(record.title, str(result)) for record, result in outcomes if isinstance(result, Exception)]
@@ -592,7 +594,7 @@ def test_adopt_ready_given_every_cleared_record_when_adopted_then_none_refuses_w
 def test_triage_given_an_already_adopted_session_when_triaged_then_skipped_as_done(audit):
     """AC-4: a session already in its slot is not re-adopted."""
     _, skipped = triage(audit())
-    reason = next(reason for record, reason in skipped if record.title == "myapp-1")
+    reason = next(reason for record, reason in skipped if record.title == "app-tst-1")
     assert "already adopted" in reason
 
 
@@ -608,16 +610,16 @@ def test_triage_given_a_slot_resident_session_whose_records_carry_the_old_cwd_wh
     answer: re-adopting it is at best a no-op and at worst disturbs a session that
     currently resumes correctly.
     """
-    slot = fleet["myproject"] / WORKTREES / "myproject-7"
+    slot = fleet["myproject"] / WORKTREES / "myrepo-tst-7"
     adopted = _write_transcript_at(
         fleet["home"],
         "77777777-2222-4333-8444-555555555555",
-        "myproject-7",
+        "myrepo-tst-7",
         project_cwd=slot,
         recorded_cwd=fleet["myproject"],  # the pre-adopt location, still in most records
     )
 
-    record = next(r for r in audit().sessions if r.title == "myproject-7")
+    record = next(r for r in audit().sessions if r.title == "myrepo-tst-7")
 
     assert record.transcript == adopted
     assert record.transcript.parent == cc_project_dir(slot, fleet["home"])
@@ -626,8 +628,8 @@ def test_triage_given_a_slot_resident_session_whose_records_carry_the_old_cwd_wh
     assert record.in_correct_slot is True, "slot residency is a fact about the file, not about a cwd field"
 
     ready, skipped = triage(audit())
-    assert "myproject-7" not in {r.title for r in ready}, "a working session must not be offered for re-adoption"
-    reason = next(reason for r, reason in skipped if r.title == "myproject-7")
+    assert "myrepo-tst-7" not in {r.title for r in ready}, "a working session must not be offered for re-adoption"
+    reason = next(reason for r, reason in skipped if r.title == "myrepo-tst-7")
     assert "already adopted" in reason
 
 
@@ -641,12 +643,12 @@ def test_survey_given_a_migrated_session_whose_first_cwd_is_gone_when_surveyed_t
     later ones. Judging it by the first cwd attributed it to a repo that does not
     exist on this host and offered to adopt it there.
     """
-    slot = _add_worktree(fleet["myproject"], "myproject-9")
-    gone = tmp_path / "efs" / "projects" / "myproject" / WORKTREES / "myproject-4"
+    slot = _add_worktree(fleet["myproject"], "myrepo-tst-9")
+    gone = tmp_path / "efs" / "projects" / "myproject" / WORKTREES / "myrepo-tst-4"
     project_dir = cc_project_dir(slot, fleet["home"])
     project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     uuid = "99999999-2222-4333-8444-555555555555"
-    lines = [_record(type="user", sessionId=uuid, cwd=str(gone), customTitle="myproject-9")]
+    lines = [_record(type="user", sessionId=uuid, cwd=str(gone), customTitle="myrepo-tst-9")]
     lines += [_record(type="user", sessionId=uuid, cwd=str(gone), n=i) for i in range(5)]
     lines += [_record(type="user", sessionId=uuid, cwd=str(slot / "docs"), n=i) for i in range(2)]
     lines += [_record(type="user", sessionId=uuid, cwd=str(slot), n=i) for i in range(5)]
@@ -654,7 +656,7 @@ def test_survey_given_a_migrated_session_whose_first_cwd_is_gone_when_surveyed_t
     transcript = project_dir / f"{uuid}.jsonl"
     transcript.write_text("\n".join(lines) + "\n")
 
-    record = next(r for r in audit().sessions if r.title == "myproject-9")
+    record = next(r for r in audit().sessions if r.title == "myrepo-tst-9")
 
     assert record.cwd == str(slot)
     assert record.repo_root == fleet["myproject"]
@@ -662,8 +664,8 @@ def test_survey_given_a_migrated_session_whose_first_cwd_is_gone_when_surveyed_t
     assert record.slug_matches is True
     assert record.resolves == transcript
     ready, skipped = triage(audit())
-    assert "myproject-9" not in {r.title for r in ready}
-    reason = next(reason for r, reason in skipped if r.title == "myproject-9")
+    assert "myrepo-tst-9" not in {r.title for r in ready}
+    reason = next(reason for r, reason in skipped if r.title == "myrepo-tst-9")
     assert "already adopted" in reason
 
 
@@ -691,21 +693,21 @@ def test_survey_given_a_transcript_far_larger_than_one_record_when_surveyed_then
     """Live transcripts exceed 1 GB, so the cwd scan must never hold the file whole."""
     import tracemalloc
 
-    slot = _add_worktree(fleet["myproject"], "myproject-6")
+    slot = _add_worktree(fleet["myproject"], "myrepo-tst-6")
     project_dir = cc_project_dir(slot, fleet["home"])
     project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     uuid = "66666666-2222-4333-8444-555555555555"
     pad = "x" * 4000
     transcript = project_dir / f"{uuid}.jsonl"
     with transcript.open("w") as fh:
-        fh.write(_record(type="user", sessionId=uuid, cwd=str(slot), customTitle="myproject-6") + "\n")
+        fh.write(_record(type="user", sessionId=uuid, cwd=str(slot), customTitle="myrepo-tst-6") + "\n")
         for i in range(4000):
             fh.write(_record(type="user", sessionId=uuid, cwd=str(slot), n=i, pad=pad) + "\n")
     size = transcript.stat().st_size
 
     tracemalloc.start()
     try:
-        record = next(r for r in audit().sessions if r.title == "myproject-6")
+        record = next(r for r in audit().sessions if r.title == "myrepo-tst-6")
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -722,14 +724,14 @@ def test_triage_given_an_unadopted_session_when_triaged_then_still_adoptable(fle
     directory the transcript file lives in. If a fix made adoptedness unconditional
     this test goes red.
     """
-    record = next(r for r in audit().sessions if r.title == "myproject-2")
+    record = next(r for r in audit().sessions if r.title == "myrepo-tst-2")
 
     assert record.transcript.parent == cc_project_dir(fleet["myproject"], fleet["home"])
     assert record.resolves is None, "`ai c 2` cannot resolve it from the slot"
     assert record.in_correct_slot is False
 
     ready, _ = triage(audit())
-    assert "myproject-2" in {r.title for r in ready}, "a genuinely unadopted session must still be adoptable"
+    assert "myrepo-tst-2" in {r.title for r in ready}, "a genuinely unadopted session must still be adoptable"
 
 
 def test_triage_given_a_title_without_an_index_when_triaged_then_skipped(fleet, audit):
@@ -744,9 +746,9 @@ def test_given_a_human_named_title_when_audited_then_its_name_and_label_are_repo
     """T-3.6: a session whose title ends in a session name is addressable, and the audit says by what."""
     monkeypatch.setattr("ai_cli.name_registry.known_names", lambda registry=None: frozenset({"ada"}))
     monkeypatch.setattr("ai_cli.session_audit._label_of", lambda prefix, repo_root: "review")
-    _write_transcript(fleet["home"], UUID_B[:-1] + "9", "myproject-box-review-ada", fleet["myproject"] / "sub")
+    _write_transcript(fleet["home"], UUID_B[:-1] + "9", "myrepo-tst-review-ada", fleet["myproject"] / "sub")
 
-    record = next(record for record in audit().sessions if record.title == "myproject-box-review-ada")
+    record = next(record for record in audit().sessions if record.title == "myrepo-tst-review-ada")
     _, skipped = triage(audit())
 
     assert (record.name, record.label, record.index) == ("ada", "review", None)
@@ -760,10 +762,10 @@ def test_triage_given_a_transcript_with_no_recorded_cwd_when_triaged_then_skippe
     """AC-4: without a cwd there is no way to know which directory to adopt from."""
     project_dir = cc_project_dir(fleet["myproject"], fleet["home"])
     (project_dir / "eeeeeeee-2222-4333-8444-555555555555.jsonl").write_text(
-        _record(type="user", customTitle="myproject-8") + "\n"
+        _record(type="user", customTitle="myrepo-tst-8") + "\n"
     )
     _, skipped = triage(audit())
-    reason = next(reason for record, reason in skipped if record.title == "myproject-8")
+    reason = next(reason for record, reason in skipped if record.title == "myrepo-tst-8")
     assert "no cwd" in reason
 
 
@@ -786,7 +788,7 @@ def test_adopt_ready_given_a_dry_run_when_run_then_the_filesystem_is_byte_identi
     A dry run that wrongly wrote would print exactly the same plan, so the printed
     output cannot distinguish the two. The snapshot can.
     """
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -803,7 +805,7 @@ def test_adopt_ready_given_a_dry_run_when_run_then_the_filesystem_is_byte_identi
 
 def test_adopt_ready_given_a_real_run_when_run_then_the_filesystem_does_change(fleet, audit):
     """AC-5 negative control: the snapshot probe can fail, so its silence means something."""
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -818,20 +820,20 @@ def test_adopt_ready_given_a_real_run_when_run_then_the_filesystem_does_change(f
 def test_survey_given_a_repo_filter_when_surveyed_then_only_that_repos_sessions_are_reported(audit, fleet):
     """AC-6: usable narrowly, on one repo."""
     report = audit(repo=fleet["myapp"])
-    assert [r.title for r in report.sessions] == ["myapp-1"]
+    assert [r.title for r in report.sessions] == ["app-tst-1"]
 
 
 def test_survey_given_a_title_filter_when_surveyed_then_only_that_session_is_reported(audit):
     """AC-6: usable narrowly, on one title."""
-    report = audit(title="myproject-5")
-    assert [r.title for r in report.sessions] == ["myproject-5"]
+    report = audit(title="myrepo-tst-5")
+    assert [r.title for r in report.sessions] == ["myrepo-tst-5"]
 
 
 def test_survey_given_a_filter_hiding_one_claimant_when_surveyed_then_the_collision_still_shows(fleet, audit):
     """AC-3 + AC-6: narrowing must not make a colliding title look safe."""
-    _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
-    report = audit(title="myproject-2", repo=fleet["myproject"])
-    assert len(report.collisions["myproject-2"]) == 2
+    _write_transcript(fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2")
+    report = audit(title="myrepo-tst-2", repo=fleet["myproject"])
+    assert len(report.collisions["myrepo-tst-2"]) == 2
     assert all(record.collides for record in report.sessions)
 
 
@@ -846,28 +848,28 @@ def test_survey_given_a_repo_filter_matching_nothing_when_surveyed_then_empty(au
 
 def test_adopt_ready_given_a_live_session_when_run_then_it_is_skipped_and_the_batch_continues(fleet, audit):
     """AC-7: the live one is reported with its reason; the rest still adopt."""
-    _mark_live(fleet, 5151, "myproject-2", fleet["myproject"], session_id=UUID_A)
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _mark_live(fleet, 5151, "myrepo-tst-2", fleet["myproject"], session_id=UUID_A)
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
 
     outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
-    reason = next(reason for record, reason in skipped if record.title == "myproject-2")
+    reason = next(reason for record, reason in skipped if record.title == "myrepo-tst-2")
     assert "live session (pid 5151)" in reason
     adopted = {record.title for record, result in outcomes if not isinstance(result, Exception)}
-    assert "myproject-5" in adopted, "one refusal must not abort the batch"
-    assert "myproject-2" not in adopted
+    assert "myrepo-tst-5" in adopted, "one refusal must not abort the batch"
+    assert "myrepo-tst-2" not in adopted
 
 
 def test_adopt_ready_given_a_collision_when_run_then_it_is_skipped_and_the_batch_continues(fleet, audit):
     """AC-7: same for a collision — reported, skipped, batch proceeds."""
-    _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _write_transcript(fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
 
     outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
-    assert any("collision" in reason for record, reason in skipped if record.title == "myproject-2")
+    assert any("collision" in reason for record, reason in skipped if record.title == "myrepo-tst-2")
     adopted = {record.title for record, result in outcomes if not isinstance(result, Exception)}
-    assert "myproject-5" in adopted
+    assert "myrepo-tst-5" in adopted
 
 
 def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batch_continues(fleet, audit, monkeypatch):
@@ -877,18 +879,18 @@ def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batc
     from ai_cli.session_adopt import adopt_session as real_adopt
 
     def _flaky(repo_root, name, **kw):
-        if name == "myproject-2":
+        if name == "myrepo-tst-2":
             raise AdoptionError("simulated refusal")
         return real_adopt(repo_root, name, **kw)
 
     monkeypatch.setattr(module, "adopt_session", _flaky)
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
 
     outcomes, _ = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
     results = {record.title: result for record, result in outcomes}
-    assert isinstance(results["myproject-2"], AdoptionError)
-    adopted = results["myproject-5"]
+    assert isinstance(results["myrepo-tst-2"], AdoptionError)
+    adopted = results["myrepo-tst-5"]
     assert isinstance(adopted, AdoptionResult)
     assert adopted.resolved is not None
 
@@ -905,9 +907,9 @@ def test_adopt_ready_given_a_live_session_bypassing_triage_when_adopted_then_the
     """
     from ai_cli.session_adopt import LiveSessionError
 
-    _add_worktree(fleet["myproject"], "myproject-5")
-    _mark_live(fleet, 5252, "myproject-5", fleet["agent_dir"], session_id=UUID_B)
-    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
+    _mark_live(fleet, 5252, "myrepo-tst-5", fleet["agent_dir"], session_id=UUID_B)
+    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myrepo-tst-5")
     record = report.sessions[0]
     record.live_pid = None  # hide it from triage; the adopter must still refuse
 
@@ -923,9 +925,9 @@ def test_adopt_ready_given_a_collision_bypassing_triage_when_adopted_then_the_ad
     from ai_cli.session_adopt import TitleCollision
 
     duplicate = _write_transcript(
-        fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2"
+        fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2"
     )
-    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-2")
+    report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myrepo-tst-2")
     target = next(r for r in report.sessions if r.transcript == fleet["root_session"])
     report.sessions = [target]
     target.claimants = 1  # hide the collision from triage; the adopter must still refuse
@@ -941,11 +943,11 @@ def test_adopt_ready_given_a_collision_bypassing_triage_when_adopted_then_the_ad
 def test_cli_given_a_collision_and_yes_when_adopting_then_the_gate_still_holds(fleet, cli_audit):
     """AC-8: -y/--yes must NEVER cover the duplicate-title gate."""
     duplicate = _write_transcript(
-        fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2"
+        fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2"
     )
     before = _snapshot(fleet["home"])
 
-    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-2", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myrepo-tst-2", "-a", "-y"])
 
     assert code == 1, "-y must not bypass the duplicate-title gate"
     assert "Title collisions" in out
@@ -955,10 +957,10 @@ def test_cli_given_a_collision_and_yes_when_adopting_then_the_gate_still_holds(f
 
 def test_cli_given_a_live_session_and_yes_when_adopting_then_it_is_skipped(fleet, cli_audit):
     """AC-8: -y does not cover the live-session refusal either."""
-    _mark_live(fleet, 5353, "myproject-5", fleet["agent_dir"], session_id=UUID_B)
+    _mark_live(fleet, 5353, "myrepo-tst-5", fleet["agent_dir"], session_id=UUID_B)
     before = _snapshot(fleet["home"])
 
-    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-5", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myrepo-tst-5", "-a", "-y"])
 
     assert code == 1
     assert "live session (pid 5353)" in out
@@ -995,7 +997,7 @@ def test_cli_given_a_survey_when_invoked_then_every_session_is_reported(cli_audi
     """AC-1 via the CLI: the default run is a read-only report."""
     code, out, err = run_cli(["ai", "audit-sessions"])
     assert code == 0, err
-    assert "myproject-2" in out and "myproject-5" in out and "myapp-1" in out
+    assert "myrepo-tst-2" in out and "myrepo-tst-5" in out and "app-tst-1" in out
     assert "Scanned 4 transcripts" in out
     assert AGENT_WORKTREE in out
 
@@ -1004,12 +1006,12 @@ def test_cli_given_a_repo_filter_when_invoked_then_only_that_repo_is_reported(cl
     """AC-6 via the CLI."""
     code, out, err = run_cli(["ai", "audit-sessions", "--repo", str(fleet["myapp"])])
     assert code == 0, err
-    assert "myapp-1" in out and "myproject-2" not in out
+    assert "app-tst-1" in out and "myrepo-tst-2" not in out
 
 
 def test_cli_given_a_collision_when_invoked_then_it_is_reported_before_any_adoption(cli_audit, fleet):
     """AC-3 via the CLI: the collision is named in the survey itself."""
-    _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
+    _write_transcript(fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2")
     code, out, err = run_cli(["ai", "audit-sessions"])
     assert code == 0
     assert "Title collisions (1)" in out
@@ -1018,7 +1020,7 @@ def test_cli_given_a_collision_when_invoked_then_it_is_reported_before_any_adopt
 
 def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_written(cli_audit, fleet):
     """AC-5 via the CLI, proved against a filesystem snapshot."""
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -1030,15 +1032,15 @@ def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_wri
 
 def test_cli_given_the_adopt_flag_when_confirmed_then_sessions_are_adopted(cli_audit, fleet):
     """AC-4 via the CLI: real adoption reports the resolve probe."""
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     code, out, err = run_cli(["ai", "audit-sessions", "-a", "-y"])
-    assert "Adopted myproject-5" in out
+    assert "Adopted myrepo-tst-5" in out
     assert "resolve probe" in out
 
 
 def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted(cli_audit, fleet, monkeypatch):
     """AC-4: the confirmation prompt is honoured."""
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     monkeypatch.setattr("click.confirm", lambda *a, **k: False)
     before = _snapshot(fleet["home"])
 
@@ -1051,15 +1053,15 @@ def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted
 
 def test_cli_given_an_accepted_confirmation_when_prompted_then_sessions_are_adopted(cli_audit, fleet, monkeypatch):
     """AC-4: accepting the prompt adopts."""
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
     monkeypatch.setattr("click.confirm", lambda *a, **k: True)
     code, out, err = run_cli(["ai", "audit-sessions", "-a"])
-    assert "Adopted myproject-5" in out
+    assert "Adopted myrepo-tst-5" in out
 
 
 def test_cli_given_nothing_safe_to_adopt_when_invoked_then_reports_and_exits_nonzero(cli_audit, fleet):
     """AC-7 via the CLI: all skipped is a non-zero exit with reasons."""
-    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myapp-1", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "app-tst-1", "-a", "-y"])
     assert code == 1
     assert "Nothing safe to adopt" in out
     assert "already adopted" in out
@@ -1067,13 +1069,13 @@ def test_cli_given_nothing_safe_to_adopt_when_invoked_then_reports_and_exits_non
 
 def test_cli_given_a_bulk_adopt_with_one_refusal_when_invoked_then_the_rest_adopt(cli_audit, fleet):
     """AC-7 via the CLI: the summary carries both counts."""
-    _mark_live(fleet, 5454, "myproject-2", fleet["myproject"], session_id=UUID_A)
-    _add_worktree(fleet["myproject"], "myproject-5")
+    _mark_live(fleet, 5454, "myrepo-tst-2", fleet["myproject"], session_id=UUID_A)
+    _add_worktree(fleet["myproject"], "myrepo-tst-5")
 
     code, out, err = run_cli(["ai", "audit-sessions", "-a", "-y"])
 
     assert code == 1
-    assert "Adopted myproject-5" in out
+    assert "Adopted myrepo-tst-5" in out
     assert "1 adopted, 2 skipped" in out
 
 
@@ -1083,7 +1085,7 @@ def test_cli_given_a_collision_during_bulk_adoption_when_invoked_then_the_remedy
     """AC-7 + AC-8: a collision raised by the adopter prints the retitle remedy."""
     import ai_cli.session_audit as module
 
-    _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
+    _write_transcript(fleet["home"], UUID_C, "myrepo-tst-2", fleet["myproject"] / ".worktrees" / "myrepo-tst-2")
 
     def _blind_triage(report):
         """Offer the colliding session as adoptable, so the ADOPTER must refuse it."""
@@ -1091,7 +1093,7 @@ def test_cli_given_a_collision_during_bulk_adoption_when_invoked_then_the_remedy
 
     monkeypatch.setattr(module, "triage", _blind_triage)
 
-    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myproject-2", "-a", "-y"])
+    code, out, err = run_cli(["ai", "audit-sessions", "-t", "myrepo-tst-2", "-a", "-y"])
 
     assert code == 1
     assert "-c retitle" in err

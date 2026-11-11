@@ -9,8 +9,8 @@ where its own checkout must go, and the two readings of that path collide.
 Two defects met there, and masked each other:
 
 * the registration check was a **substring** test against
-  ``git worktree list --porcelain``, and ``…/.worktrees/session-1`` is a substring
-  of the line ``worktree …/.worktrees/session-1/agent-a`` — so a container with no
+  ``git worktree list --porcelain``, and ``…/.worktrees/myrepo-tst-1`` is a substring
+  of the line ``worktree …/.worktrees/myrepo-tst-1/agent-a`` — so a container with no
   checkout of its own reported as a registered worktree;
 * the branch taken when that test failed used an unconditional
   ``shutil.rmtree`` — which, reached with a container in place, deleted every
@@ -51,6 +51,7 @@ def repo(tmp_path):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / "README.md").write_text("base\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -87,8 +88,8 @@ def test_given_only_a_child_worktree_is_registered_when_the_parent_is_listed_the
     the parent were genuinely registered this test would print it in the
     ``registered`` list and fail on the second assertion.
     """
-    leaf = _nested_worktree_with_unpushed_work(repo, "session-1", "agent-a")
-    container = repo / ".worktrees" / "session-1"
+    leaf = _nested_worktree_with_unpushed_work(repo, "myrepo-tst-1", "agent-a")
+    container = repo / ".worktrees" / "myrepo-tst-1"
 
     registered = registered_worktrees(repo)
 
@@ -119,7 +120,7 @@ def test_given_an_unregistered_clone_in_the_session_slot_when_created_then_it_is
     ``git worktree list`` and would otherwise be deleted outright.
     """
     monkeypatch.chdir(repo)
-    slot = repo / ".worktrees" / "session-5"
+    slot = repo / ".worktrees" / "myrepo-tst-5"
     slot.mkdir(parents=True)
     _git("init", "-q", "-b", "main", cwd=slot)
     _git("config", "user.email", "t@example.com", cwd=slot)
@@ -129,7 +130,7 @@ def test_given_an_unregistered_clone_in_the_session_slot_when_created_then_it_is
     _git("commit", "-q", "-m", "by hand", cwd=slot)
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-5")
+        create_worktree("myrepo-tst-5")
 
     assert (slot / "notes.md").read_text() == "hand-made clone\n"
     assert (slot / ".git").is_dir()
@@ -143,11 +144,11 @@ def test_given_a_container_of_nested_worktrees_when_a_session_worktree_is_create
     collided.
     """
     monkeypatch.chdir(repo)
-    leaf = _nested_worktree_with_unpushed_work(repo, "session-1", "agent-a")
+    leaf = _nested_worktree_with_unpushed_work(repo, "myrepo-tst-1", "agent-a")
     before = _git("rev-parse", "HEAD", cwd=leaf).stdout.strip()
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
     assert leaf.is_dir(), "the nested worktree must survive"
     assert (leaf / "agent-work.md").read_text() == "work that only exists here\n"
@@ -159,14 +160,14 @@ def test_given_a_container_of_nested_worktrees_when_a_session_worktree_is_create
 ):
     """The refusal has to be actionable: which path, and what to do about it."""
     monkeypatch.chdir(repo)
-    _nested_worktree_with_unpushed_work(repo, "session-1", "agent-a")
+    _nested_worktree_with_unpushed_work(repo, "myrepo-tst-1", "agent-a")
 
     with pytest.raises(RuntimeError) as caught:
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
     message = str(caught.value)
-    assert str(repo / ".worktrees" / "session-1") in message
-    assert str(repo / ".worktrees" / "session-1" / "agent-a") in message
+    assert str(repo / ".worktrees" / "myrepo-tst-1") in message
+    assert str(repo / ".worktrees" / "myrepo-tst-1" / "agent-a") in message
     assert "git worktree move" in message
 
 
@@ -181,7 +182,7 @@ def test_given_a_directory_holding_an_unregistered_checkout_when_a_session_workt
     be deleted.
     """
     monkeypatch.chdir(repo)
-    container = repo / ".worktrees" / "session-2"
+    container = repo / ".worktrees" / "myrepo-tst-2"
     inner = container / "unrelated-clone"
     inner.mkdir(parents=True)
     _git("init", "-q", "-b", "main", cwd=inner)
@@ -192,7 +193,7 @@ def test_given_a_directory_holding_an_unregistered_checkout_when_a_session_workt
     _git("commit", "-q", "-m", "independent", cwd=inner)
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-2")
+        create_worktree("myrepo-tst-2")
 
     assert (inner / ".git").is_dir(), "the unrelated repository must survive"
     assert (inner / "notes.md").read_text() == "independent history\n"
@@ -201,13 +202,13 @@ def test_given_a_directory_holding_an_unregistered_checkout_when_a_session_workt
 def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then_it_is_recovered(repo, monkeypatch):
     """A non-empty non-checkout slot is preserved before its worktree is recreated."""
     monkeypatch.chdir(repo)
-    stale = repo / ".worktrees" / "session-3"
+    stale = repo / ".worktrees" / "myrepo-tst-3"
     stale.mkdir(parents=True)
     (stale / "leftover.txt").write_text("debris from an interrupted run\n")
 
-    created = create_worktree("session-3")
+    created = create_worktree("myrepo-tst-3")
 
-    recovered = next(stale.parent.glob("session-3-orphaned-*"))
+    recovered = next(stale.parent.glob("myrepo-tst-3-orphaned-*"))
     assert created == stale
     assert (recovered / "leftover.txt").read_text() == "debris from an interrupted run\n"
 
@@ -226,15 +227,15 @@ def test_given_an_empty_unregistered_directory_when_a_session_worktree_is_create
     empty.
     """
     monkeypatch.chdir(repo)
-    slot = repo / ".worktrees" / "session-empty"
+    slot = repo / ".worktrees" / "myrepo-tst-empty-1"
     slot.mkdir(parents=True)
 
-    created = create_worktree("session-empty")
+    created = create_worktree("myrepo-tst-empty-1")
 
     assert created == slot
     assert slot in registered_worktrees(repo), "the slot must end up a real registered worktree"
     assert (slot / "README.md").read_text() == "base\n", "a real checkout must have landed in it"
-    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-empty"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-myrepo-tst-empty-1"
 
 
 def test_given_a_slot_holding_only_a_dotfile_when_a_session_worktree_is_created_then_it_is_recovered(repo, monkeypatch):
@@ -244,13 +245,13 @@ def test_given_a_slot_holding_only_a_dotfile_when_a_session_worktree_is_created_
     outside the slot before asking git to create the worktree.
     """
     monkeypatch.chdir(repo)
-    slot = repo / ".worktrees" / "session-dotfile"
+    slot = repo / ".worktrees" / "myrepo-tst-dotfile-1"
     slot.mkdir(parents=True)
     (slot / ".leftover").write_text("hidden debris\n")
 
-    created = create_worktree("session-dotfile")
+    created = create_worktree("myrepo-tst-dotfile-1")
 
-    recovered = next(slot.parent.glob("session-dotfile-orphaned-*"))
+    recovered = next(slot.parent.glob("myrepo-tst-dotfile-1-orphaned-*"))
     assert created == slot
     assert (recovered / ".leftover").read_text() == "hidden debris\n"
 
@@ -264,13 +265,13 @@ def test_given_a_slot_holding_only_an_empty_subdirectory_when_a_session_worktree
     so recover the occupied slot before letting git create the checkout.
     """
     monkeypatch.chdir(repo)
-    slot = repo / ".worktrees" / "session-subdir"
+    slot = repo / ".worktrees" / "myrepo-tst-subdir-1"
     nested = slot / "nested"
     nested.mkdir(parents=True)
 
-    created = create_worktree("session-subdir")
+    created = create_worktree("myrepo-tst-subdir-1")
 
-    recovered = next(slot.parent.glob("session-subdir-orphaned-*"))
+    recovered = next(slot.parent.glob("myrepo-tst-subdir-1-orphaned-*"))
     assert created == slot
     assert (recovered / "nested").is_dir(), "the nested directory must be preserved"
 
@@ -331,12 +332,12 @@ def _unregistered_checkout(repo: Path, name: str) -> Path:
 
 def test_given_unregistered_slot_with_uncommitted_work_when_created_then_it_is_refused_and_preserved(repo, monkeypatch):
     monkeypatch.chdir(repo)
-    slot = _unregistered_checkout(repo, "session-uncommitted")
+    slot = _unregistered_checkout(repo, "myrepo-tst-uncommitted-1")
     marker = slot / "work.md"
     marker.write_text("uncommitted work\n")
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-uncommitted")
+        create_worktree("myrepo-tst-uncommitted-1")
 
     assert marker.read_text() == "uncommitted work\n"
     assert _git("status", "--porcelain", cwd=slot).stdout == "?? work.md\n"
@@ -346,14 +347,14 @@ def test_given_unregistered_slot_with_an_unpushed_commit_when_created_then_it_is
     repo, monkeypatch
 ):
     monkeypatch.chdir(repo)
-    slot = _unregistered_checkout(repo, "session-unpushed")
+    slot = _unregistered_checkout(repo, "myrepo-tst-unpushed-1")
     (slot / "work.md").write_text("unpushed work\n")
     _git("add", "-A", cwd=slot)
     _git("commit", "-q", "-m", "unpushed work", cwd=slot)
     before = _git("rev-parse", "HEAD", cwd=slot).stdout.strip()
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-unpushed")
+        create_worktree("myrepo-tst-unpushed-1")
 
     assert _git("rev-parse", "HEAD", cwd=slot).stdout.strip() == before
     assert _git("remote", cwd=slot).stdout == ""
@@ -363,7 +364,7 @@ def test_given_unregistered_slot_with_commit_outside_integration_when_created_th
     repo, monkeypatch
 ):
     monkeypatch.chdir(repo)
-    slot = repo / ".worktrees" / "session-off-main"
+    slot = repo / ".worktrees" / "myrepo-tst-off-main-1"
     _git("clone", "-q", str(repo / ".git"), str(slot), cwd=repo)
     _git("config", "user.email", "t@example.com", cwd=slot)
     _git("config", "user.name", "T", cwd=slot)
@@ -373,7 +374,7 @@ def test_given_unregistered_slot_with_commit_outside_integration_when_created_th
     before = _git("rev-parse", "HEAD", cwd=slot).stdout.strip()
 
     with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-off-main")
+        create_worktree("myrepo-tst-off-main-1")
 
     assert _git("rev-parse", "HEAD", cwd=slot).stdout.strip() == before
     assert _git("merge-base", "--is-ancestor", "HEAD", "origin/main", cwd=slot, check=False).returncode == 1
@@ -382,12 +383,12 @@ def test_given_unregistered_slot_with_commit_outside_integration_when_created_th
 def test_given_a_registered_session_worktree_when_created_again_then_it_is_returned_untouched(repo, monkeypatch):
     """Control for the exact-match path: a real worktree is still reused as-is."""
     monkeypatch.chdir(repo)
-    first = create_worktree("session-4")
+    first = create_worktree("myrepo-tst-4")
     assert first is not None
     sentinel = first / "in-progress.txt"
     sentinel.write_text("uncommitted\n")
 
-    again = create_worktree("session-4")
+    again = create_worktree("myrepo-tst-4")
 
     assert again == first
     assert sentinel.read_text() == "uncommitted\n"

@@ -72,13 +72,16 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     state = tmp_path / "ai-cli-utils"
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     state.mkdir(parents=True)
+    owner = tmp_path / "myproject"
+    owner.mkdir()
+    (owner / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "job"\n')
     meta = {
         "engine": "c",
         "ai_name": "job-1",
         "session": "c-job-1",
         "prefix": "c-job-",
         "project_prefix": "job",
-        "worktree_dir": "/tmp/wt",
+        "worktree_dir": str(owner),
         "project_name": "myproject",
     }
     (state / "session-meta-c-job-1.json").write_text(json.dumps(meta))

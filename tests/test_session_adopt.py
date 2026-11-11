@@ -100,6 +100,7 @@ def _init_repo(path: Path) -> Path:
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / "README.md").write_text("base\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -122,7 +123,7 @@ def _add_worktree(repo: Path, ai_name: str) -> Path:
 def world(tmp_path):
     """A real repo with .worktrees/, a fake ~/.claude, and one adoptable session.
 
-    The session ``myproject-2`` was started at the repo root (the mistake this
+    The session ``myrepo-tst-2`` was started at the repo root (the mistake this
     command exists to correct), so its transcript sits in the *root's* project
     directory. Nothing is live: ``proc`` is an empty fake /proc.
     """
@@ -135,7 +136,7 @@ def world(tmp_path):
     proc.mkdir()
 
     src_dir = cc_project_dir(repo, home)
-    _write_transcript(src_dir, UUID, "myproject-2", repo)
+    _write_transcript(src_dir, UUID, "myrepo-tst-2", repo)
     return {"repo": repo, "home": home, "proc": proc, "src_dir": src_dir, "tmp": tmp_path}
 
 
@@ -143,7 +144,7 @@ def world(tmp_path):
 def adopt(world):
     """Call ``adopt_session`` with this world's fake home and /proc pre-bound."""
 
-    def _adopt(name="myproject-2", **kw):
+    def _adopt(name="myrepo-tst-2", **kw):
         kw.setdefault("claude_home", world["home"])
         kw.setdefault("proc_dir", world["proc"])
         return adopt_session(world["repo"], name, **kw)
@@ -153,8 +154,8 @@ def adopt(world):
 
 @pytest.fixture
 def existing_worktree(world):
-    """Pre-register .worktrees/myproject-2 so no worktree ever has to be created."""
-    return _add_worktree(world["repo"], "myproject-2")
+    """Pre-register .worktrees/myrepo-tst-2 so no worktree ever has to be created."""
+    return _add_worktree(world["repo"], "myrepo-tst-2")
 
 
 def _mark_live(world, pid: int, name: str, cwd: Path) -> None:
@@ -258,7 +259,7 @@ def adopt_real_proc(world):
     redirected, so no test here reads or writes the real registry.
     """
 
-    def _adopt(name="myproject-2", **kw):
+    def _adopt(name="myrepo-tst-2", **kw):
         kw.setdefault("claude_home", world["home"])
         return adopt_session(world["repo"], name, **kw)
 
@@ -269,7 +270,7 @@ def test_adopt_given_a_real_live_process_named_in_the_registry_when_adopted_then
     world, adopt_real_proc, existing_worktree, owned_process
 ):
     """AC-1/AC-2: a real-shaped registry entry for a real, test-owned process."""
-    _register(world, owned_process.pid, name="myproject-2", cwd=world["tmp"] / "elsewhere", session_id=UUID)
+    _register(world, owned_process.pid, name="myrepo-tst-2", cwd=world["tmp"] / "elsewhere", session_id=UUID)
 
     with pytest.raises(LiveSessionError, match=str(owned_process.pid)):
         adopt_real_proc()
@@ -315,7 +316,7 @@ def test_adopt_given_a_registry_entry_naming_a_reaped_pid_when_adopted_then_allo
     Everything that makes the refusal fire is present except the liveness, so a
     refusal here would mean the code stopped checking whether the pid still runs.
     """
-    _register(world, reaped_pid, name="myproject-2", cwd=world["repo"], session_id=UUID)
+    _register(world, reaped_pid, name="myrepo-tst-2", cwd=world["repo"], session_id=UUID)
 
     result = adopt_real_proc()
 
@@ -346,12 +347,12 @@ def test_live_sessions_given_a_realistic_entry_for_a_real_process_when_scanned_t
     world, owned_process
 ):
     """The whole payload round-trips out of a real-shaped record, via the real /proc."""
-    _register(world, owned_process.pid, name="myproject-2", cwd=world["repo"], session_id=UUID)
+    _register(world, owned_process.pid, name="myrepo-tst-2", cwd=world["repo"], session_id=UUID)
 
     found = live_sessions(world["home"])
 
     assert [(s.pid, s.name, s.cwd, s.session_id) for s in found] == [
-        (owned_process.pid, "myproject-2", str(world["repo"]), UUID)
+        (owned_process.pid, "myrepo-tst-2", str(world["repo"]), UUID)
     ]
 
 
@@ -359,7 +360,7 @@ def test_live_sessions_given_a_realistic_entry_for_a_real_process_when_scanned_t
 
 
 def test_split_given_prefixed_name_when_split_then_prefix_and_index_returned():
-    assert split_ai_name("myproject-12") == ("myproject", 12)
+    assert split_ai_name("myrepo-tst-12") == ("myrepo-tst", 12)
 
 
 def test_split_given_hyphenated_prefix_when_split_then_only_trailing_number_is_the_index():
@@ -371,21 +372,21 @@ def test_split_given_name_without_index_when_split_then_none():
 
 
 def test_used_indexes_given_worktrees_and_titles_when_scanned_then_both_sources_counted(world):
-    (world["repo"] / ".worktrees" / "myproject-5").mkdir()
+    (world["repo"] / ".worktrees" / "myrepo-tst-5").mkdir()
     (world["repo"] / ".worktrees" / "otherproject-9").mkdir()
-    used = used_indexes(world["repo"], "myproject", world["home"])
+    used = used_indexes(world["repo"], "myrepo-tst", world["home"])
     assert used == {2, 5}, "index 2 comes from the transcript title, 5 from the worktree"
 
 
 def test_next_free_index_given_lower_indexes_taken_when_computed_then_lowest_gap_returned(world):
-    (world["repo"] / ".worktrees" / "myproject-1").mkdir()
-    (world["repo"] / ".worktrees" / "myproject-3").mkdir()
-    assert next_free_index(world["repo"], "myproject", world["home"]) == 4
+    (world["repo"] / ".worktrees" / "myrepo-tst-1").mkdir()
+    (world["repo"] / ".worktrees" / "myrepo-tst-3").mkdir()
+    assert next_free_index(world["repo"], "myrepo-tst", world["home"]) == 4
 
 
 def test_next_free_index_given_a_gap_below_the_top_when_computed_then_the_gap_is_used(world):
-    (world["repo"] / ".worktrees" / "myproject-3").mkdir()
-    assert next_free_index(world["repo"], "myproject", world["home"]) == 1
+    (world["repo"] / ".worktrees" / "myrepo-tst-3").mkdir()
+    assert next_free_index(world["repo"], "myrepo-tst", world["home"]) == 1
 
 
 # ---- live-session refusal ----------------------------------------------------
@@ -436,7 +437,7 @@ def test_live_sessions_given_a_running_pid_when_scanned_then_reported_with_name_
 def test_adopt_given_the_named_session_is_live_when_adopted_then_refused_and_nothing_written(
     world, adopt, existing_worktree
 ):
-    _mark_live(world, 4242, "myproject-2", world["tmp"] / "elsewhere")
+    _mark_live(world, 4242, "myrepo-tst-2", world["tmp"] / "elsewhere")
     with pytest.raises(LiveSessionError, match="4242"):
         adopt()
     assert (world["src_dir"] / f"{UUID}.jsonl").is_file(), "source transcript must be untouched"
@@ -474,7 +475,7 @@ def test_adopt_given_an_unrelated_live_session_in_the_source_root_when_adopted_t
     """
     (world["proc"] / "4242").mkdir()
     (world["home"] / "sessions" / "4242.json").write_text(
-        json.dumps({"pid": 4242, "name": "myproject-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
+        json.dumps({"pid": 4242, "name": "myrepo-tst-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
     )
     result = adopt()
     assert result.resolved is not None
@@ -486,15 +487,15 @@ def test_adopt_given_an_unknown_title_and_an_unrelated_live_session_when_adopted
     """The refusal must not mask a different failure (probe-adequacy regression)."""
     (world["proc"] / "4242").mkdir()
     (world["home"] / "sessions" / "4242.json").write_text(
-        json.dumps({"pid": 4242, "name": "myproject-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
+        json.dumps({"pid": 4242, "name": "myrepo-tst-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
     )
     with pytest.raises(AdoptionError, match="no transcript titled"):
-        adopt(name="myproject-99")
+        adopt(name="myrepo-tst-99")
 
 
 def test_adopt_given_a_dead_session_record_when_adopted_then_allowed(world, adopt, existing_worktree):
     (world["home"] / "sessions" / "4242.json").write_text(
-        json.dumps({"pid": 4242, "name": "myproject-2", "cwd": str(world["repo"])})
+        json.dumps({"pid": 4242, "name": "myrepo-tst-2", "cwd": str(world["repo"])})
     )
     result = adopt()
     assert result.resolved is not None
@@ -528,20 +529,20 @@ def test_adopt_given_insufficient_space_when_adopted_then_fails_before_writing(
 @pytest.fixture
 def collision(world):
     """A second transcript in an existing worktree claiming the same title."""
-    wt = _add_worktree(world["repo"], "myproject-2")
+    wt = _add_worktree(world["repo"], "myrepo-tst-2")
     other_dir = cc_project_dir(wt, world["home"])
-    other = _write_transcript(other_dir, OTHER_UUID, "myproject-2", wt, extra_lines=40)
+    other = _write_transcript(other_dir, OTHER_UUID, "myrepo-tst-2", wt, extra_lines=40)
     return {"worktree": wt, "path": other, "project_dir": other_dir}
 
 
 def test_find_candidates_given_two_transcripts_with_one_title_when_scanned_then_both_returned(world, collision):
-    found = find_title_candidates(world["repo"], "myproject-2", world["home"])
+    found = find_title_candidates(world["repo"], "myrepo-tst-2", world["home"])
     assert len(found) == 2
     assert {c.path for c in found} == {world["src_dir"] / f"{UUID}.jsonl", collision["path"]}
 
 
 def test_find_candidates_given_candidates_when_described_then_size_lines_cwd_and_mtime_present(world, collision):
-    found = find_title_candidates(world["repo"], "myproject-2", world["home"])
+    found = find_title_candidates(world["repo"], "myrepo-tst-2", world["home"])
     small = min(found, key=lambda c: c.lines)
     large = max(found, key=lambda c: c.lines)
     assert small.lines == 3 and large.lines == 43
@@ -566,20 +567,20 @@ def test_find_candidates_given_transcript_renamed_away_when_scanned_then_no_phan
     retired.write_text(
         "\n".join(
             [
-                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myproject-2"),
+                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myrepo-tst-2"),
                 _record(type="assistant", sessionId=OTHER_UUID, cwd=str(world["repo"])),
-                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myproject-2-retired"),
+                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myrepo-tst-2-retired"),
             ]
         )
         + "\n"
     )
 
-    found = find_title_candidates(world["repo"], "myproject-2", world["home"])
+    found = find_title_candidates(world["repo"], "myrepo-tst-2", world["home"])
 
     assert [c.path for c in found] == [world["src_dir"] / f"{UUID}.jsonl"]
     assert retired not in {c.path for c in found}
     # ...and it is still reachable under the name it actually holds now.
-    renamed = find_title_candidates(world["repo"], "myproject-2-retired", world["home"])
+    renamed = find_title_candidates(world["repo"], "myrepo-tst-2-retired", world["home"])
     assert [c.path for c in renamed] == [retired]
 
 
@@ -587,7 +588,7 @@ def test_adopt_given_a_duplicate_title_when_adopted_then_gated_with_both_candida
     with pytest.raises(TitleCollision) as caught:
         adopt()
     assert len(caught.value.candidates) == 2
-    assert caught.value.prefix == "myproject"
+    assert caught.value.prefix == "myrepo-tst"
     assert caught.value.free_index == 1, "index 1 is claimed by neither a worktree nor a title"
 
 
@@ -604,20 +605,20 @@ def test_adopt_given_a_duplicate_title_when_gated_then_nothing_is_written(world,
 
 
 def test_adopt_given_a_collision_and_a_free_index_when_scanned_then_the_index_collides_with_neither(world, collision):
-    (world["repo"] / ".worktrees" / "myproject-1").mkdir()
+    (world["repo"] / ".worktrees" / "myrepo-tst-1").mkdir()
     _write_transcript(
-        cc_project_dir(world["repo"] / ".worktrees" / "myproject-1", world["home"]),
+        cc_project_dir(world["repo"] / ".worktrees" / "myrepo-tst-1", world["home"]),
         "22222222-2222-4333-8444-555555555555",
-        "myproject-3",
-        world["repo"] / ".worktrees" / "myproject-1",
+        "myrepo-tst-3",
+        world["repo"] / ".worktrees" / "myrepo-tst-1",
     )
     # 1 taken by a worktree, 2 by the collision, 3 by a title in another worktree.
-    assert next_free_index(world["repo"], "myproject", world["home"]) == 4
+    assert next_free_index(world["repo"], "myrepo-tst", world["home"]) == 4
 
 
 def test_adopt_given_a_new_title_without_retitle_mode_when_adopted_then_refused(world, adopt, existing_worktree):
     with pytest.raises(AdoptionError, match="on_collision"):
-        adopt(new_title="myproject-4")
+        adopt(new_title="myrepo-tst-4")
 
 
 # ---- retitle-to-free-index ---------------------------------------------------
@@ -625,39 +626,39 @@ def test_adopt_given_a_new_title_without_retitle_mode_when_adopted_then_refused(
 
 def test_retitle_given_a_transcript_when_retitled_then_every_matching_record_is_rewritten(world):
     path = world["src_dir"] / f"{UUID}.jsonl"
-    changed = retitle_transcript(path, "myproject-2", "myproject-7")
+    changed = retitle_transcript(path, "myrepo-tst-2", "myrepo-tst-7")
     assert changed == 2
-    assert transcript_title(path) == "myproject-7"
-    assert "myproject-2" not in path.read_text()
+    assert transcript_title(path) == "myrepo-tst-7"
+    assert "myrepo-tst-2" not in path.read_text()
 
 
 def test_retitle_given_a_transcript_when_retitled_then_mtime_is_preserved(world):
 
     path = world["src_dir"] / f"{UUID}.jsonl"
     os.utime(path, (1_000_000_000, 1_000_000_000))
-    retitle_transcript(path, "myproject-2", "myproject-7")
+    retitle_transcript(path, "myrepo-tst-2", "myrepo-tst-7")
     assert path.stat().st_mtime == pytest.approx(1_000_000_000)
 
 
 def test_retitle_given_an_unrelated_title_when_retitled_then_nothing_changes(world):
     path = world["src_dir"] / f"{UUID}.jsonl"
     before = path.read_bytes()
-    assert retitle_transcript(path, "myproject-9", "myproject-7") == 0
+    assert retitle_transcript(path, "myrepo-tst-9", "myrepo-tst-7") == 0
     assert path.read_bytes() == before
 
 
 def test_adopt_given_a_confirmed_new_title_when_retitled_then_new_index_resolves(world, adopt, collision):
-    target = _add_worktree(world["repo"], "myproject-1")
-    result = adopt(on_collision="retitle", new_title="myproject-1")
-    assert result.retitled_from == "myproject-2"
+    target = _add_worktree(world["repo"], "myrepo-tst-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
+    assert result.retitled_from == "myrepo-tst-2"
     assert result.dest_root == target
-    assert probe_resolves(target, "myproject-1", world["home"]) == result.migration.dest_jsonl
+    assert probe_resolves(target, "myrepo-tst-1", world["home"]) == result.migration.dest_jsonl
 
 
 def test_adopt_given_a_retitle_when_done_then_the_original_title_still_resolves(world, adopt, collision):
-    _add_worktree(world["repo"], "myproject-1")
-    adopt(on_collision="retitle", new_title="myproject-1")
-    still = probe_resolves(collision["worktree"], "myproject-2", world["home"])
+    _add_worktree(world["repo"], "myrepo-tst-1")
+    adopt(on_collision="retitle", new_title="myrepo-tst-1")
+    still = probe_resolves(collision["worktree"], "myrepo-tst-2", world["home"])
     assert still == collision["path"], "the transcript that kept the original title must still resolve"
 
 
@@ -675,19 +676,19 @@ def test_adopt_given_an_unmanaged_session_when_adopted_then_probe_resolves_the_t
 
 
 def test_probe_given_nothing_adopted_when_probed_then_returns_none(world, existing_worktree):
-    assert probe_resolves(existing_worktree, "myproject-2", world["home"]) is None
+    assert probe_resolves(existing_worktree, "myrepo-tst-2", world["home"]) is None
 
 
 def test_probe_given_the_transcript_in_the_wrong_project_dir_when_probed_then_returns_none(world, existing_worktree):
     """The probe must fail when a transcript exists but not where resume looks."""
     assert (world["src_dir"] / f"{UUID}.jsonl").is_file()
-    assert probe_resolves(existing_worktree, "myproject-2", world["home"]) is None
+    assert probe_resolves(existing_worktree, "myrepo-tst-2", world["home"]) is None
 
 
 def test_probe_given_the_transcript_under_a_different_title_when_probed_then_returns_none(world, existing_worktree):
     dest_dir = cc_project_dir(existing_worktree, world["home"])
-    _write_transcript(dest_dir, UUID, "myproject-9", existing_worktree)
-    assert probe_resolves(existing_worktree, "myproject-2", world["home"]) is None
+    _write_transcript(dest_dir, UUID, "myrepo-tst-9", existing_worktree)
+    assert probe_resolves(existing_worktree, "myrepo-tst-2", world["home"]) is None
 
 
 def test_adopt_given_the_probe_finds_the_wrong_file_when_adopted_then_reported_as_failed(
@@ -718,7 +719,7 @@ def test_cli_given_a_failed_probe_when_invoked_then_exits_nonzero(world, existin
     monkeypatch.setattr(module, "adopt_session", _adopt)
     monkeypatch.setattr("ai_cli.session.detect_repo_root", lambda: world["repo"])
     monkeypatch.setattr(module, "probe_resolves", lambda *a, **k: world["tmp"] / "decoy.jsonl")
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
     assert code == 1
     assert "post-adopt check FAILED" in err
 
@@ -731,13 +732,13 @@ def test_adopt_given_a_retitle_whose_original_stops_resolving_when_adopted_then_
     Adopting under a new title must leave the original title still resolving; if
     it does not, the transcript that kept it is not where it should be.
     """
-    _add_worktree(world["repo"], "myproject-1")
+    _add_worktree(world["repo"], "myrepo-tst-1")
 
     def _probe(dest_root, title, home=None):
-        return None if title == "myproject-2" else probe_resolves(dest_root, title, home)
+        return None if title == "myrepo-tst-2" else probe_resolves(dest_root, title, home)
 
     monkeypatch.setattr("ai_cli.session_adopt.probe_resolves", _probe)
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
     assert any("no longer resolves" in w for w in result.warnings)
 
 
@@ -754,17 +755,17 @@ def test_adopt_given_the_title_holder_is_a_bare_session_when_retitled_then_it_is
     ``probe_resolves`` -- the whole point is which directories the real one is
     pointed at.
     """
-    _add_worktree(world["repo"], "myproject-1")
+    _add_worktree(world["repo"], "myrepo-tst-1")
     # A SECOND claimant on the same title, in the repo ROOT's project dir rather
     # than in a worktree. That is what makes it the bare case: the `collision`
-    # fixture puts its claimant inside .worktrees/myproject-2, where the old probe
+    # fixture puts its claimant inside .worktrees/myrepo-tst-2, where the old probe
     # happened to be looking.
-    _write_transcript(world["src_dir"], OTHER_UUID, "myproject-2", world["repo"], extra_lines=40)
+    _write_transcript(world["src_dir"], OTHER_UUID, "myrepo-tst-2", world["repo"], extra_lines=40)
 
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
 
-    assert result.retitled_from == "myproject-2"
-    assert not (world["repo"] / ".worktrees" / "myproject-2").exists()
+    assert result.retitled_from == "myrepo-tst-2"
+    assert not (world["repo"] / ".worktrees" / "myrepo-tst-2").exists()
     assert not any("no longer resolves" in w for w in result.warnings), result.warnings
 
 
@@ -782,12 +783,12 @@ def test_adopt_given_a_retitle_with_no_collision_when_adopted_then_the_old_title
     Deliberately does NOT patch ``probe_resolves`` — what is under test is whether
     the check runs at all, not where it looks.
     """
-    _add_worktree(world["repo"], "myproject-1")
-    assert len(find_title_candidates(world["repo"], "myproject-2", world["home"])) == 1
+    _add_worktree(world["repo"], "myrepo-tst-1")
+    assert len(find_title_candidates(world["repo"], "myrepo-tst-2", world["home"])) == 1
 
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
 
-    assert result.retitled_from == "myproject-2"
+    assert result.retitled_from == "myrepo-tst-2"
     assert result.resolved is not None
     assert not any("no longer resolves" in w for w in result.warnings), result.warnings
 
@@ -878,7 +879,7 @@ def test_dir_size_given_a_file_that_vanishes_mid_scan_when_measured_then_skipped
 
 def test_describe_given_a_transcript_with_no_recorded_cwd_when_described_then_cwd_is_empty(world):
     path = world["src_dir"] / "e0000000-0000-4000-8000-000000000000.jsonl"
-    path.write_text(_record(type="user", customTitle="myproject-8") + "\n")
+    path.write_text(_record(type="user", customTitle="myrepo-tst-8") + "\n")
     from ai_cli.session_adopt import describe_candidate
 
     candidate = describe_candidate(path)
@@ -887,7 +888,7 @@ def test_describe_given_a_transcript_with_no_recorded_cwd_when_described_then_cw
 
 def test_describe_given_a_transcript_with_unparseable_lines_when_described_then_they_are_skipped(world):
     path = world["src_dir"] / "e1000000-0000-4000-8000-000000000000.jsonl"
-    path.write_text("not json\n\n" + _record(type="user", cwd="/somewhere", customTitle="myproject-8") + "\n")
+    path.write_text("not json\n\n" + _record(type="user", cwd="/somewhere", customTitle="myrepo-tst-8") + "\n")
     from ai_cli.session_adopt import describe_candidate
 
     assert describe_candidate(path).cwd == "/somewhere"
@@ -902,10 +903,10 @@ def test_describe_given_a_missing_file_when_described_then_zeroed_rather_than_ra
 
 def test_retitle_given_unparseable_lines_when_retitled_then_they_are_byte_preserved(world):
     path = world["src_dir"] / "e2000000-0000-4000-8000-000000000000.jsonl"
-    path.write_text("not json at all\n" + _record(type="user", customTitle="myproject-8") + "\n")
-    retitle_transcript(path, "myproject-8", "myproject-9")
+    path.write_text("not json at all\n" + _record(type="user", customTitle="myrepo-tst-8") + "\n")
+    retitle_transcript(path, "myrepo-tst-8", "myrepo-tst-9")
     assert path.read_text().splitlines()[0] == "not json at all"
-    assert transcript_title(path) == "myproject-9"
+    assert transcript_title(path) == "myrepo-tst-9"
 
 
 def test_retitle_given_a_write_failure_when_retitled_then_the_temp_file_is_removed(world, monkeypatch):
@@ -917,7 +918,7 @@ def test_retitle_given_a_write_failure_when_retitled_then_the_temp_file_is_remov
 
     monkeypatch.setattr("ai_cli.session_adopt.os.replace", _boom)
     with pytest.raises(OSError):
-        retitle_transcript(path, "myproject-2", "myproject-9")
+        retitle_transcript(path, "myrepo-tst-2", "myrepo-tst-9")
     assert path.read_bytes() == before
     assert not list(world["src_dir"].glob("*.retitle-tmp"))
 
@@ -926,7 +927,7 @@ def test_merge_tasks_given_a_source_with_no_numeric_task_files_when_merged_then_
     source = world["home"] / "tasks" / "session-11111111"
     source.mkdir(parents=True)
     (source / "notes.txt").write_text("not a task")
-    dest = world["home"] / "tasks" / "myproject-2"
+    dest = world["home"] / "tasks" / "myrepo-tst-2"
     assert merge_task_namespace(source, dest) == []
     assert not dest.exists()
 
@@ -935,14 +936,14 @@ def test_merge_tasks_given_an_unparseable_task_file_when_merged_then_moved_verba
     source = world["home"] / "tasks" / "session-11111111"
     source.mkdir(parents=True)
     (source / "1.json").write_text("not json at all")
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one"})
     merge_task_namespace(source, dest)
     assert (dest / "2.json").read_text() == "not json at all"
     assert not (source / "1.json").exists()
 
 
 def test_merge_tasks_given_the_same_namespace_for_source_and_dest_when_merged_then_no_op(world):
-    same = _tasks(world["home"], "myproject-2", {"1": "one"})
+    same = _tasks(world["home"], "myrepo-tst-2", {"1": "one"})
     assert merge_task_namespace(same, same) == []
     assert json.loads((same / "1.json").read_text())["subject"] == "one"
 
@@ -973,11 +974,11 @@ def test_adopt_given_an_existing_worktree_when_adopted_then_it_is_reused_not_rec
     result = adopt()
     assert not result.worktree_created
     assert sentinel.read_text() == "work in progress\n"
-    assert calls == [(("myproject-2",), {"with_status": True, "repo_root": world["repo"]})]
+    assert calls == [(("myrepo-tst-2",), {"with_status": True, "repo_root": world["repo"]})]
 
 
 def test_adopt_given_a_missing_worktree_when_adopted_then_it_is_created(world, adopt, monkeypatch):
-    target = world["repo"] / ".worktrees" / "myproject-2"
+    target = world["repo"] / ".worktrees" / "myrepo-tst-2"
 
     def _create(ai_name, *, with_status, repo_root):
         return _add_worktree(world["repo"], ai_name), True
@@ -1034,13 +1035,13 @@ def test_adopt_given_a_destination_of_mere_debris_when_adopted_then_the_slot_is_
     refusal and is wrong here: a successful adoption is supposed to move the transcript,
     so the old assertion would now pass only if adoption had silently done nothing.
     """
-    plain = world["repo"] / ".worktrees" / "myproject-2"
+    plain = world["repo"] / ".worktrees" / "myrepo-tst-2"
     plain.mkdir(parents=True)
     (plain / "debris.txt").write_text("not a checkout", encoding="utf-8")
 
     result = adopt()
 
-    recovered = [p for p in (world["repo"] / ".worktrees").iterdir() if p.name.startswith("myproject-2-orphaned-")]
+    recovered = [p for p in (world["repo"] / ".worktrees").iterdir() if p.name.startswith("myrepo-tst-2-orphaned-")]
     assert len(recovered) == 1, (
         "the debris slot must be moved aside exactly once, not deleted and not left "
         f"in place; found: {sorted(p.name for p in (world['repo'] / '.worktrees').iterdir())}"
@@ -1057,7 +1058,7 @@ def test_adopt_given_a_destination_of_mere_debris_when_adopted_then_the_slot_is_
 
 def test_adopt_given_a_destination_holding_nested_agent_worktrees_when_adopted_then_refused(world, adopt):
     """The real shape: the slot is a CONTAINER of per-task agent worktrees."""
-    nested = world["repo"] / ".worktrees" / "myproject-2" / "task-1" / "leaf"
+    nested = world["repo"] / ".worktrees" / "myrepo-tst-2" / "task-1" / "leaf"
     _git("worktree", "add", "-q", "--detach", str(nested), cwd=world["repo"])
     (nested / "agent-work.md").write_text("only here\n")
     _git("add", "-A", cwd=nested)
@@ -1072,14 +1073,14 @@ def test_adopt_given_a_destination_holding_nested_agent_worktrees_when_adopted_t
 
 def test_adopt_given_a_collided_destination_when_refused_then_the_error_says_what_to_do(world, adopt):
     """The refusal must be actionable — which path, and the relocation to run."""
-    nested = world["repo"] / ".worktrees" / "myproject-2" / "task-1" / "leaf"
+    nested = world["repo"] / ".worktrees" / "myrepo-tst-2" / "task-1" / "leaf"
     _git("worktree", "add", "-q", "--detach", str(nested), cwd=world["repo"])
 
     with pytest.raises(AdoptionError) as caught:
         adopt()
 
     message = str(caught.value)
-    assert str(world["repo"] / ".worktrees" / "myproject-2") in message
+    assert str(world["repo"] / ".worktrees" / "myrepo-tst-2") in message
     assert "git worktree move" in message
 
 
@@ -1089,7 +1090,7 @@ def test_adopt_given_a_collided_destination_when_previewed_then_the_dry_run_also
     A preview that reports success is how this defect stayed invisible: the only
     difference in the output was a line that did *not* appear.
     """
-    (world["repo"] / ".worktrees" / "myproject-2").mkdir(parents=True)
+    (world["repo"] / ".worktrees" / "myrepo-tst-2").mkdir(parents=True)
 
     with pytest.raises(AdoptionError, match="not a worktree"):
         adopt(dry_run=True)
@@ -1128,7 +1129,7 @@ def _tasks(base: Path, ns: str, ids_to_subjects: dict[str, str], blocks=None) ->
 
 def test_merge_tasks_given_colliding_ids_when_merged_then_existing_files_are_not_clobbered(world):
     source = _tasks(world["home"], "session-11111111", {"1": "source one", "2": "source two"})
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one"})
     moves = merge_task_namespace(source, dest)
     assert json.loads((dest / "1.json").read_text())["subject"] == "dest one"
     subjects = {json.loads(p.read_text())["subject"] for p in dest.glob("*.json")}
@@ -1138,7 +1139,7 @@ def test_merge_tasks_given_colliding_ids_when_merged_then_existing_files_are_not
 
 def test_merge_tasks_given_a_renumbered_task_when_merged_then_its_id_field_matches_its_filename(world):
     source = _tasks(world["home"], "session-11111111", {"1": "source one"})
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one"})
     merge_task_namespace(source, dest)
     moved = json.loads((dest / "2.json").read_text())
     assert moved["subject"] == "source one" and moved["id"] == "2"
@@ -1146,7 +1147,7 @@ def test_merge_tasks_given_a_renumbered_task_when_merged_then_its_id_field_match
 
 def test_merge_tasks_given_references_between_moved_tasks_when_renumbered_then_references_are_remapped(world):
     source = _tasks(world["home"], "session-11111111", {"1": "a", "2": "b"}, blocks={"1": ["2"]})
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one", "2": "dest two"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one", "2": "dest two"})
     merge_task_namespace(source, dest)
     remapped = next(
         json.loads(p.read_text()) for p in dest.glob("*.json") if json.loads(p.read_text())["subject"] == "a"
@@ -1157,21 +1158,21 @@ def test_merge_tasks_given_references_between_moved_tasks_when_renumbered_then_r
 
 def test_merge_tasks_given_no_collision_when_merged_then_ids_are_preserved(world):
     source = _tasks(world["home"], "session-11111111", {"3": "keep three"})
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one"})
     moves = merge_task_namespace(source, dest)
     assert (dest / "3.json").is_file()
     assert moves[0].renumbered_from is None
 
 
 def test_merge_tasks_given_a_missing_source_namespace_when_merged_then_no_op(world):
-    dest = world["home"] / "tasks" / "myproject-2"
+    dest = world["home"] / "tasks" / "myrepo-tst-2"
     assert merge_task_namespace(world["home"] / "tasks" / "nope", dest) == []
     assert not dest.exists()
 
 
 def test_merge_tasks_given_a_dry_run_when_merged_then_files_stay_put(world):
     source = _tasks(world["home"], "session-11111111", {"1": "source one"})
-    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    dest = _tasks(world["home"], "myrepo-tst-2", {"1": "dest one"})
     moves = merge_task_namespace(source, dest, dry_run=True)
     assert len(moves) == 1
     assert (source / "1.json").is_file()
@@ -1184,7 +1185,7 @@ def test_adopt_given_a_uuid_task_namespace_when_adopted_then_tasks_land_in_the_p
 ):
     _tasks(world["home"], f"session-{UUID[:8]}", {"1": "unpinned work"})
     result = adopt()
-    pinned = world["home"] / "tasks" / "myproject-2"
+    pinned = world["home"] / "tasks" / "myrepo-tst-2"
     assert json.loads((pinned / "1.json").read_text())["subject"] == "unpinned work"
     assert len(result.tasks_moved) == 1
 
@@ -1194,7 +1195,7 @@ def test_adopt_given_an_explicit_task_namespace_when_adopted_then_that_namespace
 ):
     _tasks(world["home"], "some-other-namespace", {"1": "explicit"})
     adopt(task_namespace="some-other-namespace")
-    assert json.loads((world["home"] / "tasks" / "myproject-2" / "1.json").read_text())["subject"] == "explicit"
+    assert json.loads((world["home"] / "tasks" / "myrepo-tst-2" / "1.json").read_text())["subject"] == "explicit"
 
 
 # ---- auto-memory -------------------------------------------------------------
@@ -1269,7 +1270,7 @@ def test_adopt_given_a_dry_run_when_previewed_then_nothing_is_written(world, ado
     assert (world["src_dir"] / f"{UUID}.jsonl").is_file()
     assert not cc_project_dir(existing_worktree, world["home"]).exists()
     assert (world["home"] / "tasks" / f"session-{UUID[:8]}" / "1.json").is_file()
-    assert not (world["home"] / "tasks" / "myproject-2").exists()
+    assert not (world["home"] / "tasks" / "myrepo-tst-2").exists()
     assert result.tasks_moved and result.memory_copied
 
 
@@ -1291,27 +1292,27 @@ def test_adopt_given_an_already_adopted_session_when_rerun_then_it_is_a_no_op(wo
 
 def test_adopt_given_nothing_to_adopt_and_nothing_adopted_when_run_then_raises(world, adopt, existing_worktree):
     with pytest.raises(AdoptionError, match="no transcript titled"):
-        adopt(name="myproject-9")
+        adopt(name="myrepo-tst-9")
 
 
 # ---- bulk mode ---------------------------------------------------------------
 
 
 def test_titled_sessions_given_several_transcripts_when_listed_then_each_title_once(world):
-    _write_transcript(world["src_dir"], OTHER_UUID, "myproject-3", world["repo"])
-    assert sorted(titled_sessions(world["repo"], world["home"])) == ["myproject-2", "myproject-3"]
+    _write_transcript(world["src_dir"], OTHER_UUID, "myrepo-tst-3", world["repo"])
+    assert sorted(titled_sessions(world["repo"], world["home"])) == ["myrepo-tst-2", "myrepo-tst-3"]
 
 
 def test_adopt_all_given_one_collision_when_run_then_the_batch_continues(world, monkeypatch):
-    _write_transcript(world["src_dir"], OTHER_UUID, "myproject-3", world["repo"])
-    # myproject-2 collides with a transcript already in its worktree.
-    wt2 = _add_worktree(world["repo"], "myproject-2")
-    _write_transcript(cc_project_dir(wt2, world["home"]), "33333333-2222-4333-8444-555555555555", "myproject-2", wt2)
-    _add_worktree(world["repo"], "myproject-3")
+    _write_transcript(world["src_dir"], OTHER_UUID, "myrepo-tst-3", world["repo"])
+    # myrepo-tst-2 collides with a transcript already in its worktree.
+    wt2 = _add_worktree(world["repo"], "myrepo-tst-2")
+    _write_transcript(cc_project_dir(wt2, world["home"]), "33333333-2222-4333-8444-555555555555", "myrepo-tst-2", wt2)
+    _add_worktree(world["repo"], "myrepo-tst-3")
 
     outcomes = dict(adopt_all(world["repo"], claude_home=world["home"], proc_dir=world["proc"]))
-    assert isinstance(outcomes["myproject-2"], TitleCollision)
-    adopted = outcomes["myproject-3"]
+    assert isinstance(outcomes["myrepo-tst-2"], TitleCollision)
+    adopted = outcomes["myrepo-tst-3"]
     assert isinstance(adopted, AdoptionResult)
     assert adopted.resolved is not None, "the rest of the batch must still be adopted"
 
@@ -1350,21 +1351,21 @@ def cli_world(world, existing_worktree, monkeypatch):
 
 
 def test_cli_given_a_dry_run_when_invoked_then_reports_the_plan_and_exits_zero(cli_world):
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-n"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-n"])
     assert code == 0
-    assert "Would adopt myproject-2" in out
+    assert "Would adopt myrepo-tst-2" in out
 
 
 def test_cli_given_an_adoption_when_confirmed_then_reports_the_resolve_probe(cli_world):
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
     assert code == 0
     assert "resolve probe" in out and f"{UUID}.jsonl" in out
 
 
 def test_cli_given_a_collision_when_invoked_then_exits_nonzero_printing_both_candidates(cli_world):
-    wt = cli_world["repo"] / ".worktrees" / "myproject-2"
-    _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt, extra_lines=40)
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
+    wt = cli_world["repo"] / ".worktrees" / "myrepo-tst-2"
+    _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myrepo-tst-2", wt, extra_lines=40)
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2"])
     assert code == 1
     assert UUID in err and OTHER_UUID in err
     assert "MB" in err and "lines=" in err and "cwd=" in err
@@ -1372,10 +1373,10 @@ def test_cli_given_a_collision_when_invoked_then_exits_nonzero_printing_both_can
 
 
 def test_cli_given_a_collision_and_yes_when_invoked_then_the_gate_still_holds(cli_world):
-    wt = cli_world["repo"] / ".worktrees" / "myproject-2"
-    other = _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt)
+    wt = cli_world["repo"] / ".worktrees" / "myrepo-tst-2"
+    other = _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myrepo-tst-2", wt)
     before = (cli_world["src_dir"] / f"{UUID}.jsonl").read_bytes()
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
     assert code == 1, "-y must not bypass the duplicate-title gate"
     assert "-y/--yes does not cover it" in err
     assert (cli_world["src_dir"] / f"{UUID}.jsonl").read_bytes() == before
@@ -1383,19 +1384,19 @@ def test_cli_given_a_collision_and_yes_when_invoked_then_the_gate_still_holds(cl
 
 
 def test_cli_given_retitle_without_a_title_or_index_when_invoked_then_refused(cli_world):
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-c", "retitle", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-c", "retitle", "-y"])
     assert code == 1
     assert "human-confirmed title" in err
 
 
 def test_cli_given_retitle_with_a_confirmed_index_when_invoked_then_the_new_title_is_derived(cli_world):
-    wt = cli_world["repo"] / ".worktrees" / "myproject-2"
-    _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt)
-    _add_worktree(cli_world["repo"], "myproject-4")
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-c", "retitle", "-I", "4", "-y"])
+    wt = cli_world["repo"] / ".worktrees" / "myrepo-tst-2"
+    _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myrepo-tst-2", wt)
+    _add_worktree(cli_world["repo"], "myrepo-tst-4")
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-c", "retitle", "-I", "4", "-y"])
     assert code == 0, err
-    assert "retitled 'myproject-2' -> 'myproject-4'" in out
-    assert probe_resolves(cli_world["repo"] / ".worktrees" / "myproject-4", "myproject-4", cli_world["home"])
+    assert "retitled 'myrepo-tst-2' -> 'myrepo-tst-4'" in out
+    assert probe_resolves(cli_world["repo"] / ".worktrees" / "myrepo-tst-4", "myrepo-tst-4", cli_world["home"])
 
 
 def test_cli_given_no_name_and_no_all_flag_when_invoked_then_refused(cli_world):
@@ -1415,14 +1416,14 @@ def orphaned_transcript(cli_world):
     (cli_world["src_dir"] / f"{UUID}.jsonl").unlink()
     gone = cli_world["tmp"] / "projects" / "myproject-deleted-checkout"
     assert not gone.exists()
-    return _write_transcript(cc_project_dir(gone, cli_world["home"]), UUID, "myproject-2", gone)
+    return _write_transcript(cc_project_dir(gone, cli_world["home"]), UUID, "myrepo-tst-2", gone)
 
 
 def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_without_t_then_not_found(
     cli_world, orphaned_transcript
 ):
     """The control: with neither -s nor -t the adoption cannot find the transcript."""
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
     assert code == 1
     assert f"{UUID}.jsonl" not in out
 
@@ -1430,16 +1431,16 @@ def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_without_t_then
 def test_cli_given_a_transcript_whose_source_is_gone_when_adopted_with_t_then_it_resolves(
     cli_world, orphaned_transcript
 ):
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-t", str(orphaned_transcript), "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-t", str(orphaned_transcript), "-y"])
     assert code == 0, err
     assert "resolve probe" in out and f"{UUID}.jsonl" in out
-    adopted = cc_project_dir(cli_world["repo"] / ".worktrees" / "myproject-2", cli_world["home"]) / f"{UUID}.jsonl"
+    adopted = cc_project_dir(cli_world["repo"] / ".worktrees" / "myrepo-tst-2", cli_world["home"]) / f"{UUID}.jsonl"
     assert adopted.is_file()
 
 
 def test_cli_given_both_t_and_s_when_invoked_then_refused_before_anything_is_written(cli_world, orphaned_transcript):
     code, out, err = run_cli(
-        ["ai", "adopt-session", "myproject-2", "--transcript", str(orphaned_transcript), "-s", str(cli_world["repo"])]
+        ["ai", "adopt-session", "myrepo-tst-2", "--transcript", str(orphaned_transcript), "-s", str(cli_world["repo"])]
     )
     assert code == 1
     assert "-t/--transcript" in err and "-s/--source" in err
@@ -1447,36 +1448,36 @@ def test_cli_given_both_t_and_s_when_invoked_then_refused_before_anything_is_wri
 
 
 def test_cli_given_t_naming_a_transcript_with_another_title_when_invoked_then_refused(cli_world, orphaned_transcript):
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-7", "-t", str(orphaned_transcript), "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-7", "-t", str(orphaned_transcript), "-y"])
     assert code == 1
-    assert "myproject-7" in err and str(orphaned_transcript) in err
+    assert "myrepo-tst-7" in err and str(orphaned_transcript) in err
 
 
 def test_cli_given_a_live_session_when_invoked_then_exits_nonzero(cli_world):
-    _mark_live(cli_world, 4242, "myproject-2", cli_world["repo"])
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    _mark_live(cli_world, 4242, "myrepo-tst-2", cli_world["repo"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
     assert code == 1
     assert "still" in err and "running" in err
 
 
 def test_cli_given_bulk_mode_when_invoked_then_each_session_is_reported(cli_world):
-    _write_transcript(cli_world["src_dir"], OTHER_UUID, "myproject-3", cli_world["repo"])
-    _add_worktree(cli_world["repo"], "myproject-3")
+    _write_transcript(cli_world["src_dir"], OTHER_UUID, "myrepo-tst-3", cli_world["repo"])
+    _add_worktree(cli_world["repo"], "myrepo-tst-3")
     code, out, err = run_cli(["ai", "adopt-session", "-a", "-n"])
     assert code == 0
-    assert "myproject-2" in out and "myproject-3" in out
+    assert "myrepo-tst-2" in out and "myrepo-tst-3" in out
     assert "2 adopted, 0 skipped" in out
 
 
 def test_cli_given_bulk_mode_with_a_collision_when_invoked_then_the_rest_still_adopt(cli_world):
-    _write_transcript(cli_world["src_dir"], OTHER_UUID, "myproject-3", cli_world["repo"])
-    _add_worktree(cli_world["repo"], "myproject-3")
-    wt = cli_world["repo"] / ".worktrees" / "myproject-2"
-    _write_transcript(cc_project_dir(wt, cli_world["home"]), "33333333-2222-4333-8444-555555555555", "myproject-2", wt)
+    _write_transcript(cli_world["src_dir"], OTHER_UUID, "myrepo-tst-3", cli_world["repo"])
+    _add_worktree(cli_world["repo"], "myrepo-tst-3")
+    wt = cli_world["repo"] / ".worktrees" / "myrepo-tst-2"
+    _write_transcript(cc_project_dir(wt, cli_world["home"]), "33333333-2222-4333-8444-555555555555", "myrepo-tst-2", wt)
     code, out, err = run_cli(["ai", "adopt-session", "-a", "-y"])
     assert code == 1
-    assert "Paused on myproject-2" in err
-    assert "Adopted myproject-3" in out
+    assert "Paused on myrepo-tst-2" in err
+    assert "Adopted myrepo-tst-3" in out
     assert "1 adopted, 1 skipped" in out
 
 
@@ -1489,7 +1490,7 @@ def test_cli_given_bulk_mode_with_nothing_titled_when_invoked_then_reports_nothi
 
 def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted(cli_world, monkeypatch):
     monkeypatch.setattr("click.confirm", lambda *a, **k: False)
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2"])
     assert code == 1
     assert "Aborted" in err
     assert (cli_world["src_dir"] / f"{UUID}.jsonl").is_file()
@@ -1497,9 +1498,9 @@ def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted
 
 def test_cli_given_an_accepted_confirmation_when_prompted_then_the_session_is_adopted(cli_world, monkeypatch):
     monkeypatch.setattr("click.confirm", lambda *a, **k: True)
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2"])
     assert code == 0
-    assert "Adopted myproject-2" in out
+    assert "Adopted myrepo-tst-2" in out
 
 
 def test_cli_given_an_index_on_an_unindexed_name_when_invoked_then_refused(cli_world):
@@ -1611,7 +1612,7 @@ def _cc_relocation_on_exit(transcript: Path, home: Path) -> Path:
 def worktree_world(world):
     """``world``, but the adoptable session carries a stale worktree binding."""
     (world["src_dir"] / f"{UUID}.jsonl").unlink()
-    _write_worktree_transcript(world["src_dir"], UUID, "myproject-2", world["repo"])
+    _write_worktree_transcript(world["src_dir"], UUID, "myrepo-tst-2", world["repo"])
     return world
 
 
@@ -1625,7 +1626,7 @@ def test_relocation_replay_given_an_unadopted_worktree_transcript_when_resumed_t
     """
     home = worktree_world["home"]
     slot_dir = cc_project_dir(existing_worktree, home)
-    planted = _write_worktree_transcript(slot_dir, UUID, "myproject-2", worktree_world["repo"])
+    planted = _write_worktree_transcript(slot_dir, UUID, "myrepo-tst-2", worktree_world["repo"])
 
     after = _cc_relocation_on_exit(planted, home)
 
@@ -1664,7 +1665,7 @@ def test_adopt_given_a_worktree_state_session_when_resumed_after_adoption_then_t
     assert after == adopted
     assert adopted.is_file()
     assert adopted.parent == cc_project_dir(existing_worktree, home)
-    assert probe_resolves(existing_worktree, "myproject-2", home) == adopted
+    assert probe_resolves(existing_worktree, "myrepo-tst-2", home) == adopted
 
 
 def test_adopt_given_a_worktree_state_session_when_resumed_twice_then_it_stays_in_the_slot_both_times(
@@ -1676,7 +1677,7 @@ def test_adopt_given_a_worktree_state_session_when_resumed_twice_then_it_stays_i
 
     for _ in range(2):
         assert _cc_relocation_on_exit(adopted, home) == adopted
-        assert probe_resolves(existing_worktree, "myproject-2", home) == adopted
+        assert probe_resolves(existing_worktree, "myrepo-tst-2", home) == adopted
 
 
 def test_adopt_given_a_worktree_state_session_when_adopted_then_the_conversation_is_preserved(
@@ -1693,7 +1694,7 @@ def test_adopt_given_a_worktree_state_session_when_adopted_then_the_conversation
     assert len(after) == len(before)
     assert [r.get("type") for r in after] == [r.get("type") for r in before]
     assert [r for r in after if r.get("type") in metadata] != [r for r in before if r.get("type") in metadata]
-    assert transcript_title(adopted) == "myproject-2"
+    assert transcript_title(adopted) == "myrepo-tst-2"
 
 
 def test_neutralise_given_a_transcript_without_worktree_state_when_called_then_nothing_changes(world):
@@ -1701,13 +1702,13 @@ def test_neutralise_given_a_transcript_without_worktree_state_when_called_then_n
     path = world["src_dir"] / f"{UUID}.jsonl"
     before = path.read_bytes()
 
-    assert neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myproject-2") == 0
+    assert neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myrepo-tst-2") == 0
     assert path.read_bytes() == before
 
 
 def test_neutralise_given_an_unparseable_line_when_called_then_it_survives_byte_identical(world):
     """A malformed line is never rewritten or dropped."""
-    slot = world["repo"] / ".worktrees" / "myproject-2"
+    slot = world["repo"] / ".worktrees" / "myrepo-tst-2"
     path = world["src_dir"] / "broken.jsonl"
     path.write_text(
         "not json at all\n" + _worktree_state_record(UUID, world["repo"], world["repo"] / "wt") + "\n",
@@ -1724,7 +1725,7 @@ def test_neutralise_given_the_replace_failing_when_called_then_the_original_surv
     """Failure path: an interrupted rewrite leaves the original intact and no temp file."""
     from ai_cli import session_adopt
 
-    _write_worktree_transcript(world["src_dir"], UUID, "myproject-2", world["repo"])
+    _write_worktree_transcript(world["src_dir"], UUID, "myrepo-tst-2", world["repo"])
     path = world["src_dir"] / f"{UUID}.jsonl"
     before = path.read_bytes()
 
@@ -1733,7 +1734,7 @@ def test_neutralise_given_the_replace_failing_when_called_then_the_original_surv
 
     monkeypatch.setattr(session_adopt.os, "replace", boom)
     with pytest.raises(OSError):
-        neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myproject-2")
+        neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myrepo-tst-2")
 
     assert path.read_bytes() == before
     assert not list(world["src_dir"].glob("*.worktree-tmp"))
@@ -2059,47 +2060,47 @@ def _adopt_resume_tree(home: Path, key: str) -> Path:
 
 def test_adopt_given_a_retitle_when_adopted_then_the_resume_artifacts_follow_the_new_name(world, adopt, collision):
     """AC1 through the command: the adopted session's next window still gets its hand-off."""
-    root = _adopt_resume_tree(world["home"], "myproject-2")
+    root = _adopt_resume_tree(world["home"], "myrepo-tst-2")
 
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
 
-    assert resume_artifacts(root, "myproject-2") == []
-    assert _relative(resume_artifacts(root, "myproject-1"), root) == {
-        "outbox/myproject-1.md",
-        "history/myproject-1.jsonl",
-        f"attempts/myproject-1-{ATTEMPT}.json",
-        f"pollers/myproject-1__{ATTEMPT}.json",
+    assert resume_artifacts(root, "myrepo-tst-2") == []
+    assert _relative(resume_artifacts(root, "myrepo-tst-1"), root) == {
+        "outbox/myrepo-tst-1.md",
+        "history/myrepo-tst-1.jsonl",
+        f"attempts/myrepo-tst-1-{ATTEMPT}.json",
+        f"pollers/myrepo-tst-1__{ATTEMPT}.json",
     }
     assert {m.action for m in result.resume_moves} == {"move"}
 
 
 def test_adopt_given_a_dry_run_retitle_when_planned_then_the_resume_tree_is_untouched(world, adopt, collision):
     """AC4 through the command."""
-    root = _adopt_resume_tree(world["home"], "myproject-2")
+    root = _adopt_resume_tree(world["home"], "myrepo-tst-2")
 
-    result = adopt(on_collision="retitle", new_title="myproject-1", dry_run=True)
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1", dry_run=True)
 
-    assert len(resume_artifacts(root, "myproject-2")) == 4
-    assert resume_artifacts(root, "myproject-1") == []
+    assert len(resume_artifacts(root, "myrepo-tst-2")) == 4
+    assert resume_artifacts(root, "myrepo-tst-1") == []
     assert len(result.resume_moves) == 4
 
 
 def test_adopt_given_a_resume_target_that_exists_when_adopted_then_it_is_kept_and_warned_about(world, adopt, collision):
     """AC3 and AC6 through the command: the conflict reaches the operator."""
-    root = _adopt_resume_tree(world["home"], "myproject-2")
-    occupied = root / "outbox" / "myproject-1.md"
-    occupied.write_text("myproject-1's own hand-off\n", encoding="utf-8")
+    root = _adopt_resume_tree(world["home"], "myrepo-tst-2")
+    occupied = root / "outbox" / "myrepo-tst-1.md"
+    occupied.write_text("myrepo-tst-1's own hand-off\n", encoding="utf-8")
 
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
 
-    assert occupied.read_text() == "myproject-1's own hand-off\n"
-    assert (root / "outbox" / "myproject-2.md").exists()
+    assert occupied.read_text() == "myrepo-tst-1's own hand-off\n"
+    assert (root / "outbox" / "myrepo-tst-2.md").exists()
     assert any("was NOT re-keyed" in w for w in result.warnings)
 
 
 def test_adopt_given_no_resume_tree_when_adopted_then_it_succeeds_with_no_moves(world, adopt, collision):
     """AC5 through the command."""
-    result = adopt(on_collision="retitle", new_title="myproject-1")
+    result = adopt(on_collision="retitle", new_title="myrepo-tst-1")
 
     assert result.resume_moves == []
     assert not (world["home"] / "resume").exists()
@@ -2125,24 +2126,24 @@ def _give_transcript_a_naming_history(world, *earlier_titles: str) -> Path:
 
 def test_source_keys_given_a_renamed_transcript_when_collected_then_history_and_uuid_are_included(world):
     """The naming history IS the record of where older artifacts were filed."""
-    path = _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+    path = _give_transcript_a_naming_history(world, "myrepo-tst-7", "myrepo-tst-8")
 
-    keys = resume_source_keys(path, "myproject-2")
+    keys = resume_source_keys(path, "myrepo-tst-2")
 
     # Oldest first, the current title dropped as the target, and the UUID last
     # because a bare session's key falls back to it.
-    assert keys == ["myproject-7", "myproject-8", UUID]
+    assert keys == ["myrepo-tst-7", "myrepo-tst-8", UUID]
 
 
 def test_adopt_given_no_retitle_when_adopted_then_an_earlier_name_s_artifacts_still_move(world, adopt):
     """The regression this exists for: no rename happens, and the hand-off must STILL follow."""
-    _give_transcript_a_naming_history(world, "myproject-9")
-    root = _adopt_resume_tree(world["home"], "myproject-9")
+    _give_transcript_a_naming_history(world, "myrepo-tst-9")
+    root = _adopt_resume_tree(world["home"], "myrepo-tst-9")
 
     result = adopt()  # adopting under its CURRENT title, so nothing is retitled
 
-    assert resume_artifacts(root, "myproject-9") == [], "artifacts were left under the old key"
-    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert resume_artifacts(root, "myrepo-tst-9") == [], "artifacts were left under the old key"
+    assert len(resume_artifacts(root, "myrepo-tst-2")) == 4
     assert {m.action for m in result.resume_moves} == {"move"}
 
 
@@ -2153,7 +2154,7 @@ def test_adopt_given_uuid_keyed_artifacts_when_adopted_then_they_move_to_the_nam
     result = adopt()
 
     assert resume_artifacts(root, UUID) == []
-    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert len(resume_artifacts(root, "myrepo-tst-2")) == 4
     assert {m.action for m in result.resume_moves} == {"move"}
 
 
@@ -2164,9 +2165,9 @@ def test_adopt_given_two_earlier_names_sharing_a_filename_when_dry_run_then_the_
     not see the destination the first already planned and both would report as
     moves — while a real run performs one move and one conflict.
     """
-    _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
-    _adopt_resume_tree(world["home"], "myproject-7")
-    _adopt_resume_tree(world["home"], "myproject-8")
+    _give_transcript_a_naming_history(world, "myrepo-tst-7", "myrepo-tst-8")
+    _adopt_resume_tree(world["home"], "myrepo-tst-7")
+    _adopt_resume_tree(world["home"], "myrepo-tst-8")
 
     result = adopt(dry_run=True)
 

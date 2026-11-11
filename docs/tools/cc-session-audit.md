@@ -134,3 +134,24 @@ A survey with no `-a` exits `0`.
   moves, and the full inventory of session state
 * [`cc-session-migration.md`](cc-session-migration.md) — moving a single
   transcript between project roots
+
+## Naming census
+
+`ai audit-sessions -N` (or `--naming`) cross-checks session slots against the
+last locally available name-registry tree and the machine's registered aliases.
+It also reports orphan scripts, watcher/worktree locks and task namespaces,
+launcher metadata disagreements, mismatched transcript titles and attached
+branches, and human names within one edit on the same machine. Slot discovery
+is independent of transcripts, so an abandoned directory with no conversation
+or registry row still appears. `-r/--repo` limits repository checks and
+`-t/--title` limits the reported identity; global orphan artifacts remain
+visible when their owning repository cannot be established.
+
+This mode is always read-only and refuses `-a/--adopt`. It does not fetch or
+initialize the name registry, repair Git metadata, migrate configuration, or
+remove anything. Exit status is `1` when violations are found, otherwise `0`.
+`probe`/`test` segments and registered label-only titles are noncanonical;
+`<session>-agents` is a container rather than a session home. Legacy names are
+reported even while the configured migration window still permits reaching
+them. See [the naming validation inventory](../bugs/session-naming-validation.md)
+for the grammar, enforcement boundaries and compatibility limits.

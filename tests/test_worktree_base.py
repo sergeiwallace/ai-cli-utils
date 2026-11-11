@@ -56,6 +56,7 @@ def repo_on_workspace_branch(tmp_path):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / "README.md").write_text("base\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "shared base", cwd=seed)
@@ -107,18 +108,18 @@ def test_given_main_tree_on_workspace_branch_when_worktree_created_then_based_on
     assert _out("rev-parse", "HEAD", cwd=repo) != _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None and worktree.is_dir()
 
     # Positive: the branch is exactly the remote-tracking ref of the integration branch.
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
-    ahead = _out("rev-list", "--count", "origin/user/dev-workspace..wt-session-1", cwd=repo)
-    assert ahead == "0", f"wt-session-1 must add no commits to its integration branch, but is {ahead} ahead"
+    assert _out("rev-parse", "wt-myrepo-tst-1", cwd=repo) == _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
+    ahead = _out("rev-list", "--count", "origin/user/dev-workspace..wt-myrepo-tst-1", cwd=repo)
+    assert ahead == "0", f"wt-myrepo-tst-1 must add no commits to its integration branch, but is {ahead} ahead"
 
     # Negative: the local-only commit did NOT leak in. A base of HEAD would have
     # brought this commit — and its file — along.
-    subjects = _out("log", "--format=%s", "wt-session-1", cwd=repo).splitlines()
+    subjects = _out("log", "--format=%s", "wt-myrepo-tst-1", cwd=repo).splitlines()
     assert "unpushed local commit" not in subjects, f"unpushed local history leaked in: {subjects}"
     assert not (worktree / "unpushed.md").exists(), "unpushed local file leaked into the worktree"
 
@@ -127,7 +128,7 @@ def test_given_main_tree_on_workspace_branch_when_worktree_created_then_based_on
 
     # Upstream tracking (AI-CLI-128) still attaches, now to the integration branch
     # rather than to main (AI-CLI-193).
-    upstream = _out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "wt-session-1@{u}", cwd=repo)
+    upstream = _out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "wt-myrepo-tst-1@{u}", cwd=repo)
     assert upstream == "origin/user/dev-workspace"
 
 
@@ -140,7 +141,7 @@ def test_given_main_tree_on_workspace_branch_when_worktree_created_then_that_bra
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
     assert _out("rev-parse", "user/dev-workspace", cwd=repo) == before
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "user/dev-workspace"
@@ -158,15 +159,16 @@ def test_given_no_origin_remote_when_worktree_created_then_raises_instead_of_bas
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (repo / "README.md").write_text("hi\n")
     _git("add", "-A", cwd=repo)
     _git("commit", "-q", "-m", "init", cwd=repo)
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), pytest.raises(RuntimeError, match="no `origin` remote"):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
-    assert not (repo / ".worktrees" / "session-1").exists(), "no worktree may be left behind on an unresolvable base"
+    assert not (repo / ".worktrees" / "myrepo-tst-1").exists(), "no worktree may be left behind on an unresolvable base"
 
 
 def test_given_existing_worktree_branch_when_worktree_recreated_then_its_history_is_preserved(
@@ -181,21 +183,21 @@ def test_given_existing_worktree_branch_when_worktree_recreated_then_its_history
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None
     (worktree / "session-work.md").write_text("work from the session\n")
     _git("add", "-A", cwd=worktree)
     _git("commit", "-q", "-m", "session work", cwd=worktree)
-    session_tip = _out("rev-parse", "wt-session-1", cwd=repo)
+    session_tip = _out("rev-parse", "wt-myrepo-tst-1", cwd=repo)
 
     _git("worktree", "remove", "--force", str(worktree), cwd=repo)
     assert not worktree.exists()
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        again = create_worktree("session-1")
+        again = create_worktree("myrepo-tst-1")
 
     assert again is not None
     assert again == worktree
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == session_tip
+    assert _out("rev-parse", "wt-myrepo-tst-1", cwd=repo) == session_tip
     assert (Path(again) / "session-work.md").exists(), "the session's own commit must survive re-creation"

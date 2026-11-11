@@ -417,6 +417,7 @@ def committed_envrc_repo(tmp_path):
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
     (seed / "README.md").write_text("hi\n")
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myapp"\n')
     (seed / ".envrc").write_text(_BODY)
     _git("add", "-A", cwd=seed)
     _git("commit", "-m", "init", cwd=seed)

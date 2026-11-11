@@ -15,11 +15,25 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import overload
 
 from . import output as _out
 from .output import Tag
+
+_INSPECTION_ONLY = ContextVar("inspection_only", default=False)
+
+
+@contextlib.contextmanager
+def inspection_only():
+    """Keep transitive config/path reads from initializing or migrating local state."""
+    token = _INSPECTION_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _INSPECTION_ONLY.reset(token)
+
 
 TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
@@ -55,6 +69,8 @@ def _pid_alive(pid: int) -> bool:
 def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     """Rename old XDG dir to new name if old exists and new does not."""
     if old.exists() and not new.exists():
+        if _INSPECTION_ONLY.get():
+            return old
         old.rename(new)
     return new
 
@@ -1044,6 +1060,7 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
 
 
 def load_config(*, read_only: bool = False):
+    read_only = read_only or _INSPECTION_ONLY.get()
     # Inspection commands must not initialise a profile or change permissions.
     config_path = Path(config_file_text()) if read_only else get_xdg_config_home() / "config.toml"
 
@@ -1579,10 +1596,11 @@ def resolve_project_prefix(path: Path | None = None) -> str:
     metadata = _read_local_project_metadata(root)
     if metadata:
         prefix, project_type = metadata
-        register_project(root, prefix, project_type)
+        if not _INSPECTION_ONLY.get():
+            register_project(root, prefix, project_type)
         return prefix
 
-    if not _can_prompt():
+    if _INSPECTION_ONLY.get() or not _can_prompt():
         raise ProjectPrefixError(
             f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
         )
