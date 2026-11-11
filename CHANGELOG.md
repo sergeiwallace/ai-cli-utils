@@ -53,6 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
   finished. Every other resume artifact found under both names is still reported and left alone.
 
+- `ai migrate-session` now checks the `ai` on `PATH`, which the migrated session relaunches
+  under, before it writes anything. A build older than the migration record format this one
+  writes (it answers `ai internal get-migration-format` with a lower number, or not at all) is
+  updated with `ai update --force`; when the update fails or cannot run, the command exits 2
+  naming the build and the update command. A dry run names the skew and updates nothing. Every
+  `session-migrations.jsonl` row now carries `"format"`. Before, a host whose installed build
+  predated the boot-recipe rename relaunched a migrated session from stale boot recipes.
+- `ai migrate-session --finish` given one name now finds the pair and its repo in this host's
+  migration record, from any directory: `ai migrate-session NEW --finish`, the old name, NEW's
+  first name, or `--finish -t FIRST`. Before, it needed both names run from the repo root, and
+  `--finish -t FIRST` failed with "not a registered worktree". A name matching no recorded pair
+  exits 2 naming the ledger it searched, and one matching several exits 2 listing the full
+  command for each. Both names given from outside the repo also use the recorded repo.
 - A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
   boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
