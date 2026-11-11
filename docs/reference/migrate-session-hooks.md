@@ -70,14 +70,17 @@ hook notes: moved notes/myrepo-3 -> notes/myrepo-box-3
 
 | Phase | Exit 0 | Non-zero |
 |---|---|---|
-| Planning (`--dry-run`) | the hook can do its part | the whole migration is refused before anything is written; the hook's stderr is quoted |
+| Planning (`--dry-run`) | the hook can do its part | the whole migration is refused before anything is written; the hook's stderr is quoted. Under `--finish`, or a re-run on a slot that already moved, only that hook is skipped: it is reported as pending with its stderr, the rest of the run goes ahead, and the command exits 1 |
 | Real run | done | a `FAILED` warning naming the hook and quoting its stderr; the remaining hooks still run and the command exits 1 |
 
 A program that cannot be started counts as a non-zero exit.
 
 Planning runs every hook before the first write, so a hook that cannot do its part
 stops the migration while nothing has moved, and a hook extends the refuse-if-live
-guard to its own state. The core moves are not rolled back after a real-run
+guard to its own state. Once the slot has moved, refusing the whole run would only
+leave the core parts undone as well, so `--finish` (including the one `ai c` runs at
+launch) skips a refusing hook, runs everything else, records no `finished` ledger
+row, and a later `--finish` plans that hook again. The core moves are not rolled back after a real-run
 failure: they are already durable. Hooks must therefore be idempotent, so that
 repeating the original `ai migrate-session` command completes the migration.
 

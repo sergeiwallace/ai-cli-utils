@@ -8,7 +8,8 @@ migration by dropping a TOML file into ``<config dir>/migrate-session.d/``::
 
 ``migrate-session`` runs every hook, sorted by filename, as
 ``argv + ["--old", OLD, "--new", NEW]``: with ``--dry-run`` while it plans (a
-non-zero exit refuses the whole migration before anything is written), then
+non-zero exit refuses the whole migration before anything is written, except under
+``--finish``, where only that hook is skipped and reported as pending), then
 without it after every core move (a non-zero exit is reported as ``FAILED``).
 ``adopt-session`` runs the same hooks under the same contract whenever an adoption
 changes the session's name. The contract is documented in
@@ -116,11 +117,15 @@ def run_hook(hook: Hook, old: str, new: str, *, dry_run: bool, cwd: Path | None 
     return HookRun(hook=hook, returncode=proc.returncode, lines=lines, stderr=(proc.stderr or "").strip())
 
 
-def plan_hooks(old: str, new: str, *, cwd: Path | None = None) -> tuple[list[Hook], list[HookRun]]:
+def plan_hooks(
+    old: str, new: str, *, cwd: Path | None = None, refused: list[HookRun] | None = None
+) -> tuple[list[Hook], list[HookRun]]:
     """Load every hook and run each with ``--dry-run``, before anything is written.
 
     Raises :class:`HookRefusal` for a malformed hook file or the first hook that
-    exits non-zero, quoting its stderr; the caller must then write nothing.
+    exits non-zero, quoting its stderr; the caller must then write nothing. When
+    ``refused`` is given, a hook that exits non-zero is appended to it and left out of
+    the plan instead, and the other hooks are still planned.
     """
     try:
         hooks = load_hooks()
@@ -129,6 +134,9 @@ def plan_hooks(old: str, new: str, *, cwd: Path | None = None) -> tuple[list[Hoo
     runs: list[HookRun] = []
     for hook in hooks:
         run = run_hook(hook, old, new, dry_run=True, cwd=cwd)
+        if not run.ok and refused is not None:
+            refused.append(run)
+            continue
         if not run.ok:
             raise HookRefusal(
                 f"hook {hook.name} ({hook.path}) refused the migration (exit {run.returncode}): "
@@ -147,6 +155,14 @@ def plan_hooks(old: str, new: str, *, cwd: Path | None = None) -> tuple[list[Hoo
 def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
     """Run every planned hook live, in order; one failure never stops the rest."""
     return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks if hook.status != "done"]
+
+
+def refusal_warning(run: HookRun) -> str:
+    """The ``NOT run`` line for a hook a ``--finish`` skipped because its ``--dry-run`` refused."""
+    return (
+        f"hook {run.hook.name} ({run.hook.path}) NOT run: it refused its preflight (exit {run.returncode}): "
+        f"{run.stderr or '(no stderr)'} -- pending; re-run the same command to finish"
+    )
 
 
 def failure_warning(run: HookRun) -> str:
