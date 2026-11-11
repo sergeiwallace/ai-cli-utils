@@ -55,6 +55,15 @@ def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]
     return parts_left(plan)
 
 
+def _bookkeeping(row: dict) -> bool:
+    """Whether a ledger row only notes a delivered context or the transcripts a run recorded.
+
+    Neither is a migration, so neither makes a pair pending, as
+    :func:`ai_cli.session_migrate.pending_finishes` also reads them.
+    """
+    return row.get("context_announced") is True or row.get("transcripts_recorded") is True
+
+
 def finish_state(old: str, new: str, state: Path) -> str | None:
     """The ledger's word on the pair: ``verified``, ``unverified``, ``pending``, or ``None`` if unrecorded.
 
@@ -64,7 +73,7 @@ def finish_state(old: str, new: str, state: Path) -> str | None:
     """
     found: str | None = None
     for row in m._ledger_rows(state):
-        if (row.get("old"), row.get("new")) != (old, new) or row.get("context_announced") is True:
+        if (row.get("old"), row.get("new")) != (old, new) or _bookkeeping(row):
             continue
         if row.get("finished") is True:
             found = "verified" if row.get("verified") is True else "unverified"

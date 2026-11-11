@@ -108,6 +108,17 @@ def test_given_a_verified_pair_when_status_runs_then_it_is_not_listed_until_all_
     assert f"{OLD} | {NEW} | {slot['repo']} | partial | " in row
 
 
+def test_given_a_verified_pair_with_a_later_transcripts_row_when_status_runs_then_it_still_reads_verified(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    _append(slot, old=OLD, new=NEW, repo=str(slot["repo"]), transcripts=["example-id"], transcripts_recorded=True)
+
+    code, out, err = _status(slot, "--status")
+
+    assert code == 0, out + err
+    assert _rows(out) == [], "a transcripts row records a resume hint, not a new migration"
+
+
 def test_given_new_is_live_when_status_runs_then_it_still_re_plans_the_pair(recorded):
     before = _everything_and_ledger(recorded)
 
