@@ -52,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picks the chief, so the dispatching machine used to invent a name that matched no session. It now
   asks the remote host (`ai internal resolve-chief-session`, read-only) and keeps the old
   placeholder only when the remote has no running chief to name or predates the command.
+
+- `ai migrate-session OLD NEW --finish`, including the finish `ai c` runs at launch, no
+  longer stops when one external hook refuses its `--dry-run`. The slot has already moved, so
+  that hook is skipped and reported as pending, the core parts and the other hooks still run,
+  no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
+  fresh migration still refuses before its first write.
+
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot

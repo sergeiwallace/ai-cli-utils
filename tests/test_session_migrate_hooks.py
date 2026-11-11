@@ -132,8 +132,8 @@ def test_given_a_moved_slot_and_a_hook_refusing_its_plan_when_finished_then_the_
     live = [c["hook"] for c in hooks.calls() if "--dry-run" not in c["args"]]
     assert live == ["notes"]
     assert f"hook notes: moved notes/{OLD}" in out
-    board = next(line for line in out.splitlines() if line.startswith("hook board | "))
-    assert board.startswith("hook board | failed: ") and "pending" in board, board
+    board = next(line.partition("hook board | ")[2] for line in out.splitlines() if "hook board | " in line)
+    assert board.startswith("failed: ") and "pending" in board, board
     assert "refused its preflight (exit 4): notes store is locked" in board
     assert "hook board" in err and "NOT run" in err
     assert _ledger_finished(slot) == []
