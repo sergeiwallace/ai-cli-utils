@@ -1191,6 +1191,12 @@ class TestDetectRepoRoot:
         assert result is None
 
 
+@pytest.fixture
+def registered_worktree_repo(tmp_path, monkeypatch):
+    entries = {str(root): {"prefix": "myrepo"} for root in (tmp_path, tmp_path / "repo")}
+    monkeypatch.setattr("ai_cli.config.load_config", lambda **kwargs: {"project_registry": entries})
+
+
 # --- create_worktree ---
 
 
@@ -1228,6 +1234,7 @@ def _stub_worktree_base(upstream="main"):
     return patch("ai_cli.session._resolve_worktree_target", return_value=(base, upstream))
 
 
+@pytest.mark.usefixtures("registered_worktree_repo")
 class TestCreateWorktree:
     def test_given_worktree_listing_fails_when_registered_worktrees_called_then_it_raises_with_stderr(self, tmp_path):
         """A genuine listing failure (not the ordinary "no repo here" case) must raise.
@@ -1248,11 +1255,11 @@ class TestCreateWorktree:
 
     def test_create_worktree_when_no_repo_then_returns_none(self):
         with patch("ai_cli.session.detect_repo_root", return_value=None):
-            result = create_worktree("session-1")
+            result = create_worktree("myrepo-tst-1")
         assert result is None
 
     def test_create_worktree_when_existing_valid_wt_then_returns_it(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "session-1"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-1"
         wt_dir.mkdir(parents=True)
 
         mock_prune = MagicMock(returncode=0)
@@ -1267,11 +1274,11 @@ class TestCreateWorktree:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("session-1")
+                result = create_worktree("myrepo-tst-1")
         assert result == wt_dir
 
     def test_create_worktree_when_new_then_creates_and_returns(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "session-2"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-2"
 
         call_log = []
 
@@ -1285,14 +1292,14 @@ class TestCreateWorktree:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("session-2")
+                result = create_worktree("myrepo-tst-2")
         assert result == wt_dir
 
     def test_create_worktree_when_new_worktree_carries_an_envrc_then_direnv_allows_that_path(self, tmp_path):
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
-        wt_dir = repo_root / ".worktrees" / "session-1"
+        wt_dir = repo_root / ".worktrees" / "myrepo-tst-1"
         calls = []
         probes = []
 
@@ -1313,7 +1320,7 @@ class TestCreateWorktree:
             _stub_worktree_base(),
             patch("subprocess.run", side_effect=fake_run),
         ):
-            result = create_worktree("session-1")
+            result = create_worktree("myrepo-tst-1")
 
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
@@ -1329,7 +1336,7 @@ class TestCreateWorktree:
         a host where no .envrc is approved at all -- the reported defect.
         """
         repo_root = tmp_path / "repo"
-        wt_dir = repo_root / ".worktrees" / "session-1"
+        wt_dir = repo_root / ".worktrees" / "myrepo-tst-1"
         wt_dir.mkdir(parents=True)
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
@@ -1348,7 +1355,7 @@ class TestCreateWorktree:
             patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
-            result = create_worktree("session-1")
+            result = create_worktree("myrepo-tst-1")
 
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
@@ -1356,7 +1363,7 @@ class TestCreateWorktree:
 
     def test_create_worktree_when_the_worktree_is_already_approved_then_nothing_is_reallowed(self, tmp_path):
         repo_root = tmp_path / "repo"
-        wt_dir = repo_root / ".worktrees" / "session-1"
+        wt_dir = repo_root / ".worktrees" / "myrepo-tst-1"
         wt_dir.mkdir(parents=True)
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
@@ -1377,18 +1384,19 @@ class TestCreateWorktree:
             patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
-            result = create_worktree("session-1")
+            result = create_worktree("myrepo-tst-1")
 
         assert result == wt_dir
         assert probes == [wt_dir]
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 
+@pytest.mark.usefixtures("registered_worktree_repo")
 class TestCreateWorktreeEdgeCases:
     def test_given_a_plain_populated_worktree_slot_when_created_then_it_is_recovered_and_recreated(
         self, tmp_path, capsys
     ):
-        wt_dir = tmp_path / ".worktrees" / "session-3"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-3"
         wt_dir.mkdir(parents=True)
         (wt_dir / "leftover.txt").write_text("do not remove\n")
         add_calls = []
@@ -1406,23 +1414,26 @@ class TestCreateWorktreeEdgeCases:
             _stub_worktree_base(),
             patch("subprocess.run", side_effect=mock_run),
         ):
-            result = create_worktree("session-3")
+            result = create_worktree("myrepo-tst-3")
 
-        recovered = wt_dir.with_name("session-3-orphaned-1725143900123456789")
+        recovered = wt_dir.with_name("myrepo-tst-3-orphaned-1725143900123456789")
         assert result == wt_dir
         assert (recovered / "leftover.txt").read_text() == "do not remove\n"
         assert wt_dir.is_dir()
-        assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-session-3", "refs/remotes/origin/main"]]
+        assert add_calls == [
+            ["git", "worktree", "add", str(wt_dir), "-b", "wt-myrepo-tst-3", "refs/remotes/origin/main"]
+        ]
         assert (
             f"[launch] worktree: recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
             in capsys.readouterr().err
         )
 
 
+@pytest.mark.usefixtures("registered_worktree_repo")
 class TestCreateWorktreeEdgeCases2:
     def test_create_worktree_when_first_add_fails_then_retries_existing_branch(self, tmp_path):
         """Covers line 444: fallback to existing branch."""
-        wt_dir = tmp_path / ".worktrees" / "session-4"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-4"
         calls = []
 
         def mock_run(cmd, **kwargs):
@@ -1436,17 +1447,17 @@ class TestCreateWorktreeEdgeCases2:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("session-4")
+                result = create_worktree("myrepo-tst-4")
         assert result == wt_dir
         add_calls = [c for c in calls if "worktree" in c and "add" in c]
         assert len(add_calls) == 2
         # The retry checks out the existing branch with NO start-point, so a previous
-        # session's commits on wt-session-4 are never reset to origin/main.
-        assert add_calls[1] == ["git", "worktree", "add", str(wt_dir), "wt-session-4"]
+        # session's commits on wt-myrepo-tst-4 are never reset to origin/main.
+        assert add_calls[1] == ["git", "worktree", "add", str(wt_dir), "wt-myrepo-tst-4"]
 
     def test_create_worktree_when_src_not_exists_then_skips_symlink(self, tmp_path):
         """Covers lines 454-455: src doesn't exist, so no symlink."""
-        wt_dir = tmp_path / ".worktrees" / "session-5"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-5"
 
         def mock_run(cmd, **kwargs):
             m = MagicMock(returncode=0, stdout="")
@@ -1456,7 +1467,7 @@ class TestCreateWorktreeEdgeCases2:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("session-5")
+                result = create_worktree("myrepo-tst-5")
         assert result == wt_dir
         assert not (wt_dir / ".venv").exists()
 
@@ -1472,13 +1483,13 @@ class TestCreateWorktreeEdgeCases2:
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match=r"branch already exists.*permission denied"):
-                    create_worktree("session-6")
+                    create_worktree("myrepo-tst-6")
 
     def test_create_worktree_when_adds_fail_after_another_process_creates_slot_then_does_not_claim_creation(
         self, tmp_path
     ):
         """A directory appearing after failed adds is not this launch's creation."""
-        wt_dir = tmp_path / ".worktrees" / "session-7"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-7"
 
         def mock_run(cmd, **kwargs):
             if cmd[:3] == ["git", "worktree", "add"]:
@@ -1489,11 +1500,11 @@ class TestCreateWorktreeEdgeCases2:
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match="slot already exists"):
-                    create_worktree("session-7", with_status=True)
+                    create_worktree("myrepo-tst-7", with_status=True)
 
     def test_given_initialization_is_blocked_when_second_launch_starts_then_it_waits_for_reuse(self, tmp_path):
         """A second launcher cannot return a worktree before its creator initializes it."""
-        wt_dir = tmp_path / ".worktrees" / "session-1"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-1"
         slot_lock = threading.Lock()
         initialization_started = threading.Event()
         release_initialization = threading.Event()
@@ -1523,7 +1534,7 @@ class TestCreateWorktreeEdgeCases2:
             assert release_initialization.wait(timeout=2)
 
         def launch(name):
-            results[name] = create_worktree("session-1", with_status=True)
+            results[name] = create_worktree("myrepo-tst-1", with_status=True)
             if name == "second":
                 second_finished.set()
 
@@ -1548,7 +1559,7 @@ class TestCreateWorktreeEdgeCases2:
 
     def test_given_creator_initialization_failure_when_waiter_reuses_then_it_completes_setup(self, tmp_path):
         """A registered worktree is initialized by the waiter after its creator fails."""
-        wt_dir = tmp_path / ".worktrees" / "session-1"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-1"
         (tmp_path / ".venv").mkdir()
         slot_lock = threading.Lock()
         creator_initializing = threading.Event()
@@ -1581,14 +1592,14 @@ class TestCreateWorktreeEdgeCases2:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         def fail_creator_upstream(_repo_root, branch, _upstream):
-            assert branch == "wt-session-1"
+            assert branch == "wt-myrepo-tst-1"
             creator_initializing.set()
             assert release_creator_failure.wait(timeout=2)
             raise RuntimeError("creator initialization failed")
 
         def launch(name):
             try:
-                results[name] = create_worktree("session-1", with_status=True)
+                results[name] = create_worktree("myrepo-tst-1", with_status=True)
             except RuntimeError as exc:
                 results[name] = str(exc)
             if name == "waiter":
@@ -1662,6 +1673,7 @@ import ai_cli.session
             _same_worktree_path(first, second)
 
 
+@pytest.mark.usefixtures("registered_worktree_repo")
 class TestCreateWorktreeSymlink:
     def test_create_worktree_when_venv_exists_then_symlinks(self, tmp_path):
         """Covers line 455: os.symlink when src exists and dst does not.
@@ -1669,7 +1681,7 @@ class TestCreateWorktreeSymlink:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".venv").mkdir()
-        wt_dir = repo_root / ".worktrees" / "session-1"
+        wt_dir = repo_root / ".worktrees" / "myrepo-tst-1"
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
@@ -1679,7 +1691,7 @@ class TestCreateWorktreeSymlink:
         with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
             with patch("ai_cli.session.get_project_prefix", return_value="session"):
                 with patch("subprocess.run", side_effect=fake_run):
-                    result = create_worktree("session-1")
+                    result = create_worktree("myrepo-tst-1")
 
         # On Windows without Developer Mode, the code falls back to junctions
         # which report as directories, not symlinks. On other platforms, symlinks work.
@@ -1699,7 +1711,7 @@ class TestCreateWorktreeSymlink:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".venv").mkdir()
-        wt_dir = repo_root / ".worktrees" / "session-2"
+        wt_dir = repo_root / ".worktrees" / "myrepo-tst-2"
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
@@ -1719,7 +1731,7 @@ class TestCreateWorktreeSymlink:
             with patch("ai_cli.session.get_project_prefix", return_value="session"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch.object(Path, "symlink_to", mock_symlink_to):
-                        result = create_worktree("session-2")
+                        result = create_worktree("myrepo-tst-2")
 
         # On Windows, the .venv link should exist as a junction (directory), not a symlink
         assert (wt_dir / ".venv").exists()
@@ -1729,11 +1741,12 @@ class TestCreateWorktreeSymlink:
         assert result == wt_dir
 
 
+@pytest.mark.usefixtures("registered_worktree_repo")
 class TestCreateWorktreeUpstreamGuard:
     """AI-CLI-128: --set-upstream-to=origin/main must not fail silently."""
 
     def test_create_worktree_when_set_upstream_fails_once_then_retries_and_succeeds(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "session-1"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-1"
         upstream_attempts = []
 
         def mock_run(cmd, **kwargs):
@@ -1747,13 +1760,13 @@ class TestCreateWorktreeUpstreamGuard:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("session-1")
+                result = create_worktree("myrepo-tst-1")
 
         assert result == wt_dir
         assert len(upstream_attempts) == 2
 
     def test_create_worktree_when_set_upstream_fails_twice_then_raises(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "session-2"
+        wt_dir = tmp_path / ".worktrees" / "myrepo-tst-2"
 
         def mock_run(cmd, **kwargs):
             m = MagicMock(returncode=0, stdout="", stderr=b"")
@@ -1761,13 +1774,13 @@ class TestCreateWorktreeUpstreamGuard:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             elif cmd[:2] == ["git", "branch"] and "--set-upstream-to=origin/main" in cmd:
                 m.returncode = 1
-                m.stderr = b"fatal: branch 'wt-session-2' does not exist"
+                m.stderr = b"fatal: branch 'wt-myrepo-tst-2' does not exist"
             return m
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match="AI-CLI-128"):
-                    create_worktree("session-2")
+                    create_worktree("myrepo-tst-2")
 
 
 # --- find_next_index ---

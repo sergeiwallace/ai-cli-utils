@@ -120,6 +120,9 @@ def test_given_idle_session_watcher_when_it_polls_then_it_ticks_at_most_once_per
 
 def _install_session_meta(state: Path, tmux_session: str, ai_name: str) -> None:
     state.mkdir(parents=True, exist_ok=True)
+    owner = state.parent / "myproject"
+    owner.mkdir(exist_ok=True)
+    (owner / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "session"\n')
     (state / f"session-meta-{tmux_session}.json").write_text(
         json.dumps(
             {
@@ -128,7 +131,7 @@ def _install_session_meta(state: Path, tmux_session: str, ai_name: str) -> None:
                 "session": tmux_session,
                 "prefix": "c-session-",
                 "project_prefix": "session",
-                "worktree_dir": "/tmp/wt",
+                "worktree_dir": str(owner),
                 "project_name": "myproject",
             }
         )
@@ -170,7 +173,15 @@ def test_given_windows_when_unchanged_template_refresh_reruns_then_script_is_not
     so rewriting an unchanged script makes every session exec a reload for nothing.
     """
     state, _ = refresh_env
-    monkeypatch.setattr(main.os, "name", "nt")
+    real_os = main.os
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, key):
+            return getattr(real_os, key)
+
+    monkeypatch.setattr(main, "os", WindowsOS())
 
     assert _refresh_live_session_scripts() == 1
     script_path = state / "sessions" / "c-session-1.sh"

@@ -42,7 +42,7 @@ def _git(*args, cwd):
 
 
 @pytest.fixture
-def real_repo(tmp_path):
+def real_repo(tmp_path, register_repo):
     """A clone with a real upstream, which is what the launcher accepts."""
     remote = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True, capture_output=True)
@@ -53,6 +53,7 @@ def real_repo(tmp_path):
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
     (seed / "README.md").write_text("hi\n")
+    register_repo(seed, "kg")
     _git("add", "-A", cwd=seed)
     _git("commit", "-m", "init", cwd=seed)
     _git("push", "-q", str(remote), "main", cwd=seed)

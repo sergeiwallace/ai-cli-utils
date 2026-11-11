@@ -271,6 +271,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     cwd = tmp_path / "myproject"
     cwd.mkdir()
+    (cwd / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
     (root / ".claude").mkdir()
     (root / ".claude" / "settings.json").write_text('{"remoteControlAtStartup": true}', encoding="utf-8")
     transcript = root / ".claude" / "projects" / "myproject" / f"{SESSION_ID}.jsonl"

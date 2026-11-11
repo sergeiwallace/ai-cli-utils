@@ -294,10 +294,10 @@ def test_given_a_label_and_with_name_when_launched_then_the_label_is_followed_by
 ):
     fleet = build_fleet(tmp_path, monkeypatch)
 
-    ai_name = named(launch, "probe", naming=main._NamingRequest(with_name=True))
+    ai_name = named(launch, "review", naming=main._NamingRequest(with_name=True))
 
-    assert ai_name.startswith(f"{STEM}-probe-")
-    assert fleet.rows()[ai_name.rsplit("-", 1)[-1]]["label"] == "probe"
+    assert ai_name.startswith(f"{STEM}-review-")
+    assert fleet.rows()[ai_name.rsplit("-", 1)[-1]]["label"] == "review"
 
 
 def _fresh_clone_fleet(tmp_path, monkeypatch):
@@ -374,7 +374,7 @@ def test_given_a_terminal_inside_tmux_when_a_tmux_launch_starts_then_it_refuses_
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
 
     with pytest.raises(SystemExit) as exited:
-        launch("probe", bare=False)
+        launch("review", bare=False)
 
     assert exited.value.code == 1
     assert fleet.rows() == {}
@@ -392,7 +392,7 @@ def test_given_a_terminal_inside_tmux_when_a_bare_launch_starts_then_it_is_named
 
 def _held_labelled_title(launch) -> str:
     """Reserve a labelled title on this machine, as a --once launch that then died leaves it."""
-    return named(launch, "probe", naming=main._NamingRequest(with_name=True))
+    return named(launch, "review", naming=main._NamingRequest(with_name=True))
 
 
 def test_given_a_labelled_title_held_here_with_no_session_when_resumed_by_name_then_that_title_relaunches(

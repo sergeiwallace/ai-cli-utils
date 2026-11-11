@@ -154,7 +154,12 @@ def test_given_an_unknown_option_when_run_through_cli_then_the_usage_error_is_ta
     assert not _untagged(err), _untagged(err)
 
 
-def test_given_allocate_session_name_when_run_through_cli_then_stdout_is_one_bare_json_document(capsys):
+def test_given_allocate_session_name_when_run_through_cli_then_stdout_is_one_bare_json_document(
+    capsys, tmp_path, monkeypatch, register_repo
+):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    register_repo(tmp_path, "myproject")
+    monkeypatch.chdir(tmp_path)
     with (
         patch("sys.argv", ["ai", "internal", "allocate-session-name", "c", "myproject", "4"]),
         patch("ai_cli.host_env.resolve_host_env", return_value=("inherited", "test-host")),

@@ -745,7 +745,7 @@ def detect_repo_root():
     res = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env(), check=False
     )
-    if res.returncode != 0:
+    if res.returncode != 0 or not res.stdout.strip():
         return None
     git_common = Path(res.stdout.strip())
     if not git_common.is_absolute():
@@ -1271,6 +1271,11 @@ def create_worktree(
     repo_root = repo_root or detect_repo_root()
     if not repo_root:
         return None
+
+    from .session_naming import validate_artifact_name
+
+    # Existing legacy homes remain reachable during the configured migration window.
+    validate_artifact_name(ai_name, repo_root, allow_legacy=(repo_root / WORKTREE_DIR / ai_name).is_dir())
 
     # Deterministic repair backstop (AI-CLI-99): repo_root is a normal working
     # tree and must never be core.bare=true / carry a stale core.worktree.

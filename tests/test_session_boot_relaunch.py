@@ -18,7 +18,11 @@ from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
 
 
 @pytest.fixture
-def boot_record(tmp_path):
+def boot_record(tmp_path, monkeypatch):
+    from ai_cli import session_naming
+
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
+    session_naming.alias_sources()[0].write_text('[aliases]\ntest-host = "host"\n')
     return {
         "id": "record-1",
         "name": "c-myproject-host-1",

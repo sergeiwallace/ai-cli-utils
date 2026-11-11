@@ -404,6 +404,236 @@ class NamingConventionError(HostAliasError):
     """The configured naming conventions leave no way to name this session."""
 
 
+# One grammar for durable session identities and every artifact derived from them.
+_SESSION_TEXT_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+MAX_SESSION_LENGTH = 128
+NONCANONICAL_SEGMENTS = frozenset({"probe", "test"})
+
+
+@dataclass(frozen=True)
+class SessionName:
+    """A checked identity; diagnostic sessions and labels are never canonical homes."""
+
+    title: str
+    suffix: str
+    label: str | None
+    canonical: bool
+
+
+def naming_refusal(rule: str, value: object, fix: str) -> NamingConventionError:
+    return NamingConventionError(f"{rule} rule refused {value!r}. Fix: {fix}")
+
+
+def validate_session_text(value: str, *, partial: bool = False) -> None:
+    """Refuse input instead of silently turning it into a different identity."""
+    if partial and not value:
+        return
+    if len(value) > MAX_SESSION_LENGTH or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
+        raise naming_refusal(
+            "session charset", value, "use lowercase ASCII letters/digits and single hyphens, at most 128 characters"
+        )
+    tail = value.rsplit("-", 1)[-1]
+    if tail.isdigit() and (tail.startswith("0")):
+        raise naming_refusal("session index", value, "use a positive decimal index without leading zeroes")
+
+
+def validate_session_name(
+    title: str,
+    *,
+    repo_alias: str,
+    host_alias: str,
+    names: Iterable[str] = (),
+    label_only: bool = False,
+    allow_legacy: bool = False,
+) -> SessionName:
+    """Validate against explicit owner aliases, without resolving or writing state.
+
+    Human suffixes come from the registry's known names. A label-only title is
+    accepted only when its caller has identified a label row. Legacy reach is an
+    explicit compatibility choice; audits always leave it off.
+    """
+    validate_session_text(title)
+    if not _SESSION_TEXT_RE.fullmatch(title):
+        raise naming_refusal("session charset", title, "start the session name with a lowercase ASCII letter")
+    if not title.startswith(f"{repo_alias}-"):
+        raise naming_refusal("repo alias", title, f"use the owning repository's registered alias {repo_alias!r}")
+    rest = title[len(repo_alias) + 1 :]
+    canonical = True
+    if host_alias and rest.startswith(f"{host_alias}-"):
+        rest = rest[len(host_alias) + 1 :]
+    elif allow_legacy:
+        canonical = False
+    else:
+        raise naming_refusal("host alias", title, f"use the registered host alias {host_alias!r} after {repo_alias!r}")
+    head, _, tail = rest.rpartition("-")
+    known = frozenset(names)
+    if not (tail.isdigit() or tail in known or label_only):
+        raise naming_refusal(
+            "session suffix",
+            title,
+            "end in a positive index or a registered human name; reserve human names with --name/--to-name",
+        )
+    if tail in {repo_alias, host_alias, "agents"}:
+        raise naming_refusal("reserved name", title, "choose a human name different from repo/host aliases and agents")
+    diagnostic = bool(set(rest.split("-")) & NONCANONICAL_SEGMENTS)
+    return SessionName(title, tail, head or None, canonical and not diagnostic and not label_only)
+
+
+def validate_launch_input(value: str, *, repo_alias: str, host_alias: str, legacy_titles: Iterable[str] = ()) -> None:
+    """Recognize qualified requests before the slot parser can reinterpret them as labels."""
+    validate_session_text(value, partial=True)
+    bare = launch_title(value)
+    _refuse_diagnostic(bare.removeprefix(f"{repo_alias}-{host_alias}-"), value)
+    qualified = bare != value or bare.startswith(f"{repo_alias}-") or (host_alias and f"-{host_alias}-" in bare)
+    if qualified:
+        validate_session_name(
+            bare, repo_alias=repo_alias, host_alias=host_alias, label_only=True, allow_legacy=bare in legacy_titles
+        )
+
+
+def launch_title(value: str) -> str:
+    """The title carried by a qualified engine/tmux request, or the bare input."""
+    return re.sub(r"^(?:cx|c|g|p|claude|gemini|pi|codex)(?:-r)?-", "", value)
+
+
+def _refuse_diagnostic(label: str, title: str) -> None:
+    if set(label.split("-")) & NONCANONICAL_SEGMENTS:
+        raise naming_refusal(
+            "noncanonical", title, "keep probe/test sessions outside canonical launch and worktree creation"
+        )
+
+
+def split_host_qualified(value: str) -> tuple[str | None, str]:
+    """Split a host-qualified inventory name, resolving host ids or unique registered aliases."""
+    if "--" not in value:
+        return None, value
+    qualifier, title = value.split("--", 1)
+    sources = alias_sources()
+    try:
+        _resolve_from(qualifier, sources)
+        return qualifier, title
+    except HostAliasNotConfiguredError:
+        candidates = set()
+        for source in sources:
+            aliases = (_read_registry(source) or {}).get("aliases", {})
+            if isinstance(aliases, dict):
+                candidates.update(machine for machine, alias in aliases.items() if alias == qualifier)
+        matches = [machine for machine in candidates if _resolve_from(machine, sources) == qualifier]
+        if len(matches) == 1:
+            return matches[0], title
+    raise naming_refusal("host alias", qualifier, "qualify with a registered machine id or an unambiguous host alias")
+
+
+def registered_repo_alias(repo: Path) -> str:
+    """Resolve the existing owner registration, never prompting or persisting metadata."""
+    try:
+        with _config.inspection_only():
+            return _config.resolve_project_prefix(repo).lower()
+    except _config.ProjectPrefixError as exc:
+        raise naming_refusal("repo registration", repo.name, str(exc)) from exc
+
+
+def legacy_target_allowed(title: str, repo: Path) -> bool:
+    """Retain the configured numeric legacy API until its cutover is approved."""
+    alias = registered_repo_alias(repo)
+    rest = title.removeprefix(f"{alias}-")
+    return (
+        title.startswith(f"{alias}-")
+        and rest.isdigit()
+        and _config.read_naming_config(_config.load_config())["legacy_convention"] == "full"
+    )
+
+
+def naming_snapshot():
+    """Read the last local registry tree without fetch, seed, lock creation or publish."""
+    from . import name_registry as registry
+
+    discovered = registry.discover().registry
+    if isinstance(discovered, registry.LocalRegistry):
+        return discovered._read()
+    if discovered is None:
+        # Older registry checkouts explicitly disable human names. Numeric
+        # identities still use the canonical-worktree registry.
+        return registry.Snapshot(tip=None)
+    return discovered.snapshot(fetch=False)
+
+
+@_config.inspection_only()
+def validate_artifact_name(
+    title: str,
+    repo: Path,
+    *,
+    machine: str | None = None,
+    allow_legacy: bool = False,
+    reserved_name: bool = False,
+) -> SessionName:
+    """Check the owning repo/host at a filesystem boundary without initializing config."""
+    from . import name_registry as registry
+
+    alias = registered_repo_alias(repo)
+    try:
+        host = resolve_host_alias() if machine is None else _resolve_from(machine, alias_sources())
+    except HostAliasNotConfiguredError:
+        if not allow_legacy:
+            raise
+        host = ""
+    try:
+        snapshot = naming_snapshot()
+    except registry.RegistryError as exc:
+        raise naming_refusal("name registry", title, str(exc)) from exc
+    names = snapshot.available | {str(row.get("name")) for row in snapshot.rows.values() if row.get("name")}
+    if reserved_name:
+        names |= {title.rsplit("-", 1)[-1]}
+    label_only = any(row.get("title") == title and row.get("kind") == "label" for row in snapshot.rows.values())
+    parsed = validate_session_name(
+        title, repo_alias=alias, host_alias=host, names=names, label_only=label_only, allow_legacy=allow_legacy
+    )
+    _refuse_diagnostic("-".join(filter(None, (parsed.label, parsed.suffix))), title)
+    if parsed.suffix in names and not label_only:
+        for row in snapshot.rows.values():
+            token = row.get("name")
+            if (
+                row.get("machine") == (machine or host_id())
+                and row.get("host_alias") == host
+                and row.get("title") != title
+                and token
+                and one_edit_apart(parsed.suffix, token)
+            ):
+                raise naming_refusal(
+                    "name distance", title, f"choose a name more than one edit from {token!r} on host {host!r}"
+                )
+    return parsed
+
+
+def validate_artifact_agreement(
+    title: str, *, engine: str, session: str, remote: bool, worktree: Path | None = None
+) -> None:
+    """All launch artifacts derive from the same checked session identity."""
+    expected = f"{engine}{'-r' if remote else ''}-{title}"
+    if session != expected:
+        raise naming_refusal("tmux agreement", session, f"use {expected!r} for session {title!r}")
+    if worktree is not None and (worktree.name != title or worktree.parent.name != ".worktrees"):
+        raise naming_refusal("worktree agreement", str(worktree), f"use <repo>/.worktrees/{title}")
+
+
+def validate_script_metadata(meta: dict, *, expected_session: str | None = None) -> None:
+    """Check the identity at launcher creation/regeneration, before rendering or writing."""
+    title = meta["ai_name"]
+    if expected_session is not None and meta["session"] != expected_session:
+        raise naming_refusal("script agreement", meta["session"], f"use metadata for {expected_session!r}")
+    validate_session_text(title)
+    worktree = Path(meta["worktree_dir"]) if meta.get("worktree_dir") not in (None, "", ".") else None
+    home = worktree if worktree is not None and ".worktrees" in worktree.parts else None
+    validate_artifact_agreement(
+        title, engine=meta["engine"], session=meta["session"], remote=meta.get("is_remote", False), worktree=home
+    )
+    if worktree is not None:
+        owner = _config._project_root(worktree)
+        if home is None and owner != worktree.resolve():
+            raise naming_refusal("worktree agreement", str(worktree), "use a session home or the registered repo root")
+        validate_artifact_name(title, owner, allow_legacy=worktree.is_dir())
+
+
 @dataclass(frozen=True)
 class LaunchNaming:
     """How one launch names its session under the ``[naming]`` config.

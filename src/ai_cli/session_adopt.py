@@ -1008,6 +1008,12 @@ def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path
     wt_dir = repo_root / ".worktrees" / ai_name
     if dry_run:
         from .session import _registered_worktree_at, registered_worktrees
+        from .session_naming import validate_artifact_name
+
+        try:
+            validate_artifact_name(ai_name, repo_root, allow_legacy=wt_dir.is_dir())
+        except RuntimeError as exc:
+            raise AdoptionError(str(exc)) from exc
 
         registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
         if registered is not None:
@@ -1157,6 +1163,15 @@ def adopt_session(
             hook_lines = [f"hook {run.hook.name}: {line}" for run in runs for line in run.lines]
 
     dest_root, worktree_created = _ensure_worktree(repo_root, target_title, dry_run)
+    if not dry_run:
+        from .canonical_worktrees import CanonicalWorktreeRegistryError, register_canonical_worktree
+
+        try:
+            register_canonical_worktree(dest_root, engine="c", session_name=f"c-{target_title}")
+        except CanonicalWorktreeRegistryError as exc:
+            raise AdoptionError(
+                f"{exc}; refusing to move a transcript into an unregistered home. Repair the canonical registry and retry."
+            ) from exc
 
     migration: MigrationResult | None
     worktree_records_cleared = 0

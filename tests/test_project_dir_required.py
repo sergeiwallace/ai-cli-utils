@@ -69,10 +69,14 @@ def test_given_a_remote_launch_when_the_project_dir_is_absent_then_it_refuses_na
     assert "ai c -R -p PROJECT" in err
 
 
-def test_given_a_remote_launch_when_the_project_dir_exists_then_it_chdirs_into_it(launch_boundary, tmp_path):
+def test_given_a_remote_launch_when_the_project_dir_exists_then_it_chdirs_into_it(
+    launch_boundary, tmp_path, monkeypatch, register_repo
+):
     """The positive control: refusing an absent directory must not refuse a present one."""
     present = tmp_path / "projects" / "myproject"
     present.mkdir(parents=True)
+    register_repo(present, "myproject")
+    monkeypatch.chdir(present)
 
     with (
         patch(
@@ -82,7 +86,7 @@ def test_given_a_remote_launch_when_the_project_dir_exists_then_it_chdirs_into_i
         patch("ai_cli.config.load_config", return_value=_BARE_CONFIG),
         patch("ai_cli.config.get_project_aliases", return_value={}),
         patch("ai_cli.config._find_project_dir", return_value=present),
-        patch("ai_cli.session.build_session_name", return_value=("c-r-myproject-1", "myproject-1")),
+        patch("ai_cli.session.build_session_name", return_value=("c-r-myproject-tst-1", "myproject-tst-1")),
         patch("os.chdir") as mock_chdir,
     ):
         with pytest.raises(SystemExit) as exc_info:

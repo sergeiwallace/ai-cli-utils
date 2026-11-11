@@ -27,6 +27,7 @@ from ai_cli.session_script import get_engine_script
 @pytest.fixture
 def programs(tmp_path, monkeypatch):
     legacy = (Path(__file__).parent / "fixtures/session_restart_legacy.txt").read_text(encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
     legacy = legacy.replace("__PROJECT_DIR__", tmp_path.as_posix())
     metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     metadata = json.loads(shlex.split(metadata_line)[2])
@@ -135,6 +136,7 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     state.register(SESSION, recipe={"argv": ["ai", "c", "1"], "cwd": str(root / "myproject")}, host="host-a")
     _install_real_lifecycle(root / "bin/ai", root)
+    (root / "myproject" / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
     metadata = session_restart._object(config.get_xdg_state_home() / f"session-meta-{SESSION}.json")
     old_inode = script.stat().st_ino
     main._write_launch_script_if_changed(script, main._engine_script_from_meta(metadata))

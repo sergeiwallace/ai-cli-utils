@@ -51,6 +51,7 @@ def repo(tmp_path):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / "README.md").write_text("base\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -83,12 +84,12 @@ def _misplaced_session_worktree(repo: Path, name: str, wrong_leaf: str) -> Path:
 def test_given_the_branch_held_at_another_path_when_created_then_it_is_relocated_to_the_slot(repo, monkeypatch):
     """The repair: the launch succeeds, at the canonical slot, with the work intact."""
     monkeypatch.chdir(repo)
-    wrong = _misplaced_session_worktree(repo, "session-1", "session-1r")
-    slot = repo / ".worktrees" / "session-1"
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-1", "myrepo-tst-1r")
+    slot = repo / ".worktrees" / "myrepo-tst-1"
     head_before = _git("rev-parse", "HEAD", cwd=wrong).stdout.strip()
     assert not slot.exists(), "precondition: the canonical slot is absent"
 
-    created = create_worktree("session-1")
+    created = create_worktree("myrepo-tst-1")
 
     assert created == slot
     assert slot in registered_worktrees(repo), "git must report a worktree at the slot"
@@ -96,7 +97,7 @@ def test_given_the_branch_held_at_another_path_when_created_then_it_is_relocated
     assert (slot / "committed.md").read_text() == "a commit that exists nowhere else\n"
     assert (slot / "dirty.md").read_text() == "an uncommitted edit\n", "uncommitted work must survive"
     assert _git("rev-parse", "HEAD", cwd=slot).stdout.strip() == head_before, "the unpushed commit must survive"
-    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-1"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-myrepo-tst-1"
 
 
 def test_given_the_branch_held_at_another_path_when_created_then_git_registration_follows_the_move(repo, monkeypatch):
@@ -107,14 +108,14 @@ def test_given_the_branch_held_at_another_path_when_created_then_git_registratio
     files reports the old path here while the assertions above still pass.
     """
     monkeypatch.chdir(repo)
-    wrong = _misplaced_session_worktree(repo, "session-2", "session-2r")
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-2", "myrepo-tst-2r")
 
-    create_worktree("session-2")
+    create_worktree("myrepo-tst-2")
 
     prune = _git("worktree", "prune", "--dry-run", cwd=repo).stdout
     assert prune.strip() == "", f"no stale registration may remain, got {prune!r}"
     assert wrong not in registered_worktrees(repo)
-    assert _git("status", "--porcelain", cwd=repo / ".worktrees" / "session-2").stdout == "?? dirty.md\n"
+    assert _git("status", "--porcelain", cwd=repo / ".worktrees" / "myrepo-tst-2").stdout == "?? dirty.md\n"
 
 
 def test_given_an_empty_slot_and_the_branch_held_elsewhere_when_created_then_it_is_still_relocated(repo, monkeypatch):
@@ -124,11 +125,11 @@ def test_given_an_empty_slot_and_the_branch_held_elsewhere_when_created_then_it_
     directory itself rather than refusing over a path holding nothing.
     """
     monkeypatch.chdir(repo)
-    _misplaced_session_worktree(repo, "session-3", "session-3r")
-    slot = repo / ".worktrees" / "session-3"
+    _misplaced_session_worktree(repo, "myrepo-tst-3", "myrepo-tst-3r")
+    slot = repo / ".worktrees" / "myrepo-tst-3"
     slot.mkdir()
 
-    created = create_worktree("session-3")
+    created = create_worktree("myrepo-tst-3")
 
     assert created == slot
     assert (slot / "committed.md").read_text() == "a commit that exists nowhere else\n"
@@ -144,12 +145,12 @@ def test_given_a_live_session_in_the_misplaced_worktree_when_created_then_it_ref
     the command that finishes the job once the session exits.
     """
     monkeypatch.chdir(repo)
-    wrong = _misplaced_session_worktree(repo, "session-4", "session-4r")
-    slot = repo / ".worktrees" / "session-4"
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-4", "myrepo-tst-4r")
+    slot = repo / ".worktrees" / "myrepo-tst-4"
     monkeypatch.setattr("ai_cli.session._worktree_has_live_session", lambda path: path == wrong)
 
     with pytest.raises(RuntimeError) as caught:
-        create_worktree("session-4")
+        create_worktree("myrepo-tst-4")
 
     message = str(caught.value)
     assert f"worktree move {wrong} {slot}" in message, (
@@ -168,12 +169,12 @@ def test_given_a_locked_misplaced_worktree_when_created_then_it_refuses_with_git
     non-zero ``git worktree move`` without replacing any part of the code under
     test.
     """
-    wrong = _misplaced_session_worktree(repo, "session-5", "session-5r")
-    slot = repo / ".worktrees" / "session-5"
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-5", "myrepo-tst-5r")
+    slot = repo / ".worktrees" / "myrepo-tst-5"
     _git("worktree", "lock", str(wrong), "--reason", "held by hand", cwd=repo)
 
     with pytest.raises(RuntimeError) as caught:
-        create_worktree("session-5", repo_root=repo)
+        create_worktree("myrepo-tst-5", repo_root=repo)
 
     message = str(caught.value)
     assert "locked" in message.lower(), f"git's own reason must reach the user, got {message!r}"
@@ -191,11 +192,11 @@ def test_given_a_branch_no_worktree_holds_when_probed_then_no_holder_is_reported
     launcher relocated arbitrary worktrees.
     """
     monkeypatch.chdir(repo)
-    wrong = _misplaced_session_worktree(repo, "session-6", "session-6r")
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-6", "myrepo-tst-6r")
 
-    assert _worktree_holding_branch(repo, "wt-session-6") == wrong
+    assert _worktree_holding_branch(repo, "wt-myrepo-tst-6") == wrong
     assert _worktree_holding_branch(repo, "wt-session-nobody") is None
-    assert _worktree_holding_branch(repo, "wt-session-6-suffix") is None, "matching must not be a prefix test"
+    assert _worktree_holding_branch(repo, "wt-myrepo-tst-6-suffix") is None, "matching must not be a prefix test"
 
 
 def test_given_a_detached_worktree_when_probed_then_it_is_not_reported_as_holding_a_branch(repo, monkeypatch):
@@ -205,9 +206,9 @@ def test_given_a_detached_worktree_when_probed_then_it_is_not_reported_as_holdin
     attribute the session's branch to the detached worktree that follows it.
     """
     monkeypatch.chdir(repo)
-    held = _misplaced_session_worktree(repo, "session-7", "session-7r")
+    held = _misplaced_session_worktree(repo, "myrepo-tst-7", "myrepo-tst-7r")
     detached = repo / ".worktrees" / "detached-leaf"
     _git("worktree", "add", "-q", "--detach", str(detached), cwd=repo)
 
-    assert _worktree_holding_branch(repo, "wt-session-7") == held
+    assert _worktree_holding_branch(repo, "wt-myrepo-tst-7") == held
     assert _worktree_holding_branch(repo, "HEAD") is None

@@ -58,7 +58,7 @@ def _hook_env() -> dict[str, str]:
 
 def _commit_all(repo: Path, message: str) -> None:
     _git(repo, "add", "-A")
-    result = _git(repo, "commit", "-q", "--no-verify", "-m", message)
+    result = _git(repo, "commit", "-q", "-m", message)
     assert result.returncode == 0, result.stderr
 
 
@@ -204,7 +204,7 @@ def test_given_staged_deletion_of_a_tracked_symlink_when_checked_then_rejects(re
         check=True,
     ).stdout.strip()
     _git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},docs/link.md")
-    assert _git(repo, "commit", "-q", "--no-verify", "-m", "add a tracked symlink").returncode == 0
+    assert _git(repo, "commit", "-q", "-m", "add a tracked symlink").returncode == 0
     _git(repo, "update-ref", "refs/remotes/origin/main", _git(repo, "rev-parse", "HEAD").stdout.strip())
     assert "120000" in _git(repo, "ls-files", "-s", "--", "docs/link.md").stdout, "fixture must stage a symlink"
 

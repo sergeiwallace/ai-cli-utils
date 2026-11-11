@@ -111,8 +111,10 @@ def test_given_stale_host_when_name_candidates_listed_then_current_alias_is_reso
     assert "free" in out
 
 
-def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(fresh_host, tmp_path):
-    repo = _make_repo(tmp_path, "myrepo")
+def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(slot, fresh_host, monkeypatch):  # noqa: F811
+    # Host resolution must not depend on an external dictionary download or a warm cache.
+    monkeypatch.setattr(name_registry, "common_words", lambda policy: frozenset({"may", "art", "sun"}))
+    repo = slot["repo"]
     (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     # The dry run now applies the real run's refusals, so the session must be a registered worktree.
     subprocess.run(
@@ -120,7 +122,7 @@ def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target
         check=True,
     )
     code, out, err = run_cli(
-        ["ai", "migrate-session", "myrepo-1", "--to-name", "cleo", "--dry-run", "--repo", str(repo)]
+        ["ai", "migrate-session", "myrepo-3", "--to-name", "cleo", "--dry-run", "--repo", str(repo)]
     )
     assert code == 0, err
     assert "myrepo-box-cleo" in out
