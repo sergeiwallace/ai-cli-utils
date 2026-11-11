@@ -260,6 +260,71 @@ def test_given_both_artifacts_gone_when_released_by_hand_then_the_row_is_deleted
     assert "cleo" not in fleet.rows()
 
 
+def _add_spare(fleet, name: str, *, machine: str = HOST, registry=None) -> None:
+    (registry or fleet.registry).transact(
+        lambda s: reg.Change(
+            {
+                reg.row_path(name): reg.checked_row(
+                    reg.spare_row(name=name, host_alias="box" if machine == HOST else "two", machine=machine)
+                )
+            },
+            "spare (fixture)",
+        )
+    )
+
+
+def test_given_an_unused_spare_when_released_by_hand_then_the_row_is_deleted(fleet):
+    _repo(fleet)
+    _add_spare(fleet, "lola")
+
+    result = CliRunner().invoke(_cli_group, ["release-name", "lola"])
+
+    assert result.exit_code == 0, result.output
+    assert "lola" not in fleet.rows()
+
+
+def test_given_another_machines_spare_when_released_by_hand_then_it_refuses_naming_the_holder(fleet):
+    _repo(fleet)
+    _add_spare(fleet, "kurt", machine=OTHER_HOST, registry=fleet.other_machine("other-spare"))
+
+    result = CliRunner().invoke(_cli_group, ["release-name", "kurt"])
+
+    assert result.exit_code == 2
+    assert f"only {OTHER_HOST} can test" in result.output
+    assert "kurt" in fleet.rows()
+
+
+def test_given_a_spare_an_offline_launch_took_when_released_by_hand_then_it_refuses_and_keeps_the_row(fleet):
+    _repo(fleet)
+    _add_spare(fleet, "lola")
+    fleet.registry.snapshot()
+    fleet.offline()
+    taken = reg.take_spare(
+        fleet.registry,
+        reg.Slot(repo=REPO, repo_alias=REPO, host_alias="box", label=None, machine=HOST, client="claude-code"),
+    )
+    fleet.online()
+
+    with pytest.raises(reg.WriteRefusedError, match="offline launch"):
+        reg.release_name(fleet.registry, taken.name, HOST, projects_root=fleet.projects, adapters={})
+
+    assert fleet.rows()[taken.name]["kind"] == "spare"
+
+
+def test_given_a_session_row_without_a_client_when_released_by_hand_then_it_still_refuses(fleet):
+    _repo(fleet)
+    _session(fleet, "cleo")
+    row = dict(fleet.rows()["cleo"])
+    row["client"] = None
+    fleet.registry.transact(lambda s: reg.Change({reg.row_path("cleo"): reg.encode_json(row)}, "no client (fixture)"))
+
+    result = CliRunner().invoke(_cli_group, ["release-name", "cleo"])
+
+    assert result.exit_code == 2
+    assert "transcript unknown" in result.output
+    assert "cleo" in fleet.rows()
+
+
 def test_given_a_reassignment_when_it_succeeds_then_the_row_stays_held_with_only_its_owner_changed(fleet, monkeypatch):
     _repo(fleet)
     before = _session(fleet, "cleo")
