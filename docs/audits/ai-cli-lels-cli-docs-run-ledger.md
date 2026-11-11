@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `research converged (round 1)`; research doc `docs/research/cli-docs-generation-tools.md`; doc stage next |
+| Stage cursor | `doc done`; design doc `docs/designs/single-source-cli-docs.md`; doc-audit next |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -77,5 +77,12 @@ ledger-version: 1
   run, so no critic finding is open. Both legs reported that general web search was unavailable;
   the host's search service was not loadable from the coordinator either, and the remaining
   search gap does not bear on a decision. `research->doc` round 1 recorded `converged`.
+
+- 2026-11-11 ~06:00Z: design doc authored by the coordinator (eight Decisions, each resolved
+  through the Authority test; no Open Questions); `scripts/far_fidelity.py check` reported 0
+  findings against the raw record. Doc-stage boundary run through `flow_dispatch_doc.py` prepare
+  and complete with lineage root `docs/tools/ai-cli-usage.md` (the hand-written usage doc this
+  design supersedes in part); a first prepare with the design itself as lineage root refused
+  `pinned-target-absent`, correctly, since that file is new.
 
 <!-- /doc:region name="run_history" -->
