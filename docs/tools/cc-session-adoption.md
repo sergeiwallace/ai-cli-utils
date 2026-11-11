@@ -560,7 +560,10 @@ and refuses while `.worktrees/OLD` is still a registered slot or either session 
 running; stop a running one with `ai sessions stop NAME` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
 other parts and hooks still run, and the command exits 1 so it is re-run. `-n` prints its
-plan with nothing written.
+plan with nothing written, and runs while either session is live: its first line,
+`live session: ...`, names the running session and says a writing run refuses until it
+is stopped with `ai sessions stop NAME`. The writing run keeps that refusal and exits 2
+before its first write.
 
 `--finish` needs only one name. `ai migrate-session NEW --finish`, the old name,
 NEW's first name (`cleo` in `myrepo-box-cleo`) or `ai migrate-session --finish -t
@@ -597,15 +600,28 @@ plan. `--finish` refuses while either session runs; `ai migrate-session OLD NEW
 --beads-only` does only this re-key, under the same ledger rule, and runs while
 NEW is live, so a migrated session already back at work need not exit for it.
 
-A `--finish` that re-keyed on that row and left nothing undone appends a row with
-`"finished": true` for the pair; the ledger is append-only, so the migration's own
-row is never rewritten. The migration's row lists the session ids of the
-transcripts it moved (`"transcripts"`), and a `--finish` on that row appends a
+The migration's row lists the session ids of the transcripts it moved
+(`"transcripts"`), and a `--finish` on that row appends a
 `"transcripts_recorded": true` row for each transcript that no row names yet and
 that it retitles or that began (its first timestamped record) before the pair's
 first migration row, on a finished pair too. `ai c NEW` resumes a listed transcript ahead of a
 more recently active one also titled NEW, such as one a relaunch started before the
-migration finished. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
+migration finished.
+
+Every writing run, a full migration, `--finish` or `--to-name`, ends with a read-only
+re-plan of the pair: the `--finish -n` plan, read part by part. A part is done when
+it reads `done earlier`, or a skip that finds nothing to carry (`no matching
+artifact`, `informational`, `unconfigured`, `missing`, and the `direct rename` of
+the name registry); a hook is done only when its `--dry-run` prints
+`migrate-status: done`. Anything else, an unreadable store, a hook without a status
+line, or a plan that refuses, is a part left. When nothing is left and this host's
+ledger records the pair, the run appends a row with `"finished": true` and
+`"verified": true` for it. Otherwise it appends nothing, marks each part left
+`failed` in the table, warns `NOT finished` naming each one and the `--finish`
+command, and exits 1; `--to-name` then marks the name registry entry incomplete. A
+`finished` row written before this rule carries no `verified` and counts as
+unverified. The ledger is append-only, so the migration's own
+row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
 remote side of `-R`, and a detached replay of NEW's recorded recipe by
 `ai sessions relaunch`) checks the ledger once the session name is resolved and,
 before the worktree or the session exists, runs the finish of each pair migrated
@@ -615,6 +631,32 @@ itself could never complete. A finish that refuses or leaves work undone is
 reported on one line naming the pair and the `--finish -y` command to retry,
 records nothing, and the launch continues. A dry run (`-d`) finishes nothing.
 
+`ai migrate-session -s/--status` lists, without writing anything, every pair this
+host's ledger records whose latest row is not a verified `finished`, so every
+migration recorded before the re-plan rule is listed. It re-plans each one as
+`--finish -n` would and prints one row per pair:
+
+```text
+old | new | repo | state | parts left | finish with
+myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | partial | slot lock (would do); memory file (would do) | ai migrate-session myrepo-3 myrepo-box-3 --finish -r /home/user/projects/myrepo
+```
+
+A pair reads `complete` when its re-plan finds nothing left, and `partial` with each
+part left otherwise; a pair whose repo or `.worktrees/NEW` is gone reads `partial`
+with `slot (missing: ...)`. `-a/--all` re-plans the verified pairs too. A NAME
+(`--status NAME`, or OLD and NEW) narrows the listing to the pairs it names, matched
+as `--finish` matches one name: the pair's OLD, its NEW or NEW's first name; a NAME
+matching no pair exits 2. It runs while NEW is live, since its plan is a `--finish`
+dry run, and it writes nothing, the ledger and the hooks' state included (each hook
+gets only `--dry-run`). It exits 1 if any listed pair is partial, else 0, and 2 on a
+usage error: `-s` takes only NAME, `-a` and `-R`.
+
+`-R/--remote` runs the same `ai migrate-session --status` on the default remote
+machine (`[remote]`, or `[remote] default` among `[remote.machines]`) over the
+non-interactive ssh route `ai c -R -X` (restart) uses (`BatchMode=yes`, the remote
+login shell), and prints its rows and exit code. An unreachable host, or one whose
+`ai` exits with any other code, exits 2 saying so.
+
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
 directory, and another repo holds the registered `.worktrees/NEW`), the command,
@@ -622,14 +664,15 @@ with or without `--finish`, does only the cleanup: it retires every old-name slo
 proved landed and removes every empty `OLD-agents` container, in every repo, and
 keeps and names the rest. Because it touches nothing NEW could be using, it runs
 while NEW is live in its own slot. It still refuses while a process named OLD runs
-or any process works inside that slot.
+or any process works inside that slot; its `--finish -n` plans anyway and names that
+process on a `live session:` line.
 
 Left alone deliberately: the rest of the repo-root memory directory (shared by every session
 of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
 
-Refused before anything is written, `-n` included: a slot that is not a
+Refused before anything is written, `-n` included (a `--finish -n` excepted, as above): a slot that is not a
 registered worktree (use `adopt-session`), an existing `.worktrees/NEW` or
 project directory for it, a running Claude Code process named OLD/NEW or working
 inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent).

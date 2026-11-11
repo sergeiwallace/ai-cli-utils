@@ -134,9 +134,16 @@ def _replay(slot) -> list[dict]:
 
 @pytest.fixture
 def migrated(slot):
-    """A slot migrated OLD -> NEW, then given leftovers only ``--finish`` carries."""
+    """A slot migrated OLD -> NEW and recorded unfinished, then given leftovers only ``--finish`` carries.
+
+    The migration's own verified ``finished`` row is dropped, leaving the ledger a build from
+    before the re-plan rule wrote: the migration row alone.
+    """
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
+    ledger = slot["state"] / "session-migrations.jsonl"
+    rows = ledger.read_text(encoding="utf-8").splitlines(keepends=True)
+    ledger.write_text("".join(row for row in rows if not json.loads(row).get("finished")), encoding="utf-8")
     assert [(r["old"], r["new"]) for r in _ledger(slot)] == [(OLD, NEW)]
     slot["seeded"] = _seed_logs_and_evidence(slot)
     return slot
@@ -235,7 +242,7 @@ def test_given_a_hook_when_new_is_launched_then_the_finish_runs_it_like_finish_d
     calls = hooks.calls()
     planned = [c["hook"] for c in calls if "--dry-run" in c["args"]]
     live = [c for c in calls if "--dry-run" not in c["args"]]
-    assert planned == ["notes", "board"]
+    assert planned == ["notes", "board", "notes", "board"], "the plan, then the re-plan that verifies it"
     assert [(c["hook"], c["args"]) for c in live] == [
         ("notes", ["--old", OLD, "--new", NEW]),
         ("board", ["--old", OLD, "--new", NEW]),

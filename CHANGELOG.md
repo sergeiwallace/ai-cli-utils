@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page names its source. A tracked file that is neither published nor excluded as a non-document
   fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
   `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
+- `ai migrate-session -s/--status [NAME]` lists every migration this host records that is not
+  verified finished, one row each: OLD, NEW, repo, `complete` or `partial`, the parts left and
+  the `--finish` command that finishes it. Each pair is re-planned with the same read-only
+  `--finish` plan a writing run verifies against, so the listing works while NEW is live and
+  writes nothing, the migration ledger included. `-a/--all` re-plans verified pairs too, NAME
+  narrows it to the pair whose OLD, NEW or NEW's first name it is, and a pair whose slot is gone
+  reads `partial`. It exits 1 if any pair is partial and 2 on a usage error. `-R/--remote` runs
+  the same status on the default remote machine over ssh and prints its rows.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
@@ -86,7 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
   `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
   finished. Every other resume artifact found under both names is still reported and left alone.
-
+- `ai migrate-session` records a migration `finished` only when a read-only re-plan of the
+  pair, run after every writing full migration, `--finish` and `--to-name`, finds nothing
+  left. The row then carries `"verified": true`. Otherwise the run names each part left in a
+  `NOT finished` warning, marks it failed, records nothing and exits 1, and `--to-name` marks
+  the registry entry incomplete. A hook counts as done only when its `--dry-run` prints
+  `migrate-status: done`, so a hook without a status line keeps a migration unfinished. Before,
+  `finished` came from the run's own warnings and was written while parts were still on disk.
+- `ai migrate-session --finish -n` now plans a migration whose session is live instead of
+  refusing it, so a running session can be checked read-only. Its first line names the live
+  session and says a writing run refuses until it is stopped with `ai sessions stop NAME`; the
+  writing `--finish` still refuses with exit 2 before its first write, now without asking first.
 - `ai migrate-session` now checks the `ai` on `PATH`, which the migrated session relaunches
   under, before it writes anything. A build older than the migration record format this one
   writes (it answers `ai internal get-migration-format` with a lower number, or not at all) is

@@ -223,6 +223,8 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
     else:
         # Freeze the read-only plan before any writes, including hook preflights.
         preview = call(repo, old, new, **{**kwargs, "dry_run": True})
+        if preview.live:
+            raise m.LiveSessionError(preview.live)
         try:
             if resumed and not m.migration_recorded(old, new, state):
                 m._record_migration(state, old, new, repo, new_wt)
