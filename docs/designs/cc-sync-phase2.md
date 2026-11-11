@@ -6,8 +6,8 @@ status: approved
 source: myproject
 ---
 
-> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> **Migrated from `myproject` (historical-task, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the historical-task repo-ownership
 > migration. `myproject/docs/designs/cc-sync-phase2.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
@@ -18,7 +18,7 @@ source: myproject
 
 **Created:** 2026-03-23
 
-**Task:** SW-642 (Phase 2)
+**Task:** historical-task (Phase 2)
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -657,7 +657,7 @@ Phase 2 is split into two sub-phases to allow testing the core sync logic before
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|------------|------------|
 | **Staging repo corruption** (bad merge, interrupted push) | Sync breaks until repo is repaired. No CC data loss — staging repo is a copy, not the source of truth. | Low | `ai sync` validates repo health before each operation. If corrupt, prints repair instructions (`git reset --hard origin/main`) or re-initializes from scratch. The staging repo is disposable — nuking and re-creating it loses only sync history, not CC data. |
-| **Auto-dream race condition** (SW-644) | Anthropic's auto-dream rewrites `MEMORY.md` asynchronously. A sync push/pull mid-dream could stage a partially-written file. | Low (auto-dream not yet on our account) | Deferred to SW-644. Current mitigation: sync is discrete and transactional (commit-then-apply, not continuous). When auto-dream ships, review whether a lock/signal is needed. |
+| **Auto-dream race condition** (historical-task) | Anthropic's auto-dream rewrites `MEMORY.md` asynchronously. A sync push/pull mid-dream could stage a partially-written file. | Low (auto-dream not yet on our account) | Deferred to historical-task. Current mitigation: sync is discrete and transactional (commit-then-apply, not continuous). When auto-dream ships, review whether a lock/signal is needed. |
 | **Concurrent writes on both machines** | Both machines edit the same memory file between syncs. Git merge produces conflict markers instead of clean file. | Low (sequential usage is the norm) | Three-way merge handles non-overlapping edits. Overlapping edits produce `.conflict` files with clear resolution path. Worst case: user spends 30 seconds resolving a conflict. |
 | **Server-to-Mac NAT detection gap** | Cannot detect if Mac CC is active when pushing from server. Risk of writing to files CC has open on Mac. | Medium | Deferred — see Open Questions. Current mitigation: server `ai sync push` only writes to the staging bare repo, not to Mac's `~/.claude/projects/`. The Mac pulls at its own initiative (start hook). This eliminates the push-to-active-CC risk entirely for server-to-Mac direction. |
 | **Stale lock file (CC crash)** | If CC crashes without firing the stop hook, `~/.claude/.sync-lock` persists. Server would refuse to sync thinking CC is active. | Medium | Write PID into the lock file. Before honoring the lock, check if the PID is still running. If not, delete the stale lock and proceed. Also apply a mtime-based timeout (e.g., lock older than 2 hours is considered stale). |

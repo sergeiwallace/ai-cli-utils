@@ -2538,7 +2538,7 @@ worker could not independently execute the real-tmux launch or cited regression 
 
 ### R5 Files Read
 
-- Canonical ai-harness `docs/audits/STUB.md` and `TEMPLATE.md` -- full scaffold, later-round
+- Canonical automation framework `docs/audits/STUB.md` and `TEMPLATE.md` -- full scaffold, later-round
   boilerplate, taxonomy, verification matrix, anti-patterns, and Decision/AD-N skeleton.
 - `docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md` -- full prior history through
   Round 4 and every prior reviewer prompt.
@@ -2824,7 +2824,7 @@ systemic hunt found a further post-capture mutable-name identity defect (N-7).
 
 ### R6 Files Read
 
-- Canonical ai-harness `docs/audits/STUB.md` and `TEMPLATE.md` -- read in full before audit work,
+- Canonical automation framework `docs/audits/STUB.md` and `TEMPLATE.md` -- read in full before audit work,
   including taxonomy, later-round boilerplate, verification matrix, anti-patterns, and exact AD-N
   option/Pros/Cons/final-Recommendation skeleton.
 - `docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md` -- full history through Round 5;
@@ -2849,8 +2849,8 @@ systemic hunt found a further post-capture mutable-name identity defect (N-7).
 ### R6 Commands Run
 
 ```bash
-sed -n '<chunks>' ~/projects/ai-harness/docs/audits/STUB.md
-sed -n '<chunks>' ~/projects/ai-harness/docs/audits/TEMPLATE.md
+sed -n '<chunks>' ~/projects/automation framework/docs/audits/STUB.md
+sed -n '<chunks>' ~/projects/automation framework/docs/audits/TEMPLATE.md
 mktemp -d
 tmux new-session -d -s <probe> 'sleep 5'
 git rev-parse --short HEAD
@@ -3073,7 +3073,7 @@ invocation failed before collection.
 
 ### R7 Files Read
 
-- Canonical ai-harness `docs/audits/STUB.md` and `TEMPLATE.md` -- read before substantive audit
+- Canonical automation framework `docs/audits/STUB.md` and `TEMPLATE.md` -- read before substantive audit
   work, including later-round boilerplate, finding taxonomy, verification-matrix mandate,
   anti-patterns, and exact AD-N option/Pros/Cons/final-Recommendation skeleton.
 - `docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md` -- complete prior history, with
@@ -3100,9 +3100,9 @@ invocation failed before collection.
 ### R7 Commands Run
 
 ```bash
-sed -n '<chunks>' ~/projects/ai-harness/skills/audit-auto/SKILL.md
-sed -n '<chunks>' ~/projects/ai-harness/docs/audits/STUB.md
-sed -n '<chunks>' ~/projects/ai-harness/docs/audits/TEMPLATE.md
+sed -n '<chunks>' ~/projects/automation framework/skills/audit-auto/SKILL.md
+sed -n '<chunks>' ~/projects/automation framework/docs/audits/STUB.md
+sed -n '<chunks>' ~/projects/automation framework/docs/audits/TEMPLATE.md
 mktemp -d
 tmux new-session -d -s audit-round7-probe 'sleep 5'
 git rev-parse --short HEAD

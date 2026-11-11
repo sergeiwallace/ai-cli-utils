@@ -1254,7 +1254,7 @@ found; faked findings are not. Cite file:line for every codebase claim.
 - Under-reading the codebase — read sibling / neighbor code for pattern-consistency.
 - Treating the run as done because the doc exists, is large, has a fresh mtime, or the command
   exited 0. An UNFILLED template passes all four — grep for a finding heading, or run
-  ai-harness/scripts/check_audit_doc_filled.py.
+  automation framework/scripts/check_audit_doc_filled.py.
 ```
 
 ### Round 2 Reviewer Prompt (Re-audit)

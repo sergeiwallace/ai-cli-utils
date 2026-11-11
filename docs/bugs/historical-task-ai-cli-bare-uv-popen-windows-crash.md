@@ -3,13 +3,13 @@ title: "Bare `uv` subprocess call crashes on Windows — shutil.which() result d
 category: bug
 tags: [bug, windows, subprocess, uv, path-resolution, background-update, upgrade]
 status: resolved
-source: "CORE-5m6"
+source: "historical-task"
 template_version: "bug-1.0.0"
 ---
 
 <!-- doc:region name="summary" kind="replaceable" -->
 
-# [CORE-5m6] Bare `uv` subprocess call crashes on Windows — `shutil.which()` result discarded, CreateProcess cannot resolve bare names
+# [historical-task] Bare `uv` subprocess call crashes on Windows — `shutil.which()` result discarded, CreateProcess cannot resolve bare names
 
 **Status:** resolved — fix applied and verified 2026-07-31
 
@@ -17,16 +17,16 @@ template_version: "bug-1.0.0"
 
 **Created:** 2026-07-31
 
-**Task:** CORE-5m6 (filed in core-cli store; ai-cli-utils store blocked by CORE-5dx)
+**Task:** historical-task (filed in core-cli store; ai-cli-utils store blocked by historical-task)
 
 **Fixed by:** `src/ai_cli/main.py` — two sites, commit not created (per corporate-machine git discipline)
 
 **Related issues:**
-- CORE-6nr (separate, pre-existing Windows incompatibility — `ai ls` crashes with identical `FileNotFoundError` class for a different bare-name call; NOT fixed here, filed separately)
+- historical-task (separate, pre-existing Windows incompatibility — `ai ls` crashes with identical `FileNotFoundError` class for a different bare-name call; NOT fixed here, filed separately)
 
 **Related docs:**
-- ai-harness `docs/procedures/beads-work-machine-install.md` — documents Windows/Dolt known issues
-- ai-harness `docs/research/beads-cross-machine-sync.md` — Open bug #4770 (Windows 11 `bd dolt pull` hang)
+- automation framework `docs/procedures/beads-work-machine-install.md` — documents Windows/Dolt known issues
+- automation framework `docs/research/beads-cross-machine-sync.md` — Open bug #4770 (Windows 11 `bd dolt pull` hang)
 
 ## Summary
 
@@ -276,22 +276,22 @@ Tested 2026-07-31 on Windows 11 Enterprise, git bash, with editable install (cha
 
 ## Related Issues
 
-**CORE-6nr** (separate, NOT fixed here):
+**historical-task** (separate, NOT fixed here):
 
 During the audit of bare subprocess calls, a THIRD, PRE-EXISTING gap was found:
 
 - **`_do_ls()` ~line 1460** and **`_do_attach()` ~line 1452** call bare `"tmux"` in subprocess.run/os.execvp
 - `ai ls` crashes on Windows with the same `FileNotFoundError` class: `[WinError 2] The system cannot find the file specified`
 - Root cause: identical to this bug (bare name, no shell, Windows CreateProcess cannot resolve)
-- **NOT fixed in this change.** Filed as a separate beads issue (CORE-6nr) and mentioned here only for completeness. Fixing it requires a broader design decision: tmux does not exist on Windows; the correct fix may be "gate these commands behind a platform check" or "document Windows-unsupported" rather than "resolve the path."
+- **NOT fixed in this change.** Filed as a separate beads issue (historical-task) and mentioned here only for completeness. Fixing it requires a broader design decision: tmux does not exist on Windows; the correct fix may be "gate these commands behind a platform check" or "document Windows-unsupported" rather than "resolve the path."
 
-**ai-harness beads Windows/Dolt issues** (blocker for filing this bug):
+**automation framework beads Windows/Dolt issues** (blocker for filing this bug):
 
-- Both `ai-cli-utils` and `ai-harness` beads stores failed to initialize on this Windows 11 machine
+- Both `ai-cli-utils` and `automation framework` beads stores failed to initialize on this Windows 11 machine
 - `bd init --prefix <PREFIX> --skip-agents --skip-hooks --non-interactive` completes (exit 0) but leaves the Dolt database corrupted: `.beads/embeddeddolt/<PREFIX>/.dolt/` exists but is missing `repo_state.json`
 - Subsequent `bd config set` / `bd list` commands fail: `Error 1105: open C:\...\repo_state.json: The system cannot find the file specified.`
-- Documented in ai-harness `docs/research/beads-cross-machine-sync.md` § 5, Open bug #4770 (2026-07-14): Windows 11 `bd dolt pull` hangs forever due to pipe deadlock in Dolt's git blobstore
-- This is a known Windows/Dolt limitation, not an ai-cli-utils bug. Reported here as context for why this bug and CORE-6nr are filed in the core-cli store rather than the ai-cli-utils one.
+- Documented in automation framework `docs/research/beads-cross-machine-sync.md` § 5, Open bug #4770 (2026-07-14): Windows 11 `bd dolt pull` hangs forever due to pipe deadlock in Dolt's git blobstore
+- This is a known Windows/Dolt limitation, not an ai-cli-utils bug. Reported here as context for why this bug and historical-task are filed in the core-cli store rather than the ai-cli-utils one.
 
 <!-- /doc:region name="related_issues" -->
 
@@ -312,7 +312,7 @@ During the audit of bare subprocess calls, a THIRD, PRE-EXISTING gap was found:
 
 **Paper trail:**
 - This bug doc serves as the canonical record of the fix
-- ai-cli-utils is installed editable; changes are live immediately, no commit required per corporate-machine git discipline (ai-harness `CLAUDE.md`: "on the ACN Windows machine follow enterprise constraints (no autonomous push)")
+- ai-cli-utils is installed editable; changes are live immediately, no commit required per corporate-machine git discipline (automation framework `CLAUDE.md`: "on the ACN Windows machine follow enterprise constraints (no autonomous push)")
 - Real beads issue ID will be backfilled once the Windows/Dolt blocker is resolved or a workaround is found
 
 <!-- /doc:region name="appendix" -->

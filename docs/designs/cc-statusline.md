@@ -105,10 +105,10 @@ Branch lookup (`git branch --show-current`) costs ~100ms. Cached in `$TMPDIR/.ai
 
 Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()` in `src/ai_cli/quota.py`).
 
-> **AIH-164 update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
+> **historical-task update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
 > now come from CC's official `rate_limits` object on the statusLine **stdin** (`five_hour` +
 > `seven_day`, each `used_percentage` + `resets_at`) — deterministic, \$0/zero-token. The
-> ai-harness `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
+> automation framework `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
 > (read by the new `quota-pct` ad-hoc tool, a `ctx-pct` sibling), and exports `AI_CLI_QUOTA_*`
 > env vars that `quota_statusline_part()` consumes as the authoritative source (recording a
 > *throttled* snapshot so the acceleration arrow keeps its cadence). The old `claude -p /usage`
@@ -123,7 +123,7 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 > The Fable parser, `weekly_sonnet_pct` and `weekly_model_name` database columns, and
 > Fable-specific backoff state remain in the codebase as retained dead code pending a separate
 > removal decision. They are not called from the statusline render path. See plan
-> `ai-harness/docs/plans/aih-164-*` + research
+> `automation framework/docs/plans/app-164-*` + research
 > `docs/research/claude-quota-statusline-rate-limits-2026.md`.
 
 ### Output Format
@@ -234,7 +234,7 @@ No user-facing configuration for the statusline itself. Related config:
 |------|---------|
 | `src/ai_cli/data/statusline-command.sh` | Shell script: JSON parse, segment assembly, caching, telemetry |
 | `src/ai_cli/quota.py` → `quota_statusline_part()` | Python: quota DB read, format output with ANSI codes |
-| `~/.claude/statusline-command.sh` (ai-harness) | Copy installed by `ai setup`; must stay in sync with source |
+| `~/.claude/statusline-command.sh` (automation framework) | Copy installed by `ai setup`; must stay in sync with source |
 
 The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup` and referenced in `.claude/settings.json` as the `hooks.statusLine` command.
 
@@ -248,7 +248,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 
 ## Open Questions
 
-1. Should the statusline design doc live in `ai-cli-utils/docs/designs/` (current) or migrate to a future `ai-harness` repo? The script has a copy in `ai-harness/.claude/` already.
+1. Should the statusline design doc live in `ai-cli-utils/docs/designs/` (current) or migrate to a future `automation framework` repo? The script has a copy in `automation framework/.claude/` already.
 2. Should the branch cache TTL (5s) be configurable via env var?
 
 > **Feedback Round 1:** Your thoughts on the open questions:

@@ -28,7 +28,7 @@ are the only preserved launch evidence; per-launch logging was not available.
 
 The report came from a macOS client connected to a Linux tmux server over a
 remote terminal transport. The live incident evidence is preserved in
-[`aih-jpnd-2026-09-21-live-linux-repro.txt`](aih-jpnd-2026-09-21-live-linux-repro.txt).
+[`app-jpnd-2026-09-21-live-linux-repro.txt`](app-jpnd-2026-09-21-live-linux-repro.txt).
 
 The generated supervisor creates a terminal-backed child wrapper that:
 

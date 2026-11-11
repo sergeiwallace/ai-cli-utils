@@ -1418,7 +1418,7 @@ covers 206. Six tracked Markdown documents are outside both locations:
 `.beads/README.md`, `.claude/rules/held-docs-fallback.md`, `.claude/skills/lint-md/SKILL.md`,
 `.github/pull_request_template.md`, `assets/README.md`, and
 `src/ai_cli/data/icons/README.md`. The rule also excludes the tracked, linked documentation artifact
-`docs/bugs/aih-jpnd-2026-09-21-live-linux-repro.txt`; it is linked from <!-- public-hygiene: allow -->
+`docs/bugs/app-jpnd-2026-09-21-live-linux-repro.txt`; it is linked from <!-- public-hygiene: allow -->
 `docs/bugs/terminal-promotion-failure-hang.md` but is neither Markdown nor a top-level file.
 
 **Why it matters:** Implemented literally, the generated wiki is incomplete while both the ask
@@ -1429,7 +1429,7 @@ build and repeats on every publication.
 
 ```bash
 python -c 'import subprocess; fs=subprocess.check_output(["git","ls-files"],text=True).splitlines(); md=[f for f in fs if f.endswith(".md")]; covered=[f for f in md if "/" not in f or f.startswith("docs/")]; print(len(md),len(covered)); print(*sorted(set(md)-set(covered)),sep="\\n")'
-rg -n 'aih-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md  # public-hygiene: allow
+rg -n 'app-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md  # public-hygiene: allow
 ```
 
 **Verification note:** `CONFIRMED` at commit `4603da33a5c01514a69526b1e8cfc3aca156a4d9`:
@@ -1485,7 +1485,7 @@ before implementation.
 | Artifact drift — current digest | `sha256sum docs/designs/single-source-cli-docs.md` | Driver digest | `f6c6bc63...7676`, exact match | ✅ |
 | Artifact drift — no later target edit | `git diff -- docs/designs/single-source-cli-docs.md` | No output | No output | ✅ |
 | JA-2 — Markdown coverage | Read-only `git ls-files` classifier from the finding | No omitted tracked docs if “every document” is literal | 212 tracked Markdown files; 206 satisfy the stated predicate; six do not | ✅ reproduced |
-| JA-2 — linked non-Markdown document | `rg -n 'aih-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md` | Linked documentation is covered or explicitly excluded | The tracked `.txt` artifact is linked at line 28 but outside the coverage predicate | ✅ reproduced <!-- public-hygiene: allow --> |
+| JA-2 — linked non-Markdown document | `rg -n 'app-jpnd-2026-09-21-live-linux-repro.txt' docs/bugs/terminal-promotion-failure-hang.md` | Linked documentation is covered or explicitly excluded | The tracked `.txt` artifact is linked at line 28 but outside the coverage predicate | ✅ reproduced <!-- public-hygiene: allow --> |
 | IC-2 — matched files without H1 | H1 inventory command from the finding | Every matched document supplies the required first H1 | Exactly three matched files have no H1 | ✅ reproduced |
 | IC-2 — no fallback contract | `sed -n '285,299p;516,524p' docs/designs/single-source-cli-docs.md` | A deterministic title fallback or failure path | Schema and AC specify only the nonexistent first H1 | ✅ reproduced |
 
@@ -1648,7 +1648,7 @@ same invariant.
 | Target identity | `sha256sum docs/designs/single-source-cli-docs.md` | Driver target digest | `36f0faab...a6bf`, exact match | ✅ |
 | IC-2 — fallback contract | `sed -n '548,552p' docs/designs/single-source-cli-docs.md` | Deterministic title chain and coverage for every branch | Frontmatter title, first H1, then normalized filename; focused fixtures cover all three | ✅ |
 | IC-2 — former counterexamples | Read line 2 of the three files named by Round 5 | Each file supplies the first fallback branch | All three line-2 values are non-empty frontmatter `title` fields | ✅ |
-| JA-2 — prior omissions | Classify `git ls-files` with the design's union predicate | The seven Round 5 omissions are included | All six Markdown paths and `docs/bugs/aih-jpnd-2026-09-21-live-linux-repro.txt` printed `COVERED` | ✅ <!-- public-hygiene: allow --> |
+| JA-2 — prior omissions | Classify `git ls-files` with the design's union predicate | The seven Round 5 omissions are included | All six Markdown paths and `docs/bugs/app-jpnd-2026-09-21-live-linux-repro.txt` printed `COVERED` | ✅ <!-- public-hygiene: allow --> |
 | JA-2 — complete document coverage | Apply the same predicate to tracked `LICENSE` | A claim covering every repository document includes or explicitly excludes it | Printed `OMITTED LICENSE`; exact exclusions cannot apply because the design restricts them to the derived universe | ❌ reproduced |
 | JA-2 — document identity | `git ls-files LICENSE; sed -n '1,3p' LICENSE` | Ground the alleged omitted document | Git lists `LICENSE`; its first line is `MIT License` | ✅ |
 

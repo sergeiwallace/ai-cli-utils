@@ -76,7 +76,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -84,7 +84,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options | Status |
 |---|----------|---------|--------|
@@ -94,7 +94,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 | D4 | Multi-user first-run UX | (a) Manual `ai setup` after install, (b) First-run auto-detect + prompt, (c) Graceful no-op if unconfigured | `PENDING` |
 | D5 | Copier hook mechanism | (a) `_tasks` entry calls `ai register`, (b) Inline Python in `_tasks`, (c) Separate post-copy script | `PENDING` |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
@@ -145,7 +145,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Pros:**
 
-- Clean single-purpose CLI: `ai register --project ai-harness --prefix AIH --type tool`
+- Clean single-purpose CLI: `ai register --project automation framework --prefix AIH --type tool`
 - Called from copier `_tasks` hook, fully non-interactive
 - Small scope — ~15 LOC in `main.py` + `config.py`
 
@@ -202,7 +202,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 ```toml
 [tool.ai-cli]
-task_prefix = "AIH"
+task_prefix = "app"
 project_type = "tool"
 ```
 
@@ -535,7 +535,7 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 5. **`TODO` default prefix**: Is a `TODO` placeholder prefix in `ai setup` acceptable, or should the setup wizard require a real prefix before proceeding? Risk: `TODO` prefix gets committed to myproject.toml and never updated.
 
-6. **project-template scope**: T-05 touches `project-template`, which is a separate copier-managed project. Should it be a separate roadmap task in myproject, or folded into this AI-CLI task with a dependency note? (Recommendation: separate SW-XXX task, linked here.)
+6. **project-template scope**: T-05 touches `project-template`, which is a separate copier-managed project. Should it be a separate roadmap task in myproject, or folded into this AI-CLI task with a dependency note? (Recommendation: separate historical-task task, linked here.)
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->

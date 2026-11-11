@@ -890,7 +890,7 @@ cross-process coordination contract for a session slot.
 
 | Date | Round | Notes |
 |------|-------|-------|
-| 2026-08-10 | — | Doc created from canonical ai-harness STUB/TEMPLATE ahead of Round 1 launch. |
+| 2026-08-10 | — | Doc created from canonical automation framework STUB/TEMPLATE ahead of Round 1 launch. |
 | 2026-08-10 | Round 1 | Independent audit complete: 8 findings (2 P1, 5 P2, 1 P3), 8/8 reproduced; no source edits; AD-1 pending. |
 | 2026-08-10 | Round 2 | Verification complete at `1bd495c`: 11 PASS, 1 PARTIAL, 1 FAIL; AD-1 PARTIAL; 4 new findings (2 P1, 2 P2); no target edits. |
 | 2026-08-10 | Round 3 | Resolution verification complete at `1ad2615`: N-1/N-4 PASS, N-2/N-3 PARTIAL, AD-1 PARTIAL; N-5 (P1) and N-6 (P2) added; no target edits; pytest blocked before collection by sandbox temporary-directory policy. |
@@ -1199,7 +1199,7 @@ found; faked findings are not. Cite file:line for every codebase claim.
   pattern-consistency, not just the two changed files.
 - Verification commands that aren't actually run.
 - Treating the run as done because the doc exists, is large, has a fresh mtime, or the command
-  exited 0. Grep for a finding heading, or run ai-harness/scripts/check_audit_doc_filled.py.
+  exited 0. Grep for a finding heading, or run automation framework/scripts/check_audit_doc_filled.py.
 ```
 
 ### Round 2 Reviewer Prompt (Re-audit)

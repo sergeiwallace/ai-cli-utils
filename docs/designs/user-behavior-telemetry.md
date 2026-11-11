@@ -7,8 +7,8 @@ source: myproject
 template_version: "design-1.0.0"
 ---
 
-> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> **Migrated from `myproject` (historical-task, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the historical-task repo-ownership
 > migration. `myproject/docs/designs/user-behavior-telemetry.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
@@ -211,7 +211,7 @@ The nudge engine is the primary event producer. Every nudge decision point emits
 
 ### Backlog Curation
 
-Task prioritization nudges (e.g., "Focus on SW-42 — it's blocking two other tasks") emit lifecycle events tied to `task_id`. Conversion is measured as task state change within the attribution window, not nudge click-through.
+Task prioritization nudges (e.g., "Focus on historical-task — it's blocking two other tasks") emit lifecycle events tied to `task_id`. Conversion is measured as task state change within the attribution window, not nudge click-through.
 
 ### Daily Digest
 

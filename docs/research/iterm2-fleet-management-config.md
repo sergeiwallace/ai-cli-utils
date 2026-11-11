@@ -9,13 +9,13 @@ registry_id: R-2
 
 # iTerm2 Power User Configuration for AI Agent Fleet Management
 
-Profile inheritance, pre-transport setup, shell reports and tmux/API limits are now carried by [📄 ai-harness/docs/research/host-aware-clickable-file-links.md (local)](../../../ai-harness/docs/research/host-aware-clickable-file-links.md). Icon, badge, picker, shortcut and restoration administration remain here. Broad restart-loss claims are not adopted as universal facts in the canonical research.
+Profile inheritance, pre-transport setup, shell reports and tmux/API limits are now carried by [📄 automation framework/docs/research/host-aware-clickable-file-links.md (local)](../../../automation framework/docs/research/host-aware-clickable-file-links.md). Icon, badge, picker, shortcut and restoration administration remain here. Broad restart-loss claims are not adopted as universal facts in the canonical research.
 
 **Status:** complete
 
 **Created:** 2026-03-29
 
-**Task:** SW-730
+**Task:** historical-task
 **Prompt:** R-36 in `docs/research/prompts/research-prompt-registry.md`
 
 ## Executive Summary

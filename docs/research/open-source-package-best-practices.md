@@ -13,7 +13,7 @@ registry_id: R-4
 
 **Created:** 2026-03-29
 
-**Task:** SW-672
+**Task:** historical-task
 **Prompt:** R-1 in `docs/research/prompts/research-prompt-registry.md`
 
 ## Summary

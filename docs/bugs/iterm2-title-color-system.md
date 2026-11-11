@@ -473,7 +473,7 @@ AI-CLI-84's underlying assumption — that atomicity requires the temp file to s
 the target's directory — is the reopening cause: POSIX rename atomicity requires
 only the same filesystem (`st_dev`), not the same parent directory.
 
-**Fix Round 2 (2026-07-27, AIH-478):** Stage the temp file in
+**Fix Round 2 (2026-07-27, historical-task):** Stage the temp file in
 `_dynamic_profile_dir().parent` (`~/Library/Application Support/iTerm2/`) instead of
 inside `DynamicProfiles/` itself. Confirmed via the same source read that iTerm2's
 `pathsToWatch` only ever adds the `DynamicProfiles` directory (and any per-file
@@ -504,10 +504,10 @@ cleanup after.
 
 **File changed:** `src/ai_cli/icon_generator.py` — `generate_dynamic_profile()`
 
-**Tracked:** `AIH-478` (ai-harness Beads store, per explicit user request — this is
+**Tracked:** `historical-task` (automation framework Beads store, per explicit user request — this is
 an ai-cli-utils defect, tracked cross-repo).
 
-**Shipped:** 2026-07-27 (AIH-478)
+**Shipped:** 2026-07-27 (historical-task)
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "Claude Code subscription quota surfaces (2026) — statusline rate_limits vs /usage scraping"
 category: research
-tags: [research, claude-code, quota, statusline, rate_limits, AI-CLI-98, AI-CLI-94, AIH-120]
+tags: [research, claude-code, quota, statusline, rate_limits, AI-CLI-98, AI-CLI-94, historical-task]
 status: complete
 source: "opus-manual-2026-07-13"
 template_version: "research-1.2.0"
@@ -16,7 +16,7 @@ related_docs:
 
 **Created:** 2026-07-13
 
-**Tasks:** AI-CLI-98 (capture all per-model weekly quotas), AI-CLI-94 (first-class Fable tracking), AIH-120 (secondary weekly line)
+**Tasks:** AI-CLI-98 (capture all per-model weekly quotas), AI-CLI-94 (first-class Fable tracking), historical-task (secondary weekly line)
 
 <!-- doc:region name="context" kind="immutable" -->
 
@@ -137,7 +137,7 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
      line stayed `Current week (Fable)`, so **model-switching does not change it** — the second
      cap is a fixed Anthropic-defined premium-model cap, not per-active-model. Implication:
      AI-CLI-98's "capture ALL per-model via model-switching" premise is invalid; the only per-model
-     datum to capture is the single Fable cap (rate-limit-aware TUI scrape — AIH-164 D-4/T-06).
+     datum to capture is the single Fable cap (rate-limit-aware TUI scrape — historical-task D-4/T-06).
 2. Is `/api/oauth/usage` stable enough (auth, shape, rate-limit policy) to depend on for
    per-model, or is TUI scraping the lesser evil? (Resolve in the AI-CLI-98 plan.)
 3. Cross-machine: with stdin `rate_limits` as primary, is the NATS KV + quota-subscriber
@@ -160,7 +160,7 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
 
 ```text
 Manually-authored research doc (not an companion run). Investigation performed inline by the
-aih-2 session: reviewed existing repo research/design docs (claude-usage-telemetry.md),
+app-2 session: reviewed existing repo research/design docs (claude-usage-telemetry.md),
 WebSearch for Anthropic subscription-quota APIs + CC /usage JSON, gh issue view on the
 canonical feature requests (#13585, #44328), WebFetch of the official statusline docs, and
 a live statusLine-stdin capture on CC 2.1.207. This doc predates use of the companion prompt
@@ -173,7 +173,7 @@ appendix template for its authoring flow.
 
 ## Appendix: Provenance Ledger
 
-First-party empirical capture (session aih-2, CC 2.1.207, 2026-07-13): launched an
+First-party empirical capture (session app-2, CC 2.1.207, 2026-07-13): launched an
 interactive `claude --settings` with a throwaway statusLine command that dumped its stdin
 JSON. Observed `rate_limits.seven_day.used_percentage=20`, `five_hour.used_percentage=23`;
 `resets_at` epochs `1783978200` → 5:30pm and `1784052000` → Jul 14 2pm — matching the
@@ -187,7 +187,7 @@ text (no quota bars). No online source (first-party runtime observation).
 
 ## Run History
 
-2026-07-13 — Manual authoring (opus, session aih-2). Findings from inline research + live
+2026-07-13 — Manual authoring (opus, session app-2). Findings from inline research + live
 CC 2.1.207 capture. No companion run.
 
 <!-- /doc:region name="run_history" -->

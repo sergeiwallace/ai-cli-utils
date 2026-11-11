@@ -5,7 +5,7 @@ tags: [iterm2, terminal, fleet-management, ai-cli, configuration]
 status: active
 source: internal
 task: AI-CLI-75
-related_task: SW-730
+related_task: historical-task
 ---
 
 # iTerm2 Fleet Management Configuration — Implementation Plan
@@ -14,7 +14,7 @@ related_task: SW-730
 
 **Created:** 2026-03-29
 
-**Task:** SW-730
+**Task:** historical-task
 **Research:** R-36 ([`iterm2-fleet-management-config.md`](../research/iterm2-fleet-management-config.md))
 
 ## Overview

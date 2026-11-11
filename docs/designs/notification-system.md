@@ -61,7 +61,7 @@ template_version: "design-1.0.0"
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -69,7 +69,7 @@ template_version: "design-1.0.0"
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
@@ -78,7 +78,7 @@ template_version: "design-1.0.0"
 | 3 | Config source | Config file only, env vars only, layered | Layered (config file → env var) | Allows Doppler injection without requiring file edits; consistent with existing ai-cli config pattern | Approved |
 | 4 | Notifier API storage | Database, config file, hybrid | Config file for channels + SQLite for history | Config is static structure (config file); history is mutable state (SQLite) | Approved |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder

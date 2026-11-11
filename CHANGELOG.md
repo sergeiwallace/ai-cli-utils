@@ -347,7 +347,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (off by default), applies the ordered vetoes (a session exited by hand or with an unknown cause never
   relaunches), refuses a second copy, reserves each attempt per boot so a retry cannot spawn twice, and
   `--dry-run` prints every decision with the winning veto.
-- Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered ai-harness
+- Local `ai c`, `ai g`, `ai p`, and `ai cx` launches now ask a discovered automation framework
   checkout to idempotently ensure its machine wake sidecar is running. The bounded check
   never blocks the session after a failure and is skipped for remote launches and
   unsupported platforms. The new `[sidecar]` configuration defaults to disabled.
@@ -700,7 +700,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Lines are also coloured again after the per-launch log starts: its stderr mirror had
   made the terminal look like a pipe. Every exec now flushes output first.
 
-- `ai c firstmate-N -R` no longer loops on `no machine key`. The remote side runs in a
+- `ai c coordinator-N -R` no longer loops on `no machine key`. The remote side runs in a
   login shell that is not interactive, so a machine key exported in an rc file below its
   "not interactive: return" guard never reached it. With no key, the remote `ai` now uses
   the one chief home the installer seeded on that machine, and refuses, naming each one,
@@ -830,7 +830,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The pty carries the submission only: your terminal stays the terminal, and the
   pty path provides no detach/reattach and no scrollback.
 
-- `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
+- `-F/--coordinator` launches a machine's single chief-of-staff session on **any**
   engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
   shorthand. It resolves the chief home from `-k/--machine-key` (default
   `$AI_MACHINE_ID`) or `-H/--fm-home` — both refused without `-F` rather than
@@ -841,9 +841,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
   into the tmux pane. `--dry-run` registers nothing.
 
-  The session is named `{project-prefix}-{host-alias}-firstmate-[suffix-]{index}` (the
+  The session is named `{project-prefix}-{host-alias}-coordinator-[suffix-]{index}` (the
   positional NAME is the optional suffix) off the ordinary index allocator, and
-  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-firstmate-[suffix-]{index}`:
+  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-coordinator-[suffix-]{index}`:
   with every main tree read-only under the worktree model, a chief running in a
   repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
 
