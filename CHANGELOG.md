@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
+  boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
+  already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
+  after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
+
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot

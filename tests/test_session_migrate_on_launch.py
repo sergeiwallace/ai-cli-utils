@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -75,6 +76,60 @@ def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[di
             stack.enter_context(patch(target, **kwargs))
         code, out, err = test_session_migrate.run_cli(["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo"])
     return code, out, err, launched
+
+
+def _replay(slot) -> list[dict]:
+    """A recorded ``c-NEW`` recipe replayed as ``ai sessions relaunch`` does; returns what each launch saw.
+
+    The launch is stopped at the migration-context queue, the next step after the finish.
+    """
+    from ai_cli import session_commands
+
+    launched: list[dict] = []
+    logs = slot["state"] / "launch-logs"
+
+    def _start(ai_name, *_args, **_kwargs):
+        launched.append(
+            {
+                "ai_name": ai_name,
+                "old_logs": sorted(p.name for p in logs.glob(f"{OLD}-*")) if logs.is_dir() else [],
+                "ledger": _ledger(slot),
+            }
+        )
+        raise SystemExit(0)
+
+    name = f"c-{NEW}"
+    record = {
+        "name": name,
+        "boot_recipe": {
+            "session_name": name,
+            "cwd": str(slot["repo"] / ".worktrees" / NEW),
+            "project": "myrepo",
+            "engine": "c",
+            "options": {"no_direnv": True},
+            "extra_args": [],
+            "shell": "sh",
+            "argv": ["ai", "c", name, "--project-prefix", "myrepo"],
+        },
+    }
+    with ExitStack() as stack:
+        patches: tuple[tuple[str, dict], ...] = (
+            ("ai_cli.main._queue_migration_context", {"side_effect": _start}),
+            ("ai_cli.session._tmux_session_names", {"return_value": []}),
+            ("ai_cli.tmux_setup.tmux_runs", {"return_value": True}),
+            ("ai_cli.tmux_setup.formats_expand", {"return_value": True}),
+            ("ai_cli.tmux_setup.probe", {"return_value": SimpleNamespace(versions_disagree=False)}),
+            ("ai_cli.tmux_setup.report_lines", {"return_value": []}),
+            ("ai_cli.config._get_projects_dir", {"return_value": slot["repo"].parent}),
+            ("ai_cli.main._ensure_dolt_server", {}),
+            ("ai_cli.tunnel._ensure_nats_tunnel", {}),
+        )
+        for target, kwargs in patches:
+            stack.enter_context(patch(target, **kwargs))
+        with pytest.raises(SystemExit) as stopped:
+            session_commands._launch_recipe(record, cause="manual")
+    assert stopped.value.code == 0
+    return launched
 
 
 @pytest.fixture
@@ -199,6 +254,35 @@ def test_given_a_manual_finish_succeeds_when_new_is_launched_then_it_is_not_run_
     assert code == 0, out + err
     assert len(launched) == 1
     assert hooks.calls() == []
+
+
+def test_given_a_recorded_unfinished_migration_when_new_is_relaunched_from_its_recipe_then_it_is_finished_first(
+    migrated, capfd
+):
+    launched = _replay(migrated)
+
+    err = capfd.readouterr().err
+    assert len(launched) == 1 and launched[0]["ai_name"] == NEW, err
+    assert launched[0]["old_logs"] == [], "the finish ran before the relaunch"
+    _assert_logs_and_evidence_follow_new(migrated, migrated["seeded"])
+    finished = [r for r in launched[0]["ledger"] if r.get("finished")]
+    assert [(r["old"], r["new"], r["repo"]) for r in finished] == [(OLD, NEW, str(migrated["repo"]))]
+
+
+def test_given_the_finish_refuses_when_new_is_relaunched_from_its_recipe_then_it_still_relaunches(
+    migrated, hooks, capfd
+):
+    hooks("10-notes", "notes", fail="plan")
+    rows = _ledger(migrated)
+
+    launched = _replay(migrated)
+
+    err = capfd.readouterr().err
+    assert len(launched) == 1 and launched[0]["ai_name"] == NEW, "a refused finish never blocks the relaunch"
+    assert _ledger(migrated) == rows
+    notice = [line for line in err.splitlines() if f"{OLD} -> {NEW}" in line]
+    assert len(notice) == 1, err
+    assert f"{REMEDY} {migrated['repo']} --finish -y" in notice[0]
 
 
 def test_given_the_launch_help_when_printed_then_it_names_the_pending_finish():
