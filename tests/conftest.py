@@ -1415,6 +1415,21 @@ def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registr
 TEST_HOST_ALIAS = "tst"
 
 
+@pytest.fixture
+def register_repo():
+    """Give a fixture repository real, locally discoverable naming metadata.
+
+    Opt in at repository creation, before cloning when the metadata must reach
+    worktrees or child processes. Never bypass the production naming checks.
+    """
+
+    def register(repo: Path, prefix: str) -> None:
+        with (repo / "pyproject.toml").open("x", encoding="utf-8") as handle:
+            handle.write(f'[tool.ai-cli]\ntask_prefix = "{prefix}"\n')
+
+    return register
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_host_alias(monkeypatch, tmp_path_factory):
     """Resolve the host alias from a temp file, never this machine's identity or config.

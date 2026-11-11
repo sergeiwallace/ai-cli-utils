@@ -37,12 +37,15 @@ def _answering_allocation(fallback):
 
 
 @pytest.fixture
-def remote_host_allocation(tmp_path, monkeypatch):
+def remote_host_allocation(tmp_path, monkeypatch, register_repo):
     """Drive the launcher's SSH command into the real internal allocator."""
     projects = tmp_path / "projects"
     registry = projects / "environment" / "config" / session_naming.ALIAS_FILENAME
     registry.parent.mkdir(parents=True)
     registry.write_text('[aliases]\nnew-host = "box"\n', encoding="utf-8")
+    repo = projects / "myrepo"
+    repo.mkdir()
+    register_repo(repo, "myrepo")
     config_home = tmp_path / "config"
     login_shell = tmp_path / "login-shell"
 
@@ -775,14 +778,14 @@ class TestRemoteSessionIterm2Emit:
             if "ai update" in command[-1]:
                 return MagicMock(returncode=0, stdout="current", stderr="")
             remote_allocations.append(command)
-            session_id, ai_name = build_session_name("c", "session", "Planning", is_remote=True)
+            session_id, ai_name = build_session_name("c", "session", "planning", is_remote=True)
             return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
 
         with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
             mock_slot, mock_emit, mock_exec, _ = self._run_remote(
-                ["ai", "c", "Planning", "--remote"], transport="ssh", preflight_run=remote_preflight
+                ["ai", "c", "planning", "--remote"], transport="ssh", preflight_run=remote_preflight
             )
-            remote_session_id, _ = build_session_name("c", "session", "Planning", is_remote=True)
+            remote_session_id, _ = build_session_name("c", "session", "planning", is_remote=True)
 
         assert mock_exec is not None
         assert mock_slot.call_args[0][0] == remote_session_id

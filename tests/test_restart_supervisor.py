@@ -67,13 +67,14 @@ def _wait_for(check, process, timeout=60):
 
 
 @pytest.fixture
-def supervisor_fixture(tmp_path_factory, monkeypatch, request):
+def supervisor_fixture(tmp_path_factory, monkeypatch, request, register_repo):
     root = tmp_path_factory.mktemp("restart")
     home = root / "home"
     cwd = root / "myproject"
     binaries = root / "bin"
     for directory in (home / ".claude", cwd / ".claude", binaries):
         directory.mkdir(parents=True)
+    register_repo(cwd, "myproject")
     # Expose only checked OS utilities and the fixture service programs below.
     # Optional host tools such as direnv must not change the child environment.
     for name in (
