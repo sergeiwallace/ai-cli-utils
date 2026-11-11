@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -291,6 +292,192 @@ def scan_for_private_environment_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_environment_names_remain():
     findings = scan_for_private_environment_names(_repo_root())
     assert not findings, "private environment names in a public package:\n" + "\n".join(findings)
+
+
+# Public design and audit documents may describe provenance without publishing the
+# private orchestration carrier that produced them: workflow metadata keys, tracker ids,
+# environment names, or the session directory a run was driven from.
+_PUBLIC_PROVENANCE_DOC_DIRS = ("docs/audits", "docs/designs")
+_PRIVATE_WORKFLOW_METADATA = re.compile(
+    r"\b(?:canonical_root_json|founding_ask_ref_sha256|task_id)\b|^\*\*Run Ledger:\*\*",
+    re.MULTILINE,
+)
+
+# A delegated run's worktree lives at ``.worktrees/<session>-agents/<run>``, and the
+# session segment is a fleet session name (environment prefix plus host alias). A
+# placeholder in angle brackets, alone or dash-joined, carries no name.
+_WORKTREE_SESSION_DIR = re.compile(r"\.worktrees/(?P<name>[^/\s`'\"]+)-agents\b")
+_WORKTREE_SESSION_PLACEHOLDER = re.compile(r"<[^<>/]+>(?:-<[^<>/]+>)*")
+
+# Files already on main that carry historical ids, measured 2026-11-11 against the
+# patterns below: 15 of the 29 Markdown files in these folders. They are skipped unless
+# a branch changes them, so a pre-existing provenance note does not turn the gate red; a
+# branch that edits one must scrub it. A test below fails once an entry is clean, so a
+# scrubbed file has to leave the set.
+_PROVENANCE_DOC_BASELINE = frozenset(
+    {
+        Path("docs/audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md"),
+        Path("docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md"),
+        Path("docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md"),
+        Path("docs/audits/ai-cli-208-session-naming-casing-audit.md"),
+        Path("docs/audits/ai-cli-6xud-name-registry-run-ledger.md"),
+        Path("docs/audits/stale-session-reaper-audit.md"),
+        Path("docs/designs/cc-statusline.md"),
+        Path("docs/designs/cc-sync-phase2.md"),
+        Path("docs/designs/claude-usage-telemetry.md"),
+        Path("docs/designs/event-driven-platform.md"),
+        Path("docs/designs/iterm2-cross-machine-vscode-routing.md"),
+        Path("docs/designs/notification-system.md"),
+        Path("docs/designs/user-behavior-telemetry.md"),
+        Path("docs/designs/vpn-transport-switching.md"),
+        Path("docs/designs/vscode-terminal-tab-naming.md"),
+    }
+)
+
+
+def _line_has_worktree_session_name(line: str) -> bool:
+    return any(
+        match["name"] != "agents" and not _WORKTREE_SESSION_PLACEHOLDER.fullmatch(match["name"])
+        for match in _WORKTREE_SESSION_DIR.finditer(line)
+    )
+
+
+def _line_has_private_workflow_metadata(line: str) -> bool:
+    return bool(
+        _line_has_environment_name(line)
+        or _PRIVATE_TRACKER_ID.search(line)
+        or _PRIVATE_WORKFLOW_METADATA.search(line)
+        or _line_has_worktree_session_name(line)
+    )
+
+
+def _branch_changed_provenance_docs(root: Path) -> set[Path]:
+    """Markdown files under the provenance dirs that differ from ``origin/main``.
+
+    Empty when ``origin/main`` cannot be resolved. CI checks out one commit with no
+    remote-tracking refs (``actions/checkout`` defaults to ``fetch-depth: 1``), so the
+    diff is a local-only signal, and the full-folder scan in the caller is what CI runs.
+    """
+    command = ["git", "-C", str(root), "diff", "--name-only", "origin/main...HEAD", "--", *_PUBLIC_PROVENANCE_DOC_DIRS]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {Path(name) for name in result.stdout.splitlines() if name.endswith(".md") and (root / name).is_file()}
+
+
+def _public_provenance_docs(root: Path) -> list[Path]:
+    """Every Markdown file in the provenance dirs except the baseline, plus changed files.
+
+    The brief for this guard asked for the changed set with an all-files fallback. A plain
+    all-files fallback cannot be used: CI never has ``origin/main``, and the historical
+    files on main would turn it red. A changed-only scan cannot stand alone either: on main
+    itself, or in CI, it scans nothing and passes vacuously. So both run: every file not
+    in the baseline is scanned everywhere, and a baseline file is scanned once a branch
+    changes it, which is only knowable where ``origin/main`` resolves.
+    """
+    every_doc = {
+        path.relative_to(root)
+        for directory in _PUBLIC_PROVENANCE_DOC_DIRS
+        if (root / directory).is_dir()
+        for path in (root / directory).rglob("*.md")
+        if path.is_file()
+    }
+    in_scope = {path for path in every_doc if path not in _PROVENANCE_DOC_BASELINE}
+    return sorted(in_scope | _branch_changed_provenance_docs(root))
+
+
+def scan_public_docs_for_private_workflow_metadata(root: Path) -> list[str]:
+    """Return design and audit lines that expose private workflow provenance."""
+    findings: list[str] = []
+    for relative_path in _public_provenance_docs(root):
+        text = (root / relative_path).read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _line_has_private_workflow_metadata(line) and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_public_design_and_audit_docs_when_scanned_then_private_workflow_metadata_is_absent():
+    scanned = _public_provenance_docs(_repo_root())
+    findings = scan_public_docs_for_private_workflow_metadata(_repo_root())
+
+    assert scanned, "no design or audit document was in scope, so the scan measured nothing"
+    assert not findings, "private workflow metadata in public design docs:\n" + "\n".join(findings)
+
+
+def test_given_the_provenance_baseline_when_read_then_every_entry_still_carries_historical_metadata():
+    root = _repo_root()
+    clean = [
+        path.as_posix()
+        for path in sorted(_PROVENANCE_DOC_BASELINE)
+        if not (root / path).is_file()
+        or not any(
+            _line_has_private_workflow_metadata(line) and not _line_is_exempted(path, line)
+            for line in (root / path).read_text(encoding="utf-8").splitlines()
+        )
+    ]
+
+    assert not clean, f"baseline entries that are missing or already clean, remove them: {clean}"
+
+
+def test_given_private_workflow_metadata_in_a_public_design_when_scanned_then_it_is_flagged(tmp_path):
+    design = tmp_path / "docs" / "designs" / "example.md"
+    design.parent.mkdir(parents=True)
+    design.write_text('task_id = "private-task"\n', encoding="utf-8")
+
+    findings = scan_public_docs_for_private_workflow_metadata(tmp_path)
+
+    assert findings == ['docs/designs/example.md:1: task_id = "private-task"']
+
+
+# The first name is built from the environment prefix, the shape the leak shipped in; the
+# second carries no other forbidden token, so it proves the worktree rule on its own.
+@pytest.mark.parametrize("session", [f"{_PRIVATE_ENVIRONMENT_PREFIX}-host-1", "example-host-1"])
+def test_given_a_ledger_line_naming_a_session_worktree_when_scanned_then_it_is_flagged(tmp_path, session):
+    line = f"| Orchestrator worktree | `.worktrees/{session}-agents/example-run` |"
+    ledger = tmp_path / "docs" / "audits" / "example-run-ledger.md"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(f"{line}\n", encoding="utf-8")
+
+    findings = scan_public_docs_for_private_workflow_metadata(tmp_path)
+
+    assert findings == [f"docs/audits/example-run-ledger.md:1: {line}"]
+
+
+def test_given_a_tracker_id_in_an_audit_doc_when_scanned_then_it_is_flagged(tmp_path):
+    line = f"<!-- template from {_PRIVATE_ENVIRONMENT_PREFIX.upper()}-52 -->"
+    audit = tmp_path / "docs" / "audits" / "example-audit.md"
+    audit.parent.mkdir(parents=True)
+    audit.write_text(f"{line}\n", encoding="utf-8")
+
+    findings = scan_public_docs_for_private_workflow_metadata(tmp_path)
+
+    assert findings == [f"docs/audits/example-audit.md:1: {line}"]
+
+
+def test_given_placeholder_worktree_paths_when_scanned_then_they_are_not_flagged(tmp_path):
+    audit = tmp_path / "docs" / "audits" / "example-run-ledger.md"
+    audit.parent.mkdir(parents=True)
+    audit.write_text(
+        "| Orchestrator worktree | `.worktrees/<session>-agents/example-run` |\n"
+        "| Orchestrator worktree | `.worktrees/<prefix>-<host>-agents/example-run` |\n"
+        "| Leaf worktree | `.worktrees/agents/example-run` |\n",
+        encoding="utf-8",
+    )
+
+    assert scan_public_docs_for_private_workflow_metadata(tmp_path) == []
+
+
+def test_given_a_baseline_doc_when_scanned_outside_a_branch_diff_then_it_is_skipped(tmp_path, monkeypatch):
+    historical = Path("docs") / "designs" / "historical.md"
+    (tmp_path / historical).parent.mkdir(parents=True)
+    (tmp_path / historical).write_text("task_id = 1\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "_PROVENANCE_DOC_BASELINE", frozenset({historical}))
+
+    assert scan_public_docs_for_private_workflow_metadata(tmp_path) == []
 
 
 class TestTheEnvironmentNameGuardCanActuallyFail:

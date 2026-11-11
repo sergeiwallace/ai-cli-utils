@@ -1,5 +1,6 @@
 """Exercise exit persistence across real shell, process and storage boundaries."""
 
+import errno
 import json
 import os
 import shlex
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 from process_wait import scaled
 
-from ai_cli import config, session_lifecycle_script
+from ai_cli import config, session_lifecycle, session_lifecycle_script
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_script import get_engine_script
@@ -258,3 +259,32 @@ def test_given_invalid_cli_output_when_sequence_is_read_then_retries_are_bounded
     assert result.returncode == 77
     assert state.tombstone_path("c-session-1", "host-a").exists()
     assert "persistence failed" in result.stderr.lower()
+
+
+def test_given_cli_exiting_as_its_timeout_fires_when_group_kill_is_refused_then_safety_is_persisted(monkeypatch):
+    # macOS refuses killpg with EPERM once every process in the group is a zombie, which is
+    # where a CLI lands when it exits between the last poll and its per-command timeout.
+    name = "c-session-1"
+    state.register(name, recipe={"argv": ["ai", "c", "1"], "cwd": "/"}, host="host-a")
+    generation = state.begin(name)
+
+    def darwin_killpg(pgid, _sig):
+        os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOWAIT)
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "killpg", darwin_killpg)
+    context = {
+        "command": [sys.executable, "-I", "-S", "-c", "raise SystemExit(1)"],
+        "registry_path": registry.registry_path().as_posix(),
+        "safety_path": state.tombstone_path(name, "host-a").as_posix(),
+        "policy": {
+            "deadline_seconds": 0.5,
+            "command_timeout_seconds": 0.001,
+            "backoff_seconds": 0.01,
+            "max_backoff_seconds": 0.02,
+        },
+    }
+    persisted = session_lifecycle.transition(context, name, generation, "exited", "manual_exit", "{}")
+    assert persisted is False
+    safety = json.loads(state.tombstone_path(name, "host-a").read_text())
+    assert safety["deny_boot"] and safety["generation"] == generation
