@@ -491,6 +491,28 @@ def test_given_only_bookkeeping_is_left_in_the_old_task_namespace_when_migrated_
     assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
 
 
+def test_given_idle_task_watcher_locks_in_the_old_task_namespace_when_migrated_then_they_are_removed(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    for task_id in (735, 881):
+        (old_ns / f".{task_id}.shadow-watcher.lock").write_text("")
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert f"task namespace: {old_ns} (removed after rekey)" in out
+
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_ns.exists()
+
+
+def test_given_a_task_watcher_lock_with_content_when_migrated_then_it_stays_and_is_named(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    (old_ns / ".735.shadow-watcher.lock").write_text("in use\n")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 1, out + err
+    assert f"task namespace {old_ns} left in place: it still holds .735.shadow-watcher.lock" in err
+    assert (old_ns / ".735.shadow-watcher.lock").read_text(encoding="utf-8") == "in use\n"
+
+
 def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_stays_and_is_named(slot):
     old_ns = slot["claude"] / "tasks" / OLD
     (old_ns / "notes.txt").write_text("keep me\n")
