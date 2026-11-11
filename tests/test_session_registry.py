@@ -713,7 +713,8 @@ def _fake_tmux_and_ssh(*, live_local=(), clients=None, remote_answers=None):
     def run(cmd, *args, **kwargs):
         calls.append(list(cmd))
         if cmd[:2] == ["tmux", "has-session"]:
-            return subprocess.CompletedProcess(cmd, 0 if cmd[3].removeprefix("=") in live_local else 1, b"", b"")
+            alive = cmd[3].removeprefix("=") in live_local
+            return subprocess.CompletedProcess(cmd, 0 if alive else 1, b"", b"" if alive else b"can't find session")
         if cmd[:2] == ["tmux", "list-clients"]:
             tty = clients.get(cmd[3], "")
             return subprocess.CompletedProcess(cmd, 0 if tty else 1, f"{tty}\n" if tty else "", "")

@@ -5297,6 +5297,8 @@ def _do_session_launch(
 
     def _register_run_state(*, new_start):
         try:
+            if detached:
+                _process_manager._start_stale_session_reaper_for_launch()
             if replay_recipe is not None:
                 _session_launch_state.reattach(session_id)
                 return
@@ -5809,7 +5811,7 @@ def _session_command(engine: str):
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
                     _exec_handoff(ai_bin, [ai_bin, *sys.argv[1:]])
                 _tunnel._ensure_nats_tunnel(config)
-                if engine == "c" and not remote:
+                if not remote:
                     _process_manager._start_stale_session_reaper_for_launch()
             _do_session_launch(
                 engine=engine,

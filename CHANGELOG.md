@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reconcile vanished local sessions from the current boot instead of leaving their run records
+  running indefinitely. The existing minute worker and session list/publication/enrol/stop paths
+  retain an unknown exit with liveness evidence; live, uncertain, foreign and earlier-boot records
+  are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
+  refuses contradictory running records before moving files. Detached replay and all local engines
+  also schedule the existing worker.
+
 ### Added
 
 - `ai -h` and every group's help (`ai sessions -h`, `ai sync -h` and the rest) now print each

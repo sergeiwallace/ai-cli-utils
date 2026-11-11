@@ -437,7 +437,17 @@ def _local_session_alive(name: str) -> bool | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True
+    if result.returncode != 1:
+        return None
+    error = result.stderr or b""
+    if isinstance(error, bytes):
+        error = error.decode("utf-8", errors="replace")
+    absent = any(reason in error for reason in ("can't find session", "no server running", "no sessions")) or (
+        "error connecting" in error and "No such file or directory" in error
+    )
+    return False if absent else None
 
 
 def _remote_session_alive(record: dict, config: dict) -> bool | None:

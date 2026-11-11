@@ -168,6 +168,18 @@ def _everything(slot) -> dict:
     return trees
 
 
+def test_given_running_restore_record_when_migrated_then_refused_before_any_artifact_moves(slot):
+    path = slot["state"] / "iterm2-sessions.json"
+    document = json.loads(path.read_text())
+    document["sessions"][0]["run_state"] = "running"
+    path.write_text(json.dumps(document))
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code != 0
+    assert "run state is still running" in out + err
+    assert _everything(slot) == before
+
+
 def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_new_name(slot):
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err

@@ -612,12 +612,16 @@ def _plan_hooks(
 
 
 def _plan_iterm2(old: str) -> list[PlannedMove]:
+    from .session_run_state import run_state
+
     try:
         doc = _session_registry.load_registry()
     except _session_registry.RegistryError:
         return []
     names = set(_session_variants(old))
     hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
+    if any(run_state(record) == "running" for record in hits):
+        raise MigrationError("session run state is still running; run `ai sessions list` to reconcile liveness first")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]

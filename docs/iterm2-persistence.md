@@ -129,6 +129,18 @@ A registry written as schema 1 (before `exit` and `boot_id` existed) is still re
 
 ### Exit causes
 
+The durable supervisor run state is also reconciled independently of terminal
+positions. The existing stale-session worker checks local records every minute;
+`ai sessions list`, publication ticks, enrolment and successful stops also check
+them. When the stored boot ID equals the current boot and both tmux and process
+checks prove absence, the record becomes `exited` with cause `unknown`, timestamps
+and liveness evidence. A new run has a 60-second startup grace. Missing or different
+boot IDs, foreign/remote records and unavailable probes preserve the record.
+Legacy records without `run_state` or `ended_at` display `unknown`. Migration refuses
+running restore records and directs the user to `ai sessions list` to reconcile
+them first. See the [root-cause report](bugs/stale-running-records.md) for boundaries,
+scheduler evidence and regression coverage.
+
 An exit is recorded three ways:
 
 - A clean remote exit (ssh exit status 0) records `manual_exit`.

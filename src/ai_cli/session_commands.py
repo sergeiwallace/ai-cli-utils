@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from . import output, session_boot_unit, session_publish_timer, session_state_publish
+from . import output, session_boot_unit, session_publish_timer, session_reconcile, session_state_publish
 from . import session_registry as registry
 from . import session_run_state as state
 from .cli_help import HelpGroup
@@ -163,6 +163,7 @@ def publish(now, tick):
 )
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
 def list_sessions(as_json):
+    session_reconcile.reconcile()
     records = [
         {
             "name": r["name"],
@@ -318,6 +319,8 @@ def stop_session(
     while (remaining := occupants()) and time.monotonic() < deadline:
         time.sleep(poll_seconds)
     report.remaining = remaining
+    if report.stopped:
+        session_reconcile.reconcile(names=variants)
     return report
 
 
@@ -534,8 +537,12 @@ def relaunch(slug, boot, dry_run, allow_partial_migration):
     if sys.platform == "win32":
         raise click.ClickException("boot relaunch is supported on macOS and Linux")
     if slug is not None:
+        if not dry_run:
+            session_reconcile.reconcile(names={slug})
         _relaunch_named(slug, dry_run=dry_run, allow_partial_migration=allow_partial_migration)
         return
+    if not dry_run:
+        session_reconcile.reconcile()
     heal_live_sessions(dry_run=dry_run)
     cfg = state.settings()
     doc = registry.load_registry()
