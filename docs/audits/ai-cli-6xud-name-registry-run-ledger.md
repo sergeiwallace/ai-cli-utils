@@ -54,7 +54,7 @@ ledger-version: 1
 
 | Transition | Round | Verdict | Basis | Items | Recorded by | Commit |
 |---|---:|---|---|---|---|---|
-| `entry->research` | 0 | `research-run` | `explicit` | The owner asked for a full-breadth and full-depth research doc on git-tracked storage before the design. R2 and R3 also fire. | `session` | pending |
+| `entry->research` | 0 | `research-run` | `explicit` | The owner asked for a full-breadth and full-depth research doc on git-tracked storage before the design. R2 and R3 also fire. | `session` | `6da3d70e` |
 
 ## Children dispatched
 
