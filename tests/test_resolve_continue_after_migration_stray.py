@@ -18,7 +18,7 @@ import pytest
 import test_session_migrate
 from test_session_migrate import NEW, OLD, UUID, _migrate, run_cli
 
-from ai_cli.cc_migrate import cc_project_dir
+from ai_cli.cc_migrate import cc_project_dir, transcript_titles
 
 slot = test_session_migrate.slot
 
@@ -75,6 +75,45 @@ def _strip_transcript_ids(slot) -> None:
     _ledger(slot).write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
+def _date_the_session(slot) -> None:
+    """Give the slot's transcript a first record written long before any migration, as a real one has."""
+    transcript = slot["project"] / f"{UUID}.jsonl"
+    records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records[0]["timestamp"] = "2026-01-01T00:00:00Z"
+    transcript.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+
+def _finished_without_transcript_ids(slot) -> None:
+    """Strip the ids a migration now records and append the ``finished`` row an earlier finish wrote."""
+    _strip_transcript_ids(slot)
+    with _ledger(slot).open("a", encoding="utf-8") as ledger:
+        row = {"time": "2099-01-01T00:00:00+00:00", "old": OLD, "new": NEW, "repo": str(slot["repo"])}
+        ledger.write(json.dumps({**row, "finished": True}) + "\n")
+
+
+@pytest.mark.parametrize("stray_is_later", [True, False], ids=["stray-later", "migrated-later"])
+def test_given_a_finished_pair_fully_retitled_without_transcript_ids_when_finished_again_then_the_migrated_one_resumes(
+    slot, stray_is_later
+):
+    _date_the_session(slot)
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    migrated = _new_project(slot) / f"{UUID}.jsonl"
+    stray = _stray(slot)
+    _age(stray if not stray_is_later else migrated, 600)
+    _finished_without_transcript_ids(slot)
+    assert transcript_titles(migrated) == transcript_titles(stray) == [NEW]
+
+    code, out, err = _finish(slot, "-y")
+    assert code == 0, out + err
+    assert "transcript title | done earlier" in out
+
+    assert [row["transcripts"] for row in _rows(slot) if "transcripts" in row] == [[UUID]]
+    code, out, err = _resolve(slot)
+    assert code == 0, err
+    assert out.strip() == str(migrated)
+    assert f"skipped {STRAY}" in err
+
+
 @pytest.mark.parametrize("stray_is_later", [True, False], ids=["stray-later", "migrated-later"])
 def test_given_a_stray_titled_new_beside_the_migrated_transcript_when_resolving_then_resumes_the_migrated_one(
     slot, stray_is_later
@@ -103,10 +142,7 @@ def test_given_an_already_finished_pair_without_transcript_ids_when_finished_aga
         out.write(json.dumps({"type": "agent-name", "agentName": NEW, "sessionId": UUID}) + "\n")
     _age(migrated, 600)
     stray = _stray(slot)
-    _strip_transcript_ids(slot)
-    with _ledger(slot).open("a", encoding="utf-8") as ledger:
-        row = {"time": "2099-01-01T00:00:00+00:00", "old": OLD, "new": NEW, "repo": str(slot["repo"])}
-        ledger.write(json.dumps({**row, "finished": True}) + "\n")
+    _finished_without_transcript_ids(slot)
     assert _resolve(slot)[1].strip() == str(stray)
 
     code, out, err = _finish(slot, "-y")
