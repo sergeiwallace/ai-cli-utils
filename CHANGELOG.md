@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
   after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
 
+- `ai migrate-session OLD NEW --finish`, and the finish `ai c NEW` runs at launch, now regenerate
+  the session's wrapper script for NEW. They used to move it verbatim, so it still set the old name
+  and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
+  the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
+  or the next launch.
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
