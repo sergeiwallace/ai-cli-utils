@@ -45,7 +45,10 @@ tasks, memory and resume hand-off:
   named and fails the run. Each completed migration is appended to
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
   a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
-  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`);
+  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`).
+  The ledger also names the transcripts each migration moved (:func:`moved_transcripts`),
+  so a resume of ``<new>`` takes the moved one over a later transcript a relaunch started
+  under ``<new>``;
 * whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -953,8 +956,34 @@ def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: o
         os.fsync(ledger.fileno())
 
 
-def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
-    _append_ledger(state, old, new, repo_root, worktree=str(new_wt))
+def _record_migration(
+    state: Path, old: str, new: str, repo_root: Path, new_wt: Path, transcripts: list[str] | None = None
+) -> None:
+    _append_ledger(state, old, new, repo_root, worktree=str(new_wt), transcripts=transcripts or [])
+
+
+def moved_transcripts(new: str, state_dir: Path | None = None, *, old: str | None = None) -> set[str]:
+    """Session ids of the transcripts this host's ledger records as moved by a migration to ``new``.
+
+    The migration's own row lists the transcripts it carried, and a ``--finish`` appends a
+    ``transcripts_recorded`` row for each it retitles that no row names yet, so a pair migrated
+    before the ledger named transcripts gains the record on its next finish.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    moved: set[str] = set()
+    for row in _ledger_rows(state):
+        if row.get("new") != new or (old is not None and row.get("old") != old):
+            continue
+        ids = row.get("transcripts")
+        if isinstance(ids, list):
+            moved.update(item for item in ids if isinstance(item, str))
+    return moved
+
+
+def _record_moved_transcripts(state: Path, old: str, new: str, repo_root: Path, transcripts: list[str]) -> None:
+    unrecorded = sorted(set(transcripts) - moved_transcripts(new, state, old=old))
+    if unrecorded:
+        _append_ledger(state, old, new, repo_root, transcripts=unrecorded, transcripts_recorded=True)
 
 
 def _ledger_rows(state: Path) -> list[dict]:
@@ -972,7 +1001,11 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
     """Whether this host already records a migration from ``old`` to ``new``."""
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
     return any(
-        row.get("old") == old and row.get("new") == new and not row.get("finished") for row in _ledger_rows(state)
+        row.get("old") == old
+        and row.get("new") == new
+        and not row.get("finished")
+        and row.get("transcripts_recorded") is not True
+        for row in _ledger_rows(state)
     )
 
 
@@ -1058,7 +1091,7 @@ def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str,
         old, repo = row.get("old"), row.get("repo")
         if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
             continue
-        if row.get("context_announced") is True:
+        if row.get("context_announced") is True or row.get("transcripts_recorded") is True:
             continue
         if row.get("finished") is True:
             pending.pop(old, None)
@@ -1296,7 +1329,7 @@ def _start_session(
     from .session_migrate_tasks import remember
 
     remember(result.task_intent, state)
-    _record_migration(state, old, new, repo_root, new_wt)
+    _record_migration(state, old, new, repo_root, new_wt, [path.stem for path in named])
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
@@ -1448,6 +1481,8 @@ def finish_session(
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
     A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
     as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
+    On that same record, each transcript it retitles that no ledger row names yet is recorded in
+    a ``transcripts_recorded`` row, a finished pair included, so the resume prefers it.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1565,6 +1600,8 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
+        retitled = [Path(move.source).stem for move in home_plan.moves if move.kind == "transcript title"]
+        _record_moved_transcripts(state, old, new, repo_root, retitled)
         if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
             _append_ledger(state, old, new, repo_root, finished=True)
     return result

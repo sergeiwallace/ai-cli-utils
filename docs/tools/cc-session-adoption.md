@@ -576,7 +576,12 @@ NEW is live, so a migrated session already back at work need not exit for it.
 
 A `--finish` that re-keyed on that row and left nothing undone appends a row with
 `"finished": true` for the pair; the ledger is append-only, so the migration's own
-row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
+row is never rewritten. The migration's row lists the session ids of the
+transcripts it moved (`"transcripts"`), and a `--finish` on that row appends a
+`"transcripts_recorded": true` row for each transcript it retitles that no row
+names yet, on a finished pair too. `ai c NEW` resumes a listed transcript ahead of a
+more recently active one also titled NEW, such as one a relaunch started before the
+migration finished. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
 remote side of `-R`, and a detached replay of NEW's recorded recipe by
 `ai sessions relaunch`) checks the ledger once the session name is resolved and,
 before the worktree or the session exists, runs the finish of each pair migrated

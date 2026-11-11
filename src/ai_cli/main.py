@@ -966,6 +966,35 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
     return None
 
 
+def _find_moved_cc_session(title: str, candidates: list[Path]) -> "Path | None":
+    """The newest of ``candidates`` this host's ledger records a migration to ``title`` as having moved.
+
+    A session relaunched under ``title`` before its migration finished starts a transcript titled
+    ``title`` from its first record. That stray can be more recently active than the transcript the
+    migration moved, so the recorded one is preferred over it. ``None`` when the ledger names none.
+    """
+    from .session_migrate import moved_transcripts
+
+    if not candidates:
+        return None
+    moved = moved_transcripts(title)
+    return next((path for path in candidates if path.stem in moved), None)
+
+
+def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None":
+    """The transcript a resume of ``title`` in ``cwd`` should take, noting on stderr when several qualify.
+
+    In order: the transcript a recorded migration moved (:func:`_find_moved_cc_session`), the one
+    a recorded migration left under its old title (:func:`_find_migrated_cc_session`), then the
+    most recently active transcript titled ``title``. ``None`` when none applies.
+    """
+    candidates = _find_cc_session_candidates_by_title(cwd, title)
+    moved = _find_moved_cc_session(title, candidates)
+    if len(candidates) > 1:
+        _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved), err=True)
+    return moved or _find_migrated_cc_session(cwd, title, candidates) or (candidates[0] if candidates else None)
+
+
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     """Ask whether to resume into a lone transcript whose title doesn't match.
 
@@ -994,13 +1023,14 @@ def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
+def _cc_multi_candidate_warning(title: str, candidates: list[Path], moved: "Path | None" = None) -> str:
     """Warn that more than one eligible transcript currently carries ``title``.
 
-    ``ai c`` always resolves to ``candidates[0]`` (the newest by mtime — see
-    :func:`_find_cc_session_candidates_by_title`), so this is informational,
-    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of
-    silently picking one of several same-titled transcripts.
+    Without ``moved``, ``ai c`` resolves to ``candidates[0]`` (the newest by mtime — see
+    :func:`_find_cc_session_candidates_by_title`). ``moved`` is the transcript a recorded
+    migration moved, which is resumed instead, and every candidate no migration moved is named
+    as skipped. This is informational, not a block: it makes the AI-CLI-p3fg ambiguity visible
+    instead of silently picking one of several same-titled transcripts.
     """
     lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
     for path in candidates:
@@ -1008,7 +1038,15 @@ def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
         status = f"live (pid {pid})" if is_live else "not live"
         mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
         lines.append(f"  {path.stem}  last active {mtime}  {status}")
-    lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+    if moved is None:
+        lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+        return "\n".join(lines)
+    from .session_migrate import moved_transcripts
+
+    recorded = moved_transcripts(title)
+    strays = [path.stem for path in candidates if path.stem not in recorded]
+    skipped = f"; skipped {', '.join(strays)}, which the migration did not move" if strays else ""
+    lines.append(f"Resuming {moved.stem}, the transcript migrated to '{title}'{skipped}")
     return "\n".join(lines)
 
 
@@ -1037,10 +1075,7 @@ def _bare_engine_command(
         if not _is_root():
             command.append("--dangerously-skip-permissions")
         # Resume this session's own prior conversation by its exact transcript UUID.
-        candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
-        if len(candidates) > 1:
-            _out.emit(Tag.LAUNCH, "resume", _cc_multi_candidate_warning(ai_name, candidates), err=True)
-        matched = _find_migrated_cc_session(target_root, ai_name, candidates) or (candidates[0] if candidates else None)
+        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(target_root, ai_name)
             if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
@@ -2167,12 +2202,7 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
             sys.exit(1)
-        candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
-        if len(candidates) > 1:
-            _out.emit(Tag.INTERNAL, "resume", _cc_multi_candidate_warning(argv[2], candidates), err=True)
-        matched = _find_migrated_cc_session(Path(argv[1]), argv[2], candidates) or (
-            candidates[0] if candidates else None
-        )
+        matched = _pick_cc_resume_transcript(Path(argv[1]), argv[2], Tag.INTERNAL)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
             if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
