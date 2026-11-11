@@ -354,12 +354,32 @@ rollout is outside this design.
   - **T-1.3 Self-parsing commands declared in Click ([D-8](#d-8))**
     - [ ] When `ai ps -h`, `ai layout -h` or `ai sync -h` runs, the system shall print Click help
       listing that command's actions and options and exit 0 without performing any action.
-    - [ ] When one of these valid forms is used, the system shall call the same implementation with
-      the same values as before, with one test per form through the CLI entry point: `ps` with no
-      action, `clean`, or `cron`, plus `-f`/`--force` and `-r`/`--refresh`; `layout list`,
-      `layout validate <name>`, `layout profiles <name>`, or `layout <name>`; and `sync push`,
-      `pull`, `conflicts`, `resolve`, `watch`, `cleanup`, or `repair-worktree`, with each action's
-      currently documented short and long options.
+    - [ ] When one of the forms in the inventory below is used, the system shall call the same
+      implementation with the same values as before, with one test per row through the CLI entry
+      point. The inventory is every action and flag token the current hand parsers recognize,
+      read from their source (measured 2026-11-11 at `d301960c`: `process_hygiene.cmd_ps`,
+      `layout.run_layout_command`, `main.cmd_sync`, and in `sync.py` `_parse_flags`,
+      `sync_resolve` and `sync_watch`), not from any document:
+
+      | Command | Action and arguments | Flags recognized today | Flag forms after the change |
+      |---|---|---|---|
+      | `ai ps` | none, `clean`, `cron` | `-f`/`--force`, `-r`/`--refresh` | unchanged |
+      | `ai layout` | `list`, `validate <name>`, `profiles <name>`, `<name>` (any other first argument applies that layout) | none (`-h`/`--help` prints usage) | unchanged |
+      | `ai sync push` | none | `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force` | unchanged |
+      | `ai sync pull` | none | `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`, `--prefer-remote` | `--prefer-remote` gains a short form; the long spelling is kept |
+      | `ai sync conflicts` | none | none | unchanged |
+      | `ai sync resolve` | none | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
+      | `ai sync watch` | none | `--auto`, `--verbose` | each gains a short form; the long spellings are kept |
+      | `ai sync cleanup` | none | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
+      | `ai sync repair-worktree` | `<old> <new>` | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
+
+      The short forms chosen for the three long-only flags must not collide with another option of
+      the same command, and the existing option-form test then covers them.
+    - [ ] Before converting a parser, the implementer shall re-read its source on the base commit and
+      confirm the inventory row matches; a token found there and missing from the table is added to
+      the table and its parity test, never dropped silently. The parity tests carry the table as
+      parametrized data, so each row, every spelling included, fails on its own if the converted
+      command stops accepting it.
     - [ ] When `ai layout <name>` is used and `<name>` is not a reserved action, the system shall
       call `cmd_layout_apply(name)`; reserved action names shall continue to select their action.
     - [ ] If `validate`, `profiles`, or `repair-worktree` lacks a required name, then the system
