@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
 | Orchestrator worktree | the orchestrating session's own session worktree |
 | Orchestrator branch | that worktree's session branch |
-| Stage cursor | `research written, gap review open on G5 (critic pass in flight)`; research doc `docs/research/session-name-registry-storage.md` at `47c910bb` |
+| Stage cursor | `research converged (round 1 plus critic fold); doc stage next`; research doc `docs/research/session-name-registry-storage.md` at `35a96b40` |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -55,6 +55,7 @@ ledger-version: 1
 | Transition | Round | Verdict | Basis | Items | Recorded by | Commit |
 |---|---:|---|---|---|---|---|
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked for a full-breadth and full-depth research doc on git-tracked storage before the design. R2 and R3 also fire. | `session` | `6da3d70e` |
+| `research->doc` | 1 | `converged` | `rubric` | none | `session` | `35a96b40` |
 
 ## Children dispatched
 
@@ -63,7 +64,7 @@ ledger-version: 1
 | 1 | AI-CLI-6xud.1 | `6xud-dolt-deep-dive` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited findings on Dolt | returned; child closed |
 | 2 | AI-CLI-6xud.2 | `6xud-storage-landscape` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited survey of alternatives | returned; child closed |
 | 3 | AI-CLI-6xud.3 | `6xud-registry-inventory` | `Explore`, read-only | claude / opus / n/a | none, writes no file | line-cited inventory of the current registry and prior art | returned; child closed |
-| 4 | AI-CLI-6xud.4 | `6xud-research-critic` | `researcher`, read-only, non-author | claude / opus / n/a | none, writes no file | five-perspective critic findings (gap G5) | running at save-state; result held |
+| 4 | AI-CLI-6xud.4 | `6xud-research-critic` | `researcher`, read-only, non-author | claude / opus / n/a | none, writes no file | five-perspective critic findings (gap G5) | returned 21 findings (2 high); all folded in at `35a96b40`; child closed |
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
@@ -84,5 +85,13 @@ ledger-version: 1
 - 2026-11-11: research doc and spike evidence committed (`47c910bb`). Gap review: G1 to G4 and
   G6 clear (G4 items classified in the doc's Open Questions; G6, the governing design's earlier
   rejection of Dolt, is answered in the doc). G5 waits on the critic leaf.
+
+- 2026-11-11 ~03:15Z to 03:40Z: the critic's 21 findings were reviewed against round-2 spikes
+  on the pinned Dolt version (a 20-trial concurrent race, the git-ref layout, key collation, a
+  JSON cell merge, a hosted push) and a read of the pinned tag's source. Every high and medium
+  finding was fixed, backed with new evidence, or corrected where the evidence disagreed (the
+  history-cap setting is 2.4.1+, the lock-fallback issue closed by documentation, JSON keys merge
+  cleanly). G1 to G6 re-run over the whole doc: none open. `research->doc` round 1 recorded
+  `converged` at `35a96b40`.
 
 <!-- /doc:region name="run_history" -->
