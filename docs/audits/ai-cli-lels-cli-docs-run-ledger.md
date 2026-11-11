@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `doc-audit audit-converged` (round 3, conformance round after the spec freeze); audit doc `docs/audits/single-source-cli-docs-audit.md`; boundary finalization for `doc-audit->implement` next |
+| Stage cursor | `doc-audit respecify` generation 2 frozen; conformance round pending (host contention at HOLD) |
 | Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
 | Last completed integration boundary | none |
 
@@ -103,5 +103,15 @@ ledger-version: 1
   loop terminated `audit-converged`. A hygiene failure on the scaffolded audit doc (a private
   tool name in its frontmatter) was fixed in `5681888f` and the scaffold defect filed in the
   harness task store.
+
+- 2026-11-11 ~06:30Z: boundary alignment for `doc-audit->implement` (codex review, Sol, medium,
+  non-author) returned MISMATCH: the wiki scope excluded design, plan, research and audit records,
+  narrowing "everything about this repo", and the two epics' dispositions lacked evidence. Both
+  fixed in `960e5fe8` (every document published; measured epic state recorded). Finalize recorded
+  the artifact drift; rounds 4 to 6 re-audited it, and round 6 halted on fingerprint recurrence of
+  the wiki-coverage finding (LICENSE outside the enumerated locations). Systematic fix: coverage
+  by publish-unless-excluded with publication precedence (`bdf9a4c0`, `aca5af21`); register
+  generation 2 reviewed (codex review, REJECT, all items applied) and frozen. The launcher
+  confirmed the Discussions epic's task-panel entry exists.
 
 <!-- /doc:region name="run_history" -->
