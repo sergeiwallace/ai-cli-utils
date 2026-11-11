@@ -1,6 +1,7 @@
 """Real Git transport and durable publication retries."""
 
 import logging
+import math
 import plistlib
 import subprocess
 import tomllib
@@ -33,7 +34,9 @@ def publishing(tmp_path, monkeypatch):
     # clock, while the debounce gate itself runs on the fake one below. The shipped
     # debounce, stretched by how busy the host is, keeps that deadline derived from
     # the configured value; tests advance the fake clock in debounce intervals.
-    debounce = scaled(state.PUBLISH_DEFAULTS["debounce_seconds"])
+    # Whole seconds, so one interval added to the fake clock is exactly one interval:
+    # with a fractional value, (1000 + d) - 1000 can round to just below d.
+    debounce = float(math.ceil(scaled(state.PUBLISH_DEFAULTS["debounce_seconds"])))
     cfg = {
         "machine": {"host_id": "host-a"},
         "session_relaunch": {"publish": {"repo": str(repo), "debounce_seconds": debounce}},
