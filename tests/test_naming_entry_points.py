@@ -111,7 +111,9 @@ def test_given_stale_host_when_name_candidates_listed_then_current_alias_is_reso
     assert "free" in out
 
 
-def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(slot, fresh_host):  # noqa: F811
+def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(slot, fresh_host, monkeypatch):  # noqa: F811
+    # Host resolution must not depend on an external dictionary download or a warm cache.
+    monkeypatch.setattr(name_registry, "common_words", lambda policy: frozenset({"may", "art", "sun"}))
     repo = slot["repo"]
     (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     # The dry run now applies the real run's refusals, so the session must be a registered worktree.
