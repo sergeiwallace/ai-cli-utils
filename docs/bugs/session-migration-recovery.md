@@ -139,3 +139,17 @@ preview. Recovery now streams records, preserves malformed lines under the
 existing rewriter policy, and converts unreadable-artifact errors into a precise
 refusal and parts table. This changes only inspection; transcript history remains
 untouched. The corresponding recovery and named-command gate passed all 48 cases.
+
+## Agent path follow-up
+
+Two command regressions stopped after an agent's branch rename but before its
+ownership and markers. Container session-home markers still held the old path;
+flat worktrees also retained the old owner. Recovery now recognizes new flat
+paths with branch ownership evidence and derives the old path for unfinished
+marker rewrites. It does not move the checkout a second time.
+
+Agent virtualenvs previously printed a reinstall warning while leaving old
+shebangs. Regressions reproduced those stale scripts after a normal move and a
+stop immediately after moving. Agent recovery now shares the main worktree's
+read-only relocation detector and offline rewriter. Completed environments are
+untouched. The focused agent and recovery gate passed all 61 cases.

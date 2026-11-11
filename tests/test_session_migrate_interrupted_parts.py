@@ -231,6 +231,70 @@ def test_given_an_agent_moved_before_branch_rename_when_retried_then_ownership_f
     )
 
 
+@pytest.mark.parametrize("layout", ["container", "flat"])
+def test_given_an_agent_renamed_before_ownership_when_retried_then_all_markers_finish(slot, monkeypatch, layout):
+    from test_session_migrate_agents import _provenance
+
+    from ai_cli import session_migrate_agents as agents
+
+    if layout == "container":
+        old_path = slot["repo"] / ".worktrees" / f"{OLD}-agents" / "build"
+        new_path = slot["repo"] / ".worktrees" / f"{NEW}-agents" / "build"
+    else:
+        old_path = slot["repo"] / ".worktrees" / f"{OLD}-task-build"
+        new_path = slot["repo"] / ".worktrees" / f"{NEW}-task-build"
+    _git("worktree", "add", "-q", str(old_path), "-b", f"wt/{OLD}/build", cwd=slot["repo"])
+    _provenance(old_path).write_text(json.dumps({"owner_session": OLD}))
+    for marker in ("agent-worktree", "session-home"):
+        _git("config", f"branch.wt/{OLD}/build.hub-{marker}", str(old_path), cwd=slot["repo"])
+    real = agents.apply_worktree_ownership
+    with monkeypatch.context() as changes:
+
+        def interrupt(plan, branch):
+            if plan.dest == new_path:
+                raise KeyboardInterrupt("branch already renamed")
+            return real(plan, branch)
+
+        changes.setattr(agents, "apply_worktree_ownership", interrupt)
+        assert _migrate(slot["repo"], "-y")[0] == 1
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert json.loads(_provenance(new_path).read_text())["owner_session"] == NEW
+    for marker in ("agent-worktree", "session-home"):
+        assert _git("config", "--get", f"branch.wt/{NEW}/build.hub-{marker}", cwd=slot["repo"]).strip() == str(new_path)
+    before = _everything(slot)
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    assert _everything(slot) == before
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_given_an_agent_virtualenv_when_moved_or_resumed_then_its_scripts_follow_the_path(slot, monkeypatch, stopped):
+    from ai_cli import session_migrate_agents as agents
+
+    old_path = slot["repo"] / ".worktrees" / f"{OLD}-task-build"
+    new_path = slot["repo"] / ".worktrees" / f"{NEW}-task-build"
+    _git("worktree", "add", "-q", str(old_path), "-b", f"wt/{OLD}/build", cwd=slot["repo"])
+    scripts = old_path / ".venv" / "bin"
+    scripts.mkdir(parents=True)
+    (scripts / "tool").write_text(f"#!{old_path}/.venv/bin/python\n")
+    if stopped:
+        move = agents.move_worktree
+        with monkeypatch.context() as changes:
+
+            def interrupt(*args, **kwargs):
+                assert move(*args, **kwargs)[0]
+                raise KeyboardInterrupt("agent moved before its environment")
+
+            changes.setattr(agents, "move_worktree", interrupt)
+            assert _migrate(slot["repo"], "-y")[0] == 1
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert (new_path / ".venv" / "bin" / "tool").read_text() == f"#!{new_path}/.venv/bin/python\n"
+    before = _everything(slot)
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    assert _everything(slot) == before
+
+
 def test_given_an_interruption_before_tasks_when_reported_then_pending_tasks_are_not_done_now(slot, monkeypatch):
     from ai_cli import session_migrate as migration
 

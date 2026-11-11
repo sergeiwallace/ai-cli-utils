@@ -39,6 +39,7 @@ from pathlib import Path
 from . import config as _config
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
+from .venv_relocate import needs_relocation, relocate_venv
 from .worktree_move import move_worktree
 
 
@@ -84,6 +85,7 @@ class AgentEntry:
     conflict: bool = False
     tip: str = ""
     ownership: WorktreeOwnership | None = None
+    venv_old: Path | None = None
 
     @property
     def moves(self) -> bool:
@@ -320,6 +322,7 @@ def plan_agents(
             )
 
         repo_entries: list[AgentEntry] = []
+        recovered: dict[Path, Path] = {}
         for path, branch in worktrees:
             flat = (
                 path.parent == container.parent
@@ -327,12 +330,22 @@ def plan_agents(
                 and branch
                 and branch.startswith((prefix, new_prefix))
             )
+            new_flat = (
+                path.parent == container.parent
+                and path.name.startswith(f"{new}-")
+                and branch
+                and branch.startswith((prefix, new_prefix))
+            )
             if container in path.parents:
                 dest = new_container / path.relative_to(container)
+            elif new_flat:
+                dest = path
+                recovered[path.with_name(old + path.name[len(new) :])] = path
             elif flat:
                 dest = path.with_name(new + path.name[len(old) :])
             elif new_container in path.parents:
                 dest = path
+                recovered[container / path.relative_to(new_container)] = path
             else:
                 continue
             entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
@@ -350,6 +363,9 @@ def plan_agents(
                     branch,
                     entry.new_branch or branch,
                 )
+                original = next((source for source, target in recovered.items() if target == path), path)
+                if needs_relocation(path / ".venv", original):
+                    entry.venv_old = original
             if dest == path:
                 entry.worktree = None
                 if (
@@ -358,7 +374,7 @@ def plan_agents(
                     and entry.ownership.stamp_value in {None, str(dest)}
                 ):
                     entry.ownership = None
-                if entry.branch is None and entry.ownership is None:
+                if entry.branch is None and entry.ownership is None and entry.venv_old is None:
                     continue
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
@@ -390,6 +406,8 @@ def plan_agents(
             target = Path(value).resolve(strict=False)
             if target in moved:
                 plan.markers.append(AgentMarker(repo, key, str(moved[target])))
+            elif target in recovered:
+                plan.markers.append(AgentMarker(repo, key, str(recovered[target])))
             elif target == old_wt and repo != slot_repo:
                 plan.markers.append(AgentMarker(repo, key, str(new_wt)))
     return plan
@@ -408,6 +426,8 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
             lines.append(("agent worktree", str(e.worktree), dest, action))
         if e.ownership:
             lines += describe_worktree_ownership(e.ownership)
+        if e.venv_old is not None:
+            lines.append(("virtual environment", str(e.venv_old / ".venv"), str(e.dest), "rewrite"))
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -446,8 +466,11 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 continue
             moved.add(e.worktree)
             worktree_moved = True
-            if (e.dest / ".venv").is_dir():
-                warnings.append(f"{e.dest / '.venv'} names the old path in its scripts -- run `uv sync --reinstall`")
+        if e.venv_old is not None and e.dest is not None:
+            try:
+                relocate_venv(e.dest / ".venv", e.venv_old, e.dest)
+            except OSError as exc:
+                warnings.append(f"virtual environment {e.dest / '.venv'} FAILED to relocate: {exc}")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:

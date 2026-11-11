@@ -753,3 +753,7 @@ worktree, including a process with a different title inside NEW.
 Recovery streams transcript records and preserves malformed lines verbatim, as
 the original transcript rewriters do. A file that cannot be read is a named
 preflight refusal with the same parts table; a parser traceback is not completion.
+Moved task worktrees are also inspected at their new flat or container paths.
+Their ownership and both marker types can finish independently of branch rename.
+Virtualenv relocation applies to task worktrees too, including a stop immediately
+after their move; scripts that already use the new path are left untouched.

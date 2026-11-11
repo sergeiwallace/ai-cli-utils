@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import session_migrate as m
-from .venv_relocate import _MAX_BYTES, _candidates, _forms, _pattern
+from .venv_relocate import needs_relocation
 
 # Include absent optional parts so dry and real runs expose the same inventory.
 PARTS = (
@@ -106,13 +106,8 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
         plan.moves += [m.PlannedMove(*line) for line in m._agents.describe_worktree_ownership(ownership)]
         plan.actions.append(lambda: _ownership(ownership, new_branch))
     venv = new_wt / ".venv"
-    pattern = _pattern(_forms(old_wt))
-    for path in _candidates(venv):
-        if path.stat().st_size <= _MAX_BYTES:
-            data = path.read_bytes()
-            if b"\0" not in data and pattern.search(data):
-                add("virtual environment", path, new_wt, lambda: m.relocate_venv(venv, old_wt, new_wt))
-                break
+    if needs_relocation(venv, old_wt):
+        add("virtual environment", venv, new_wt, lambda: m.relocate_venv(venv, old_wt, new_wt))
     old_pd, new_pd = m.cc_project_dir(old_wt, home), m.cc_project_dir(new_wt, home)
     if old_pd.exists() and new_pd.exists():
         raise m.MigrationError(f"both project directories exist: {old_pd} and {new_pd}; refusing to merge")
