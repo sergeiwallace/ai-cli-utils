@@ -4,7 +4,7 @@ category: audit
 tags: [audit]
 status: stub
 date: 2026-11-11
-source: "aido-stub"
+source: "audit-stub"
 template_version: "audit-1.0.0"
 delegation_provenance:
   version: 2
@@ -31,10 +31,10 @@ delegation_provenance:
      in-window (incl. VS Code Remote-SSH). If all-`###` proves too noisy, fall back to D5 (a)
      "meaningful `###`", a deterministic OR-rule: include a `###` when it (1) has child `####`,
      (2) its body ≥ ~8-10 lines, (3) its parent `##` is allowlisted, or (4) matches a pattern.
-     Hand-maintained: the not-yet-shipped `aido toc check` tool. Verify with
+     Hand-maintained. Verify with
      `scripts/check_doc_toc.py <this-doc>`, which fails on an anchor that does not resolve.
      Manual `<!-- toc:skip -->` / `<!-- toc:include -->` override. -->
-  <!-- AIH-52: every AD-N detail heading requires a ToC row; generate with
+  <!-- Every AD-N detail heading requires a ToC row; generate with
        `python3 scripts/check_doc_toc.py --fix-decision-rows <doc>`, linking each
        decision as `  - [AD-N: Name](#ad-N)`, the STABLE short id, NOT the heading auto-slug.
        AD-N headings carry a mutable status suffix (enumerated once, at TEMPLATE.md's AD-1
@@ -52,9 +52,9 @@ delegation_provenance:
 
 ### Founding ask and alignment
 
-`founding_ask_ref`: [FILL: exact `canonical_root_json` and `founding_ask_ref_sha256` | N/A with reason]
+Founding ask: Tier 3. The record is held in the operator's private configuration repository; root digest `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`.
 
-[FILL: When this `founding_ask_ref` is `N/A` for a Tier 1 dispatch with no `canonical_root_json`, paste the literal `verbatim_exact_ask` from the worker brief directly below in a fenced `text` block. Never replace it with a summary or a reference to the transient brief. Do not add this block for Tier 0 or Tier 2/3.]
+No Tier 1 verbatim block applies to a Tier 3 run.
 
 Read every authoritative raw FAR entry, including each re-scope entry. The requirements index is
 non-authoritative; report any omitted, dropped, narrowed, broadened, rejected, deferred, or
@@ -300,9 +300,9 @@ found; faked findings are not. Cite file:line for every codebase claim.
   named symbols. A missed finding because you didn't read a relevant file is the audit's most
   serious failure mode.
 - Treating the run as done because the doc exists, is large, has a fresh mtime, or the command
-  exited 0. An UNFILLED template passes all four (AIH-762: 42110 bytes, fresh, rc=0, and larger
+  exited 0. An UNFILLED template passes all four (measured: 42110 bytes, fresh, rc=0, and larger
   than several real audits) - grep for a finding heading, or run
-  ai-harness/scripts/check_audit_doc_filled.py.
+  the harness's audit-doc fill check.
 ```
 
 ### Round 2 Reviewer Prompt (Re-audit)
@@ -422,7 +422,7 @@ the verification matrix reproduce behavior outside the current regression covera
 
 The authoritative carrier and its content digest were verified from the invocation. To avoid
 republishing private carrier metadata in this public package, this projection records the safe
-reference only: `founding_ask_ref_sha256: cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`,
+reference only: root digest `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`,
 entry `A001`.
 
 | A001 requirement | Verdict | Ground-truth evidence |
