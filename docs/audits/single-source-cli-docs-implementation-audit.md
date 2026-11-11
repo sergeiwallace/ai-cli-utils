@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `impl-audit active; round 2` |
+| Stage cursor | `impl-audit done: audit-converged; round 3` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** audit-converged — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| impl-audit | 2 | sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3 | 0 | 1 | 0 | round2:N-1 | verify | yes |
+| impl-audit | 3 | sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3 | 0 | 0 | 0 | — | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1202,5 +1202,148 @@ excluding documentation.
     "kind": "verify"
   },
   "source_event_id": "round-2-audit"
+}
+```
+
+## Round 3 — Verification
+
+### R3 Summary
+
+**Auditor:** GPT-5 (Codex), independent implementation verification
+
+**Date:** 2026-11-11
+
+**Target:** `docs/designs/single-source-cli-docs.md` at
+`sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3`; current implementation
+head `e41d7eb4c7353fc5ba39866be1a34745f4cdf5dc`, with the N-1 fix in `f212b8c1`.
+
+**Verdict:** **PASS.** N-1 is fixed. The real repository wiki build now exits 0 and writes 244
+pages. Audit Markdown is transformed through the public-safe provenance renderer before both
+validation and publication, while an ordinary published source containing forbidden metadata still
+fails closed. The focused implementation suite passes all 191 tests. No new finding was reproduced,
+and the authoritative design digest is unchanged.
+
+### R3.1 Open-backlog verification
+
+| ID | Disposition | Evidence |
+|---|---|---|
+| N-1 | **FIXED — CONFIRMED** | `scripts/wiki_build.py:383-387,426-440` applies `_publication_text()` before the publication-policy scan, and `scripts/wiki_build.py:390-404` applies the same transform to the emitted page. On the current head, the exact repository build that previously exited 1 now exits 0 and creates 244 pages. The current audit source measures two private-tracker and one private-environment references before rendering and zero of either after rendering, without printing the matched values. |
+
+**Verification note:** **CONFIRMED** against code, commit ancestry, the actual tracked audit source,
+the generated wiki tree, and focused regressions. Commit `f212b8c1` is the direct child of the
+Round 1 audit record and the direct parent of the Round 2 record, so the fix under verification is
+present in the current implementation rather than inferred from an unmerged diff.
+
+### R3.2 AD-N decisions verification
+
+None. No prior round opened a decision.
+
+### R3.3 NEW issues surfaced
+
+None. The fix did not narrow the wiki inventory or disable the policy gate for ordinary
+documentation: `tests/test_wiki_build.py:363-370` still requires a non-audit source with forbidden
+metadata to fail using safe path/count diagnostics, while
+`tests/test_wiki_build.py:386-403` covers the audit-carrier publication boundary.
+
+### R3 Recommendations
+
+**MUST be fixed before merge or wiki publication:** none from this verification scope.
+
+**SHOULD be fixed before the next audit round:** none.
+
+**Can be folded into a follow-up:** the design's already-declared live default-token capability
+check remains a post-merge operational gate; it is not part of N-1 and was not exercised by this
+read-only verification.
+
+### R3 Verification Matrix
+
+| Check | Reproduced command/probe | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| N-1 real build | `generate_docs.py --check --wiki-out <temp> --repository example/myproject` | Exit 0 and create the wiki tree | Exit 0; `wiki: 244 pages`; 244 Markdown files counted | ✅ |
+| N-1 source transform | Apply `_publication_text()` and `publication_violations()` to the tracked audit without printing matches | Rendered counts are zero | Raw aggregate `2` tracker/`1` environment; rendered aggregate `0`/`0`; content changed | ✅ |
+| N-1 boundary regressions | Audit-carrier sanitization, ordinary-source fail-closed, and receipt-sanitization tests | All pass | `3 passed in 2.51s` | ✅ |
+| Wiki subsystem | `pytest -q -p no:cacheprovider tests/test_wiki_build.py` | All pass | `36 passed in 7.76s` | ✅ |
+| Implementation focus suite | CLI help/docs, wiki, option forms, and self-parsing suites | All pass | `191 passed in 8.74s` | ✅ |
+
+**Verified: 5/5 checks reproduce on implementation head `e41d7eb4`.** The target digest remains
+`sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3`, matching the driver scope.
+
+### R3 Already-Correct Items
+
+- The publisher still includes audit documents rather than excluding them from the requested
+  comprehensive wiki inventory.
+- `scripts/wiki_build.py:430-440` validates the exact transformed text that is subsequently emitted,
+  so validation and publication use one representation.
+- `tests/test_wiki_build.py:363-370` confirms that ordinary documentation remains fail-closed and
+  diagnostics expose only a path and aggregate count.
+- `tests/test_wiki_build.py:386-403` is the requested audit-carrier-to-wiki integration regression.
+- The shared Click source, generated CLI reference, full help descriptions, short/long option-form
+  enforcement, deterministic wiki generation, and stale-page reconciliation remain green in the
+  191-test focused suite.
+
+### R3 Files Read
+
+**Audit contract and subject**
+
+- Canonical audit `STUB.md` and `TEMPLATE.md` — full read before verification.
+- `docs/audits/single-source-cli-docs-implementation-audit.md` — full prior history and backlog.
+- `docs/designs/single-source-cli-docs.md` — full target, including decisions and Approval Log.
+
+**Implementation and tests**
+
+- `scripts/wiki_build.py`; `scripts/publication_hygiene.py`; `scripts/generate_docs.py`.
+- `tests/test_wiki_build.py`; `tests/test_cli_docs.py`; `tests/test_cli_help.py`;
+  `tests/test_cli_option_forms.py`; `tests/test_cli_self_parsing.py`;
+  `tests/test_public_repo_hygiene.py`.
+- `.github/workflows/wiki.yml`; `docs/wiki/pages.toml`.
+
+### R3 Commands Run
+
+- `git status --short`; current head, target digest, commit ancestry, and relevant history checks.
+- Exact current-head wiki build into an isolated temporary directory.
+- Safe aggregate before/after publication-policy probe over the tracked audit source.
+- Three focused publication-boundary regressions, the full 36-test wiki suite, and the 191-test
+  implementation focus suite, all with disposable caches outside the repository.
+
+### R3 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": "public-content-pipeline-closure",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "audit-wiki-integration",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:audit-round-output-blocks-wiki",
+      "id": "N-1",
+      "reachable_behavior": "On the current head the trusted-main wiki build exits before artifact creation because the tracked audit record violates the publication policy.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round2:N-1"
+    ],
+    "diff_since": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3",
+    "diff_summary": {
+      "changed": false,
+      "from": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3",
+      "to": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-3-audit"
 }
 ```
