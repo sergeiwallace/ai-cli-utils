@@ -261,6 +261,16 @@ _ENVIRONMENT_NAME = re.compile("|".join(re.escape(name) for name in _PRIVATE_ENV
 _ENVIRONMENT_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}-")
 _ENVIRONMENT_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}[\"']", re.IGNORECASE)
 
+# Public design documents may describe provenance without publishing the private
+# orchestration carrier that produced them. This focused list starts with the
+# design that introduced the rule; adding another public design is one explicit
+# line rather than silently widening the historical docs cleanup below.
+_PUBLIC_PROVENANCE_DOCS = (Path("docs/designs/single-source-cli-docs.md"),)
+_PRIVATE_WORKFLOW_METADATA = re.compile(
+    r"\b(?:canonical_root_json|founding_ask_ref_sha256|task_id)\b|^\*\*Run Ledger:\*\*",
+    re.MULTILINE,
+)
+
 # Everything the name guard scans except ``docs``. Measured 2026-10-21 with `grep -rniE`:
 # ``docs`` holds about 150 lines naming the repository and about 200 carrying the prefix,
 # across design records, audits and the archived roadmap, where a name is often the only
@@ -291,6 +301,36 @@ def scan_for_private_environment_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_environment_names_remain():
     findings = scan_for_private_environment_names(_repo_root())
     assert not findings, "private environment names in a public package:\n" + "\n".join(findings)
+
+
+def scan_public_docs_for_private_workflow_metadata(root: Path) -> list[str]:
+    """Return public design lines that expose private workflow provenance."""
+    findings: list[str] = []
+    for relative_path in _PUBLIC_PROVENANCE_DOCS:
+        text = (root / relative_path).read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if (
+                _line_has_environment_name(line)
+                or _PRIVATE_TRACKER_ID.search(line)
+                or _PRIVATE_WORKFLOW_METADATA.search(line)
+            ):
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_public_design_docs_when_scanned_then_private_workflow_metadata_is_absent():
+    findings = scan_public_docs_for_private_workflow_metadata(_repo_root())
+    assert not findings, "private workflow metadata in public design docs:\n" + "\n".join(findings)
+
+
+def test_given_private_workflow_metadata_in_a_public_design_when_scanned_then_it_is_flagged(tmp_path):
+    design = tmp_path / _PUBLIC_PROVENANCE_DOCS[0]
+    design.parent.mkdir(parents=True)
+    design.write_text('task_id = "private-task"\n', encoding="utf-8")
+
+    findings = scan_public_docs_for_private_workflow_metadata(tmp_path)
+
+    assert findings == [f'{_PUBLIC_PROVENANCE_DOCS[0].as_posix()}:1: task_id = "private-task"']
 
 
 class TestTheEnvironmentNameGuardCanActuallyFail:

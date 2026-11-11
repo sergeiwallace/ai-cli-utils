@@ -13,32 +13,27 @@ template_version: "design-1.0.0"
 
 ## Founding Ask Coverage
 
-`founding_ask_ref`: Tier 3. `canonical_root_json`:
-`{"blob_oid":"8b2dab3a1467d1a6fb828b59ea7c55550a3bebd7","capture_commit":"1e65faf1fd58932a154602f7601cc169cbbc4416","content_sha256":"7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9","entry_ids":["A001"],"generation":1,"path":"docs/asks/AI-CLI-single-source-cli-help-usage-lels.md","previous_ref_sha256":null,"repository":"ai-harness","schema_version":1,"task_id":"AI-CLI-single-source-cli-help-usage-lels"}`;
-`founding_ask_ref_sha256` `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`.
-The record carries the owner's words verbatim along with a pasted terminal transcript that names a
-private host, so it is kept in the operator's private configuration repository and not reproduced
-in this public one. This index is non-authoritative; the raw record governs.
+The originating request was captured verbatim in a private system of record and verified by
+content digest before this design was written. It is not reproduced here because it includes
+private operational metadata. This index is non-authoritative; the captured request governs.
 
 | Authoritative raw entry | Coverage and disposition |
 |---|---|
-| A001: "why does the `ai -h` not show the full descriptions for each command?" | Answered in [Problem Statement](#problem-statement); fixed by [Help rendering](#help-rendering) and [D-2](#d-2) |
-| A001: "are these all the options (both short and long option names, it should show both)?" | Answered in [Problem Statement](#problem-statement): `ai -h` lists only the root options, and every one of the 227 visible options in the tree already has both forms. The generated reference lists both forms of every option of every command ([CLI reference document](#cli-reference-document)) |
-| A001: update the CLI usage documentation and the help message, with "some shared source that generated template based versions for both the `ai -h` help message and also the canonical cli usage docoumentation", enforced to stay aligned | [D-1](#d-1) (the source), [D-3](#d-3) (the canonical document), [D-4](#d-4) (the generator), [D-5](#d-5) (enforcement); Phases 1 and 2 |
-| A001: the project wiki, updated "with everything about this repo", "generated from a single source if/where possible" | [D-6](#d-6) and [Wiki pages](#wiki-pages); Phase 3 |
-| A001: auto-generate canonical Markdown, CLI usage docs, help and the wiki, "progrmamatically / via LLM, but as programmatically as possible" | [D-7](#d-7): every published artifact is a deterministic render of committed sources; an LLM drafts only prose that cannot be derived, and that prose lands in a source file under review |
-| A001: research open-source packages and tools for auto-generated documentation, and existing material on programmatic and agentic documentation generation | [📄 ai-cli-utils/docs/research/cli-docs-generation-tools.md](../research/cli-docs-generation-tools.md) |
-| A001: a hosted documentation website for all the owner's open-source repos, "but we can worry about that later" | Deferred by the owner's own words. Filed as a separate task in the operator's private task store. [Website feed](#website-feed) records how this design feeds it |
-| A001: link Beads tasks to GitHub issues and Projects, template-standard, kept in sync, rolled out to every repo with its wiki | Outside this run. The launching session filed it as an epic in the operator's private task store, as the ask directs ("add this all s an epic to ai-harness repo beads store"). This design's wiki generator is written so a template can reuse it ([Integration](#integration)) |
-| A001: GitHub Discussions for public repos, standard config and first post | Outside this run. Filed by the launching session as a separate epic in the same store, as the ask directs |
+| Originating request: "why does the `ai -h` not show the full descriptions for each command?" | Answered in [Problem Statement](#problem-statement); fixed by [Help rendering](#help-rendering) and [D-2](#d-2) |
+| Originating request: "are these all the options (both short and long option names, it should show both)?" | Answered in [Problem Statement](#problem-statement): `ai -h` lists only the root options, and every one of the 227 visible options in the tree already has both forms. The generated reference lists both forms of every option of every command ([CLI reference document](#cli-reference-document)) |
+| Originating request: update the CLI usage documentation and the help message from a shared source, enforced to stay aligned | [D-1](#d-1) (the source), [D-3](#d-3) (the canonical document), [D-4](#d-4) (the generator), [D-5](#d-5) (enforcement); Phases 1 and 2 |
+| Originating request: update the project wiki with everything about this repository, generated from a single source where possible | [D-6](#d-6) and [Wiki pages](#wiki-pages); Phase 3 |
+| Originating request: auto-generate canonical Markdown, CLI usage docs, help and the wiki, programmatically where possible and with an LLM only where needed | [D-7](#d-7): every published artifact is a deterministic render of committed sources; an LLM drafts only prose that cannot be derived, and that prose lands in a source file under review |
+| Originating request: research open-source packages and tools for programmatic and agentic documentation generation | [📄 ai-cli-utils/docs/research/cli-docs-generation-tools.md](../research/cli-docs-generation-tools.md) |
+| Originating request: a hosted documentation website for the owner's open-source repositories, deferred until later | [Website feed](#website-feed) records how this design feeds it |
+| Originating request: link task records to GitHub issues and Projects, template-standard, kept in sync and rolled out with each wiki | Outside this run. This design's wiki generator is written so a template can reuse it ([Integration](#integration)) |
+| Originating request: GitHub Discussions for public repositories, standard configuration and first post | Outside this run |
 
 **Status:** DRAFT
 
 **Created:** 2026-11-11
 
 **Research:** [📄 ai-cli-utils/docs/research/cli-docs-generation-tools.md](../research/cli-docs-generation-tools.md)
-
-**Run Ledger:** [📄 ai-cli-utils/docs/audits/ai-cli-lels-cli-docs-run-ledger.md](../audits/ai-cli-lels-cli-docs-run-ledger.md)
 
 ## Table of Contents
 
@@ -58,7 +53,7 @@ in this public one. This index is non-authoritative; the raw record governs.
 - [Data Model](#data-model)
 - [Integration](#integration)
 - [Implementation Phases](#implementation-phases)
-  - [Phase 1: Full command summaries in help](#phase-1-full-command-summaries-in-help)
+  - [Phase 1: Full command descriptions in help](#phase-1-full-command-descriptions-in-help)
   - [Phase 2: Generated CLI reference and drift check](#phase-2-generated-cli-reference-and-drift-check)
   - [Phase 3: Generated wiki and its publication](#phase-3-generated-wiki-and-its-publication)
 - [Implementation Audit](#implementation-audit)
@@ -67,7 +62,7 @@ in this public one. This index is non-authoritative; the raw record governs.
   - [Decision Summary](#decision-summary)
   - [Decision Details](#decision-details)
   - [D-1: The single source of command text](#d-1)
-  - [D-2: How `ai -h` shows full summaries](#d-2)
+  - [D-2: How `ai -h` shows full descriptions](#d-2)
   - [D-3: Shape of the canonical CLI usage document](#d-3)
   - [D-4: Generator implementation](#d-4)
   - [D-5: How drift is caught](#d-5)
@@ -80,10 +75,10 @@ in this public one. This index is non-authoritative; the raw record governs.
 ## Executive Summary
 
 This design makes the help text written beside each command in the code the only place a command's
-summary, description and options are written down. Three things are generated from it: the
+summary, full description and options are written down. Three things are generated from it: the
 `ai -h` command list, a canonical CLI reference document in the repository, and the project's
 GitHub wiki, which also carries the README, guides and changelog. The `ai -h` list stops cutting
-summaries off with "..." and shows each one in full. A test fails whenever the committed reference
+text off with "..." and shows each command's complete help description. A test fails whenever the committed reference
 or README index differs from what the code would generate, so they cannot drift apart unnoticed,
 and a GitHub Actions workflow republishes the wiki on every push to `main`. No LLM runs in the
 generation path: an LLM may draft missing help text or guide prose, but that text is committed to a
@@ -92,7 +87,7 @@ the generated Markdown is plain enough to feed one later.
 
 ## Summary for a wide audience
 
-`ai -h` now prints every command's summary in full instead of truncating it. A new page,
+`ai -h` now prints every command's complete description instead of a truncated summary. A new page,
 `docs/reference/cli.md`, lists every command with its usage line, its description and every option
 in both its short and long form. That page and the README's command list are generated from the
 code, so they always match what `ai <command> -h` prints. The project wiki is rebuilt from the
@@ -134,7 +129,7 @@ interface.
 ```mermaid
 flowchart LR
     src["Command help in code<br/>(help=, short_help=, option help=)"]
-    sum["command_summary()<br/>one shared function"]
+    sum["command_description()<br/>one shared function"]
     help["ai -h and ai CMD -h<br/>(Click renders)"]
     gen["scripts/generate_docs.py"]
     ref["docs/reference/cli.md<br/>(fully generated)"]
@@ -161,15 +156,18 @@ flowchart LR
 Each command's text lives where it lives today, in the Click decorators: `help=` (or the
 callback's docstring) for the description, an optional `short_help=` for the summary, and each
 option's `help=`, `metavar`, default and flags. This design adds no second file for command text.
-The summary of a command is computed by one function, `command_summary(command)`, that both the
-help formatter and the document generator call: the explicit `short_help` when set, otherwise the
-first sentence of the help's first paragraph, never shortened.
+The complete description of a command is computed by one function,
+`command_description(command, context)`, that both the help formatter and the document generator
+call. It applies Click's help-text cleanup and formatting rules to the full `help` value (or the
+callback docstring), including `\f` and `\b` handling. `command_summary(command)` remains a compact
+index label: explicit `short_help` when set, otherwise the first sentence of the first paragraph.
 
 ### Help rendering
 
 Every group in the tree uses one shared `click.Group` subclass whose `format_commands` writes each
-row from `command_summary()` instead of Click's shortened text. Click's `write_dl` wraps a long
-summary onto following lines, so nothing is cut. The root context sets `max_content_width` to 100
+row from `command_description()` instead of Click's shortened text. Click's `write_dl` preserves
+and wraps the complete description onto following lines, so no sentence or paragraph is omitted.
+The root context sets `max_content_width` to 100
 so a terminal wider than 80 columns uses up to 100; an 80-column terminal renders as today, minus
 the truncation. The existing `_ChiefAliasGroup` becomes a subclass of the shared class so its
 alias routing is unchanged.
@@ -217,19 +215,23 @@ docs, the architecture doc, CONTRIBUTING, SECURITY and the CHANGELOG. Design, pl
 research documents are working records, not user documentation, and stay out of the wiki; the
 wiki's Home links to the repository's `docs/` index for readers who want them.
 
-A workflow, `.github/workflows/wiki.yml`, runs on every push to `main` and on manual dispatch. It
-builds the tree, checks out the wiki repository with the workflow's own `GITHUB_TOKEN`
+A workflow, `.github/workflows/wiki.yml`, runs on every push to `main` and allows manual dispatch
+only as a retry for `refs/heads/main`. The publication job has an explicit
+`github.ref == 'refs/heads/main'` condition and checks out the trusted main ref before executing the
+builder. It builds the tree, checks out the wiki repository with the workflow token
 (`permissions: contents: write`), replaces its contents with the built tree, and commits and pushes
 only when something changed. GitHub creates the wiki repository only when the first page is saved
 in the web interface, so until that one-time human step the workflow fails with a message naming
-it.
+it. Whether the default workflow token can push to this repository's wiki is an unverified
+capability until the first live run; publication stops and requests maintainer direction if it
+cannot, without silently adding another credential.
 
 ### Enforcement
 
 A pytest module regenerates the reference and the README region in memory and compares them with
 the committed files; a mismatch fails with a unified diff and the regenerate command. A second test
-renders `ai -h` and every group's help at width 80 and asserts that each command's full summary
-appears and no row ends in "...". A third builds the wiki tree into a temporary directory and
+renders `ai -h` and every group's help at width 80 and asserts that each command's complete
+`command_description()` appears and no row ends in "...". A third builds the wiki tree into a temporary directory and
 asserts that every manifest source exists, every selected section exists, and every link in the
 output resolves. A fourth reads every `ai ...` example in the hand-written docs' code blocks and
 fails when one names a command or option the tree does not have, so narrative usage text cannot
@@ -277,11 +279,15 @@ Each page has `name` and exactly one of `source` or `generated`; `sections` is v
 `source`. The generator rejects an unknown key, a duplicate name, a missing source file, a missing
 section and an unknown `generated` value, naming the page.
 
-The summary function and generator interface:
+The description, summary and generator interfaces:
 
 ```text
+command_description(command, context) -> str
+    complete Click-formatted help text, including paragraph structure, else "".
+
 command_summary(command) -> str
-    short_help (cleaned) if set, else first sentence of the help's first paragraph, else "".
+    short_help (cleaned) if set, else first sentence of the help's first paragraph, else "";
+    used only in compact indexes, never as the root help description.
 
 render_reference(root_group) -> str          # docs/reference/cli.md content
 render_index(root_group, link_base) -> str   # index table, used by the reference and README
@@ -297,10 +303,11 @@ scripts/generate_docs.py
 ## Integration
 
 The generator imports the CLI's root group directly and needs no network, configuration file or
-installed console script. The wiki builder reads only tracked files. The public-hygiene test
-already scans every source the wiki publishes, so the wiki exposes nothing the repository does not
-already publish. The project template can later lift the wiki builder and workflow unchanged for
-other repositories; that rollout belongs to the separate GitHub mirroring epic.
+installed console script. The wiki builder reads only tracked files. The public-hygiene tests scan
+every source the wiki publishes and specifically reject private workflow metadata in public design
+documents, so the wiki exposes nothing the repository does not already publish. The project
+template can later lift the wiki builder and workflow unchanged for other repositories; that
+rollout is outside this design.
 
 ## Implementation Phases
 
@@ -312,9 +319,9 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
 <!-- doc:ac-rules:mirror:end -->
 
-### Phase 1: Full command summaries in help
+### Phase 1: Full command descriptions in help
 
-- **Scope:** the shared summary function, the shared group class, help text for the commands
+- **Scope:** the shared description and summary functions, the shared group class, help text for the commands
   that have none, and Click declarations for the three self-parsing commands.
 - **Deliverables:**
   - Files created: `src/ai_cli/cli_help.py`
@@ -324,16 +331,17 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
     `CHANGELOG.md`
   - Tests added: `tests/test_cli_help.py`, parity tests for `ps`, `layout` and `sync`
 - **Tasks + acceptance criteria:**
-  - **T-1.1 Shared summary and group class**
+  - **T-1.1 Shared description, summary and group class**
     - [ ] When `ai -h` is rendered at width 80, the system shall print every visible top-level
-      command's `command_summary()` in full, wrapped where needed, and no command row shall end
-      in "...".
+      command's complete `command_description()` with every sentence and paragraph, wrapped where
+      needed, and no command row shall end in "...".
     - [ ] When any visible group's help (`ai <group> -h`) is rendered at width 80, the system shall
-      print each of its visible subcommands' full summaries.
+      print each visible subcommand's complete `command_description()`.
     - [ ] When a command sets `short_help`, `command_summary()` shall return that text cleaned of
-      indentation, and the help list shall print it unchanged.
-    - [ ] If a command has no help text and no `short_help`, then `command_summary()` shall return
-      an empty string rather than raise.
+      indentation for compact generated indexes; the help list shall still print the complete
+      `command_description()` rather than substituting the summary.
+    - [ ] If a command has no help text, then `command_description()` and `command_summary()` shall
+      return an empty string rather than raise.
     - [ ] When the terminal is 120 columns wide, the system shall render help at a content width of
       100.
     - [ ] When a configured chief-of-staff command alias is invoked, the system shall route it to
@@ -346,15 +354,24 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
   - **T-1.3 Self-parsing commands declared in Click ([D-8](#d-8))**
     - [ ] When `ai ps -h`, `ai layout -h` or `ai sync -h` runs, the system shall print Click help
       listing that command's actions and options and exit 0 without performing any action.
-    - [ ] When any invocation form the current hand parsers accept is used (each action; each flag
-      in its short and long spelling; no arguments), the system shall call the same implementation
-      with the same values as before (parity, one test per form, through the CLI entry point).
-    - [ ] If an unknown action or flag is given, then the system shall exit non-zero with a usage
-      error naming it, rather than ignoring it.
+    - [ ] When one of these valid forms is used, the system shall call the same implementation with
+      the same values as before, with one test per form through the CLI entry point: `ps` with no
+      action, `clean`, or `cron`, plus `-f`/`--force` and `-r`/`--refresh`; `layout list`,
+      `layout validate <name>`, `layout profiles <name>`, or `layout <name>`; and `sync push`,
+      `pull`, `conflicts`, `resolve`, `watch`, `cleanup`, or `repair-worktree`, with each action's
+      currently documented short and long options.
+    - [ ] When `ai layout <name>` is used and `<name>` is not a reserved action, the system shall
+      call `cmd_layout_apply(name)`; reserved action names shall continue to select their action.
+    - [ ] If `validate`, `profiles`, or `repair-worktree` lacks a required name, then the system
+      shall exit non-zero with usage text, preserving current failure behavior.
+    - [ ] If an unknown action, option, or trailing token is given, then the system shall exit
+      non-zero with a usage error naming it. The old acceptance of unknown `ps` flags and ignored
+      trailing tokens is intentionally dropped: it was undocumented accidental tolerance, cannot
+      be represented honestly in Click help, and can conceal a mistyped destructive option.
     - [ ] When the repository's own scripts and hooks invoke these commands, each invocation shall
       still parse (a test enumerates them).
   - **T-1.4 Changelog**
-    - [ ] `CHANGELOG.md` `[Unreleased]` shall describe the untruncated summaries and the working
+    - [ ] `CHANGELOG.md` `[Unreleased]` shall describe the complete root-help descriptions and the working
       `-h` on `ai ps`, `ai layout` and `ai sync`.
 - **Exit gate:** `uv run ruff check src/ tests/`, `uv run ruff format --check src/ tests/`,
   `uv run pyright src/` and `uv run pytest` pass; `ai -h` read by eye shows no "...".
@@ -405,10 +422,16 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
   - **T-2.4 Examples in hand-written docs name real commands and options**
     - [ ] When the test suite runs, every shell example line beginning with `ai ` inside a fenced
       code block in `README.md`, `docs/tools/*.md` and `docs/guides/*.md` shall resolve to a
-      visible command path, and every option token on it shall be a declared option of that
-      command (both spellings accepted).
+      visible command path. Each option token shall be classified as a locally declared option,
+      an intentional provider pass-through on `c`, `g`, `p`, or `cx`, or invalid; locally declared
+      options shall accept both spellings, and pass-through tokens shall be preserved without being
+      misreported as local options.
     - [ ] If an example names a command or option that does not exist, then the test shall fail
       naming the file, the line and the unknown token.
+    - [ ] When an example uses a provider pass-through option, the test shall record that
+      classification and shall not require the provider option to be declared on the launcher;
+      when the same token appears on a command that does not allow pass-through, the test shall
+      classify it as invalid.
     - [ ] Where an example is deliberately invalid or illustrative, a per-line marker comment shall
       exempt it, and the test shall report how many lines are exempt.
   - **T-2.5 Hand-written docs point at the generated reference**
@@ -446,13 +469,20 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
       test shall fail naming any link that does not.
     - [ ] When the wiki is built twice from the same commit, the trees shall be byte-identical.
   - **T-3.3 Publishing workflow**
-    - [ ] When a commit lands on `main`, the workflow shall build the wiki and push it to the wiki
-      repository using only the workflow's `GITHUB_TOKEN`, committing only when the built tree
+    - [ ] When a commit lands on `main`, the workflow shall build the wiki and attempt to push it
+      to the wiki repository with the default workflow token, committing only when the built tree
       differs from the wiki's current content.
+    - [ ] When the publication job starts, it shall require
+      `github.ref == 'refs/heads/main'` and check out the trusted main ref before executing any
+      repository builder code; a manual dispatch on any other ref shall skip the write-capable job.
+    - [ ] If the first live publication proves that the default workflow token cannot push to the
+      wiki, then the workflow shall stop with a diagnostic and request maintainer direction. It
+      shall not provision, request, or silently fall back to a personal token; any authorized
+      credential fallback shall be designed and reviewed separately.
     - [ ] If the wiki repository does not exist yet, then the workflow shall fail with a message
       saying the first wiki page must be created once in the GitHub web interface.
-    - [ ] When the workflow runs on a pull request, it shall not run at all (publishing happens
-      only from `main` and manual dispatch).
+    - [ ] When the workflow runs on a pull request, it shall not run at all; manual dispatch is a
+      main-only retry path, not a branch-selectable publication path.
 - **Exit gate:** Phase 2 gate plus the wiki tests pass on all three CI operating systems; after
   merge and the one-time first-page step, a workflow run on `main` publishes and the wiki's Home
   and CLI Reference pages read correctly in the browser (live verification).
@@ -465,14 +495,14 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
 | # | Phase | Section / Decision | Verified | Notes |
 |---|-------|--------------------|---------|-------|
 | 1 | N/A | Design Overview filled with concrete implementation knowledge | - [ ] | |
-| 2 | Phase 1 | D-2: `ai -h` and every group list full summaries; no "..." | - [ ] | |
+| 2 | Phase 1 | D-2: `ai -h` and every group list complete descriptions; no "..." | - [ ] | |
 | 3 | Phase 1 | Every visible command has a summary | - [ ] | |
 | 3a | Phase 1 | D-8: `ps`, `layout`, `sync` declared in Click with parity tests | - [ ] | |
 | 4 | Phase 2 | D-3, D-4: reference generated, deterministic, matches `-h` records | - [ ] | |
 | 5 | Phase 2 | D-5: stale reference or README region fails pytest and the hook | - [ ] | |
 | 6 | Phase 2 | No hand-written flag table remains in the narrative guide | - [ ] | |
 | 7 | Phase 3 | D-6: manifest validated, links resolve, sidebar and footer generated | - [ ] | |
-| 8 | Phase 3 | Workflow publishes on `main` only, with `GITHUB_TOKEN` | - [ ] | |
+| 8 | Phase 3 | Workflow publishes on `main` only; default-token capability verified live | - [ ] | |
 | 9 | N/A | D-7: no LLM call anywhere in generation or CI | - [ ] | |
 
 **Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked -->
@@ -483,10 +513,10 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
 |---|------|--------|------------|
 | 1 | Help text that differs by platform or configuration makes the committed reference differ on Windows or macOS CI | The drift test fails on one OS only | Help and defaults are static today (measured: no help string reads configuration or the environment). The determinism AC runs on all three CI systems, so a future dynamic string fails loudly where it appears |
 | 2 | Contributors edit `docs/reference/cli.md` or the wiki by hand | The edit is lost on the next regeneration | The generated notice at the top of the reference and the wiki footer say so; the drift test rejects a hand edit of the reference |
-| 3 | The wiki workflow fails until the first page exists | A red run on `main` | The failure message names the one-time step; the workflow does not gate pull requests |
-| 4 | Long summaries wrap onto two or three lines in an 80-column `ai -h` | A longer list | Six summaries exceed 80 characters; T-1.2's review can shorten them with `short_help`, never by truncation |
+| 3 | The wiki workflow fails until the first page exists or the default token's wiki capability is verified | A red run on `main` | The failure distinguishes the one-time page step from token authorization; a token failure stops for maintainer direction and never silently adds a credential |
+| 4 | Complete descriptions wrap onto many lines in an 80-column `ai -h` | A substantially longer list | This is the explicit full-description requirement; wrapping preserves readability and `command_summary()` remains available for compact generated indexes |
 | 5 | A future Click release changes `format_commands` or help records | Help or reference rendering changes | The override uses only public API (`get_short_help_str`, `get_help_record`, `write_dl`); tests pin the visible output, so an upgrade that changes it fails the suite |
-| 6 | The wiki workflow's token can write repository contents | A compromised step could push to the repository | The job runs only on `main` and dispatch, uses pinned first-party actions and no third-party action, and runs no code from pull requests |
+| 6 | The wiki workflow's token can write repository contents | A compromised step could push to the repository | The job requires the main ref, checks out trusted main before running the builder, uses pinned first-party actions and no third-party action, and runs no code from pull requests or dispatched branches |
 
 ## Design Decisions
 
@@ -495,7 +525,7 @@ other repositories; that rollout belongs to the separate GitHub mirroring epic.
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
 | D-1 | The single source of command text | (a) Click decorators in code, (b) a separate data file, (c) adopt click-extra | (a) | (a) | No | One place, already populated and already what `-h` prints; no new dependency | `✅ Resolved by Claude` |
-| D-2 | How `ai -h` shows full summaries | (a) shared group class prints untruncated summaries, (b) require `short_help` on every command, (c) only widen the content width, (d) print full help paragraphs | (a) | (a) | No | Fixes every command at once from the existing text | `✅ Resolved by Claude` |
+| D-2 | How `ai -h` shows full descriptions | (a) shared group class prints untruncated summaries, (b) require `short_help` on every command, (c) only widen the content width, (d) print complete formatted help descriptions | (d) | (d) | No | Satisfies the literal full-description requirement from the same help text used by the generated reference | `✅ Resolved by audit fix` |
 | D-3 | Shape of the canonical CLI usage document | (a) one fully generated reference plus narrative guide, (b) generated blocks inside the existing guide, (c) one generated file per command | (a) | (a) | No | Clear ownership: generated files are never hand-edited | `✅ Resolved by Claude` |
 | D-4 | Generator implementation | (a) in-repo generator on Click's public API, (b) cog blocks in Markdown, (c) mkdocs-click, (d) Typer's `get_docs_for_click` | (a) | (a) | No | No new dependency or private API; same records `-h` prints | `✅ Resolved by Claude` |
 | D-5 | How drift is caught | (a) pytest comparison plus pre-commit `--check`, (b) CI-only job, (c) generate at build time, never commit | (a) | (a) | No | Runs on all three CI systems and locally before push | `✅ Resolved by Claude` |
@@ -573,7 +603,7 @@ which the wiki also publishes.
 
 <a id="d-2"></a>
 
-#### D-2: How `ai -h` shows full summaries — `✅ Resolved by Claude: (a) shared group class prints untruncated summaries`
+#### D-2: How `ai -h` shows full descriptions — `✅ Resolved by audit fix: (d) print complete formatted help descriptions`
 
 **Context.** Click cuts each summary to 51 columns at the default width. The fix must apply to
 every group, including future ones.
@@ -583,7 +613,7 @@ every group, including future ones.
 **Pros:**
 
 - One override fixes all 96 visible commands with no text edits.
-- The same `command_summary()` feeds the reference, so the two cannot disagree.
+- The same `command_summary()` feeds compact reference indexes.
 - Uses only public Click API.
 
 **Cons:**
@@ -613,31 +643,32 @@ every group, including future ones.
 
 - Does nothing on an 80-column terminal, so it does not answer the ask.
 
-##### (d) Print full help paragraphs in the list
+##### (d) Print complete formatted help descriptions in the list
 
 **Pros:**
 
-- Shows the most text.
+- Satisfies the literal request for each command's full description.
+- The same `command_description()` feeds root/group help and the generated reference, so those
+  representations cannot disagree about the description.
 
 **Cons:**
 
-- The list grows to hundreds of lines; the full text already shows under `ai <command> -h` and in
-  the reference.
+- The list grows to hundreds of lines.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved by Claude (2026-11-11); confidence: high — (a) Shared group class prints untruncated summaries.
-<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=default; ai-profile=coordinator -->
-<!-- decision-lineage: decision-id=single-source-cli-docs/D-2; decision-topic=full-summaries-in-help-list; governs=design:single-source-cli-docs; normalized-proposition=a-shared-group-class-prints-each-command-summary-untruncated; applicability=ai-cli-command-tree; outcome-id=shared-group-untruncated; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+> **Decision:** ✅ Resolved by audit fix (2026-11-11); confidence: high — (d) Print complete formatted help descriptions.
+<!-- decision-record: chosen-option=(d); ai-family=codex; ai-model=gpt-5; ai-effort=high; ai-profile=implement -->
+<!-- decision-lineage: decision-id=single-source-cli-docs/D-2; decision-topic=full-descriptions-in-help-list; governs=design:single-source-cli-docs; normalized-proposition=d-shared-group-class-prints-each-complete-formatted-command-description; applicability=ai-cli-command-tree; outcome-id=shared-group-full-description; relation=supersedes; related-decision-id=single-source-cli-docs/D-2; supersedes=shared-group-untruncated; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-**Authority test.** Gate 0 passes: every command's description is shown in full, which is what the
-ask asks; option (d) was not rejected to narrow it, because the summary shown is never cut and the
-full text remains one command away. Gates A to C do not fire. Gate D permits self-resolution: a
-small, reversible change backed by a measured cause.
+**Authority test.** Gate 0 requires option (d): showing only an untruncated first sentence narrows
+the explicit full-description requirement. Gates A to C do not fire. Gate D permits this correction
+because it restores the founding requirement and changes no external authority or credential.
 
 The regression Con is mitigated by a test that walks the tree and fails if any group is not an
 instance of the shared class, and by setting the class as `group_class` on the root so
-`@group.group()` inherits it. The wrapping Con is accepted and bounded by Risk 4.
+`@group.group()` inherits it. The longer-output Con is accepted because it is the requested
+behavior; wrapping is bounded by Risk 4.
 
 ---
 
@@ -822,8 +853,9 @@ The pre-commit cost Con is bounded: the hook runs only when files under `src/`, 
 #### D-6: Wiki source and publication — `✅ Resolved by Claude: (a) manifest over repo docs, built and pushed by a first-party workflow`
 
 **Context.** The ask wants the wiki to carry "everything about this repo", generated from a single
-source where possible. A GitHub wiki is a separate git repository that the workflow token can push
-to once it exists.
+source where possible. A GitHub wiki is a separate git repository. Primary documentation does not
+settle whether the default workflow token can push to it for this repository, so the first live
+main-branch publication is a capability probe rather than proof established by this design.
 
 ##### (a) Manifest over repo docs, built and pushed by a first-party workflow
 
@@ -891,9 +923,10 @@ holds the write token. Option (a) keeps that push to a dozen lines of workflow s
 `actions/checkout`.
 
 The link-rewriting Con is bounded by the link-resolution test over the built tree. The first-page
-Con is a one-time human action, reported to the owner, and the workflow names it when it fails.
-The workflow shell itself is not unit-tested; it is verified live on the first run after merge,
-which the Phase 3 exit gate requires.
+Con is a one-time human action, reported to the maintainer, and the workflow names it when it fails.
+The workflow shell itself is not unit-tested; the first main-branch run verifies both publication
+and default-token capability. A capability failure stops for maintainer direction rather than
+quietly expanding credential scope.
 
 ---
 
@@ -958,8 +991,9 @@ leaving only narrative prose to a human or an LLM-assisted edit.
 
 **Context.** Three top-level commands, `ai ps`, `ai layout` and `ai sync`, take every argument as
 unprocessed text and parse it by hand, with `help_option_names` set to none. Their actions and
-flags (`ps clean|cron -f -r`, `layout list|validate|profiles`, `sync push|pull|conflicts|resolve|
-watch|repair-worktree|cleanup -n -v`) are invisible to Click, so neither `-h` nor a generator can
+flags (`ps [clean|cron] [-f|--force] [-r|--refresh]`, `layout list|validate <name>|profiles
+<name>|<name>`, `sync push|pull|conflicts|resolve|watch|repair-worktree|cleanup` with their
+action-specific options) are invisible to Click, so neither `-h` nor a generator can
 see them. Measured 2026-11-11: `ai ps -h` ignores the flag and runs the process listing, and
 `ai sync -h` fails with "Unknown sync action: -h".
 
@@ -1001,10 +1035,12 @@ only option that achieves it for these three commands. Gates A to C do not fire:
 interface contract is published for these argument forms beyond the CLI itself, and the change
 keeps every accepted form. Gate D permits self-resolution.
 
-The parsing Con is mitigated by parity ACs: every invocation form the hand parsers accept today
-(each action, each flag in both spellings, no arguments) must behave the same after the change,
-tested through the CLI entry point. The repository's own callers (session scripts, hooks) are
-searched for invocations of the three commands and each is covered by a test.
+The parsing Con is mitigated by an explicit valid-form inventory and parity ACs for every listed
+action, dynamic layout name, option spelling, no-argument behavior, and required-argument failure.
+Acceptance of unknown `ps` flags and ignored trailing tokens is intentionally dropped as
+undocumented accidental tolerance; the new usage error makes misspellings visible. The
+repository's own callers (session scripts, hooks) are searched for invocations of the three
+commands and each is covered by a test.
 
 ---
 
