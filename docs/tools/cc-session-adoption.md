@@ -565,8 +565,9 @@ NEW is live, so a migrated session already back at work need not exit for it.
 
 A `--finish` that re-keyed on that row and left nothing undone appends a row with
 `"finished": true` for the pair; the ledger is append-only, so the migration's own
-row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, and the
-remote side of `-R`) checks the ledger once the session name is resolved and,
+row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
+remote side of `-R`, and a detached replay of NEW's recorded recipe by
+`ai sessions relaunch`) checks the ledger once the session name is resolved and,
 before the worktree or the session exists, runs the finish of each pair migrated
 to NEW with no later `finished` row: the same planner, hooks and Beads rule as
 `--finish -y`. That covers a migration made while NEW was live, which `--finish`

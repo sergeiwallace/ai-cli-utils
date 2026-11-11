@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
+  boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
+  already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
+  after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
+
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
