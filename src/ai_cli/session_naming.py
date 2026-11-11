@@ -558,6 +558,7 @@ def naming_snapshot():
     return discovered.snapshot(fetch=False)
 
 
+@_config.inspection_only()
 def validate_artifact_name(
     title: str,
     repo: Path,
@@ -566,7 +567,7 @@ def validate_artifact_name(
     allow_legacy: bool = False,
     reserved_name: bool = False,
 ) -> SessionName:
-    """Validate the name at a filesystem boundary against its actual owning repo/host."""
+    """Check the owning repo/host at a filesystem boundary without initializing config."""
     from . import name_registry as registry
 
     alias = registered_repo_alias(repo)

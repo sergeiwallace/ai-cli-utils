@@ -9,6 +9,30 @@ from test_migrate_naming_validation import registered_repo as registered_repo
 from ai_cli import config, main, session, session_naming
 
 
+@pytest.mark.parametrize("existing_config", [False, True])
+def test_given_uninitialised_config_when_validating_artifact_then_config_and_output_are_unchanged(
+    tmp_path, monkeypatch, register_repo, capsys, existing_config
+):
+    repo = tmp_path / "myproject"
+    repo.mkdir()
+    register_repo(repo, "myrepo")
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    config_file = config_home / "config.toml"
+    if existing_config:
+        config_file.write_text('[machine]\nhost_id = "test-host"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "get_xdg_config_home", lambda: config_home)
+    monkeypatch.setattr(config, "config_file_text", lambda: str(config_file))
+    before = {path: path.read_bytes() for path in config_home.rglob("*") if path.is_file()}
+
+    parsed = session_naming.validate_artifact_name("myrepo-tst-1", repo)
+
+    assert parsed.canonical
+    assert {path: path.read_bytes() for path in config_home.rglob("*") if path.is_file()} == before
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
 @pytest.mark.parametrize("value", ["bad/name", "bad_name", "Réview", "UPPER", "bad--name", "0", "01"])
 def test_given_malformed_input_when_launching_then_refused_without_sanitizing(registered_repo, value):
     repo, settings = registered_repo
