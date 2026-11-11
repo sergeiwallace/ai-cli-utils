@@ -27,6 +27,7 @@ import portalocker
 import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
+from legacy_run_state import legacy_run_state_helpers  # noqa: F401  (autouse fixture)
 from process_ownership import reap, reap_tree, spawn_owned_sleeper, watch_tmux_directory
 from process_wait import process_wait_seconds
 

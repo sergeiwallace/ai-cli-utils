@@ -43,6 +43,7 @@ import psutil
 import pyte
 from process_wait import process_wait_seconds, scaled
 
+from ai_cli import session_run_state
 from ai_cli.session_script import get_engine_script, resolve_session_shell
 
 REPO = Path(__file__).resolve().parents[1]
@@ -60,6 +61,42 @@ _SGR = re.compile(r"\x1b\[[0-9;]*m")
 _RELOAD_ROW = "reloading (attempt "
 # A rendered record may lead with its datetime element.
 _SESSION_LINE = re.compile(r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} )?\[session\] reload: ")
+
+
+@contextlib.contextmanager
+def _harness_state(state: Path, home: Path, config_home: Path, worktree: Path):
+    """Register the session where the supervisor's pinned installation will look for it.
+
+    The generated script persists run state through the loaded installation, not the stand-in `ai`
+    on PATH, so the registry it bakes in must be the harness's own and must hold this session.
+    """
+    names = ("XDG_STATE_HOME", "HOME", "XDG_CONFIG_HOME")
+    saved = {name: os.environ.get(name) for name in names}
+    os.environ.update(XDG_STATE_HOME=str(state), HOME=str(home), XDG_CONFIG_HOME=str(config_home))
+    try:
+        session_run_state.register(
+            SESSION,
+            recipe={
+                "engine": "c",
+                "session_name": SESSION,
+                "owning_host": "host-a",
+                "argv": ["ai", "c", "1"],
+                "extra_args": [],
+                "options": {},
+                "cwd": str(worktree),
+                "project": "myproject",
+            },
+            host="host-a",
+        )
+        generation = session_run_state.begin(SESSION)
+        (state / "ai-cli-utils" / "harness-generation").write_text(generation, encoding="utf-8")
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 class Session:
@@ -104,17 +141,18 @@ class Session:
         )
         shell = resolve_session_shell()
         assert shell, "the suite needs zsh or bash"
-        script.write_text(
-            get_engine_script(
-                "c",
-                "session-1",
-                SESSION,
-                "test-",
-                "myproject",
-                worktree_dir=str(worktree),
-                launch_log_path=str(launch_log) if launch_log is not None else None,
+        with _harness_state(state, home, tmp_path / "config", worktree):
+            script.write_text(
+                get_engine_script(
+                    "c",
+                    "session-1",
+                    SESSION,
+                    "test-",
+                    "myproject",
+                    worktree_dir=str(worktree),
+                    launch_log_path=str(launch_log) if launch_log is not None else None,
+                )
             )
-        )
         script.chmod(0o700)
         if update_pending:
             # A stamp the template did not bake in: each child reloads after its agent exits.
@@ -189,7 +227,8 @@ class Session:
         fakes = {
             "ai": (
                 "#!/bin/sh\n"
-                f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+                f'if [ "$1" = sessions ] && [ "$2" = _begin ]; then cat {state / "ai-cli-utils" / "harness-generation"}; exit 0; fi\n'
+                f'if [ "$1" = sessions ] && {{ [ "$2" = _sequence ] || [ "$2" = mark ]; }}; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
                 'if [ "$1" = ps ] && [ "$2" = cron ]; then\n'
                 f"  n=$(cat {counter} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {counter}\n"
                 f'  case " {" ".join(map(str, reload_on))} " in *" $n "*)\n'
