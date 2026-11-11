@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gain `-a` and `-v`. An unknown action, option or extra argument is now a usage error instead of
   being ignored, so a mistyped `ai ps clean` flag can no longer pass unnoticed; put `-f` and `-r`
   after the action (`ai ps clean -f`).
+- `docs/reference/cli.md` is a generated CLI reference: every command's usage line, complete
+  description, arguments and options, with each option's short and long form in its own column,
+  exactly as `-h` prints them. The README's Usage section gains a generated command index linking
+  into it. Both are regenerated with `uv run python scripts/generate_docs.py`; `-c/--check`
+  writes nothing and exits 1 with a diff when either is stale, and the test suite and a
+  pre-commit hook run that comparison. A test also checks every `ai ...` example in the README,
+  `docs/tools/` and `docs/guides/` against the command tree. `docs/tools/ai-cli-usage.md` is now
+  the narrative CLI guide and links to the reference instead of copying flag tables.
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and

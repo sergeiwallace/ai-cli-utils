@@ -63,7 +63,7 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 ## Documentation Maintenance
 
-- **Update docs when shipping features** — after any feature lands, update `docs/tools/ai-cli-usage.md` (usage reference), inline code comments in `main.py` for changed commands, and `README.md` if the CLI interface changed. Doc staleness is a bug.
+- **Update docs when shipping features** — a command's help in its Click declaration is the only source of its usage text. After changing a command or its help, run `uv run python scripts/generate_docs.py` to regenerate `docs/reference/cli.md` and the README command index; never edit either by hand. Then update the narrative guide `docs/tools/ai-cli-usage.md` and `README.md` prose if behaviour changed, and inline code comments in `main.py` for changed commands. Doc staleness is a bug.
 - **Same commit rule** — doc updates ship in the same commit as the feature, not as a follow-up.
 - **Plan docs are living docs** — update status, decisions, and approval log as work progresses.
 

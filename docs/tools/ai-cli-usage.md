@@ -1,12 +1,17 @@
 ---
-title: ai CLI Design — Subcommands Reference
+title: ai CLI guide
 category: tools
 tags: [ai-cli, cli, tmux, session-management, reference]
 status: current
 source: internal
 ---
 
-# ai CLI Design — Subcommands Reference
+# ai CLI guide
+
+This guide explains how the main `ai` commands behave and how to configure them. Every command's
+usage line, description and options, each in both its short and long form, are in the generated
+[CLI reference](../reference/cli.md), which `ai <command> -h` matches exactly. Options are listed
+there, not here.
 
 ## Table of Contents
 
@@ -316,7 +321,7 @@ Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 ```bash
 ai cos [SUFFIX|N] [-k|--machine-key KEY] [-H|--fm-home DIR] [-R] [-m MACHINE] [-r] [-d|--dry-run]
 ai c -F|--chief [SUFFIX|N] ...     # the same launch on any engine: ai c, ai g, ai p, ai cx
-ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos
+ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos  # docs-example: skip
 ```
 
 Attach to, resume or launch this machine's one chief-of-staff session (with `-R`, the remote
@@ -435,10 +440,13 @@ ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
 ## ai sync
 
 ```bash
-ai sync push [--memories-only] [--dry-run] [--verbose] [--force]
-ai sync pull [--memories-only] [--dry-run] [--verbose] [--force]
+ai sync push [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]
+ai sync pull [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force] [-p|--prefer-remote]
 ai sync conflicts
-ai sync watch [--verbose]
+ai sync resolve [-n|--dry-run] [-v|--verbose]
+ai sync watch [-a|--auto] [-v|--verbose]
+ai sync cleanup [-n|--dry-run] [-v|--verbose]
+ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]
 ```
 
 Bidirectional sync of Claude Code session data between local and remote host.
@@ -454,9 +462,9 @@ This boundary exists because `ai sync` is for CC session migration (conversation
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
 - `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.
-- `watch` — continuous background sync loop (starts pull/push on file-change events)
+- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off.
 
-Reads remote host from `[remote] host` in config, overridable via `--remote-host`.
+Each action's options: [CLI reference](../reference/cli.md#ai-sync).
 
 ---
 
@@ -482,14 +490,7 @@ Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` 
 - Dirty worktrees → skipped (`↷`), never stashed — active sessions may have uncommitted work
 - Non-existent or non-git folders → silently skipped or warned
 
-**Flags:**
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--workspace PATH` | `-w` | Explicit path to `.code-workspace` file |
-| `--remote` | `-r` | Use `[workspace] remote_path` from config |
-| `--dry-run` | `-d` | Print what would be pulled, no git operations |
-| `--verbose` | `-v` | Show full git output per repo/worktree |
+Options: [`ai ws pull` in the CLI reference](../reference/cli.md#ai-ws-pull).
 
 **Config** (`~/.config/ai-cli-utils/config.toml`):
 
@@ -586,6 +587,8 @@ ai layout validate <name>
 ai layout profiles <name>
 ai layout <name>
 ```
+
+`list`, `validate` and `profiles` are reserved; any other first argument is a layout name.
 
 YAML-driven iTerm2 window/tab/pane layout system. Layout files live at `~/.config/iterm2/layouts/<name>.yaml`.
 
@@ -742,12 +745,8 @@ downstream distinguishes them.
 - `status` — lists all registered CDP processes with port, PID, and alive/dead state.
   Cleans up stale PID files for dead processes.
 
-**Flags:**
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--port` | `-p` | `9222` | CDP port |
-| `--no-incognito` | `-I` | off | Disable `--incognito` flag |
+Options and defaults: [`ai cdp start`](../reference/cli.md#ai-cdp-start) and
+[`ai cdp stop`](../reference/cli.md#ai-cdp-stop) in the CLI reference.
 
 **Config (`[cdp]` section in `config.toml`):**
 
@@ -815,19 +814,18 @@ Run once after cloning or installing. Safe to re-run at any time.
 ### ai ps
 
 ```bash
-ai ps [--kill] [--threshold N] [--json]
+ai ps [-r|--refresh]
+ai ps clean [-f|--force]
+ai ps cron
 ```
 
-Process hygiene inspector. Lists all ai-cli-related processes with health scores and flags stale or suspect ones.
+Process hygiene inspector. `ai ps` lists every ai-cli-related process on this machine and the configured remote host with an orphan score and a verdict, and only reads.
 
-**Scoring:** each process is assigned a score based on tmux session presence, PID file state, and age. Higher score = more suspect.
+**Scoring:** each process is assigned a score based on tmux session presence, PID file state, and age. Higher score = more suspect. A score of 80 or more is orphaned; 40 to 79 is suspect.
 
-**Flags:**
-- `--kill` / `-k` — terminate processes at or above the threshold
-- `--threshold N` / `-t N` — kill threshold (default from config, typically 50)
-- `--json` / `-j` — output as JSON (useful for scripting)
-
-Safe to run at any time; without `--kill` it only reads and reports.
+- `ai ps -r` re-checks the remote host over SSH instead of using the cached result.
+- `ai ps clean` kills orphaned processes after a confirmation prompt; `-f` also kills suspect ones and skips the prompt.
+- `ai ps cron` is the non-destructive maintenance a session launch runs: it removes stale transport files and refreshes the remote cache, and never kills a process.
 
 ### ai upgrade
 
@@ -842,7 +840,7 @@ Reinstalls the `ai` tool from the current source tree using `uv tool install . -
 ## Internal Commands
 
 ```bash
-ai internal <action> [args...]
+ai internal <action> [args...]  # docs-example: skip
 ```
 
 Used by hooks and scripts — not for direct human use.
