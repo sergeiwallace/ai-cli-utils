@@ -139,7 +139,11 @@ Repeat the original `ai migrate-session` command to finish the pipeline.
 
 Legacy hooks without a status line still receive `--dry-run`; a named warning
 says their completion cannot be checked separately, and their idempotent applying
-invocation runs again. This package ships no external hook configurations.
+invocation runs again. Every writing run ends with a read-only re-plan of the pair,
+and a migration is recorded finished only when that re-plan reads every part done:
+a hook counts as done only when its `--dry-run` prints `migrate-status: done`, so a
+hook without a status line keeps every migration it joins unfinished, and the run
+exits 1 naming it. This package ships no external hook configurations.
 Existing configurations remain compatible. Read-only preflights cannot guarantee
 that a lease, snapshot, lock or checkout stays usable until execution; the
 agent-mail snapshot warning calls out freshness checks explicitly. Hook authors

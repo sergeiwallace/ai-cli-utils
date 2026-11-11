@@ -46,8 +46,10 @@ tasks, memory and resume hand-off:
   each changed store is named as needing its publish step, and a store bd cannot read is
   named and fails the run. Each completed migration is appended to
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
-  a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
-  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`).
+  every writing run then re-plans the pair read-only, and only one whose re-plan finds
+  nothing left appends a ``finished`` row (``verified: true``) for it
+  (:mod:`ai_cli.session_migrate_status`); otherwise it names each part left and fails.
+  ``ai c <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`).
   The ledger also names the transcripts each migration moved (:func:`moved_transcripts`),
   so a resume of ``<new>`` takes the moved one over a later transcript a relaunch started
   under ``<new>``;
@@ -67,7 +69,9 @@ directory, and another repo holds the registered ``.worktrees/<new>``. That run,
 or without ``--finish``, touches only the old-name slots and empty ``<old>-agents``
 containers in every repo (:func:`clean_leftovers`), so it proceeds while ``<new>`` is
 live elsewhere. It still refuses while a process named ``<old>`` runs or any process
-works inside the slot.
+works inside the slot. A ``--finish`` dry run, of either kind, never refuses a live
+session: it plans as usual and names the live session, so a running session can be
+checked read-only; only its writing run refuses.
 
 Nothing is overwritten. A destination that already exists is reported and left
 alone, and a lock is never carried to the new name (the session is not running,
@@ -177,6 +181,8 @@ class MigrationResult:
     kept: list[str] = field(default_factory=list)
     parts: dict[str, str] = field(default_factory=dict)
     task_intent: dict = field(default_factory=dict, repr=False)
+    #: Under ``dry_run``, the refusal a writing run would raise because a session is live, else empty.
+    live: str = ""
 
     @property
     def failed(self) -> bool:
@@ -236,6 +242,24 @@ def _refuse_live(
             f"tmux session {', '.join(hosting)} still hosts {', '.join(hosted)}, and its wrapper restarts the "
             f"agent on exit. Stop it first with `ai sessions stop {hosted[0]}`."
         )
+
+
+#: The report line of a run that only cleans up a leftover of a session migrated to another repo.
+ALREADY_MIGRATED = "session already migrated"
+
+#: The report line a dry run adds, in place of the refusal, when a session it plans for is live.
+LIVE_SESSION = "live session"
+
+
+def _live_note(result: MigrationResult, refusal: LiveSessionError) -> None:
+    """Record on a dry-run ``result`` that a writing run refuses while the session is live."""
+    result.live = str(refusal)
+    result.moves.insert(
+        0,
+        PlannedMove(
+            LIVE_SESSION, f"{_one_line(str(refusal))}; a writing run refuses until it is stopped", "", "report"
+        ),
+    )
 
 
 def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
@@ -783,12 +807,21 @@ def clean_leftovers(
     proved landed (retired, tips anchored) and every empty ``<old>-agents`` container. A live
     process named ``old`` or working in ``old_wt`` refuses the run, as for a full migration.
     """
-    _refuse_live(old, old, old_wt, old_wt, home, proc_dir, tmux, verb="cleaned up")
+    refusal: LiveSessionError | None = None
+    try:
+        _refuse_live(old, old, old_wt, old_wt, home, proc_dir, tmux, verb="cleaned up")
+    except LiveSessionError as exc:
+        if not dry_run:
+            raise
+        refusal = exc
     repos = _agents._repos(projects_dir, repo_root)
-    leftovers = _plan_leftovers(old, new, repos, home=home, state=state, proc_dir=proc_dir, tmux=tmux, strict=old_wt)
+    strict = None if dry_run else old_wt
+    leftovers = _plan_leftovers(old, new, repos, home=home, state=state, proc_dir=proc_dir, tmux=tmux, strict=strict)
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
-    result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
+    result.moves.append(PlannedMove(ALREADY_MIGRATED, str(home_slot), "", "report"))
+    if refusal is not None:
+        _live_note(result, refusal)
     beads = _plan_beads(old, new, _stores(projects_dir, repo_root), state)
     _describe_beads(old, new, beads, result)
     if not dry_run:
@@ -1638,12 +1671,18 @@ def finish_session(
     launcher's state, maps and locks; held-output and memory files in the repo's and the
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
-    record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
+    record of the migration. Neither session may be running for a writing run, which raises
+    :class:`LiveSessionError` before writing anything; a ``dry_run`` plans anyway and names the
+    live session on its first line and in ``result.live``. Raises :class:`MigrationError` before writing anything.
     A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
-    as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
-    On that same record, each transcript it retitles, or that began before the pair's migration
-    row (:func:`_started_before_migration`), and that no ledger row names yet is recorded in a
-    ``transcripts_recorded`` row, a finished pair included, so the resume prefers it.
+    as pending, the rest still runs, and the run fails so that a re-run retries it. On this
+    host's record of the migration, each transcript it retitles, or that began before the pair's
+    migration row (:func:`_started_before_migration`), and that no ledger row names yet is
+    recorded in a ``transcripts_recorded`` row, a finished pair included, so the resume prefers
+    it. A writing run with ``record_finish`` then re-plans the pair
+    (:func:`ai_cli.session_migrate_status.verify`): only an empty re-plan appends the pair's
+    ``finished`` row, with ``verified: true``; anything left is named in a ``NOT finished``
+    warning and the run fails.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1675,10 +1714,18 @@ def finish_session(
     new_wt = _registered_worktree_at(repo_root / ".worktrees" / new, registered)
     if new_wt is None:
         raise MigrationError(f"{repo_root / '.worktrees' / new} is not a registered slot -- nothing to finish")
-    _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
-    hosting = sorted(set(tmux) & set(_session_variants(new)))
-    if hosting:
-        raise LiveSessionError(f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing")
+    refusal: LiveSessionError | None = None
+    try:
+        _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
+        hosting = sorted(set(tmux) & set(_session_variants(new)))
+        if hosting:
+            raise LiveSessionError(
+                f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing (`ai sessions stop {new}`)"
+            )
+    except LiveSessionError as exc:
+        if not dry_run:
+            raise
+        refusal = exc
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     leftovers = _plan_leftovers(
         old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
@@ -1694,6 +1741,8 @@ def finish_session(
     )
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
+    if refusal is not None:
+        _live_note(result, refusal)
     moves = result.moves
     from .session_migrate_resume import apply_home, plan_home
 
@@ -1764,8 +1813,19 @@ def finish_session(
         retitled = [Path(move.source).stem for move in home_plan.moves if move.kind == "transcript title"]
         carried = _started_before_migration(new_pd, old, new, state)
         _record_moved_transcripts(state, old, new, repo_root, retitled + carried)
-        if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
-            _append_ledger(state, old, new, repo_root, finished=True)
+    if record_finish:
+        from .session_migrate_status import verify
+
+        verify(
+            result,
+            repo_root,
+            state,
+            claude_home=home,
+            proc_dir=proc_dir,
+            tmux_names=lambda: tmux,
+            projects_dir=projects,
+            regenerate_script=regenerate_script,
+        )
     return result
 
 
@@ -2007,8 +2067,13 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
 def migrate_session(repo_root: Path, old: str, new: str, **kwargs) -> MigrationResult:
     """Start or resume the same migration; current artifacts decide which parts remain."""
     from .session_migrate_resume import run
+    from .session_migrate_status import verify
 
     try:
-        return run(repo_root, old, new, **kwargs)
+        result = run(repo_root, old, new, **kwargs)
     except (OSError, ValueError) as exc:
         raise MigrationError(f"cannot inspect migration artifacts: {type(exc).__name__}: {exc}") from exc
+    if not result.dry_run:
+        state = kwargs.get("state_dir") or _config.get_xdg_state_home()
+        verify(result, repo_root.resolve(), state, **kwargs)
+    return result

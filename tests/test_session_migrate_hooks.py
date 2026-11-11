@@ -19,16 +19,27 @@ from ai_cli.config import get_xdg_config_home
 slot = test_session_migrate.slot
 stores = test_session_migrate.stores
 
+# The hook keeps its own durable state: a marker it writes after a successful live run, from
+# which its ``--dry-run`` reports ``migrate-status: done`` (nothing left) or ``pending``.
 HOOK = """\
 import json, os, sys
 args = sys.argv[1:]
 with open({log!r}, "a", encoding="utf-8") as fh:
     fh.write(json.dumps({{"hook": {name!r}, "args": args, "slots": sorted(os.listdir(".worktrees"))}}) + "\\n")
 planning = "--dry-run" in args
-print(("would move " if planning else "moved ") + "notes/" + args[args.index("--old") + 1])
+old = args[args.index("--old") + 1]
+done = {log!r} + "." + {name!r} + "." + old + ".done"
+if planning and os.path.exists(done):
+    print("migrate-status: done")
+    sys.exit(0)
+print(("would move " if planning else "moved ") + "notes/" + old)
+if planning:
+    print("migrate-status: pending")
 if {fail!r} == ("plan" if planning else "live"):
     sys.stderr.write("notes store is locked\\n")
     sys.exit({code})
+if not planning:
+    open(done, "w").close()
 """
 
 
@@ -75,8 +86,11 @@ def test_given_a_hook_when_migrated_then_it_runs_once_live_after_the_core_moves(
     live = [c for c in hooks.calls() if "--dry-run" not in c["args"]]
     assert [c["args"] for c in live] == [["--old", OLD, "--new", NEW]]
     assert NEW in live[0]["slots"] and OLD not in live[0]["slots"]
-    planned = [c for c in hooks.calls() if "--dry-run" in c["args"]]
+    first_live = hooks.calls().index(live[0])
+    planned = [c for c in hooks.calls()[:first_live] if "--dry-run" in c["args"]]
     assert planned and all(OLD in c["slots"] for c in planned)
+    replanned = [c for c in hooks.calls()[first_live:] if "--dry-run" in c["args"]]
+    assert replanned and all(NEW in c["slots"] for c in replanned), "the re-plan runs after the move"
 
 
 def test_given_a_hook_that_refuses_its_plan_when_migrating_then_nothing_moves(slot, hooks):
