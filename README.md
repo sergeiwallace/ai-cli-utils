@@ -786,6 +786,17 @@ and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
 
+A plain `/exit` inside a managed session is a restart: its wrapper relaunches the agent.
+Use `ai sessions stop <name>` to end it for good. It writes the wrapper's stop marker for each
+tmux session hosting `<name>` whose wrapper is running, sends SIGTERM to the session's Claude Code
+process (by its recorded pid, and only when the record's start time proves which process holds
+it), then waits up to `-t/--timeout` seconds (default 30) for the wrapper and agent to exit. The
+wrapper records the exit as `manual_exit`, so boot relaunch leaves it down. It reports what it
+stopped and exits 1, naming what still runs, if the slot is not empty by then; a name with nothing
+running is reported and exits 0. `ai migrate-session` names this command when it refuses a live
+session. From Python, `ai_cli.session_commands.stop_session(name)` does the same and returns a
+`StopReport`.
+
 ### Enrol an existing session
 
 Use `ai sessions enrol <name>` to give an existing live tmux session a validated restart

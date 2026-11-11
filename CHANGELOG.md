@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
+  which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
+  tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
+  Code process once its record proves the pid, waits up to `-t/--timeout` seconds, and exits 1
+  naming whatever is still running. `ai migrate-session` and `--finish` now name it in their
+  live-session refusals instead of `tmux kill-session`.
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and
