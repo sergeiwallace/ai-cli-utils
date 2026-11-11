@@ -26,8 +26,8 @@ private operational metadata. This index is non-authoritative; the captured requ
 | Originating request: auto-generate canonical Markdown, CLI usage docs, help and the wiki, programmatically where possible and with an LLM only where needed | [D-7](#d-7): every published artifact is a deterministic render of committed sources; an LLM drafts only prose that cannot be derived, and that prose lands in a source file under review |
 | Originating request: research open-source packages and tools for programmatic and agentic documentation generation | [📄 ai-cli-utils/docs/research/cli-docs-generation-tools.md](../research/cli-docs-generation-tools.md) |
 | Originating request: a hosted documentation website for the owner's open-source repositories, deferred until later | [Website feed](#website-feed) records how this design feeds it |
-| Originating request: link task records to GitHub issues and Projects, template-standard, kept in sync and rolled out with each wiki | Not dropped: the request itself directs this work into separate epics in the owner's private task store, where it is filed and tracked. It is not part of this design; the wiki generator here is written so a template can reuse it ([Integration](#integration)) |
-| Originating request: GitHub Discussions for public repositories, standard configuration and first post | Not dropped: the request directs it into its own epic in the same private task store, where it is filed and tracked, and says it can follow later. It is not part of this design |
+| Originating request: link task records to GitHub issues and Projects, template-standard, kept in sync and rolled out with each wiki | Not dropped: the request itself directs this work into separate epics in the owner's private task store, where it is filed and tracked (measured 2026-11-11: one open parent epic with three open sub-epics, for the template-standard GitHub Project and issue setup, the two-way sync with `external_ref`, and the rollout with each repository's wiki). It is not part of this design; the wiki generator here is written so a template can reuse it ([Integration](#integration)) |
+| Originating request: GitHub Discussions for public repositories, standard configuration and first post | Not dropped: the request directs it into its own epic in the same private task store, where it is filed and tracked (measured 2026-11-11: one open epic), and says "we can worry about the discussions feature later". It is not part of this design |
 
 **Status:** DRAFT
 
@@ -77,7 +77,7 @@ private operational metadata. This index is non-authoritative; the captured requ
 This design makes the help text written beside each command in the code the only place a command's
 summary, full description and options are written down. Three things are generated from it: the
 `ai -h` command list, a canonical CLI reference document in the repository, and the project's
-GitHub wiki, which also carries the README, guides and changelog. The `ai -h` list stops cutting
+GitHub wiki, which also carries the README and every other document in the repository. The `ai -h` list stops cutting
 text off with "..." and shows each command's complete help description. A test fails whenever the committed reference
 or README index differs from what the code would generate, so they cannot drift apart unnoticed,
 and a GitHub Actions workflow republishes the wiki on every push to `main`. No LLM runs in the
@@ -209,11 +209,19 @@ content link, so nothing in the wiki points at a path the wiki does not have. Th
 come from `GITHUB_REPOSITORY` in CI or a `-R/--repository` argument locally; the source tree never
 names them.
 
-The initial manifest covers the README (split into Home, Installation, Quick Start, Usage,
+The wiki carries everything in the repository's documentation, in two parts. The user part
+comes first in the sidebar: the README (split into Home, Installation, Quick Start, Usage and
 Configuration pages), the generated CLI reference, the narrative CLI guide, the guides and tools
-docs, the architecture doc, CONTRIBUTING, SECURITY and the CHANGELOG. Design, plan, audit and
-research documents are working records, not user documentation, and stay out of the wiki; the
-wiki's Home links to the repository's `docs/` index for readers who want them.
+docs, the architecture doc, CONTRIBUTING, SECURITY and the CHANGELOG. The project-records part
+follows: one wiki page for every other tracked Markdown file under `docs/` (designs, plans,
+research, audits, bug write-ups, procedures, analyses and the rest), grouped by folder, each group
+with a generated index page that lists its pages with their titles. Page names are derived from
+the repository path, so two files with the same basename never collide in the wiki's flat
+namespace. A build test fails if any tracked Markdown file under `docs/`, or any top-level
+Markdown file, is covered by no page or group, so a new document cannot be left out of the wiki
+without the test naming it. The only exclusions are machine files that are not documents (receipt
+`.jsonl` files, YAML registers and the generated wiki manifest's own build output), and the
+manifest lists them explicitly.
 
 A workflow, `.github/workflows/wiki.yml`, runs on every push to `main` and allows manual dispatch
 only as a retry for `refs/heads/main`. The publication job has an explicit
@@ -273,11 +281,22 @@ generated = "cli-reference"   # rendered by the CLI reference generator, not rea
 [[page]]
 name = "Changelog"
 source = "CHANGELOG.md"       # whole file
+
+# Project records: one page per matching file, grouped under a generated index page.
+[[group]]
+name = "Design documents"     # index page name and sidebar heading
+glob = "docs/designs/**/*.md"
+
+[[group]]
+name = "Other documents"      # catch-all for any docs/ file no page or earlier group covers
+glob = "docs/**/*.md"
 ```
 
 Each page has `name` and exactly one of `source` or `generated`; `sections` is valid only with
-`source`. The generator rejects an unknown key, a duplicate name, a missing source file, a missing
-section and an unknown `generated` value, naming the page.
+`source`. Each group has `name` and `glob`; a file matched by an explicit page or an earlier group
+is not repeated by a later one. The generator rejects an unknown key, a duplicate name, a missing
+source file, a missing section, an unknown `generated` value and a group whose glob matches
+nothing, naming the entry.
 
 The description, summary and generator interfaces:
 
@@ -481,6 +500,8 @@ rollout is outside this design.
     - [ ] If a manifest page names a missing source file, a missing `##` section, an unknown key,
       a duplicate page name, or both `source` and `generated`, then the builder shall exit
       non-zero naming the page and build nothing.
+    - [ ] If a group's glob matches no file, or a group lacks `name` or `glob`, then the builder
+      shall exit non-zero naming the group and build nothing.
   - **T-3.2 Page build**
     - [ ] When the wiki is built, it shall write one file per manifest page plus `_Sidebar.md` and
       `_Footer.md`, and the sidebar shall list the pages in manifest order.
@@ -492,6 +513,14 @@ rollout is outside this design.
       URL.
     - [ ] When the built tree is scanned, every relative link shall resolve to a built page, and the
       test shall fail naming any link that does not.
+    - [ ] When the wiki is built, every tracked Markdown file under `docs/` and every top-level
+      Markdown file shall be published by exactly one page or group, except the files the manifest
+      lists as excluded machine files; the test shall fail naming any file that is published by
+      none or by more than one.
+    - [ ] When a group is built, it shall write one page per matched file, named from the file's
+      repository path so that no two pages collide, and one index page listing each member page
+      with the document's first `#` title; the sidebar shall show the user pages first and then
+      each group in manifest order.
     - [ ] When the wiki is built twice from the same commit, the trees shall be byte-identical.
   - **T-3.3 Publishing workflow**
     - [ ] When a commit lands on `main`, the workflow shall build the wiki and attempt to push it

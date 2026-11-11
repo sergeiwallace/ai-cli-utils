@@ -47,7 +47,8 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `doc-audit respecify`: round 2 `halted-recurrence`; register `docs/designs/single-source-cli-docs.md.invariants.yaml` under cross-family review before the freeze and the conformance round |
+| Stage cursor | `doc-audit audit-converged` (round 3, conformance round after the spec freeze); audit doc `docs/audits/single-source-cli-docs-audit.md`; boundary finalization for `doc-audit->implement` next |
+| Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -94,5 +95,13 @@ ledger-version: 1
   Diagnosis under the Authority test: a bounded systematic fix (read the inventory from the parser
   source and list it in full, every row tested) is permitted to the coordinator; applied in
   `fa1886ff`; invariant register drafted for the freeze.
+
+- 2026-11-11 ~06:20Z: the register's dimension challenge (codex review, Sol, medium) returned
+  REJECT with one inventory error (repair-worktree arguments) and two omissions (caller
+  compatibility; the two epics' disposition). All accepted and applied in `b28bb410`. Spec frozen
+  (standard tier, no ratification needed); round 3 conformance returned no new finding and the
+  loop terminated `audit-converged`. A hygiene failure on the scaffolded audit doc (a private
+  tool name in its frontmatter) was fixed in `5681888f` and the scaffold defect filed in the
+  harness task store.
 
 <!-- /doc:region name="run_history" -->
