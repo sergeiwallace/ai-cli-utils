@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: halted-recurrence; round 6` |
+| Stage cursor | `doc-audit active; round 7` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** halted-recurrence — NOT promotion ready
+**Loop state:** active — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 6 | sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf | 0 | 0 | 0 | round5:JA-2 | verify | no |
+| doc-audit | 7 | sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5 | 0 | 1 | 0 | round7:N-2 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1752,5 +1752,205 @@ commands recorded above. No target edit, test suite, or outward action was perfo
     "kind": "verify"
   },
   "source_event_id": "round-6-audit"
+}
+```
+
+## Round 7 — Verification
+
+**Round 7 auditor:** `gpt-5`
+
+**Round 7 date:** 2026-11-11
+
+**Round 7 scope:** Verify the sole open backlog finding against target digest
+`sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5`, inspect the
+post-Round-6 coverage and exclusion changes against the tracked-file inventory, and surface defects
+introduced by those changes. Append-only; no target edits.
+
+### R7 Summary
+
+JA-2 is fixed. The design now derives coverage from every tracked file, explicitly publishes
+`LICENSE` and `.env.example`, claims every tracked Markdown file and every file under `docs/` before
+exclusions run, and fails on an unassigned file. One new `MAJOR` finding is open-blocking: the
+exclusion-validation contract says a pattern matching any `docs/` path must fail, but the supplied
+manifest uses suffix patterns that common Python path matchers apply to tracked files under `docs/`.
+The design does not define whether forbidden-match validation sees the full inventory or only the
+unclaimed remainder, so a literal implementation can reject its own initial manifest.
+
+### R7.1 Open MUST-fix backlog verification
+
+| ID | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| JA-2 | PASS | fixed | The coverage universe is now every `git ls-files` path; pages claim first, groups claim every remaining Markdown file and every remaining file under `docs/`, and exclusions see only unclaimed non-documents (`docs/designs/single-source-cli-docs.md:212-241,335-345,567-573`). The manifest explicitly publishes tracked `LICENSE` and `.env.example` (`:317-323`), closing the Round 6 counterexample without narrowing the “every document” claim. `CONFIRMED` against the target and current tracked-file inventory. |
+
+### R7.2 AD-N decisions verification
+
+No AD-N decision is in scope or was introduced by this fix.
+
+### R7.3 NEW issues surfaced
+
+#### N-2: Exclusion validation contradicts the supplied manifest's glob patterns — `MAJOR`
+
+**Location:** `docs/designs/single-source-cli-docs.md:225-241,325-345,553-555`;
+`docs/designs/single-source-cli-docs.md.invariants.yaml:155-162`
+
+**Evidence:**
+
+The changed design lists configuration exclusions as:
+
+> “configuration and data outside `docs/` (`*.toml`, `*.yaml`, `*.yml`, `*.json`,
+> `*.json5`, `*.lock`, `.gitignore`-style dotfiles)”
+
+and its supplied manifest contains `pattern = "*.toml"`. It also requires:
+
+> “If an exclusion ... matches a Markdown file or a path under `docs/`, then the builder shall exit
+> non-zero naming the exclusion and build nothing.”
+
+The current tracked tree contains `docs/reference/iterm2-defaults.toml` and
+`docs/designs/single-source-cli-docs.md.invariants.yaml`. Both `fnmatch.fnmatch()` and
+`PurePosixPath.match()` report that the suffix-only patterns match those full repository paths. The
+design says exclusions “apply only” after pages and groups claim files, but never specifies whether
+the T-3.1 forbidden-match validation evaluates patterns against the full tracked inventory or the
+unclaimed remainder. The frozen invariant repeats both requirements: publication precedes exclusion,
+and no exclusion may match a path under `docs/`.
+
+**Why it matters:** Under the full-inventory reading of T-3.1, the design's own initial manifest
+fails before it can build the wiki. Under the unclaimed-only reading, the literal prohibition on a
+pattern matching `docs/` is not what is validated. These are observably different implementations
+of a release-blocking build check.
+
+**Verification command:**
+
+```bash
+git ls-files docs/reference/iterm2-defaults.toml docs/designs/single-source-cli-docs.md.invariants.yaml
+python - <<'PY'
+from fnmatch import fnmatch
+from pathlib import PurePosixPath
+for path, pattern in (
+    ("docs/reference/iterm2-defaults.toml", "*.toml"),
+    ("docs/designs/single-source-cli-docs.md.invariants.yaml", "*.yaml"),
+):
+    print(path, fnmatch(path, pattern), PurePosixPath(path).match(pattern))
+PY
+```
+
+**Verification note:** `CONFIRMED` at repository commit
+`63f56ab5e6e3ef191db51d3368c3cbcff150fda9`. Both tracked paths printed `True True` for the two
+standard-library matchers. The design's failure criterion and sample `*.toml` entry were reproduced
+at the cited lines; no implementation exists yet from which a different matcher scope could be
+inferred.
+
+**Recommendation:** Define exclusions as matching only the unclaimed candidate set with one named
+algorithm over normalized repository-relative POSIX paths. State that the T-3.1 forbidden-path
+check inspects matches in that same set; this keeps the sample valid after the `docs/**` group
+claims its TOML, while still rejecting the TOML if a future group regression leaves it unclaimed.
+Add a fixture containing a claimed `docs/reference/example.toml` plus an unclaimed machine-config
+TOML and assert both the publication and exclusion outcomes.
+
+### R7 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| Target identity | `sha256sum docs/designs/single-source-cli-docs.md` | Driver target digest | `4d592c204...e75c5`, exact match | ✅ |
+| JA-2 — former counterexample | `git ls-files LICENSE .env.example` plus manifest read | Both tracked documents are explicit pages | Both paths are tracked; `License` and `Configuration Example` pages name them | ✅ |
+| JA-2 — complete universe | Read `docs/designs/single-source-cli-docs.md:225-241,567-573` | No tracked file can be silently unassigned | Universe is every tracked file and the test fails on neither-claimed-nor-excluded paths | ✅ |
+| N-2 — tracked overlap fixtures | `git ls-files docs/reference/iterm2-defaults.toml docs/designs/single-source-cli-docs.md.invariants.yaml` | Ground the candidate paths | Both paths are tracked and under `docs/` | ✅ |
+| N-2 — matcher behavior | Run the standard-library matcher script from the finding | Establish whether the supplied suffix patterns overlap those paths | `fnmatch` and `PurePosixPath.match` each printed `True` for both paths | ✅ reproduced |
+| N-2 — contract conflict | Read `docs/designs/single-source-cli-docs.md:325-345,553-555` | Sample manifest and validation rule select one behavior | Sample uses `*.toml`; validation rejects an exclusion matching any `docs/` path; matcher/candidate scope is unstated | ✅ reproduced |
+
+**Verified: 6/6 checks reproduce at repository commit
+`63f56ab5e6e3ef191db51d3368c3cbcff150fda9`; target digest
+`sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5`.**
+
+### R7 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- N-2: make exclusion matching and validation scope unambiguous, make the example manifest valid
+  under that contract, and test the overlap case.
+
+**SHOULD be fixed before the design-doc PR merges:** none beyond the blocking item.
+
+**Can be folded into a follow-up:** none.
+
+### R7 Already-Correct Items
+
+- ✅ The tracked root `LICENSE` that kept JA-2 open in Round 6 is now an explicit wiki page.
+- ✅ `.env.example`, every Markdown path, and every file under `docs/` are publication candidates,
+  so the revised design covers the prior counterexamples without an allowlist of document locations.
+- ✅ Page-before-group-before-exclusion precedence prevents a claimed document from being emitted
+  twice in the intended assignment flow.
+- ✅ The change preserves the shared command source, complete help descriptions, generated CLI
+  reference, main-only wiki publication, and programmatic-first generation requirements.
+
+### R7 Files Read and Commands Run
+
+Read in full: the canonical audit `TEMPLATE.md`, the 1,178-line target design, this audit's complete
+prior history, and the 231-line invariant register. Diff-focused reads covered commit `aca5af21`,
+`LICENSE`, `.env.example`, the tracked-file inventory, the manifest example, Phase 3 ACs, and the two
+tracked `docs/` paths that exercise the exclusion overlap. Commands were `git status`, `git log`,
+`git show`, `git diff`, `git ls-files`, `sha256sum`, `rg`, `sed`, and read-only Python matcher
+inspections. No test suite, target edit, filesystem write, or outward action was performed.
+
+### R7 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 7 | JA-2 fixed; one new `MAJOR` open-blocking exclusion-contract finding; target unchanged. |
+
+### R7 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "ask-drift"
+      },
+      "disposition": "fixed",
+      "finding_key": "round5:JA-2",
+      "fingerprint": "fp:wiki-every-document-scope-incomplete",
+      "id": "JA-2",
+      "reachable_behavior": "The wiki coverage contract now publishes tracked documents including LICENSE and fails when any tracked file is neither claimed nor excluded.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "contradictory-requirements"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round7:N-2",
+      "fingerprint": "fp:wiki-exclusion-match-scope-undefined",
+      "id": "N-2",
+      "reachable_behavior": "A literal full-inventory validation rejects the supplied wiki manifest because its suffix exclusion patterns match tracked paths under docs.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 1,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round5:JA-2"
+    ],
+    "diff_since": "sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf",
+      "to": "sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-7-audit"
 }
 ```
