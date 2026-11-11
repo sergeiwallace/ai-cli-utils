@@ -215,7 +215,7 @@ git worktrees, and cross-machine sync. Cover: README structure and badges,
 GitHub project configuration (CI, releases, community files, security), Python
 packaging conventions (pyproject.toml, type hints, docs), and exemplary Python
 CLI projects to emulate (1K-50K stars range).
-```text
+```
 
 </details>
 
@@ -339,7 +339,7 @@ to satisfy a formatting instruction. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```text
+```
 
 </details>
 

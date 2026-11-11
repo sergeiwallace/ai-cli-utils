@@ -209,7 +209,7 @@ tabs:
         right:
           dir: "~"
           command: "ai quota status"
-```text
+```
 
 ### Schema reference
 
@@ -252,7 +252,7 @@ At layout apply time, for each tab that specifies color overrides, the system wr
     "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/session-dev-session-5.png"
   }]
 }
-```text
+```
 
 iTerm2 hot-reloads this directory — no restart required. GUIDs are deterministic (`ai-cli-<layout>-<tab>`), so re-running `ai layout` is idempotent.
 
@@ -284,7 +284,7 @@ ai layout <name>              # apply layout from ~/.config/iterm2/layouts/<name
 ai layout list                # list available layout files
 ai layout validate <name>     # validate YAML schema without applying
 ai layout profiles <name>     # regenerate Dynamic Profiles without rebuilding window
-```text
+```
 
 Implementation: new `layout.py` module in `src/ai_cli/`, registered as `ai layout` subcommand group.
 

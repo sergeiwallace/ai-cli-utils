@@ -133,7 +133,7 @@ Layer 3: Mac daemon → iTerm2 Python API (Mac-side, 1-5s)
                                      │    "Jump to tab"    │
                                      └─────────────────────┘
                                      Runs as launchd agent on Mac
-```text
+```
 
 ## Implementation Tasks
 
@@ -153,7 +153,7 @@ Extend `~/.claude/hooks/notify.sh` to emit iTerm2 escape sequence when CC fires 
 ```bash
 printf '\e]1337;SetBadgeFormat=%s\a' "$(echo -n '⏸ WAIT session-N' | base64)"
 printf '\e]0;⏸ WAIT session-N\a'
-```text
+```
 
 Need to extract the session number from the environment (`$AI_TMUX_SESSION`).
 

@@ -91,7 +91,7 @@ Set up and save a named Window Arrangement in iTerm2:
 │                  │ session-3     │
 │                  │          │
 └──────────────────┴──────────┘
-```text
+```
 
 Save via Window → Save Window Arrangement. Can be restored via Window → Restore Window Arrangement or `Cmd+Shift+R`.
 

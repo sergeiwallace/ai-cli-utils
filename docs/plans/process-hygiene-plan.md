@@ -155,7 +155,7 @@ ai ps                    # list all managed processes (local + cached remote hos
 ai ps --refresh          # force SSH re-check of remote host (updates cache)
 ai ps clean              # show suspect/orphaned, prompt to kill
 ai ps clean --force      # kill all orphaned (score ≥ 80) without prompting
-```text
+```
 
 **`ai ps` output:**
 ```text
@@ -170,7 +170,7 @@ LOCAL (mac)
 HETZNER (cached 8m ago — run `ai ps --refresh` to update)
   mosh-server   pid=518783 age=0h   score=0   ✓ active (art session)
   nats-server   pid=29579  age=4d   score=0   ✓ active
-```text
+```
 
 **`ai ps clean` output:**
 ```text
@@ -182,7 +182,7 @@ Suspect (score 40–79):
   LOCAL  sync-watch   pid=44201  age=18h  score=55  (tmux session gone?)
 
 Kill 2 orphan(s)? Suspects require --force to include. [y/N]
-```text
+```
 
 **Background hygiene (session start + daily cron):**
 - Scores and reports processes without signalling them

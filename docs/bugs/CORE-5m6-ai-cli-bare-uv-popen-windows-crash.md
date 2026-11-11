@@ -64,7 +64,7 @@ Traceback (most recent call last):
     subprocess.Popen(
   File "C:\Users\<user>\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1077, in __init__
     self._execute_child(args, executable, preexec_fn, close_fds,
-    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ~~~~~~~~~~~~~~~~~~
                          pass_fds, cwd, env, startupinfo,
                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                          creationflags, shell, p2cread, p2cwrite,

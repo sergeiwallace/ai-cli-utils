@@ -49,7 +49,7 @@ source: internal
 ```bash
 ai --version   # print installed version
 ai -V          # same, short form
-```text
+```
 
 ### Platform support
 
@@ -82,7 +82,7 @@ Behaviour is split across focused modules so `main.py` stays thin:
 
 ```bash
 ai c [N|LABEL|NAME] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
-```text
+```
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
@@ -303,7 +303,7 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 
 ```bash
 ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
-```text
+```
 
 Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 
@@ -345,7 +345,7 @@ resume, create, one chief per machine) is in the README's "Chief-of-staff sessio
 
 ```bash
 ai ls [--all]
-```text
+```
 
 Interactive tmux session picker using fzf. Shows `ai-cli` sessions by default (matching `_AI_SESSION_RE`). `--all` shows all tmux sessions.
 
@@ -359,7 +359,7 @@ Display columns: session name, age (e.g. `5m`, `2h`, `3d`). Sorted by most-recen
 
 ```bash
 ai attach <session-name>
-```text
+```
 
 Thin wrapper: validates the session exists, then replaces the current process with `tmux attach-session -t <name>` via `os.execvp`.
 
@@ -369,7 +369,7 @@ Exits with error if no session named `<session-name>` exists.
 
 ```bash
 ai reconnect [session_numbers...]
-```text
+```
 
 Lists remote tmux sessions (sessions starting with `c-r-`) on the configured remote host via SSH and prints the `ai c N -R` commands to reconnect to each.
 
@@ -382,7 +382,7 @@ Reads `[remote] host` and `[remote] user` from `~/.config/ai-cli/config.toml`.
 
 ```bash
 ai ssh [alias]
-```text
+```
 
 Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host. Without an alias, uses `[remote] default` (or the sole configured alias).
 
@@ -394,7 +394,7 @@ Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host.
 
 ```bash
 ai memory watch
-```text
+```
 
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
@@ -407,7 +407,7 @@ ai quota watch start    # register with Circus and start the daemon
 ai quota watch stop     # remove from Circus
 ai quota watch status   # show Circus status
 ai quota watch run      # run the daemon directly (Circus entry point)
-```text
+```
 
 Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
 
@@ -415,7 +415,7 @@ Manages the quota-watch daemon via Circus. `start` is idempotent and runs automa
 
 ```bash
 ai telemetry writer
-```text
+```
 
 Starts the telemetry writer daemon. Subscribes to NATS subject `telemetry.action.*` (durable consumer) and persists events to a local SQLite database at `~/.local/state/ai-cli/telemetry.db`.
 
@@ -426,7 +426,7 @@ Acquires PID file `telemetry-writer`.
 ```bash
 ai notifications list
 ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
-```text
+```
 
 `list` prints configured channels (Discord, ntfy, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
 
@@ -439,7 +439,7 @@ ai sync push [--memories-only] [--dry-run] [--verbose] [--force]
 ai sync pull [--memories-only] [--dry-run] [--verbose] [--force]
 ai sync conflicts
 ai sync watch [--verbose]
-```text
+```
 
 Bidirectional sync of Claude Code session data between local and remote host.
 
@@ -529,7 +529,7 @@ The historical implementation used API-key fallback, research-depth orchestratio
 
 ```bash
 ai spend gemini
-```text
+```
 
 Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
 
@@ -542,7 +542,7 @@ Print a cost summary from historical local Gemini run logs, optionally supplemen
 [gemini_billing]
 gcp_project_id = "your-gcp-project"
 billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
-```text
+```
 
 3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
 
@@ -556,7 +556,7 @@ When BigQuery is not configured, `ai spend gemini` reports the local historical 
 ```bash
 ai cc-usage push [-d/--dry-run]
 ai cc-usage status
-```text
+```
 
 Scan Claude Code session JSONL files and push per-call token usage events to a configured REST API backend.
 
@@ -570,7 +570,7 @@ Scan Claude Code session JSONL files and push per-call token usage events to a c
 [core-cli]
 api_url = "https://your-backend-host"
 api_key  = "hw-api-..."
-```text
+```
 
 Both `api_url` and `api_key` must be set for `push` to run.
 
@@ -585,7 +585,7 @@ ai layout list
 ai layout validate <name>
 ai layout profiles <name>
 ai layout <name>
-```text
+```
 
 YAML-driven iTerm2 window/tab/pane layout system. Layout files live at `~/.config/iterm2/layouts/<name>.yaml`.
 
@@ -600,7 +600,7 @@ Layout YAML schema supports nested pane splits (vertical/horizontal), per-tab ba
 
 ```bash
 ai color <palette-name|#hex>
-```text
+```
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
 
@@ -624,7 +624,7 @@ Re-attaches the recorded sessions after an iTerm2 restart (macOS). It opens the 
 
 ```bash
 ai watch-vpn
-```text
+```
 
 Internal entry point for the Circus-managed VPN state watcher. **Not intended for direct human invocation** — started and stopped automatically by `ai c -R` sessions.
 
@@ -718,7 +718,7 @@ Python cleanup survives it.
 ai cdp start [-p|--port N] [-I|--no-incognito] [-t|--tunnel] [-L|--forward]
 ai cdp stop  [-p|--port N] [-t|--tunnel]
 ai cdp status
-```text
+```
 
 Launches and manages a Chrome, Chromium or Microsoft Edge instance with the Chrome DevTools
 Protocol (CDP) remote debugging endpoint exposed. Useful for attaching Playwright,
@@ -755,7 +755,7 @@ downstream distinguishes them.
 [cdp]
 # binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # port = 9222
-```text
+```
 
 Browser binary auto-detected in this order: `binary_path` config key → well-known
 macOS/Linux/Windows paths → `shutil.which` across common executable names. Within the
@@ -775,7 +775,7 @@ binds loopback only, so reaching the endpoint already requires local access.
 ai tunnel start <local-port> [remote-port] [--forward]
 ai tunnel stop <port>
 ai tunnel status
-```text
+```
 
 Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on network drop or broken pipe.
 
@@ -791,7 +791,7 @@ Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/
 
 ```bash
 ai update [--force]
-```text
+```
 
 Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timestamp}` so uv sees it as a new package, runs `uv tool install --force`, then restores `pyproject.toml`.
 
@@ -803,7 +803,7 @@ Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timesta
 
 ```bash
 ai setup
-```text
+```
 
 Detects the runtime environment and configures the Claude Code session config (`CLAUDE.md`) accordingly.
 
@@ -816,7 +816,7 @@ Run once after cloning or installing. Safe to re-run at any time.
 
 ```bash
 ai ps [--kill] [--threshold N] [--json]
-```text
+```
 
 Process hygiene inspector. Lists all ai-cli-related processes with health scores and flags stale or suspect ones.
 
@@ -833,7 +833,7 @@ Safe to run at any time; without `--kill` it only reads and reports.
 
 ```bash
 ai upgrade
-```text
+```
 
 Reinstalls the `ai` tool from the current source tree using `uv tool install . --force`.
 
@@ -843,7 +843,7 @@ Reinstalls the `ai` tool from the current source tree using `uv tool install . -
 
 ```bash
 ai internal <action> [args...]
-```text
+```
 
 Used by hooks and scripts — not for direct human use.
 
