@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
 | Orchestrator worktree | the orchestrating session's own session worktree |
 | Orchestrator branch | that worktree's session branch |
-| Stage cursor | `research running` |
+| Stage cursor | `research written, gap review open on G5 (critic pass in flight)`; research doc `docs/research/session-name-registry-storage.md` at `47c910bb` |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -60,9 +60,10 @@ ledger-version: 1
 
 | # | Child issue | Launch name | Role | Family / tier / effort | Isolation | Deliverable | Outcome |
 |---|---|---|---|---|---|---|---|
-| 1 | AI-CLI-6xud.1 | `6xud-dolt-deep-dive` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited findings on Dolt | running |
-| 2 | AI-CLI-6xud.2 | `6xud-storage-landscape` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited survey of alternatives | running |
-| 3 | AI-CLI-6xud.3 | `6xud-registry-inventory` | `Explore`, read-only | claude / opus / n/a | none, writes no file | line-cited inventory of the current registry and prior art | running |
+| 1 | AI-CLI-6xud.1 | `6xud-dolt-deep-dive` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited findings on Dolt | returned; child closed |
+| 2 | AI-CLI-6xud.2 | `6xud-storage-landscape` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited survey of alternatives | returned; child closed |
+| 3 | AI-CLI-6xud.3 | `6xud-registry-inventory` | `Explore`, read-only | claude / opus / n/a | none, writes no file | line-cited inventory of the current registry and prior art | returned; child closed |
+| 4 | AI-CLI-6xud.4 | `6xud-research-critic` | `researcher`, read-only, non-author | claude / opus / n/a | none, writes no file | five-perspective critic findings (gap G5) | running at save-state; result held |
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
@@ -79,5 +80,9 @@ ledger-version: 1
 - 2026-11-11 02:40Z: this worktree was rebased onto `5192e13e` while the inventory leg was
   reading it; that leg may cite either base, and the synthesis checks its line references
   against `5192e13e`.
+
+- 2026-11-11: research doc and spike evidence committed (`47c910bb`). Gap review: G1 to G4 and
+  G6 clear (G4 items classified in the doc's Open Questions; G6, the governing design's earlier
+  rejection of Dolt, is answered in the doc). G5 waits on the critic leaf.
 
 <!-- /doc:region name="run_history" -->
