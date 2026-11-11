@@ -220,14 +220,15 @@ def _refuse_live(
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
-                f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
+                f"running in the slot being {verb} -- its transcript and task files are open. Stop it first "
+                f"with `ai sessions stop {session.name or old}`."
             )
     hosting = sorted(set(tmux) & set(_session_variants(old) + _session_variants(new)))
     if hosting:
-        hosted = ", ".join(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
+        hosted = list(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
         raise LiveSessionError(
-            f"tmux session {', '.join(hosting)} still hosts {hosted}, and its wrapper restarts the agent on "
-            f"exit. Exit the session and end the tmux session (`tmux kill-session -t {hosting[0]}`) first."
+            f"tmux session {', '.join(hosting)} still hosts {', '.join(hosted)}, and its wrapper restarts the "
+            f"agent on exit. Stop it first with `ai sessions stop {hosted[0]}`."
         )
 
 

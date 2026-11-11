@@ -249,6 +249,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions publish-timer status`](docs/reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](docs/reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
@@ -905,6 +906,17 @@ Live, unknown, foreign and incomplete records are refused; `-d/--dry-run` previe
 and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <auto|never|always>`
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
+
+A plain `/exit` inside a managed session is a restart: its wrapper relaunches the agent.
+Use `ai sessions stop <name>` to end it for good. It writes the wrapper's stop marker for each
+tmux session hosting `<name>` whose wrapper is running, sends SIGTERM to the session's Claude Code
+process (by its recorded pid, and only when the record's start time proves which process holds
+it), then waits up to `-t/--timeout` seconds (default 30) for the wrapper and agent to exit. The
+wrapper records the exit as `manual_exit`, so boot relaunch leaves it down. It reports what it
+stopped and exits 1, naming what still runs, if the slot is not empty by then; a name with nothing
+running is reported and exits 0. `ai migrate-session` names this command when it refuses a live
+session. From Python, `ai_cli.session_commands.stop_session(name)` does the same and returns a
+`StopReport`.
 
 ### Enrol an existing session
 

@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page names its source. A tracked file that is neither published nor excluded as a non-document
   fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
   `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
+- `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
+  which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
+  tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
+  Code process once its record proves the pid, waits up to `-t/--timeout` seconds, and exits 1
+  naming whatever is still running. `ai migrate-session` and `--finish` now name it in their
+  live-session refusals instead of `tmux kill-session`.
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and
@@ -62,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
   after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
 
+- `ai migrate-session OLD NEW --finish`, and the finish `ai c NEW` runs at launch, now regenerate
+  the session's wrapper script for NEW. They used to move it verbatim, so it still set the old name
+  and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
+  the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
+  or the next launch.
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot

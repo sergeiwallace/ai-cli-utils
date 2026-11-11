@@ -93,6 +93,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions publish-timer status`](#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](#ai-spend) | Usage-cost reports |
@@ -1468,6 +1469,23 @@ Arguments:
 |---|---|---|---|
 | `-b` | `--boot` |  | Replay eligible owning-host sessions after boot |
 | `-d` | `--dry-run` |  | Print decisions without writing or launching |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai sessions stop
+
+```text
+ai sessions stop [OPTIONS] NAME
+```
+
+Stop a managed session so its wrapper does not relaunch the agent
+
+Arguments:
+
+- `NAME`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-t` | `--timeout` | `FLOAT RANGE` | Seconds to wait for the session to exit  [default: 30.0; x>=0] |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai setup
