@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import _pytest.pathlib
+import _pytest.tmpdir
 import psutil
 import pytest
 from process_ownership import watch_tmux_directory
@@ -278,6 +280,21 @@ def _refuse_temp_root_inside_a_checkout(config) -> None:
         )
 
 
+def _cleanup_dead_symlinks_beside_a_concurrent_run(root: Path) -> None:
+    """pytest's ``cleanup_dead_symlinks``, minus its race with another run sharing ``root``.
+
+    With ``tmp_path_retention_policy = "failed"`` every passing run deletes its own base dir, so
+    the root's ``pytest-current`` link is dead after each one. pytest checks that the link is
+    dead and then unlinks it. Two runs of this suite ending together in the shared
+    :func:`suite_temproot` both pass the check, the slower unlink raises
+    ``FileNotFoundError`` from ``pytest_sessionfinish``, and a run whose every test passed
+    exits 1. A link another run already removed is the outcome this cleanup wants.
+    """
+    for left_dir in root.iterdir():
+        if left_dir.is_symlink() and not left_dir.resolve().exists():
+            left_dir.unlink(missing_ok=True)
+
+
 def pytest_configure(config):
     """Relocate the temp root to :func:`suite_temproot` before pytest first resolves ``basetemp``.
 
@@ -297,6 +314,9 @@ def pytest_configure(config):
     fights pytest's own security check.
     """
     _refuse_temp_root_inside_a_checkout(config)
+    # tmpdir imported the name and pathlib calls its own global, so both are replaced.
+    _pytest.pathlib.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
+    _pytest.tmpdir.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
     if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return
     root = suite_temproot(tempfile.gettempdir())
