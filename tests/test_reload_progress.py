@@ -64,16 +64,30 @@ _SESSION_LINE = re.compile(r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} 
 
 
 @contextlib.contextmanager
-def _harness_state(state: Path, home: Path, config_home: Path, worktree: Path):
-    """Register the session where the supervisor's pinned installation will look for it.
+def harness_environment(state: Path, home: Path, config_home: Path):
+    """Point this process at the harness's own state while a script is generated.
 
-    The generated script persists run state through the loaded installation, not the stand-in `ai`
-    on PATH, so the registry it bakes in must be the harness's own and must hold this session.
+    The generated script bakes in the registry and safety paths of the process that renders it, and
+    the supervisor persists run state through the loaded installation rather than the stand-in `ai`
+    on PATH, so a script rendered outside this scope would name the wrong registry.
     """
     names = ("XDG_STATE_HOME", "HOME", "XDG_CONFIG_HOME")
     saved = {name: os.environ.get(name) for name in names}
     os.environ.update(XDG_STATE_HOME=str(state), HOME=str(home), XDG_CONFIG_HOME=str(config_home))
     try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@contextlib.contextmanager
+def _harness_state(state: Path, home: Path, config_home: Path, worktree: Path):
+    """Register the session where the supervisor's pinned installation will look for it."""
+    with harness_environment(state, home, config_home):
         session_run_state.register(
             SESSION,
             recipe={
@@ -91,12 +105,6 @@ def _harness_state(state: Path, home: Path, config_home: Path, worktree: Path):
         generation = session_run_state.begin(SESSION)
         (state / "ai-cli-utils" / "harness-generation").write_text(generation, encoding="utf-8")
         yield
-    finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 class Session:

@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import test_reload_progress
-from test_reload_progress import SESSION, Session, session_factory  # noqa: F401
+from test_reload_progress import SESSION, Session, harness_environment, session_factory  # noqa: F401
 
 from ai_cli import main, session_script
 
@@ -71,15 +71,16 @@ def generation_swap(monkeypatch, tmp_path, session_factory):  # noqa: F811
         session = session_factory(reload_on=(), launch_log=supervisor_log)
         session.wait_for_agents(1)
         script = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SESSION}.sh"
-        replacement = session_script.get_engine_script(
-            "c",
-            "session-1",
-            SESSION,
-            "test-",
-            "myproject",
-            worktree_dir=str(tmp_path / "worktree"),
-            launch_log_path=str(child_log) if child_log is not None else None,
-        )
+        with harness_environment(tmp_path / "state", tmp_path / "home", tmp_path / "config"):
+            replacement = session_script.get_engine_script(
+                "c",
+                "session-1",
+                SESSION,
+                "test-",
+                "myproject",
+                worktree_dir=str(tmp_path / "worktree"),
+                launch_log_path=str(child_log) if child_log is not None else None,
+            )
         assert main._write_launch_script_if_changed(script, replacement)
         stamp = int(time.time()) + 3600
         os.utime(script, (stamp, stamp))
