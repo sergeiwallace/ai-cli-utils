@@ -102,6 +102,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session --finish` now converges when the session already ran under its new name
+  and holds its own copy of something the old name still holds. Before, a resume log or
+  hand-off written under the new name ("resume artifact ... was NOT re-keyed: ... already
+  exists"), or a hook refusing because the new name already has an identity, failed every
+  re-run the same way. The new name's copy is kept; the old name's moves into a dated archive
+  under the state directory (`session-migration-archive/`), is recorded in the migration ledger
+  and is never deleted, and the part reads `archived OLD, NEW kept`. A hook names each file it
+  archived on a `migrate-archived: <path>` line. `-n` plans each archive and moves nothing.
+- `ai migrate-session -s` and `--finish -a` read a recorded pair as complete when its new slot
+  is gone because the ledger records that name's own later migration to a slot that exists,
+  instead of `slot (missing: ...)` forever. A gone slot with no such record still reads missing.
+
 - A migrated session that Claude Code had once run in the background now keeps its new name when
   `ai c NEW -r` resumes it. Claude Code keeps a job record for such a session under
   `~/.claude/jobs/<short session id>/state.json` and renames a resumed session to that record's

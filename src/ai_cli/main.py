@@ -8180,20 +8180,29 @@ def _recorded_pairs(names: list[str]) -> list[tuple[str, str, Path]] | None:
 
 def _replan_recorded(old: str, new: str, repo: Path) -> tuple[dict[str, str], str, bool]:
     """``(parts left, live refusal or "", whether the plan ran)`` for one recorded pair, read-only."""
-    from .session_migrate_status import UNPLANNED, replan_live
+    from .session_migrate_status import UNPLANNED, moved_on, replan_live
 
     slot = repo / ".worktrees" / new
     if not slot.is_dir():
+        if moved_on(new, repo, _config.get_xdg_state_home()) is not None:
+            return {}, "", True
         return {"slot": f"missing: {slot} does not exist"}, "", False
     left, live = replan_live(repo, old, new)
     return left, live, UNPLANNED not in left
 
 
 def _migration_row(old: str, new: str, repo: Path, state: str, left: dict[str, str]) -> str:
-    from .session_migrate_status import finish_command
+    from .session_migrate import MIGRATION_LEDGER
+    from .session_migrate_status import finish_command, moved_on
 
     if not left and state == "complete":
-        return f"{old} | {new} | {repo} | complete | - | -"
+        onward = moved_on(new, repo, _config.get_xdg_state_home())
+        note = (
+            f"- (slot moved on to {onward[0]} ({onward[1]}), per {_config.get_xdg_state_home() / MIGRATION_LEDGER})"
+            if onward
+            else "-"
+        )
+        return f"{old} | {new} | {repo} | complete | {note} | -"
     parts = "; ".join(f"{part} ({status})" for part, status in left.items()) or "-"
     return f"{old} | {new} | {repo} | {state} | {parts} | {finish_command(old, new, repo)}"
 

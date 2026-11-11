@@ -10,7 +10,9 @@ migration by dropping a TOML file into ``<config dir>/migrate-session.d/``::
 ``argv + ["--old", OLD, "--new", NEW]``: with ``--dry-run`` while it plans (a
 non-zero exit refuses the whole migration before anything is written, except under
 ``--finish``, where only that hook is skipped and reported as pending), then
-without it after every core move (a non-zero exit is reported as ``FAILED``).
+without it after every core move (a non-zero exit is reported as ``FAILED``). A live
+run that keeps NEW's own copy and archives OLD's prints ``migrate-archived: <path>`` for
+each file it archived, and the migration ledger records it.
 ``adopt-session`` runs the same hooks under the same contract whenever an adoption
 changes the session's name. The contract is documented in
 ``docs/reference/migrate-session-hooks.md``.
@@ -155,6 +157,15 @@ def plan_hooks(
 def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
     """Run every planned hook live, in order; one failure never stops the rest."""
     return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks if hook.status != "done"]
+
+
+#: The line a live run prints once per file it archived, its path after the prefix.
+ARCHIVED_PREFIX = "migrate-archived: "
+
+
+def archived_paths(run: HookRun) -> dict[str, str]:
+    """``{archived path: its line}`` for each ``migrate-archived:`` line of a live run."""
+    return {line.removeprefix(ARCHIVED_PREFIX).strip(): line for line in run.lines if line.startswith(ARCHIVED_PREFIX)}
 
 
 def refusal_warning(run: HookRun) -> str:
