@@ -763,6 +763,10 @@ Every Beads issue assigned to exactly OLD and not closed, in each store under th
 
 --finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the pair and its repo in this host's migration record, from any directory; a name matching no pair, or several, is refused with exit 2 and what it matched.
 
+Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds nothing left records the migration finished (verified); otherwise the run names each part left as NOT finished and exits 1. A hook is done only when its --dry-run prints `migrate-status: done`.
+
+-s/--status [NAME] lists, read-only, each migration this host records that is not verified finished (-a/--all: every one), re-planned as complete or partial with the parts left and the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default remote machine.
+
 With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N letters, within the configured limits; -O/--over-limit selects this host's sessions whose name is longer than max_name_length.
 
 For a session started outside `ai`, use `ai adopt-session`.
@@ -777,10 +781,12 @@ Arguments:
 | `-r` | `--repo` | `DIRECTORY` | Repo root that owns .worktrees/ (default: detected from the current directory) |
 | `-n` | `--dry-run` |  | Print every planned move without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt |
-| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included |
+| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it |
 | `-b` | `--beads-only` |  | Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running |
 | `-t` | `--to-name` | `TEXT` | Reserve a first name (this one, or the shortest free one) and migrate OLD to it |
-| `-a` | `--all` |  | With -T/--to-names: every index-named session here |
+| `-s` | `--status` |  | List each recorded migration not verified finished as complete or partial, read-only |
+| `-R` | `--remote` |  | With -s/--status: run it on the default remote machine |
+| `-a` | `--all` |  | With -T/--to-names: every index-named session here; with -s/--status: every recorded migration |
 | `-T` | `--to-names` |  | With -a/--all: migrate each one to a picked first name |
 | `-L` | `--max-length` | `INTEGER` | Pick names of at most this many letters |
 | `-O` | `--over-limit` |  | With -a -T: only names longer than max_name_length |
