@@ -37,7 +37,8 @@ audit of either document; each audit stage keeps its own audit document and rece
 | Decisions | `resolve_decisions: true` (source: default) |
 | Doc approval | `require_doc_approval: false` (source: default) |
 | Integration mode | `parent` |
-| Target commit (base) | `b05f3432` |
+| Founding ask | Tier 3. Record `docs/asks/AI-CLI-6xud.md` in the operator's private harness repository, merged there as `9bbe49e048b`; `founding_ask_ref_sha256` `6b5df6dc0d9aef7bd45832af903ad5d8f4439221b051da5e1969a4f4d92dd9fb`; content sha256 `c68b87eddcba35b45a9a82b768a42dacd14f4c6b8cf2826318db02829b490646`; entry `A001`, generation 1 |
+| Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike` |
 | Orchestrator branch | `wt-ai-cli-ec2-ike` |
 | Stage cursor | `research running` |
@@ -67,5 +68,16 @@ audit of either document; each audit stage keeps its own audit document and rece
 
 - 2026-11-11: run opened by `ai-cli-ec2-ike` on sem-kg-ec2 after taking AI-CLI-6xud from the
   session inbox.
+- 2026-11-11 02:0xZ: the first launch of all three legs was refused by the launch guard because
+  their briefs carried the founding ask as plain text, not the canonical carrier. The run had
+  tried to launch before the founding ask record was committed; the guard was right.
+- 2026-11-11: the founding ask capture lost the push race on the harness repository's trunk
+  twice (its pre-push gate ran about four minutes and trunk moved each time; the tool did not
+  retry that refusal). The record was captured into a dedicated worktree branch instead and
+  landed through a pull request. The retry gap is fixed separately.
+- 2026-11-11 ~02:16Z: the three legs launched with rendered Tier 3 carriers.
+- 2026-11-11 02:40Z: this worktree was rebased onto `5192e13e` while the inventory leg was
+  reading it; that leg may cite either base, and the synthesis checks its line references
+  against `5192e13e`.
 
 <!-- /doc:region name="run_history" -->
