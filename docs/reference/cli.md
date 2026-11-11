@@ -771,6 +771,8 @@ Every writing run ends with a read-only re-plan of the pair. Only a re-plan that
 
 -s/--status [NAME] lists, read-only, each migration this host records that is not verified finished (-a/--all: every one), re-planned as complete or partial with the parts left and the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default remote machine.
 
+-f/--finish -a/--all re-plans every recorded migration on this host, verified or not, and finishes each partial one whose sessions are stopped, so a migration recorded before a fix (or stuck on a refusal since fixed) needs no hand run. A live pair, or one it cannot plan, is skipped and named. It checks the installed `ai` once, lists what it would finish and asks unless -y is given, and with -n/--dry-run writes nothing. It prints one row per pair and exits 1 if any pair is left partial or skipped.
+
 With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N letters, within the configured limits; -O/--over-limit selects this host's sessions whose name is longer than max_name_length.
 
 For a session started outside `ai`, use `ai adopt-session`.
@@ -790,7 +792,7 @@ Arguments:
 | `-t` | `--to-name` | `TEXT` | Reserve a first name (this one, or the shortest free one) and migrate OLD to it |
 | `-s` | `--status` |  | List each recorded migration not verified finished as complete or partial, read-only |
 | `-R` | `--remote` |  | With -s/--status: run it on the default remote machine |
-| `-a` | `--all` |  | With -T/--to-names: every index-named session here; with -s/--status: every recorded migration |
+| `-a` | `--all` |  | With -T/--to-names: every index-named session here; with -s/--status: every recorded migration; with -f/--finish: finish every stopped partial migration this host records |
 | `-T` | `--to-names` |  | With -a/--all: migrate each one to a picked first name |
 | `-L` | `--max-length` | `INTEGER` | Pick names of at most this many letters |
 | `-O` | `--over-limit` |  | With -a -T: only names longer than max_name_length |
