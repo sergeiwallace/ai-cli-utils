@@ -551,7 +551,8 @@ a live process held. It repeats every step keyed by the old name that is safe to
 repeat (agent worktrees, branches, containers and markers; launcher state, maps and
 locks; held-output and memory files; the task namespace and resume tree; every hook)
 and refuses while `.worktrees/OLD` is still a registered slot or either session is
-running. `-n` prints its plan with nothing written.
+running; stop a running one with `ai sessions stop NAME` first. `-n` prints its plan
+with nothing written.
 
 `--finish` also re-keys the Beads issues still assigned to OLD, but only when this
 host's `session-migrations.jsonl` (in the state directory) has a row naming
@@ -595,8 +596,9 @@ that mentions the old path.
 Refused before anything is written, `-n` included: a slot that is not a
 registered worktree (use `adopt-session`), an existing `.worktrees/NEW` or
 project directory for it, a running Claude Code process named OLD/NEW or working
-inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent:
-exit the session and end the tmux session first). A destination file that exists
+inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent).
+Both refusals name `ai sessions stop OLD`, which stops the session for good: a plain
+`/exit` inside a managed session is a restart. A destination file that exists
 is reported and skipped, never overwritten.
 
 A `.venv` inside the worktree moves with it, and its console scripts, `pyvenv.cfg`,

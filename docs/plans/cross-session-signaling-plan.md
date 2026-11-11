@@ -171,7 +171,7 @@ Already implemented. signal-watch scans pending queue before NATS subscribe, cla
   due date today, or manually run:
     ai handoff check
 ==========================================
-```text
+```
 
 The alert fires repeatedly (every 5 min after the 30-min threshold) until the task is claimed or manually dismissed. Dial back aggressiveness once observability data confirms reliability.
 
@@ -193,7 +193,7 @@ All CC sessions MUST be launched via `ai c` (not bare `claude`). `ai c` is the e
    Unregistered project: "menos" (~/projects/menos)
    Suggested task_prefix: MENOS
    Add to registry? [Y/n, or enter custom prefix]:
-   ```text
+   ```
    - User confirms → append entry to `platform.toml` with sensible defaults (type, active, etc.)
    - User declines → **exit to shell**. Hard requirement — no session launch with incomplete registry.
 5. **Proceed** — registry is guaranteed complete and valid for this session
@@ -317,7 +317,7 @@ Banner format (plain ASCII):
   HANDOFF: <title> [P<priority>]
   from: <created_by>
 ==========================================
-```text
+```
 
 Non-fatal if NATS unavailable — exits cleanly with no output.
 

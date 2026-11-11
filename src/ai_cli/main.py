@@ -55,6 +55,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
+from .cli_help import HelpGroup
 from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -161,8 +162,10 @@ from .tunnel import (  # noqa: F401
 )
 
 # MAINTENANCE: when editing ai-cli, also update:
-#   - docs/tools/ai-cli-usage.md (usage reference, session naming, transport, auto-resume)
-#   - README.md (if CLI interface changes)
+#   - docs/reference/cli.md and the README command index: regenerate them from the command
+#     declarations with `uv run python scripts/generate_docs.py`; never edit them by hand
+#   - docs/tools/ai-cli-usage.md (narrative guide: session naming, transport, auto-resume)
+#   - README.md prose (if CLI behaviour changes)
 #   - Code comments in this file (especially around session naming, resume logic, mosh/transport)
 #   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
 
@@ -3449,7 +3452,7 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
     for old, repo in pending_finishes(ai_name):
         retry = f"`ai migrate-session {old} {ai_name} -r {repo} --finish -y`"
         try:
-            result = finish_session(repo, old, ai_name)
+            result = finish_session(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
         except Exception as exc:  # a finish failure must never block the launch
             reason = " ".join(str(exc).split()) or type(exc).__name__
             reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
@@ -5888,7 +5891,7 @@ class _ChiefFlagCommand(click.Command):
         return parser
 
 
-class _ChiefAliasGroup(click.Group):
+class _ChiefAliasGroup(HelpGroup):
     """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
@@ -5903,7 +5906,7 @@ class _ChiefAliasGroup(click.Group):
     name="ai",
     cls=_ChiefAliasGroup,
     invoke_without_command=True,
-    context_settings={"help_option_names": ["-h", "--help"]},
+    context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
 )
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
 @_restart_options
@@ -6905,16 +6908,53 @@ def cmd_copier_update(dry_run, project, inspect_output, no_isolate, no_push):
     sys.exit(cast(int, exit_code))
 
 
-@_cli_group.command(
+class _LayoutGroup(HelpGroup):
+    """``ai layout NAME`` applies the layout NAME unless NAME is one of the group's commands."""
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            return "_apply", self.commands["_apply"], args
+        return super().resolve_command(ctx, args)
+
+
+@_cli_group.group(
     "layout",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Apply a tmux pane layout",
+    cls=_LayoutGroup,
+    subcommand_metavar="NAME | COMMAND [ARGS]...",
+    help="Apply a tmux pane layout. `ai layout NAME` applies the layout file NAME; "
+    "the commands below list, validate or regenerate profiles for a layout instead.",
 )
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_layout(args):
+def cmd_layout():
+    pass
+
+
+def _run_layout(args: list[str]) -> None:
     from .layout import run_layout_command
 
-    sys.exit(run_layout_command(list(args)))
+    sys.exit(run_layout_command(args))
+
+
+@cmd_layout.command("_apply", hidden=True)
+@click.argument("name")
+def cmd_layout_apply(name):
+    _run_layout([name])
+
+
+@cmd_layout.command("list", help="List the available layout files")
+def cmd_layout_list():
+    _run_layout(["list"])
+
+
+@cmd_layout.command("validate", help="Check a layout file against the layout schema without applying it")
+@click.argument("name")
+def cmd_layout_validate(name):
+    _run_layout(["validate", name])
+
+
+@cmd_layout.command("profiles", help="Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it")
+@click.argument("name")
+def cmd_layout_profiles(name):
+    _run_layout(["profiles", name])
 
 
 @_cli_group.group("iterm2", help="iTerm2 session tracking")
@@ -7927,7 +7967,7 @@ def cmd_migrate_session(
         if beads_only:
             return rekey_beads(repo_root, old, new, dry_run=preview)
         if finish:
-            return finish_session(repo_root, old, new, dry_run=preview)
+            return finish_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
         return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
 
     try:
@@ -8211,103 +8251,195 @@ def cmd_watch_vpn():
     sys.exit(0)
 
 
-@_cli_group.command(
-    "ps",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Process hygiene — show/kill stale ai-cli processes",
-)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_ps(args):
+def _ps_options(func):
+    func = click.option(
+        "-r", "--refresh", is_flag=True, help="Re-check the remote host over SSH instead of using the cached result"
+    )(func)
+    return click.option(
+        "-f", "--force", is_flag=True, help="With clean: also kill suspect processes, and do not prompt"
+    )(func)
+
+
+def _run_ps(action: list[str], force: bool, refresh: bool) -> None:
     from .process_hygiene import cmd_ps as _cmd_ps
 
-    sys.exit(_cmd_ps(list(args), _config.load_config()))
+    args = [*action, *(["--force"] if force else []), *(["--refresh"] if refresh else [])]
+    sys.exit(_cmd_ps(args, _config.load_config()))
 
 
-@_cli_group.command(
-    "sync",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Sync CC session data (JSONL + memory files) across machines",
+@_cli_group.group(
+    "ps",
+    invoke_without_command=True,
+    help="Process hygiene — show/kill stale ai-cli processes. With no command, list every managed "
+    "process on this machine and the configured remote host, with its orphan score.",
 )
-@click.argument("action", required=False, default="")
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_sync(action, args):
-    if not action:
-        _out.emit(
-            Tag.SYNC,
-            "usage",
-            "Usage: ai sync [push|pull|conflicts|resolve|watch|cleanup|repair-worktree] "
-            "[-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]",
-        )
-        sys.exit(1)
-    from .sync import (
-        _cc_projects_dir,
-        clean_worktree_cc_dirs,
-        get_local_prefix,
-        repair_worktree_cc_dir,
-        sync_conflicts,
-        sync_pull,
-        sync_push,
-        sync_resolve,
-        sync_watch,
+@_ps_options
+@click.pass_context
+def cmd_ps(ctx, force, refresh):
+    if ctx.invoked_subcommand is None:
+        _run_ps([], force, refresh)
+    if force or refresh:
+        raise click.UsageError(f"put -f/--force and -r/--refresh after the command: ai ps {ctx.invoked_subcommand} -f")
+
+
+@cmd_ps.command(
+    "clean",
+    help="Kill orphaned processes after a confirmation prompt; suspect ones only with -f/--force",
+)
+@_ps_options
+def cmd_ps_clean(force, refresh):
+    _run_ps(["clean"], force, refresh)
+
+
+@cmd_ps.command(
+    "cron",
+    help="Non-destructive maintenance: remove stale transport files and refresh the remote cache. "
+    "Never kills a process.",
+)
+@_ps_options
+def cmd_ps_cron(force, refresh):
+    _run_ps(["cron"], force, refresh)
+
+
+@_cli_group.group("sync", help="Sync CC session data (JSONL + memory files) across machines")
+def cmd_sync():
+    pass
+
+
+def _sync_flags(**flags: bool) -> list[str]:
+    return [f"--{name.replace('_', '-')}" for name, given in flags.items() if given]
+
+
+def _memories_only_option(func):
+    return click.option("-m", "--memories-only", is_flag=True, help="Sync memory files only, not session transcripts")(
+        func
     )
 
-    flags = list(args)
-    if action == "push":
-        sys.exit(sync_push(flags))
-    elif action == "pull":
-        sys.exit(sync_pull(flags))
-    elif action == "conflicts":
-        sys.exit(sync_conflicts(flags))
-    elif action == "resolve":
-        sys.exit(sync_resolve(flags))
-    elif action == "watch":
-        sys.exit(sync_watch(flags))
-    elif action == "repair-worktree":
-        positional = [a for a in flags if not a.startswith("-")]
-        if len(positional) < 2:
-            _out.emit(
-                Tag.SYNC,
-                "usage",
-                "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
-                "Example: ai sync repair-worktree myproject wt-1\n"
-                "Copies all conversations from the main project CC dir into the worktree CC dir\n"
-                "so they are accessible from the worktree session.",
-                err=True,
-            )
-            sys.exit(1)
-        project_name = positional[0]
-        wt_name = positional[1]
-        dry_run = "-n" in flags or "--dry-run" in flags
-        verbose = "-v" in flags or "--verbose" in flags
-        copied = repair_worktree_cc_dir(
-            project_name=project_name,
-            wt_name=wt_name,
-            cc_projects_dir=_cc_projects_dir(),
-            local_prefix=get_local_prefix(),
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-        sys.exit(0 if copied >= 0 else 1)
-    elif action == "cleanup":
-        dry_run = "-n" in flags or "--dry-run" in flags
-        verbose = "-v" in flags or "--verbose" in flags
-        removed_jsonl, removed_lock = clean_worktree_cc_dirs(
-            _cc_projects_dir(),
-            get_local_prefix(),
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-        verb = "Would remove" if dry_run else "Removed"
-        _out.emit(Tag.SYNC, "cleanup", f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
-        sys.exit(0)
-    else:
-        _out.emit(
-            Tag.SYNC,
-            "usage",
-            f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
-            err=True,
-        )
-        sys.exit(1)
+
+def _dry_run_option(func):
+    return click.option("-n", "--dry-run", is_flag=True, help="Report what would change without writing anything")(func)
+
+
+def _verbose_option(func):
+    return click.option("-v", "--verbose", is_flag=True, help="Print each file as it is processed")(func)
+
+
+def _force_option(func):
+    return click.option("-f", "--force", is_flag=True, help="Overwrite the other side's changes instead of stopping")(
+        func
+    )
+
+
+@cmd_sync.command(
+    "push",
+    help="Push local CC data to the staging repo and server. Exits 2 when conflicts were preserved.",
+)
+@_memories_only_option
+@_dry_run_option
+@_verbose_option
+@_force_option
+def cmd_sync_push(memories_only, dry_run, verbose, force):
+    from .sync import sync_push
+
+    sys.exit(sync_push(_sync_flags(memories_only=memories_only, dry_run=dry_run, verbose=verbose, force=force)))
+
+
+@cmd_sync.command(
+    "pull",
+    help="Pull from the staging repo and apply it to the local CC projects dir. Exits 2 when conflicts were preserved.",
+)
+@_memories_only_option
+@_dry_run_option
+@_verbose_option
+@_force_option
+@click.option(
+    "-p", "--prefer-remote", is_flag=True, help="When a memory file differs on both sides, apply the remote copy"
+)
+def cmd_sync_pull(memories_only, dry_run, verbose, force, prefer_remote):
+    from .sync import sync_pull
+
+    flags = _sync_flags(
+        memories_only=memories_only, dry_run=dry_run, verbose=verbose, force=force, prefer_remote=prefer_remote
+    )
+    sys.exit(sync_pull(flags))
+
+
+@cmd_sync.command("conflicts", help="List unresolved conflict files and recent conflict log entries")
+def cmd_sync_conflicts():
+    from .sync import sync_conflicts
+
+    sys.exit(sync_conflicts([]))
+
+
+@cmd_sync.command(
+    "resolve",
+    help="Resolve accumulated conflict files: delete transcript conflict backups and merge memory "
+    "conflicts. Exits 1 when a memory file could not be merged automatically.",
+)
+@_dry_run_option
+@_verbose_option
+def cmd_sync_resolve(dry_run, verbose):
+    from .sync import sync_resolve
+
+    sys.exit(sync_resolve(_sync_flags(dry_run=dry_run, verbose=verbose)))
+
+
+@cmd_sync.command(
+    "watch",
+    help="Listen for pull requests from other machines and run `ai sync pull --force` on each. "
+    "Exits 2 when a watcher is already running.",
+)
+@click.option(
+    "-a",
+    "--auto",
+    is_flag=True,
+    help="Started by a session launch: exit quietly when [sync] auto_watch is off for this machine",
+)
+@_verbose_option
+def cmd_sync_watch(auto, verbose):
+    from .sync import sync_watch
+
+    sys.exit(sync_watch(_sync_flags(auto=auto, verbose=verbose)))
+
+
+@cmd_sync.command("cleanup", help="Remove stale transcript copies and orphan lock dirs from worktree CC dirs")
+@_dry_run_option
+@_verbose_option
+def cmd_sync_cleanup(dry_run, verbose):
+    from .sync import _cc_projects_dir, clean_worktree_cc_dirs, get_local_prefix
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(
+        _cc_projects_dir(),
+        get_local_prefix(),
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    verb = "Would remove" if dry_run else "Removed"
+    _out.emit(Tag.SYNC, "cleanup", f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
+    sys.exit(0)
+
+
+@cmd_sync.command(
+    "repair-worktree",
+    help="Copy every conversation from a project's main CC dir into a worktree's CC dir, so the "
+    "worktree session can resume them. Example: ai sync repair-worktree myproject wt-1",
+)
+@click.argument("project")
+@click.argument("worktree")
+@_dry_run_option
+@_verbose_option
+def cmd_sync_repair_worktree(project, worktree, dry_run, verbose):
+    from .sync import _cc_projects_dir, get_local_prefix, repair_worktree_cc_dir
+
+    copied = repair_worktree_cc_dir(
+        project_name=project,
+        wt_name=worktree,
+        cc_projects_dir=_cc_projects_dir(),
+        local_prefix=get_local_prefix(),
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    sys.exit(0 if copied >= 0 else 1)
 
 
 @_cli_group.group("ws", help="Workspace-wide operations across all repos")

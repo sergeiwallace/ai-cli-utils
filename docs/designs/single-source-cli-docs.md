@@ -122,7 +122,64 @@ interface.
 
 ## Design Overview
 
-**Status:** stub; to be filled during/after implementation.
+**Status:** implemented in all three phases; the live wiki publication is verified after merge.
+
+What was built, and where it differs in detail from the sections below:
+
+- `src/ai_cli/cli_help.py` holds `command_description()`, `command_summary()` and `HelpGroup`.
+  `command_description()` asks Click's own `format_help_text` to write into a formatter so wide
+  that no ordinary paragraph wraps, then removes the indentation. Every Click rule (cleanup, the
+  `\f` cut, `\b` paragraphs, the deprecation label) is applied by Click itself, and the function
+  touches no private API. Each ordinary paragraph comes back as one line; a `\b` paragraph keeps
+  its lines. `command_summary()` is `get_short_help_str` with an unbounded limit.
+  `HelpGroup.format_commands` puts the `\b` marker back on multi-line paragraphs before
+  `write_dl`, so the help list keeps those line breaks too. `HelpGroup.group_class` is
+  `HelpGroup`, so `@group.group()` inherits it; `_ChiefAliasGroup` and the standalone
+  `ai sessions` group subclass or name it, and a tree-walk test fails on any group that does not.
+- `ai ps` is a group that lists when given no command, with `clean` and `cron` subcommands. All
+  three forms accept `-f/--force` and `-r/--refresh`, as the hand parser did. A flag given before
+  the action (`ai ps -f clean`) is a usage error rather than a silent switch to a force-kill,
+  since that form used to list. `ai layout` is a group whose `resolve_command` sends any first
+  argument that is not one of its commands to a hidden apply command, so the reserved names stay
+  exactly `list`, `validate` and `profiles`. `ai sync` is a group of its seven actions. Every
+  command calls the unchanged implementation (`process_hygiene.cmd_ps`,
+  `layout.run_layout_command`, the `sync_*` functions) with the long spelling of each flag the
+  user gave, and the push and pull parity rows also check that the unchanged `_parse_flags`
+  reads the new list exactly as it read the typed one. The new short forms are
+  `ai sync pull -p`, `ai sync watch -a` and `ai sync watch -v`.
+- `scripts/generate_docs.py` is the generator; `scripts/wiki_build.py` is the wiki builder it
+  imports. The reference's usage line is the command path plus `collect_usage_pieces`, unwrapped;
+  option cells are `get_help_record` text. A bare `<word>` outside a code span is written as
+  `&lt;word>`, since the rendered page would otherwise drop it as an HTML tag. Click caches a
+  command's help option from the first context it sees, so every context the generator and the
+  tests build carries the command's own context settings; a bare context leaves `-h`
+  unrecognised for the rest of the process.
+- The README's Usage section opens with a "Command index" subsection holding the markers. The
+  docs-example test reads `ai ...` lines in fenced blocks, accepts `[-x]`, `-x/--long` and
+  `-x|--long` spellings, skips `<placeholder>` tokens, and treats an unknown option as provider
+  pass-through only directly on `c`, `g`, `p` or `cx`. The per-line exemption marker is
+  `# docs-example: skip`; three lines carry it (two configured-alias examples and the internal
+  fast path). The test found two invented `ai ps` options in the hand-written docs, now fixed.
+- Wiki manifest: a page may also set `preamble = true` to include the text before the first `##`
+  heading, so Home keeps the README's title, badges and introduction. A file split into section
+  pages must have every `##` section selected by some page, or the build names the section no
+  page selects, so a README section cannot drop out of the wiki unnoticed. The generated
+  `cli-reference` page claims `docs/reference/cli.md`, so the reference is not published twice.
+  Group member pages are named from the repository path with `/` replaced by `-`; the builder
+  rejects any two names that would map to the same wiki file. A link that leaves the repository
+  (`../` past the root) keeps its text and loses its target, because the wiki cannot resolve it.
+  Every page ends with a line naming its source; `_Footer.md` says the wiki is generated.
+- The workflow has two jobs. `build` checks out `refs/heads/main` with a read-only token, runs
+  the builder with `--check` (so a stale reference on `main` fails instead of publishing) and
+  uploads the tree. `publish` holds `contents: write`, runs only `actions/download-artifact` and
+  git, and never executes repository code or a third-party action, which is the strictest reading
+  of Risk 6: the builder needs `astral-sh/setup-uv`, and that action never sees the write token.
+  Both jobs require `github.ref == 'refs/heads/main'`. A missing wiki repository is detected with
+  an anonymous `git ls-remote` before any token is used.
+- Found while implementing: 289 code blocks in 42 Markdown files were closed with a fence that
+  carried an info string, which CommonMark does not accept as a closing fence, so the block ran
+  on into the following prose. They were fixed in their own commit before the wiki started
+  publishing those files.
 
 ## The generation pipeline
 
@@ -618,18 +675,18 @@ rollout is outside this design.
 
 | # | Phase | Section / Decision | Verified | Notes |
 |---|-------|--------------------|---------|-------|
-| 1 | N/A | Design Overview filled with concrete implementation knowledge | - [ ] | |
-| 2 | Phase 1 | D-2: `ai -h` and every group list complete descriptions; no "..." | - [ ] | |
-| 3 | Phase 1 | Every visible command has a summary | - [ ] | |
-| 3a | Phase 1 | D-8: `ps`, `layout`, `sync` declared in Click with parity tests | - [ ] | |
-| 4 | Phase 2 | D-3, D-4: reference generated, deterministic, matches `-h` records | - [ ] | |
-| 5 | Phase 2 | D-5: stale reference or README region fails pytest and the hook | - [ ] | |
-| 6 | Phase 2 | No hand-written flag table remains in the narrative guide | - [ ] | |
-| 7 | Phase 3 | D-6: complete tracked-document inventory, title fallback, manifest, links, sidebar and footer verified | - [ ] | |
-| 8 | Phase 3 | Workflow publishes on `main` only; default-token capability verified live | - [ ] | |
-| 9 | N/A | D-7: no LLM call anywhere in generation or CI | - [ ] | |
+| 1 | N/A | Design Overview filled with concrete implementation knowledge | - [x] | [Design Overview](#design-overview) |
+| 2 | Phase 1 | D-2: `ai -h` and every group list complete descriptions; no "..." | - [x] | `tests/test_cli_help.py`: one parametrized case per group at width 80, plus the 120-column content-width case |
+| 3 | Phase 1 | Every visible command has a summary | - [x] | Tree-walk test; nine `ai sessions` subcommands and `ai sessions mark -c` gained help |
+| 3a | Phase 1 | D-8: `ps`, `layout`, `sync` declared in Click with parity tests | - [x] | `tests/test_cli_self_parsing.py`: every inventory row and spelling, the repository callers found by search, missing-name and unknown-token failures |
+| 4 | Phase 2 | D-3, D-4: reference generated, deterministic, matches `-h` records | - [x] | `tests/test_cli_docs.py` compares each section with the usage line and option records of `ai <command> -h` |
+| 5 | Phase 2 | D-5: stale reference or README region fails pytest and the hook | - [x] | Drift test plus the `generate-docs` pre-commit hook (passed on the commits that touched `src/` and `docs/`) |
+| 6 | Phase 2 | No hand-written flag table remains in the narrative guide | - [x] | Two tables replaced by reference links; asserted by test |
+| 7 | Phase 3 | D-6: complete tracked-document inventory, title fallback, manifest, links, sidebar and footer verified | - [x] | `tests/test_wiki_build.py`, on fixtures and on this repository's own tree |
+| 8 | Phase 3 | Workflow publishes on `main` only; default-token capability verified live | - [ ] | Triggers, ref guard and permissions asserted by test. The live run waits on merge and on the one-time first wiki page |
+| 9 | N/A | D-7: no LLM call anywhere in generation or CI | - [x] | The generator and the wiki builder run offline from committed files; the workflow only installs dependencies and runs git |
 
-**Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked -->
+**Audit completed:** <!-- YYYY-MM-DD; update when all items above are checked --> Open: item 8 waits on the first live run after merge.
 
 ## Risks and Mitigations
 

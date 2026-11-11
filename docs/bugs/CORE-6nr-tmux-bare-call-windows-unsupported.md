@@ -56,12 +56,12 @@ Traceback (most recent call last):
     self._execute_child(args, executable, preexec_fn, close_fds,
   File "...\subprocess.py", line 1538, in _execute_child
     hp, ht, pid, tid = _winapi.CreateProcess(executable, args,
-                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 FileNotFoundError: [WinError 2] The system cannot find the file specified
 ```
 
 **2. `ai attach <session>` crash (expected):**
-```bash
+```
 $ ai attach my-session
 Traceback (most recent call last):
   File "...\ai_cli\main.py", line 1453, in _do_attach

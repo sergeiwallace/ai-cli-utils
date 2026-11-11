@@ -192,7 +192,7 @@ graph LR
         MacNode["Mac"] -->|"ai sync push → git staging repo"| HetznerNode["Hetzner"]
         HetznerNode -->|"ai sync watch pulls on event"| HetznerNode
     end
-```text
+```
 
 ### Component Roles
 
@@ -313,7 +313,7 @@ class NATSClient:
     async def publish(subject: str, data: dict) -> bool
     async def subscribe(subject: str, callback: Callable) -> None  # blocking
     async def close() -> None
-```text
+```
 
 ### Event Envelope (convention, not enforced by schema)
 
@@ -324,14 +324,14 @@ class NATSClient:
   "ts": 1742832000,
   "data": { ... subject-specific payload ... }
 }
-```text
+```
 
 ### NATS Config Section (`~/.config/ai-cli/config.toml`)
 
 ```toml
 [messaging]
 nats_servers = ["nats://localhost:4222"]
-```text
+```
 
 ### Telemetry SQLite Schema (Phase 4, SW-16)
 
@@ -345,7 +345,7 @@ CREATE TABLE events (
     data      TEXT NOT NULL            -- JSON blob
 );
 CREATE INDEX idx_events_subject_ts ON events(subject, ts);
-```text
+```
 
 ---
 
