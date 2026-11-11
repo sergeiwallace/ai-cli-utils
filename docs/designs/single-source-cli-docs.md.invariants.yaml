@@ -1,15 +1,14 @@
-spec_version: single-source-cli-docs-respecify-1
+spec_version: single-source-cli-docs-respecify-2
 subsystem: single-source-cli-docs-doc-audit
 owner: repository maintainer
 authored_by: {family: claude, model: us.anthropic.claude-opus-5-5, date: "2026-11-11"}
 reviewed_by: {family: codex, model: gpt-5.6-sol, date: "2026-11-11"}
 target_anchor: docs/designs/single-source-cli-docs.md
-generation: 1
-candidate_digest: "sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11"
-# candidate_digest is the target digest the receipt's current audit (round 2) recorded, which
-# invariant_register.validate() requires it to equal. The design was revised after round 2 (commit
-# fa1886ff and its review follow-up); revised_target_digest records that file, which the conformance round audits.
-revised_target_digest: "sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6"
+generation: 2
+candidate_digest: "sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf"
+# candidate_digest is the target digest the receipt's current audit (round 6) recorded. The design
+# was revised after round 6 (commits bdf9a4c0 and aca5af21); revised_target_digest records that file.
+revised_target_digest: "sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5"
 policy_version: audit-loop-policy/1
 
 # Round 2 halted on cluster recurrence: round2:N-1 (sync pull --prefer-remote and sync watch --auto
@@ -22,6 +21,13 @@ policy_version: audit-loop-policy/1
 # token), the parity tests carry that table as parametrized data, and the implementer must re-read
 # each parser before converting it and add any token the table lacks. This register freezes that
 # contract so the next round is a conformance round, not counted against the pre-freeze history.
+#
+# Generation 2. Round 6 halted on fingerprint recurrence: round5:JA-2 (wiki coverage of "every
+# document") stayed open because each fix widened a list of document locations (docs/, then all
+# Markdown) and the next audit found a document outside it (LICENSE). The systematic fix, decided
+# by the coordinator through /decision-framework in bdf9a4c0: coverage is every tracked file,
+# published unless a named non-document class excludes it, and no exclusion may match Markdown, so
+# a document in an unlisted location fails the coverage test instead of being left out.
 
 states: [open-blocking, fixed, deferred, accepted-risk]
 initial_state: open-blocking
@@ -127,7 +133,7 @@ transitions:
 invalid_transition_policy: every state/event pair not covered by an explicit guard above is rejected by audit_loop.py's schema validation before it can be recorded
 
 dimensions:
-  cluster: [missing-parity-coverage, caller-compatibility]
+  cluster: [missing-parity-coverage, caller-compatibility, wiki-coverage-universe, wiki-exclusion-soundness]
 
 invariants:
   - id: INV-inventory-from-source
@@ -146,6 +152,14 @@ invariants:
     statement: "The three long-only flags (sync pull --prefer-remote, sync watch --auto, sync watch --verbose) keep their long spelling and gain a non-colliding short form, so the repository's both-forms rule and its option-form test hold -- self-parsing-commands, missing-parity-coverage"
     kind: safety
     counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3 inventory table, last column; tests/test_cli_option_forms.py"
+  - id: INV-coverage-by-exclusion
+    statement: "The wiki coverage universe is every tracked file; each is published by exactly one page or group or matched by a non-document exclusion class with a reason, never both and never neither, and no exclusion matches a Markdown file -- wiki-builder, wiki-coverage-universe"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 3 T-3.1 exclusion criterion and T-3.2 coverage criterion with the LICENSE fixture"
+  - id: INV-exclusion-soundness
+    statement: "Pages claim first, then groups in manifest order, and exclusions apply only to unclaimed files; no exclusion may match a Markdown file or any path under docs/, so every file under docs/ is published whatever its suffix -- wiki-builder, wiki-exclusion-soundness"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 3 T-3.1 exclusion criterion and T-3.2 claim-order criterion with the docs/reference toml and audit receipt fixtures"
   - id: INV-callers-tested
     statement: "Every in-repository invocation of ai ps, ai layout or ai sync (session script template, process hygiene cron path, and any other found in src/, scripts/, .githooks/ and config/) is a parity test row with its exact argument list -- self-parsing-commands, caller-compatibility"
     kind: safety
@@ -177,15 +191,41 @@ cells:
     evidence: "src/ai_cli/session_script.py sync watch invocation; round2:N-1; the dimension challenge below"
     members: [N-1]
 
+  - key: [wiki-coverage-universe]
+    invariants:
+      - INV-coverage-by-exclusion
+    disposition: OPEN
+    rationale: >-
+      round5:JA-2 recurred in round 6 on a document outside the enumerated locations. The revised
+      contract inverts the rule to publish-unless-excluded, so the conformance round checks that
+      no tracked document can be in neither set.
+    evidence: "docs/audits/single-source-cli-docs-audit.receipt.jsonl round-6 audit and halt events, finding round5:JA-2; commit bdf9a4c0"
+    members: [JA-2]
+  - key: [wiki-exclusion-soundness]
+    invariants:
+      - INV-exclusion-soundness
+    disposition: OPEN
+    rationale: >-
+      Added from the generation-2 dimension challenge: broad suffix exclusions could suppress a
+      non-Markdown document and overlapped the docs/ group. The revised contract gives publication
+      precedence and bans exclusions under docs/ and on Markdown.
+    evidence: "generation-2 dimension challenge below; commit aca5af21"
+    members: [JA-2]
+
 dimension_challenge:
-  reviewer: "codex gpt-5.6-sol, review role, medium effort, 2026-11-11"
+  reviewer: "codex gpt-5.6-sol, review role, medium effort, 2026-11-11 (generation 1 and generation 2)"
   proposed_omissions:
-    - "repair-worktree arguments are <project> <worktree>, not <old> <new>"
-    - "a caller-compatibility dimension covering every in-repository invocation, including sync watch --auto"
-    - "founding-ask disposition for the GitHub issues and Projects epic and the Discussions epic"
+    - "generation 1: repair-worktree arguments are <project> <worktree>, not <old> <new>"
+    - "generation 1: a caller-compatibility dimension covering every in-repository invocation"
+    - "generation 1: founding-ask disposition for the two separate epics"
+    - "generation 2: an exclusion-soundness dimension; exclusions must not match reader documents"
+    - "generation 2: publication and exclusion must be disjoint"
+    - "generation 2: classify setup.sh, pytest_*.py, renovate.json5, py.typed and demo scripts"
   disposition: >-
-    The review returned REJECT with one inventory error and two omissions. All three were accepted:
-    the table now names <project> <worktree>; a caller-compatibility dimension, invariant and design
-    criterion were added; and the design's coverage rows now state that both epics are filed where
-    the request itself directs, not dropped. The register's candidate_digest stays bound to the
-    receipt's round-2 audit, and revised_target_digest records the revised file.
+    Generation 1 returned REJECT; all three items were accepted and applied in b28bb410. Generation
+    2 returned REJECT with the three items above and four documents at risk (.env.example, a docs/
+    reference toml, the invariant register and the audit receipt). All were accepted: aca5af21 makes
+    publication take precedence over exclusion, publishes every file under docs/ whatever its
+    suffix, bans exclusions on Markdown and under docs/, publishes .env.example and LICENSE as pages,
+    and names Python, shell, py.typed, json5 and demo classes in the exclusion list. The epic
+    dispositions are measured facts in the owner's private task store, recorded in the design.
