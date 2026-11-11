@@ -272,6 +272,20 @@ under `docs/` (including `docs/plans/archive/`). New `tests/test_public_repo_hyg
 The `docs/` substitution was reverted once and redone after the first version rewrote four
 legitimate GitHub URLs; see Prior Fix Attempts.
 
+### 2026-11-11 — generated audit provenance sanitized at publication
+
+A repository audit record can legitimately retain internal provenance while its generated public
+wiki page must not reproduce that provenance. The wiki builder previously sanitized machine
+receipts only, then scanned audit Markdown unchanged, so a valid new audit round made the complete
+wiki build fail before creating an artifact.
+
+The regression test builds a real temporary repository containing a representative audit carrier.
+It was RED on the unfixed builder because publication stopped with one tracker reference and one
+environment reference. Audit Markdown and machine receipts now share the same public-provenance
+rendering before both policy validation and page generation. Ordinary documentation remains under
+the fail-closed policy. The focused wiki suite passes, and the repository wiki builds all planned
+pages without excluding the audit record.
+
 <!-- /doc:region name="fix_log" -->
 
 <!-- doc:region name="appendix_evidence" kind="immutable" -->

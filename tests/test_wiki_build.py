@@ -383,6 +383,26 @@ def test_given_a_machine_receipt_with_private_metadata_when_built_then_the_publi
     assert "private-tracker-reference" in published
 
 
+def test_given_an_audit_carrier_with_private_provenance_when_built_then_it_is_published_safely(tmp_path):
+    private_reference = "historical " + "CORE" + "-example"
+    private_environment = "historical " + "ai" + "-harness"
+
+    _, out, _ = _build(
+        tmp_path,
+        files={
+            "docs/audits/example-audit.md": (
+                f"# Audit\n\nSource: {private_reference}\n\nEnvironment: {private_environment}\n"
+            )
+        },
+    )
+
+    published = (out / "docs-audits-example-audit.md").read_text(encoding="utf-8")
+    assert private_reference not in published
+    assert private_environment not in published
+    assert "private-tracker-reference" in published
+    assert "private-environment" in published
+
+
 def test_given_no_repository_when_the_wiki_is_built_then_it_fails_rather_than_guess(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
 

@@ -19,9 +19,9 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 try:
-    from .publication_hygiene import publication_violations, sanitize_machine_receipt
+    from .publication_hygiene import publication_violations, sanitize_public_provenance
 except ImportError:  # run as `python scripts/wiki_build.py`
-    from publication_hygiene import publication_violations, sanitize_machine_receipt
+    from publication_hygiene import publication_violations, sanitize_public_provenance
 
 MANIFEST = "docs/wiki/pages.toml"
 RESERVED = {"_Sidebar", "_Footer"}
@@ -380,6 +380,13 @@ def _as_text_page(rel: str, text: str) -> str:
     return f"# {rel}\n\n{fence}{language}\n{text.rstrip(chr(10))}\n{fence}"
 
 
+def _publication_text(source: str, text: str) -> str:
+    """Render machine receipts and audit carriers as public-safe provenance."""
+    if source.endswith(".receipt.jsonl") or (source.startswith("docs/audits/") and source.endswith(".md")):
+        return sanitize_public_provenance(text)
+    return text
+
+
 def _body(page: Page, repo: Path, links: _Links) -> str:
     if page.generated:
         text = page.body
@@ -387,8 +394,7 @@ def _body(page: Page, repo: Path, links: _Links) -> str:
         raw = _read(repo, page.source)
         if raw is None:
             return f"# {page.source}\n\n[Download {page.source}]({links.blob}{page.source})"
-        if page.source.endswith(".receipt.jsonl"):
-            raw = sanitize_machine_receipt(raw)
+        raw = _publication_text(page.source, raw)
         if not page.source.endswith(".md"):
             return _as_text_page(page.source, raw)
         text = raw
@@ -421,8 +427,7 @@ def build_wiki(
         text = _read(repo_root, source)
         if text is None:
             continue
-        if source.endswith(".receipt.jsonl"):
-            text = sanitize_machine_receipt(text)
+        text = _publication_text(source, text)
         counts = publication_violations(text)
         if counts:
             details = []

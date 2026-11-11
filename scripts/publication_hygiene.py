@@ -50,8 +50,8 @@ def publication_violations(text: str) -> PublicationViolations:
     return PublicationViolations(tracker, environment)
 
 
-def sanitize_machine_receipt(text: str) -> str:
-    """Remove private references from a machine receipt without changing its source file."""
+def sanitize_public_provenance(text: str) -> str:
+    """Remove private references from public provenance without changing its source file."""
     text = _PRIVATE_TRACKER_ID.sub("private-tracker-reference", text)
     text = _ENVIRONMENT_NAME.sub("private-environment", text)
     text = _ENVIRONMENT_SESSION_NAME.sub(lambda match: match.group(0)[:-4] + "example-", text)
