@@ -1,0 +1,191 @@
+spec_version: single-source-cli-docs-respecify-1
+subsystem: single-source-cli-docs-doc-audit
+owner: repository maintainer
+authored_by: {family: claude, model: us.anthropic.claude-opus-5-5, date: "2026-11-11"}
+reviewed_by: {family: codex, model: gpt-5.6-sol, date: "2026-11-11"}
+target_anchor: docs/designs/single-source-cli-docs.md
+generation: 1
+candidate_digest: "sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11"
+# candidate_digest is the target digest the receipt's current audit (round 2) recorded, which
+# invariant_register.validate() requires it to equal. The design was revised after round 2 (commit
+# fa1886ff and its review follow-up); revised_target_digest records that file, which the conformance round audits.
+revised_target_digest: "sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6"
+policy_version: audit-loop-policy/1
+
+# Round 2 halted on cluster recurrence: round2:N-1 (sync pull --prefer-remote and sync watch --auto
+# missing from the parity inventory) recurred the missing-parity-coverage class of round1:F-2
+# (layout <name> missing from the same inventory). Both came from one cause: the inventory of forms
+# the three self-parsing commands accept was summarised from memory and from documentation instead
+# of read from the parsers. The systematic fix, decided by the run's coordinator (Opus 5.5) through
+# /decision-framework and landed in fa1886ff before this freeze: the inventory is read from the
+# parser source at the base commit and listed in full as a table (every action, argument and flag
+# token), the parity tests carry that table as parametrized data, and the implementer must re-read
+# each parser before converting it and add any token the table lacks. This register freezes that
+# contract so the next round is a conformance round, not counted against the pre-freeze history.
+
+states: [open-blocking, fixed, deferred, accepted-risk]
+initial_state: open-blocking
+event_alphabet: [conformance-confirm]
+transitions:
+  - id: T1
+    source: open-blocking
+    event: conformance-confirm
+    guard: "disposition==fixed"
+    target: fixed
+    observable_effect: "the conformance round reports the finding fixed against the frozen invariants; state becomes fixed"
+  - id: T2
+    source: open-blocking
+    event: conformance-confirm
+    guard: "disposition==deferred"
+    target: deferred
+    observable_effect: "the conformance round reports the finding deferred; state becomes deferred"
+  - id: T3
+    source: open-blocking
+    event: conformance-confirm
+    guard: "disposition==accepted-risk"
+    target: accepted-risk
+    observable_effect: "the conformance round reports the finding as an accepted risk; state becomes accepted-risk"
+  - id: T4
+    source: open-blocking
+    event: conformance-confirm
+    guard: otherwise
+    target: open-blocking
+    observable_effect: "residual case for the remaining enum value, open-blocking"
+  - id: T5
+    source: fixed
+    event: conformance-confirm
+    guard: "disposition==open-blocking"
+    target: open-blocking
+    observable_effect: "a later round reports a regression; state reopens to open-blocking"
+  - id: T6
+    source: fixed
+    event: conformance-confirm
+    guard: "disposition==deferred"
+    target: deferred
+    observable_effect: "a later round reports the finding deferred instead; state becomes deferred"
+  - id: T7
+    source: fixed
+    event: conformance-confirm
+    guard: "disposition==accepted-risk"
+    target: accepted-risk
+    observable_effect: "a later round reports the finding as an accepted risk instead; state becomes accepted-risk"
+  - id: T8
+    source: fixed
+    event: conformance-confirm
+    guard: otherwise
+    target: fixed
+    observable_effect: "residual case for the remaining enum value, fixed"
+  - id: T9
+    source: deferred
+    event: conformance-confirm
+    guard: "disposition==fixed"
+    target: fixed
+    observable_effect: "the deferred item is later resolved; state becomes fixed"
+  - id: T10
+    source: deferred
+    event: conformance-confirm
+    guard: "disposition==open-blocking"
+    target: open-blocking
+    observable_effect: "the deferral is revoked and the finding reopened; state becomes open-blocking"
+  - id: T11
+    source: deferred
+    event: conformance-confirm
+    guard: "disposition==accepted-risk"
+    target: accepted-risk
+    observable_effect: "a later round reports the finding as an accepted risk instead; state becomes accepted-risk"
+  - id: T12
+    source: deferred
+    event: conformance-confirm
+    guard: otherwise
+    target: deferred
+    observable_effect: "residual case for the remaining enum value, deferred"
+  - id: T13
+    source: accepted-risk
+    event: conformance-confirm
+    guard: "disposition==fixed"
+    target: fixed
+    observable_effect: "the accepted risk is later resolved; state becomes fixed"
+  - id: T14
+    source: accepted-risk
+    event: conformance-confirm
+    guard: "disposition==open-blocking"
+    target: open-blocking
+    observable_effect: "the risk acceptance is revoked and the finding reopened; state becomes open-blocking"
+  - id: T15
+    source: accepted-risk
+    event: conformance-confirm
+    guard: "disposition==deferred"
+    target: deferred
+    observable_effect: "a later round reports the finding deferred instead; state becomes deferred"
+  - id: T16
+    source: accepted-risk
+    event: conformance-confirm
+    guard: otherwise
+    target: accepted-risk
+    observable_effect: "residual case for the remaining enum value, accepted-risk"
+
+invalid_transition_policy: every state/event pair not covered by an explicit guard above is rejected by audit_loop.py's schema validation before it can be recorded
+
+dimensions:
+  cluster: [missing-parity-coverage, caller-compatibility]
+
+invariants:
+  - id: INV-inventory-from-source
+    statement: "The parity inventory for ai ps, ai layout and ai sync lists every action, positional argument and flag token their current parsers recognize, read from process_hygiene.cmd_ps, layout.run_layout_command, main.cmd_sync and sync.py's _parse_flags, sync_resolve and sync_watch at the base commit -- self-parsing-commands, missing-parity-coverage"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3, the inventory table and the parity criterion that carries it"
+  - id: INV-every-row-tested
+    statement: "Each inventory row, every spelling included, has its own parity test through the CLI entry point, carried as parametrized data, so a converted command that stops accepting a recognized form fails a named test -- self-parsing-commands, missing-parity-coverage"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3, the re-read and parametrized-data criterion"
+  - id: INV-no-silent-drop
+    statement: "A recognized form is removed only when the design names it as intentionally dropped with a reason; the only such drop is the acceptance of unknown ps flags and ignored trailing tokens -- self-parsing-commands, missing-parity-coverage"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3, the unknown-token criterion"
+  - id: INV-short-forms-added
+    statement: "The three long-only flags (sync pull --prefer-remote, sync watch --auto, sync watch --verbose) keep their long spelling and gain a non-colliding short form, so the repository's both-forms rule and its option-form test hold -- self-parsing-commands, missing-parity-coverage"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3 inventory table, last column; tests/test_cli_option_forms.py"
+  - id: INV-callers-tested
+    statement: "Every in-repository invocation of ai ps, ai layout or ai sync (session script template, process hygiene cron path, and any other found in src/, scripts/, .githooks/ and config/) is a parity test row with its exact argument list -- self-parsing-commands, caller-compatibility"
+    kind: safety
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 1 T-1.3, the in-repository caller criterion"
+
+cells:
+  - key: [missing-parity-coverage]
+    invariants:
+      - INV-inventory-from-source
+      - INV-every-row-tested
+      - INV-no-silent-drop
+      - INV-short-forms-added
+    disposition: OPEN
+    rationale: >-
+      round2:N-1, the open-blocking finding at round 2's halt, and its predecessor round1:F-2 both
+      named forms the self-parsing commands accept that the parity inventory omitted. The revised
+      design lists the full inventory read from the parsers and ties every row to a test. The
+      conformance round checks the revised design against the four invariants above.
+    evidence: "docs/audits/single-source-cli-docs-audit.receipt.jsonl round-2 audit and halt events, findings round1:F-2 and round2:N-1; commit fa1886ff"
+    members: [F-2, N-1]
+  - key: [caller-compatibility]
+    invariants:
+      - INV-callers-tested
+    disposition: OPEN
+    rationale: >-
+      Added from the dimension challenge: round2:N-1 cited `ai sync watch --auto` as invoked by the
+      shipped session script, so caller forms are frozen as their own dimension. The revised design
+      makes every in-repository invocation a parity test row.
+    evidence: "src/ai_cli/session_script.py sync watch invocation; round2:N-1; the dimension challenge below"
+    members: [N-1]
+
+dimension_challenge:
+  reviewer: "codex gpt-5.6-sol, review role, medium effort, 2026-11-11"
+  proposed_omissions:
+    - "repair-worktree arguments are <project> <worktree>, not <old> <new>"
+    - "a caller-compatibility dimension covering every in-repository invocation, including sync watch --auto"
+    - "founding-ask disposition for the GitHub issues and Projects epic and the Discussions epic"
+  disposition: >-
+    The review returned REJECT with one inventory error and two omissions. All three were accepted:
+    the table now names <project> <worktree>; a caller-compatibility dimension, invariant and design
+    criterion were added; and the design's coverage rows now state that both epics are filed where
+    the request itself directs, not dropped. The register's candidate_digest stays bound to the
+    receipt's round-2 audit, and revised_target_digest records the revised file.

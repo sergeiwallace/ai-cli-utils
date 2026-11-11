@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `doc done`; design doc `docs/designs/single-source-cli-docs.md`; doc-audit next |
+| Stage cursor | `doc-audit respecify`: round 2 `halted-recurrence`; register `docs/designs/single-source-cli-docs.md.invariants.yaml` under cross-family review before the freeze and the conformance round |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -84,5 +84,15 @@ ledger-version: 1
   and complete with lineage root `docs/tools/ai-cli-usage.md` (the hand-written usage doc this
   design supersedes in part); a first prepare with the design itself as lineage root refused
   `pinned-target-absent`, correctly, since that file is new.
+
+- 2026-11-11 ~06:10Z: doc-audit round 1 (codex audit, Sol, high) returned 7 MAJOR, 0 CRITICAL,
+  among them a founding-ask fidelity point (root help must show complete descriptions, not a
+  first sentence). The in-loop fix pass (codex implement, medium) applied all seven in `9f816f1d`,
+  including a docs-scoped hygiene test for this design. Per-round sanity check: clear. Round 2
+  (verify) returned one MAJOR, round2:N-1 (sync flags missing from the parity inventory), the same
+  missing-parity-coverage class as round1:F-2, and the loop terminated `halted-recurrence`.
+  Diagnosis under the Authority test: a bounded systematic fix (read the inventory from the parser
+  source and list it in full, every row tested) is permitted to the coordinator; applied in
+  `fa1886ff`; invariant register drafted for the freeze.
 
 <!-- /doc:region name="run_history" -->

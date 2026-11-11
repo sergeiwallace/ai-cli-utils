@@ -26,8 +26,8 @@ private operational metadata. This index is non-authoritative; the captured requ
 | Originating request: auto-generate canonical Markdown, CLI usage docs, help and the wiki, programmatically where possible and with an LLM only where needed | [D-7](#d-7): every published artifact is a deterministic render of committed sources; an LLM drafts only prose that cannot be derived, and that prose lands in a source file under review |
 | Originating request: research open-source packages and tools for programmatic and agentic documentation generation | [📄 ai-cli-utils/docs/research/cli-docs-generation-tools.md](../research/cli-docs-generation-tools.md) |
 | Originating request: a hosted documentation website for the owner's open-source repositories, deferred until later | [Website feed](#website-feed) records how this design feeds it |
-| Originating request: link task records to GitHub issues and Projects, template-standard, kept in sync and rolled out with each wiki | Outside this run. This design's wiki generator is written so a template can reuse it ([Integration](#integration)) |
-| Originating request: GitHub Discussions for public repositories, standard configuration and first post | Outside this run |
+| Originating request: link task records to GitHub issues and Projects, template-standard, kept in sync and rolled out with each wiki | Not dropped: the request itself directs this work into separate epics in the owner's private task store, where it is filed and tracked. It is not part of this design; the wiki generator here is written so a template can reuse it ([Integration](#integration)) |
+| Originating request: GitHub Discussions for public repositories, standard configuration and first post | Not dropped: the request directs it into its own epic in the same private task store, where it is filed and tracked, and says it can follow later. It is not part of this design |
 
 **Status:** DRAFT
 
@@ -113,7 +113,7 @@ commands, `ai ps`, `ai layout` and `ai sync`, parse their own arguments, so thei
 are not in that count and not in any help screen: `ai ps -h` runs the process listing and
 `ai sync -h` fails ([D-8](#d-8)).
 
-The written documentation has drifted from the code. `docs/tools/ai-cli-usage.md` documents 30
+The written documentation has drifted from the code. `docs/tools/ai-cli-usage.md` names 28
 of the 52 top-level commands and carries hand-copied flag tables. The README's Usage section is
 hand-written. Nothing checks either against the code. The wiki is enabled but empty: its git
 repository does not exist yet, since `git ls-remote` on `<repo>.wiki.git` answers "Repository not
@@ -371,10 +371,15 @@ rollout is outside this design.
       | `ai sync resolve` | none | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
       | `ai sync watch` | none | `--auto`, `--verbose` | each gains a short form; the long spellings are kept |
       | `ai sync cleanup` | none | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
-      | `ai sync repair-worktree` | `<old> <new>` | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
+      | `ai sync repair-worktree` | `<project> <worktree>` | `-n`/`--dry-run`, `-v`/`--verbose` | unchanged |
 
       The short forms chosen for the three long-only flags must not collide with another option of
       the same command, and the existing option-form test then covers them.
+    - [ ] When the repository's own callers invoke these commands (measured: `ai sync watch --auto`
+      in the session script template, `src/ai_cli/session_script.py`; the `ps cron` path in
+      `src/ai_cli/process_hygiene.py`; and any other found by searching `src/`, `scripts/`,
+      `.githooks/` and `config/` for `ai ps`, `ai layout` and `ai sync`), each exact argument list
+      shall be a parity test row, so a caller's form cannot break without a named failure.
     - [ ] Before converting a parser, the implementer shall re-read its source on the base commit and
       confirm the inventory row matches; a token found there and missing from the table is added to
       the table and its parity test, never dropped silently. The parity tests carry the table as
@@ -697,7 +702,7 @@ behavior; wrapping is bounded by Risk 4.
 #### D-3: Shape of the canonical CLI usage document — `✅ Resolved by Claude: (a) one fully generated reference plus narrative guide`
 
 **Context.** `docs/tools/ai-cli-usage.md` mixes narrative with hand-copied flag tables and covers
-30 of 52 commands. The canonical usage document must be generated.
+28 of 52 commands by name. The canonical usage document must be generated.
 
 ##### (a) One fully generated reference plus narrative guide
 
