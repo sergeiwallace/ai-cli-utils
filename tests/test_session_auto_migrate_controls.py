@@ -108,7 +108,7 @@ def test_given_the_pair_is_already_recorded_when_legacy_slot_is_launched_then_it
 
 
 @pytest.mark.usefixtures("interactive_terminal")
-def test_given_the_recorded_target_exists_when_legacy_leftover_is_launched_then_the_recorded_target_is_used(slot):
+def test_given_the_recorded_target_exists_when_legacy_leftover_is_launched_then_the_partial_target_is_refused(slot):
     target = slot["repo"] / ".worktrees" / NEW
     test_session_migrate._git("worktree", "add", "-q", str(target), "-b", f"wt-{NEW}", cwd=slot["repo"])
     ledger = slot["state"] / MIGRATION_LEDGER
@@ -119,25 +119,30 @@ def test_given_the_recorded_target_exists_when_legacy_leftover_is_launched_then_
 
     code, out, err, launched = _launch(slot)
 
-    assert code == 0, out + err
-    assert [item["ai_name"] for item in launched] == [NEW]
+    assert code == 1, out + err
+    assert launched == [], "the recorded target resolves, but its migration is partial while OLD's slot stays"
+    assert f"refusing to launch {NEW}: the migration {OLD} -> {NEW} is partial" in err
+    assert "still a registered slot" in err
     assert slot["wt"].is_dir()
     assert target.is_dir()
-    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 2  # context delivery records its own event
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
 
 
 @pytest.mark.usefixtures("interactive_terminal", "hooks")
-def test_given_live_migration_step_fails_after_the_move_when_launched_then_the_new_slot_still_launches(slot, request):
+def test_given_live_migration_step_fails_after_the_move_when_launched_then_the_partial_new_slot_is_refused(
+    slot, request
+):
     add_hook = request.getfixturevalue("hooks")
     add_hook("10-example", "example", fail="live")
 
     code, out, err, launched = _launch(slot)
 
-    assert code == 0, out + err
-    assert [item["ai_name"] for item in launched] == [NEW]
+    assert code == 1, out + err
+    assert launched == [], "the move happened, but a migration left partial starts nothing"
     assert not slot["wt"].exists()
     assert (slot["repo"] / ".worktrees" / NEW).is_dir()
     assert f"automatic migration {OLD} -> {NEW} was incomplete" in err
+    assert f"ai migrate-session {OLD} {NEW} --finish -r {slot['repo']}" in err
 
 
 def test_given_the_resume_prompt_cannot_be_replaced_when_context_is_queued_then_it_returns_one_warning(slot):
