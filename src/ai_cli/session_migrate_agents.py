@@ -39,6 +39,7 @@ from pathlib import Path
 from . import config as _config
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
+from .venv_relocate import needs_relocation, relocate_venv
 from .worktree_move import move_worktree
 
 
@@ -84,6 +85,7 @@ class AgentEntry:
     conflict: bool = False
     tip: str = ""
     ownership: WorktreeOwnership | None = None
+    venv_old: Path | None = None
 
     @property
     def moves(self) -> bool:
@@ -270,7 +272,7 @@ def apply_worktree_ownership(plan: WorktreeOwnership, branch: str | None) -> lis
         if reason:
             warnings.append(f"provenance owner for {plan.dest} was NOT rebound: {reason}")
     key = _agent_worktree_key(branch) if branch else None
-    if plan.stamp_value is not None and key:
+    if plan.stamp_value is not None and plan.stamp_value != str(plan.dest) and key:
         written = _git(plan.repo, "config", key, str(plan.dest))
         if written.returncode != 0:
             warnings.append(f"agent-worktree marker {key} FAILED to rewrite: {(written.stderr or '').strip()}")
@@ -320,15 +322,37 @@ def plan_agents(
             )
 
         repo_entries: list[AgentEntry] = []
+        recovered: dict[Path, Path] = {}
         for path, branch in worktrees:
-            if container not in path.parents:
+            flat = (
+                path.parent == container.parent
+                and path.name.startswith(f"{old}-")
+                and branch
+                and branch.startswith((prefix, new_prefix))
+            )
+            new_flat = (
+                path.parent == container.parent
+                and path.name.startswith(f"{new}-")
+                and branch
+                and branch.startswith((prefix, new_prefix))
+            )
+            if container in path.parents:
+                dest = new_container / path.relative_to(container)
+            elif new_flat:
+                dest = path
+                recovered[path.with_name(old + path.name[len(new) :])] = path
+            elif flat:
+                dest = path.with_name(new + path.name[len(old) :])
+            elif new_container in path.parents:
+                dest = path
+                recovered[container / path.relative_to(new_container)] = path
+            else:
                 continue
-            dest = new_container / path.relative_to(container)
             entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
             if entry.new_branch is None:
                 entry.branch = None
             entry.held_by = _holder(path, live_cwds)
-            entry.conflict = os.path.lexists(dest) or _branch_exists(entry.new_branch)
+            entry.conflict = (dest != path and os.path.lexists(dest)) or _branch_exists(entry.new_branch)
             if entry.moves:
                 entry.ownership = plan_worktree_ownership(
                     repo,
@@ -336,9 +360,22 @@ def plan_agents(
                     dest,
                     old,
                     new,
-                    entry.branch,
-                    entry.new_branch,
+                    branch,
+                    entry.new_branch or branch,
                 )
+                original = next((source for source, target in recovered.items() if target == path), path)
+                if needs_relocation(path / ".venv", original):
+                    entry.venv_old = original
+            if dest == path:
+                entry.worktree = None
+                if (
+                    entry.ownership
+                    and entry.ownership.provenance_state != "present"
+                    and entry.ownership.stamp_value in {None, str(dest)}
+                ):
+                    entry.ownership = None
+                if entry.branch is None and entry.ownership is None and entry.venv_old is None:
+                    continue
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
         for branch in branches:
@@ -369,6 +406,8 @@ def plan_agents(
             target = Path(value).resolve(strict=False)
             if target in moved:
                 plan.markers.append(AgentMarker(repo, key, str(moved[target])))
+            elif target in recovered:
+                plan.markers.append(AgentMarker(repo, key, str(recovered[target])))
             elif target == old_wt and repo != slot_repo:
                 plan.markers.append(AgentMarker(repo, key, str(new_wt)))
     return plan
@@ -385,8 +424,10 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
         if e.worktree:
             dest = "" if e.held_by is not None else str(e.dest)
             lines.append(("agent worktree", str(e.worktree), dest, action))
-            if e.ownership:
-                lines += describe_worktree_ownership(e.ownership)
+        if e.ownership:
+            lines += describe_worktree_ownership(e.ownership)
+        if e.venv_old is not None:
+            lines.append(("virtual environment", str(e.venv_old / ".venv"), str(e.dest), "rewrite"))
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -425,8 +466,11 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 continue
             moved.add(e.worktree)
             worktree_moved = True
-            if (e.dest / ".venv").is_dir():
-                warnings.append(f"{e.dest / '.venv'} names the old path in its scripts -- run `uv sync --reinstall`")
+        if e.venv_old is not None and e.dest is not None:
+            try:
+                relocate_venv(e.dest / ".venv", e.venv_old, e.dest)
+            except OSError as exc:
+                warnings.append(f"virtual environment {e.dest / '.venv'} FAILED to relocate: {exc}")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:
@@ -434,8 +478,8 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 current_branch = e.new_branch
             else:
                 warnings.append(f"agent branch {e.branch} in {e.repo} FAILED to rename: {renamed.error}")
-        if worktree_moved and e.ownership:
-            warnings += apply_worktree_ownership(e.ownership, current_branch)
+        if e.ownership and (worktree_moved or e.worktree is None):
+            warnings += apply_worktree_ownership(e.ownership, current_branch or e.ownership.new_branch)
     for m in plan.markers:
         key = renamed_key(m.key, done.get(m.repo, {}))
         res = _git(m.repo, "config", key, m.value)

@@ -20,7 +20,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import config as _config
@@ -41,6 +41,7 @@ class Hook:
     name: str
     argv: tuple[str, ...]
     path: Path
+    status: str = "pending"
 
 
 @dataclass
@@ -134,17 +135,23 @@ def plan_hooks(old: str, new: str, *, cwd: Path | None = None) -> tuple[list[Hoo
                 f"{run.stderr or '(no stderr)'}"
             )
         runs.append(run)
-    return hooks, runs
+    planned = []
+    for run in runs:
+        statuses = [line.removeprefix("migrate-status: ") for line in run.lines if line.startswith("migrate-status: ")]
+        if statuses and (len(statuses) != 1 or statuses[0] not in {"done", "pending", "partial"}):
+            raise HookRefusal(f"hook {run.hook.name} returned an invalid migrate-status")
+        planned.append(replace(run.hook, status=statuses[0] if statuses else "pending"))
+    return planned, runs
 
 
 def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
     """Run every planned hook live, in order; one failure never stops the rest."""
-    return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks]
+    return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks if hook.status != "done"]
 
 
 def failure_warning(run: HookRun) -> str:
     """The ``FAILED`` line for a hook that exited non-zero on its live run."""
     return (
         f"hook {run.hook.name} ({run.hook.path}) FAILED (exit {run.returncode}): {run.stderr or '(no stderr)'} "
-        f"-- the core moves are done; re-run the hook alone to finish"
+        f"-- re-run the same migrate-session command to finish"
     )

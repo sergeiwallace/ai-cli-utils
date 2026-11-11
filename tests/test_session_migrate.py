@@ -266,7 +266,7 @@ def test_given_the_session_is_running_when_migrating_then_it_is_refused_and_noth
     )
     before = _everything(slot)
     code, out, err = _migrate(slot["repo"], "-y")
-    assert code == 1
+    assert code == 2
     assert "still running" in err
     assert _everything(slot) == before
 
@@ -274,7 +274,7 @@ def test_given_the_session_is_running_when_migrating_then_it_is_refused_and_noth
 def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(slot):
     before = _everything(slot)
     code, _out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{OLD}"])
-    assert code == 1
+    assert code == 2
     assert f"tmux session c-{OLD} still hosts {OLD}" in err
     assert _everything(slot) == before
 
@@ -282,20 +282,20 @@ def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(s
 def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
     (slot["repo"] / ".worktrees" / NEW).mkdir()
     code, _out, err = _migrate(slot["repo"], "-y")
-    assert code == 1
+    assert code == 2
     assert "already exists" in err
     assert slot["wt"].is_dir()
 
 
 def test_given_an_unregistered_slot_when_migrating_then_it_points_at_session_adopt(slot, tmp_path):
     code, _out, err = run_cli(["ai", "migrate-session", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
-    assert code == 1
+    assert code == 2
     assert "not a registered worktree" in err and "adopt-session" in err
 
 
 def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_refused(slot):
     code, _out, err = run_cli(["ai", "migrate-session", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
-    assert code == 1
+    assert code == 2
     assert "is not a session name" in err
 
 
@@ -307,7 +307,7 @@ def test_given_a_dry_run_or_a_refusal_when_migrating_then_every_line_carries_the
     assert all("[migrate]" in line for line in lines), out + err
 
     code, out, err = run_cli(["ai", "migrate-session", "myrepo-9", NEW, "-r", str(slot["repo"]), "-y"])
-    assert code == 1
+    assert code == 2
     assert "[migrate]" in err and "[adopt]" not in out + err
 
 
@@ -368,7 +368,7 @@ def test_given_the_new_canonical_branch_exists_when_migrated_then_the_parked_one
     _git("branch", f"wt-{NEW}", "main", cwd=repo)
     tip = _ref(repo, f"refs/heads/wt-{OLD}")
     code, out, err = _migrate(repo, "-y")
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert f"branch wt-{NEW} already exists, so it keeps the name wt-{OLD}" in err
     assert _ref(repo, f"refs/heads/wt-{OLD}") == tip
     assert _ref(repo, ANCHOR) is None
@@ -380,8 +380,8 @@ def test_given_git_refuses_the_branch_rename_when_migrated_then_stderr_is_quoted
     _git("branch", f"wt-{NEW}/child", "main", cwd=repo)
     tip = _ref(repo, f"refs/heads/wt-{OLD}")
     code, out, err = _migrate(repo, "-y")
-    assert code == 0, out + err
-    assert f"branch rename to wt-{NEW} failed: git branch -m wt-{OLD} wt-{NEW} was refused: " in err
+    assert code == 1, out + err
+    assert f"branch rename to wt-{NEW} FAILED: git branch -m wt-{OLD} wt-{NEW} was refused: " in err
     assert f"the tip stays anchored at {ANCHOR}" in err
     assert _ref(repo, f"refs/heads/wt-{OLD}") == tip == _ref(repo, ANCHOR)
     markers = _git("config", "--get-regexp", r"hub-session-home$", cwd=repo)
@@ -430,7 +430,7 @@ def test_given_the_held_output_target_exists_when_migrated_then_both_files_are_l
     new_main = main_memory / f".held-output-{NEW}-01-review-queue.md"
     new_main.write_bytes(b"belongs to the new name\n")
     code, out, err = _migrate(held_slot["repo"], "-y")
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert f"held output: {old_main} -> {new_main} SKIPPED (target exists)" in out
     assert old_main.read_bytes() == HELD_BODY
     assert new_main.read_bytes() == b"belongs to the new name\n"
@@ -458,7 +458,7 @@ def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_sta
     old_ns = slot["claude"] / "tasks" / OLD
     (old_ns / "notes.txt").write_text("keep me\n")
     code, out, err = _migrate(slot["repo"], "-y")
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert f"task namespace {old_ns} left in place: it still holds notes.txt" in err
     assert (old_ns / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
     assert (old_ns / ".highwatermark").is_file()
@@ -481,7 +481,7 @@ def test_given_a_live_session_when_migrating_then_no_new_artifact_class_is_touch
     before = _everything(held_slot)
     refs = _git("for-each-ref", cwd=held_slot["repo"])
     code, _out, err = _migrate(held_slot["repo"], "-y")
-    assert code == 1
+    assert code == 2
     assert "still running" in err
     assert _everything(held_slot) == before
     assert _git("for-each-ref", cwd=held_slot["repo"]) == refs
@@ -584,7 +584,7 @@ def test_given_a_watcher_lock_naming_a_live_pid_when_migrated_then_it_is_left_al
 
     code, out, err = _migrate(slot["repo"], "-y")
 
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert lock.read_text(encoding="utf-8") == str(os.getpid())
     assert f"its pid {os.getpid()} is running" in out
 
@@ -595,7 +595,7 @@ def test_given_a_slot_lock_a_process_holds_when_migrated_then_it_is_left_alone(s
     lock = slot["repo"] / ".worktrees" / f".{OLD}.lock"
     with portalocker.Lock(str(lock), mode="a", timeout=0):
         code, out, err = _migrate(slot["repo"], "-y")
-        assert code == 0, out + err
+        assert code == 1, out + err
         assert lock.exists()
     assert "slot lock" in out and "left alone: a process holds it" in out
 
@@ -639,7 +639,7 @@ def test_given_the_old_slot_is_still_registered_when_finished_then_it_is_refused
 
     code, _out, err = _finish(slot["repo"], "-y")
 
-    assert code == 1
+    assert code == 2
     assert "migrate it without --finish first" in err
     assert _everything(slot) == before
 
@@ -651,7 +651,7 @@ def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slo
 
     code, _out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
 
-    assert code == 1
+    assert code == 2
     assert f"hosts {NEW}" in err
     assert left["slot_lock"].exists()
 
@@ -698,6 +698,8 @@ elif args[0] == "update":
     issue["assignee"] = opt("--assignee")
 elif args[:2] == ["comments", "add"]:
     next(i for i in issues if i["id"] == args[2]).setdefault("comments", []).append(" ".join(args[3:]))
+elif args[0] == "comments":
+    print(json.dumps([{"text": text} for text in next(i for i in issues if i["id"] == args[1]).get("comments", [])]))
 db.write_text(json.dumps(data))
 """
 
@@ -837,14 +839,14 @@ def test_given_a_migration_from_before_the_re_key_when_finished_then_only_a_ledg
     # The session metadata and registry bind NEW to the slot but never name OLD: not evidence.
     assert (slot["state"] / f"session-meta-c-{NEW}.json").exists()
     code, out, err = _finish(stores["repo"], "-y")
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert stores["db"].read_text(encoding="utf-8") == before
     assert f"beads issues on {OLD} were NOT re-keyed to {NEW}" in err
 
     # A row for another pair is not evidence either.
     ledger.write_text(json.dumps({"old": f"{OLD}x", "new": NEW}) + "\n", encoding="utf-8")
     code, out, err = _finish(stores["repo"], "-y")
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert stores["db"].read_text(encoding="utf-8") == before
 
     with ledger.open("a", encoding="utf-8") as rows:
@@ -866,7 +868,7 @@ def test_given_no_record_of_the_migration_on_this_host_when_finished_then_nothin
 
     code, out, err = _finish(stores["repo"], "-y")
 
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert stores["db"].read_text(encoding="utf-8") == before
     assert _bd_writes(stores) == []
     reason = f"this host holds no record that {OLD} was migrated to {NEW} here"
@@ -891,7 +893,7 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
         )
     )
     code, out, err = _finish(stores["repo"], "-y")
-    assert code == 1 and "still running" in err, out + err
+    assert code == 2 and "still running" in err, out + err
 
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
         code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
@@ -906,7 +908,7 @@ def test_given_no_ledger_row_when_re_keyed_beads_only_then_nothing_is_written(st
     before = stores["db"].read_text(encoding="utf-8")
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
         code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])
-    assert code == 0, out + err
+    assert code == 1, out + err
     assert stores["db"].read_text(encoding="utf-8") == before
     assert _bd_writes(stores) == []
     assert f"beads issues on {OLD} were NOT re-keyed to {NEW}" in err
@@ -1051,7 +1053,7 @@ def test_given_an_unreadable_chief_registration_when_migrating_then_it_is_named_
 
     code, _out, err = _migrate(slot["repo"], "-y")
 
-    assert code == 1
+    assert code == 2
     assert str(chief["registration"]) in err
     assert _everything(slot) == before
 

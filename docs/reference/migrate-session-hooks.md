@@ -79,8 +79,7 @@ Planning runs every hook before the first write, so a hook that cannot do its pa
 stops the migration while nothing has moved, and a hook extends the refuse-if-live
 guard to its own state. The core moves are not rolled back after a real-run
 failure: they are already durable. Hooks must therefore be idempotent, so that
-running the failed hook alone (the same argv, without `--dry-run`) completes the
-migration.
+repeating the original `ai migrate-session` command completes the migration.
 
 ## `ai adopt-session`
 
@@ -112,3 +111,34 @@ name has changed. `ai audit-sessions` adopts through the same code path.
 Implementation: `src/ai_cli/session_migrate_hooks.py`, called from
 `src/ai_cli/session_migrate.py` and `src/ai_cli/session_adopt.py`; tests in
 `tests/test_session_migrate_hooks.py` and `tests/test_session_adopt_hooks.py`.
+
+## Resumable completion status
+
+The read-only `--dry-run` invocation may print exactly one machine-readable line:
+
+```text
+migrate-status: done
+```
+
+The other allowed values are `pending` and `partial`. `done` means all hook-owned
+artifacts and any required shipping step are durably complete; the runner skips
+that hook's applying invocation. `pending` and `partial` mean applying the same
+OLD/NEW pair must finish only remaining work. Invalid or duplicate status lines
+refuse the migration. A hook must derive status from its own durable state,
+including unfinished publishing, and must be idempotent at every internal write
+boundary. A completion stamp alone must not hide remaining source artifacts.
+
+Exit 0 means complete (or a valid read-only plan); exit 3 means partial, repeat the
+same command; other nonzero codes describe refusal or failure on stderr. The
+runner treats every nonzero applying result as incomplete, continues the other
+hooks, and exits 1. This also supports legacy hooks using exit 1 for partial work.
+Repeat the original `ai migrate-session` command to finish the pipeline.
+
+Legacy hooks without a status line still receive `--dry-run`; a named warning
+says their completion cannot be checked separately, and their idempotent applying
+invocation runs again. This package ships no external hook configurations.
+Existing configurations remain compatible. Read-only preflights cannot guarantee
+that a lease, snapshot, lock or checkout stays usable until execution; the
+agent-mail snapshot warning calls out freshness checks explicitly. Hook authors
+must recheck those conditions when applying, return nonzero if incomplete, and
+never report `done` while a shipping step remains.

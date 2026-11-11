@@ -139,3 +139,12 @@ ai c <n>       # then check the conversation history is present
 
 Implementation: `src/ai_cli/cc_migrate.py` (library, stdlib-only) and the
 `migrate-transcript` command in `src/ai_cli/main.py`. Tests: `tests/test_cc_migrate.py`.
+
+## Repeating a session rename
+
+`migrate-transcript` above moves conversations between roots. To retry an entire
+session rename, repeat `ai migrate-session OLD -t NAME -y`, including after a
+partial failure. It checks existing parts and reports a final `part | status`
+table. Exit 0 means complete (or a valid dry-run plan), 1 means partial and
+retryable, and 2 means refused or invalid usage. Named dry runs validate the name
+and run hook preflights. See [session rename recovery](cc-session-adoption.md#repeating-the-original-migration-command).
