@@ -688,21 +688,26 @@ def _containers(old: str, repos: list[Path]) -> list[Path]:
     return [c for c in ((r / ".worktrees" / f"{old}-agents").resolve() for r in repos) if c.is_dir()]
 
 
-def _holds_a_file(path: Path) -> bool:
+def _holds_a_file(path: Path, moving: Container[Path] = ()) -> bool:
+    if path in moving:
+        return False
     if path.is_symlink() or not path.is_dir():
         return True
-    return any(_holds_a_file(child) for child in path.iterdir())
+    return any(_holds_a_file(child, moving) for child in path.iterdir())
 
 
-def _sweep_containers(containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool) -> list[PlannedMove]:
+def _sweep_containers(
+    containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool, moving: Container[Path] = ()
+) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
-    A container already gone is not listed: the agent plan's own line covers it.
+    A container already gone is not listed: the agent plan's own line covers it. A preview
+    passes the agent worktrees the run ``moving`` out, so it names the fate the run reaches.
     """
     moves: list[PlannedMove] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
-        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child))
+        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
         elif held:
@@ -756,7 +761,7 @@ def clean_leftovers(
 def _clean_other_repos(
     result: MigrationResult,
     leftovers: list[_Leftover],
-    containers: list[Path],
+    agent_plan: _agents.AgentPlan,
     live_cwds: list[tuple[int, Path]],
     *,
     home: Path,
@@ -768,8 +773,8 @@ def _clean_other_repos(
     if not result.dry_run:
         result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, result.dry_run)
-    if not result.dry_run:
-        result.moves += _sweep_containers(containers, live_cwds, dry_run=False)
+    moving = {e.worktree for e in agent_plan.entries if e.worktree and e.moves} if result.dry_run else set()
+    result.moves += _sweep_containers(agent_plan.containers, live_cwds, dry_run=result.dry_run, moving=moving)
     _record_kept(leftovers, result)
 
 
@@ -1274,7 +1279,7 @@ def _start_session(
     _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     # Record intent before Git can move a topic-branch checkout. Its branch alone
@@ -1339,7 +1344,7 @@ def _start_session(
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     _apply_beads(old, new, beads, result)
 
     if titled:
@@ -1520,7 +1525,7 @@ def finish_session(
     _describe_beads(old, new, beads, result, held=held)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -1547,7 +1552,7 @@ def finish_session(
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
         if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
