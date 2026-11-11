@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
   the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
   or the next launch.
+- An unnumbered remote chief launch (`ai cos -R`) now titles the local pane, leases its colour and
+  names its cleanup command after the tmux session the remote host actually runs. The remote host
+  picks the chief, so the dispatching machine used to invent a name that matched no session. It now
+  asks the remote host (`ai internal resolve-chief-session`, read-only) and keeps the old
+  placeholder only when the remote has no running chief to name or predates the command.
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
