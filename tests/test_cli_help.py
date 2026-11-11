@@ -45,7 +45,7 @@ def _help(path):
 
 
 def _ctx(command):
-    return click.Context(command, info_name=command.name)
+    return click.Context(command, info_name=command.name, help_option_names=["-h", "--help"])
 
 
 @pytest.mark.parametrize(

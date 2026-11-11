@@ -284,7 +284,9 @@ def _option_names(command, ctx):
 def classify(line):
     """``(findings, pass_through)`` for one example: unknown tokens, and provider pass-through options."""
     tokens = _tokens(line)[1:]
-    command, ctx, path = _cli_group, click.Context(_cli_group, info_name="ai"), ["ai"]
+    # Contexts carry each command's settings: Click caches a command's help option from the
+    # first context it sees, so a bare context would leave `-h` unrecognised for later tests.
+    command, ctx, path = _cli_group, gen._context(_cli_group, "ai", None), ["ai"]
     findings, passed = [], []
     takes_value = False
     commands_open = True
@@ -322,7 +324,7 @@ def classify(line):
                 findings.append(token)
                 break
             path.append(names[0])
-            ctx = click.Context(command, info_name=names[0], parent=ctx)
+            ctx = gen._context(command, names[0], ctx)
             continue
         commands_open = False
     return findings, passed
