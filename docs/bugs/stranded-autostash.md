@@ -15,7 +15,7 @@ task: AI-CLI-132
 
 **Created:** 2026-07-27
 
-**Task:** `AI-CLI-132` (AIH-443 Shape B)
+**Task:** `AI-CLI-132` (historical-task Shape B)
 
 ## Symptoms
 
@@ -75,7 +75,7 @@ The return value is not even bound. The follow-up conflict scan that does exist 
 `src/**/*.py`, so the live incident's conflict — in `.gitignore` — fell outside it entirely.
 
 `src/ai_cli/main.py:1584` (pre-fix), the `ai c N` worktree launch, gated on `pull.returncode != 0`,
-which by defect 1 never fires. Its AIH-443 `detect_stranded_autostash` backstop reported **any**
+which by defect 1 never fires. Its historical-task `detect_stranded_autostash` backstop reported **any**
 stash entry as a strand, so it false-positived on every launch in a repo holding saved WIP —
 verified against a clean pull in a repo with one pre-existing stash. The stranded box held three.
 A warning that always fires is a warning nobody reads.
@@ -164,7 +164,7 @@ Callers:
 * `ai update` / `ai deploy` — **fatal** on any conflicted index, whether this run caused it or a
   previous one did. A conflicted source tree cannot be built from, and this is what breaks the latch.
 * `ai c N` worktree launch — **refuses to launch** when the launch itself stranded the worktree.
-  Dropping an agent into an index carrying conflict stages is how AIH-443's phantom deletions spread
+  Dropping an agent into an index carrying conflict stages is how historical-task's phantom deletions spread
   across six worktrees. A pre-existing conflict is left alone, so a session can still be launched to
   help resolve one.
 
@@ -209,4 +209,4 @@ conflicted checkout — the live incident, reproduced through the real caller.
 ## Related
 
 * `docs/bugs/worktree-index-corruption.md` — AI-CLI-70, the adjacent corruption class
-* AIH-443 Shape A — silently dropped tracked symlinks, `detect_missing_tracked_symlinks()`
+* historical-task Shape A — silently dropped tracked symlinks, `detect_missing_tracked_symlinks()`

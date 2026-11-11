@@ -92,7 +92,7 @@ iTerm2 pane
               +-- [mosh protocol over UDP to remote mosh-server]
                     +-- tmux session c-r-prefix-N on Hetzner
                           +-- bash -> claude
-```text
+```
 
 When mosh dies, `subprocess.run()` returns to the Python process. This is the key leverage point.
 
@@ -102,7 +102,7 @@ When mosh dies, `subprocess.run()` returns to the Python process. This is the ke
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -110,7 +110,7 @@ When mosh dies, `subprocess.run()` returns to the Python process. This is the ke
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
@@ -119,7 +119,7 @@ When mosh dies, `subprocess.run()` returns to the Python process. This is the ke
 | 3 | How to track transport state | (a) PID files in XDG state dir, (b) In-memory only | **(a) State JSON files** | External visibility for `ai ps`, `ai reconnect`, and Circus watcher | **Approved** |
 | 4 | VPN watcher lifecycle | (a) One global Circus watcher, (b) Per-session watcher | **(a) One global watcher** | Lazy start on first remote session; shared by all; torn down when last session exits | **Approved** |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
@@ -222,7 +222,7 @@ Write `{state_dir}/transport-{session}.json` containing:
   "host": "1.2.3.4",
   "started": "2026-04-06T10:00:00Z"
 }
-```text
+```
 
 **Pros:**
 - External tools can inspect transport state (`ai ps` enhancement)
@@ -335,12 +335,10 @@ async def _run_transport_loop(
 
             args = ssh_args if vpn_active else mosh_args
             transport_type = "ssh" if vpn_active else "mosh"
-            print(f"{'VPN active' if vpn_active else 'No VPN'} -- "
-                  f"connecting via {transport_type}...", file=sys.stderr)
+            print(f"{'VPN active' if vpn_active else 'No VPN'} -- connecting via {transport_type}...", file=sys.stderr)
 
             proc = subprocess.Popen(args)
-            _write_transport_state(transport_file, session_name,
-                                   os.getpid(), proc.pid, transport_type)
+            _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
 
             start_time = time.monotonic()
             # Wait for process exit OR vpn_changed signal
@@ -357,13 +355,11 @@ async def _run_transport_loop(
                 continue
 
             if transport_type == "mosh" and elapsed < 10 and _is_vpn_active():
-                print(f"\nmosh failed ({elapsed:.1f}s), VPN detected -- "
-                      f"switching to SSH...", file=sys.stderr)
+                print(f"\nmosh failed ({elapsed:.1f}s), VPN detected -- switching to SSH...", file=sys.stderr)
                 continue
 
             if elapsed < 3:
-                print(f"\nTransport exited too quickly ({elapsed:.1f}s) -- "
-                      f"giving up.", file=sys.stderr)
+                print(f"\nTransport exited too quickly ({elapsed:.1f}s) -- giving up.", file=sys.stderr)
                 break
 
             break  # Normal exit
@@ -371,7 +367,7 @@ async def _run_transport_loop(
         transport_file.unlink(missing_ok=True)
         await nc.drain()
         subprocess.run(cleanup_cmd, capture_output=True)
-```text
+```
 
 ### Circus Watcher Lifecycle
 
@@ -387,7 +383,7 @@ ai c N -R exits
   → transport-{session}.json deleted (finally block)
   → _maybe_stop_vpn_watcher(config)
       → if no transport-*.json remain: CircusClient.stop("watch-vpn")
-```text
+```
 
 `ai watch-vpn` is a new subcommand (entry point for the Circus watcher process).
 
@@ -424,7 +420,7 @@ ai c N -R exits
                   | Check VPN state  |
                   | -> loop back     |
                   +------------------+
-```text
+```
 
 ---
 
@@ -443,7 +439,7 @@ Location: `~/.local/state/ai-cli-utils/transport-{session_name}.json`
   "host": "192.0.2.1",
   "started_at": "2026-04-06T10:00:00Z"
 }
-```text
+```
 
 Written when a transport process starts, deleted on clean exit (in `finally` block). Stale files (where `parent_pid` is dead) are cleaned up by `ai ps cron`.
 
@@ -453,7 +449,7 @@ The `ai ps` command can read transport state files to show:
 ```text
 c-r-session-1  mosh  192.0.2.1  pid=12346  2h uptime
 c-r-session-2  ssh   192.0.2.1  pid=12350  5m uptime (VPN active)
-```text
+```
 
 ### Integration with `ai reconnect`
 

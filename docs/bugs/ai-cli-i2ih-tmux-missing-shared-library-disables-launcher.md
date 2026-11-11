@@ -20,7 +20,7 @@ template_version: "bug-1.0.0"
 **Tasks:** AI-CLI-i2ih (auto-provision tmux's runtime dependencies), AI-CLI-d89q (make the health check assert execution, not resolution)
 
 **Related:**
-- `docs/bugs/CORE-6nr-tmux-bare-call-windows-unsupported.md` — the other end of the same "tmux is optional" contract
+- `docs/bugs/historical-task-tmux-bare-call-windows-unsupported.md` — the other end of the same "tmux is optional" contract
 
 ## Summary
 

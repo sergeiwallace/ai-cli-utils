@@ -3,28 +3,28 @@ title: "`ai ls` and `ai attach` crash on Windows — bare tmux calls, tmux unava
 category: bug
 tags: [bug, windows, tmux, subprocess, platform-compatibility]
 status: open
-source: "CORE-6nr"
+source: "historical-task"
 template_version: "bug-1.0.0"
 ---
 
 <!-- doc:region name="summary" kind="replaceable" -->
 
-# [CORE-6nr] `ai ls` and `ai attach` crash on Windows — bare `tmux` calls, tmux unavailable on Windows
+# [historical-task] `ai ls` and `ai attach` crash on Windows — bare `tmux` calls, tmux unavailable on Windows
 
-**Status:** open — found during CORE-5m6-ai-cli-bare-uv-popen-windows-crash audit, NOT fixed
+**Status:** open — found during historical-task-ai-cli-bare-uv-popen-windows-crash audit, NOT fixed
 
 **Severity:** P2
 
 **Created:** 2026-07-31
 
-**Task:** CORE-6nr (filed in core-cli store; ai-cli-utils store blocked by CORE-5dx)
+**Task:** historical-task (filed in core-cli store; ai-cli-utils store blocked by historical-task)
 
 **Related issues:**
-- CORE-5m6-ai-cli-bare-uv-popen-windows-crash (fixed; same `FileNotFoundError` class, different tool)
+- historical-task-ai-cli-bare-uv-popen-windows-crash (fixed; same `FileNotFoundError` class, different tool)
 
 ## Summary
 
-`ai ls` and `ai attach <session>` crash on Windows with `FileNotFoundError: [WinError 2] The system cannot find the file specified`. Root cause: two functions (`_do_ls()` ~line 1460, `_do_attach()` ~line 1452) call bare `"tmux"` in `subprocess.run()` and `os.execvp()` without resolving the path. This is the same structural defect as CORE-5m6-ai-cli-bare-uv-popen-windows-crash (bare subprocess names are not portable on Windows), but with a deeper platform incompatibility: **tmux does not exist on Windows** — it is a POSIX-only terminal multiplexer with no native Windows port.
+`ai ls` and `ai attach <session>` crash on Windows with `FileNotFoundError: [WinError 2] The system cannot find the file specified`. Root cause: two functions (`_do_ls()` ~line 1460, `_do_attach()` ~line 1452) call bare `"tmux"` in `subprocess.run()` and `os.execvp()` without resolving the path. This is the same structural defect as historical-task-ai-cli-bare-uv-popen-windows-crash (bare subprocess names are not portable on Windows), but with a deeper platform incompatibility: **tmux does not exist on Windows** — it is a POSIX-only terminal multiplexer with no native Windows port.
 
 The correct fix is not "resolve the path" (as in the uv bug) but "gate these commands behind a platform check" or "document as unsupported on Windows." This issue is filed separately to capture the design decision: do these commands fail gracefully with a clear "tmux is not available on Windows" message, or are they silently no-ops on Windows, or is the whole session-management feature Windows-unsupported?
 
@@ -56,12 +56,12 @@ Traceback (most recent call last):
     self._execute_child(args, executable, preexec_fn, close_fds,
   File "...\subprocess.py", line 1538, in _execute_child
     hp, ht, pid, tid = _winapi.CreateProcess(executable, args,
-                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 FileNotFoundError: [WinError 2] The system cannot find the file specified
 ```
 
 **2. `ai attach <session>` crash (expected):**
-```bash
+```
 $ ai attach my-session
 Traceback (most recent call last):
   File "...\ai_cli\main.py", line 1453, in _do_attach
@@ -118,7 +118,7 @@ Both pass bare `"tmux"` without checking platform or attempting path resolution.
 
 1. **tmux is POSIX-only.** There is no native Windows port of tmux. Windows users typically use Windows Terminal, ConEmu, or other terminal emulators, none of which are tmux-compatible.
 
-2. **Bare subprocess names are not portable on Windows** (same as CORE-5m6-ai-cli-bare-uv-popen-windows-crash). Even if tmux were available, passing `"tmux"` to `subprocess.run()` without a shell would fail on Windows unless the path included a directory separator.
+2. **Bare subprocess names are not portable on Windows** (same as historical-task-ai-cli-bare-uv-popen-windows-crash). Even if tmux were available, passing `"tmux"` to `subprocess.run()` without a shell would fail on Windows unless the path included a directory separator.
 
 3. **No platform guard.** The code does not check `sys.platform` or attempt to detect tmux availability before calling these functions. The crash happens at the subprocess call, not at a graceful check-and-fail point.
 
@@ -209,7 +209,7 @@ No code change, just documentation. Crashes remain, but expectations are set.
 
 <!-- doc:region name="appendix" kind="replaceable" -->
 
-## Appendix: Relationship to CORE-5m6-ai-cli-bare-uv-popen-windows-crash
+## Appendix: Relationship to historical-task-ai-cli-bare-uv-popen-windows-crash
 
 Both bugs share the same `FileNotFoundError` symptom and the same root cause class (bare subprocess names on Windows), but they require different fixes:
 
@@ -219,7 +219,7 @@ Both bugs share the same `FileNotFoundError` symptom and the same root cause cla
 This is why the tmux bug was NOT fixed during the uv bug fix — it requires a design decision about the intended scope of the session-management feature, not just a mechanical path-resolution change.
 
 **Paper trail:**
-- Found during audit of CORE-5m6-ai-cli-bare-uv-popen-windows-crash
+- Found during audit of historical-task-ai-cli-bare-uv-popen-windows-crash
 - Filed separately to capture the design question
 - ai-cli-utils is installed editable; no commit per corporate-machine git discipline
 - Real beads issue ID will be backfilled once the Windows/Dolt blocker is resolved

@@ -5,7 +5,7 @@ tags: [iterm2, ntfy, notifications, session-status, ai-cli, nats]
 status: active
 source: internal
 task: AI-CLI-76
-related_task: SW-732
+related_task: historical-task
 ---
 
 # iTerm2 + ntfy Session Status Integration — Implementation Plan
@@ -14,8 +14,8 @@ related_task: SW-732
 
 **Created:** 2026-03-29
 
-**Task:** SW-732
-**Related:** SW-731 (iTerm2 Mac-local setup), SW-667 (notification system), R-36 (iTerm2 research)
+**Task:** historical-task
+**Related:** historical-task (iTerm2 Mac-local setup), historical-task (notification system), R-36 (iTerm2 research)
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -133,7 +133,7 @@ Layer 3: Mac daemon → iTerm2 Python API (Mac-side, 1-5s)
                                      │    "Jump to tab"    │
                                      └─────────────────────┘
                                      Runs as launchd agent on Mac
-```text
+```
 
 ## Implementation Tasks
 
@@ -153,7 +153,7 @@ Extend `~/.claude/hooks/notify.sh` to emit iTerm2 escape sequence when CC fires 
 ```bash
 printf '\e]1337;SetBadgeFormat=%s\a' "$(echo -n '⏸ WAIT session-N' | base64)"
 printf '\e]0;⏸ WAIT session-N\a'
-```text
+```
 
 Need to extract the session number from the environment (`$AI_TMUX_SESSION`).
 

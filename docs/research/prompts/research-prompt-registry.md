@@ -140,7 +140,7 @@ For primary/showcase diagrams, use the `archify` skill by default
 - [Pending / Ready](#pending--ready)
 - [Completed](#completed)
   - [R-51: Rich live displays in tmux-wrapped and remote launcher sessions (AI-CLI-g013)](#r-51-rich-live-displays-in-tmux-wrapped-and-remote-launcher-sessions-ai-cli-g013)
-  - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672) <!-- public-hygiene: allow: anchor mirrors a heading whose dev-tracking id is handled by AI-CLI-wpdd -->
+  - [R-1: Open-source Python CLI package best practices (historical-task)](#r-1-open-source-python-cli-package-best-practices--sw-672) <!-- public-hygiene: allow: anchor mirrors a heading whose dev-tracking id is handled by AI-CLI-wpdd -->
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
   - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
 - [Deprecated / Archived](#deprecated--archived)
@@ -163,7 +163,7 @@ For primary/showcase diagrams, use the `archify` skill by default
 
 | # | Type | Topic | Task | Model | Results Doc |
 |---|------|-------|------|-------|-------------|
-| R-1 | opus | Open-source Python CLI package best practices | SW-672 | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
+| R-1 | opus | Open-source Python CLI package best practices | historical-task | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
 | R-2 | opus | GitHub repo automation & ecosystem tooling | AI-CLI-3 | `opus researcher` | [`github-repo-automation.md`](../github-repo-automation.md) |
 | R-50 | deep-think | Terminal tab/pane title, color, and icon customization for AI fleet management | AI-CLI | `deep-think` | [`iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md) |
 | R-51 | opus | Rich live displays in tmux-wrapped and remote launcher sessions | AI-CLI-g013 | `claude-opus-5-5` | [`rich-live-displays-in-wrapped-sessions.md`](../rich-live-displays-in-wrapped-sessions.md) |
@@ -192,11 +192,11 @@ ssh attempt and terminal-inheriting child, and on SIGTERM and SIGHUP.
 
 ---
 
-### R-1: Open-Source Python CLI Package Best Practices — SW-672
+### R-1: Open-Source Python CLI Package Best Practices — historical-task
 
 **Status:** ✅ Complete
 
-**Task:** SW-672 (Extract ai-cli to standalone repo)
+**Task:** historical-task (Extract ai-cli to standalone repo)
 
 **Results:** [`docs/research/open-source-package-best-practices.md`](../open-source-package-best-practices.md)
 
@@ -215,7 +215,7 @@ git worktrees, and cross-machine sync. Cover: README structure and badges,
 GitHub project configuration (CI, releases, community files, security), Python
 packaging conventions (pyproject.toml, type hints, docs), and exemplary Python
 CLI projects to emulate (1K-50K stars range).
-```text
+```
 
 </details>
 
@@ -339,7 +339,7 @@ to satisfy a formatting instruction. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```text
+```
 
 </details>
 

@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/<session>-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `doc-audit audit-stabilized` (8 rounds, two spec freezes); boundary `doc-audit->implement` finalized and the implement gate passed for design sha256 `1c5c7a5a`; implement next |
+| Stage cursor | `impl-audit done: audit-stabilized` (3 rounds); boundary `impl-audit->integrate` finalized and its gate passed for design sha256 `75bb65ec`; integration by pull request next |
 | Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
 | Last completed integration boundary | none |
 
@@ -58,6 +58,7 @@ ledger-version: 1
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked to "see what open source packages / tools / repos etc there are" and "what existing documentaiton there is for auto-generating documentation programmatically and / or with agentic AI". R1 and R2 also fire. | `session` | `d301960c` |
 | `research->doc` | 1 | `converged` | `rubric` | none | `session` | `e3aa819c` |
 | `doc-audit->implement` | 8 | `advance` | `fold` | none | `session` | `HEAD` |
+| `impl-audit->integrate` | 3 | `advance` | `fold` | none | `session` | `HEAD` |
 
 ## Children dispatched
 
@@ -65,6 +66,9 @@ ledger-version: 1
 |---|---|---|---|---|---|---|---|
 | 1 | AI-CLI-lels.2 | `lels-research-tools` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of Click help and Markdown generators, drift checks and wiki publishing | returned 68 cited sources; child closed |
 | 2 | AI-CLI-lels.3 | `lels-research-agentic` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of agentic and LLM documentation generation | returned 51 cited sources; child closed |
+| 3 | none | register and alignment reviews | `codex review`, read-only, non-author | codex / review (Sol) / medium | none | two register dimension challenges and three boundary alignment results | each folded in; see run history |
+| 4 | AI-CLI-lels.4 | `lels-implement` | `engineer` | claude / opus / n/a | `.worktrees/<session>-agents/lels-implement` | all three design phases | returned; commits through `2e4ebeac` merged into this branch; child closed |
+| 5 | AI-CLI-lels.5 | `lels-hygiene-guard` | `engineer` | claude / opus / n/a | `.worktrees/<session>-agents/lels-hygiene-guard` | docs-scoped public-hygiene guard | returned twice (`086656b0`, `def9b989`); merged; child closed |
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
@@ -123,5 +127,19 @@ ledger-version: 1
   and the recorded rationale for the `ps` change, returned ALIGNED. Its two scope-change `kind`
   values were lower-case; they were upper-cased to the schema's enum with no other edit. Finalize
   returned `audit-stabilized`; `check_auto_flow_implement_gate.py` passed.
+
+- 2026-11-11 ~08:00Z to 11:00Z: the implementation leaf built all three phases. The hygiene
+  leaf widened the docs guard, which found 12 more leaks in this run's own audit docs (scrubbed).
+  The impl-audit loop (codex audit, Sol, high; review tier `none`, since the Codex rounds are the
+  non-author check on Claude-authored code) ran 3 rounds. Round 1 found 4 MAJOR and 1 MINOR,
+  among them that publishing every document would copy private references from historical docs
+  into the wiki. The fix pass scrubbed 58 source files and added a publication gate to the
+  builder. Round 2 found one MAJOR (the scaffolded audit doc itself), fixed, and round 3 was
+  clean. The leaf's full serial run found 4 order-dependent test failures, fixed in `2e4ebeac`.
+  Boundary alignment for `impl-audit->integrate` (codex review) returned ALIGNED; finalize
+  returned `audit-stabilized` and the gate passed. `test_edit_flag.py` flags two pre-existing
+  test files edited without a stated reason: `tests/test_cli_option_forms.py` (extended to the
+  root command's options, round-1 finding) and `tests/test_public_repo_hygiene.py` (widened).
+  The coordinator reviewed both diffs; each adds coverage and removes none.
 
 <!-- /doc:region name="run_history" -->

@@ -17,6 +17,13 @@ from pathlib import Path
 
 import pytest
 
+from scripts.publication_hygiene import (
+    _PRIVATE_ENVIRONMENT_NAMES,
+    _PRIVATE_ENVIRONMENT_PREFIX,
+    _PRIVATE_TRACKER_ID,
+    line_has_private_environment_name,
+)
+
 _SCANNED_PATHS = (
     "src",
     "tests",
@@ -62,6 +69,7 @@ _EXEMPTION_PATHS = frozenset(
         Path("pyproject.toml"),
         Path(".github"),
         Path("docs"),
+        Path("scripts") / "publication_hygiene.py",
         Path("tests") / "test_public_repo_hygiene.py",
     }
 )
@@ -206,6 +214,15 @@ def _scanned_text_files(
     deliberately narrower set than the name guard, and defaults to the full set so
     every existing caller is unchanged.
     """
+    tracked: set[str] | None = None
+    if (root / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            tracked = {path for path in result.stdout.decode("utf-8").split("\0") if path}
     for scanned_path in scanned_paths:
         candidate = root / scanned_path
         if not candidate.exists():
@@ -214,11 +231,14 @@ def _scanned_text_files(
         for path in sorted(paths):
             if not path.is_file():
                 continue
+            relative_path = path.relative_to(root)
+            if tracked is not None and relative_path.as_posix() not in tracked:
+                continue
             try:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            yield path, path.relative_to(root), text
+            yield path, relative_path, text
 
 
 def scan_for_private_names(root: Path) -> list[str]:
@@ -250,18 +270,6 @@ def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_na
 # ``branch.<b>.<prefix>-session-home``). They sat in ``src/`` as load-bearing values -- the
 # project a chief launches into, its registry key, git-config marker keys -- so forbidding
 # them needed those values moved into configuration first, not a scrub (AI-CLI-nout).
-_PRIVATE_ENVIRONMENT_NAMES = ("ai-harness", "firstmate")  # public-hygiene: allow
-_PRIVATE_ENVIRONMENT_PREFIX = "aih"  # public-hygiene: allow
-
-# Unbounded: the chief name reaches code as an identifier fragment (``_prepare_<name>_launch``,
-# ``--<name>``), where a word boundary would miss it, and neither token is an English word.
-_ENVIRONMENT_NAME = re.compile("|".join(re.escape(name) for name in _PRIVATE_ENVIRONMENT_NAMES), re.IGNORECASE)
-# The prefix in the same two shapes as the personal session prefix above, for the same
-# reasons: case-sensitive with a separator, so the uppercase tracker ids that share the
-# letters stay with the tracker-id guard, and case-insensitive as a bare quoted literal.
-_ENVIRONMENT_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}-")
-_ENVIRONMENT_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_ENVIRONMENT_PREFIX)}[\"']", re.IGNORECASE)
-
 # Everything the name guard scans except ``docs``. Measured 2026-10-21 with `grep -rniE`:
 # ``docs`` holds about 150 lines naming the repository and about 200 carrying the prefix,
 # across design records, audits and the archived roadmap, where a name is often the only
@@ -271,11 +279,7 @@ _ENVIRONMENT_NAME_SCANNED_PATHS = tuple(path for path in _SCANNED_PATHS if path 
 
 
 def _line_has_environment_name(line: str) -> bool:
-    return bool(
-        _ENVIRONMENT_NAME.search(line)
-        or _ENVIRONMENT_SESSION_NAME.search(line)
-        or _ENVIRONMENT_PREFIX_LITERAL.search(line)
-    )
+    return line_has_private_environment_name(line)
 
 
 def scan_for_private_environment_names(root: Path) -> list[str]:
@@ -316,20 +320,9 @@ _WORKTREE_SESSION_PLACEHOLDER = re.compile(r"<[^<>/]+>(?:-<[^<>/]+>)*")
 # scrubbed file has to leave the set.
 _PROVENANCE_DOC_BASELINE = frozenset(
     {
-        Path("docs/audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md"),
-        Path("docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md"),
-        Path("docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md"),
-        Path("docs/audits/ai-cli-208-session-naming-casing-audit.md"),
         Path("docs/audits/ai-cli-6xud-name-registry-run-ledger.md"),
-        Path("docs/audits/stale-session-reaper-audit.md"),
-        Path("docs/designs/cc-statusline.md"),
-        Path("docs/designs/cc-sync-phase2.md"),
-        Path("docs/designs/claude-usage-telemetry.md"),
-        Path("docs/designs/event-driven-platform.md"),
         Path("docs/designs/iterm2-cross-machine-vscode-routing.md"),
-        Path("docs/designs/notification-system.md"),
         Path("docs/designs/user-behavior-telemetry.md"),
-        Path("docs/designs/vpn-transport-switching.md"),
         Path("docs/designs/vscode-terminal-tab-naming.md"),
     }
 )
@@ -351,57 +344,93 @@ def _line_has_private_workflow_metadata(line: str) -> bool:
     )
 
 
-def _branch_changed_provenance_docs(root: Path) -> set[Path]:
-    """Markdown files under the provenance dirs that differ from ``origin/main``.
+def _git_stdout(root: Path, *args: str) -> str | None:
+    """Stdout of a git command in ``root``, or None when git or the command fails.
 
-    Empty when ``origin/main`` cannot be resolved. CI checks out one commit with no
-    remote-tracking refs (``actions/checkout`` defaults to ``fetch-depth: 1``), so the
-    diff is a local-only signal, and the full-folder scan in the caller is what CI runs.
+    Every caller diffs against ``origin/main``, which fails where that ref is absent. CI
+    checks out one commit with no remote-tracking refs (``actions/checkout`` defaults to
+    ``fetch-depth: 1``), so the branch diff is a local-only signal and the full-folder
+    scan is what CI runs.
     """
-    command = ["git", "-C", str(root), "diff", "--name-only", "origin/main...HEAD", "--", *_PUBLIC_PROVENANCE_DOC_DIRS]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
     except OSError:
-        return set()
-    if result.returncode != 0:
-        return set()
-    return {Path(name) for name in result.stdout.splitlines() if name.endswith(".md") and (root / name).is_file()}
+        return None
+    return result.stdout if result.returncode == 0 else None
 
 
-def _public_provenance_docs(root: Path) -> list[Path]:
-    """Every Markdown file in the provenance dirs except the baseline, plus changed files.
+def _branch_changed_provenance_docs(root: Path) -> set[Path]:
+    """Markdown files under the provenance dirs that differ from ``origin/main``."""
+    stdout = _git_stdout(root, "diff", "--name-only", "origin/main...HEAD", "--", *_PUBLIC_PROVENANCE_DOC_DIRS)
+    if stdout is None:
+        return set()
+    return {Path(name) for name in stdout.splitlines() if name.endswith(".md") and (root / name).is_file()}
+
+
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _branch_added_lines(root: Path, relative_path: Path) -> list[tuple[int, str]]:
+    """``(lineno, line)`` for each line the branch added to ``relative_path``."""
+    stdout = _git_stdout(
+        root, "diff", "--no-color", "--no-ext-diff", "-U0", "origin/main...HEAD", "--", relative_path.as_posix()
+    )
+    added: list[tuple[int, str]] = []
+    lineno = 0
+    for diff_line in (stdout or "").splitlines():
+        header = _HUNK_HEADER.match(diff_line)
+        if header:
+            lineno = int(header[1])
+        elif diff_line.startswith("+") and not diff_line.startswith("+++"):
+            added.append((lineno, diff_line[1:]))
+            lineno += 1
+    return added
+
+
+def _public_provenance_scan_targets(root: Path) -> list[tuple[Path, list[tuple[int, str]]]]:
+    """Each in-scope Markdown file in the provenance dirs, with the lines to scan in it.
 
     The brief for this guard asked for the changed set with an all-files fallback. A plain
     all-files fallback cannot be used: CI never has ``origin/main``, and the historical
     files on main would turn it red. A changed-only scan cannot stand alone either: on main
-    itself, or in CI, it scans nothing and passes vacuously. So both run: every file not
-    in the baseline is scanned everywhere, and a baseline file is scanned once a branch
-    changes it, which is only knowable where ``origin/main`` resolves.
+    itself, or in CI, it scans nothing and passes vacuously. So every file outside the
+    baseline is scanned in full everywhere, and a baseline file the branch changed is
+    scanned on the lines the branch added, so fixing one part of a historical document
+    does not make its old ids the editor's problem. Without ``origin/main`` baseline files
+    stay skipped.
     """
+    tracked_output = _git_stdout(root, "ls-files", "-z")
+    tracked = None if tracked_output is None else {path for path in tracked_output.split("\0") if path}
     every_doc = {
         path.relative_to(root)
         for directory in _PUBLIC_PROVENANCE_DOC_DIRS
         if (root / directory).is_dir()
         for path in (root / directory).rglob("*.md")
-        if path.is_file()
+        if path.is_file() and (tracked is None or path.relative_to(root).as_posix() in tracked)
     }
-    in_scope = {path for path in every_doc if path not in _PROVENANCE_DOC_BASELINE}
-    return sorted(in_scope | _branch_changed_provenance_docs(root))
+    changed = _branch_changed_provenance_docs(root)
+    targets: list[tuple[Path, list[tuple[int, str]]]] = []
+    for relative_path in sorted(every_doc | changed):
+        if relative_path not in _PROVENANCE_DOC_BASELINE:
+            text = (root / relative_path).read_text(encoding="utf-8")
+            targets.append((relative_path, list(enumerate(text.splitlines(), start=1))))
+        elif relative_path in changed:
+            targets.append((relative_path, _branch_added_lines(root, relative_path)))
+    return targets
 
 
 def scan_public_docs_for_private_workflow_metadata(root: Path) -> list[str]:
     """Return design and audit lines that expose private workflow provenance."""
     findings: list[str] = []
-    for relative_path in _public_provenance_docs(root):
-        text = (root / relative_path).read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
+    for relative_path, lines in _public_provenance_scan_targets(root):
+        for lineno, line in lines:
             if _line_has_private_workflow_metadata(line) and not _line_is_exempted(relative_path, line):
                 findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
 
 def test_given_public_design_and_audit_docs_when_scanned_then_private_workflow_metadata_is_absent():
-    scanned = _public_provenance_docs(_repo_root())
+    scanned = _public_provenance_scan_targets(_repo_root())
     findings = scan_public_docs_for_private_workflow_metadata(_repo_root())
 
     assert scanned, "no design or audit document was in scope, so the scan measured nothing"
@@ -480,6 +509,55 @@ def test_given_a_baseline_doc_when_scanned_outside_a_branch_diff_then_it_is_skip
     assert scan_public_docs_for_private_workflow_metadata(tmp_path) == []
 
 
+def _git(root: Path, *args: str) -> None:
+    # Hooks off and a fixed identity, so the fixture repository never runs the host's hooks.
+    config = ["-c", "core.hooksPath=", "-c", "user.name=test", "-c", "user.email=test@example.com"]
+    subprocess.run(
+        ["git", "-C", str(root), *config, "-c", "commit.gpgsign=false", *args], check=True, capture_output=True
+    )
+
+
+@pytest.fixture
+def changed_baseline_doc(tmp_path, monkeypatch):
+    """A repository whose ``origin/main`` holds a baseline doc with a historical tracker id."""
+    historical = Path("docs") / "designs" / "historical.md"
+    (tmp_path / historical).parent.mkdir(parents=True)
+    (tmp_path / historical).write_text(
+        f"# Historical\n\nFixed in {_PRIVATE_ENVIRONMENT_PREFIX.upper()}-10.\n\nclosing line\n", encoding="utf-8"
+    )
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(sys.modules[__name__], "_PROVENANCE_DOC_BASELINE", frozenset({historical}))
+    return tmp_path, historical
+
+
+def test_given_a_tracker_id_added_to_a_baseline_doc_when_scanned_then_the_added_line_is_flagged(
+    changed_baseline_doc,
+):
+    root, historical = changed_baseline_doc
+    added = f"Follow-up in {_PRIVATE_ENVIRONMENT_PREFIX.upper()}-11."
+    text = (root / historical).read_text(encoding="utf-8").replace("closing line", f"{added}\nclosing line")
+    (root / historical).write_text(text, encoding="utf-8")
+    _git(root, "commit", "-q", "-am", "add a line")
+
+    findings = scan_public_docs_for_private_workflow_metadata(root)
+
+    assert findings == [f"docs/designs/historical.md:5: {added}"]
+
+
+def test_given_a_changed_baseline_doc_when_its_historical_line_is_untouched_then_it_is_not_flagged(
+    changed_baseline_doc,
+):
+    root, historical = changed_baseline_doc
+    text = (root / historical).read_text(encoding="utf-8").replace("closing line", "closing line, reworded")
+    (root / historical).write_text(text, encoding="utf-8")
+    _git(root, "commit", "-q", "-am", "reword")
+
+    assert scan_public_docs_for_private_workflow_metadata(root) == []
+
+
 class TestTheEnvironmentNameGuardCanActuallyFail:
     """Positive and negative controls for the patterns, in the shapes the names shipped in."""
 
@@ -528,8 +606,6 @@ class TestTheEnvironmentNameGuardCanActuallyFail:
 # `AI-CLI-` is deliberately absent from the pattern: it is this repository's own prefix, its
 # issues ship in `.beads/issues.jsonl`, and the ids already appear in merged commit messages.
 # Forbidding them would delete references a reader can actually follow.
-_PRIVATE_TRACKER_ID = re.compile(r"\b(?:AIH|SW|CORE)-[0-9A-Za-z]{2,}\b")  # public-hygiene: allow
-
 # `src`, `scripts` and now `tests`. The omission of `docs` remains a measured scope
 # decision rather than an oversight -- the mistake the `scripts` gap above taught.
 #

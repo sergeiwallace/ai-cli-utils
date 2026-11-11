@@ -1,0 +1,212 @@
+# The project wiki, built from this repository by `scripts/generate_docs.py -w DIR` and
+# published by .github/workflows/wiki.yml on every push to main. Never edit the wiki itself.
+#
+# [[page]]     a user page: `source` (a whole tracked file, or with `sections` the named
+#              `##` sections of it, `preamble = true` adding the text before the first one)
+#              or `generated` (rendered by the generator). Order is the sidebar order.
+# [[group]]    every tracked file `glob` matches that no page or earlier group claimed, one
+#              page each, with an index page called `name`.
+# [[exclude]]  a class of non-documents, applied only to files nothing above claimed. Never
+#              Markdown and never under docs/: those are always published.
+#
+# Every tracked file must end up in exactly one place; the build fails naming any that is not.
+
+# --- User guide ---------------------------------------------------------------------
+
+[[page]]
+name = "Home"
+source = "README.md"
+preamble = true
+sections = ["What it does", "Features", "Contributing", "License"]
+
+[[page]]
+name = "Installation"
+source = "README.md"
+sections = ["Installation", "Requirements"]
+
+[[page]]
+name = "Quick Start"
+source = "README.md"
+sections = ["Quick Start"]
+
+[[page]]
+name = "Usage"
+source = "README.md"
+sections = ["Usage"]
+
+[[page]]
+name = "Configuration"
+source = "README.md"
+sections = ["Configuration"]
+
+[[page]]
+name = "CLI Reference"
+generated = "cli-reference"
+
+[[page]]
+name = "CLI Guide"
+source = "docs/tools/ai-cli-usage.md"
+
+[[page]]
+name = "iTerm2 Persistence"
+source = "docs/iterm2-persistence.md"
+
+[[page]]
+name = "Architecture"
+source = "docs/designs/architecture.md"
+
+[[page]]
+name = "Contributing"
+source = "CONTRIBUTING.md"
+
+[[page]]
+name = "Security"
+source = "SECURITY.md"
+
+[[page]]
+name = "Changelog"
+source = "CHANGELOG.md"
+
+[[page]]
+name = "License"
+source = "LICENSE"
+
+[[page]]
+name = "Configuration Example"
+source = ".env.example"
+
+# --- Project records ----------------------------------------------------------------
+
+[[group]]
+name = "Guides"
+glob = "docs/guides/**/*.md"
+
+[[group]]
+name = "Tools"
+glob = "docs/tools/**/*.md"
+
+[[group]]
+name = "Design documents"
+glob = "docs/designs/**/*.md"
+
+[[group]]
+name = "Plans"
+glob = "docs/plans/**/*.md"
+
+[[group]]
+name = "Research"
+glob = "docs/research/**/*.md"
+
+[[group]]
+name = "Audits"
+glob = "docs/audits/**/*.md"
+
+[[group]]
+name = "Bug write-ups"
+glob = "docs/bugs/**/*.md"
+
+[[group]]
+name = "Procedures"
+glob = "docs/procedures/**/*.md"
+
+[[group]]
+name = "Reference"
+glob = "docs/reference/**/*.md"
+
+[[group]]
+name = "Other documentation"
+glob = "docs/**/*.md"
+
+[[group]]
+name = "Other Markdown"
+glob = "**/*.md"
+
+[[group]]
+name = "Other documentation artifacts"
+glob = "docs/**/*"
+
+# --- Non-documents outside docs/ ----------------------------------------------------
+
+[[exclude]]
+pattern = "*.py"
+reason = "Python source, documented through the generated CLI reference"
+
+[[exclude]]
+pattern = "py.typed"
+reason = "Typing marker file with no content"
+
+[[exclude]]
+pattern = "*.sh"
+reason = "Shell scripts and hooks"
+
+[[exclude]]
+pattern = "tests/**"
+reason = "Test suite and its fixtures"
+
+[[exclude]]
+pattern = ".githooks/**"
+reason = "Git hook scripts"
+
+[[exclude]]
+pattern = "*.toml"
+reason = "Project configuration outside docs/, not reader documentation"
+
+[[exclude]]
+pattern = "*.yaml"
+reason = "Tool and workflow configuration outside docs/"
+
+[[exclude]]
+pattern = "*.yml"
+reason = "Tool and workflow configuration outside docs/"
+
+[[exclude]]
+pattern = "*.json"
+reason = "Tool configuration and generated data outside docs/"
+
+[[exclude]]
+pattern = "*.json5"
+reason = "Dependency-update tool configuration"
+
+[[exclude]]
+pattern = "*.lock"
+reason = "Generated dependency lock file"
+
+[[exclude]]
+pattern = ".git*"
+reason = "Git configuration dotfiles (.gitignore, .gitattributes, .git-blame-ignore-revs)"
+
+[[exclude]]
+pattern = ".editorconfig"
+reason = "Editor configuration dotfile"
+
+[[exclude]]
+pattern = ".envrc"
+reason = "direnv configuration dotfile"
+
+[[exclude]]
+pattern = ".mailmap"
+reason = "Git author mapping dotfile"
+
+[[exclude]]
+pattern = ".markdownlintignore"
+reason = "Markdown linter configuration dotfile"
+
+[[exclude]]
+pattern = ".python-version"
+reason = "Interpreter version pin"
+
+[[exclude]]
+pattern = ".beads/**"
+reason = "Task tracker data files"
+
+[[exclude]]
+pattern = "assets/**"
+reason = "Images and icons, linked from pages as raw content"
+
+[[exclude]]
+pattern = "demo/**"
+reason = "Demo recordings and the scripts that make them"
+
+[[exclude]]
+pattern = "src/ai_cli/data/**"
+reason = "Packaged data files (icons, name lists, output settings)"

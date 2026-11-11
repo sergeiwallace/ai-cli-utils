@@ -18,7 +18,7 @@ override required for their automatic Remote Control reconnect.
 
 **Created:** 2026-08-01
 
-**Task:** `AI-CLI-165` (AIH-352 follow-up)
+**Task:** `AI-CLI-165` (historical-task follow-up)
 
 ## Symptoms
 

@@ -7,7 +7,7 @@
 
 ```text
 [paste test output here]
-```text
+```
 
 ## UAT Test Cases
 

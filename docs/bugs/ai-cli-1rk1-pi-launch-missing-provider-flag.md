@@ -52,8 +52,8 @@ ai p 2 -R
 produced a tmux pane that repeatedly printed (captured via `tmux capture-pane`):
 
 ```
-direnv: loading ~/projects/ai-harness/.worktrees/aih-2/.envrc
-direnv: ai-harness environment loaded
+direnv: loading ~/projects/automation framework/.worktrees/app-2/.envrc
+direnv: automation framework environment loaded
 direnv: export +ADZUNA_APP_ID ... +DOPPLER_CONFIG +DOPPLER_ENVIRONMENT +DOPPLER_PROJECT +DOPPLER_TOKEN ... +WIF_SERVICE_ACCOUNT
 ```
 
