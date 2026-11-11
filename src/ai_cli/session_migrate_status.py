@@ -91,7 +91,7 @@ def recorded_pairs(new: str, state: Path) -> list[tuple[str, Path]]:
     pairs: dict[str, Path] = {}
     for row in m._ledger_rows(state):
         old, repo = row.get("old"), row.get("repo")
-        if row.get("new") != new or row.get("context_announced") is True:
+        if row.get("new") != new or _bookkeeping(row):
             continue
         if isinstance(old, str) and isinstance(repo, str):
             pairs[old] = Path(repo)
