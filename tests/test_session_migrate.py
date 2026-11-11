@@ -54,7 +54,7 @@ def _dead_pid() -> int:
 
 
 @pytest.fixture
-def slot(tmp_path):
+def slot(tmp_path, monkeypatch):
     """A repo whose slot ``.worktrees/myrepo-3`` carries every artifact a migration moves."""
     home = Path.home()
     claude = home / ".claude"
@@ -66,6 +66,8 @@ def slot(tmp_path):
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
     (repo / "README.md").write_text("hi\n")
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    monkeypatch.setattr("ai_cli.session_naming.resolve_host_alias", lambda: "box")
     _git("add", "-A", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
     repo = repo.resolve()
@@ -296,7 +298,7 @@ def test_given_an_unregistered_slot_when_migrating_then_it_points_at_session_ado
 def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_refused(slot):
     code, _out, err = run_cli(["ai", "migrate-session", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
     assert code == 1
-    assert "is not a session name" in err
+    assert "session charset rule" in err
 
 
 def test_given_a_dry_run_or_a_refusal_when_migrating_then_every_line_carries_the_migrate_tag(slot):

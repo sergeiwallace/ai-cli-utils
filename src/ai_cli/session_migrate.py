@@ -111,11 +111,6 @@ from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
 
-#: A session name: lowercase hyphen-separated segments ending in ``-<N>``.
-_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-\d+")
-#: The same shape ending in a human session name, accepted only once the registry holds it.
-_HUMAN_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-[a-z]+")
-
 #: State files named ``<stem><tmux session>``, each a record of that session.
 _STATE_FILE_STEMS = (
     "cc-resume-prompt-",
@@ -1059,13 +1054,9 @@ def migrate_session(
 
     if old == new:
         raise MigrationError(f"{old!r} is already the session's name")
-    if not _NAME_RE.fullmatch(new) and not (new_is_reserved and _HUMAN_NAME_RE.fullmatch(new)):
-        human = _HUMAN_NAME_RE.fullmatch(new) is not None
-        raise MigrationError(
-            f"{new!r} is not a session name: lowercase letters and digits in hyphen-separated "
-            f"segments, ending in -<N> (e.g. myrepo-box-1)"
-            + (". A name ending in a first name is reserved first: use --to-name instead" if human else "")
-        )
+    from .session_naming import legacy_target_allowed, naming_refusal, validate_artifact_name, validate_session_text
+
+    validate_session_text(new)
     registered = registered_worktrees(repo_root)
     old_wt = _registered_worktree_at(repo_root / ".worktrees" / old, registered)
     if old_wt is None:
@@ -1085,6 +1076,14 @@ def migrate_session(
     projects = (projects_dir if projects_dir is not None else _config._get_projects_dir()).resolve()
     tmux = (tmux_names or _tmux_names)()
     home_slot = _migrated_home(repo_root, old_wt, new, home, projects)
+    # Cleanup in another repository names the existing owning home, rather
+    # than creating a home under the repository containing the leftover.
+    validation_repo = _config._project_root(home_slot) if home_slot is not None else repo_root
+    parsed = validate_artifact_name(
+        new, validation_repo, reserved_name=new_is_reserved, allow_legacy=legacy_target_allowed(new, validation_repo)
+    )
+    if not parsed.suffix.isdigit() and not new_is_reserved:
+        raise naming_refusal("session suffix", new, "a first name is reserved first: use --to-name instead")
     if home_slot is not None:
         return clean_leftovers(
             repo_root,

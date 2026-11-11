@@ -28,16 +28,22 @@ def run_cli(argv, config=None, env=None):
     return _run_cli(argv, config=with_environment_config(config), env=env)
 
 
+@pytest.fixture(autouse=True)
+def configured_host(monkeypatch):
+    monkeypatch.setattr("ai_cli.session_naming.resolve_host_alias", lambda: "box")
+
+
 def _git(*args: str, cwd: Path, check: bool = True) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=check, capture_output=True, text=True).stdout
 
 
-def _init(repo: Path) -> Path:
+def _init(repo: Path, alias: str = "myrepo") -> Path:
     repo.mkdir(parents=True)
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
     (repo / "README.md").write_text("hi\n")
+    (repo / "pyproject.toml").write_text(f'[tool.ai-cli]\ntask_prefix = "{alias}"\n')
     _git("add", "-A", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
     return repo.resolve()
@@ -60,7 +66,7 @@ def fleet(tmp_path):
     _git("worktree", "add", "-q", str(leaf_c), "-b", f"wt/{OLD}/leaf-c", cwd=repo)
     _git("config", f"branch.wt/{OLD}/leaf-c.hub-session-home", str(slot), cwd=repo)
 
-    other = _init(projects / "otherrepo")
+    other = _init(projects / "otherrepo", alias="other")
     leaf_a = other / ".worktrees" / f"{OLD}-agents" / "leaf-a"
     _git("worktree", "add", "-q", str(leaf_a), "-b", f"wt/{OLD}/leaf-a", cwd=other)
     (leaf_a / "wip.txt").write_text("agent work\n")
