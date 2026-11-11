@@ -45,8 +45,8 @@ ledger-version: 1
 | Integration mode | `parent` |
 | Founding ask | Tier 3. Record `docs/asks/AI-CLI-6xud.md` in the operator's private harness repository, merged there as `9bbe49e048b`; `founding_ask_ref_sha256` `6b5df6dc0d9aef7bd45832af903ad5d8f4439221b051da5e1969a4f4d92dd9fb`; content sha256 `c68b87eddcba35b45a9a82b768a42dacd14f4c6b8cf2826318db02829b490646`; entry `A001`, generation 1 |
 | Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
-| Orchestrator worktree | `.worktrees/ai-cli-ec2-ike` |
-| Orchestrator branch | `wt-ai-cli-ec2-ike` |
+| Orchestrator worktree | the orchestrating session's own session worktree |
+| Orchestrator branch | that worktree's session branch |
 | Stage cursor | `research running` |
 | Last completed integration boundary | none |
 
@@ -66,7 +66,7 @@ ledger-version: 1
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
-- 2026-11-11: run opened by `ai-cli-ec2-ike` on sem-kg-ec2 after taking AI-CLI-6xud from the
+- 2026-11-11: run opened by the orchestrating session after taking AI-CLI-6xud from the
   session inbox.
 - 2026-11-11 02:0xZ: the first launch of all three legs was refused by the launch guard because
   their briefs carried the founding ask as plain text, not the canonical carrier. The run had
