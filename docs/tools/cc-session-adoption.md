@@ -622,6 +622,32 @@ itself could never complete. A finish that refuses or leaves work undone is
 reported on one line naming the pair and the `--finish -y` command to retry,
 records nothing, and the launch continues. A dry run (`-d`) finishes nothing.
 
+`ai migrate-session -s/--status` lists, without writing anything, every pair this
+host's ledger records whose latest row is not a verified `finished`, so every
+migration recorded before the re-plan rule is listed. It re-plans each one as
+`--finish -n` would and prints one row per pair:
+
+```text
+old | new | repo | state | parts left | finish with
+myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | partial | slot lock (would do); memory file (would do) | ai migrate-session myrepo-3 myrepo-box-3 --finish -r /home/user/projects/myrepo
+```
+
+A pair reads `complete` when its re-plan finds nothing left, and `partial` with each
+part left otherwise; a pair whose repo or `.worktrees/NEW` is gone reads `partial`
+with `slot (missing: ...)`. `-a/--all` re-plans the verified pairs too. A NAME
+(`--status NAME`, or OLD and NEW) narrows the listing to the pairs it names, matched
+as `--finish` matches one name: the pair's OLD, its NEW or NEW's first name; a NAME
+matching no pair exits 2. It runs while NEW is live, since its plan is a `--finish`
+dry run, and it writes nothing, the ledger and the hooks' state included (each hook
+gets only `--dry-run`). It exits 1 if any listed pair is partial, else 0, and 2 on a
+usage error: `-s` takes only NAME, `-a` and `-R`.
+
+`-R/--remote` runs the same `ai migrate-session --status` on the default remote
+machine (`[remote]`, or `[remote] default` among `[remote.machines]`) over the
+non-interactive ssh route `ai c -R -X` (restart) uses (`BatchMode=yes`, the remote
+login shell), and prints its rows and exit code. An unreachable host, or one whose
+`ai` exits with any other code, exits 2 saying so.
+
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
 directory, and another repo holds the registered `.worktrees/NEW`), the command,
