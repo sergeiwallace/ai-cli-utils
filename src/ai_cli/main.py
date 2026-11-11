@@ -893,6 +893,79 @@ def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
     return candidate
 
 
+def _utc_instant(value: object):
+    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
+    from datetime import UTC, datetime
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _cc_transcript_started(path: Path):
+    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                    return _utc_instant(record["timestamp"])
+    except OSError:
+        pass
+    return None
+
+
+def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> "Path | None":
+    """The transcript a recorded migration to ``title`` left under its old name, when it should be resumed.
+
+    ``ai migrate-session OLD NEW`` retitles the session's transcript to NEW, but a session still
+    running at that moment writes its old title again on its next turn, so the transcript it lives
+    in ends up titled OLD and the lookup by NEW misses it. A relaunch then starts a fresh session
+    titled NEW, which shadows the real one on every later relaunch.
+
+    Returns the newest non-background transcript under ``cwd`` currently titled OLD (or a numbered
+    copy of it) for a migration to ``title`` this host's ledger records, provided every one of
+    ``candidates`` (the transcripts titled ``title``) was started after that migration. A candidate
+    started before it, or whose start cannot be read, is the session's own retitled history and
+    keeps winning, so ``None`` is returned.
+    """
+    from .session_migrate import _ledger_rows
+
+    migrated_at: dict[str, Any] = {}
+    for row in _ledger_rows(_config.get_xdg_state_home()):
+        old, at = row.get("old"), _utc_instant(row.get("time"))
+        # Only the migration's own row carries ``worktree``; finish and announce rows do not.
+        if row.get("new") != title or not isinstance(old, str) or old == title or at is None:
+            continue
+        if isinstance(row.get("worktree"), str) and (old not in migrated_at or at > migrated_at[old]):
+            migrated_at[old] = at
+    if not migrated_at:
+        return None
+    project_dir = _cc_project_dir(cwd)
+    try:
+        transcripts = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in transcripts:
+        current = _cc_transcript_current_title(path)
+        old = next((name for name in migrated_at if _background_attach.is_copy_title(current, name)), None)
+        if old is None or _cc_registered_kind(path.stem) == "bg":
+            continue
+        for candidate in candidates:
+            started = _cc_transcript_started(candidate)
+            if started is None or started <= migrated_at[old]:
+                return None
+        return path
+    return None
+
+
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     """Ask whether to resume into a lone transcript whose title doesn't match.
 
@@ -967,7 +1040,7 @@ def _bare_engine_command(
         candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
         if len(candidates) > 1:
             _out.emit(Tag.LAUNCH, "resume", _cc_multi_candidate_warning(ai_name, candidates), err=True)
-        matched = candidates[0] if candidates else None
+        matched = _find_migrated_cc_session(target_root, ai_name, candidates) or (candidates[0] if candidates else None)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(target_root, ai_name)
             if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
@@ -2066,7 +2139,9 @@ def _handle_internal(argv: list[str]) -> None:
         candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
         if len(candidates) > 1:
             _out.emit(Tag.INTERNAL, "resume", _cc_multi_candidate_warning(argv[2], candidates), err=True)
-        matched = candidates[0] if candidates else None
+        matched = _find_migrated_cc_session(Path(argv[1]), argv[2], candidates) or (
+            candidates[0] if candidates else None
+        )
         if matched is None:
             lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
             if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):

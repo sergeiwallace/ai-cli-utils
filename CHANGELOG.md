@@ -31,6 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
+  its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
+  so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
+  recipe", and neither a boot nor a manual relaunch could start it. `--finish` repairs a record
+  migrated before this fix.
+- `ai c NEW` and the session supervisor's relaunch now resume the session's own transcript after
+  `ai migrate-session OLD NEW` left it titled OLD (a session running during the migration writes
+  its old title back). They used to find no transcript titled NEW and start a fresh session, and
+  that fresh transcript then shadowed the real one on every later relaunch. With a migration from
+  OLD to NEW recorded in `session-migrations.jsonl`, the newest transcript titled OLD is resumed
+  unless a transcript titled NEW predates the migration.
+- `ai migrate-session` now renames a transcript's `agent-name` records as well as its
+  `custom-title` records. Claude Code restores a resumed session's name from the last
+  `agent-name` record, so a migrated session used to come back under its old name and
+  recreate state keyed by it. `--finish` and a re-run now find a transcript still carrying
+  the old `agentName` and rewrite it, the post-migrate resolve check fails while the
+  resolved transcript's current `agentName` is another name, and a host sweep's
+  transcript-only rename rewrites both fields.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that

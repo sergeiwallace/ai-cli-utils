@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cc_migrate import cc_project_dir
+from .cc_migrate import RECORD_NAME_KEYS, cc_project_dir
 
 PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
 
@@ -235,9 +235,8 @@ class ClaudeCode(Adapter):
         result = RenameResult()
 
         def retitle(entry: dict) -> dict | None:
-            if entry.get("customTitle") == old_title:
-                return {**entry, "customTitle": new_title}
-            return None
+            keys = [key for key in RECORD_NAME_KEYS if entry.get(key) == old_title]
+            return {**entry, **dict.fromkeys(keys, new_title)} if keys else None
 
         if record.path.is_file():
             before = _rewrite_lines(record.path, retitle)

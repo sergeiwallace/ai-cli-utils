@@ -266,6 +266,8 @@ def test_given_a_session_whose_worktree_is_gone_when_swept_then_its_transcript_i
         + "\n"
         + json.dumps({"type": "custom-title", "customTitle": "myrepo-5", "sessionId": "keep-me"})
         + "\n"
+        + json.dumps({"type": "agent-name", "agentName": "myrepo-5", "sessionId": "keep-me"})
+        + "\n"
     )
     shutil.rmtree(repo / ".worktrees" / OLD, ignore_errors=True)
     git(repo, "worktree", "prune")
@@ -276,6 +278,7 @@ def test_given_a_session_whose_worktree_is_gone_when_swept_then_its_transcript_i
     records = [json.loads(line) for line in transcript.read_text().splitlines()]
     [row] = [row for row in fleet.rows().values() if row.get("title") == records[1]["customTitle"]]
     assert row["source"] == "migrated"
+    assert records[2]["agentName"] == row["title"]
     assert row["worktree"] is None
     assert not gone.exists()
     assert not (repo / ".worktrees" / row["title"]).exists()

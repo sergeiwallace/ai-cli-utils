@@ -12,8 +12,8 @@ tasks, memory and resume hand-off:
   naming the old path;
 * the canonical-session registry entry for the old path;
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
-  memory), with each transcript's recorded cwd repointed, its ``customTitle``
-  renamed and its stale worktree binding cleared;
+  memory), with each transcript's recorded cwd repointed, its ``customTitle`` and
+  ``agentName`` renamed and its stale worktree binding cleared;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
   and the slot's project directories (filename prefix only), and the memory files
   named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
@@ -78,7 +78,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,7 +93,7 @@ from .canonical_worktrees import (
     get_canonical_worktree_registry_path,
     move_canonical_worktree,
 )
-from .cc_migrate import _rewrite_line, cc_project_dir, transcript_titles
+from .cc_migrate import _rewrite_line, cc_project_dir, transcript_agent_names, transcript_titles
 from .git_repair import _git_env
 from .session_adopt import (
     AdoptionError,
@@ -545,7 +545,7 @@ def _plan_iterm2(old: str) -> list[PlannedMove]:
     except _session_registry.RegistryError:
         return []
     names = set(_session_variants(old))
-    hits = [r for r in doc["sessions"] if isinstance(r, dict) and r.get("name") in names]
+    hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
@@ -1242,9 +1242,10 @@ def _start_session(
 
     transcripts = sorted(old_pd.glob("*.jsonl")) if old_pd.is_dir() else []
     titled = [path for path in transcripts if old in transcript_titles(path)]
+    named = [path for path in transcripts if path in titled or old in transcript_agent_names(path)]
     if old_pd.is_dir():
         moves.append(PlannedMove("project dir", str(old_pd), str(new_pd)))
-        for path in titled:
+        for path in named:
             moves.append(PlannedMove("transcript title", path.name, f"{old} -> {new}", "rewrite"))
     else:
         result.warnings.append(f"no Claude Code project directory at {old_pd}; there is no transcript to carry")
@@ -1324,7 +1325,7 @@ def _start_session(
         old_pd.rename(new_pd)
         for path in sorted(new_pd.glob("*.jsonl")):
             _rewrite_transcript_cwd(path, str(old_wt), str(new_wt))
-            if path.name in {t.name for t in titled}:
+            if path.name in {t.name for t in named}:
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
 
@@ -1333,7 +1334,7 @@ def _start_session(
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
-        _apply_iterm2(old, new)
+        _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
@@ -1541,7 +1542,7 @@ def finish_session(
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
     if iterm2_moves:
-        _apply_iterm2(old, new)
+        _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
     _run_live_hooks(hooks, old, new, repo_root, result)
@@ -1635,24 +1636,53 @@ def _apply_session_maps(moves: list[PlannedMove], old: str, new: str, home: Path
         _write_migration_file(path, json.dumps(data, indent=2).encode(), expected=before)
 
 
-def _apply_iterm2(old: str, new: str) -> None:
+def _apply_iterm2(old: str, new: str, old_wt: Path, new_wt: Path) -> None:
     renames = dict(zip(_session_variants(old), _session_variants(new), strict=True))
 
     def change(doc: dict) -> bool:
         changed = False
         for record in doc["sessions"]:
-            if not isinstance(record, dict) or record.get("name") not in renames:
+            if not _names_old_session(record, renames):
                 continue
-            record["name"] = renames[record["name"]]
-            argv = record.get("relaunch_argv")
-            if isinstance(argv, list) and argv:
-                # The relaunch line ends with the session's slot or full name, and a full
-                # name maps back to its own slot, so naming the new session is exact.
-                argv[-1] = new
+            if record.get("name") in renames:
+                record["name"] = renames[record["name"]]
+                argv = record.get("relaunch_argv")
+                if isinstance(argv, list) and argv:
+                    # The relaunch line ends with the session's slot or full name, and a full
+                    # name maps back to its own slot, so naming the new session is exact.
+                    argv[-1] = new
+            # A record renamed before AI-CLI-uzur still carries the old recipe; --finish repairs it.
+            _rename_boot_recipe(record.get("boot_recipe"), renames, old_wt, new_wt)
             changed = True
         return changed
 
     _session_registry._mutate(change)
+
+
+def _names_old_session(record: object, names: Container[str]) -> bool:
+    """A restore record still keyed by, or still booting, one of the old session's tmux names."""
+    if not isinstance(record, dict):
+        return False
+    recipe = record.get("boot_recipe")
+    booted = recipe.get("session_name") if isinstance(recipe, dict) else None
+    return any(isinstance(name, str) and name in names for name in (record.get("name"), booted))
+
+
+def _rename_boot_recipe(recipe: object, renames: dict[str, str], old_wt: Path, new_wt: Path) -> None:
+    """Point a record's boot recipe at the new name and worktree (AI-CLI-uzur).
+
+    ``ai sessions relaunch`` refuses a recipe whose ``session_name`` differs from its record's
+    name, so a recipe left naming the old session made every migrated session unrelaunchable.
+    """
+    if not isinstance(recipe, dict):
+        return
+    if recipe.get("session_name") in renames:
+        recipe["session_name"] = renames[recipe["session_name"]]
+    if recipe.get("cwd") == str(old_wt):
+        recipe["cwd"] = str(new_wt)
+    argv = recipe.get("argv")
+    if isinstance(argv, list):
+        recipe["argv"] = [renames.get(arg, arg) if isinstance(arg, str) else arg for arg in argv]
 
 
 #: ``<name>-<UTC stamp>-<pid>.log``, the name :func:`ai_cli.launch_logging.create_launch_log` gives.
