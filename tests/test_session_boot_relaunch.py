@@ -246,11 +246,12 @@ def detached_launch(boot_record, monkeypatch):
     )
     for module, names in (
         (main._session, ["cleanup_stale_sessions", "build_session_name"]),
-        (main, ["_finish_recorded_migrations", "_start_session_wake_watcher"]),
+        (main, ["_start_session_wake_watcher"]),
         (main._iterm2, ["_emit_iterm2_profile_setup", "_configure_tmux_for_iterm2", "_rename_tmux_window"]),
     ):
         for name in names:
             monkeypatch.setattr(module, name, Mock(side_effect=AssertionError(f"unexpected boot action: {name}")))
+    monkeypatch.setattr(main, "_finish_recorded_migrations", Mock())
     monkeypatch.setattr(main._iterm2, "_load_iterm2_config", dict)
     monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *a, **kw: None)
     monkeypatch.setattr(main._config, "get_session_map", lambda *a: {})

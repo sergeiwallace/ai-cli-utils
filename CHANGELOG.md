@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
+  boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
+  already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
+  after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
+
 - `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
   its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
@@ -42,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that fresh transcript then shadowed the real one on every later relaunch. With a migration from
   OLD to NEW recorded in `session-migrations.jsonl`, the newest transcript titled OLD is resumed
   unless a transcript titled NEW predates the migration.
+- `ai migrate-session` now renames a transcript's `agent-name` records as well as its
+  `custom-title` records. Claude Code restores a resumed session's name from the last
+  `agent-name` record, so a migrated session used to come back under its old name and
+  recreate state keyed by it. `--finish` and a re-run now find a transcript still carrying
+  the old `agentName` and rewrite it, the post-migrate resolve check fails while the
+  resolved transcript's current `agentName` is another name, and a host sweep's
+  transcript-only rename rewrites both fields.
+- Session final-exit persistence now uses the launcher's installation with configurable
+  deadlines, command timeouts and bounded backoff under `[session_relaunch.exit_persistence]`.
+  Interrupts stop retries promptly; exhausted retries write a generation-scoped deny-boot
+  safety record and stop the agent, reporting failures even when safety storage is unavailable.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that

@@ -201,7 +201,10 @@ elif args[:2] == ['internal', 'restart-pin']:
     status, transcript = child_pin(args[2], args[3])
     if transcript: print(transcript)
     sys.exit(status)
-elif args[:2] in (['sessions', '_begin'], ['sessions', '_sequence']): print('1')
+elif args[:1] == ['sessions'] and args[1:2] and args[1] in ('_begin', '_sequence', 'mark'):
+    # The supervisor persists run state through its own pinned installation, so the
+    # fixture's registry is the only state both sides can agree on.
+    os.execv(sys.executable, [sys.executable, '-m', 'ai_cli.main', *args])
 """,
         encoding="utf-8",
     )
