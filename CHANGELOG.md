@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker
+  (`~/.claude/resume/pollers/<name>__<id>.notified`) exists under both the old and the new name.
+  Both copies hold one timestamp, so the rename keeps the later one under the new name and
+  removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
+  `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
+  finished. Every other resume artifact found under both names is still reported and left alone.
+
 - A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
   boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
   already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched

@@ -372,7 +372,12 @@ Four rules, each of which is wrong in the other direction:
   `lsof`) leaves it **where it is** — not migrated, so it cannot block the new
   name, and not deleted, because nothing proved it dead.
 - **Never overwrite.** An existing target belongs to whoever already holds the
-  new name and may be its only copy, so it is reported and left alone.
+  new name and may be its only copy, so it is reported and left alone. The one
+  exception is a poller marker, `pollers/<name>__<id>.notified`, when both copies
+  hold one integer epoch. The marker only records that the poller's fault was
+  announced, so the two copies agree, and the rename keeps the later timestamp
+  under the new name and removes the old one (`... merged (keeps the later
+  timestamp N)`). A marker holding anything else is reported and left alone.
 
 `--dry-run` reports every rename it would make and renames nothing, including the
 lock removals.
