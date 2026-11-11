@@ -69,6 +69,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is written. The floor used to be a fixed one second, and the default leaves behaviour
   unchanged.
 
+### Changed
+
+- `ai c NEW` (and `ai g`/`ai p`/`ai cx`) and `ai sessions relaunch` no longer start a session
+  whose recorded migration is partial. Each migration to NEW this host records is judged once at
+  launch: one with no `finished` row is finished as before, and one recorded finished is
+  re-planned read-only. If a finish refuses, raises or leaves any part, the launch starts
+  nothing, prints the parts left and the `ai migrate-session OLD NEW --finish -r REPO` command,
+  and exits 1, where it used to warn and launch. `ai sessions relaunch` refuses each such session,
+  records the refusal as its relaunch reason, relaunches the others and exits 1. A ledger row in a
+  migration record format newer than the running build refuses the launch with
+  `ai update --force`. `-P/--allow-partial-migration` on either command starts the session anyway
+  and writes the parts left into its launch log; it is never read from config, the environment or
+  a boot recipe, and does not override the format refusal. A detached relaunch now writes a launch
+  log too.
+
 ### Fixed
 
 - A migrated session now resumes the transcript `ai migrate-session OLD NEW` moved, not a later

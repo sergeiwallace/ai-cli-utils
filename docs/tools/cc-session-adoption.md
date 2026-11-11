@@ -623,12 +623,26 @@ unverified. The ledger is append-only, so the migration's own
 row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
 remote side of `-R`, and a detached replay of NEW's recorded recipe by
 `ai sessions relaunch`) checks the ledger once the session name is resolved and,
-before the worktree or the session exists, runs the finish of each pair migrated
-to NEW with no later `finished` row: the same planner, hooks and Beads rule as
-`--finish -y`. That covers a migration made while NEW was live, which `--finish`
-itself could never complete. A finish that refuses or leaves work undone is
-reported on one line naming the pair and the `--finish -y` command to retry,
-records nothing, and the launch continues. A dry run (`-d`) finishes nothing.
+before the worktree or the session exists, judges every pair migrated to NEW once.
+A pair with no later `finished` row is finished: the same planner, hooks and Beads
+rule as `--finish -y`, verified by that run's own re-plan. That covers a migration
+made while NEW was live, which `--finish` itself could never complete. A pair the
+ledger records finished, verified or not, is re-planned read-only, so one a later
+process dirtied is caught. If any pair is still partial, because its finish refused,
+raised or left a part, the launch is refused: it starts nothing, prints one line per
+pair naming the parts left and the `ai migrate-session OLD NEW --finish -r REPO`
+command, records nothing, and exits 1. `ai sessions relaunch` refuses each such
+session the same way, records the refusal as its relaunch reason, still relaunches
+the others, and exits 1. A ledger row naming NEW in a migration record format newer
+than the running `ai` reads refuses the launch with `ai update --force`.
+
+`-P/--allow-partial-migration` on `ai c` (and `ai g`/`ai p`/`ai cx`, forwarded to
+the remote side of `-R`) and on `ai sessions relaunch` starts the session anyway.
+It is read only from that invocation's command line, never from config, the
+environment or a boot recipe. The launch prints one warning per partial pair naming
+the parts left, which also goes into the launch log, and records nothing, so the
+next `--status` still lists the pair as partial. It does not override the
+newer-format refusal. A dry run (`-d`) finishes and re-plans nothing.
 
 `ai migrate-session -s/--status` lists, without writing anything, every pair this
 host's ledger records whose latest row is not a verified `finished`, so every
@@ -786,7 +800,8 @@ Scripts that previously treated a named migration's exit 0 as success must now
 handle exit 1 when a hook fails: the naming row remains incomplete until the
 original command succeeds. Scripts that distinguished refusals by exit 1 must
 accept exit 2. `--finish` remains available, and launches still finish pending
-ledger pairs. No migration automatically publishes changed issue stores.
+ledger pairs, refusing to start while one stays partial. No migration automatically
+publishes changed issue stores.
 
 A hook's time-sensitive checks can expire between planning and execution. The
 agent-mail snapshot warning explicitly names this limitation. See the
