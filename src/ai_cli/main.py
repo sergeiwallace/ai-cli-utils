@@ -3497,32 +3497,83 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
     reporter.phase("session").outcome(f"{session_name} running detached")
 
 
-def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
-    """Run ``migrate-session --finish`` for each migration to ``ai_name`` this host recorded unfinished.
+#: The launch override for a partial migration. Per invocation only: never read from
+#: config or the environment, and never written into a boot recipe.
+ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
 
-    A migration made while its new session was live could never be finished: ``--finish``
-    refuses a running session, so its old-keyed leftovers stayed. The launch is the one
-    moment the new session is known not to be running. A finish that refuses or leaves work
-    undone is reported on one line with the command to retry, records nothing, and never
-    blocks the launch.
+
+class PartialMigrationRefusal(SystemExit):
+    """A launch refused before it started anything, because a recorded migration to its name is partial."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(1)
+        self.reason = reason
+
+
+def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter, *, allow_partial: bool = False) -> None:
+    """Refuse the launch of ``ai_name`` while any migration to it this host recorded is partial.
+
+    Each recorded pair whose NEW is ``ai_name`` is judged once, whatever its ledger row says.
+    A pair with no ``finished`` row is finished here, since the launch is the one moment the
+    new session is known not to be running, and that finish's own re-plan is the verdict. A
+    pair recorded finished is re-planned read-only, so one a later process dirtied is caught.
+    A finish that refuses, raises or leaves any part refuses the launch with the parts left
+    and the ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``)
+    is given: the session then starts and the parts left go into the launch log. A ledger row
+    in a format newer than this build reads refuses the launch, override or not. Every
+    refusal raises :class:`PartialMigrationRefusal`.
     """
-    from .session_migrate import finish_session, pending_finishes
+    from .session_migrate import MIGRATION_FORMAT, finish_session, pending_finishes
+    from .session_migrate_status import finish_command, left_after, newest_format, recorded_pairs, replan
 
-    for old, repo in pending_finishes(ai_name):
-        retry = f"`ai migrate-session {old} {ai_name} -r {repo} --finish -y`"
-        try:
-            result = finish_session(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
-        except Exception as exc:  # a finish failure must never block the launch
-            reason = " ".join(str(exc).split()) or type(exc).__name__
-            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
-            continue
-        for move in result.moves:
-            reporter.detail("migrate", move.describe())
-        if result.failed:
-            reason = " ".join("; ".join([*result.kept, *result.warnings]).split())
-            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
+    state = _config.get_xdg_state_home()
+    newest = newest_format(ai_name, state)
+    if newest > MIGRATION_FORMAT:
+        reason = (
+            f"the migration ledger records {ai_name} in format {newest}, newer than format "
+            f"{MIGRATION_FORMAT} this ai reads; run `ai update --force`, then launch again"
+        )
+        reporter.error("migrate", f"refusing to launch {ai_name}: {reason}")
+        raise PartialMigrationRefusal(reason)
+    pending = dict(pending_finishes(ai_name, state))
+    partial: list[tuple[str, Path, dict[str, str]]] = []
+    for old, repo in recorded_pairs(ai_name, state):
+        if old not in pending:
+            left = replan(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
         else:
-            reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+            try:
+                result = finish_session(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
+            except Exception as exc:  # a finish that raises is a part left, never a launch
+                left = {"migration": f"failed: {' '.join(str(exc).split()) or type(exc).__name__}"}
+            else:
+                for move in result.moves:
+                    reporter.detail("migrate", move.describe())
+                left = left_after(result)
+                if not left:
+                    reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+        if left:
+            partial.append((old, repo, left))
+    for old, repo, left in partial:
+        named = "; ".join(f"{part} ({status})" for part, status in left.items())
+        if allow_partial:
+            reporter.warning(
+                "migrate",
+                f"launching {ai_name} with the migration {old} -> {ai_name} partial "
+                f"({ALLOW_PARTIAL_MIGRATION_OPTS[1]}); parts left: {named}",
+            )
+            continue
+        reporter.error(
+            "migrate",
+            f"refusing to launch {ai_name}: the migration {old} -> {ai_name} is partial; parts left: {named}; "
+            f"finish it with `{finish_command(old, ai_name, repo)}`, then launch again",
+        )
+    if partial and not allow_partial:
+        raise PartialMigrationRefusal(
+            "; ".join(
+                f"migration {old} -> {ai_name} partial, run `{finish_command(old, ai_name, repo)}`"
+                for old, repo, _left in partial
+            )
+        )
 
 
 def _legacy_launch_name(repo_alias: str, name: str) -> str | None:
@@ -4149,6 +4200,7 @@ def _do_session_launch(
     replay_recipe: dict | None = None,
     attach: bool = True,
     naming: "_NamingRequest | None" = None,
+    allow_partial_migration: bool = False,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -4621,6 +4673,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(_remote_arg)}"
         if resume:
             remote_cmd += " --resume"
+        if allow_partial_migration:
+            remote_cmd += f" {ALLOW_PARTIAL_MIGRATION_OPTS[1]}"
         # The local wrapper owns transport state, an iTerm profile, and its
         # cleanup command.  It must use the exact session identity the remote
         # launch will create.  Guessing ``...-1`` for unnamed launches made all
@@ -5030,8 +5084,9 @@ def _do_session_launch(
         reporter=reporter,
     )
     reporter.phase("session").outcome(f"resolved {ai_name}")
-    # A recipe replay starts NEW's tmux session too, so it is the same safe moment.
-    _finish_recorded_migrations(ai_name, reporter)
+    # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
+    # migration raises here, before the worktree, tmux or engine is touched.
+    _finish_recorded_migrations(ai_name, reporter, allow_partial=allow_partial_migration)
     if engine == "c":
         _queue_migration_context(ai_name, session_id, reporter)
 
@@ -5703,6 +5758,7 @@ def _session_command(engine: str):
         dry_run=False,
         remote_args=(),
         naming=None,
+        allow_partial_migration=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -5778,6 +5834,7 @@ def _session_command(engine: str):
                 remote_args=list(remote_args),
                 attach=sys.stdin.isatty(),
                 naming=naming,
+                allow_partial_migration=allow_partial_migration,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -6024,6 +6081,15 @@ def _session_options(func):
         "--dry-run",
         is_flag=True,
         help="Print the resolved launch plan and exit; creates and starts nothing",
+    )(func)
+    func = click.option(
+        *ALLOW_PARTIAL_MIGRATION_OPTS,
+        "allow_partial_migration",
+        is_flag=True,
+        help=(
+            "Start the session even though a recorded migration to its name is partial; "
+            "the parts left are written into the launch log"
+        ),
     )(func)
     func = click.option(
         "-F",
@@ -6473,7 +6539,9 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     help=(
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
-        "--finish -y` would; a finish that fails is reported and the launch continues."
+        "--finish -y` would, and one recorded finished is re-planned. If any is still partial, "
+        "the launch is refused: it starts nothing, prints the parts left and the --finish "
+        "command, and exits 1. -P/--allow-partial-migration starts the session anyway."
     ),
 )
 @_session_options

@@ -32,7 +32,7 @@ from test_session_migrate import (
 slot = test_session_migrate.slot
 hooks = test_session_migrate_hooks.hooks
 
-REMEDY = f"ai migrate-session {OLD} {NEW} -r"
+FINISH = f"ai migrate-session {OLD} {NEW} --finish -r"
 
 
 def _ledger(slot) -> list[dict]:
@@ -44,8 +44,8 @@ def _ledger(slot) -> list[dict]:
     ]
 
 
-def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[dict]]:
-    """``ai c 3`` resolving to NEW; returns the exit code, output and what each launch saw."""
+def _launch(slot, tmux: list[str] | None = None, *flags: str) -> tuple[int, str, str, list[dict]]:
+    """``ai c 3 [flags]`` resolving to NEW; returns the exit code, output and what each launch saw."""
     launched: list[dict] = []
     logs = slot["state"] / "launch-logs"
 
@@ -74,7 +74,9 @@ def _launch(slot, tmux: list[str] | None = None) -> tuple[int, str, str, list[di
         )
         for target, kwargs in patches:
             stack.enter_context(patch(target, **kwargs))
-        code, out, err = test_session_migrate.run_cli(["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo"])
+        code, out, err = test_session_migrate.run_cli(
+            ["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo", *flags]
+        )
     return code, out, err, launched
 
 
@@ -128,6 +130,8 @@ def _replay(slot) -> list[dict]:
             stack.enter_context(patch(target, **kwargs))
         with pytest.raises(SystemExit) as stopped:
             session_commands._launch_recipe(record, cause="manual")
+    if not launched:
+        raise stopped.value  # refused before the launch reached the stub
     assert stopped.value.code == 0
     return launched
 
@@ -161,24 +165,39 @@ def test_given_a_recorded_unfinished_migration_when_new_is_launched_then_it_is_f
     assert f"finished the migration {OLD} -> {NEW}" in err
 
 
-def test_given_the_finish_is_recorded_when_new_is_launched_again_then_it_does_not_run_again(migrated, hooks):
+def test_given_the_finish_is_recorded_when_new_is_launched_again_then_it_is_re_planned_read_only_and_launches(
+    migrated, hooks
+):
     hooks("10-notes", "notes")
     code, out, err, _launched = _launch(migrated)
     assert code == 0, out + err
     runs = len(hooks.calls())
-    assert runs
     rows = _ledger(migrated)
-    leftover = migrated["state"] / "launch-logs" / f"{OLD}-again.log"
-    leftover.write_text("x\n")
 
     code, out, err, launched = _launch(migrated)
 
     assert code == 0, out + err
     assert len(launched) == 1
-    assert len(hooks.calls()) == runs
-    assert leftover.is_file()
+    again = hooks.calls()[runs:]
+    assert [c["args"][-1] for c in again] == ["--dry-run"], "one read-only re-plan, no live hook run"
     assert _ledger(migrated) == rows
-    assert "migration" not in err
+    assert "refusing" not in err
+
+
+def test_given_a_recorded_finish_dirtied_later_when_new_is_launched_then_nothing_starts(migrated):
+    code, out, err, _launched = _launch(migrated)
+    assert code == 0, out + err
+    rows = _ledger(migrated)
+    assert rows[-1].get("verified") is True
+    leftover = _seed_logs_and_evidence(migrated)["bare"]
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 1, out + err
+    assert launched == [], "a verified pair that re-plans partial still refuses the launch"
+    assert leftover.is_file(), "the re-plan writes nothing"
+    assert _ledger(migrated) == rows
+    assert f"ai migrate-session {OLD} {NEW} --finish -r {migrated['repo']}" in err
 
 
 def test_given_no_ledger_row_names_new_when_launched_then_nothing_is_finished_or_printed(migrated):
@@ -215,8 +234,18 @@ def _hook_refuses_plan(_slot, hooks) -> None:
     hooks("10-notes", "notes", fail="plan")
 
 
-@pytest.mark.parametrize("failure", [_old_still_running, _unreadable_chief, _hook_fails_live, _hook_refuses_plan])
-def test_given_the_finish_fails_when_new_is_launched_then_it_says_so_records_nothing_and_still_launches(
+def _finish_raises(_slot, _hooks):
+    return patch("ai_cli.session_migrate.finish_session", side_effect=RuntimeError("example finish failure"))
+
+
+def _refusal(err: str) -> str:
+    lines = [line for line in err.splitlines() if f"refusing to launch {NEW}" in line]
+    assert len(lines) == 1, err
+    return lines[0]
+
+
+@pytest.mark.parametrize("failure", [_unreadable_chief, _hook_fails_live, _hook_refuses_plan])
+def test_given_the_finish_leaves_a_part_when_new_is_launched_then_nothing_starts_and_the_finish_command_prints(
     migrated, hooks, failure
 ):
     failure(migrated, hooks)
@@ -224,12 +253,72 @@ def test_given_the_finish_fails_when_new_is_launched_then_it_says_so_records_not
 
     code, out, err, launched = _launch(migrated)
 
-    assert code == 0, out + err
-    assert len(launched) == 1 and launched[0]["ai_name"] == NEW, "a failed finish never blocks the launch"
+    assert code == 1, out + err
+    assert launched == [], "a partial migration starts nothing"
+    assert _ledger(migrated) == rows, "no finished row"
+    refusal = _refusal(err)
+    assert f"the migration {OLD} -> {NEW} is partial; parts left: " in refusal
+    assert f"`{FINISH} {migrated['repo']}`" in refusal
+    assert "allow-partial" not in refusal, "the refusal names the finish, not the override"
+
+
+@pytest.mark.parametrize("failure", [_old_still_running, _finish_raises])
+def test_given_the_launch_time_finish_raises_when_new_is_launched_then_the_launch_is_refused_not_continued(
+    migrated, hooks, failure
+):
+    raising = failure(migrated, hooks)
+    rows = _ledger(migrated)
+
+    with raising or ExitStack():
+        code, out, err, launched = _launch(migrated)
+
+    assert code == 1, out + err
+    assert launched == []
     assert _ledger(migrated) == rows
-    notice = [line for line in err.splitlines() if f"{OLD} -> {NEW}" in line]
-    assert len(notice) == 1, err
-    assert f"{REMEDY} {migrated['repo']} --finish -y" in notice[0]
+    assert "parts left: migration (failed: " in _refusal(err)
+    assert f"`{FINISH} {migrated['repo']}`" in _refusal(err)
+
+
+@pytest.mark.parametrize("flag", ["-P", "--allow-partial-migration"])
+def test_given_the_override_when_a_partial_new_is_launched_then_it_starts_with_one_warning_logged(
+    migrated, hooks, flag
+):
+    hooks("10-notes", "notes", fail="live")
+    logs = migrated["state"] / "launch-logs"
+    before = set(logs.glob("3-*.log"))
+
+    code, out, err, launched = _launch(migrated, None, flag)
+
+    assert code == 0, out + err
+    assert len(launched) == 1 and launched[0]["ai_name"] == NEW
+    warnings = [line for line in err.splitlines() if f"with the migration {OLD} -> {NEW} partial" in line]
+    assert len(warnings) == 1, err
+    assert "parts left: hook notes (failed:" in warnings[0]
+    assert "refusing" not in err
+    (log,) = set(logs.glob("3-*.log")) - before
+    assert "parts left: hook notes (failed:" in log.read_text(encoding="utf-8")
+    assert not [r for r in _ledger(migrated) if r.get("finished")], "the pair stays partial on the ledger"
+
+
+@pytest.mark.parametrize("flags", [(), ("-P",)])
+def test_given_a_ledger_row_in_a_newer_format_when_new_is_launched_then_it_refuses_with_the_update_command(
+    migrated, flags
+):
+    from ai_cli.session_migrate import MIGRATION_FORMAT
+
+    ledger = migrated["state"] / "session-migrations.jsonl"
+    newer = {"old": OLD, "new": NEW, "repo": str(migrated["repo"]), "format": MIGRATION_FORMAT + 1}
+    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(newer) + "\n", encoding="utf-8")
+    before = ledger.read_text(encoding="utf-8")
+
+    code, out, err, launched = _launch(migrated, None, *flags)
+
+    assert code == 1, out + err
+    assert launched == []
+    assert ledger.read_text(encoding="utf-8") == before
+    refusal = _refusal(err)
+    assert f"format {MIGRATION_FORMAT + 1}" in refusal
+    assert "`ai update --force`" in refusal
 
 
 def test_given_a_hook_when_new_is_launched_then_the_finish_runs_it_like_finish_does(migrated, hooks):
@@ -253,14 +342,28 @@ def test_given_a_hook_when_new_is_launched_then_the_finish_runs_it_like_finish_d
 def test_given_a_manual_finish_succeeds_when_new_is_launched_then_it_is_not_run_again(migrated, hooks):
     code, out, err = _finish(migrated["repo"], "-y")
     assert code == 0, out + err
-    assert [r for r in _ledger(migrated) if r.get("finished")]
-    hooks("10-notes", "notes")
+    rows = _ledger(migrated)
+    assert [r for r in rows if r.get("finished")]
 
     code, out, err, launched = _launch(migrated)
 
     assert code == 0, out + err
     assert len(launched) == 1
-    assert hooks.calls() == []
+    assert _ledger(migrated) == rows
+    assert "finished the migration" not in err
+
+
+def test_given_a_verified_finish_and_a_hook_added_later_when_new_is_launched_then_it_is_refused_unrun(migrated, hooks):
+    code, out, err = _finish(migrated["repo"], "-y")
+    assert code == 0, out + err
+    hooks("10-notes", "notes")
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 1, out + err
+    assert launched == []
+    assert all("--dry-run" in c["args"] for c in hooks.calls()), "the re-plan never runs the hook live"
+    assert "parts left: hook notes (would do)" in _refusal(err)
 
 
 def test_given_a_recorded_unfinished_migration_when_new_is_relaunched_from_its_recipe_then_it_is_finished_first(
@@ -276,23 +379,26 @@ def test_given_a_recorded_unfinished_migration_when_new_is_relaunched_from_its_r
     assert [(r["old"], r["new"], r["repo"]) for r in finished] == [(OLD, NEW, str(migrated["repo"]))]
 
 
-def test_given_the_finish_refuses_when_new_is_relaunched_from_its_recipe_then_it_still_relaunches(
-    migrated, hooks, capfd
-):
+def test_given_the_finish_refuses_when_new_is_relaunched_from_its_recipe_then_it_is_refused(migrated, hooks, capfd):
+    from ai_cli.main import PartialMigrationRefusal
+
     hooks("10-notes", "notes", fail="plan")
     rows = _ledger(migrated)
 
-    launched = _replay(migrated)
+    with pytest.raises(PartialMigrationRefusal) as refused:
+        _replay(migrated)
 
     err = capfd.readouterr().err
-    assert len(launched) == 1 and launched[0]["ai_name"] == NEW, "a refused finish never blocks the relaunch"
+    assert refused.value.code == 1
+    assert f"`{FINISH} {migrated['repo']}`" in refused.value.reason
     assert _ledger(migrated) == rows
-    notice = [line for line in err.splitlines() if f"{OLD} -> {NEW}" in line]
-    assert len(notice) == 1, err
-    assert f"{REMEDY} {migrated['repo']} --finish -y" in notice[0]
+    assert f"`{FINISH} {migrated['repo']}`" in _refusal(err)
 
 
-def test_given_the_launch_help_when_printed_then_it_names_the_pending_finish():
+def test_given_the_launch_help_when_printed_then_it_names_the_finish_the_refusal_and_the_override():
     code, out, _err = _run_cli(["ai", "c", "--help"])
     assert code == 0
-    assert "migrate-session OLD NEW --finish -y" in " ".join(out.split())
+    text = " ".join(out.split())
+    assert "migrate-session OLD NEW --finish -y" in text
+    assert "the launch is refused" in text
+    assert "-P, --allow-partial-migration" in text

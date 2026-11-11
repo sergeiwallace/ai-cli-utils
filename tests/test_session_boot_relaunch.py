@@ -1,5 +1,6 @@
 """Boot decisions and detached replay use isolated state and a fake tmux."""
 
+import json
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -15,6 +16,9 @@ from ai_cli import main, session_commands
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
+#: The launch guard itself, captured before any fixture replaces it.
+_REAL_FINISH = main._finish_recorded_migrations
 
 
 @pytest.fixture
@@ -129,7 +133,7 @@ def boot_cli(boot_record, monkeypatch):
     launches = []
     real_launch = session_commands._launch_recipe
     monkeypatch.setattr(
-        session_commands, "_launch_recipe", lambda record: launches.append(deepcopy(record)), raising=False
+        session_commands, "_launch_recipe", lambda record, **_kwargs: launches.append(deepcopy(record)), raising=False
     )
     publish = Mock()
     monkeypatch.setattr(session_commands.session_state_publish, "publish", publish)
@@ -153,7 +157,7 @@ def test_given_switch_off_when_cli_runs_then_ac_2_6_nothing_launches_and_off_is_
 def test_given_reboot_when_cli_runs_twice_then_ac_2_7_reservation_precedes_only_spawn(boot_cli):
     observed = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         observed.append(registry.load_registry()["sessions"][0]["relaunched_boot_id"])
 
     with pytest.MonkeyPatch.context() as patcher:
@@ -173,7 +177,7 @@ def test_given_attempt_then_reattach_when_retried_then_ac_2_11_reservation_and_p
 
     calls = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         calls.append(record)
         if failed:
             raise RuntimeError("example launch failure")
@@ -359,7 +363,7 @@ def test_given_forbidden_final_exit_when_cli_runs_then_ac_2_8_winning_cause_is_l
 def test_given_overlapping_boot_invocation_when_reserved_then_ac_2_7_only_one_spawns(boot_cli, monkeypatch):
     nested = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         nested.append(boot_cli.invoke())
 
     monkeypatch.setattr(session_commands, "_launch_recipe", launch)
@@ -630,3 +634,81 @@ def test_given_default_host_identity_when_named_relaunch_then_registry_host_owns
     assert result.exit_code == 0, result.output
     assert len(named_cli.launches) == 1
     assert named_cli.launches[0]["boot_recipe"]["session_name"] == "c-myproject-host-1"
+
+
+PARTIAL = "c-myproject-host-2"
+
+
+@pytest.fixture
+def partial_boot(boot_cli, detached_launch, boot_record, monkeypatch, tmp_path):
+    """Two boot records; the ledger records a migration to the second's name whose finish cannot run.
+
+    The recorded repo is gone, so the launch-time finish raises: the migration is partial.
+    """
+    from ai_cli.session_migrate import MIGRATION_FORMAT, MIGRATION_LEDGER
+
+    monkeypatch.setattr(session_commands, "_launch_recipe", boot_cli.real_launch)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: boot_cli.cfg)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", _REAL_FINISH)
+    second = deepcopy(boot_record)
+    second.update(id="record-2", name=PARTIAL)
+    second["boot_recipe"].update(session_name=PARTIAL, argv=["ai", "c", PARTIAL, "--project-prefix", "myproject"])
+    registry._mutate(lambda doc: doc["sessions"].append(second) or True)
+    repo = tmp_path / "gone"
+    ledger = main._config.get_xdg_state_home() / MIGRATION_LEDGER
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    row = {"old": "myproject-old-2", "new": "myproject-host-2", "repo": str(repo), "format": MIGRATION_FORMAT}
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return SimpleNamespace(
+        cli=boot_cli,
+        calls=detached_launch[0],
+        finish=f"ai migrate-session myproject-old-2 myproject-host-2 --finish -r {repo}",
+    )
+
+
+def _created(calls) -> list[str]:
+    return [argv[argv.index("-s") + 1] for argv, _kw in calls if argv[:2] == ["tmux", "new-session"]]
+
+
+def _reasons() -> dict[str, str]:
+    return {r["name"]: r["boot_decision"]["reason"] for r in registry.load_registry()["sessions"]}
+
+
+def test_given_a_partial_migration_when_boot_relaunch_runs_then_it_is_refused_and_the_others_relaunch(partial_boot):
+    result = partial_boot.cli.invoke()
+
+    assert result.exit_code == 1, result.output
+    assert _created(partial_boot.calls) == ["c-myproject-host-1"], "the partial session starts nothing"
+    reasons = _reasons()
+    assert reasons["c-myproject-host-1"] == "relaunched detached"
+    assert reasons[PARTIAL].startswith("refused: ")
+    assert partial_boot.finish in reasons[PARTIAL]
+    refusal = [line for line in result.output.splitlines() if "refusing to launch myproject-host-2" in line]
+    assert len(refusal) == 1, result.output
+    assert "parts left: migration (failed:" in refusal[0]
+    assert partial_boot.finish in refusal[0]
+    assert "allow-partial" not in refusal[0], "the refusal names the finish, not the override"
+
+
+def test_given_a_partial_migration_when_named_relaunch_runs_then_it_is_refused_with_the_finish_command(partial_boot):
+    result = CliRunner().invoke(main._cli_group, ["sessions", "relaunch", PARTIAL])
+
+    assert result.exit_code == 1, result.output
+    assert _created(partial_boot.calls) == []
+    assert partial_boot.finish in result.output
+
+
+@pytest.mark.parametrize("flag", ["-P", "--allow-partial-migration"])
+def test_given_the_override_when_relaunch_runs_then_the_partial_session_starts_and_its_log_names_the_parts(
+    partial_boot, flag
+):
+    result = CliRunner().invoke(main._cli_group, ["sessions", "relaunch", PARTIAL, flag])
+
+    assert result.exit_code == 0, result.output
+    assert _created(partial_boot.calls) == [PARTIAL]
+    warnings = [line for line in result.output.splitlines() if "with the migration myproject-old-2" in line]
+    assert len(warnings) == 1, result.output
+    assert "parts left: migration (failed:" in warnings[0]
+    logs = sorted((main._config.get_xdg_state_home() / "launch-logs").glob(f"{PARTIAL}-*.log"))
+    assert len(logs) == 1
+    assert "parts left: migration (failed:" in logs[0].read_text(encoding="utf-8")

@@ -372,7 +372,8 @@ def policy(slug, policy):
     output.emit(output.Tag.SESSIONS, "session", f"{slug}: relaunch policy {policy}")
 
 
-def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
+def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migration: bool = False) -> None:
+    from .launch_logging import create_launch_log
     from .main import _do_session_launch
 
     recipe = record["boot_recipe"]
@@ -381,6 +382,10 @@ def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
     prefix = argv[argv.index("--project-prefix") + 1] if "--project-prefix" in argv else ""
     previous_cwd = Path.cwd()
     previous_reason = os.environ.get(LAUNCH_REASON_VAR)
+    # A replay writes a launch log like `ai c` does, so what it reported, such as the parts of
+    # a partial migration it was told to start past, can be read after the fact.
+    launch_log = create_launch_log(record["name"])
+    previous_sink = output.attach_file_sink(launch_log.write_line)
     try:
         os.chdir(recipe["cwd"])
         os.environ[LAUNCH_REASON_VAR] = (
@@ -404,13 +409,25 @@ def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
             no_direnv=options.get("no_direnv", False),
             detached=True,
             replay_recipe=recipe,
+            allow_partial_migration=allow_partial_migration,
         )
     finally:
+        output.attach_file_sink(previous_sink)
+        launch_log.close()
         os.chdir(previous_cwd)
         if previous_reason is None:
             os.environ.pop(LAUNCH_REASON_VAR, None)
         else:
             os.environ[LAUNCH_REASON_VAR] = previous_reason
+
+
+def _launch_failure(exc: BaseException) -> str:
+    """The recorded reason a replay did not start: a partial-migration refusal names its finish command."""
+    from .main import PartialMigrationRefusal
+
+    if isinstance(exc, PartialMigrationRefusal):
+        return f"refused: {exc.reason}"
+    return f"launch failed ({type(exc).__name__})"
 
 
 def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None) -> str | None:
@@ -448,7 +465,7 @@ def _wait_for_boot_recipe(recipe: dict, cfg: dict) -> str | None:
         time.sleep(min(1, remaining))
 
 
-def _relaunch_named(slug: str, *, dry_run: bool) -> None:
+def _relaunch_named(slug: str, *, dry_run: bool, allow_partial_migration: bool = False) -> None:
     selected = {}
 
     def select(doc):
@@ -475,10 +492,10 @@ def _relaunch_named(slug: str, *, dry_run: bool) -> None:
     registry._mutate(select, timeout=2)
     failed = False
     try:
-        _launch_recipe(selected, cause="remote_request")
+        _launch_recipe(selected, cause="remote_request", allow_partial_migration=allow_partial_migration)
         reason = "relaunched detached"
     except (Exception, SystemExit) as exc:
-        reason = f"launch failed ({type(exc).__name__})"
+        reason = _launch_failure(exc)
         failed = True
 
     def finish(doc):
@@ -499,14 +516,25 @@ def _relaunch_named(slug: str, *, dry_run: bool) -> None:
 @click.argument("slug", required=False, callback=_session_slug)
 @click.option("-b", "--boot", is_flag=True, help="Replay eligible owning-host sessions after boot")
 @click.option("-d", "--dry-run", is_flag=True, help="Print decisions without writing or launching")
-def relaunch(slug, boot, dry_run):
-    """Relaunch recorded sessions detached, without a terminal application."""
+@click.option(
+    "-P",
+    "--allow-partial-migration",
+    is_flag=True,
+    help="Relaunch a session even though a recorded migration to its name is partial; the parts left "
+    "are written into its launch log",
+)
+def relaunch(slug, boot, dry_run, allow_partial_migration):
+    """Relaunch recorded sessions detached, without a terminal application.
+
+    A session whose recorded migration is partial is refused, with the parts left and the
+    command that finishes it; the others still relaunch, and the command exits 1.
+    """
     if boot == (slug is not None):
         raise click.UsageError("provide either a session name or --boot, never both")
     if sys.platform == "win32":
         raise click.ClickException("boot relaunch is supported on macOS and Linux")
     if slug is not None:
-        _relaunch_named(slug, dry_run=dry_run)
+        _relaunch_named(slug, dry_run=dry_run, allow_partial_migration=allow_partial_migration)
         return
     heal_live_sessions(dry_run=dry_run)
     cfg = state.settings()
@@ -556,10 +584,10 @@ def relaunch(slug, boot, dry_run):
         record, veto = selected["record"], selected["veto"]
         if veto is None:
             try:
-                _launch_recipe(record)
+                _launch_recipe(record, allow_partial_migration=allow_partial_migration)
                 reason = "relaunched detached"
             except (Exception, SystemExit) as exc:
-                reason = f"launch failed ({type(exc).__name__}); boot reservation retained"
+                reason = f"{_launch_failure(exc)}; boot reservation retained"
                 failed = True
 
             def finish(current, record=record, reason=reason):

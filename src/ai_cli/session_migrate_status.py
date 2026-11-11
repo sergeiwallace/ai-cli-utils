@@ -82,6 +82,42 @@ def finish_state(old: str, new: str, state: Path) -> str | None:
     return found
 
 
+def recorded_pairs(new: str, state: Path) -> list[tuple[str, Path]]:
+    """``(old, repo)`` for every migration to ``new`` the ledger records, whatever its latest row says.
+
+    The repo is the latest one a row of the pair names. A row without a ``repo`` names no
+    slot to judge and is skipped, as :func:`ai_cli.session_migrate.pending_finishes` skips it.
+    """
+    pairs: dict[str, Path] = {}
+    for row in m._ledger_rows(state):
+        old, repo = row.get("old"), row.get("repo")
+        if row.get("new") != new or row.get("context_announced") is True:
+            continue
+        if isinstance(old, str) and isinstance(repo, str):
+            pairs[old] = Path(repo)
+    return list(pairs.items())
+
+
+def newest_format(new: str, state: Path) -> int:
+    """The highest migration record format any ledger row naming ``new`` carries; 0 when none does."""
+    found = 0
+    for row in m._ledger_rows(state):
+        value = row.get("format")
+        if new in (row.get("old"), row.get("new")) and isinstance(value, int) and not isinstance(value, bool):
+            found = max(found, value)
+    return found
+
+
+def left_after(result: m.MigrationResult) -> dict[str, str]:
+    """``{part: status}`` for each part a writing run left undone; empty when it did not fail."""
+    if not result.failed:
+        return {}
+    if not result.parts:
+        summarize(result, resumed=True)
+    left = {part: status for part, status in result.parts.items() if status.startswith("failed:")}
+    return left or {UNPLANNED: f"failed: {m._one_line('; '.join([*result.kept, *result.warnings])) or 'not finished'}"}
+
+
 def finish_command(old: str, new: str, repo: Path) -> str:
     return f"ai migrate-session {old} {new} --finish -r {repo}"
 

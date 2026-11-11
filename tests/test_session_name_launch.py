@@ -32,7 +32,7 @@ def _tripwire(*_args, **_kwargs):
     raise _Created("the launch reached a call that creates session state")
 
 
-def _stop_after_naming(ai_name, reporter):
+def _stop_after_naming(ai_name, reporter, **_kwargs):
     raise _Named(ai_name)
 
 
