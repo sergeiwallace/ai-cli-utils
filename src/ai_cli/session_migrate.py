@@ -502,9 +502,32 @@ def _remove_stale_locks(moves: list[PlannedMove]) -> None:
 _NAMESPACE_BOOKKEEPING = (".highwatermark", ".lock")
 
 
+#: The per-task watcher lock Claude Code leaves in a namespace: ``.<task id>.shadow-watcher.lock``.
+_TASK_WATCHER_LOCK = re.compile(r"\.\d+\.shadow-watcher\.lock")
+
+
+def _idle_task_watcher_lock(path: Path) -> bool:
+    """Whether ``path`` is one of Claude Code's task watcher locks that nothing holds.
+
+    The file is empty and carries no state, so it means nothing once the tasks have moved. It is
+    treated as bookkeeping only while it is empty and a non-blocking lock on it succeeds; a held
+    or non-empty one stays a leftover and keeps the namespace in place.
+    """
+    try:
+        if not _TASK_WATCHER_LOCK.fullmatch(path.name) or not path.is_file() or path.stat().st_size:
+            return False
+        return _slot_lock_free(path)
+    except OSError:
+        return False
+
+
 def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
     """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
-    return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
+    return sorted(
+        p.name
+        for p in ns.iterdir()
+        if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving and not _idle_task_watcher_lock(p)
+    )
 
 
 def _plan_hooks(
@@ -1414,6 +1437,8 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
         else:
             for name in _NAMESPACE_BOOKKEEPING:
                 (old_ns / name).unlink(missing_ok=True)
+            for lock in [p for p in old_ns.iterdir() if _idle_task_watcher_lock(p)]:
+                lock.unlink(missing_ok=True)
             old_ns.rmdir()
 
 
