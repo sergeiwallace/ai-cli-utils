@@ -74,10 +74,12 @@ from pathlib import Path
 
 from . import session_migrate_hooks as _hooks
 from .cc_migrate import (
+    RECORD_NAME_KEYS,
     MigrationResult,
     cc_project_dir,
     find_transcript,
     migrate_session,
+    transcript_agent_name,
     transcript_title,
     transcript_titles,
 )
@@ -438,7 +440,11 @@ def next_free_index(repo_root: Path, prefix: str, claude_home: Path | None = Non
 
 
 def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
-    """Rewrite every ``customTitle`` equal to ``old_title`` in ``path``.
+    """Rewrite every ``customTitle`` and ``agentName`` equal to ``old_title`` in ``path``.
+
+    Both fields name the session. Claude Code restores a resumed session's name from
+    its last ``agentName``, so a rewrite of ``customTitle`` alone brings the session
+    back under the old name on resume.
 
     All matching records are rewritten, not just the first. Resume matches the
     *last* titled record, so rewriting only the first would leave the file still
@@ -461,8 +467,11 @@ def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
                         record = json.loads(stripped)
                     except (json.JSONDecodeError, ValueError):
                         record = None
-                    if isinstance(record, dict) and record.get("customTitle") == old_title:
-                        record["customTitle"] = new_title
+                    if not isinstance(record, dict):
+                        record = {}
+                    keys = [key for key in RECORD_NAME_KEYS if record.get(key) == old_title]
+                    if keys:
+                        record.update(dict.fromkeys(keys, new_title))
                         raw = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
                         changed += 1
                 out.write(raw)
@@ -966,9 +975,14 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
     genuinely finds the file,
     and a miss returns None. It reports failure whenever adoption did nothing,
     landed the transcript in the wrong project directory, or left it under the
-    wrong title.
+    wrong title. A transcript whose current ``agentName`` names another session
+    is a miss too: Claude Code restores that name on resume, so the session would
+    come back under it.
     """
-    return find_transcript(cc_project_dir(dest_root, claude_home), title=title)
+    found = find_transcript(cc_project_dir(dest_root, claude_home), title=title)
+    if found is None or transcript_agent_name(found) not in (None, title):
+        return None
+    return found
 
 
 # --- the adoption itself ----------------------------------------------------

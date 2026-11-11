@@ -47,6 +47,10 @@ from pathlib import Path
 #: rewritten from the source root to the destination root on migration.
 _CWD_KEYS = ("cwd", "originalCwd")
 
+#: The record fields that name a session: ``custom-title`` records carry ``customTitle``
+#: and ``agent-name`` records carry ``agentName``. A rename rewrites both.
+RECORD_NAME_KEYS = ("customTitle", "agentName")
+
 
 def cc_project_dir(cwd: Path, claude_home: Path | None = None) -> Path:
     """Return the ``~/.claude/projects`` directory Claude Code uses for ``cwd``.
@@ -88,25 +92,11 @@ def transcript_title(path: Path) -> str | None:
     held that name.  A 16-line abandoned stub was measured blocking a live
     session's adoption two days after being renamed away.
     """
-    current: str | None = None
     try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                found = record.get("customTitle", "")
-                # Only a non-empty title counts; an untitled record leaves the
-                # title in effect alone rather than clearing it.
-                if found:
-                    current = found
+        names = _names(path, "customTitle")
     except OSError:
         return None
-    return current
+    return names[-1] if names else None
 
 
 def transcript_titles(path: Path) -> list[str]:
@@ -127,23 +117,55 @@ def transcript_titles(path: Path) -> list[str]:
     :func:`transcript_title`. Duplicates are collapsed: a session renamed away and
     back appears once.
     """
-    seen: list[str] = []
     try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                found = record.get("customTitle", "")
-                if found and found not in seen:
-                    seen.append(found)
+        return list(dict.fromkeys(_names(path, "customTitle")))
     except OSError:
         return []
-    return seen
+
+
+def transcript_agent_name(path: Path) -> str | None:
+    """Return ``path``'s CURRENT ``agentName``, the name Claude Code restores on resume, else None.
+
+    Claude Code writes ``agent-name`` records beside its ``custom-title`` ones and, on
+    resume, takes the session's name from the last of them, then re-emits
+    ``custom-title`` records under that name. A transcript whose ``customTitle`` was
+    rewritten but whose ``agentName`` was not therefore resumes under the old name.
+    """
+    try:
+        names = _names(path, "agentName")
+    except OSError:
+        return None
+    return names[-1] if names else None
+
+
+def transcript_agent_names(path: Path) -> list[str]:
+    """Every distinct ``agentName`` this transcript has held, oldest first."""
+    try:
+        return list(dict.fromkeys(_names(path, "agentName")))
+    except OSError:
+        return []
+
+
+def _names(path: Path, key: str) -> list[str]:
+    """Every non-empty ``key`` value in ``path``, in record order; raises OSError.
+
+    Only a non-empty value counts: an unnamed record leaves the name in effect alone
+    rather than clearing it.
+    """
+    found: list[str] = []
+    with path.open("rb") as fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            value = record.get(key, "") if isinstance(record, dict) else ""
+            if value:
+                found.append(value)
+    return found
 
 
 def find_transcript(project_dir: Path, *, title: str | None = None, session_id: str | None = None) -> Path | None:

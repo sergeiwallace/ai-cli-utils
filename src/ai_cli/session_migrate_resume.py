@@ -63,7 +63,7 @@ def _stale_transcript(path: Path, old_wt: Path, new_wt: Path, old: str) -> bool:
             if not isinstance(row, dict):
                 continue
             if (
-                row.get("customTitle") == old
+                old in (row.get("customTitle"), row.get("agentName"))
                 or m._rewrite_line(raw, str(old_wt), str(new_wt)) != raw
                 or (row.get("type") == "worktree-state" and row.get("worktreeSession") is not None)
                 or (row.get("type") == "relocated" and row.get("relocatedCwd") not in (None, str(new_wt)))
@@ -120,8 +120,7 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
 
             def rewrite(dest=dest):
                 m._rewrite_transcript_cwd(dest, str(old_wt), str(new_wt))
-                if old in m.transcript_titles(dest):
-                    m.retitle_transcript(dest, old, new)
+                m.retitle_transcript(dest, old, new)
                 m.neutralise_worktree_state(dest, new_wt)
 
             add("transcript title", path, dest, rewrite)
