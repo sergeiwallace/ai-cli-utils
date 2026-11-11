@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `research running` |
+| Stage cursor | `research converged (round 1)`; research doc `docs/research/cli-docs-generation-tools.md`; doc stage next |
 | Last completed integration boundary | none |
 
 ## Transition verdicts
@@ -55,18 +55,27 @@ ledger-version: 1
 | Transition | Round | Verdict | Basis | Items | Recorded by | Commit |
 |---|---:|---|---|---|---|---|
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked to "see what open source packages / tools / repos etc there are" and "what existing documentaiton there is for auto-generating documentation programmatically and / or with agentic AI". R1 and R2 also fire. | `session` | `d301960c` |
+| `research->doc` | 1 | `converged` | `rubric` | none | `session` | `e3aa819c` |
 
 ## Children dispatched
 
 | # | Child issue | Launch name | Role | Family / tier / effort | Isolation | Deliverable | Outcome |
 |---|---|---|---|---|---|---|---|
-| 1 | AI-CLI-lels.2 | `lels-research-tools` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of Click help and Markdown generators, drift checks and wiki publishing | running |
-| 2 | AI-CLI-lels.3 | `lels-research-agentic` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of agentic and LLM documentation generation | running |
+| 1 | AI-CLI-lels.2 | `lels-research-tools` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of Click help and Markdown generators, drift checks and wiki publishing | returned 68 cited sources; child closed |
+| 2 | AI-CLI-lels.3 | `lels-research-agentic` | `researcher`, read-only | claude / opus / n/a | none, writes only a scratch evidence file | cited survey of agentic and LLM documentation generation | returned 51 cited sources; child closed |
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
 - 2026-11-11 05:03Z: run opened by the coordinator; its own child issue filed and claimed.
 - 2026-11-11 05:10Z: both research legs launched with rendered Tier 3 carriers. Host contention
   read LOOK at launch.
+
+- 2026-11-11 ~05:45Z: both legs returned. The coordinator measured the Click mechanism, the
+  command tree, doc coverage and the wiki's state, and wrote the research doc. Gap review over the
+  whole doc: G1 to G4 and G6 clear (the one researchable platform fact, whether the workflow token
+  can push to the wiki, is classified as settled by the first run); G5 has no critic round in this
+  run, so no critic finding is open. Both legs reported that general web search was unavailable;
+  the host's search service was not loadable from the coordinator either, and the remaining
+  search gap does not bear on a decision. `research->doc` round 1 recorded `converged`.
 
 <!-- /doc:region name="run_history" -->
