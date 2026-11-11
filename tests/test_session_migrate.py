@@ -23,7 +23,7 @@ from conftest import snapshot_tree, with_environment_config
 from process_ownership import exited_pid
 from process_wait import scaled
 
-from ai_cli import session_migrate, session_registry
+from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.config import get_xdg_config_home, get_xdg_state_home
@@ -125,7 +125,26 @@ def slot(tmp_path):
             {
                 "schema": session_registry.SCHEMA_VERSION,
                 "machine": "m",
-                "sessions": [{"id": "r1", "kind": "local", "name": f"c-{OLD}", "relaunch_argv": ["ai", "c", "3"]}],
+                "sessions": [
+                    {
+                        "id": "r1",
+                        "kind": "local",
+                        "name": f"c-{OLD}",
+                        "owning_host": "m",
+                        "relaunch_argv": ["ai", "c", "3"],
+                        "boot_recipe": {
+                            "session_name": f"c-{OLD}",
+                            "owning_host": "m",
+                            "cwd": str(wt),
+                            "project": "myrepo",
+                            "engine": "c",
+                            "options": {"once": False, "bare": False, "is_remote": False},
+                            "extra_args": [],
+                            "shell": "/bin/zsh",
+                            "argv": ["ai", "c", f"c-{OLD}", "-p", "myrepo", "--project-prefix", "myrepo"],
+                        },
+                    }
+                ],
             }
         )
     )
@@ -210,6 +229,10 @@ def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_n
     assert json.loads((claude / "cc-sessions.json").read_text(encoding="utf-8")) == {NEW: UUID, "other-1": "x"}
     record = json.loads((state / "iterm2-sessions.json").read_text(encoding="utf-8"))["sessions"][0]
     assert (record["name"], record["relaunch_argv"]) == (f"c-{NEW}", ["ai", "c", NEW])
+    # the boot recipe follows the rename, so `ai sessions relaunch` accepts the record (AI-CLI-uzur)
+    recipe = record["boot_recipe"]
+    assert (recipe["session_name"], recipe["cwd"], recipe["argv"][2]) == (f"c-{NEW}", str(new_wt), f"c-{NEW}")
+    assert session_run_state.valid_boot_recipe(record)
 
     # a lock is never carried to the new name, and one whose pid is gone is removed
     assert not (state / f"ai-watcher-lock-c-{OLD}").exists()
@@ -619,6 +642,28 @@ def test_given_a_slot_migrated_before_these_steps_when_finished_then_every_lefto
     assert code == 0, out + err
     _assert_leftovers_carried(slot, left)
     assert (slot["repo"] / ".worktrees" / NEW).is_dir()
+
+
+def test_given_a_boot_recipe_left_naming_the_old_session_when_finished_then_it_relaunches_as_new(slot):
+    """A record renamed before AI-CLI-uzur kept a recipe booting OLD; --finish repoints it at NEW."""
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    registry = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(registry.read_text(encoding="utf-8"))
+    stale = doc["sessions"][0]["boot_recipe"]
+    stale.update(session_name=f"c-{OLD}", cwd=str(slot["wt"]))
+    stale["argv"][2] = f"c-{OLD}"
+    registry.write_text(json.dumps(doc), encoding="utf-8")
+    assert not session_run_state.valid_boot_recipe(doc["sessions"][0])
+
+    code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    record = json.loads(registry.read_text(encoding="utf-8"))["sessions"][0]
+    recipe = record["boot_recipe"]
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    assert (record["name"], recipe["session_name"], recipe["cwd"]) == (f"c-{NEW}", f"c-{NEW}", str(new_wt))
+    assert session_run_state.valid_boot_recipe(record)
 
 
 def test_given_leftovers_when_finish_dry_runs_then_nothing_changes(slot):
