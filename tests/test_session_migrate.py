@@ -819,6 +819,135 @@ def test_given_issues_assigned_to_old_when_migrated_then_new_holds_each_and_the_
         assert f"beads store: {store} (publish needed" in out, out
 
 
+# A stand-in for the configured publish command: it logs its argv, its cwd and the assignees the
+# fake bd store holds when it runs, then exits with the code ``exit`` names (``revert`` first
+# hands TST-1 back to the old name, as a pull of someone else's change would).
+_FAKE_PUBLISH = """\
+import json, os, sys
+from pathlib import Path
+
+db = Path(os.environ["FAKE_BD_DB"])
+data = json.loads(db.read_text())
+control = json.loads(Path(os.environ["FAKE_PUBLISH_CONTROL"]).read_text())
+store = sys.argv[sys.argv.index("--repo") + 1]
+held = {i["id"]: i["assignee"] for i in data["stores"].get(store, [])}
+with open(os.environ["FAKE_PUBLISH_LOG"], "a") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "cwd": str(Path.cwd().resolve()), "held": held}) + "\\n")
+if control.get("revert"):
+    next(i for i in data["stores"][store] if i["id"] == "TST-1")["assignee"] = control["revert"]
+    db.write_text(json.dumps(data))
+if control["exit"]:
+    print(f"publish refused: exit {control['exit']}", file=sys.stderr)
+    sys.exit(control["exit"])
+"""
+
+
+@pytest.fixture
+def publish(stores, tmp_path, monkeypatch):
+    """A configured publish command for each store the run re-keys, logged outside the stores."""
+    root = tmp_path / "fakepublish"
+    root.mkdir()
+    program = root / "publish_store.py"
+    program.write_text(_FAKE_PUBLISH, encoding="utf-8")
+    control = root / "control.json"
+    control.write_text(json.dumps({"exit": 0}), encoding="utf-8")
+    monkeypatch.setenv("FAKE_PUBLISH_CONTROL", str(control))
+    monkeypatch.setenv("FAKE_PUBLISH_LOG", str(root / "calls.jsonl"))
+    config = get_xdg_config_home() / "migrate-session-publish.d"
+    config.mkdir(parents=True)
+    (config / "beads.toml").write_text(
+        f"argv = [{json.dumps(str(program))}, {json.dumps('--repo')}, {json.dumps('{store}')}]\n", encoding="utf-8"
+    )
+    return {"control": control, "log": root / "calls.jsonl", "config": config / "beads.toml"}
+
+
+def _publish_calls(publish) -> list[dict]:
+    if not publish["log"].exists():
+        return []
+    return [json.loads(line) for line in publish["log"].read_text(encoding="utf-8").splitlines()]
+
+
+def _part(out: str, part: str) -> str:
+    return next(line.split(" | ", 1)[1] for line in out.splitlines() if f": {part} | " in line)
+
+
+def _ledger_finished(slot) -> list[dict]:
+    ledger = slot["state"] / "session-migrations.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()] if ledger.exists() else []
+    return [row for row in rows if row.get("finished")]
+
+
+def test_given_a_publish_command_when_migrated_then_it_runs_once_per_changed_store_after_the_re_key(stores, publish):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    calls = _publish_calls(publish)
+    assert sorted(call["argv"][-1] for call in calls) == sorted([str(stores["repo"]), str(stores["workspace"])])
+    for call in calls:
+        assert call["argv"][-2:] == ["--repo", call["cwd"]]
+        assert NEW in call["held"].values() and OLD not in {
+            assignee for issue, assignee in call["held"].items() if issue in ("TST-1", "TST-2", "WS-1")
+        }
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store: {store} (published" in out, out
+    assert _part(out, "beads store") == "done now"
+
+
+def test_given_a_publish_that_exits_non_zero_when_finished_then_the_run_exits_1_with_no_finished_row(
+    stores, publish, slot
+):
+    publish["control"].write_text(json.dumps({"exit": 6}), encoding="utf-8")
+    code, out, err = _migrate(stores["repo"], "-y")
+    assert code == 1, out + err
+
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} publish FAILED (exit 6): publish refused: exit 6" in err
+    assert _part(out, "beads store").startswith("failed: ")
+    assert _ledger_finished(slot) == []
+    # The issues were already re-keyed: the second run publishes each store again on its own record.
+    assert len(_publish_calls(publish)) == 4
+
+    publish["control"].write_text(json.dumps({"exit": 0}), encoding="utf-8")
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    assert len(_publish_calls(publish)) == 6
+    assert _part(out, "beads store") == "done now"
+    assert len(_ledger_finished(slot)) == 1
+
+
+def test_given_a_published_store_still_holding_an_issue_on_old_when_migrated_then_the_run_exits_1(stores, publish):
+    publish["control"].write_text(json.dumps({"exit": 0, "revert": OLD}), encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} was published but still holds TST-1 on {OLD}: NOT converged" in err
+    assert _part(out, "beads store").startswith("failed: ")
+
+
+def test_given_a_publish_file_without_the_store_placeholder_when_migrated_then_the_store_reads_failed(stores, publish):
+    publish["config"].write_text('argv = ["publish"]\n', encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert "must name the {store} placeholder" in err
+    assert _publish_calls(publish) == []
+    assert _assignees(stores)["TST-1"] == NEW
+
+
+def test_given_no_publish_command_when_migrated_then_each_store_reads_publish_needed_and_the_run_exits_0(stores):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store: {store} (publish needed" in out, out
+    assert _part(out, "beads store") == "skipped: publish needed, no publish command is configured"
+
+
 def test_given_closed_and_similarly_named_issues_when_migrated_then_neither_is_rewritten(stores):
     code, out, err = _migrate(stores["repo"], "-y")
 

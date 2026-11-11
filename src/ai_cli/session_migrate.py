@@ -780,6 +780,7 @@ MIGRATION_LEDGER = "session-migrations.jsonl"
 
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
+_PUBLISH_TIMEOUT = 600
 
 #: The argv prefix that runs bd.
 BD_COMMAND: tuple[str, ...] = ("bd",)
@@ -813,6 +814,8 @@ class _Store:
     comments: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
     state: Path | None = None
+    #: Re-keyed by an earlier run of this pair that no publish has confirmed since.
+    unpublished: bool = False
 
 
 def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
@@ -825,36 +828,40 @@ def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
     return found
 
 
+def _held_by(path: Path, old: str) -> tuple[list[str], str | None]:
+    """The store's non-closed issues assigned to exactly ``old``, or why they could not be read."""
+    try:
+        listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], _one_line(str(exc))
+    if listed.returncode != 0:
+        return [], _one_line(listed.stderr or f"bd exited {listed.returncode}")
+    try:
+        rows = json.loads(listed.stdout or "null")
+    except json.JSONDecodeError as exc:
+        return [], f"bd list printed no JSON ({exc})"
+    if not isinstance(rows, list):
+        return [], "bd list printed no issue list"
+    return [
+        str(row["id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
+    ], None
+
+
 def _plan_beads(old: str, new: str, stores: list[Path], state: Path) -> list[_Store]:
     """Read each store's issues held by ``old``: exactly that name, any status but closed."""
-    from .session_migrate_issues import inspect_comments, intents
+    from .session_migrate_issues import inspect_comments, intents, unpublished
 
     recorded = intents(state, old, new)
+    waiting = unpublished(state, old, new)
     planned: list[_Store] = []
     for path in dict.fromkeys([*stores, *recorded]):
-        store = _Store(path, state=state)
+        store = _Store(path, state=state, unpublished=path in waiting)
         planned.append(store)
-        try:
-            listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            store.error = _one_line(str(exc))
+        store.issues, store.error = _held_by(path, old)
+        if store.error is not None:
             continue
-        if listed.returncode != 0:
-            store.error = _one_line(listed.stderr or f"bd exited {listed.returncode}")
-            continue
-        try:
-            rows = json.loads(listed.stdout or "null")
-        except json.JSONDecodeError as exc:
-            store.error = f"bd list printed no JSON ({exc})"
-            continue
-        if not isinstance(rows, list):
-            store.error = "bd list printed no issue list"
-            continue
-        store.issues = [
-            str(row["id"])
-            for row in rows
-            if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
-        ]
         try:
             inspect_comments(store, old, new, recorded.get(path, set()))
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
@@ -891,7 +898,11 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
     """
     from .session_migrate_issues import note, remember
 
-    for store in [s for s in stores if s.error is None and (s.issues or s.comments)]:
+    try:
+        publish: tuple[str, ...] | Exception | None = _hooks.load_beads_publish()
+    except _hooks.HookConfigError as exc:
+        publish = exc
+    for store in [s for s in stores if s.error is None and (s.issues or s.comments or (s.unpublished and publish))]:
         if store.state is None:
             raise MigrationError(f"missing issue migration intent directory for {store.path}")
         remember(store.state, store.path, old, new, store.issues)
@@ -920,15 +931,65 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
                 noted = subprocess.CompletedProcess([], 1, "", str(exc))
             if noted.returncode != 0:
                 result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
-        if changed or comments:
-            result.moves.append(
-                PlannedMove(
-                    "beads store",
-                    str(store.path),
-                    f"{changed} re-keyed, local until the store is published",
-                    "publish needed",
+        if publish is None:
+            if changed or comments:
+                result.moves.append(
+                    PlannedMove(
+                        "beads store",
+                        str(store.path),
+                        f"{changed} re-keyed, local until the store is published",
+                        "publish needed",
+                    )
                 )
-            )
+            continue
+        _publish_store(publish, old, new, store, changed, result)
+
+
+def _publish_store(
+    publish: tuple[str, ...] | Exception, old: str, new: str, store: _Store, changed: int, result: MigrationResult
+) -> None:
+    """Run the configured publish command once for ``store``, then re-read it for issues still on ``old``.
+
+    A refused or failed publish, or an issue still on ``old`` after it, is a ``FAILED`` or
+    ``NOT`` warning, so the run exits 1 and records no ``finished`` row; the next run of the
+    same pair publishes the store again.
+    """
+    from .session_migrate_issues import remember_published
+
+    where = f"beads store {store.path}"
+    if isinstance(publish, Exception):
+        result.moves.append(PlannedMove("beads store", str(store.path), _one_line(str(publish)), "publish failed"))
+        result.warnings.append(f"{where} publish FAILED: {_one_line(str(publish))}")
+        return
+    env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+    try:
+        ran = subprocess.run(
+            _hooks.publish_command(publish, store.path),
+            cwd=store.path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=_PUBLISH_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        ran = subprocess.CompletedProcess([], 127, "", str(exc))
+    if ran.returncode != 0:
+        why = _one_line(ran.stderr or ran.stdout or "(no output)")
+        result.moves.append(PlannedMove("beads store", str(store.path), f"exit {ran.returncode}", "publish failed"))
+        result.warnings.append(
+            f"{where} publish FAILED (exit {ran.returncode}): {why} -- re-run the same migrate-session command"
+        )
+        return
+    if store.state is not None:
+        remember_published(store.state, store.path, old, new)
+    left, error = _held_by(store.path, old)
+    if error is not None:
+        result.warnings.append(f"{where} was published but FAILED to re-read: {error}")
+    elif left:
+        result.warnings.append(f"{where} was published but still holds {', '.join(left)} on {old}: NOT converged")
+    result.moves.append(PlannedMove("beads store", str(store.path), f"{changed} re-keyed", "published"))
 
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:

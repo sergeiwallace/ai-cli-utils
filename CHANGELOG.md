@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai migrate-session` publishes each Beads store it re-keyed when the host configures a publish
+  command in `migrate-session-publish.d/beads.toml` (an `argv` naming the `{store}` placeholder).
+  It runs the command once per changed store after the re-key, then re-reads the store: a
+  non-zero exit, or an issue still on the old name, reads `failed` and the run exits 1 with no
+  `finished` row, and the next run of the same pair publishes that store again. A host with no
+  publish command keeps the `publish needed` line, now also in the parts table, and exits 0.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
