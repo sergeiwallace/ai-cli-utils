@@ -2024,8 +2024,11 @@ def mark_migration_incomplete(registry: Registry, old_title: str, machine: str, 
         if row is None:
             raise WriteRefusedError(f"the row for {record['new_title']} is gone")
         updated = {**row, "state": "migration-incomplete", "recovery": survivors}
+        writes: dict[str, bytes | None] = {row_path(new_token): checked_row(updated)}
+        if record.get("status") == "complete":
+            writes[migration_path(old_title)] = encode_json({**record, "status": "intent", "completed_at": None})
         return Change(
-            {row_path(new_token): checked_row(updated)},
+            writes,
             f"session-names: hold {new_token} as migration-incomplete ({record['new_title']}@{machine})",
         )
 

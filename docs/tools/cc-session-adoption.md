@@ -666,3 +666,94 @@ worktree) and the `adopt-session` command in `src/ai_cli/main.py`. Tests:
 `src/ai_cli/session_migrate.py`, tested in `tests/test_session_migrate.py`.
 `ai retire-session` is `src/ai_cli/session_retire.py`, tested in
 `tests/test_session_retire.py`.
+
+### Repeating the original migration command
+
+Repeat `ai migrate-session OLD -t NAME -y` (or `OLD NEW -y`) after a failed,
+interrupted or completed attempt. The name registry's recorded pair is used even
+when its naming record is complete: naming completion alone does not prove that
+hooks finished. A different requested target is refused. No new reservation is
+made for a recorded pair. `-n` validates the requested name, spare ownership,
+word policy, worktree and registry rules, and every hook's read-only preflight.
+A preview never publishes a naming record.
+
+When OLD has gone, recovery requires the local migration ledger to bind the pair
+and repository, or OLD's original branch still checked out at NEW. An unrelated
+NEW is refused. Both project directories are refused rather than merged. Recovery
+checks and repairs the main branch, ownership and canonical registry, virtualenv
+paths, project directory and incomplete transcript rewrites as well as the
+old-name artifacts handled by `--finish`. Completed files are left untouched.
+The append-only ledger is evidence of intent; it never substitutes for inspecting
+current artifacts. If evidence is missing or ambiguous, the command names it and
+refuses rather than guessing.
+
+Every result ends with a `part | status` table. Statuses are `done earlier`,
+`done now`, `would do`, `skipped: reason` and `failed: reason`. Optional absent
+artifacts are skipped; on recovery an absent old-name artifact has no remaining
+work. Detailed artifact lines precede the table.
+
+| Exit | Meaning |
+|---|---|
+| 0 | The migration completed, or the read-only plan passed all available checks |
+| 1 | Partial migration; repeat the original command after resolving the named failure |
+| 2 | Refused before applying this attempt, or invalid command usage |
+
+Scripts that previously treated a named migration's exit 0 as success must now
+handle exit 1 when a hook fails: the naming row remains incomplete until the
+original command succeeds. Scripts that distinguished refusals by exit 1 must
+accept exit 2. `--finish` remains available, and launches still finish pending
+ledger pairs. No migration automatically publishes changed issue stores.
+
+A hook's time-sensitive checks can expire between planning and execution. The
+agent-mail snapshot warning explicitly names this limitation. See the
+[resumable hook contract](../reference/migrate-session-hooks.md) for completion
+status and legacy-hook limitations.
+
+Recovery also covers interruptions within individual parts:
+
+- Task IDs and dependency remapping are recorded once, before any task copy, in
+  the append-only `session-migration-tasks.jsonl` under the same state directory.
+  Every remaining source and existing destination is checked against its saved
+  hash. A task copied before a stop is verified and its old copy removed; its ID
+  is never allocated again. A missing journal with tasks in both namespaces is
+  ambiguous and is refused with both paths named. A changed or missing artifact
+  is refused rather than overwritten. The journal records intent, not completion.
+- A renamed memory file whose index rewrite was interrupted supplies the verified
+  new filename for finishing only the stale links in `MEMORY.md`.
+- Matching old/new metadata copies finish source removal; differing copies remain
+  a conflict. New metadata, task and wrapper files are published atomically.
+- A moved agent worktree's old branch and ownership are repaired independently.
+  Flat `.worktrees/OLD-<task>` worktrees follow NEW when their branch proves the
+  OLD or NEW owner; a matching filename alone never grants ownership.
+- The chief registration and its registry fields are checked independently, so
+  stopping between those writes does not hide the second write.
+
+Named dry runs never publish offline activations or fetch the name-registry ref;
+they inspect its cached snapshot. A missing published generation retains the
+existing shipped-list warning. Registry availability and cached policy can change
+before a real reservation, whose transaction rechecks current naming rules.
+Without `-y`, a named migration asks for confirmation before reserving its name.
+The pair intent and task-ID mapping are appended before moving a worktree, so a stop before the move
+receipt can also recover a checkout that was using a topic branch. A completed
+hook's read-only output is informational and does not count as a new write.
+
+Issue assignee updates and their migration comments are recovered separately.
+The append-only `session-migration-issues.jsonl` records the exact store and issue
+before its update; retry verifies the current assignee and existing comment before
+adding only a missing comment. An unrelated issue already held by NEW is never
+included just because its assignee matches. A changed assignee or unreadable store
+is named as incomplete. Store publishing remains a separate operation.
+
+Tasks whose source has already gone are left untouched after later task edits;
+hash checks protect copies that still have a source to remove. Recorded naming
+pairs can prove recovery even if the local pair ledger is lost. The final table
+includes the naming registry, and an incomplete dry-run plan returns 1.
+Liveness checks include either name's tmux session and processes below either
+worktree, including a process with a different title inside NEW.
+Recovery streams transcript records and preserves malformed lines verbatim, as
+the original transcript rewriters do. A file that cannot be read is a named
+preflight refusal with the same parts table; a parser traceback is not completion.
+Moved task worktrees are also inspected at their new flat or container paths.
+Their ownership and both marker types can finish independently of branch rename.
+Virtualenv relocation applies to task worktrees too, including a stop immediately
+after their move; scripts that already use the new path are left untouched.

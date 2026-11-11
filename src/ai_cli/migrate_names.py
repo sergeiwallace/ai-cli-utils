@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import name_list, session_clients
 from . import name_registry as reg
-from .session_migrate import MigrationError, finish_session, migrate_session
+from .session_migrate import MigrationError, MigrationResult, PartialMigrationError, migrate_session
 
 ENGINES = ("c", "g", "p", "cx")
 
@@ -95,7 +95,7 @@ class NamedMigration:
     old: str
     new: str
     released_old: bool = False
-    result: object = None
+    result: MigrationResult | None = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -110,7 +110,7 @@ def migrate_to_name(
     words: frozenset[str],
     adapters: list[session_clients.Adapter],
     regenerate_script: Callable[[dict], str] | None = None,
-    migrate: Callable[..., object] = migrate_session,
+    migrate: Callable[..., MigrationResult | None] = migrate_session,
     complete: Callable[[reg.Registry, str, str], bool] = reg.complete_migration,
 ) -> NamedMigration:
     """Reserve a name for ``old``'s session and rename it, releasing what a failure leaves unused."""
@@ -135,14 +135,19 @@ def migrate_to_name(
             ) from exc
         reg.mark_migration_incomplete(registry, old, slot.machine, survivors)
         listed = ", ".join(f"{item['kind']} {item['identifier']}" for item in survivors)
-        raise MigrationError(
+        raise PartialMigrationError(
             f"the rename of {old} to {reservation.title} failed ({exc}) and left {listed} under the new name; "
             f"{reservation.name} stays held as migration-incomplete. Run the same command again to resume it."
         ) from exc
+    if getattr(result, "failed", False):
+        reg.mark_migration_incomplete(
+            registry, old, slot.machine, artifacts_under(reservation.title, repo_root, adapters)
+        )
+        return NamedMigration(old=old, new=reservation.title, result=result)
     try:
         complete(registry, old, slot.machine)
     except reg.RegistryError as exc:
-        raise MigrationError(
+        raise PartialMigrationError(
             f"{old} was renamed to {reservation.title}, but the completion could not be published ({exc}); "
             "the next `ai reconcile-names` or `ai migrate-session` publishes it"
         ) from exc
@@ -195,10 +200,7 @@ def resume_rename(repo_root: Path, old: str, new: str, regenerate_script=None) -
     A rename that stopped after the worktree moved has its Claude Code project directory
     carried here too, as the full move would have, before the old-name leftovers are finished.
     """
-    if not (repo_root / ".worktrees" / new).exists():
-        return migrate_session(repo_root, old, new, regenerate_script=regenerate_script, new_is_reserved=True)
-    carry_project_dir(repo_root / ".worktrees" / old, repo_root / ".worktrees" / new, old, new)
-    return finish_session(repo_root, old, new)
+    return migrate_session(repo_root, old, new, regenerate_script=regenerate_script, new_is_reserved=True)
 
 
 def carry_project_dir(old_wt: Path, new_wt: Path, old: str, new: str, home: Path | None = None) -> bool:

@@ -38,7 +38,7 @@ def _added_by() -> str:
     return f"{os.environ.get('AI_TMUX_SESSION') or 'cli'}@{_host()}"
 
 
-def open_registry() -> reg.Registry:
+def open_registry(*, read_only: bool = False) -> reg.Registry:
     """This machine's registry, after publishing its spool; exits when there is none to use."""
     try:
         discovery = reg.discover()
@@ -48,7 +48,8 @@ def open_registry() -> reg.Registry:
     if discovery.registry is None:
         _out.error(Tag.NAMES, "config", discovery.reason)
         sys.exit(1)
-    publish_pending(discovery.registry)
+    if not read_only:
+        publish_pending(discovery.registry)
     return discovery.registry
 
 
