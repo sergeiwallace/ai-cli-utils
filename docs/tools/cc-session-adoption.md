@@ -559,7 +559,10 @@ and refuses while `.worktrees/OLD` is still a registered slot or either session 
 running; stop a running one with `ai sessions stop NAME` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
 other parts and hooks still run, and the command exits 1 so it is re-run. `-n` prints its
-plan with nothing written.
+plan with nothing written, and runs while either session is live: its first line,
+`live session: ...`, names the running session and says a writing run refuses until it
+is stopped with `ai sessions stop NAME`. The writing run keeps that refusal and exits 2
+before its first write.
 
 `--finish` needs only one name. `ai migrate-session NEW --finish`, the old name,
 NEW's first name (`cleo` in `myrepo-box-cleo`) or `ai migrate-session --finish -t
@@ -615,14 +618,15 @@ with or without `--finish`, does only the cleanup: it retires every old-name slo
 proved landed and removes every empty `OLD-agents` container, in every repo, and
 keeps and names the rest. Because it touches nothing NEW could be using, it runs
 while NEW is live in its own slot. It still refuses while a process named OLD runs
-or any process works inside that slot.
+or any process works inside that slot; its `--finish -n` plans anyway and names that
+process on a `live session:` line.
 
 Left alone deliberately: the rest of the repo-root memory directory (shared by every session
 of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
 
-Refused before anything is written, `-n` included: a slot that is not a
+Refused before anything is written, `-n` included (a `--finish -n` excepted, as above): a slot that is not a
 registered worktree (use `adopt-session`), an existing `.worktrees/NEW` or
 project directory for it, a running Claude Code process named OLD/NEW or working
 inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent).

@@ -8082,7 +8082,10 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
     "-f",
     "--finish",
     is_flag=True,
-    help="The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included",
+    help=(
+        "The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; "
+        "with -n/--dry-run it plans even while a session is live and names it"
+    ),
 )
 @click.option(
     "-b",
@@ -8169,7 +8172,7 @@ def cmd_migrate_session(
     try:
         result = _run(True)
         if not dry_run:
-            if not yes:
+            if not yes and not result.live:
                 _print_migration(result)
                 if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {new}?"):
                     _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)
