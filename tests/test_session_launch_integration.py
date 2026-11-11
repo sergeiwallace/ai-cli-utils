@@ -536,6 +536,7 @@ def test_given_live_remote_worktree_when_launched_from_elsewhere_then_reuses_own
     server._real_git = True
     repo = tmp_path / "myproject"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
 
     def git(*args):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
@@ -608,6 +609,7 @@ def test_given_dead_remote_session_when_relaunched_from_elsewhere_then_reuses_it
     server._real_git = True
     repo = tmp_path / "myproject"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
 
     def git(*args):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
@@ -683,6 +685,7 @@ def test_given_session_running_in_its_worktree_when_reattached_then_its_git_stat
     server._real_git = True
     repo = tmp_path / "myproject"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
 
     def git(*args, cwd=repo):
         return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True)
@@ -1155,6 +1158,7 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
 ):
     """A new session uses lowercase names while retaining the registry's raw prefix."""
     server = patched_subprocess
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "MYPROJECT"\n')
     worktree = tmp_path / ".worktrees" / "myproject-tst-1"
 
     with (

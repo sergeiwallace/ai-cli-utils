@@ -7,6 +7,7 @@ it without creating anything, so each test reads the name a real launch would us
 import io
 import json
 import os
+import subprocess
 import sys
 import tomllib
 from unittest.mock import patch
@@ -104,6 +105,10 @@ def real_alias_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(session_naming, "host_id", _REAL_HOST_ID)
     monkeypatch.setattr(session_naming, "alias_sources", _REAL_ALIAS_SOURCES)
     projects = tmp_path / "projects"
+    owner = projects / "myrepo"
+    owner.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(owner)], check=True)
+    (owner / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     environment_config = projects / "myhub" / "config"
     environment_config.mkdir(parents=True)
     monkeypatch.setattr("ai_cli.config.get_environment_repo", lambda: "myhub")
@@ -294,7 +299,9 @@ def _allocate(stdin: io.StringIO, config=None):
         patch("ai_cli.session._tmux_session_names", return_value=[]),
         patch("ai_cli.tmux_setup.tmux_present", return_value=True),
     ):
-        return run_cli(["ai", "internal", "allocate-session-name", "c", "myrepo", ""], config=config)
+        return run_cli(
+            ["ai", "internal", "allocate-session-name", "c", "myrepo", "", "--project", "myrepo"], config=config
+        )
 
 
 _COMMENTED_REGISTRY = (

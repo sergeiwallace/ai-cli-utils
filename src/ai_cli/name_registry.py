@@ -1082,6 +1082,8 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     holder = snapshot.holder(name)
     if holder:
         return "held", f"{name} is held by {holder}"
+    if name in alias_words() | {slot.repo_alias, slot.host_alias, "agents"}:
+        return "word", f"reserved name rule refused {name!r}: it is a repo or host alias; choose another name"
     if _TOKEN_RE.fullmatch(name):
         held = held_tokens(snapshot)
         if int(policy.get("confusable", {}).get("max_edit_distance", 1)):

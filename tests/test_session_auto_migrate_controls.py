@@ -160,6 +160,7 @@ def test_given_a_legacy_slot_when_boot_recipe_replays_then_it_is_not_migrated(tm
     repo = tmp_path / "myrepo"
     legacy_slot = repo / ".worktrees" / OLD
     legacy_slot.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     record["name"] = f"c-{OLD}"
     recipe = record["boot_recipe"]
     recipe.update(session_name=f"c-{OLD}", cwd=str(legacy_slot), project="myrepo")

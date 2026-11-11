@@ -80,7 +80,7 @@ def test_given_blocked_envrc_when_exec_then_command_still_runs(tmp_path):
         patch("ai_cli.main.subprocess.run", side_effect=fake_run),
     ):
         with pytest.raises(SystemExit):
-            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+            _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
     assert execs, "the engine must still be exec'd when direnv refuses the .envrc"
     assert execs[0][0] == "claude", f"expected a direct claude exec, got {execs[0]!r}"
@@ -103,7 +103,7 @@ def test_given_usable_envrc_when_exec_then_goes_through_direnv(tmp_path):
         ),
     ):
         with pytest.raises(SystemExit):
-            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+            _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
     assert execs[0][0] == "direnv"
     assert "claude" in execs[0]
@@ -123,7 +123,7 @@ def test_given_no_envrc_when_exec_then_runs_command_directly(tmp_path):
 
     with patch("ai_cli.main.os.execvp", side_effect=fake_execvp):
         with pytest.raises(SystemExit):
-            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+            _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
     assert execs[0][0] == "claude"
 
@@ -144,7 +144,7 @@ def test_given_direnv_missing_when_envrc_present_then_falls_back_to_direct_exec(
         patch("ai_cli.main.subprocess.run", side_effect=FileNotFoundError("no direnv")),
     ):
         with pytest.raises(SystemExit):
-            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+            _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
     assert execs and execs[0][0] == "claude"
 
@@ -164,7 +164,7 @@ def test_given_direnv_missing_when_envrc_present_then_no_approval_warning(tmp_pa
         patch("ai_cli.main.shutil.which", return_value=None),
     ):
         with pytest.raises(SystemExit):
-            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+            _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
     assert "direnv allow" not in capsys.readouterr().err
 
@@ -195,6 +195,7 @@ def _make_repo(path: Path) -> Path:
     _git("init", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "app"\n')
     (seed / "README.md").write_text("hi\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-m", "init", cwd=seed)
@@ -211,7 +212,7 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
     """The end-to-end regression: launching in repo A must not touch repo B.
 
     Reproduces the reported failure -- ``ai c`` inside the knowledge-graph repo
-    created ``kg-tst-1`` under the *main* project's ``.worktrees/`` instead.
+    created ``app-tst-1`` under the *main* project's ``.worktrees/`` instead.
     """
     projects = tmp_path / "projects"
     target = _make_repo(projects / "myproject")
@@ -244,7 +245,7 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
                 remote=False,
                 project="",
                 is_remote=False,
-                project_prefix_override="kg",
+                project_prefix_override="app",
                 extra_args=[],
                 config={
                     "worktree": {"enabled": True},
@@ -253,7 +254,7 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
                 },
             )
 
-    assert (target / ".worktrees" / "kg-tst-1").is_dir(), "worktree must be created in the launching repo"
+    assert (target / ".worktrees" / "app-tst-1").is_dir(), "worktree must be created in the launching repo"
     assert not (other / ".worktrees").exists(), "worktree must NOT be created in the main project"
 
 
@@ -300,14 +301,14 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
                 remote=False,
                 project="",
                 is_remote=False,
-                project_prefix_override="kg",
+                project_prefix_override="app",
                 extra_args=[],
                 config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
             )
 
     # The launch must proceed to the engine exec, not abort on the failed sync.
     assert exc_info.value.code == 0
-    assert (repo / ".worktrees" / "kg-tst-1").is_dir()
+    assert (repo / ".worktrees" / "app-tst-1").is_dir()
 
     err = capsys.readouterr().err
     assert "git pull --rebase failed" in err
@@ -316,7 +317,7 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
 
 
 def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_segment(tmp_path, monkeypatch):
-    """A local session on a named host must be ``kg-tst-1``, not ``c-r-kg-tst-1``.
+    """A local session on a named host must be ``app-tst-1``, not ``c-r-app-tst-1``.
 
     The ``-r`` segment marks a session reached over SSH; applying it to a local
     launch mislabels it in the session map and in ``ai ls``.
@@ -347,13 +348,13 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
                 remote=False,
                 project="",
                 is_remote=False,
-                project_prefix_override="kg",
+                project_prefix_override="app",
                 extra_args=[],
                 config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
             )
 
-    assert os.environ.get("CLAUDE_CODE_TASK_LIST_ID") == "kg-tst-1"
-    assert (repo / ".worktrees" / "kg-tst-1").is_dir()
+    assert os.environ.get("CLAUDE_CODE_TASK_LIST_ID") == "app-tst-1"
+    assert (repo / ".worktrees" / "app-tst-1").is_dir()
 
 
 # --- worktree isolation is announced, not silent (AI-CLI-195 AC-7) --------------
@@ -384,7 +385,7 @@ def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected
                 remote=False,
                 project="",
                 is_remote=False,
-                project_prefix_override="kg",
+                project_prefix_override="app",
                 extra_args=[],
                 config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
             )
@@ -406,8 +407,8 @@ def test_given_a_new_worktree_when_launched_then_its_creation_is_announced(tmp_p
     err = capsys.readouterr().err
     assert "[launch] worktree: created" in err
     # The message must name WHERE, or it does not remove the surprise.
-    assert str(repo / ".worktrees" / "kg-tst-1") in err
-    assert (repo / ".worktrees" / "kg-tst-1").is_dir()
+    assert str(repo / ".worktrees" / "app-tst-1") in err
+    assert (repo / ".worktrees" / "app-tst-1").is_dir()
 
 
 def test_given_a_launch_from_a_repo_root_when_announced_then_the_opt_out_is_named(tmp_path, monkeypatch, capsys):
@@ -427,7 +428,7 @@ def test_given_an_existing_worktree_when_announced_then_no_opt_out_hint_is_repea
     _launch_in(monkeypatch, tmp_path)
     capsys.readouterr()
 
-    monkeypatch.chdir(repo / ".worktrees" / "kg-tst-1")
+    monkeypatch.chdir(repo / ".worktrees" / "app-tst-1")
     _launch_in(monkeypatch, tmp_path)
 
     assert "--no-worktree" not in capsys.readouterr().err
@@ -499,8 +500,8 @@ def test_given_an_existing_worktree_when_launched_then_its_reuse_is_announced(tm
     _launch_in(monkeypatch, tmp_path, engine=engine)
     capsys.readouterr()
 
-    monkeypatch.chdir(repo / ".worktrees" / "kg-tst-1")
+    monkeypatch.chdir(repo / ".worktrees" / "app-tst-1")
     _launch_in(monkeypatch, tmp_path, engine=engine)
 
     err = capsys.readouterr().err
-    assert f"[launch] worktree: reusing {repo / '.worktrees' / 'kg-tst-1'}" in err
+    assert f"[launch] worktree: reusing {repo / '.worktrees' / 'app-tst-1'}" in err

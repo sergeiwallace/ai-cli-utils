@@ -48,6 +48,7 @@ def _init_seed(seed: Path) -> None:
     _git("init", "-q", "-b", "main", ".", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
 
 
 @pytest.fixture
@@ -133,16 +134,16 @@ def test_given_checkout_on_workspace_branch_when_worktree_created_then_tracks_th
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "workspace"
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None and worktree.is_dir()
-    assert _upstream_of("wt-session-1", cwd=repo) == "origin/workspace"
+    assert _upstream_of("wt-myrepo-tst-1", cwd=repo) == "origin/workspace"
     # The point of the issue: not main, however main has moved.
-    assert _upstream_of("wt-session-1", cwd=repo) != "origin/main"
+    assert _upstream_of("wt-myrepo-tst-1", cwd=repo) != "origin/main"
 
     # Base agrees with upstream — a worktree based on main while tracking the
     # workspace branch would make its first pull --rebase replay unrelated commits.
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == _out("rev-parse", "origin/workspace", cwd=repo)
+    assert _out("rev-parse", "wt-myrepo-tst-1", cwd=repo) == _out("rev-parse", "origin/workspace", cwd=repo)
     assert (worktree / "workspace-notes.md").exists(), "the worktree must contain the workspace branch's work"
 
 
@@ -155,7 +156,7 @@ def test_given_checkout_on_workspace_branch_when_worktree_created_then_that_bran
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
     assert _out("rev-parse", "workspace", cwd=repo) == before
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "workspace"
@@ -171,11 +172,11 @@ def test_given_checkout_on_main_when_worktree_created_then_still_tracks_origin_m
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "main"
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None and worktree.is_dir()
-    assert _upstream_of("wt-session-1", cwd=repo) == "origin/main"
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == _out("rev-parse", "origin/main", cwd=repo)
+    assert _upstream_of("wt-myrepo-tst-1", cwd=repo) == "origin/main"
+    assert _out("rev-parse", "wt-myrepo-tst-1", cwd=repo) == _out("rev-parse", "origin/main", cwd=repo)
 
 
 # --- AC-3: resolution failure attaches NO upstream, never origin/main ---
@@ -195,10 +196,10 @@ def test_given_integration_branch_absent_from_origin_when_worktree_created_then_
     assert _out("rev-parse", "--verify", "--quiet", "refs/remotes/origin/main", cwd=repo), "origin/main must exist"
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None and worktree.is_dir()
-    upstream = _upstream_of("wt-session-1", cwd=repo)
+    upstream = _upstream_of("wt-myrepo-tst-1", cwd=repo)
     assert upstream is None, f"expected NO upstream, got {upstream!r}"
     assert "NO upstream" in capsys.readouterr().err, "the user must be told the worktree tracks nothing"
 
@@ -218,10 +219,10 @@ def test_given_configured_branch_exists_only_locally_when_worktree_created_then_
         patch("ai_cli.trust.ensure_workspace_trusted"),
         _config(myproject="local-only-workspace"),
     ):
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
 
     assert worktree is not None and worktree.is_dir()
-    upstream = _upstream_of("wt-session-1", cwd=repo)
+    upstream = _upstream_of("wt-myrepo-tst-1", cwd=repo)
     assert upstream is None, f"expected NO upstream, got {upstream!r}"
 
 
@@ -235,9 +236,9 @@ def test_given_configured_branch_exists_nowhere_when_worktree_created_then_raise
         _config(myproject="never-created"),
         pytest.raises(RuntimeError, match="neither on"),
     ):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
-    assert not (repo / ".worktrees" / "session-1").exists(), "no worktree may be left behind"
+    assert not (repo / ".worktrees" / "myrepo-tst-1").exists(), "no worktree may be left behind"
 
 
 def test_given_detached_head_when_worktree_created_then_raises_instead_of_guessing(repo_on_main, monkeypatch):
@@ -251,9 +252,9 @@ def test_given_detached_head_when_worktree_created_then_raises_instead_of_guessi
         _no_config(),
         pytest.raises(RuntimeError, match="detached"),
     ):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
-    assert not (repo / ".worktrees" / "session-1").exists(), "no worktree may be left behind"
+    assert not (repo / ".worktrees" / "myrepo-tst-1").exists(), "no worktree may be left behind"
 
 
 def test_given_no_origin_remote_when_worktree_created_then_raises(tmp_path, monkeypatch):
@@ -271,9 +272,9 @@ def test_given_no_origin_remote_when_worktree_created_then_raises(tmp_path, monk
         _no_config(),
         pytest.raises(RuntimeError, match="no `origin` remote"),
     ):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
-    assert not (repo / ".worktrees" / "session-1").exists()
+    assert not (repo / ".worktrees" / "myrepo-tst-1").exists()
 
 
 # --- AC-5: the workspace branch is configured, never hardcoded ---
@@ -296,9 +297,9 @@ def test_given_configured_integration_branch_when_worktree_created_then_config_w
         patch("ai_cli.trust.ensure_workspace_trusted"),
         _config(myproject="main"),
     ):
-        create_worktree("session-1")
+        create_worktree("myrepo-tst-1")
 
-    assert _upstream_of("wt-session-1", cwd=repo) == "origin/main"
+    assert _upstream_of("wt-myrepo-tst-1", cwd=repo) == "origin/main"
 
 
 def test_given_config_table_when_read_then_blank_branches_are_ignored(tmp_path):
@@ -334,7 +335,7 @@ def test_given_worktree_tracking_its_integration_branch_when_drift_checked_then_
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
     assert worktree is not None
 
     with _no_config():
@@ -342,7 +343,7 @@ def test_given_worktree_tracking_its_integration_branch_when_drift_checked_then_
         assert _upstream_drift(worktree) is None
 
     # Negative control: repoint it at main and the same check must now report drift.
-    _git("branch", "--set-upstream-to=origin/main", "wt-session-1", cwd=repo)
+    _git("branch", "--set-upstream-to=origin/main", "wt-myrepo-tst-1", cwd=repo)
     with _no_config():
         drift = _upstream_drift(worktree)
     assert drift is not None, "a worktree repointed at origin/main must be reported as drifted"
@@ -365,20 +366,20 @@ def test_given_existing_worktree_branch_when_recreated_then_history_is_preserved
     monkeypatch.chdir(repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        worktree = create_worktree("session-1")
+        worktree = create_worktree("myrepo-tst-1")
     assert worktree is not None
 
     (worktree / "session-work.md").write_text("work from the session\n")
     _git("add", "-A", cwd=worktree)
     _git("commit", "-q", "-m", "session work", cwd=worktree)
-    session_tip = _out("rev-parse", "wt-session-1", cwd=repo)
+    session_tip = _out("rev-parse", "wt-myrepo-tst-1", cwd=repo)
 
     _git("worktree", "remove", "--force", str(worktree), cwd=repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"), _no_config():
-        again = create_worktree("session-1")
+        again = create_worktree("myrepo-tst-1")
 
     assert again is not None
     assert again == worktree
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == session_tip
+    assert _out("rev-parse", "wt-myrepo-tst-1", cwd=repo) == session_tip
     assert (Path(again) / "session-work.md").exists(), "the session's own commit must survive re-creation"
