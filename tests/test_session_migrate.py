@@ -302,6 +302,20 @@ def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(s
     assert _everything(slot) == before
 
 
+def test_given_a_running_session_when_migrating_then_the_refusal_names_the_stop_verb(slot):
+    sessions = slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(slot["wt"]), "sessionId": UUID})
+    )
+    _code, _out, err = _migrate(slot["repo"], "-y")
+    assert f"ai sessions stop {OLD}" in err
+    (sessions / f"{os.getpid()}.json").unlink()
+    code, _out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{OLD}"])
+    assert code == 2
+    assert f"ai sessions stop {OLD}" in err
+
+
 def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
     (slot["repo"] / ".worktrees" / NEW).mkdir()
     code, _out, err = _migrate(slot["repo"], "-y")

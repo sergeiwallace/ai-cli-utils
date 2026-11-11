@@ -269,7 +269,9 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
         .read_text(encoding="utf-8")
         .replace("__PROJECT_DIR__", str(cwd))
     )
-    if getattr(request, "param", None) in ("fenced", "dead-fenced"):
+    # "current" runs the program session_script.py generates today; the fenced
+    # variants run it with a failed restart request already recorded.
+    if getattr(request, "param", None) in ("current", "fenced", "dead-fenced"):
         shell = binaries / "session-shell"
         shell.write_text(
             preamble
@@ -305,7 +307,8 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
                 old_agent_identity={"backend": "procfs", "marker": 1},
                 launch_log_path=str(launch_log),
             )
-        session_restart._atomic_json(session_restart.state_paths(SESSION)[2], fenced)
+        if request.param != "current":
+            session_restart._atomic_json(session_restart.state_paths(SESSION)[2], fenced)
     else:
         source = legacy
     main._write_launch_script_if_changed(script, source)
