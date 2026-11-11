@@ -1,6 +1,7 @@
 """Real naming entry points must refresh a retired shell identity before lookup."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,11 @@ def test_given_stale_host_when_name_candidates_listed_then_current_alias_is_reso
 def test_given_stale_host_when_migrating_to_name_then_current_alias_names_target(fresh_host, tmp_path):
     repo = _make_repo(tmp_path, "myrepo")
     (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    # The dry run now applies the real run's refusals, so the session must be a registered worktree.
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", str(repo / ".worktrees" / "myrepo-1"), "-b", "wt-myrepo-1"],
+        check=True,
+    )
     code, out, err = run_cli(
         ["ai", "migrate-session", "myrepo-1", "--to-name", "cleo", "--dry-run", "--repo", str(repo)]
     )
