@@ -92,7 +92,7 @@ def test_given_an_incomplete_transcript_line_when_original_command_repeats_then_
 
     assert _migrate(slot["repo"], "-y")[0] == 0
     transcript = next(cc_project_dir(slot["repo"] / ".worktrees" / NEW, slot["claude"]).glob("*.jsonl"))
-    with transcript.open("a") as out:
+    with transcript.open("a", encoding="utf-8") as out:
         out.write('{"type":"assistant","message":"incomplete')
     before = _everything(slot)
     for flag in ("-n", "-y"):
@@ -191,7 +191,7 @@ def test_given_metadata_copied_before_source_removal_when_retried_then_metadata_
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     assert not source.exists()
-    script = (slot["state"] / "sessions" / f"c-{NEW}.sh").read_text()
+    script = (slot["state"] / "sessions" / f"c-{NEW}.sh").read_text(encoding="utf-8")
     assert f"ai_name={NEW}" in script and f"ai_name={OLD}" not in script
 
 

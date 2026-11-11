@@ -75,7 +75,7 @@ def test_given_a_named_hook_failure_when_migrating_then_incomplete_until_origina
     code, out, err = migrate(fleet, OLD, "-t", "cleo")
     assert code == 1, out + err
     assert fleet.rows()["cleo"]["state"] == "migration-incomplete"
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
     script.write_text(content.replace("'live' ==", "'never' =="))
     code, out, err = migrate(fleet, OLD, "-t", "cleo")
     assert code == 0, out + err
@@ -119,7 +119,7 @@ def test_given_a_completed_name_with_a_new_failing_hook_when_retried_then_row_st
     script = hooks("10-notes", "notes", fail="live")
     assert migrate(fleet, OLD, "-t", "cleo")[0] == 1
     assert fleet.rows()["cleo"]["state"] == "migration-incomplete"
-    script.write_text(script.read_text().replace("'live' ==", "'never' =="))
+    script.write_text(script.read_text(encoding="utf-8").replace("'live' ==", "'never' =="), encoding="utf-8")
     code, out, err = migrate(fleet, OLD, "-t", "cleo")
     assert code == 0, out + err
     assert fleet.rows()["cleo"]["state"] == "active"
