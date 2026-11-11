@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions wind-down <slug>` stops a running session for a scheduled maintenance window and
+  records the new exit cause `maintenance_wind_down`, so `ai sessions relaunch --boot` brings it
+  back after the next boot. It marks the record first, then stops the session through its
+  wrapper's normal clean exit, which keeps that cause instead of `manual_exit`. `-t/--timeout`
+  bounds the wait and `-d/--dry-run` previews it. A window that ends without a reboot runs
+  `ai sessions relaunch <slug>` for each session it wound down. The new cause is in the default
+  `session_relaunch.causes`; a profile that lists its own causes must add it. Terminal restore
+  treats it like `host_reboot`.
 - `ai -h` and every group's help (`ai sessions -h`, `ai sync -h` and the rest) now print each
   command's complete description, every sentence and paragraph, wrapped under the command name,
   instead of a first sentence cut off with "...". Help uses up to 100 columns on a terminal wider

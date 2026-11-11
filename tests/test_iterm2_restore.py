@@ -932,3 +932,18 @@ def test_given_dry_run_when_the_sweep_would_classify_then_the_registry_is_not_wr
     assert "c-myproject-9: would record exit (cause=host_reboot; tmux session no longer exists)" in out
     assert machine.registry.read_bytes() == before
     assert machine.system.typed() == []
+
+
+def test_given_a_wound_down_record_when_restoring_then_it_follows_the_host_reboot_toggle(machine):
+    machine.config("[iterm2.persistence.restore.relaunch.scenarios]\nhost_reboot = false")
+    machine.system.gone = {"c-myproject-9"}
+    machine.seat(_record("c-myproject-9", exit_cause="maintenance_wind_down"))
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert (
+        "c-myproject-9: skipped (cause=maintenance_wind_down follows host_reboot; "
+        "restore.relaunch.scenarios.host_reboot = false)"
+    ) in out
+    assert machine.system.typed() == []
