@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import name_list, session_clients
 from . import name_registry as reg
-from .session_migrate import MigrationError, PartialMigrationError, migrate_session
+from .session_migrate import MigrationError, MigrationResult, PartialMigrationError, migrate_session
 
 ENGINES = ("c", "g", "p", "cx")
 
@@ -95,7 +95,7 @@ class NamedMigration:
     old: str
     new: str
     released_old: bool = False
-    result: object = None
+    result: MigrationResult | None = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -110,7 +110,7 @@ def migrate_to_name(
     words: frozenset[str],
     adapters: list[session_clients.Adapter],
     regenerate_script: Callable[[dict], str] | None = None,
-    migrate: Callable[..., object] = migrate_session,
+    migrate: Callable[..., MigrationResult | None] = migrate_session,
     complete: Callable[[reg.Registry, str, str], bool] = reg.complete_migration,
 ) -> NamedMigration:
     """Reserve a name for ``old``'s session and rename it, releasing what a failure leaves unused."""

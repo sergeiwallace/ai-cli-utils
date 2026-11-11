@@ -150,7 +150,7 @@ def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:
 
 
 def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
-    parts = dict.fromkeys(PARTS, "done earlier" if resumed else "skipped: no matching artifact")
+    parts: dict[str, str] = dict.fromkeys(PARTS, "done earlier" if resumed else "skipped: no matching artifact")
     parts["name registry"] = "skipped: direct rename"
 
     def assign(part: str, status: str):
