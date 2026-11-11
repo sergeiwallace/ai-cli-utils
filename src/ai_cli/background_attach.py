@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeGuard
 
 import psutil
 
@@ -97,7 +98,7 @@ def is_idle(row: dict) -> bool:
     return _word(row, "state") in _IDLE_STATES and _word(row, "status") in _IDLE_STATUSES
 
 
-def is_copy_title(title: object, name: str) -> bool:
+def is_copy_title(title: object, name: str) -> TypeGuard[str]:
     """Whether ``title`` is session ``name`` or a copy Claude Code numbered ``name (N)``.
 
     Claude Code numbers a new background copy " (N)" when an older copy already holds
