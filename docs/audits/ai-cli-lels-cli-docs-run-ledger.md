@@ -47,7 +47,7 @@ ledger-version: 1
 | Target commit (base) | `d301960c` |
 | Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
-| Stage cursor | `doc-audit respecify` generation 2 frozen; conformance round pending (host contention at HOLD) |
+| Stage cursor | `doc-audit audit-stabilized` (8 rounds, two spec freezes); boundary `doc-audit->implement` finalized and the implement gate passed for design sha256 `1c5c7a5a`; implement next |
 | Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
 | Last completed integration boundary | none |
 
@@ -57,6 +57,7 @@ ledger-version: 1
 |---|---:|---|---|---|---|---|
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked to "see what open source packages / tools / repos etc there are" and "what existing documentaiton there is for auto-generating documentation programmatically and / or with agentic AI". R1 and R2 also fire. | `session` | `d301960c` |
 | `research->doc` | 1 | `converged` | `rubric` | none | `session` | `e3aa819c` |
+| `doc-audit->implement` | 8 | `advance` | `fold` | none | `session` | `HEAD` |
 
 ## Children dispatched
 
@@ -113,5 +114,14 @@ ledger-version: 1
   by publish-unless-excluded with publication precedence (`bdf9a4c0`, `aca5af21`); register
   generation 2 reviewed (codex review, REJECT, all items applied) and frozen. The launcher
   confirmed the Discussions epic's task-panel entry exists.
+
+- 2026-11-11 ~07:20Z: rounds 7 and 8 converged after one more fix pass (`f5461940`). The audit
+  budget (8 rounds at the standard tier) is now spent, so any further design change would halt at
+  the cap. Boundary alignment, second attempt: MISMATCH on a brief contradiction (the audit
+  authority's `push: false` against the leaf's own push and PR) and on the deliberate rejection
+  of unknown `ai ps` flags. The brief was clarified; the third attempt, given the scope definition
+  and the recorded rationale for the `ps` change, returned ALIGNED. Its two scope-change `kind`
+  values were lower-case; they were upper-cased to the schema's enum with no other edit. Finalize
+  returned `audit-stabilized`; `check_auto_flow_implement_gate.py` passed.
 
 <!-- /doc:region name="run_history" -->

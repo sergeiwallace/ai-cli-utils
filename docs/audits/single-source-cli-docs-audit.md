@@ -79,12 +79,12 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: audit-converged; round 8` |
-| Promotion | `blocked` |
+| Stage cursor | `doc-audit done: audit-stabilized; round 8` |
+| Promotion | `ready` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** audit-converged — NOT promotion ready
+**Loop state:** audit-stabilized — promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
