@@ -43,7 +43,24 @@ compatibility are distinct: configured legacy names remain reachable.
 | Launcher script | `main.py:1510`, `:5353` validate at creation/rewrite; `:1654` checks the target filename | Regenerated from checked migration target | `session_audit.py:723`, `:748` compare literal assignments and metadata and report orphans |
 | Task namespace | `main.py:5195` and the generated script derive it from `ai_name` | Existing rekey follows checked target | `session_audit.py:791` reports namespaces without a slot/row; linked native namespaces are excluded |
 | Human-name registry | `name_registry.py:1070` retains distance/length policy and now checks reserved aliases | Existing reservation transaction, then shared target check | `session_audit.py:680`, `:707` check row aliases, worktree paths and per-machine edit-distance pairs |
+| Adopted home / title | `session_adopt.py:998` checks previews; `:1156` registers actual homes before moving transcripts | Retitles pass the same destination check | The independent directory/registry census also covers adopted homes |
 | Locks | Existing slot locking in `session.py:1287` remains unchanged | Existing migration lock handling remains unchanged | `session_audit.py:653`, `:743` report orphan locks without testing/removing ownership |
+
+## Acceptance and preserved behavior
+
+* WHEN a new canonical artifact is requested, the boundary SHALL refuse a wrong
+  owning-repo alias, wrong configured host alias or malformed name before creating it.
+* WHEN a launcher is regenerated, the writer SHALL refuse inconsistent title,
+  tmux, home or target-filename identities while preserving the existing script.
+* WHEN adoption creates a home, it SHALL register that home before moving its
+  transcript; a preview SHALL validate the same destination without registering it.
+* WHEN a naming census runs, it SHALL inspect directories independently of
+  transcripts and registries and SHALL make no config, registry or artifact changes.
+* WHILE legacy reachability is configured, existing legacy homes and the numeric
+  legacy migration API SHALL remain reachable; strict census findings SHALL expose
+  their naming violations. A strict creation/reachability cutover remains open.
+* WHEN the pure script-rendering API is used, it SHALL remain usable without an
+  on-disk checkout; durable writers SHALL perform ownership checks instead.
 
 ## Fix
 
