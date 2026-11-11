@@ -15,9 +15,10 @@ from . import config
 from . import session_registry as registry
 
 LOGGER = logging.getLogger(__name__)
+WIND_DOWN_CAUSE = "maintenance_wind_down"
 DEFAULTS = {
     "on_boot": False,
-    "causes": ["host_reboot", "terminal_quit_or_crash"],
+    "causes": ["host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"],
     "network_wait_seconds": 120,
     "network_probe": "api.anthropic.com:443",
 }
@@ -35,7 +36,7 @@ def settings() -> dict:
     cfg = config.load_config()
     result = DEFAULTS | cfg.get("session_relaunch", {})
     if not isinstance(result["causes"], list) or any(c not in DEFAULTS["causes"] for c in result["causes"]):
-        raise ValueError("session_relaunch.causes permits only host_reboot and terminal_quit_or_crash")
+        raise ValueError(f"session_relaunch.causes permits only {', '.join(DEFAULTS['causes'])}")
     result["publish"] = PUBLISH_DEFAULTS | result.get("publish", {})
     result["publish"]["host"] = result["publish"]["host"] or cfg.get("machine", {}).get("host_id", "")
     return result
@@ -274,7 +275,13 @@ def mark(
         if state == "running":
             record.update(exit=None, ended_at=None, supervisor_exit=None, boot_id=registry.current_boot_id())
         else:
-            registry.record_exit(record["id"], cause=cause, evidence=evidence or {}, at=now, _document=doc)
+            settled, details = cause, dict(evidence or {})
+            # The wrapper's clean exit says manual_exit; a wind-down of this run asked for it first.
+            request = record.pop("wind_down", None) or {}
+            if cause == "manual_exit" and request.get("generation") == record.get("generation"):
+                settled = WIND_DOWN_CAUSE
+                details["wind_down_requested_at"] = request.get("at")
+            registry.record_exit(record["id"], cause=settled, evidence=details, at=now, _document=doc)
             record["supervisor_exit"] = dict(record["exit"])
             record["ended_at"] = now
         accepted.update(record)
@@ -310,6 +317,14 @@ def mark(
     except Exception as exc:
         LOGGER.error("session state persistence refused: %s", exc)
         return False
+
+
+def request_wind_down(record: dict) -> None:
+    """Mark this run so its next clean exit is recorded as a maintenance wind-down."""
+    now = registry._now()
+    record.update(
+        wind_down={"cause": WIND_DOWN_CAUSE, "generation": record.get("generation"), "at": now}, changed_at=now
+    )
 
 
 def mark_running(name: str, **kwargs) -> bool:
