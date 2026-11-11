@@ -18,7 +18,13 @@ audit of either document; each audit stage keeps its own audit document and rece
 
 ## Run Ledger
 
-`ledger-version: 1`
+ledger-version: 1
+
+| Run ID | Contract | Decision classes | Push |
+|---|---|---|---|
+| `ai-cli-6xud-name-registry-2026-11-11` | `auto-flow/1#d-7` | `["commit-without-push", "adn:in-scope"]` | `false` |
+
+### Resolved run plan
 
 | Field | Value |
 |---|---|
@@ -43,12 +49,6 @@ audit of either document; each audit stage keeps its own audit document and rece
 | Orchestrator branch | `wt-ai-cli-ec2-ike` |
 | Stage cursor | `research running` |
 | Last completed integration boundary | none |
-
-## Authority
-
-| Run ID | Contract | Decision classes | Push |
-|---|---|---|---|
-| `ai-cli-6xud-name-registry-2026-11-11` | `auto-flow/1#d-7` | `["commit-without-push", "adn:in-scope"]` | `false` |
 
 ## Transition verdicts
 
