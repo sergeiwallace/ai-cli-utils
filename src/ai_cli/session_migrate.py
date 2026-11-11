@@ -822,6 +822,14 @@ def _clean_other_repos(
 #: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
 MIGRATION_LEDGER = "session-migrations.jsonl"
 
+#: The migration record format this build writes, stamped as ``format`` on every
+#: :data:`MIGRATION_LEDGER` row. A build reporting a lower number (``ai internal
+#: get-migration-format``; a build from before that probe answers none, read as 0) predates a
+#: step the migrated session's relaunch depends on: format 1 is the boot-recipe rename. Raise it
+#: whenever what a migration writes needs a newer installed ``ai`` to read it. A launch meeting a
+#: row whose ``format`` is higher than this build's is running a build too old for that record.
+MIGRATION_FORMAT = 1
+
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
 
@@ -977,7 +985,14 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
+    row = {
+        "time": datetime.now(UTC).isoformat(),
+        "old": old,
+        "new": new,
+        "repo": str(repo_root),
+        "format": MIGRATION_FORMAT,
+        **fields,
+    }
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
         ledger.flush()
@@ -1083,6 +1098,20 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
         and row.get("transcripts_recorded") is not True
         for row in _ledger_rows(state)
     )
+
+
+def recorded_migrations(state_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """``(old, new, repo)`` for each pair this host's ledger records, with the pair's latest repo.
+
+    A row without a string ``old``, ``new`` and ``repo`` names no slot and is skipped.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    pairs: dict[tuple[str, str], Path] = {}
+    for row in _ledger_rows(state):
+        old, new, repo = row.get("old"), row.get("new"), row.get("repo")
+        if isinstance(old, str) and isinstance(new, str) and isinstance(repo, str):
+            pairs[(old, new)] = Path(repo)
+    return [(old, new, repo) for (old, new), repo in pairs.items()]
 
 
 def _pending_context_rows(new: str, state: Path) -> list[dict]:

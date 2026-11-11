@@ -2273,6 +2273,11 @@ def _handle_internal(argv: list[str]) -> None:
     elif action == "get-version":
         _out.raw(Untagged.INTERNAL_REPLY, _pkg_version_string())
         sys.exit(0)
+    elif action == "get-migration-format":
+        from .session_migrate import MIGRATION_FORMAT
+
+        _out.raw(Untagged.INTERNAL_REPLY, str(MIGRATION_FORMAT))
+        sys.exit(0)
     elif action == "refresh-template":
         if len(argv) < 2:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal refresh-template <tmux_session>", err=True)
@@ -7905,6 +7910,146 @@ def _migrate_all_to_names(
     return 1 if refused else 0
 
 
+#: Seconds the installed ``ai`` may take to answer the migration-format probe or to update itself.
+_INSTALLED_PROBE_TIMEOUT_SECONDS = 60
+_INSTALLED_UPDATE_TIMEOUT_SECONDS = 15 * 60
+_INSTALLED_UPDATE_COMMAND = "ai update --force"
+
+
+def _installed_migration_format() -> tuple[str | None, int | None]:
+    """The ``ai`` on ``PATH``, which a session wrapper runs, and the migration format it reads.
+
+    A build from before ``ai internal get-migration-format`` answers "unknown action", which
+    reads as format 0. The format is ``None`` when the probe cannot tell: no ``ai`` on
+    ``PATH``, a timeout, or any other failure.
+    """
+    ai_bin = shutil.which("ai")
+    if ai_bin is None:
+        return None, None
+    try:
+        done = subprocess.run(
+            [ai_bin, "internal", "get-migration-format"],
+            capture_output=True,
+            text=True,
+            timeout=_INSTALLED_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ai_bin, None
+    answer = done.stdout.strip()
+    if done.returncode == 0 and answer.isdigit():
+        return ai_bin, int(answer)
+    if "unknown action: get-migration-format" in done.stderr:
+        return ai_bin, 0
+    return ai_bin, None
+
+
+def _require_current_installed_build(*, dry_run: bool) -> None:
+    """Update an installed ``ai`` older than :data:`MIGRATION_FORMAT`, or exit 2 before any write.
+
+    The migrated session relaunches under the installed build, so one that predates a step
+    this migration writes reads stale state. A dry run only names the skew.
+    """
+    from .session_migrate import MIGRATION_FORMAT
+
+    ai_bin, found = _installed_migration_format()
+    if found is not None and found >= MIGRATION_FORMAT:
+        return
+    if found is None:
+        what = f"could not read the migration format of the installed `ai` ({ai_bin or 'none on PATH'})"
+    else:
+        what = (
+            f"the installed `ai` ({ai_bin}) reads migration format {found}, "
+            f"older than format {MIGRATION_FORMAT} this migration writes"
+        )
+    if dry_run:
+        _out.emit(
+            Tag.MIGRATE, "migrate", f"dry run: {what}; a real run updates it first (`{_INSTALLED_UPDATE_COMMAND}`)"
+        )
+        return
+    if ai_bin is not None and found is not None:
+        _out.emit(Tag.MIGRATE, "migrate", f"{what}; updating it with `{_INSTALLED_UPDATE_COMMAND}`")
+        project_path = _find_aicli_project_path(_config.load_config())
+        try:
+            updated = subprocess.run(
+                [ai_bin, "update", "--force", "--quiet"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=_INSTALLED_UPDATE_TIMEOUT_SECONDS,
+                check=False,
+                env=_out.record_relay_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            what = f"{what}; the update did not run: {exc}"
+        else:
+            ai_bin, found = _installed_migration_format()
+            if updated.returncode == 0 and found is not None and found >= MIGRATION_FORMAT:
+                _out.emit(Tag.MIGRATE, "migrate", f"updated the installed `ai` to migration format {found}")
+                return
+            said = (updated.stderr or updated.stdout).strip().splitlines()[-1:]
+            what = (
+                f"{what}; the update exited {updated.returncode}"
+                + (f" ({said[0]})" if said else "")
+                + f" and the installed build reads format {found}"
+            )
+    reason = (
+        f"{what}. The migrated session relaunches under that build; run `{_INSTALLED_UPDATE_COMMAND}` "
+        "and repeat this command"
+    )
+    _out.error(Tag.MIGRATE, "migrate", reason)
+    _print_migration_refusal(reason)
+    sys.exit(2)
+
+
+def _first_name(title: str, repo_root: Path) -> str | None:
+    """The first name ending ``title`` (``ivy`` in ``myrepo-box-ivy``), read under the repo's stem."""
+    from . import migrate_names
+
+    try:
+        parts = migrate_names.split_title(title, _migration_stem(repo_root))
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError):
+        return None
+    return parts.tail if parts else None
+
+
+def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) -> tuple[str, str, Path | None]:
+    """The recorded ``(old, new, repo)`` a ``--finish`` given one name, or both, refers to.
+
+    One name matches a pair this host's ledger records when it is the pair's OLD, its NEW
+    or the first name of its NEW; ``-t NAME`` and a positional name must both match. Both
+    names given positionally keep the cwd's repo when the ledger does not record them, so a
+    migration from before the ledger still finishes. ``-r`` always wins over the record's repo.
+    Zero or several matching pairs exit 2 with what was searched.
+    """
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+
+    pairs = recorded_migrations()
+    if old and new:
+        hits = [pair for pair in pairs if pair[:2] == (old, new)]
+        return old, new, repo or (hits[-1][2] if hits else None)
+    names = [name for name in (old, to_name) if name]
+
+    def matches(name: str, pair: tuple[str, str, Path]) -> bool:
+        return name in pair[:2] or name == _first_name(pair[1], pair[2])
+
+    hits = [pair for pair in pairs if all(matches(name, pair) for name in names)]
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], repo or hits[0][2]
+    searched = " and ".join(names)
+    ledger = _config.get_xdg_state_home() / MIGRATION_LEDGER
+    if not hits:
+        reason = f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in {ledger})"
+        _out.error(Tag.MIGRATE, "migrate", reason)
+        _print_migration_refusal(reason)
+        sys.exit(2)
+    lines = [f"{searched} matches {len(hits)} recorded migrations in {ledger}; run the one you mean:"]
+    lines += [f"  ai migrate-session {o} {n} --finish -r {r}" for o, n, r in hits]
+    _out.error(Tag.MIGRATE, "migrate", "\n".join(lines))
+    _print_migration_refusal(f"{searched} names more than one recorded migration")
+    sys.exit(2)
+
+
 @_cli_group.command(
     "migrate-session",
     help=(
@@ -7920,6 +8065,9 @@ def _migrate_all_to_names(
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
         "runs while NEW is live.\n\n"
+        "--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the "
+        "pair and its repo in this host's migration record, from any directory; a name matching no "
+        "pair, or several, is refused with exit 2 and what it matched.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -7995,10 +8143,16 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if finish and not (sweep or to_names or over_limit) and (old or to_name):
+        if to_name and new:
+            raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")
+        old, new, repo = _resolve_finish(old, new, to_name, repo)
+        to_name = None
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
     if sweep or to_names or over_limit:
         if not (sweep and to_names):
             raise click.UsageError("-a/--all and -T/--to-names go together")
+        _require_current_installed_build(dry_run=dry_run or not yes)
         sys.exit(
             _migrate_all_to_names(
                 repo_root, write=yes and not dry_run, dry_run=dry_run, max_length=max_length, over_limit=over_limit
@@ -8007,9 +8161,12 @@ def cmd_migrate_session(
     if to_name is not None:
         if not old or new:
             raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
+        _require_current_installed_build(dry_run=dry_run)
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
+    if not beads_only:
+        _require_current_installed_build(dry_run=dry_run)
 
     def _run(preview: bool):
         if beads_only:
