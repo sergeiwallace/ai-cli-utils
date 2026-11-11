@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit active; round 5` |
+| Stage cursor | `doc-audit done: halted-recurrence; round 6` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** active — NOT promotion ready
+**Loop state:** halted-recurrence — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 5 | sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676 | 0 | 2 | 0 | round5:IC-2, round5:JA-2 | verify | no |
+| doc-audit | 6 | sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf | 0 | 0 | 0 | round5:JA-2 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1602,5 +1602,155 @@ as repository absence. No target edit or outward action was performed.
     "kind": "verify"
   },
   "source_event_id": "round-5-audit"
+}
+```
+
+## Round 6 — Verification
+
+**Round 6 auditor:** `gpt-5`
+
+**Round 6 date:** 2026-11-11
+
+**Round 6 scope:** Verify `round5:IC-2` and `round5:JA-2` against target digest
+`sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf`, the
+tracked-file inventory, and the current sources that exercised the defects. Append-only; no target
+edits.
+
+### R6 Summary
+
+`round5:IC-2` is fixed: the design now specifies and tests a deterministic frontmatter-title, H1,
+then normalized-filename chain, and each of the three previously undefined current documents has a
+non-empty frontmatter title. `round5:JA-2` remains open-blocking. The widened universe now includes
+all seven omissions named in Round 5, but it still excludes the tracked root `LICENSE` while claiming
+to publish “every other document in the repository” and “every current documentation artifact.” No
+new finding was reproduced; the unresolved case is the same coverage finding.
+
+### R6.1 Open MUST-fix backlog verification
+
+| Finding key | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| `round5:IC-2` | PASS | fixed | The group-index contract now says, “The index label shall use the first non-empty value in this order: frontmatter `title`, first `#` heading, normalized filename,” and requires focused fixtures for all three branches (`docs/designs/single-source-cli-docs.md:548-552`). The three current files cited in Round 5 each have a non-empty `title` at line 2. `CONFIRMED` against the target and those files. |
+| `round5:JA-2` | PARTIAL | open-blocking | The revised universe covers every tracked Markdown file and every tracked file under `docs/` (`docs/designs/single-source-cli-docs.md:225-232,543-547`). A `git ls-files` classifier measured 218 covered paths and confirmed the six previously omitted Markdown files plus the linked `.txt` artifact are now included. However, tracked `LICENSE:1-21` is a repository document and satisfies neither predicate. This contradicts the design's claims that the wiki carries “every other document in the repository” (`docs/designs/single-source-cli-docs.md:77-83`) and that “every current documentation artifact” is accounted for (`:225-232`). `CONFIRMED`; implemented literally, the first build omits the license page without failing the completeness test. |
+
+### R6.2 AD-N decisions verification
+
+No AD-N decision is in scope or was introduced by this fix.
+
+### R6.3 NEW issues surfaced
+
+None. The omitted `LICENSE` keeps `round5:JA-2` open rather than creating a second finding for the
+same invariant.
+
+### R6 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| Target identity | `sha256sum docs/designs/single-source-cli-docs.md` | Driver target digest | `36f0faab...a6bf`, exact match | ✅ |
+| IC-2 — fallback contract | `sed -n '548,552p' docs/designs/single-source-cli-docs.md` | Deterministic title chain and coverage for every branch | Frontmatter title, first H1, then normalized filename; focused fixtures cover all three | ✅ |
+| IC-2 — former counterexamples | Read line 2 of the three files named by Round 5 | Each file supplies the first fallback branch | All three line-2 values are non-empty frontmatter `title` fields | ✅ |
+| JA-2 — prior omissions | Classify `git ls-files` with the design's union predicate | The seven Round 5 omissions are included | All six Markdown paths and `docs/bugs/aih-jpnd-2026-09-21-live-linux-repro.txt` printed `COVERED` | ✅ |
+| JA-2 — complete document coverage | Apply the same predicate to tracked `LICENSE` | A claim covering every repository document includes or explicitly excludes it | Printed `OMITTED LICENSE`; exact exclusions cannot apply because the design restricts them to the derived universe | ❌ reproduced |
+| JA-2 — document identity | `git ls-files LICENSE; sed -n '1,3p' LICENSE` | Ground the alleged omitted document | Git lists `LICENSE`; its first line is `MIT License` | ✅ |
+
+**Verified: 6/6 checks reproduced at repository commit
+`b4008218b6972861fcea48fc7228a7b511e07380`; target digest
+`sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf`.**
+
+### R6 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- `round5:JA-2`: derive the universe from an explicit inventory of repository documentation that
+  includes root legal documents such as `LICENSE`, or add `LICENSE` as an explicit page and make the
+  completeness test cover required standalone documents. Keep exact, reasoned exclusions for
+  non-document machine files; do not silently narrow the reader-facing “every document” claim.
+
+**SHOULD be fixed before the design-doc PR merges:** none beyond the blocking item.
+
+**Can be folded into a follow-up:** none.
+
+### R6 Already-Correct Items
+
+- ✅ The six previously omitted Markdown files and linked non-Markdown bug artifact are now inside
+  the derived universe.
+- ✅ Group matching explicitly includes dot-directories, so hidden Markdown sources are not silently
+  skipped (`docs/designs/single-source-cli-docs.md:313-317`).
+- ✅ Exclusions must be exact tracked paths with non-empty reasons; globs and untracked paths fail
+  validation (`docs/designs/single-source-cli-docs.md:317-321,529-531`).
+- ✅ The title fallback is deterministic and covers the three former counterexamples.
+- ✅ The change preserves the shared command source, complete help descriptions, generated CLI
+  reference, main-only wiki publication, and programmatic-first generation requirements.
+
+### R6 Files Read and Commands Run
+
+Read in full: the canonical audit `STUB.md` and `TEMPLATE.md`, the 1,152-line target design, and this
+audit's complete prior history. Diff-focused reads covered commit `6c3ebd47`, the target invariant
+register, the tracked-file inventory, every non-Markdown file under `docs/`, the seven Round 5
+omissions, `LICENSE`, and the three title-fallback counterexamples. Commands were the `git show`,
+`git diff`, `git log`, `git ls-files`, `sha256sum`, `rg`, `sed`, `file`, and read-only inventory
+commands recorded above. No target edit, test suite, or outward action was performed.
+
+### R6 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 6 | `round5:IC-2` fixed; `round5:JA-2` remains open-blocking because tracked `LICENSE` is outside the revised universe; no new finding; target unchanged. |
+
+### R6 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "missing-precondition"
+      },
+      "disposition": "fixed",
+      "finding_key": "round5:IC-2",
+      "fingerprint": "fp:wiki-group-title-missing-h1",
+      "id": "IC-2",
+      "reachable_behavior": "Every matched document now receives a deterministic group-index title from frontmatter, its first H1, or its normalized filename.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "ask-drift"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round5:JA-2",
+      "fingerprint": "fp:wiki-every-document-scope-incomplete",
+      "id": "JA-2",
+      "reachable_behavior": "The generated wiki still omits the tracked root LICENSE while claiming to carry every repository document.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round5:IC-2",
+      "round5:JA-2"
+    ],
+    "diff_since": "sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:f6c6bc63f32d5c97df5c9c586524649c7dd6687f361057b8c0d96abfe8347676",
+      "to": "sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-6-audit"
 }
 ```
