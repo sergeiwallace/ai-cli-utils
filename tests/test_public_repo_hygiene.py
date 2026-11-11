@@ -351,32 +351,60 @@ def _line_has_private_workflow_metadata(line: str) -> bool:
     )
 
 
-def _branch_changed_provenance_docs(root: Path) -> set[Path]:
-    """Markdown files under the provenance dirs that differ from ``origin/main``.
+def _git_stdout(root: Path, *args: str) -> str | None:
+    """Stdout of a git command in ``root``, or None when git or the command fails.
 
-    Empty when ``origin/main`` cannot be resolved. CI checks out one commit with no
-    remote-tracking refs (``actions/checkout`` defaults to ``fetch-depth: 1``), so the
-    diff is a local-only signal, and the full-folder scan in the caller is what CI runs.
+    Every caller diffs against ``origin/main``, which fails where that ref is absent. CI
+    checks out one commit with no remote-tracking refs (``actions/checkout`` defaults to
+    ``fetch-depth: 1``), so the branch diff is a local-only signal and the full-folder
+    scan is what CI runs.
     """
-    command = ["git", "-C", str(root), "diff", "--name-only", "origin/main...HEAD", "--", *_PUBLIC_PROVENANCE_DOC_DIRS]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
     except OSError:
-        return set()
-    if result.returncode != 0:
-        return set()
-    return {Path(name) for name in result.stdout.splitlines() if name.endswith(".md") and (root / name).is_file()}
+        return None
+    return result.stdout if result.returncode == 0 else None
 
 
-def _public_provenance_docs(root: Path) -> list[Path]:
-    """Every Markdown file in the provenance dirs except the baseline, plus changed files.
+def _branch_changed_provenance_docs(root: Path) -> set[Path]:
+    """Markdown files under the provenance dirs that differ from ``origin/main``."""
+    stdout = _git_stdout(root, "diff", "--name-only", "origin/main...HEAD", "--", *_PUBLIC_PROVENANCE_DOC_DIRS)
+    if stdout is None:
+        return set()
+    return {Path(name) for name in stdout.splitlines() if name.endswith(".md") and (root / name).is_file()}
+
+
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _branch_added_lines(root: Path, relative_path: Path) -> list[tuple[int, str]]:
+    """``(lineno, line)`` for each line the branch added to ``relative_path``."""
+    stdout = _git_stdout(
+        root, "diff", "--no-color", "--no-ext-diff", "-U0", "origin/main...HEAD", "--", relative_path.as_posix()
+    )
+    added: list[tuple[int, str]] = []
+    lineno = 0
+    for diff_line in (stdout or "").splitlines():
+        header = _HUNK_HEADER.match(diff_line)
+        if header:
+            lineno = int(header[1])
+        elif diff_line.startswith("+") and not diff_line.startswith("+++"):
+            added.append((lineno, diff_line[1:]))
+            lineno += 1
+    return added
+
+
+def _public_provenance_scan_targets(root: Path) -> list[tuple[Path, list[tuple[int, str]]]]:
+    """Each in-scope Markdown file in the provenance dirs, with the lines to scan in it.
 
     The brief for this guard asked for the changed set with an all-files fallback. A plain
     all-files fallback cannot be used: CI never has ``origin/main``, and the historical
     files on main would turn it red. A changed-only scan cannot stand alone either: on main
-    itself, or in CI, it scans nothing and passes vacuously. So both run: every file not
-    in the baseline is scanned everywhere, and a baseline file is scanned once a branch
-    changes it, which is only knowable where ``origin/main`` resolves.
+    itself, or in CI, it scans nothing and passes vacuously. So every file outside the
+    baseline is scanned in full everywhere, and a baseline file the branch changed is
+    scanned on the lines the branch added, so fixing one part of a historical document
+    does not make its old ids the editor's problem. Without ``origin/main`` baseline files
+    stay skipped.
     """
     every_doc = {
         path.relative_to(root)
@@ -385,23 +413,29 @@ def _public_provenance_docs(root: Path) -> list[Path]:
         for path in (root / directory).rglob("*.md")
         if path.is_file()
     }
-    in_scope = {path for path in every_doc if path not in _PROVENANCE_DOC_BASELINE}
-    return sorted(in_scope | _branch_changed_provenance_docs(root))
+    changed = _branch_changed_provenance_docs(root)
+    targets: list[tuple[Path, list[tuple[int, str]]]] = []
+    for relative_path in sorted(every_doc | changed):
+        if relative_path not in _PROVENANCE_DOC_BASELINE:
+            text = (root / relative_path).read_text(encoding="utf-8")
+            targets.append((relative_path, list(enumerate(text.splitlines(), start=1))))
+        elif relative_path in changed:
+            targets.append((relative_path, _branch_added_lines(root, relative_path)))
+    return targets
 
 
 def scan_public_docs_for_private_workflow_metadata(root: Path) -> list[str]:
     """Return design and audit lines that expose private workflow provenance."""
     findings: list[str] = []
-    for relative_path in _public_provenance_docs(root):
-        text = (root / relative_path).read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
+    for relative_path, lines in _public_provenance_scan_targets(root):
+        for lineno, line in lines:
             if _line_has_private_workflow_metadata(line) and not _line_is_exempted(relative_path, line):
                 findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
 
 def test_given_public_design_and_audit_docs_when_scanned_then_private_workflow_metadata_is_absent():
-    scanned = _public_provenance_docs(_repo_root())
+    scanned = _public_provenance_scan_targets(_repo_root())
     findings = scan_public_docs_for_private_workflow_metadata(_repo_root())
 
     assert scanned, "no design or audit document was in scope, so the scan measured nothing"
@@ -478,6 +512,55 @@ def test_given_a_baseline_doc_when_scanned_outside_a_branch_diff_then_it_is_skip
     monkeypatch.setattr(sys.modules[__name__], "_PROVENANCE_DOC_BASELINE", frozenset({historical}))
 
     assert scan_public_docs_for_private_workflow_metadata(tmp_path) == []
+
+
+def _git(root: Path, *args: str) -> None:
+    # Hooks off and a fixed identity, so the fixture repository never runs the host's hooks.
+    config = ["-c", "core.hooksPath=", "-c", "user.name=test", "-c", "user.email=test@example.com"]
+    subprocess.run(
+        ["git", "-C", str(root), *config, "-c", "commit.gpgsign=false", *args], check=True, capture_output=True
+    )
+
+
+@pytest.fixture
+def changed_baseline_doc(tmp_path, monkeypatch):
+    """A repository whose ``origin/main`` holds a baseline doc with a historical tracker id."""
+    historical = Path("docs") / "designs" / "historical.md"
+    (tmp_path / historical).parent.mkdir(parents=True)
+    (tmp_path / historical).write_text(
+        f"# Historical\n\nFixed in {_PRIVATE_ENVIRONMENT_PREFIX.upper()}-10.\n\nclosing line\n", encoding="utf-8"
+    )
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(sys.modules[__name__], "_PROVENANCE_DOC_BASELINE", frozenset({historical}))
+    return tmp_path, historical
+
+
+def test_given_a_tracker_id_added_to_a_baseline_doc_when_scanned_then_the_added_line_is_flagged(
+    changed_baseline_doc,
+):
+    root, historical = changed_baseline_doc
+    added = f"Follow-up in {_PRIVATE_ENVIRONMENT_PREFIX.upper()}-11."
+    text = (root / historical).read_text(encoding="utf-8").replace("closing line", f"{added}\nclosing line")
+    (root / historical).write_text(text, encoding="utf-8")
+    _git(root, "commit", "-q", "-am", "add a line")
+
+    findings = scan_public_docs_for_private_workflow_metadata(root)
+
+    assert findings == [f"docs/designs/historical.md:5: {added}"]
+
+
+def test_given_a_changed_baseline_doc_when_its_historical_line_is_untouched_then_it_is_not_flagged(
+    changed_baseline_doc,
+):
+    root, historical = changed_baseline_doc
+    text = (root / historical).read_text(encoding="utf-8").replace("closing line", "closing line, reworded")
+    (root / historical).write_text(text, encoding="utf-8")
+    _git(root, "commit", "-q", "-am", "reword")
+
+    assert scan_public_docs_for_private_workflow_metadata(root) == []
 
 
 class TestTheEnvironmentNameGuardCanActuallyFail:
