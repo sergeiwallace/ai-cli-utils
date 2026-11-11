@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
   recipe", and neither a boot nor a manual relaunch could start it. `--finish` repairs a record
   migrated before this fix.
+- `ai c NEW` and the session supervisor's relaunch now resume the session's own transcript after
+  `ai migrate-session OLD NEW` left it titled OLD (a session running during the migration writes
+  its old title back). They used to find no transcript titled NEW and start a fresh session, and
+  that fresh transcript then shadowed the real one on every later relaunch. With a migration from
+  OLD to NEW recorded in `session-migrations.jsonl`, the newest transcript titled OLD is resumed
+  unless a transcript titled NEW predates the migration.
 - `ai locate-session` for a session on another host prints its liveness record as the word and
   rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
   "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
