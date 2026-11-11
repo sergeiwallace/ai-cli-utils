@@ -193,3 +193,24 @@ def test_given_an_owned_process_context_when_the_body_returns_then_the_process_i
         assert proc.poll() is None
 
     assert _gone(pid)
+
+
+class _GoneProcess:
+    """A process that exited between listing and inspection, as macOS psutil reports it.
+
+    On macOS psutil can raise a bare ``ProcessLookupError`` from ``sysctl(kinfo_proc)`` for a
+    process that already exited, instead of ``psutil.NoSuchProcess``.
+    """
+
+    def __getattr__(self, name):
+        def gone(*_args, **_kwargs):
+            raise ProcessLookupError(3, "no such process (originated from sysctl(kinfo_proc), len == 0)")
+
+        return gone
+
+
+def test_given_owned_process_gone_with_bare_lookup_error_when_ending_owned_then_cleanup_completes(monkeypatch):
+    from tests import process_ownership
+
+    monkeypatch.setattr(process_ownership, "_session_members", lambda sessions, born_after: set())
+    process_ownership._end_owned({_GoneProcess()}, set(), 0.0, "owned process survived cleanup")

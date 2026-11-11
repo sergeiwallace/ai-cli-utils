@@ -342,6 +342,8 @@ def _session_members(sessions: set[int], born_after: float) -> set[psutil.Proces
 def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float, failure: str) -> None:
     """Stop, then kill, every owned process, its descendants and every member of ``sessions``."""
     # Stop parents before taking a final descendant snapshot so none can spawn
+    # On macOS psutil can also raise a bare ProcessLookupError (from sysctl) for a process
+    # that exited between listing and inspection; that is the same "already gone" case.
     # another child during cleanup. psutil pins identity with PID + creation time.
     # A process this user may not inspect or signal (macOS /bin/ps is setuid root, and the
     # session's suspend watchdog polls it) raises AccessDenied. It must not abort the walk:
@@ -350,7 +352,7 @@ def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float
     while pending:
         while pending:
             process = pending.pop()
-            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
                 process.ppid()
                 process.cwd()
                 process.suspend()
@@ -363,13 +365,13 @@ def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float
         pending = list(_session_members(sessions, born_after) - owned)
         owned.update(pending)
     for process in owned:
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
             process.kill()
     deadline = monotonic() + _REAP_TIMEOUT
     while True:
         alive = []
         for process in owned:
-            with contextlib.suppress(psutil.NoSuchProcess):
+            with contextlib.suppress(psutil.NoSuchProcess, ProcessLookupError):
                 if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
                     alive.append(process)
         if not alive:
