@@ -23,13 +23,13 @@ described in T-3.2 and T-4.2. This index is non-authoritative; the raw request g
 | General approval, separate session approval, and reserved, migrated and in-use tracking | [Data Model](#data-model): `names.status`, session-scoped `verdicts`, `holds` and `migrations`; [D-3](#d-3) |
 | Never reviewed, generally rejected, generally approved but not approved for a session, and approvals or rejections per repository, host or session | The four states are derived in [Status model](#status-model). Scoped decisions are normalized `verdicts` rows, as resolved in [D-3](#d-3) |
 | The database must be git tracked | The canonical Dolt database and its row history live on a git remote ref ([D-2](#d-2)); this is a requirement, not an open question |
-| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 requires the exact private 21-entry seed manifest, including the replacement and excluding the superseded entry; T-4.2 binds it by a canonical digest before the flip |
+| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 applies the substitution inside the 20-entry pre-approved list (the replacement in, the superseded entry out, still 20) and approves every entry for picking and migration; T-4.2 checks the corrected list and the digest independently before the flip |
 | Use the best git-tracked database, with Dolt selected after research | Answered by the research recommendation; this design builds on Dolt |
 | Replace the JSON-ref system with a robust schema and searchable data | The old store is retired in [Phase 4](#phase-4-fleet-cutover), constraints are in [Data Model](#data-model), and T-3.4 supplies SQL-backed search |
 | A package dependency is acceptable; compare SQLite and other candidates | The research compared the candidates. Dolt is the fleet dependency ([D-6](#d-6)); SQLite is the no-fleet fallback with the same logical schema ([D-5](#d-5)) |
 | Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 binds the earlier feedback into the exact seed manifest |
 | Authoring and routing constraints | Handled by the orchestration outside this public product design; they do not change runtime behaviour |
-| Provide approved and needs-review statuses and seed the 20 pre-approved names plus one replacement | `unreviewed` is needs-review, `approved` is approved, and T-3.2/T-4.2 require the exact 21-entry private seed |
+| Provide approved and needs-review statuses and seed the 20 pre-approved names plus one more name | `unreviewed` is needs-review, `approved` is approved. T-3.2 binds the one additional name as a separate part of the manifest, beyond the corrected 20-entry list, for exactly 21 approvals; T-4.2 checks that part on its own |
 | Research candidates beyond the initially suggested stores | Satisfied by the converged research document |
 
 **Status:** DRAFT
@@ -184,55 +184,134 @@ launching session, and refuses any scoped rejection that matches.
 ### Lifecycle of a held name
 
 A row in `holds` is a held token; a token is held exactly while its row exists, as today. Its
-`kind` and `state` give the owner's reserved, in-use and migrated vocabulary:
+`kind` and `state`, together with any `migrations` row in state `intent` that names it, give the
+owner's reserved, in-use and migrated vocabulary. Two token languages apply, by kind, exactly as
+today's validator has them: a `session` or `spare` token matches `[a-z]+`, and a `label` token (the
+last token of a dropped label) matches `[a-z0-9]*[a-z][a-z0-9]*`, so it may carry digits but is
+never digits only. Every row below that writes a token checks the language for that row's kind.
 
-<!-- ac-format: state-machine id="AC-SM-HOLD" initial="absent" coverage="all-transitions-plus-invalid" verifier="uv run pytest tests/test_name_dolt.py tests/test_name_release.py -q" -->
+<!-- ac-format: state-machine id="AC-SM-HOLD" initial="absent" coverage="all-transitions-plus-invalid" verifier="uv run pytest tests/test_name_dolt.py tests/test_name_release.py tests/test_migrate_to_name.py tests/test_migrate_to_name_resume.py -q" -->
 
 **AC-SM-HOLD — Lifecycle of a held token**
 
-States: `absent`, `spare-reserved` (`kind = 'spare'`, `state = 'reserved'`), `session-active`
-(`kind = 'session'`, `state = 'active'`), `session-migrating` (`kind = 'session'`,
-`state = 'migration-incomplete'`), `label-active` (`kind = 'label'`, `state = 'active'`), and
-`cutover-quarantined` (`kind = 'spare'`, `state = 'cutover-quarantined'`)
+States: `absent`; `spare-reserved` (`kind = 'spare'`, `state = 'reserved'`); `session-active`
+(`kind = 'session'`, `state = 'active'`, no `intent` migration names the token as its new name);
+`session-intent` (`kind = 'session'`, `state = 'active'`, `recovery` null, and a `migrations` row in
+state `intent` names the token as its new name); `session-migrating` (`kind = 'session'`,
+`state = 'migration-incomplete'`, `recovery` set, and that `intent` row still exists);
+`label-active` (`kind = 'label'`, `state = 'active'`); and `cutover-quarantined`
+(`kind = 'spare'`, `state = 'cutover-quarantined'`)
 Initial state: `absent`
-Event alphabet: `top-up`, `claim`, `migration-intent`, `activate-spare`, `migrate-to-own-spare`,
-`migration-complete`, `label-claim`, `reassign`, `release`, `spare-release`,
-`quarantine-spare`, `reconcile-quarantine`, `foreign-edit`
+Event alphabet: `top-up`, `claim`, `label-claim`, `migration-intent`, `activate-spare`,
+`migrate-to-own-spare`, `migration-complete`, `completion-publish-failure`,
+`migration-fail-clean`, `migration-fail-partial`, `recover`, `reassign`, `release`,
+`spare-release`, `quarantine-spare`, `reconcile-quarantine`, `foreign-edit`
 Terminal states: none. A released token returns to `absent` and can be held again.
+
+Event meanings: `migration-complete` is the completion commit a successful rename publishes;
+`completion-publish-failure` is that commit failing to publish after the rename finished on disk;
+`migration-fail-clean` is a rename that raised with nothing left under the new title;
+`migration-fail-partial` is a rename that raised leaving artifacts under the new title, or that
+reported failure; `recover` is a reconcile pass, or a rerun of the same `migrate-session` command,
+settling an `intent` row from what is on disk. A `recover` observation is one of `N` (artifacts
+under the new title only), `O` (under the old title only), `B` (under both) or `Z` (under
+neither). A rerun of `migrate-session` can resume a rename; a reconcile pass cannot.
 
 | Transition | Source | Event | Guard | Target | Observable outcome |
 |------------|--------|-------|-------|--------|--------------------|
 | T1 | absent | top-up | the machine holds fewer than `offline_spares` unactivated spares | spare-reserved | a `holds` row of kind `spare` for that machine |
-| T2 | absent | claim | the claim protocol wins | session-active | a `holds` row carrying this attempt's claimant |
-| T3 | absent | migration-intent | true | session-migrating | the `holds` row and a `migrations` row in state `intent`, in one commit |
-| T4 | spare-reserved | activate-spare | the activating host is the spare's `machine` | session-active | the row's activation fields set; nothing else changes |
-| T5 | spare-reserved | migrate-to-own-spare | the migrating host is the spare's `machine` | session-active | as T4; the dry run reports the same plan |
-| T6 | session-migrating | migration-complete | true | session-active | the `migrations` row moves to `complete` in the same commit |
-| T7 | absent | label-claim | the label token passes the label-token validator and the claim protocol wins | label-active | a label hold carrying its label metadata and this attempt's claimant |
-| T8 | session-active, session-migrating or label-active | reassign | the target host is known and the row still equals the version read | same state | only `machine`, `host_alias` and `writer` change; the token never becomes free |
-| T9 | session-active or label-active | release | both absence tests pass and the row is unchanged since the test | absent | the `holds` row is deleted; its history remains in `dolt_history_holds` |
-| T10 | spare-reserved | spare-release | the spare-release test passes under the spool lock | absent | the `holds` row is deleted |
-| T11 | spare-reserved | quarantine-spare | cutover import is running with Dolt writes disabled | cutover-quarantined | the imported spare remains held but cannot be activated or released by ordinary lifecycle commands |
-| T12 | cutover-quarantined | reconcile-quarantine | every registered host has installed the new client and its old spool and cached spare inventory was reconciled | spare-reserved or session-active | the row becomes the reconciled old spare or activation; the runbook records the source evidence |
-| T13 | any state but absent | foreign-edit | the editing host is not the row's `machine` and the event is not an authorized `reassign` | unchanged | refused with exit 2; nothing written |
-| T14 | spare-reserved | activate-spare or migrate-to-own-spare | the host is not the spare's `machine` | unchanged | refused as held |
-| T15 | cutover-quarantined | activate-spare, migrate-to-own-spare, release or spare-release | true | unchanged | refused as quarantined with exit 2 |
-| T16 | any | any event not listed for that state (for example `release` on `absent`) | true | unchanged | reject with an invalid-transition refusal (exit 2); nothing written |
+| T2 | absent | claim | the token matches `[a-z]+` and the claim protocol wins | session-active | a `holds` row carrying this attempt's claimant |
+| T3 | absent | label-claim | the token matches `[a-z0-9]*[a-z][a-z0-9]*` and the claim protocol wins | label-active | a label hold carrying its label metadata and this attempt's claimant; a token such as `abc2` is accepted |
+| T4 | absent | claim or label-claim | the token does not match its kind's language: `[a-z]+` for a claim (so `abc2` is refused), `[a-z0-9]*[a-z][a-z0-9]*` for a label claim (so `42`, `Abc` and `abc-2` are refused) | unchanged | refused with exit 2; nothing written |
+| T5 | absent | migration-intent | the claim protocol wins | session-intent | the hold (`active`, `recovery` null) and a `migrations` row in state `intent`, in one commit, before any filesystem change |
+| T6 | any state but absent | top-up, claim, label-claim or migration-intent | true | unchanged | the guarded insert affects zero rows and nothing is committed; a picked name is picked again, a hand-chosen one is refused as held with the fresh tip's holder |
+| T7 | spare-reserved | activate-spare | the activating host is the spare's `machine` | session-active | the row's activation fields set; nothing else changes |
+| T8 | spare-reserved | migrate-to-own-spare | the migrating host is the spare's `machine` | session-intent | the spare activated and its `intent` row written in one commit; the dry run reports the same plan |
+| T9 | spare-reserved | activate-spare or migrate-to-own-spare | the host is not the spare's `machine` | unchanged | refused as held |
+| T10 | spare-reserved | spare-release, or release of a spare | the spare-release test passes under the spool lock | absent | the `holds` row is deleted |
+| T11 | spare-reserved | spare-release, or release of a spare | the spare-release test fails, or the token is in the spool | unchanged | kept held, with the reason |
+| T12 | session-intent or session-migrating | migration-complete | the completing migration names this token as its new name, its `intent` row matches the old title, new name and machine, and the rename finished on disk | session-active | one commit: the `migrations` row becomes `complete`, the hold becomes `active` with `recovery` null, and T14 or T15 applies to the old hold |
+| T13 | session-active | migration-complete | the completing migration names this token as its new name and its `migrations` row is already `complete` | unchanged | no commit; the call reports success (idempotent completion) |
+| T14 | session-active | migration-complete | the completing migration names this row's title as its old title, and the row is unchanged, on the same machine, with that exact title | absent | deleted in T12's commit; history remains in `dolt_history_holds` |
+| T15 | session-active | migration-complete | the completing migration names this row's token as its old token, but the row changed, is on another machine, or carries another title | unchanged | kept held; T12's commit still lands |
+| T16 | session-intent or session-migrating | completion-publish-failure | the rename finished on disk | unchanged | the `intent` row, the new hold and the old hold all stay; nothing is released; the command exits with a partial-migration error naming `reconcile-names` and `migrate-session` as the commands that publish the completion |
+| T17 | session-intent | migration-fail-clean | the rollback is proved, no artifact remains under the new title, and the `intent` row matches this machine | absent | one commit deletes the new hold and its `intent` row; the old hold is unchanged; the error names the released name |
+| T18 | session-intent or session-migrating | migration-fail-partial | the `intent` row matches this machine | session-migrating | `state = 'migration-incomplete'` with `recovery` set to the exact survivor list observed under the new title; the old hold is unchanged; nothing is released |
+| T19 | session-active | migration-fail-partial | the migration's `migrations` row for this token is already `complete` | session-migrating | one commit moves the `migrations` row back to `intent` with `completed_at` null and sets `recovery` |
+| T20 | session-migrating | migration-fail-clean | true | unchanged | refused with exit 2; stored survivors prove artifacts exist under the new title, so the name is never released here |
+| T21 | session-intent or session-migrating | recover | a resume request's old title, new name, machine or survivor data disagrees with the stored rows | unchanged | refused with exit 2; neither rows nor recovery data change |
+| T22 | session-intent or session-migrating | recover | observation `N` | session-active | as T12 |
+| T23 | session-intent or session-migrating | recover | observation `O`, and the caller is a `migrate-session` rerun | session-active | the rename is resumed, then T12; if the resumed rename fails, T18 applies instead |
+| T24 | session-intent or session-migrating | recover | observation `O`, and the caller is a reconcile pass | unchanged | nothing written; `check-names` lists it as a stale intent once it is older than the stale-intent threshold |
+| T25 | session-intent or session-migrating | recover | observation `B` | session-migrating | `recovery` set to the artifacts under the new title |
+| T26 | session-intent or session-migrating | recover | observation `Z` | unchanged | nothing written; `check-names` lists it as a stale intent once it is older than the stale-intent threshold |
+| T27 | spare-reserved, session-active, session-intent, session-migrating or label-active | reassign | the target host is known, the row still equals the version read, and its `machine` is unchanged | same state | only `machine`, `host_alias` and `writer` change; the token never becomes free |
+| T28 | spare-reserved, session-active, session-intent, session-migrating or label-active | reassign | the target host is unknown, or the row changed since it was read | unchanged | refused with exit 2; nothing written |
+| T29 | session-active or label-active | release | both absence tests pass, the row is unchanged since the test, and no `intent` row names its title as an old or new title | absent | the `holds` row is deleted; its history remains in `dolt_history_holds` |
+| T30 | session-active or label-active | release | an absence test fails, the row changed since the test, or an `intent` row names its title | unchanged | kept held, with the reason ("a recorded rename of this session has not completed" for the last case) |
+| T31 | session-intent | release | true | unchanged | kept held: a recorded rename of this session has not completed |
+| T32 | session-migrating | release | true | unchanged | refused with exit 2, telling the user to run the same `migrate-session` command again |
+| T33 | absent or spare-reserved | quarantine-spare | cutover import is running with Dolt writes disabled, and the token is a spare in the frozen tree or in a host cache inventory | cutover-quarantined | the spare is held but cannot be activated or released by ordinary lifecycle commands |
+| T34 | session-active, session-intent, session-migrating, label-active or cutover-quarantined | quarantine-spare | true | unchanged | the existing row is kept exactly as it is; nothing written |
+| T35 | cutover-quarantined | reconcile-quarantine | every registered host has installed the new client and its old spool and cached spare inventory was reconciled | spare-reserved or session-active | the row becomes the reconciled old spare or activation; the runbook records the source evidence |
+| T36 | cutover-quarantined | activate-spare, migrate-to-own-spare, release, spare-release or reassign | true | unchanged | refused as quarantined with exit 2 |
+| T37 | any state but absent | foreign-edit | the editing host is not the row's `machine` and the event is not an authorized `reassign` | unchanged | refused with exit 2; nothing written |
+| T38 | any | a state and event pair the matrix below marks T38 | true | unchanged | reject with an invalid-transition refusal (exit 2); nothing written |
 
-Guard exclusivity: T4 and T14, and T5 and T14, share a source and event with complementary guards
-(the host is, or is not, the spare's machine). No other source and event pair has more than one
-row. Invalid transitions: T13 to T16. Coverage requirement: exercise T1 to T16, including label
-claim, ownership reassignment without release, and every forbidden quarantine exit.
+Every state and event pair, with the rows that govern it (`SR` spare-reserved, `SA`
+session-active, `SI` session-intent, `SM` session-migrating, `LA` label-active, `CQ`
+cutover-quarantined):
+
+| Event | absent | SR | SA | SI | SM | LA | CQ |
+|---|---|---|---|---|---|---|---|
+| top-up | T1 | T6 | T6 | T6 | T6 | T6 | T6 |
+| claim | T2, T4 | T6 | T6 | T6 | T6 | T6 | T6 |
+| label-claim | T3, T4 | T6 | T6 | T6 | T6 | T6 | T6 |
+| migration-intent | T5 | T6 | T6 | T6 | T6 | T6 | T6 |
+| activate-spare | T38 | T7, T9 | T38 | T38 | T38 | T38 | T36 |
+| migrate-to-own-spare | T38 | T8, T9 | T38 | T38 | T38 | T38 | T36 |
+| migration-complete | T38 | T38 | T13, T14, T15 | T12 | T12 | T38 | T38 |
+| completion-publish-failure | T38 | T38 | T38 | T16 | T16 | T38 | T38 |
+| migration-fail-clean | T38 | T38 | T38 | T17 | T20 | T38 | T38 |
+| migration-fail-partial | T38 | T38 | T19 | T18 | T18 | T38 | T38 |
+| recover | T38 | T38 | T38 | T21 to T26 | T21 to T26 | T38 | T38 |
+| reassign | T38 | T27, T28 | T27, T28 | T27, T28 | T27, T28 | T27, T28 | T36 |
+| release | T38 | T10, T11 | T29, T30 | T31 | T32 | T29, T30 | T36 |
+| spare-release | T38 | T10, T11 | T38 | T38 | T38 | T38 | T36 |
+| quarantine-spare | T33, T38 | T33 | T34 | T34 | T34 | T34 | T34 |
+| reconcile-quarantine | T38 | T38 | T38 | T38 | T38 | T38 | T35 |
+| foreign-edit | T38 | T37 | T37 | T37 | T37 | T37 | T37 |
+
+`quarantine-spare` on `absent` is T33 when the token is in a host cache inventory and T38
+otherwise. A `recover`, `migration-complete` or `reassign` against a token with no row or no
+recorded rename is T38 ("no rename of ... is recorded", "no session holds ...").
+
+Guard exclusivity: T2 and T4 split `claim`, and T3 and T4 split `label-claim`, on `absent` by the
+token language for that kind. T7 and T9, and T8 and T9, split on whether the host is the spare's
+machine. T10 and T11 split on the
+spare-release test. On `session-active` with `migration-complete`, T13 applies to the migration's
+new token, and T14 and T15 to its old token, split on whether the old row is unchanged, local and
+carries the old title. On `recover`, T21 takes precedence; otherwise the observations `N`, `O`,
+`B` and `Z` are mutually exclusive and exhaustive, and `O` splits into T23 and T24 by caller. T27
+and T28, and T29 and T30, have complementary guards. Every other matrix cell names one row.
+Invalid and refused transitions: T4, T6, T9, T11, T15, T20, T21, T24, T26, T28, T30 to T32, T34
+and T36 to T38. Coverage requirement: exercise every row T1 to T38 on both backends, and at least
+one T38 cell in every event row of the matrix that has one, including a digit-bearing label claim, ownership
+reassignment without release, each migration failure and recovery observation, and every
+forbidden quarantine exit.
 
 <!-- /ac-format -->
 
 "Migrated" is a `migrations` row in state `complete` linking the old title to the new name.
-"In use" is `kind = 'session'` and `state = 'active'`. Released rows are deleted; their history
-stays in `dolt_history_holds`.
+"In use" is `kind = 'session'` and `state = 'active'`. A migration in progress is `session-intent`
+(nothing has failed) or `session-migrating` (a failure left artifacts that `recovery` lists), so
+`recovery` is set exactly while the state is `migration-incomplete`, as today's validator requires.
+Released rows are deleted; their history stays in `dolt_history_holds`.
 
 **Held spares.** A machine's own unactivated spare may be taken by a hand-chosen migrate on that
-machine: `migrate-session --to-name <spare>` activates it instead of refusing it as held, and the
-dry run reports the same plan the real run would execute. Another machine's spare stays refused as
+machine: `migrate-session --to-name <spare>` activates it, with its migration intent in the same
+commit (T8), instead of refusing it as held, and the dry run reports the same plan the real run
+would execute. Another machine's spare stays refused as
 held.
 
 **Reclaiming a dead session's name** keeps today's rule: release and reconcile delete a row only
@@ -292,7 +371,8 @@ upgrade.
 Every behaviour in this list keeps its current guard and its current tests' intent; Phase 1 ports
 the tests to the new backend:
 
-- one fleet-wide namespace for session, spare and label tokens;
+- one fleet-wide namespace for session, spare and label tokens, with today's per-kind token
+  languages (`[a-z]+` for session and spare tokens, `[a-z0-9]*[a-z][a-z0-9]*` for label tokens);
 - every write re-runs its whole guard on the fresh tip, retrying up to `publish_attempts`, then
   `RegistryContendedError`; a picked name that loses is picked again, a hand-chosen one is refused
   with the new tip's reason;
@@ -305,8 +385,11 @@ the tests to the new backend:
   spool, published by the next command; an unreachable registry on a `--name` launch refuses;
 - release needs both absence tests; reconcile deletes only an unchanged row; there is no force
   release;
-- the migration ledger: intent in the reserve commit, completion with the old row's release,
-  idempotent recovery;
+- the migration ledger: intent in the reserve commit, completion with the old row's release, the
+  clean-failure release of the new row with its intent, the partial-failure hold as
+  `migration-incomplete` with its survivors, a completion that failed to publish left for the next
+  reconcile or rerun, and idempotent recovery from what is on disk (T5 and T8, T12 to T26 of
+  AC-SM-HOLD, and T-1.5);
 - `check-names` reports over-limit, grandfathered, incomplete and stale intents, with its exit
   codes; exit 2 refusal, 3 unreadable, 75 unreachable;
 - `known_names` works with no network and includes the shipped seed;
@@ -402,7 +485,8 @@ create table holds (
   activated_at varchar(20),
   claimant varchar(160) not null,
   writer varchar(64) not null,
-  check (token regexp '^[a-z]+$')
+  check ((kind in ('session','spare') and token regexp '^[a-z]+$')
+      or (kind = 'label' and token regexp '^[a-z0-9]*[a-z][a-z0-9]*$'))
 );
 
 create table migrations (
@@ -417,7 +501,8 @@ create table migrations (
 
 The `holds` fields are today's 19 row fields plus `claimant`; the field rules `row_problem` checks
 today (per-kind non-null and null fields, `recovery` set exactly while `migration-incomplete`, no
-absolute paths) stay in the package's validator and also become database `check` constraints.
+absolute paths, the per-kind token language) stay in the package's validator and also become
+database `check` constraints.
 `holds.token` has no foreign key to `names`, because a label's last token can be held without being
 in the pool, as today.
 
@@ -425,8 +510,10 @@ in the pool, as today.
 connection executes `PRAGMA foreign_keys = ON` and verifies that it reads back as `1` before any
 schema or data operation. Its enum types become `check (... in (...))`; its JSON columns become
 `text` with `check (json_valid(body))` and
-`check (recovery is null or json_valid(recovery))`; its token checks use
-`token glob '[a-z]*' and token not glob '*[^a-z]*'`. Dolt's native `json`, enum, foreign-key and
+`check (recovery is null or json_valid(recovery))`; its `[a-z]+` checks (`names.name`, and session
+and spare tokens) use `x glob '[a-z]*' and x not glob '*[^a-z]*'` on the column `x`, and its
+label-token check uses `token glob '*[a-z]*' and token not glob '*[^a-z0-9]*'`, combined with
+`kind` exactly as in the Dolt `holds` check. Dolt's native `json`, enum, foreign-key and
 regular-expression constraints enforce the same accepted and rejected value sets. A backend may
 not omit a logical constraint merely because its DDL spelling differs.
 
@@ -476,10 +563,12 @@ those tests as not run, never as passed.
 - **Tasks + acceptance criteria:**
   - **T-1.1 Schema** — one module emits both dialects.
     - [ ] When the schema is applied to an empty Dolt database and to an empty SQLite file, the system shall create the six tables with the constraints in [Data Model](#data-model).
-    - [ ] If a `names` or `holds` insert carries a token outside `[a-z]+` (for example `Ava` or `ava2`), then the system shall refuse it at the database on both backends.
+    - [ ] If a `names` row, or a `holds` row of kind `session` or `spare`, carries a token outside `[a-z]+` (for example `Abc` or `abc2`), then the system shall refuse it at the database on both backends.
+    - [ ] If a `holds` row of kind `label` carries a token outside `[a-z0-9]*[a-z][a-z0-9]*` (for example `42`, `Abc`, `abc-2` or the empty string), then the system shall refuse it at the database on both backends.
+    - [ ] When a `holds` row of kind `label` carries a digit-bearing token that is not digits only (for example `abc2` or `2abc`), both backends shall accept it.
     - [ ] If a `verdicts` insert names no existing `names` row, then both backends shall reject it with a foreign-key violation; the SQLite test shall also assert `PRAGMA foreign_keys = 1` on every opened connection.
     - [ ] If `policy_snapshot.body` or a non-null `holds.recovery` is malformed JSON, then both backends shall reject the row at the database.
-    - [ ] For every enum, nullability, foreign-key, JSON and token constraint in the logical schema, a generated valid/invalid fixture matrix shall produce the same result on Dolt and SQLite.
+    - [ ] For every enum, nullability, foreign-key, JSON and per-kind token constraint in the logical schema, a generated valid/invalid fixture matrix shall produce the same result on Dolt and SQLite, and the token rows of that matrix shall give the same verdict as today's row validator for each kind.
   - **T-1.2 Claim protocol** — the seven-step loop.
     - [ ] When two hosts claim the same free name at the same moment over a local bare remote, repeated 20 times, the system shall give exactly one winner in each trial, and the loser's caller shall see the winner's claimant.
     - [ ] When two hosts claim the same name with otherwise identical row values, the system shall still give exactly one winner, because each claimant value is unique.
@@ -498,7 +587,9 @@ those tests as not run, never as passed.
     - [ ] If either registry timeout setting is invalid, then the system shall refuse while naming that setting; it shall not silently fall back to `publish_timeout_s`.
   - **T-1.4 Allocation and transaction parity**
     - [ ] When any session, spare or label token is held, every allocation path shall treat it as occupied in the one shared namespace on both backends.
-    - [ ] When reserve and spare top-up, reserve and manual add, reserve and migration intent, or migration completion and old-row release are requested together, each pair shall appear in one commit or neither change shall appear.
+    - [ ] When a drop-policy launch reserves a label whose last token carries digits (for example `abc2`), the system shall hold it as a `label` row on both backends, and every other allocation path shall refuse that token as held; today's label-reservation tests shall run unchanged against both backends.
+    - [ ] If a drop-policy label's last token is digits only, then the system shall refuse the reservation with exit 2 and write nothing.
+    - [ ] When reserve and spare top-up, reserve and manual add, reserve and migration intent, migration completion and old-row release, or a clean migration failure's release of the new row and deletion of its intent are requested together, each pair shall appear in one commit or neither change shall appear.
     - [ ] If a picked claim loses a publish race, then the picker shall re-read and pick again; if a hand-chosen claim loses, then it shall refuse with the fresh tip's holder; after `publish_attempts` losses either path shall raise `RegistryContendedError`.
     - [ ] If a policy snapshot has an unknown schema or key, then every allocation shall refuse with "update ai-cli-utils".
     - [ ] When `sync-names` sees a policy revision newer than the published snapshot, it shall regenerate the pool; for an equal or older revision it shall make no registry change.
@@ -512,12 +603,22 @@ those tests as not run, never as passed.
     - [ ] When `reassign-name` targets a known host and the row is unchanged, it shall change ownership atomically without making the token absent at any point.
     - [ ] When `check-names` sees an over-limit, grandfathered, migration-incomplete or stale-intent row, it shall report the matching category and preserve exit codes 2 for refusal, 3 for unreadable data and 75 for an unreachable registry.
     - [ ] When the registry is unavailable, `known_names` shall return the shipped seed without a network or database read.
-  - **T-1.5 Migration recovery parity**
-    - [ ] When migration starts, the new hold and `migrations.state = 'intent'` row shall land atomically before filesystem changes; rerunning the same intent shall be idempotent.
-    - [ ] If migration fails after any artifact moves, then the new hold shall remain `migration-incomplete` with the exact survivor recovery data and the old hold shall remain held; no spare or session name shall be released or leaked.
-    - [ ] When the same migration command resumes an incomplete migration, it shall consume the stored survivor data, complete idempotently, set the migration row to `complete`, make the new hold active and release the unchanged old row in one commit.
-    - [ ] If a resume request disagrees with the stored old title, new name, machine or survivor data, then it shall refuse with exit 2 and change neither rows nor recovery data.
-    - [ ] A backend-parametrized interrupted-migration test shall stop after each durable boundary and prove that the next identical invocation reaches the same completed rows on Dolt and SQLite.
+  - **T-1.5 Migration success, failure and recovery parity**: every path of today's `migrate_to_name`, `complete_migration`, `release_failed_migration`, `mark_migration_incomplete` and `recover_intents`, mapped to AC-SM-HOLD. Each failure-path AC below is the counterpart of a success-path AC and is held to the same contract: guarded conditional DML, one commit, and the operation-specific remote read-back of the claim protocol, on Dolt and SQLite alike.
+    - [ ] When migration starts, the system shall write the new hold (`active`, `recovery` null) and its `migrations.state = 'intent'` row in one commit before any filesystem change (T5, or T8 for an own spare); rerunning the same intent shall be idempotent.
+    - [ ] When the rename finishes on disk and the completion publishes, the system shall, in one commit, set the migration row to `complete`, make the new hold `active` with `recovery` null, and delete the old hold only when it is unchanged, on the same machine and carries the old title; otherwise it shall keep the old hold and still publish the completion (T12, T14, T15).
+    - [ ] When a completion is published for a migration already `complete`, the system shall make no commit and report success (T13).
+    - [ ] If the rename raises and no artifact remains under the new title, then the system shall, in one commit, delete the new hold and its `intent` row, leave the old hold unchanged, and exit with an error naming the released name; after a fetch, the remote shall hold neither the new row nor the intent (T17).
+    - [ ] If the rename raises leaving artifacts under the new title, or reports failure, then the system shall hold the new row as `migration-incomplete` with `recovery` equal to the exact survivor list observed under the new title, keep the old hold, release no spare or session name, and exit with an error telling the user to run the same command again (T18).
+    - [ ] If a failure is recorded after the migration row was already `complete`, then the system shall move that row back to `intent` with `completed_at` null and set `recovery`, in one commit (T19).
+    - [ ] If the rename finishes on disk but the completion commit cannot be published, then the system shall keep the `intent` row, the new hold and the old hold unchanged, release nothing, and exit with an error naming `reconcile-names` and `migrate-session`; the next run of either shall publish the completion as T12 does (T16).
+    - [ ] If a clean-failure release is requested for a `migration-incomplete` hold, then the system shall refuse with exit 2 and keep the hold and its recovery data (T20).
+    - [ ] When a reconcile pass or a rerun of `migrate-session` settles an `intent` row, the system shall act on what is on disk: artifacts under the new title only shall publish the completion (T22); under the old title only, a rerun shall resume the rename and then complete (T23) while a reconcile pass shall write nothing (T24); under both shall hold the row as `migration-incomplete` with the artifacts under the new title (T25); under neither shall write nothing (T26). A second identical run shall change nothing.
+    - [ ] If an `intent` row is left unsettled past the stale-intent threshold, then `check-names` shall list it as a stale intent (T24, T26).
+    - [ ] If a release or reconcile targets a hold that an `intent` row names as its old or new title, or a `migration-incomplete` hold, then the system shall keep it held with the reason (T30 to T32).
+    - [ ] When the same migration command resumes an incomplete migration, it shall consume the stored survivor data, complete idempotently, set the migration row to `complete`, make the new hold active and release the unchanged old row in one commit; if the resumed rename fails again, the hold shall stay `migration-incomplete` with the newly observed survivors (T18, T23).
+    - [ ] If a resume request disagrees with the stored old title, new name, machine or survivor data, then it shall refuse with exit 2 and change neither rows nor recovery data (T21).
+    - [ ] A backend-parametrized interrupted-migration test shall stop after each durable boundary (intent committed, each artifact move, rename finished before completion) and prove that the next identical invocation reaches the same completed rows on Dolt and SQLite.
+    - [ ] Every test in `tests/test_migrate_to_name.py` and `tests/test_migrate_to_name_resume.py` shall run against both backends, and each AC above shall map to at least one of those tests, or to a new test, that fails when its path is removed.
 - **Exit gate:** all Phase 1 ACs green; `uv run pytest` passes on Linux and in CI on macOS and Windows with `dolt` installed; a fresh-context diff review against these ACs.
 
 ### Phase 2: Status model and the picker
@@ -540,7 +641,7 @@ those tests as not run, never as passed.
     - [ ] When a verdict is set, the system shall write one `verdicts` row per name, keyed by name and scope.
     - [ ] If the scope kind is not one of `repo`, `host`, `session`, then the system shall refuse with exit 2.
   - **T-2.4 Held spares**
-    - [ ] When `migrate-session --to-name` names an unactivated spare of the same machine, the system shall activate that spare, and the dry run shall report the same plan.
+    - [ ] When `migrate-session --to-name` names an unactivated spare of the same machine, the system shall activate that spare and write its migration intent in the same commit (AC-SM-HOLD T8), and the dry run shall report the same plan.
     - [ ] If the spare belongs to another machine, then the system shall refuse it as held.
   - **T-2.5 Approval-status parity**
     - [ ] When `list-names` is run, it shall show each name's general status and apply the requested pool filter on Dolt and SQLite.
@@ -586,11 +687,19 @@ asserting both the pick result and the hand-choice result.
     - [ ] When run against a registry tree, the system shall write one Dolt commit holding every pool name, manual name, held row and migration record from that tree, and a second run shall report nothing to import.
     - [ ] When the import completes, the system shall print counts that match the tree: names, manual names, held rows by kind, migrations by state.
     - [ ] If the tree has a row that fails today's validator, then the system shall refuse the whole import and name the row.
-  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. The private manifest contains exactly the 20 previously approved entries plus the one approved replacement (21 approved entries total), omits the superseded entry, carries all recorded scoped verdicts, and records a canonical SHA-256 over sorted normalized rows plus the authoritative requirement-record digest it was derived from.
-    - [ ] When seeded, the system shall verify the manifest's canonical digest, apply all 21 exact general approvals and every listed scoped verdict with the file's actor, omit the superseded entry, and convert every denylisted name to `rejected` in one commit.
+  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. The founding ask states two separate approval facts, and the approved set is built from both, in this order:
+    1. the owner's pre-approved list of 20 entries, with the one substitution the owner named applied inside it: the superseded entry is removed and its named replacement takes its place, so the corrected list still has exactly 20 entries;
+    2. the one entry the owner approved separately, in addition to that list, which is neither the superseded entry nor a member of the corrected list.
+
+    The approved set is the corrected 20-entry list plus the separate addition: exactly 21 entries. The private manifest records the three parts separately (the corrected 20-entry list, which of its entries is the replacement and which entry it superseded, and the separate addition), carries all recorded scoped verdicts, and records a canonical SHA-256 over sorted normalized rows plus the digest of the authoritative requirement record it was derived from. Every approved entry is approved for migration as well as for picking, because general approval is what both the picker and `migrate-session` read.
+    - [ ] When seeded, the system shall verify the manifest's canonical digest and apply, with the file's actor, exactly 21 general approvals: the 20 entries of the corrected list, the replacement among them, and the separate addition. It shall leave the superseded entry without an approval, apply every listed scoped verdict, and convert every denylisted name to `rejected`, all in one commit.
+    - [ ] When an approved entry is not yet in the pool, the seed shall add it as a `manual` name, with the file's actor and reason, in the same commit as its approval, so no owner approval is dropped.
     - [ ] When a denylisted name is held, the system shall keep the hold and add a session-scoped `approved` verdict for its holder.
-    - [ ] If the seed file names a name outside the pool, then the system shall refuse the whole seed.
-    - [ ] If the manifest has any missing, extra, substituted or duplicate approved entry, does not attest to the authoritative requirement record, or its recomputed digest differs, then the cutover validation shall fail before any seed row is written.
+    - [ ] If a scoped verdict or a rejection in the seed file names a name outside the pool, then the system shall refuse the whole seed.
+    - [ ] If the corrected list does not have exactly 20 entries, omits the replacement, still contains the superseded entry, or has a duplicate, then the cutover validation shall fail before any seed row is written.
+    - [ ] If the separate addition is missing, is a member of the corrected list, equals the superseded entry, or more than one addition is listed, then the cutover validation shall fail before any seed row is written.
+    - [ ] If the superseded entry is not a member of the owner's original 20-entry list, then the cutover validation shall fail before any seed row is written and report that the substitution cannot be applied as recorded.
+    - [ ] If the manifest does not attest to the authoritative requirement record, or its recomputed digest differs, then the cutover validation shall fail before any seed row is written.
   - **T-3.3 `list-migrations`** — `ai list-migrations -j/--json`.
     - [ ] When run, the system shall list every migration row with its state, as JSON with `--json`.
   - **T-3.4 `find-names`** — `ai find-names -s/--status S -k/--scope KIND -v/--value VALUE -m/--machine M -t/--state STATE -j/--json`.
@@ -613,7 +722,7 @@ asserting both the pick result and the hand-choice result.
     - [ ] If any registered host cannot be locked, inventoried and upgraded, or if the old branch changes after the recorded frozen tip, then the cutover shall stop with Dolt writes disabled.
   - **T-4.2 Import, quarantine and seed** — on one host, import from the exact frozen tip, import every spare token in the union of the frozen tree and all host cache inventories as `cutover-quarantined`, and seed verdicts while Dolt writes remain disabled.
     - [ ] When import completes, every old session and label hold shall exist unchanged, every token an old offline client could activate shall still be occupied by a quarantined Dolt hold, and no ordinary Dolt allocation shall yet be accepted.
-    - [ ] Before seed writes, the runbook shall independently derive the expected private 21-entry approved set from the authoritative requirement record, recompute the manifest digest, and record equality with the manifest's attested digest; any count, membership, replacement or digest mismatch shall block the flip.
+    - [ ] Before seed writes, the runbook shall independently derive from the authoritative requirement record the corrected 20-entry list (the original 20 with the named substitution applied) and the separate addition, check each against the manifest's matching part, recompute the manifest digest, and record equality with the manifest's attested digest; a mismatch in the corrected list's count or membership, the replacement, the superseded entry, the separate addition, or the digest shall block the flip.
     - [ ] When validation succeeds, `check-names` in cutover mode shall exit 0 and `list-names` shall show counts equal to the frozen tree plus the attested seed and cache-only quarantines.
   - **T-4.3 Enable and roll out** — after every registered host is upgraded, reconcile each quarantine from its captured cache/spool evidence, verify no old registry process is running, switch policy to the Dolt backend, and set `meta.writes_enabled = 1` in the enabling Dolt commit. Sessions are told before the freeze and after the last host.
     - [ ] At every cutover checkpoint, an integration test shall attempt an old online write, an old cached offline-spare activation and a new Dolt write; zero stores shall accept ordinary allocation before the enabling commit, and only Dolt shall accept it afterward.
@@ -1079,9 +1188,10 @@ the session automatically.
 ## Open Questions
 
 None. "Git tracked" is satisfied by the canonical Dolt database and row history stored on a git
-remote ref. The exact private seed is not discretionary: T-3.2 fixes its 21 approved entries and
-replacement rule, and T-4.2 requires count, membership and digest equality with the authoritative
-record before cutover.
+remote ref. The exact private seed is not discretionary: T-3.2 builds its 21 approved entries from
+the corrected 20-entry list (one named substitution inside the original 20) plus one separately
+approved addition, and T-4.2 requires each part, and the digest, to equal what the authoritative
+record yields before cutover.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
