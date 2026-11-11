@@ -994,16 +994,17 @@ def rekey_name_artifacts(
             # claims keeps the preview honest about what the real run will do,
             # which is the only reason to offer a preview at all.
             if dry_run and move.action in ("move", "merge") and move.dest is not None:
-                earlier = claimed.get(move.dest)
+                dest = move.dest
+                earlier = claimed.get(dest)
                 if earlier is not None:
                     kept = _merged_epoch(move.source, earlier.source)
                     if kept is not None and earlier.kept is not None:
                         kept = max(kept, earlier.kept)
                     move = ResumeMove(
-                        source=move.source, dest=move.dest, action="conflict" if kept is None else "merge", kept=kept
+                        source=move.source, dest=dest, action="conflict" if kept is None else "merge", kept=kept
                     )
                 if move.action != "conflict":
-                    claimed[move.dest] = move
+                    claimed[dest] = move
             resume_moves.append(move)
     return tasks_moved, resume_moves
 
