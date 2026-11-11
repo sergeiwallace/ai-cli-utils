@@ -8086,15 +8086,13 @@ def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) 
     sys.exit(2)
 
 
-def _migration_status(names: list[str], *, every: bool) -> int:
-    """``ai migrate-session -s/--status [NAME]``: each recorded pair, re-planned read-only; 1 if any is partial.
+_STATUS_HEADER = "old | new | repo | state | parts left | finish with"
 
-    Without ``every`` a pair whose latest ledger row is a verified ``finished`` is not listed.
-    """
+
+def _recorded_pairs(names: list[str]) -> list[tuple[str, str, Path]] | None:
+    """Each pair this host records, narrowed to those every one of ``names`` matches; ``None`` after an error."""
     from .session_migrate import MIGRATION_LEDGER, recorded_migrations
-    from .session_migrate_status import finish_command, finish_state, replan
 
-    state = _config.get_xdg_state_home()
     pairs = recorded_migrations()
     if names:
         pairs = [pair for pair in pairs if all(_names_pair(name, pair) for name in names)]
@@ -8104,9 +8102,44 @@ def _migration_status(names: list[str], *, every: bool) -> int:
                 Tag.MIGRATE,
                 "migrate",
                 f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in "
-                f"{state / MIGRATION_LEDGER})",
+                f"{_config.get_xdg_state_home() / MIGRATION_LEDGER})",
             )
-            return 2
+            return None
+    return pairs
+
+
+def _replan_recorded(old: str, new: str, repo: Path) -> tuple[dict[str, str], str, bool]:
+    """``(parts left, live refusal or "", whether the plan ran)`` for one recorded pair, read-only."""
+    from .session_migrate_status import UNPLANNED, replan_live
+
+    slot = repo / ".worktrees" / new
+    if not slot.is_dir():
+        return {"slot": f"missing: {slot} does not exist"}, "", False
+    left, live = replan_live(repo, old, new)
+    return left, live, UNPLANNED not in left
+
+
+def _migration_row(old: str, new: str, repo: Path, state: str, left: dict[str, str]) -> str:
+    from .session_migrate_status import finish_command
+
+    if not left and state == "complete":
+        return f"{old} | {new} | {repo} | complete | - | -"
+    parts = "; ".join(f"{part} ({status})" for part, status in left.items()) or "-"
+    return f"{old} | {new} | {repo} | {state} | {parts} | {finish_command(old, new, repo)}"
+
+
+def _migration_status(names: list[str], *, every: bool) -> int:
+    """``ai migrate-session -s/--status [NAME]``: each recorded pair, re-planned read-only; 1 if any is partial.
+
+    Without ``every`` a pair whose latest ledger row is a verified ``finished`` is not listed.
+    """
+    from .session_migrate import MIGRATION_LEDGER
+    from .session_migrate_status import finish_state
+
+    state = _config.get_xdg_state_home()
+    pairs = _recorded_pairs(names)
+    if pairs is None:
+        return 2
     listed = [pair for pair in pairs if every or finish_state(pair[0], pair[1], state) != "verified"]
     if not listed:
         _out.emit(
@@ -8118,18 +8151,74 @@ def _migration_status(names: list[str], *, every: bool) -> int:
         )
         return 0
     partial = 0
-    _out.emit(Tag.MIGRATE, "migrate", "old | new | repo | state | parts left | finish with")
+    _out.emit(Tag.MIGRATE, "migrate", _STATUS_HEADER)
     for old, new, repo in listed:
-        slot = repo / ".worktrees" / new
-        left = replan(repo, old, new) if slot.is_dir() else {"slot": f"missing: {slot} does not exist"}
-        if left:
-            partial += 1
-            parts = "; ".join(f"{part} ({status})" for part, status in left.items())
-            row = f"{old} | {new} | {repo} | partial | {parts} | {finish_command(old, new, repo)}"
-        else:
-            row = f"{old} | {new} | {repo} | complete | - | -"
-        _out.emit(Tag.MIGRATE, "migrate", row)
+        left, _live, _planned = _replan_recorded(old, new, repo)
+        partial += bool(left)
+        _out.emit(Tag.MIGRATE, "migrate", _migration_row(old, new, repo, "partial" if left else "complete", left))
     return 1 if partial else 0
+
+
+def _finish_all_recorded(*, dry_run: bool, yes: bool) -> int:
+    """``ai migrate-session --finish -a/--all``: finish every stopped partial migration this host records.
+
+    Every recorded pair is re-planned read-only, a verified ``finished`` row or not. A partial
+    pair whose sessions are stopped is finished through :func:`finish_session`'s writing run,
+    then re-planned again for its row. A live pair, or one that cannot be planned, is skipped
+    and named. One summary row per pair; 1 if any pair is left partial or skipped.
+    """
+    from .session_adopt import AdoptionError, LiveSessionError
+    from .session_migrate import MIGRATION_LEDGER, _one_line, finish_session
+
+    pairs = _recorded_pairs([]) or []
+    if not pairs:
+        _out.emit(Tag.MIGRATE, "migrate", f"no migration recorded in {_config.get_xdg_state_home() / MIGRATION_LEDGER}")
+        return 0
+    rows: dict[tuple[str, str, Path], tuple[str, dict[str, str]]] = {}
+    for old, new, repo in pairs:
+        left, live, planned = _replan_recorded(old, new, repo)
+        if not left:
+            rows[(old, new, repo)] = ("complete", left)
+        elif not planned:
+            rows[(old, new, repo)] = ("skipped: could not plan", left)
+        elif live:
+            rows[(old, new, repo)] = (f"skipped: live ({_one_line(live)})", left)
+        else:
+            rows[(old, new, repo)] = ("would finish", left)
+    todo = [pair for pair, (state, _left) in rows.items() if state == "would finish"]
+
+    def _summary() -> int:
+        _out.emit(Tag.MIGRATE, "migrate", _STATUS_HEADER)
+        for (old, new, repo), (state, left) in rows.items():
+            _out.emit(Tag.MIGRATE, "migrate", _migration_row(old, new, repo, state, left))
+        return 1 if any(state != "complete" for state, _left in rows.values()) else 0
+
+    if not todo or dry_run:
+        if todo:
+            _require_current_installed_build(dry_run=True)
+            _out.emit(Tag.MIGRATE, "migrate", f"dry run: {len(todo)} migration(s) would be finished; nothing written")
+        return _summary()
+    _require_current_installed_build(dry_run=False)
+    if not yes:
+        _summary()
+        if not _out.confirm(Tag.MIGRATE, "migrate", f"Finish {len(todo)} migration(s)?"):
+            _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)
+            return 1
+    for old, new, repo in todo:
+        try:
+            result = finish_session(repo, old, new, regenerate_script=_engine_script_from_meta)
+        except LiveSessionError as exc:
+            left, _live, _planned = _replan_recorded(old, new, repo)
+            rows[(old, new, repo)] = (f"skipped: live ({_one_line(str(exc))})", left)
+            continue
+        except (AdoptionError, RuntimeError) as exc:
+            _out.error(Tag.MIGRATE, "migrate", f"{old} -> {new}: {exc}")
+            rows[(old, new, repo)] = ("partial", {"migration": f"failed: {_one_line(str(exc))}"})
+            continue
+        _print_migration(result)
+        left, _live, _planned = _replan_recorded(old, new, repo)
+        rows[(old, new, repo)] = ("partial" if left else "complete", left)
+    return _summary()
 
 
 def _remote_ai_command(remote: dict, argv: list[str]) -> list[str]:
@@ -8195,6 +8284,12 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
         "the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, "
         "and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default "
         "remote machine.\n\n"
+        "-f/--finish -a/--all re-plans every recorded migration on this host, verified or not, and "
+        "finishes each partial one whose sessions are stopped, so a migration recorded before a fix "
+        "(or stuck on a refusal since fixed) needs no hand run. A live pair, or one it cannot plan, "
+        "is skipped and named. It checks the installed `ai` once, lists what it would finish and asks "
+        "unless -y is given, and with -n/--dry-run writes nothing. It prints one row per pair and "
+        "exits 1 if any pair is left partial or skipped.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -8250,7 +8345,10 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
     "--all",
     "sweep",
     is_flag=True,
-    help="With -T/--to-names: every index-named session here; with -s/--status: every recorded migration",
+    help=(
+        "With -T/--to-names: every index-named session here; with -s/--status: every recorded migration; "
+        "with -f/--finish: finish every stopped partial migration this host records"
+    ),
 )
 @click.option("-T", "--to-names", is_flag=True, help="With -a/--all: migrate each one to a picked first name")
 @click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
@@ -8294,6 +8392,12 @@ def cmd_migrate_session(
             sys.exit(2)
         names = [name for name in (old, new) if name]
         sys.exit(_remote_migration_status(names, every=sweep) if remote else _migration_status(names, every=sweep))
+    if finish and sweep and not to_names:
+        others = (old, new, repo, beads_only, to_name is not None, max_length, over_limit)
+        if any(other not in (None, False, "") for other in others):
+            _out.error(Tag.MIGRATE, "migrate", "-f/--finish -a/--all takes -n/--dry-run and -y/--yes only")
+            sys.exit(2)
+        sys.exit(_finish_all_recorded(dry_run=dry_run, yes=yes))
     if finish and not (sweep or to_names or over_limit) and (old or to_name):
         if to_name and new:
             raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")

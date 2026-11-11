@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page names its source. A tracked file that is neither published nor excluded as a non-document
   fails the build. `.github/workflows/wiki.yml` rebuilds and pushes the wiki on every push to
   `main`; preview it with `uv run python scripts/generate_docs.py -c -w DIR -R OWNER/REPO`.
+- `ai migrate-session --finish -a/--all` finishes every partial migration this host records
+  whose sessions are stopped. It re-plans every recorded pair, verified or not, so a migration
+  recorded before a fix, or one a hook refused before the hook was fixed, is finished without a
+  hand run. A pair with a live session, or one it cannot plan, is skipped and named. The installed
+  `ai` is checked once; without `-y` it lists what it would finish and asks, and `-n/--dry-run`
+  writes nothing. It prints one row per pair in the `--status` columns and exits 1 if any pair
+  is left partial or skipped.
 - `ai migrate-session -s/--status [NAME]` lists every migration this host records that is not
   verified finished, one row each: OLD, NEW, repo, `complete` or `partial`, the parts left and
   the `--finish` command that finishes it. Each pair is re-planned with the same read-only
