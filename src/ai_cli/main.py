@@ -7438,6 +7438,10 @@ def cmd_adopt_session(
 
 def _print_migration(result) -> None:
     """Every planned (or performed) move of a ``migrate-session`` run, then its warnings."""
+    if not result.parts:
+        from .session_migrate_resume import summarize
+
+        summarize(result, resumed=not result.old_worktree.exists())
     verb = "would migrate" if result.dry_run else "migrated"
     _out.emit(Tag.MIGRATE, "migrate", f"{result.old} -> {result.new}: {verb}")
     for move in result.moves:
@@ -7451,6 +7455,21 @@ def _print_migration(result) -> None:
         _out.emit(Tag.MIGRATE, "migrate", f"  resolve probe: `ai c` finds {result.resolved}")
     for warning in result.warnings:
         _out.emit(Tag.MIGRATE, "migrate", f"  warning: {warning}", err=True)
+
+    if result.parts:
+        _out.emit(Tag.MIGRATE, "migrate", "part | status")
+        for part, status in result.parts.items():
+            _out.emit(Tag.MIGRATE, "migrate", f"{part} | {status}")
+
+
+def _print_migration_refusal(reason: str, *, partial: bool = False) -> None:
+    from .session_migrate_resume import PARTS
+
+    _out.emit(Tag.MIGRATE, "migrate", "part | status")
+    status = "completion unverified after partial failure" if partial else "preflight refused"
+    for part in PARTS:
+        _out.emit(Tag.MIGRATE, "migrate", f"{part} | skipped: {status}")
+    _out.emit(Tag.MIGRATE, "migrate", f"migration | failed: {reason}")
 
 
 def _migration_stem(repo_root: Path) -> str:
@@ -7474,19 +7493,26 @@ def _complete_migration_for_names(registry, old: str, machine: str) -> bool:
     return _names.complete_migration(registry, old, machine)
 
 
-def _names_registry_or_exit():
+def _names_registry_or_exit(*, read_only: bool = False):
     from . import name_commands
 
-    return name_commands.open_registry()
+    return name_commands.open_registry(read_only=read_only)
 
 
-def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_length: int | None, dry_run: bool) -> int:
+def _migrate_one_to_name(
+    repo_root: Path, old: str, name: str | None, *, max_length: int | None, dry_run: bool, yes: bool = False
+) -> int:
     """``ai migrate-session OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
     from . import migrate_names, session_clients
     from . import name_registry as _names
     from .session_adopt import AdoptionError
+    from .session_migrate import PartialMigrationError
 
-    registry = _names_registry_or_exit()
+    try:
+        registry = _names_registry_or_exit(read_only=True)
+    except SystemExit:
+        _print_migration_refusal("name registry unavailable; see error above")
+        return 2
     try:
         stem = _migration_stem(repo_root)
         host = _session_naming.host_id()
@@ -7499,47 +7525,87 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
             machine=host,
             client="claude-code",
         )
-        snapshot = registry.snapshot()
+        snapshot = registry.snapshot(fetch=not dry_run)
         notes: list[str] = []
         if dry_run:
             snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
         migrate_names.bounded_max_length(max_length, snapshot.policy)
     except (_session_naming.HostAliasError, _config.ProjectPrefixError, _names.RegistryError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
-        return 1
+        _print_migration_refusal(str(exc))
+        return 2
     except ValueError as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
+        _print_migration_refusal(str(exc))
         return 2
     adapters = session_clients.all_adapters()
-    if dry_run:
-        try:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
-            planned = name or _session_naming.pick_name(request).name
-        except (_names.RegistryError, _session_naming.NamePoolExhaustedError) as exc:
-            _out.error(Tag.MIGRATE, "migrate", f"{exc}")
-            return 1
-        for note in notes:
-            _out.emit(Tag.MIGRATE, "migrate", f"dry run: {note}")
-        _out.emit(
-            Tag.MIGRATE, "migrate", f"dry run: {old} would become {slot.title_for(planned)}; nothing was reserved"
-        )
-        return 0
-    words = _names.common_words(snapshot.policy) if name else frozenset()
+    name = name.lower() if name else None
     try:
         pending = snapshot.migrations.get(old)
-        if pending and pending.get("status") == "intent" and pending.get("machine") == host:
+        if pending and pending.get("machine") == host:
             new = str(pending["new_title"])
-            migrate_names.resume_rename(repo_root, old, new, regenerate_script=_engine_script_from_meta)
-            left = migrate_names.artifacts_under(old, repo_root, adapters)
-            if left:
-                _names.mark_migration_incomplete(
-                    registry, old, host, migrate_names.artifacts_under(new, repo_root, adapters)
+            if name and new != slot.title_for(name):
+                raise AdoptionError(f"{old} already has a migration to {new}; refusing a different target")
+            result = _migrate_session_for_names(
+                repo_root, old, new, dry_run=True, new_is_reserved=True, pair_recorded=True
+            )
+            if not dry_run:
+                if not yes and not _out.confirm(Tag.MIGRATE, "migrate", f"Finish migrating {old} to {new}?"):
+                    return 2
+                result = _migrate_session_for_names(
+                    repo_root, old, new, dry_run=False, new_is_reserved=True, pair_recorded=True
                 )
-                _out.error(Tag.MIGRATE, "migrate", f"{old} still has {left}; {new} stays migration-incomplete")
+            if result.failed:
+                if not dry_run:
+                    try:
+                        _names.mark_migration_incomplete(
+                            registry, old, host, migrate_names.artifacts_under(new, repo_root, adapters)
+                        )
+                    except _names.RegistryError as exc:
+                        result.warnings.append(f"name registry FAILED to record incomplete migration: {exc}")
+                result.parts["name registry"] = "failed: migration remains incomplete"
+                _print_migration(result)
                 return 1
-            _complete_migration_for_names(registry, old, host)
-            _out.emit(Tag.MIGRATE, "migrate", f"resumed and completed the rename of {old} to {new}")
+            if not dry_run:
+                try:
+                    _complete_migration_for_names(registry, old, host)
+                except _names.RegistryError as exc:
+                    result.warnings.append(f"name registry completion FAILED: {exc}; repeat the same command")
+                    result.parts["name registry"] = "failed: completion was not published"
+                    _print_migration(result)
+                    return 1
+            result.parts["name registry"] = (
+                "done earlier" if pending.get("status") == "complete" else "would do" if dry_run else "done now"
+            )
+            _print_migration(result)
             return 0
+        words = _names.common_words(snapshot.policy) if name else frozenset()
+        if name:
+            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
+            if verdict != "ok":
+                if verdict == "unknown":
+                    reason += f"; add it with `ai add-name {name}` first"
+                raise AdoptionError(reason)
+            planned = name
+        else:
+            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
+            planned = _session_naming.pick_name(request).name
+        preview = _migrate_session_for_names(
+            repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True
+        )
+        if dry_run:
+            for note in notes:
+                _out.emit(Tag.MIGRATE, "migrate", f"dry run: {note}")
+            _out.emit(
+                Tag.MIGRATE, "migrate", f"dry run: {old} would become {slot.title_for(planned)}; nothing was reserved"
+            )
+            preview.parts["name registry"] = "would do"
+            _print_migration(preview)
+            return 1 if preview.failed else 0
+        if not yes:
+            _print_migration(preview)
+            if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {slot.title_for(planned)}?"):
+                return 2
         done = migrate_names.migrate_to_name(
             registry,
             repo_root,
@@ -7552,13 +7618,21 @@ def _migrate_one_to_name(repo_root: Path, old: str, name: str | None, *, max_len
             migrate=_migrate_session_for_names,
             complete=_complete_migration_for_names,
         )
+    except PartialMigrationError as exc:
+        _out.error(Tag.MIGRATE, "migrate", str(exc))
+        _print_migration_refusal(str(exc), partial=True)
+        return 1
     except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
-        return 1
+        _print_migration_refusal(str(exc))
+        return 2
     if done.result is not None:
+        done.result.parts["name registry"] = (
+            "failed: migration remains incomplete" if done.result.failed else "done now"
+        )
         _print_migration(done.result)
     _out.emit(Tag.MIGRATE, "migrate", f"migrated {old} to {done.new}")
-    return 0
+    return 1 if done.result is not None and done.result.failed else 0
 
 
 def _migrate_all_to_names(
@@ -7660,6 +7734,10 @@ def _migrate_all_to_names(
             refused += 1
             _out.error(Tag.MIGRATE, "migrate", f"{entry.title}: {exc}")
             continue
+        if done.result is not None:
+            _print_migration(done.result)
+            if done.result.failed:
+                refused += 1
         _out.emit(Tag.MIGRATE, "migrate", f"migrated {entry.title} to {done.new}")
     return 1 if refused else 0
 
@@ -7766,7 +7844,7 @@ def cmd_migrate_session(
     if to_name is not None:
         if not old or new:
             raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
-        sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run))
+        sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
 
@@ -7788,7 +7866,8 @@ def cmd_migrate_session(
             result = _run(False)
     except (AdoptionError, RuntimeError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
-        sys.exit(1)
+        _print_migration_refusal(str(exc))
+        sys.exit(2)
 
     _print_migration(result)
     sys.exit(1 if result.failed else 0)

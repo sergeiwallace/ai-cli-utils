@@ -460,7 +460,7 @@ def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_na
     else:
         code, out, err = migrate(unpublished, OLD, *args)
 
-    assert code == 1
+    assert code == (2 if args[0] == "--to-name" else 1)
     assert "no available/generation.json; run `ai sync-names` to publish one" in out + err
     assert _registry_refs(unpublished) == before
     assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()

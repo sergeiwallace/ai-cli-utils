@@ -82,7 +82,7 @@ def test_given_a_hook_that_refuses_its_plan_when_migrating_then_nothing_moves(sl
     hooks("10-notes", "notes", fail="plan")
     before = _everything(slot)
     code, _out, err = _migrate(slot["repo"], "-y")
-    assert code == 1
+    assert code == 2
     assert "hook notes" in err and "refused the migration (exit 3): notes store is locked" in err
     assert _everything(slot) == before
     assert all("--dry-run" in c["args"] for c in hooks.calls())
@@ -114,7 +114,7 @@ def test_given_a_malformed_hook_file_when_migrating_then_it_is_refused_naming_fi
     bad.write_text(body, encoding="utf-8")
     before = _everything(slot)
     code, _out, err = _migrate(slot["repo"], "--dry-run")
-    assert code == 1
+    assert code == 2
     assert str(bad) in err and field in err
     assert _everything(slot) == before
 
