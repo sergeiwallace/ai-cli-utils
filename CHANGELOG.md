@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai -h` and every group's help (`ai sessions -h`, `ai sync -h` and the rest) now print each
+  command's complete description, every sentence and paragraph, wrapped under the command name,
+  instead of a first sentence cut off with "...". Help uses up to 100 columns on a terminal wider
+  than 80. The `ai sessions` subcommands that had no help text now have it.
+- `ai ps -h`, `ai layout -h` and `ai sync -h` print their actions and options. Before, `ai ps -h`
+  ran the process listing and `ai sync -h` failed. Every form these commands accepted still
+  works. `ai sync pull --prefer-remote` gains `-p`, and `ai sync watch --auto` and `--verbose`
+  gain `-a` and `-v`. An unknown action, option or extra argument is now a usage error instead of
+  being ignored, so a mistyped `ai ps clean` flag can no longer pass unnoticed; put `-f` and `-r`
+  after the action (`ai ps clean -f`).
 - `ai migrate-session` now rewrites the old worktree path to the new one inside the moved
   worktree's `.venv` (console scripts, `pyvenv.cfg`, `.pth` and `direct_url.json` files)
   instead of only warning. The rewrite is offline, atomic per file, leaves binary files and

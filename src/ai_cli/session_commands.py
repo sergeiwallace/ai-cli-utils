@@ -17,12 +17,13 @@ import click
 from . import output, session_boot_unit, session_publish_timer, session_state_publish
 from . import session_registry as registry
 from . import session_run_state as state
+from .cli_help import HelpGroup
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
 from .session_enrol import enrol, heal_live_sessions
 
 
-@click.group("sessions", help="Session run state and publication")
+@click.group("sessions", cls=HelpGroup, help="Session run state and publication")
 def sessions():
     pass
 
@@ -30,10 +31,16 @@ def sessions():
 sessions.add_command(enrol)
 
 
-@sessions.command("mark")
+@sessions.command(
+    "mark",
+    help="Record a session's run state in the registry: running, or exited with a cause (-c) and "
+    "optional JSON evidence (-e)",
+)
 @click.argument("name")
 @click.argument("status", type=click.Choice(["running", "exited"]))
-@click.option("-c", "--cause", type=click.Choice(registry.EXIT_CAUSES))
+@click.option(
+    "-c", "--cause", type=click.Choice(registry.EXIT_CAUSES), help="Why the session exited; required with exited"
+)
 @click.option("-e", "--evidence", default="{}", help="Exit evidence as a JSON object")
 @click.option("--generation", hidden=True)
 @click.option("--sequence", type=int, hidden=True)
@@ -135,7 +142,11 @@ def sequence():
     output.raw(Untagged.INTERNAL_REPLY, str(time.monotonic_ns()))
 
 
-@sessions.command("publish")
+@sessions.command(
+    "publish",
+    help="Publish a snapshot of the session registry to the configured publication repo, when it "
+    "has unpublished changes and the debounce window has passed",
+)
 @click.option("-n", "--now", is_flag=True, help="Ignore the debounce window")
 @click.option("-t", "--tick", is_flag=True, help="Run one publication timer tick")
 def publish(now, tick):
@@ -143,7 +154,10 @@ def publish(now, tick):
     output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
-@sessions.command("list")
+@sessions.command(
+    "list",
+    help="List the sessions in the registry with their run state, exit cause, last change and relaunch policy",
+)
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
 def list_sessions(as_json):
     records = [
@@ -413,8 +427,16 @@ def publish_timer():
     pass
 
 
+_TIMER_HELP = {
+    "install": "Install and enable the background timer that publishes session state; "
+    "removes it instead when no publication repo is configured",
+    "uninstall": "Disable and remove the publication timer",
+    "status": "Report whether the publication timer is installed, current and active",
+}
+
+
 def _timer_command(action):
-    @click.command(action)
+    @click.command(action, help=_TIMER_HELP[action])
     def command():
         output.emit(output.Tag.SESSIONS, "configure", session_publish_timer.manage(action))
 
@@ -430,8 +452,16 @@ def boot_unit():
     pass
 
 
+_BOOT_UNIT_HELP = {
+    "install": "Write the boot relaunch service and enable it, or disable and remove it, as "
+    "session_relaunch.on_boot (or -b/--on-boot) asks",
+    "uninstall": "Disable and remove the boot relaunch service",
+    "status": "Report whether the boot relaunch service is installed, current and enabled",
+}
+
+
 def _boot_unit_command(action):
-    @click.command(action)
+    @click.command(action, help=_BOOT_UNIT_HELP[action])
     @click.option("-d", "--dry-run", is_flag=True, help="Print the unit, path and actions without making changes")
     def command(dry_run, on_boot=None):
         try:
