@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A migrated session that Claude Code had once run in the background now keeps its new name when
+  `ai c NEW -r` resumes it. Claude Code keeps a job record for such a session under
+  `~/.claude/jobs/<short session id>/state.json` and renames a resumed session to that record's
+  name, whatever `--name` the launch passed, so the session came back as OLD and wrote OLD name
+  records into its transcript. `ai migrate-session OLD NEW` now renames that record to NEW, and
+  `--finish` reports (`job name`) and renames one still naming OLD, also on a pair already
+  finished. A record naming another session id is left alone.
+
 - A migrated session now resumes the transcript `ai migrate-session OLD NEW` moved, not a later
   transcript also titled NEW that a relaunch started before the migration finished. Before, the
   resume took the most recently active transcript titled NEW, so that short stray won and the

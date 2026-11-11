@@ -25,6 +25,7 @@ PARTS = (
     "agent branch",
     "project dir",
     "transcript title",
+    "job name",
     "held output",
     "memory file",
     "memory index",
@@ -124,7 +125,16 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
                 m.neutralise_worktree_state(dest, new_wt)
 
             add("transcript title", path, dest, rewrite)
+    for move in m.plan_job_names(project, old, new, home):
+        plan.moves.append(move)
+        plan.actions.append(lambda record=Path(move.source): _job_name(record, old, new))
     return plan
+
+
+def _job_name(record: Path, old: str, new: str) -> None:
+    warning = m.apply_job_name(record, old, new)
+    if warning:
+        raise m.MigrationError(warning)
 
 
 def _ownership(plan, branch):

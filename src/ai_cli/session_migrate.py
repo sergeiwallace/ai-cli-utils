@@ -14,6 +14,8 @@ tasks, memory and resume hand-off:
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
   memory), with each transcript's recorded cwd repointed, its ``customTitle`` and
   ``agentName`` renamed and its stale worktree binding cleared;
+* each moved transcript's Claude Code job record (``jobs/<short id>/state.json``),
+  whose ``name`` Claude Code restores on resume, renamed;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
   and the slot's project directories (filename prefix only), and the memory files
   named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
@@ -90,6 +92,7 @@ from . import config as _config
 from . import session_migrate_agents as _agents
 from . import session_migrate_hooks as _hooks
 from . import session_registry as _session_registry
+from .background_attach import is_copy_title
 from .branch_rename import rename_branch_anchored
 from .canonical_worktrees import (
     CanonicalWorktreeRegistryError,
@@ -1227,6 +1230,50 @@ def rekey_beads(
     return result
 
 
+def _job_record(path: Path) -> dict | None:
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return job if isinstance(job, dict) else None
+
+
+def plan_job_names(project: Path, old: str, new: str, home: Path) -> list[PlannedMove]:
+    """Claude Code's job record of each transcript in ``project`` still naming ``old``.
+
+    Claude Code keeps ``<home>/jobs/<first 8 characters of the session id>/state.json`` for a
+    session it ran in the background, and renames a resumed session to that record's
+    user-set name whatever ``--name`` the launch passed. A record left naming ``old`` therefore
+    sends the migrated session back to ``old``. A record that names another session id is left
+    alone, since two sessions can share the short id.
+    """
+    moves = []
+    for path in sorted(project.glob("*.jsonl")) if project.is_dir() else []:
+        record = home / "jobs" / path.stem[:8] / "state.json"
+        job = _job_record(record)
+        if job is None or path.stem not in (job.get("sessionId"), job.get("resumeSessionId")):
+            continue
+        name = job.get("name")
+        if is_copy_title(name, old):
+            moves.append(PlannedMove("job name", str(record), f"{name} -> {new}{name[len(old) :]}", "rewrite"))
+    return moves
+
+
+def apply_job_name(record: Path, old: str, new: str) -> str | None:
+    """Rename the job record at ``record`` from ``old`` to ``new``; a warning when it is NOT renamed."""
+    try:
+        before = record.read_bytes()
+        job = json.loads(before)
+        name = job.get("name")
+        if not is_copy_title(name, old):
+            return None
+        job["name"] = f"{new}{name[len(old) :]}"
+        _write_migration_file(record, json.dumps(job, indent=2, ensure_ascii=False).encode(), expected=before)
+    except (OSError, ValueError, AttributeError, MigrationError) as exc:
+        return f"job name {record} was NOT renamed to {new}: {_one_line(str(exc))}"
+    return None
+
+
 def _start_session(
     repo_root: Path,
     old: str,
@@ -1373,6 +1420,8 @@ def _start_session(
             moves.append(PlannedMove("transcript title", path.name, f"{old} -> {new}", "rewrite"))
     else:
         result.warnings.append(f"no Claude Code project directory at {old_pd}; there is no transcript to carry")
+    job_moves = plan_job_names(old_pd, old, new, home)
+    moves += job_moves
 
     state_moves = _plan_state(old, new, state)
     moves += state_moves
@@ -1452,6 +1501,10 @@ def _start_session(
             if path.name in {t.name for t in named}:
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
+    for item in job_moves:
+        warning = apply_job_name(Path(item.source), old, new)
+        if warning:
+            result.warnings.append(warning)
 
     _apply_task_rekey(old, new, home, result, state)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
