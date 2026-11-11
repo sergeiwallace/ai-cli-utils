@@ -698,6 +698,8 @@ elif args[0] == "update":
     issue["assignee"] = opt("--assignee")
 elif args[:2] == ["comments", "add"]:
     next(i for i in issues if i["id"] == args[2]).setdefault("comments", []).append(" ".join(args[3:]))
+elif args[0] == "comments":
+    print(json.dumps([{"text": text} for text in next(i for i in issues if i["id"] == args[1]).get("comments", [])]))
 db.write_text(json.dumps(data))
 """
 

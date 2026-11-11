@@ -4,19 +4,46 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import test_session_migrate
 from test_session_migrate import NEW, OLD, _everything, _git, _migrate
 
 slot = test_session_migrate.slot
 
 
+@pytest.mark.parametrize("running", ["target tmux", "nested target process"])
+def test_given_a_running_target_when_migrating_then_it_is_refused_without_changes(slot, monkeypatch, running):
+    from ai_cli import session_migrate as migration
+
+    if running == "nested target process":
+        assert _migrate(slot["repo"], "-y")[0] == 0
+        monkeypatch.setattr(
+            migration,
+            "live_sessions",
+            lambda *a: [
+                SimpleNamespace(name="other-session", pid=12345, cwd=str(slot["repo"] / ".worktrees" / NEW / "src"))
+            ],
+        )
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{NEW}"] if running == "target tmux" else [])
+    assert code == 2, out + err
+    assert _everything(slot) == before
+
+
 def test_given_a_topic_branch_and_move_before_record_when_retried_then_saved_intent_proves_pair(slot, monkeypatch):
     from ai_cli import session_migrate as migration
 
     _git("switch", "-q", "-c", "topic", cwd=slot["wt"])
+    move = migration.move_worktree
     with monkeypatch.context() as changes:
-        changes.setattr(migration, "_record_migration", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+        def interrupt(*args, **kwargs):
+            assert move(*args, **kwargs)[0]
+            raise KeyboardInterrupt("moved before returning to the runner")
+
+        changes.setattr(migration, "move_worktree", interrupt)
         assert _migrate(slot["repo"], "-y")[0] == 1
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
@@ -30,6 +57,34 @@ def test_given_an_explicit_finish_when_complete_then_the_same_parts_table_is_pri
     assert code == 0, out + err
     assert "part | status" in out
     assert "worktree | done earlier" in out
+
+
+def test_given_an_existing_target_namespace_when_stopped_before_tasks_then_retry_uses_original_mapping(
+    slot, monkeypatch
+):
+    from ai_cli import session_migrate as migration
+
+    dest = slot["claude"] / "tasks" / NEW
+    dest.mkdir()
+    (dest / "1.json").write_text(json.dumps({"id": "1", "subject": "unrelated"}))
+    with monkeypatch.context() as changes:
+        changes.setattr(migration, "_apply_task_rekey", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        assert _migrate(slot["repo"], "-y")[0] == 1
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert len(list(dest.glob("*.json"))) == 3
+
+
+def test_given_migrated_tasks_updated_later_when_retried_then_completed_tasks_are_not_overwritten(slot):
+    assert _migrate(slot["repo"], "-y")[0] == 0
+    target = slot["claude"] / "tasks" / NEW / "1.json"
+    task = json.loads(target.read_text())
+    task["status"] = "completed"
+    target.write_text(json.dumps(task))
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert _everything(slot) == before
 
 
 def test_given_a_task_copied_before_interruption_when_retried_then_no_duplicate_or_remapped_dependency(

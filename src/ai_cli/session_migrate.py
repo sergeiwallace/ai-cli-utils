@@ -216,16 +216,17 @@ def _refuse_live(
 ) -> None:
     for session in live_sessions(home, proc_dir):
         cwd = Path(session.cwd).resolve(strict=False) if session.cwd else None
-        inside = cwd is not None and (cwd in (old_wt, new_wt) or old_wt in cwd.parents)
+        inside = cwd is not None and any(cwd == root or root in cwd.parents for root in (old_wt, new_wt))
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
                 f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
             )
-    hosting = sorted(set(tmux) & set(_session_variants(old)))
+    hosting = sorted(set(tmux) & set(_session_variants(old) + _session_variants(new)))
     if hosting:
+        hosted = ", ".join(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
         raise LiveSessionError(
-            f"tmux session {', '.join(hosting)} still hosts {old}, and its wrapper restarts the agent on "
+            f"tmux session {', '.join(hosting)} still hosts {hosted}, and its wrapper restarts the agent on "
             f"exit. Exit the session and end the tmux session (`tmux kill-session -t {hosting[0]}`) first."
         )
 
@@ -740,7 +741,7 @@ def clean_leftovers(
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
     result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
-    beads = _plan_beads(old, _stores(projects_dir, repo_root))
+    beads = _plan_beads(old, new, _stores(projects_dir, repo_root), state)
     _describe_beads(old, new, beads, result)
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
@@ -808,6 +809,9 @@ class _Store:
     path: Path
     issues: list[str] = field(default_factory=list)
     error: str | None = None
+    comments: list[str] = field(default_factory=list)
+    completed: list[str] = field(default_factory=list)
+    state: Path | None = None
 
 
 def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
@@ -820,11 +824,14 @@ def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
     return found
 
 
-def _plan_beads(old: str, stores: list[Path]) -> list[_Store]:
+def _plan_beads(old: str, new: str, stores: list[Path], state: Path) -> list[_Store]:
     """Read each store's issues held by ``old``: exactly that name, any status but closed."""
+    from .session_migrate_issues import inspect_comments, intents
+
+    recorded = intents(state, old, new)
     planned: list[_Store] = []
-    for path in stores:
-        store = _Store(path)
+    for path in dict.fromkeys([*stores, *recorded]):
+        store = _Store(path, state=state)
         planned.append(store)
         try:
             listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
@@ -847,6 +854,10 @@ def _plan_beads(old: str, stores: list[Path]) -> list[_Store]:
             for row in rows
             if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
         ]
+        try:
+            inspect_comments(store, old, new, recorded.get(path, set()))
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            store.error = _one_line(str(exc))
     return planned
 
 
@@ -861,6 +872,11 @@ def _describe_beads(old: str, new: str, stores: list[_Store], result: MigrationR
         for issue in store.issues:
             action = f"left alone: {held}" if held else "move"
             result.moves.append(PlannedMove("beads issue", f"{issue} [{old}] ({store.path})", new, action))
+        for issue in store.comments:
+            action = f"left alone: {held}" if held else "finish comment"
+            result.moves.append(PlannedMove("beads issue", f"{issue} comment ({store.path})", new, action))
+        for issue in store.completed:
+            result.moves.append(PlannedMove("beads issue", f"{issue} ({store.path})", new, "already done"))
     if held and any(store.issues for store in stores):
         result.warnings.append(f"beads issues on {old} were NOT re-keyed to {new}: {held}")
 
@@ -872,8 +888,14 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
     moves without ``--force`` (which bd refuses beside ``--if-assignee`` anyway), and
     ``--if-assignee`` keeps it from touching an issue anyone else picked up meanwhile.
     """
-    for store in [s for s in stores if s.error is None and s.issues]:
+    from .session_migrate_issues import note, remember
+
+    for store in [s for s in stores if s.error is None and (s.issues or s.comments)]:
+        if store.state is None:
+            raise MigrationError(f"missing issue migration intent directory for {store.path}")
+        remember(store.state, store.path, old, new, store.issues)
         changed = 0
+        comments = list(store.comments)
         for issue in store.issues:
             where = f"beads issue {issue} in {store.path}"
             try:
@@ -888,14 +910,16 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
                 result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
                 continue
             changed += 1
-            note = f"Re-keyed from {old} to {new} by `ai migrate-session`."
+            comments.append(issue)
+        for issue in comments:
+            where = f"beads issue {issue} in {store.path}"
             try:
-                noted = _bd(store.path, "comments", "add", issue, note)
+                noted = _bd(store.path, "comments", "add", issue, note(old, new))
             except (OSError, subprocess.TimeoutExpired) as exc:
                 noted = subprocess.CompletedProcess([], 1, "", str(exc))
             if noted.returncode != 0:
                 result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
-        if changed:
+        if changed or comments:
             result.moves.append(
                 PlannedMove(
                     "beads store",
@@ -1072,7 +1096,7 @@ def rekey_beads(
     evidence = _migration_evidence(old, new, state)
     if evidence:
         result.moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
     if evidence and not dry_run:
@@ -1245,7 +1269,7 @@ def _start_session(
 
     _plan_task_rekey(old, new, home, result, state)
     hooks = _plan_hooks(old, new, repo_root, moves)
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     _describe_beads(old, new, beads, result)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
     if dry_run:
@@ -1253,14 +1277,16 @@ def _start_session(
         return result
 
     # Record intent before Git can move a topic-branch checkout. Its branch alone
-    # cannot prove the original session after an interruption before the move receipt.
-    _append_ledger(state, old, new, repo_root, intent=True)
+    # cannot prove the original session after an interruption during the move.
+    from .session_migrate_tasks import remember
+
+    remember(result.task_intent, state)
+    _record_migration(state, old, new, repo_root, new_wt)
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
             raise MigrationError(f"git worktree move failed, nothing was migrated: {why}")
         raise MigrationError(f"the worktree moved but is not usable yet, so nothing else was migrated: {why}")
-    _record_migration(state, old, new, repo_root, new_wt)
     if has_venv:
         # A moved environment still names the old path in its scripts and config; rewriting the
         # path is offline and idempotent, unlike a reinstall, which fails on a pinned source path.
@@ -1488,7 +1514,7 @@ def finish_session(
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, _stores(projects, repo_root))
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
     others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}

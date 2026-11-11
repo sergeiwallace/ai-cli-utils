@@ -82,9 +82,9 @@ def plan(old: str, new: str, home: Path, state: Path, *, resuming: bool) -> tupl
         if not item["source"].isdigit() or not item["dest"].isdigit():
             raise MigrationError(f"invalid task migration intent in {path}")
         source, dest = source_ns / f"{item['source']}.json", dest_ns / f"{item['dest']}.json"
-        if dest.exists() and _digest(dest.read_bytes()) != item["after"]:
-            raise MigrationError(f"task destination {dest} differs from the recorded intent; refusing to overwrite")
         if source.exists():
+            if dest.exists() and _digest(dest.read_bytes()) != item["after"]:
+                raise MigrationError(f"task destination {dest} differs from the recorded intent; refusing to overwrite")
             if _digest(source.read_bytes()) != item["before"]:
                 raise MigrationError(f"task source {source} changed after its migration intent")
             remaining.append(TaskMove(source, dest, source.stem if source.stem != dest.stem else None))
@@ -93,9 +93,9 @@ def plan(old: str, new: str, home: Path, state: Path, *, resuming: bool) -> tupl
     return remaining, saved
 
 
-def apply(moves: list[TaskMove], intent: dict, state: Path) -> None:
-    """Append intent before copying; an exact destination match finishes only source removal."""
-    if not moves:
+def remember(intent: dict, state: Path) -> None:
+    """Save the mapping before any earlier step can leave the migration resumable."""
+    if not intent.get("tasks"):
         return
     if not intent["recorded"]:
         state.mkdir(parents=True, exist_ok=True)
@@ -103,6 +103,14 @@ def apply(moves: list[TaskMove], intent: dict, state: Path) -> None:
             out.write(json.dumps({key: value for key, value in intent.items() if key != "recorded"}) + "\n")
             out.flush()
             os.fsync(out.fileno())
+        intent["recorded"] = True
+
+
+def apply(moves: list[TaskMove], intent: dict, state: Path) -> None:
+    """An exact destination match finishes only source removal, using the saved ID mapping."""
+    if not moves:
+        return
+    remember(intent, state)
     mapping = {item["source"]: item["dest"] for item in intent["tasks"]}
     for move in moves:
         payload = _payload(move.source, move.dest.stem, mapping)

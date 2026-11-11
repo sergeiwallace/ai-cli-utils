@@ -8,7 +8,7 @@ import pytest
 import test_migrate_to_name
 import test_session_migrate
 import test_session_migrate_hooks
-from test_migrate_to_name import migrate
+from test_migrate_to_name import STEM, migrate
 from test_session_migrate import OLD, _everything
 
 from ai_cli import name_registry as reg
@@ -16,6 +16,16 @@ from ai_cli import name_registry as reg
 fleet = test_migrate_to_name.fleet
 slot = test_session_migrate.slot
 hooks = test_session_migrate_hooks.hooks
+
+
+def test_given_a_named_plan_with_a_conflicting_artifact_when_previewed_then_completion_is_not_reported(fleet):
+    (fleet.slot["state"] / f"cc-resume-prompt-c-{STEM}-cleo").write_text("unrelated prompt")
+    before, tip = _everything(fleet.slot), fleet.tip()
+    code, out, err = migrate(fleet, OLD, "-t", "cleo", "-n")
+    assert code == 1, out + err
+    assert "name registry | would do" in out
+    assert _everything(fleet.slot) == before
+    assert fleet.tip() == tip
 
 
 def test_given_a_completed_named_migration_when_original_command_repeats_then_reports_existing_parts(fleet):
@@ -27,6 +37,16 @@ def test_given_a_completed_named_migration_when_original_command_repeats_then_re
         assert "worktree | done earlier" in out
         assert _everything(fleet.slot) == before
         assert fleet.tip() == tip
+
+
+def test_given_a_recorded_named_pair_without_local_ledger_when_retried_then_registry_proves_recovery(fleet):
+    assert migrate(fleet, OLD, "-t", "cleo")[0] == 0
+    ledger = fleet.slot["state"] / "session-migrations.jsonl"
+    assert OLD in ledger.read_text()
+    ledger.unlink()
+    code, out, err = migrate(fleet, OLD, "-t", "cleo")
+    assert code == 0, out + err
+    assert "worktree | done earlier" in out
 
 
 @pytest.mark.parametrize(

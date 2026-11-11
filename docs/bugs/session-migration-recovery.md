@@ -111,3 +111,21 @@ Two further RED regressions found that a topic-branch checkout moved before its
 receipt had no usable pair evidence (`assert 2 == 0`), and explicit finishing
 omitted the parts table. Intent is now flushed before the move, every command
 result gets a table, and informational hook output cannot mask `done earlier`.
+
+## Completion boundary follow-up
+
+An issue assigned to NEW before its comment failed was absent from subsequent
+OLD queries. A command regression reproduced `KeyError: 'comments'` after retry.
+Issue intent now precedes assignee changes; recovery checks the store's actual
+comment text and adds only a missing comment. A stop after comment creation is
+also covered and never adds a duplicate. The CLI's comment-list JSON contract was
+verified against its local source, without accessing a live store.
+
+Further RED command cases (`assert 2 == 0`) covered a target task namespace
+existing before an earlier stop, later edits to completed tasks, and recovery
+without the local pair ledger. Task intent now precedes the worktree move, copied
+destinations are checked only while their source remains, and a verified naming
+pair also proves recovery. An incomplete named preview now returns 1 (`assert 0
+== 1` before the fix), with naming completion represented in the table. Target
+tmux sessions and processes nested under NEW are refused (`assert 0 == 2` before
+the guard fix).

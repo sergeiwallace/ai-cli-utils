@@ -7546,25 +7546,38 @@ def _migrate_one_to_name(
             new = str(pending["new_title"])
             if name and new != slot.title_for(name):
                 raise AdoptionError(f"{old} already has a migration to {new}; refusing a different target")
-            result = _migrate_session_for_names(repo_root, old, new, dry_run=True, new_is_reserved=True)
+            result = _migrate_session_for_names(
+                repo_root, old, new, dry_run=True, new_is_reserved=True, pair_recorded=True
+            )
             if not dry_run:
                 if not yes and not _out.confirm(Tag.MIGRATE, "migrate", f"Finish migrating {old} to {new}?"):
                     return 2
-                result = _migrate_session_for_names(repo_root, old, new, dry_run=False, new_is_reserved=True)
-            _print_migration(result)
+                result = _migrate_session_for_names(
+                    repo_root, old, new, dry_run=False, new_is_reserved=True, pair_recorded=True
+                )
             if result.failed:
                 if not dry_run:
-                    _names.mark_migration_incomplete(
-                        registry, old, host, migrate_names.artifacts_under(new, repo_root, adapters)
-                    )
+                    try:
+                        _names.mark_migration_incomplete(
+                            registry, old, host, migrate_names.artifacts_under(new, repo_root, adapters)
+                        )
+                    except _names.RegistryError as exc:
+                        result.warnings.append(f"name registry FAILED to record incomplete migration: {exc}")
+                result.parts["name registry"] = "failed: migration remains incomplete"
+                _print_migration(result)
                 return 1
             if not dry_run:
                 try:
                     _complete_migration_for_names(registry, old, host)
                 except _names.RegistryError as exc:
-                    raise PartialMigrationError(
-                        f"name registry completion FAILED: {exc}; repeat the same command"
-                    ) from exc
+                    result.warnings.append(f"name registry completion FAILED: {exc}; repeat the same command")
+                    result.parts["name registry"] = "failed: completion was not published"
+                    _print_migration(result)
+                    return 1
+            result.parts["name registry"] = (
+                "done earlier" if pending.get("status") == "complete" else "would do" if dry_run else "done now"
+            )
+            _print_migration(result)
             return 0
         words = _names.common_words(snapshot.policy) if name else frozenset()
         if name:
@@ -7586,8 +7599,9 @@ def _migrate_one_to_name(
             _out.emit(
                 Tag.MIGRATE, "migrate", f"dry run: {old} would become {slot.title_for(planned)}; nothing was reserved"
             )
+            preview.parts["name registry"] = "would do"
             _print_migration(preview)
-            return 0
+            return 1 if preview.failed else 0
         if not yes:
             _print_migration(preview)
             if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {slot.title_for(planned)}?"):
@@ -7613,6 +7627,9 @@ def _migrate_one_to_name(
         _print_migration_refusal(str(exc))
         return 2
     if done.result is not None:
+        done.result.parts["name registry"] = (
+            "failed: migration remains incomplete" if done.result.failed else "done now"
+        )
         _print_migration(done.result)
     _out.emit(Tag.MIGRATE, "migrate", f"migrated {old} to {done.new}")
     return 1 if done.result is not None and done.result.failed else 0

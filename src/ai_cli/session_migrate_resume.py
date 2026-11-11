@@ -14,6 +14,7 @@ from .venv_relocate import _MAX_BYTES, _candidates, _forms, _pattern
 # Include absent optional parts so dry and real runs expose the same inventory.
 PARTS = (
     "worktree",
+    "name registry",
     "virtual environment",
     "branch",
     "canonical registry",
@@ -141,6 +142,7 @@ def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:
 
 def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
     parts = dict.fromkeys(PARTS, "done earlier" if resumed else "skipped: no matching artifact")
+    parts["name registry"] = "skipped: direct rename"
 
     def assign(part: str, status: str):
         def rank(value):
@@ -163,7 +165,7 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
         if move.action == "already done":
             status = "done earlier"
         elif move.action.startswith(("skipped:", "left alone", "kept", "left in place")) or move.action == "conflict":
-            status = f"skipped: {move.action} {move.dest}".strip()
+            status = f"{'' if move.action.startswith('skipped:') else 'skipped: '}{move.action} {move.dest}".strip()
         elif move.action == "report" and not move.kind.startswith("hook "):
             status = "skipped: informational"
         else:
@@ -187,8 +189,9 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
     state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
     old_wt, new_wt = repo / ".worktrees" / old, repo / ".worktrees" / new
     resumed = not old_wt.exists() and new_wt.exists()
+    pair_recorded = kwargs.pop("pair_recorded", False)
     if resumed:
-        if not proven_pair(repo, old, new, state):
+        if not pair_recorded and not proven_pair(repo, old, new, state):
             raise m.MigrationError(f"{new_wt} exists but no durable evidence binds {old} to {new}; refusing recovery")
         call = m.finish_session
         kwargs["record_finish"] = False
@@ -208,7 +211,9 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
             result = call(repo, old, new, **kwargs)
         except (Exception, KeyboardInterrupt) as exc:
             if not new_wt.exists():
-                raise
+                raise m.MigrationError(
+                    f"migration stopped before the worktree move: {type(exc).__name__}: {exc}"
+                ) from exc
             interrupted = True
             # Inspect what remains after the interrupted write. If that preflight itself
             # refuses, report uncertainty instead of claiming every planned write happened.

@@ -733,6 +733,20 @@ they inspect its cached snapshot. A missing published generation retains the
 existing shipped-list warning. Registry availability and cached policy can change
 before a real reservation, whose transaction rechecks current naming rules.
 Without `-y`, a named migration asks for confirmation before reserving its name.
-The pair intent is appended before moving a worktree, so a stop before the move
+The pair intent and task-ID mapping are appended before moving a worktree, so a stop before the move
 receipt can also recover a checkout that was using a topic branch. A completed
 hook's read-only output is informational and does not count as a new write.
+
+Issue assignee updates and their migration comments are recovered separately.
+The append-only `session-migration-issues.jsonl` records the exact store and issue
+before its update; retry verifies the current assignee and existing comment before
+adding only a missing comment. An unrelated issue already held by NEW is never
+included just because its assignee matches. A changed assignee or unreadable store
+is named as incomplete. Store publishing remains a separate operation.
+
+Tasks whose source has already gone are left untouched after later task edits;
+hash checks protect copies that still have a source to remove. Recorded naming
+pairs can prove recovery even if the local pair ledger is lost. The final table
+includes the naming registry, and an incomplete dry-run plan returns 1.
+Liveness checks include either name's tmux session and processes below either
+worktree, including a process with a different title inside NEW.
