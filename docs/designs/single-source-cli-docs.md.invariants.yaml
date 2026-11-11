@@ -8,7 +8,7 @@ generation: 2
 candidate_digest: "sha256:36f0faabf0e76802e29c99c7f095762020ece46191de6365705954a25782a6bf"
 # candidate_digest is the target digest the receipt's current audit (round 6) recorded. The design
 # was revised after round 6 (commits bdf9a4c0 and aca5af21); revised_target_digest records that file.
-revised_target_digest: "sha256:4d592c204a35e356a56d6a6ed1debeef2fbebb419428d26635651c9834de75c5"
+revised_target_digest: "sha256:1c5c7a5ace023073f0d17efa7175ab9a1fdf34ca8698bd97b282f33b380c9568"
 policy_version: audit-loop-policy/1
 
 # Round 2 halted on cluster recurrence: round2:N-1 (sync pull --prefer-remote and sync watch --auto
@@ -26,8 +26,8 @@ policy_version: audit-loop-policy/1
 # document") stayed open because each fix widened a list of document locations (docs/, then all
 # Markdown) and the next audit found a document outside it (LICENSE). The systematic fix, decided
 # by the coordinator through /decision-framework in bdf9a4c0: coverage is every tracked file,
-# published unless a named non-document class excludes it, and no exclusion may match Markdown, so
-# a document in an unlisted location fails the coverage test instead of being left out.
+# published unless a named non-document class excludes it, and no exclusion candidate may be
+# Markdown, so a document in an unlisted location fails the coverage test instead of being left out.
 
 states: [open-blocking, fixed, deferred, accepted-risk]
 initial_state: open-blocking
@@ -157,9 +157,9 @@ invariants:
     kind: safety
     counterexample_test: "docs/designs/single-source-cli-docs.md Phase 3 T-3.1 exclusion criterion and T-3.2 coverage criterion with the LICENSE fixture"
   - id: INV-exclusion-soundness
-    statement: "Pages claim first, then groups in manifest order, and exclusions apply only to unclaimed files; no exclusion may match a Markdown file or any path under docs/, so every file under docs/ is published whatever its suffix -- wiki-builder, wiki-exclusion-soundness"
+    statement: "Pages claim first, then groups in manifest order; exclusions use the same case-sensitive manifest matcher only against the fixed unclaimed candidate set, so a suffix pattern may overlap a claimed docs/ path in the full inventory, while an unclaimed Markdown or docs/ match is rejected -- wiki-builder, wiki-exclusion-soundness"
     kind: safety
-    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 3 T-3.1 exclusion criterion and T-3.2 claim-order criterion with the docs/reference toml and audit receipt fixtures"
+    counterexample_test: "docs/designs/single-source-cli-docs.md Phase 3 T-3.1 claimed docs/reference/example.toml and unclaimed config/tool.toml overlap fixture, plus T-3.2 claim-order fixtures"
   - id: INV-callers-tested
     statement: "Every in-repository invocation of ai ps, ai layout or ai sync (session script template, process hygiene cron path, and any other found in src/, scripts/, .githooks/ and config/) is a parity test row with its exact argument list -- self-parsing-commands, caller-compatibility"
     kind: safety
@@ -207,8 +207,9 @@ cells:
     disposition: OPEN
     rationale: >-
       Added from the generation-2 dimension challenge: broad suffix exclusions could suppress a
-      non-Markdown document and overlapped the docs/ group. The revised contract gives publication
-      precedence and bans exclusions under docs/ and on Markdown.
+      non-Markdown document and overlap the docs/ group. The revised contract gives publication
+      precedence by matching exclusions only against the fixed unclaimed candidate set, then rejects
+      any Markdown or docs/ path that remains in that set and matches an exclusion.
     evidence: "generation-2 dimension challenge below; commit aca5af21"
     members: [JA-2]
 
@@ -226,6 +227,7 @@ dimension_challenge:
     2 returned REJECT with the three items above and four documents at risk (.env.example, a docs/
     reference toml, the invariant register and the audit receipt). All were accepted: aca5af21 makes
     publication take precedence over exclusion, publishes every file under docs/ whatever its
-    suffix, bans exclusions on Markdown and under docs/, publishes .env.example and LICENSE as pages,
-    and names Python, shell, py.typed, json5 and demo classes in the exclusion list. The epic
-    dispositions are measured facts in the owner's private task store, recorded in the design.
+    suffix, limits exclusion matching to unclaimed paths and rejects unclaimed Markdown and docs/
+    matches, publishes .env.example and LICENSE as pages, and names Python, shell, py.typed, json5
+    and demo classes in the exclusion list. The epic dispositions are measured facts in the owner's
+    private task store, recorded in the design.
