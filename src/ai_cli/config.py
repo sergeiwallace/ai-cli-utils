@@ -826,6 +826,13 @@ causes = ["host_reboot", "terminal_quit_or_crash"]
 network_wait_seconds = 120
 network_probe = "api.anthropic.com:443"
 
+[session_relaunch.exit_persistence]
+## Bounds for final-exit persistence, captured before loading the project environment.
+deadline_seconds = 30.0
+command_timeout_seconds = 10.0
+backoff_seconds = 0.25
+max_backoff_seconds = 2.0
+
 [session_relaunch.publish]
 repo = ""
 remote = "origin"

@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 from conftest import tmux_runnable
+from legacy_run_state import legacy_run_state_helpers  # noqa: F401  (autouse fixture)
 from process_ownership import watch_tmux_directory
 from process_wait import process_wait_seconds
 

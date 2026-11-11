@@ -20,7 +20,7 @@ from test_session_restart import world as world
 from ai_cli import config, main, session_restart
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
-from ai_cli.session_lifecycle_script import SESSION_STATE_FUNCTIONS
+from ai_cli.session_lifecycle_script import session_state_functions
 from ai_cli.session_script import get_engine_script
 
 
@@ -89,13 +89,14 @@ def test_given_outside_insertion_edit_when_ac_i_2_gate_runs_then_no_action_is_ta
     assert not world.signals and not world.injected
 
 
-def _install_real_lifecycle(ai, fault_root):
+def _install_real_lifecycle(ai, fault_root, monkeypatch):
     """Delegate lifecycle commands to the real CLI, injecting only storage faults."""
     source = ai.read_text(encoding="utf-8")
     insertion = f"""
 if args and args[0] == 'sessions':
     from pathlib import Path
     from ai_cli import session_registry as registry
+    registry.current_boot_id = lambda: 'test-boot'
     from ai_cli.main import cli
     original_write = registry._write
     def write(path, doc):
@@ -112,12 +113,15 @@ if args and args[0] == 'sessions':
 """
     assert "args = sys.argv[1:]\n" in source
     ai.write_text(source.replace("args = sys.argv[1:]\n", "args = sys.argv[1:]\n" + insertion), encoding="utf-8")
+    monkeypatch.setattr("ai_cli.session_lifecycle_script.lifecycle_command", lambda _path: [sys.executable, str(ai)])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
 @pytest.mark.real_tmux
 @pytest.mark.parametrize("fault", ["none", "registry", "both"])
-def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_is_durable(supervisor_fixture, fault):
+def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_is_durable(
+    supervisor_fixture, fault, monkeypatch
+):
     root, script, supervisor = supervisor_fixture
     # The supervisor inherits this process's environment. Check it here too, because
     # macOS hides a platform binary's environment from psutil and the line below
@@ -134,7 +138,7 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
     observed = time.monotonic()
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     state.register(SESSION, recipe={"argv": ["ai", "c", "1"], "cwd": str(root / "myproject")}, host="host-a")
-    _install_real_lifecycle(root / "bin/ai", root)
+    _install_real_lifecycle(root / "bin/ai", root, monkeypatch)
     metadata = session_restart._object(config.get_xdg_state_home() / f"session-meta-{SESSION}.json")
     old_inode = script.stat().st_ino
     main._write_launch_script_if_changed(script, main._engine_script_from_meta(metadata))
@@ -185,7 +189,9 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
 @pytest.mark.parametrize("fault", ["none", "registry", "both"])
-def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_first(promotion_environment, fault):
+def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_first(
+    promotion_environment, fault, monkeypatch
+):
     shell, env, name, tmp_path = promotion_environment
     generated = get_engine_script("c", "session-1", name, "c-session-", "myproject")
     start = generated.index("          # A Ctrl+C while a child is still starting")
@@ -195,13 +201,13 @@ def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_f
     assert interrupt.index("_ai_final_manual_exit") < interrupt.index("(( _promotion_status == 2 )) && break")
     ai = tmp_path / "bin/ai"
     # This fixture's executable is a shell trampoline; replace it after inspecting it.
-    assert '-m ai_cli.main "$@"' in ai.read_text(encoding="utf-8")
+    assert "registry.current_boot_id" in ai.read_text(encoding="utf-8")
     ai.write_text(f"#!{sys.executable}\nimport sys\nargs = sys.argv[1:]\n", encoding="utf-8")
-    _install_real_lifecycle(ai, tmp_path)
+    _install_real_lifecycle(ai, tmp_path, monkeypatch)
     if fault != "none":
         (tmp_path / "storage-fault").write_text(fault, encoding="utf-8")
     body = (
-        SESSION_STATE_FUNCTIONS
+        session_state_functions(name)
         + f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
         + '_ai_emit() { printf "%s\\n" "$*"; }\n_promotion_status=2\nwhile true; do\n'
         + interrupt
@@ -220,7 +226,7 @@ def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_f
         assert process.returncode == 0, err
         assert out.endswith("shell-returned")
         if fault == "both":
-            assert "retrying" in out
+            assert "retrying" in err
         if fault == "registry":
             saved = json.loads(state.tombstone_path(name, "host-a").read_text(encoding="utf-8"))
             assert saved["deny_boot"] and saved["record"]["supervisor_exit"]["cause"] == "manual_exit"

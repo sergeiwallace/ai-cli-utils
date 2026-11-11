@@ -36,6 +36,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
+from legacy_run_state import legacy_run_state_helpers  # noqa: F401  (autouse fixture)
 from process_ownership import watch_tmux_directory
 from process_wait import process_wait_seconds
 

@@ -11,7 +11,7 @@ import sys
 
 from . import config as _config
 from .launch_logging import LAUNCH_LOG_ENV
-from .session_lifecycle_script import SESSION_STATE_FUNCTIONS
+from .session_lifecycle_script import session_state_functions
 
 # Interpreters that can run the generated session template, most preferred first.
 # zsh stays first because that is what every host has used to date; the ordering,
@@ -392,7 +392,7 @@ def get_engine_script(
         printf '\\r\\n' >&2
       fi
     }}
-    {SESSION_STATE_FUNCTIONS}
+    {session_state_functions(session)}
     if ! $_ai_cli_child_mode; then
       # Preserve interactive stderr while recording supervisor-only diagnostics.
       # Child bodies restore fd 2 below so normal agent output does not grow this log.
