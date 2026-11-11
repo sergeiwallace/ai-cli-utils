@@ -34,7 +34,7 @@ delegation_provenance:
      Hand-maintained. Verify with
      `scripts/check_doc_toc.py <this-doc>`, which fails on an anchor that does not resolve.
      Manual `<!-- toc:skip -->` / `<!-- toc:include -->` override. -->
-  <!-- AIH-52: every AD-N detail heading requires a ToC row; generate with
+  <!-- Every AD-N detail heading requires a ToC row; generate with
        `python3 scripts/check_doc_toc.py --fix-decision-rows <doc>`, linking each
        decision as `  - [AD-N: Name](#ad-N)`, the STABLE short id, NOT the heading auto-slug.
        AD-N headings carry a mutable status suffix (enumerated once, at TEMPLATE.md's AD-1
@@ -300,7 +300,7 @@ found; faked findings are not. Cite file:line for every codebase claim.
   named symbols. A missed finding because you didn't read a relevant file is the audit's most
   serious failure mode.
 - Treating the run as done because the doc exists, is large, has a fresh mtime, or the command
-  exited 0. An UNFILLED template passes all four (AIH-762: 42110 bytes, fresh, rc=0, and larger
+  exited 0. An UNFILLED template passes all four (measured: 42110 bytes, fresh, rc=0, and larger
   than several real audits) - grep for a finding heading, or run
   ai-harness/scripts/check_audit_doc_filled.py.
 ```

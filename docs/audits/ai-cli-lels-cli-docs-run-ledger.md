@@ -45,7 +45,7 @@ ledger-version: 1
 | Integration mode | this coordinator lands each stage on `main` by pull request |
 | Founding ask | Tier 3. Record `docs/asks/AI-CLI-single-source-cli-help-usage-lels.md` in the operator's private harness repository at capture commit `1e65faf1fd58`; `founding_ask_ref_sha256` `cc266ebe307ece299aea75e1f3ed34acc3428467545b0a3e654850de2fc4bfca`; content sha256 `7e40d47e4e7a8cc4b38f1dc02d435f916c11926c3d59ef6f66cc4552708b8df9`; entry `A001`, generation 1 |
 | Target commit (base) | `d301960c` |
-| Orchestrator worktree | `.worktrees/ai-cli-ec2-ike-agents/lels-docs-flow` |
+| Orchestrator worktree | `.worktrees/<session>-agents/lels-docs-flow` |
 | Orchestrator branch | `wt/agent/lels-docs-flow` |
 | Stage cursor | `doc-audit audit-stabilized` (8 rounds, two spec freezes); boundary `doc-audit->implement` finalized and the implement gate passed for design sha256 `1c5c7a5a`; implement next |
 | Review tier (doc-audit) | `none`: the Codex audit rounds and the Codex register review are the cross-family checks; an added Claude round would review a Claude-authored design with the same family |
