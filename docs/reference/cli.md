@@ -761,6 +761,8 @@ Afterwards it cleans up the old name in every other repo: a clean, landed `.work
 
 Every Beads issue assigned to exactly OLD and not closed, in each store under the projects dir, is re-keyed to NEW with `bd --actor OLD update --if-assignee OLD` and a comment; a store bd cannot read is named and the command exits 1, and each changed store is named as needing its publish step. With --finish it re-keys only when this host records that OLD was migrated to NEW; --beads-only does just that re-key, and runs while NEW is live.
 
+--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the pair and its repo in this host's migration record, from any directory; a name matching no pair, or several, is refused with exit 2 and what it matched.
+
 With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N letters, within the configured limits; -O/--over-limit selects this host's sessions whose name is longer than max_name_length.
 
 For a session started outside `ai`, use `ai adopt-session`.

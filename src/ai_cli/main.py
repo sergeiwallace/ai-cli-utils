@@ -896,35 +896,6 @@ def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
     return candidate
 
 
-def _utc_instant(value: object):
-    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
-    from datetime import UTC, datetime
-
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
-def _cc_transcript_started(path: Path):
-    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
-    try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
-                    return _utc_instant(record["timestamp"])
-    except OSError:
-        pass
-    return None
-
-
 def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> "Path | None":
     """The transcript a recorded migration to ``title`` left under its old name, when it should be resumed.
 
@@ -939,11 +910,11 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
     started before it, or whose start cannot be read, is the session's own retitled history and
     keeps winning, so ``None`` is returned.
     """
-    from .session_migrate import _ledger_rows
+    from .session_migrate import _ledger_rows, transcript_started, utc_instant
 
     migrated_at: dict[str, Any] = {}
     for row in _ledger_rows(_config.get_xdg_state_home()):
-        old, at = row.get("old"), _utc_instant(row.get("time"))
+        old, at = row.get("old"), utc_instant(row.get("time"))
         # Only the migration's own row carries ``worktree``; finish and announce rows do not.
         if row.get("new") != title or not isinstance(old, str) or old == title or at is None:
             continue
@@ -962,11 +933,41 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
         if old is None or _cc_registered_kind(path.stem) == "bg":
             continue
         for candidate in candidates:
-            started = _cc_transcript_started(candidate)
+            started = transcript_started(candidate)
             if started is None or started <= migrated_at[old]:
                 return None
         return path
     return None
+
+
+def _find_moved_cc_session(title: str, candidates: list[Path]) -> "Path | None":
+    """The newest of ``candidates`` this host's ledger records a migration to ``title`` as having moved.
+
+    A session relaunched under ``title`` before its migration finished starts a transcript titled
+    ``title`` from its first record. That stray can be more recently active than the transcript the
+    migration moved, so the recorded one is preferred over it. ``None`` when the ledger names none.
+    """
+    from .session_migrate import moved_transcripts
+
+    if not candidates:
+        return None
+    moved = moved_transcripts(title)
+    return next((path for path in candidates if path.stem in moved), None)
+
+
+def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None":
+    """The transcript a resume of ``title`` in ``cwd`` should take, noting on stderr when several qualify.
+
+    In order: the transcript a recorded migration moved (:func:`_find_moved_cc_session`), the one
+    a recorded migration left under its old title (:func:`_find_migrated_cc_session`), then the
+    most recently active transcript titled ``title``. ``None`` when none applies.
+    """
+    candidates = _find_cc_session_candidates_by_title(cwd, title)
+    moved = _find_moved_cc_session(title, candidates)
+    reverted = None if moved else _find_migrated_cc_session(cwd, title, candidates)
+    if len(candidates) > 1:
+        _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved, reverted), err=True)
+    return moved or reverted or (candidates[0] if candidates else None)
 
 
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
@@ -997,13 +998,18 @@ def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
+def _cc_multi_candidate_warning(
+    title: str, candidates: list[Path], moved: "Path | None" = None, reverted: "Path | None" = None
+) -> str:
     """Warn that more than one eligible transcript currently carries ``title``.
 
-    ``ai c`` always resolves to ``candidates[0]`` (the newest by mtime — see
-    :func:`_find_cc_session_candidates_by_title`), so this is informational,
-    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of
-    silently picking one of several same-titled transcripts.
+    Without ``moved``, ``ai c`` resolves to ``candidates[0]`` (the newest by mtime — see
+    :func:`_find_cc_session_candidates_by_title`). ``moved`` is the transcript a recorded
+    migration moved, which is resumed instead, and every candidate no migration moved is named
+    as skipped. ``reverted`` is the transcript a recorded migration left under its old title
+    (:func:`_find_migrated_cc_session`), resumed instead of every candidate. This is informational,
+    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of silently picking one of
+    several same-titled transcripts.
     """
     lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
     for path in candidates:
@@ -1011,7 +1017,18 @@ def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
         status = f"live (pid {pid})" if is_live else "not live"
         mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
         lines.append(f"  {path.stem}  last active {mtime}  {status}")
-    lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+    if moved is None and reverted is not None:
+        lines.append(f"Resuming {reverted.stem}, which the migration to '{title}' left under its old title")
+        return "\n".join(lines)
+    if moved is None:
+        lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+        return "\n".join(lines)
+    from .session_migrate import moved_transcripts
+
+    recorded = moved_transcripts(title)
+    strays = [path.stem for path in candidates if path.stem not in recorded]
+    skipped = f"; skipped {', '.join(strays)}, which the migration did not move" if strays else ""
+    lines.append(f"Resuming {moved.stem}, the transcript migrated to '{title}'{skipped}")
     return "\n".join(lines)
 
 
@@ -1040,10 +1057,7 @@ def _bare_engine_command(
         if not _is_root():
             command.append("--dangerously-skip-permissions")
         # Resume this session's own prior conversation by its exact transcript UUID.
-        candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
-        if len(candidates) > 1:
-            _out.emit(Tag.LAUNCH, "resume", _cc_multi_candidate_warning(ai_name, candidates), err=True)
-        matched = _find_migrated_cc_session(target_root, ai_name, candidates) or (candidates[0] if candidates else None)
+        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(target_root, ai_name)
             if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
@@ -2170,12 +2184,7 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
             sys.exit(1)
-        candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
-        if len(candidates) > 1:
-            _out.emit(Tag.INTERNAL, "resume", _cc_multi_candidate_warning(argv[2], candidates), err=True)
-        matched = _find_migrated_cc_session(Path(argv[1]), argv[2], candidates) or (
-            candidates[0] if candidates else None
-        )
+        matched = _pick_cc_resume_transcript(Path(argv[1]), argv[2], Tag.INTERNAL)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
             if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
@@ -2266,6 +2275,11 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "get-version":
         _out.raw(Untagged.INTERNAL_REPLY, _pkg_version_string())
+        sys.exit(0)
+    elif action == "get-migration-format":
+        from .session_migrate import MIGRATION_FORMAT
+
+        _out.raw(Untagged.INTERNAL_REPLY, str(MIGRATION_FORMAT))
         sys.exit(0)
     elif action == "refresh-template":
         if len(argv) < 2:
@@ -7938,6 +7952,146 @@ def _migrate_all_to_names(
     return 1 if refused else 0
 
 
+#: Seconds the installed ``ai`` may take to answer the migration-format probe or to update itself.
+_INSTALLED_PROBE_TIMEOUT_SECONDS = 60
+_INSTALLED_UPDATE_TIMEOUT_SECONDS = 15 * 60
+_INSTALLED_UPDATE_COMMAND = "ai update --force"
+
+
+def _installed_migration_format() -> tuple[str | None, int | None]:
+    """The ``ai`` on ``PATH``, which a session wrapper runs, and the migration format it reads.
+
+    A build from before ``ai internal get-migration-format`` answers "unknown action", which
+    reads as format 0. The format is ``None`` when the probe cannot tell: no ``ai`` on
+    ``PATH``, a timeout, or any other failure.
+    """
+    ai_bin = shutil.which("ai")
+    if ai_bin is None:
+        return None, None
+    try:
+        done = subprocess.run(
+            [ai_bin, "internal", "get-migration-format"],
+            capture_output=True,
+            text=True,
+            timeout=_INSTALLED_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ai_bin, None
+    answer = done.stdout.strip()
+    if done.returncode == 0 and answer.isdigit():
+        return ai_bin, int(answer)
+    if "unknown action: get-migration-format" in done.stderr:
+        return ai_bin, 0
+    return ai_bin, None
+
+
+def _require_current_installed_build(*, dry_run: bool) -> None:
+    """Update an installed ``ai`` older than :data:`MIGRATION_FORMAT`, or exit 2 before any write.
+
+    The migrated session relaunches under the installed build, so one that predates a step
+    this migration writes reads stale state. A dry run only names the skew.
+    """
+    from .session_migrate import MIGRATION_FORMAT
+
+    ai_bin, found = _installed_migration_format()
+    if found is not None and found >= MIGRATION_FORMAT:
+        return
+    if found is None:
+        what = f"could not read the migration format of the installed `ai` ({ai_bin or 'none on PATH'})"
+    else:
+        what = (
+            f"the installed `ai` ({ai_bin}) reads migration format {found}, "
+            f"older than format {MIGRATION_FORMAT} this migration writes"
+        )
+    if dry_run:
+        _out.emit(
+            Tag.MIGRATE, "migrate", f"dry run: {what}; a real run updates it first (`{_INSTALLED_UPDATE_COMMAND}`)"
+        )
+        return
+    if ai_bin is not None and found is not None:
+        _out.emit(Tag.MIGRATE, "migrate", f"{what}; updating it with `{_INSTALLED_UPDATE_COMMAND}`")
+        project_path = _find_aicli_project_path(_config.load_config())
+        try:
+            updated = subprocess.run(
+                [ai_bin, "update", "--force", "--quiet"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=_INSTALLED_UPDATE_TIMEOUT_SECONDS,
+                check=False,
+                env=_out.record_relay_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            what = f"{what}; the update did not run: {exc}"
+        else:
+            ai_bin, found = _installed_migration_format()
+            if updated.returncode == 0 and found is not None and found >= MIGRATION_FORMAT:
+                _out.emit(Tag.MIGRATE, "migrate", f"updated the installed `ai` to migration format {found}")
+                return
+            said = (updated.stderr or updated.stdout).strip().splitlines()[-1:]
+            what = (
+                f"{what}; the update exited {updated.returncode}"
+                + (f" ({said[0]})" if said else "")
+                + f" and the installed build reads format {found}"
+            )
+    reason = (
+        f"{what}. The migrated session relaunches under that build; run `{_INSTALLED_UPDATE_COMMAND}` "
+        "and repeat this command"
+    )
+    _out.error(Tag.MIGRATE, "migrate", reason)
+    _print_migration_refusal(reason)
+    sys.exit(2)
+
+
+def _first_name(title: str, repo_root: Path) -> str | None:
+    """The first name ending ``title`` (``ivy`` in ``myrepo-box-ivy``), read under the repo's stem."""
+    from . import migrate_names
+
+    try:
+        parts = migrate_names.split_title(title, _migration_stem(repo_root))
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError):
+        return None
+    return parts.tail if parts else None
+
+
+def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) -> tuple[str, str, Path | None]:
+    """The recorded ``(old, new, repo)`` a ``--finish`` given one name, or both, refers to.
+
+    One name matches a pair this host's ledger records when it is the pair's OLD, its NEW
+    or the first name of its NEW; ``-t NAME`` and a positional name must both match. Both
+    names given positionally keep the cwd's repo when the ledger does not record them, so a
+    migration from before the ledger still finishes. ``-r`` always wins over the record's repo.
+    Zero or several matching pairs exit 2 with what was searched.
+    """
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+
+    pairs = recorded_migrations()
+    if old and new:
+        hits = [pair for pair in pairs if pair[:2] == (old, new)]
+        return old, new, repo or (hits[-1][2] if hits else None)
+    names = [name for name in (old, to_name) if name]
+
+    def matches(name: str, pair: tuple[str, str, Path]) -> bool:
+        return name in pair[:2] or name == _first_name(pair[1], pair[2])
+
+    hits = [pair for pair in pairs if all(matches(name, pair) for name in names)]
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], repo or hits[0][2]
+    searched = " and ".join(names)
+    ledger = _config.get_xdg_state_home() / MIGRATION_LEDGER
+    if not hits:
+        reason = f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in {ledger})"
+        _out.error(Tag.MIGRATE, "migrate", reason)
+        _print_migration_refusal(reason)
+        sys.exit(2)
+    lines = [f"{searched} matches {len(hits)} recorded migrations in {ledger}; run the one you mean:"]
+    lines += [f"  ai migrate-session {o} {n} --finish -r {r}" for o, n, r in hits]
+    _out.error(Tag.MIGRATE, "migrate", "\n".join(lines))
+    _print_migration_refusal(f"{searched} names more than one recorded migration")
+    sys.exit(2)
+
+
 @_cli_group.command(
     "migrate-session",
     help=(
@@ -7953,6 +8107,9 @@ def _migrate_all_to_names(
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
         "runs while NEW is live.\n\n"
+        "--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the "
+        "pair and its repo in this host's migration record, from any directory; a name matching no "
+        "pair, or several, is refused with exit 2 and what it matched.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -8028,10 +8185,16 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if finish and not (sweep or to_names or over_limit) and (old or to_name):
+        if to_name and new:
+            raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")
+        old, new, repo = _resolve_finish(old, new, to_name, repo)
+        to_name = None
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
     if sweep or to_names or over_limit:
         if not (sweep and to_names):
             raise click.UsageError("-a/--all and -T/--to-names go together")
+        _require_current_installed_build(dry_run=dry_run or not yes)
         sys.exit(
             _migrate_all_to_names(
                 repo_root, write=yes and not dry_run, dry_run=dry_run, max_length=max_length, over_limit=over_limit
@@ -8040,9 +8203,12 @@ def cmd_migrate_session(
     if to_name is not None:
         if not old or new:
             raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
+        _require_current_installed_build(dry_run=dry_run)
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
+    if not beads_only:
+        _require_current_installed_build(dry_run=dry_run)
 
     def _run(preview: bool):
         if beads_only:

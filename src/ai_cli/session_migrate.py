@@ -45,7 +45,10 @@ tasks, memory and resume hand-off:
   named and fails the run. Each completed migration is appended to
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
   a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
-  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`);
+  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`).
+  The ledger also names the transcripts each migration moved (:func:`moved_transcripts`),
+  so a resume of ``<new>`` takes the moved one over a later transcript a relaunch started
+  under ``<new>``;
 * whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
   the first write and run after the core moves.
@@ -502,9 +505,32 @@ def _remove_stale_locks(moves: list[PlannedMove]) -> None:
 _NAMESPACE_BOOKKEEPING = (".highwatermark", ".lock")
 
 
+#: The per-task watcher lock Claude Code leaves in a namespace: ``.<task id>.shadow-watcher.lock``.
+_TASK_WATCHER_LOCK = re.compile(r"\.\d+\.shadow-watcher\.lock")
+
+
+def _idle_task_watcher_lock(path: Path) -> bool:
+    """Whether ``path`` is one of Claude Code's task watcher locks that nothing holds.
+
+    The file is empty and carries no state, so it means nothing once the tasks have moved. It is
+    treated as bookkeeping only while it is empty and a non-blocking lock on it succeeds; a held
+    or non-empty one stays a leftover and keeps the namespace in place.
+    """
+    try:
+        if not _TASK_WATCHER_LOCK.fullmatch(path.name) or not path.is_file() or path.stat().st_size:
+            return False
+        return _slot_lock_free(path)
+    except OSError:
+        return False
+
+
 def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
     """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
-    return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
+    return sorted(
+        p.name
+        for p in ns.iterdir()
+        if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving and not _idle_task_watcher_lock(p)
+    )
 
 
 def _plan_hooks(
@@ -796,6 +822,14 @@ def _clean_other_repos(
 #: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
 MIGRATION_LEDGER = "session-migrations.jsonl"
 
+#: The migration record format this build writes, stamped as ``format`` on every
+#: :data:`MIGRATION_LEDGER` row. A build reporting a lower number (``ai internal
+#: get-migration-format``; a build from before that probe answers none, read as 0) predates a
+#: step the migrated session's relaunch depends on: format 1 is the boot-recipe rename. Raise it
+#: whenever what a migration writes needs a newer installed ``ai`` to read it. A launch meeting a
+#: row whose ``format`` is higher than this build's is running a build too old for that record.
+MIGRATION_FORMAT = 1
+
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
 
@@ -951,15 +985,96 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
+    row = {
+        "time": datetime.now(UTC).isoformat(),
+        "old": old,
+        "new": new,
+        "repo": str(repo_root),
+        "format": MIGRATION_FORMAT,
+        **fields,
+    }
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
         ledger.flush()
         os.fsync(ledger.fileno())
 
 
-def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
-    _append_ledger(state, old, new, repo_root, worktree=str(new_wt))
+def _record_migration(
+    state: Path, old: str, new: str, repo_root: Path, new_wt: Path, transcripts: list[str] | None = None
+) -> None:
+    _append_ledger(state, old, new, repo_root, worktree=str(new_wt), transcripts=transcripts or [])
+
+
+def moved_transcripts(new: str, state_dir: Path | None = None, *, old: str | None = None) -> set[str]:
+    """Session ids of the transcripts this host's ledger records as moved by a migration to ``new``.
+
+    The migration's own row lists the transcripts it carried, and a ``--finish`` appends a
+    ``transcripts_recorded`` row for each it retitles that no row names yet, so a pair migrated
+    before the ledger named transcripts gains the record on its next finish.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    moved: set[str] = set()
+    for row in _ledger_rows(state):
+        if row.get("new") != new or (old is not None and row.get("old") != old):
+            continue
+        ids = row.get("transcripts")
+        if isinstance(ids, list):
+            moved.update(item for item in ids if isinstance(item, str))
+    return moved
+
+
+def utc_instant(value: object) -> datetime | None:
+    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def transcript_started(path: Path) -> datetime | None:
+    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                    return utc_instant(record["timestamp"])
+    except OSError:
+        pass
+    return None
+
+
+def _started_before_migration(project: Path, old: str, new: str, state: Path) -> list[str]:
+    """Session ids of the transcripts in ``project`` that began before the pair's first migration row.
+
+    A migration refuses while NEW's project directory exists, so a transcript there that began
+    before the migration was carried from OLD's, and one a relaunch under NEW started began after
+    it. Unlike an old title or path, the start survives a completed retitle. A row written by hand
+    names no ``worktree`` and is not used; a transcript whose start cannot be read is not counted.
+    """
+    times = [
+        utc_instant(row.get("time"))
+        for row in _ledger_rows(state)
+        if (row.get("old"), row.get("new")) == (old, new) and isinstance(row.get("worktree"), str)
+    ]
+    known = [at for at in times if at is not None]
+    if not known or not project.is_dir():
+        return []
+    migrated_at = min(known)
+    started = {path.stem: transcript_started(path) for path in sorted(project.glob("*.jsonl"))}
+    return [stem for stem, at in started.items() if at is not None and at < migrated_at]
+
+
+def _record_moved_transcripts(state: Path, old: str, new: str, repo_root: Path, transcripts: list[str]) -> None:
+    unrecorded = sorted(set(transcripts) - moved_transcripts(new, state, old=old))
+    if unrecorded:
+        _append_ledger(state, old, new, repo_root, transcripts=unrecorded, transcripts_recorded=True)
 
 
 def _ledger_rows(state: Path) -> list[dict]:
@@ -977,8 +1092,26 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
     """Whether this host already records a migration from ``old`` to ``new``."""
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
     return any(
-        row.get("old") == old and row.get("new") == new and not row.get("finished") for row in _ledger_rows(state)
+        row.get("old") == old
+        and row.get("new") == new
+        and not row.get("finished")
+        and row.get("transcripts_recorded") is not True
+        for row in _ledger_rows(state)
     )
+
+
+def recorded_migrations(state_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """``(old, new, repo)`` for each pair this host's ledger records, with the pair's latest repo.
+
+    A row without a string ``old``, ``new`` and ``repo`` names no slot and is skipped.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    pairs: dict[tuple[str, str], Path] = {}
+    for row in _ledger_rows(state):
+        old, new, repo = row.get("old"), row.get("new"), row.get("repo")
+        if isinstance(old, str) and isinstance(new, str) and isinstance(repo, str):
+            pairs[(old, new)] = Path(repo)
+    return [(old, new, repo) for (old, new), repo in pairs.items()]
 
 
 def _pending_context_rows(new: str, state: Path) -> list[dict]:
@@ -1063,7 +1196,7 @@ def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str,
         old, repo = row.get("old"), row.get("repo")
         if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
             continue
-        if row.get("context_announced") is True:
+        if row.get("context_announced") is True or row.get("transcripts_recorded") is True:
             continue
         if row.get("finished") is True:
             pending.pop(old, None)
@@ -1301,7 +1434,7 @@ def _start_session(
     from .session_migrate_tasks import remember
 
     remember(result.task_intent, state)
-    _record_migration(state, old, new, repo_root, new_wt)
+    _record_migration(state, old, new, repo_root, new_wt, [path.stem for path in named])
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
@@ -1414,6 +1547,8 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
         else:
             for name in _NAMESPACE_BOOKKEEPING:
                 (old_ns / name).unlink(missing_ok=True)
+            for lock in [p for p in old_ns.iterdir() if _idle_task_watcher_lock(p)]:
+                lock.unlink(missing_ok=True)
             old_ns.rmdir()
 
 
@@ -1453,6 +1588,9 @@ def finish_session(
     record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
     A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
     as pending, the rest still runs, and the run fails so that a re-run retries it. A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
+    On that same record, each transcript it retitles, or that began before the pair's migration
+    row (:func:`_started_before_migration`), and that no ledger row names yet is recorded in a
+    ``transcripts_recorded`` row, a finished pair included, so the resume prefers it.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1570,6 +1708,9 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)
+        retitled = [Path(move.source).stem for move in home_plan.moves if move.kind == "transcript title"]
+        carried = _started_before_migration(new_pd, old, new, state)
+        _record_moved_transcripts(state, old, new, repo_root, retitled + carried)
         if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
             _append_ledger(state, old, new, repo_root, finished=True)
     return result
