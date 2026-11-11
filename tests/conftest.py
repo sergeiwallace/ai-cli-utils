@@ -1037,6 +1037,18 @@ def _reject_real_agent_processes(request, monkeypatch):
     monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
 
 
+@pytest.fixture(autouse=True)
+def _installed_build_reads_this_migration_format(monkeypatch):
+    """Report the installed ``ai`` as current, so no migration test probes or updates the real tool.
+
+    A test of the probe or the update path replaces this with its own stub.
+    """
+    from ai_cli import main
+    from ai_cli.session_migrate import MIGRATION_FORMAT
+
+    monkeypatch.setattr(main, "_installed_migration_format", lambda: ("ai", MIGRATION_FORMAT))
+
+
 @pytest.fixture
 def expect_desktop_escape():
     """Opt out of the teardown check below, for tests that DRIVE the guard on purpose.

@@ -2219,6 +2219,11 @@ def _handle_internal(argv: list[str]) -> None:
     elif action == "get-version":
         _out.raw(Untagged.INTERNAL_REPLY, _pkg_version_string())
         sys.exit(0)
+    elif action == "get-migration-format":
+        from .session_migrate import MIGRATION_FORMAT
+
+        _out.raw(Untagged.INTERNAL_REPLY, str(MIGRATION_FORMAT))
+        sys.exit(0)
     elif action == "refresh-template":
         if len(argv) < 2:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal refresh-template <tmux_session>", err=True)
@@ -7817,6 +7822,98 @@ def _migrate_all_to_names(
     return 1 if refused else 0
 
 
+#: Seconds the installed ``ai`` may take to answer the migration-format probe or to update itself.
+_INSTALLED_PROBE_TIMEOUT_SECONDS = 60
+_INSTALLED_UPDATE_TIMEOUT_SECONDS = 15 * 60
+_INSTALLED_UPDATE_COMMAND = "ai update --force"
+
+
+def _installed_migration_format() -> tuple[str | None, int | None]:
+    """The ``ai`` on ``PATH``, which a session wrapper runs, and the migration format it reads.
+
+    A build from before ``ai internal get-migration-format`` answers "unknown action", which
+    reads as format 0. The format is ``None`` when the probe cannot tell: no ``ai`` on
+    ``PATH``, a timeout, or any other failure.
+    """
+    ai_bin = shutil.which("ai")
+    if ai_bin is None:
+        return None, None
+    try:
+        done = subprocess.run(
+            [ai_bin, "internal", "get-migration-format"],
+            capture_output=True,
+            text=True,
+            timeout=_INSTALLED_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ai_bin, None
+    answer = done.stdout.strip()
+    if done.returncode == 0 and answer.isdigit():
+        return ai_bin, int(answer)
+    if "unknown action: get-migration-format" in done.stderr:
+        return ai_bin, 0
+    return ai_bin, None
+
+
+def _require_current_installed_build(*, dry_run: bool) -> None:
+    """Update an installed ``ai`` older than :data:`MIGRATION_FORMAT`, or exit 2 before any write.
+
+    The migrated session relaunches under the installed build, so one that predates a step
+    this migration writes reads stale state. A dry run only names the skew.
+    """
+    from .session_migrate import MIGRATION_FORMAT
+
+    ai_bin, found = _installed_migration_format()
+    if found is not None and found >= MIGRATION_FORMAT:
+        return
+    if found is None:
+        what = f"could not read the migration format of the installed `ai` ({ai_bin or 'none on PATH'})"
+    else:
+        what = (
+            f"the installed `ai` ({ai_bin}) reads migration format {found}, "
+            f"older than format {MIGRATION_FORMAT} this migration writes"
+        )
+    if dry_run:
+        _out.emit(
+            Tag.MIGRATE, "migrate", f"dry run: {what}; a real run updates it first (`{_INSTALLED_UPDATE_COMMAND}`)"
+        )
+        return
+    if ai_bin is not None and found is not None:
+        _out.emit(Tag.MIGRATE, "migrate", f"{what}; updating it with `{_INSTALLED_UPDATE_COMMAND}`")
+        project_path = _find_aicli_project_path(_config.load_config())
+        try:
+            updated = subprocess.run(
+                [ai_bin, "update", "--force", "--quiet"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=_INSTALLED_UPDATE_TIMEOUT_SECONDS,
+                check=False,
+                env=_out.record_relay_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            what = f"{what}; the update did not run: {exc}"
+        else:
+            ai_bin, found = _installed_migration_format()
+            if updated.returncode == 0 and found is not None and found >= MIGRATION_FORMAT:
+                _out.emit(Tag.MIGRATE, "migrate", f"updated the installed `ai` to migration format {found}")
+                return
+            said = (updated.stderr or updated.stdout).strip().splitlines()[-1:]
+            what = (
+                f"{what}; the update exited {updated.returncode}"
+                + (f" ({said[0]})" if said else "")
+                + f" and the installed build reads format {found}"
+            )
+    reason = (
+        f"{what}. The migrated session relaunches under that build; run `{_INSTALLED_UPDATE_COMMAND}` "
+        "and repeat this command"
+    )
+    _out.error(Tag.MIGRATE, "migrate", reason)
+    _print_migration_refusal(reason)
+    sys.exit(2)
+
+
 def _first_name(title: str, repo_root: Path) -> str | None:
     """The first name ending ``title`` (``ivy`` in ``myrepo-box-ivy``), read under the repo's stem."""
     from . import migrate_names
@@ -7967,6 +8064,7 @@ def cmd_migrate_session(
     if sweep or to_names or over_limit:
         if not (sweep and to_names):
             raise click.UsageError("-a/--all and -T/--to-names go together")
+        _require_current_installed_build(dry_run=dry_run or not yes)
         sys.exit(
             _migrate_all_to_names(
                 repo_root, write=yes and not dry_run, dry_run=dry_run, max_length=max_length, over_limit=over_limit
@@ -7975,9 +8073,12 @@ def cmd_migrate_session(
     if to_name is not None:
         if not old or new:
             raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
+        _require_current_installed_build(dry_run=dry_run)
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
+    if not beads_only:
+        _require_current_installed_build(dry_run=dry_run)
 
     def _run(preview: bool):
         if beads_only:
