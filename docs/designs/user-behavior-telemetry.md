@@ -211,7 +211,7 @@ The nudge engine is the primary event producer. Every nudge decision point emits
 
 ### Backlog Curation
 
-Task prioritization nudges (e.g., "Focus on historical-task — it's blocking two other tasks") emit lifecycle events tied to `task_id`. Conversion is measured as task state change within the attribution window, not nudge click-through.
+Task prioritization nudges (e.g., "Focus on historical-task — it's blocking two other tasks") emit lifecycle events tied to the task key. Conversion is measured as task state change within the attribution window, not nudge click-through.
 
 ### Daily Digest
 
