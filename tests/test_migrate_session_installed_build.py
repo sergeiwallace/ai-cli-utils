@@ -80,7 +80,9 @@ def test_given_an_installed_build_older_than_the_format_when_migrated_then_it_is
     assert UPDATE in installed.calls
     assert "reads migration format 0, older than format 1" in out + err
     assert (slot["repo"] / ".worktrees" / NEW).is_dir()
-    assert [row["format"] for row in _ledger(slot)] == [MIGRATION_FORMAT]
+    rows = _ledger(slot)
+    assert [bool(row.get("finished")) for row in rows] == [False, True], "the migration, then its verified finish"
+    assert [row["format"] for row in rows] == [MIGRATION_FORMAT, MIGRATION_FORMAT]
 
 
 def test_given_the_update_failing_when_migrated_then_it_exits_2_with_the_update_command_and_writes_nothing(
