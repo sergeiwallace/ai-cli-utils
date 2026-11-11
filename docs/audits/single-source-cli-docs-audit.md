@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: halted-recurrence; round 2` |
+| Stage cursor | `doc-audit done: audit-converged; round 3` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** halted-recurrence — NOT promotion ready
+**Loop state:** audit-converged — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 2 | sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11 | 0 | 1 | 0 | round2:N-1 | verify | no |
+| doc-audit | 3 | sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6 | 0 | 0 | 0 | — | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1228,5 +1228,139 @@ or live outward actions were performed.
     "kind": "verify"
   },
   "source_event_id": "round-2-audit"
+}
+```
+
+## Round 3 — Verification
+
+**Round 3 auditor:** `gpt-5`
+
+**Round 3 date:** 2026-11-11
+
+**Round 3 scope:** Verify the sole open MUST-fix backlog item, `round2:N-1`, against target
+digest `sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6` and the
+unchanged parser sources at the design's recorded base commit. Inspect the changed parity contract
+for regressions and ask drift. Append-only; no target edits.
+
+### R3 Summary
+
+`round2:N-1` is fixed. The revised design now inventories both previously omitted semantic flags,
+all seven `ai sync` actions, the two other self-parsing commands, and the exact in-repository caller
+forms. It requires non-colliding short forms for the three formerly long-only flags, CLI-entry
+parity coverage for every inventory row and spelling, and a base-commit re-read before conversion.
+No new finding was reproduced. `CONFIRMED`; the document has no open blocking finding in this
+verification scope, while any stage transition remains driver-owned.
+
+### R3.1 Open MUST-fix backlog verification
+
+| Finding key | Verdict | Disposition | Evidence and verification note |
+|---|---|---|---|
+| `round2:N-1` | PASS | fixed | The design now names `--prefer-remote` on `ai sync pull` and `--auto` plus `--verbose` on `ai sync watch`, and requires each to retain its long spelling and gain a short form (`docs/designs/single-source-cli-docs.md:357-387`). Source consumes `--prefer-remote` as `prefer_remote` in the pull path (`src/ai_cli/sync.py:345-353,2493-2496,2560-2569`), consumes `--auto` in the watch gate (`src/ai_cli/sync.py:2856-2873`), and the shipped caller uses `ai sync watch --auto` (`src/ai_cli/session_script.py:1168-1174`). The five parser files have no diff from recorded base `d301960c`, so this comparison is against the source the design says it measured. `CONFIRMED`. |
+
+### R3.2 AD-N decisions verification
+
+No AD-N decision is in scope or was introduced by this fix.
+
+### R3.3 NEW issues surfaced
+
+None.
+
+### R3 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|---|---|---|---|---|
+| N-1 — action matrix | `sed -n '364,377p' docs/designs/single-source-cli-docs.md` | Every self-parser action and meaningful flag is explicit | The table lists `ps`, `layout`, and all seven `sync` actions with their positional arguments and flags | ✅ |
+| N-1 — pull semantic flag | `sed -n '345,353p;2493,2497p;2560,2570p' src/ai_cli/sync.py` | `--prefer-remote` is parsed and reaches pull application | `_parse_flags` returns it, `_sync_pull` binds it, and `apply_pull_files` receives `prefer_remote=prefer_remote` | ✅ |
+| N-1 — watch semantic flag | `sed -n '2863,2873p' src/ai_cli/sync.py` | `--auto` controls the automatic-watch gate | The condition is `if "--auto" in flags and not auto_watch_enabled()` | ✅ |
+| N-1 — watch verbosity | `sed -n '2863,2900p' src/ai_cli/sync.py` | The current long-only `--verbose` behavior is represented | Source binds `verbose = "--verbose" in flags`; the table preserves it and requires a short form | ✅ |
+| N-1 — caller compatibility | `rg -n 'ai ps cron|ai sync watch --auto' src scripts .githooks config` | Every production caller form named by the fix is discoverable | Production hits are `src/ai_cli/session_script.py:1168` and `:1174`, matching the design criterion | ✅ |
+| N-1 — positional contract | `sed -n '8254,8309p' src/ai_cli/main.py` | Action and repair-worktree arguments match the matrix | Dispatch has the seven listed actions and binds `<project> <worktree>` as `project_name` and `wt_name` | ✅ |
+| N-1 — frozen source basis | `git diff --quiet d301960c..HEAD -- src/ai_cli/process_hygiene.py src/ai_cli/layout.py src/ai_cli/main.py src/ai_cli/sync.py src/ai_cli/session_script.py` | Exit 0 | Exit 0; the audited parser sources are unchanged from the recorded base | ✅ |
+
+**Verified: 7/7 checks reproduce at repository commit
+`b6fe62356718846de34b072a6ca3524e0eb175a4`; target digest
+`sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6`.**
+
+### R3 Recommendations
+
+**MUST be fixed before implementation starts:** none.
+
+**SHOULD be fixed before the design-doc PR merges:** none in this verification scope.
+
+**Can be folded into a follow-up:** none.
+
+### R3 Already-Correct Items
+
+- ✅ The sync inventory now includes the two semantic paths N-1 found and the existing long-only
+  watch verbosity flag (`docs/designs/single-source-cli-docs.md:368-377`).
+- ✅ The parity contract requires the implementer to re-read parser source at the implementation
+  base and add any newly found token rather than silently dropping it
+  (`docs/designs/single-source-cli-docs.md:383-387`).
+- ✅ Exact production caller argument lists are required as parity rows
+  (`docs/designs/single-source-cli-docs.md:378-382`).
+- ✅ Unknown flags and ignored trailing tokens are explicitly classified as intentionally dropped,
+  with a reason (`docs/designs/single-source-cli-docs.md:392-395`).
+- ✅ The revised N-1 contract does not narrow the authoritative shared-source, full-description,
+  generated-reference, wiki-generation, programmatic-first, or research requirements.
+
+### R3 Files Read and Commands Run
+
+Read in full: the canonical audit `STUB.md` and `TEMPLATE.md`,
+`docs/designs/single-source-cli-docs.md`, and this audit's prior-round history. Ground-truth reads
+covered `src/ai_cli/process_hygiene.py:737-875`, `src/ai_cli/layout.py:393-425`,
+`src/ai_cli/main.py:8214-8310`, `src/ai_cli/sync.py:345-353,2327-2525,2645-2909`,
+`src/ai_cli/session_script.py:1168-1176`, `tests/test_sync.py:1781-1799,6373-6423`,
+`tests/test_cli_dispatch.py:298-365`, `tests/test_layout.py:400-454`, and
+`tests/test_cli_option_forms.py`. Commands were the `sed`, `rg`, `git diff --quiet`, `git show`,
+`git log`, and `sha256sum` inspections recorded above. No test suite, target edit, or outward action
+was run. A confined read of the private task store was unavailable and was not treated as evidence
+of absence; its filing assertions are outside this verification round's sole backlog item.
+
+### R3 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | 3 | `round2:N-1` fixed; 0 new findings; target unchanged. |
+
+### R3 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-docs-design",
+        "violation_kind": "missing-parity-coverage"
+      },
+      "disposition": "fixed",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:sync-meaningful-flags-omitted",
+      "id": "N-1",
+      "reachable_behavior": "The revised design preserves sync pull --prefer-remote and sync watch --auto with CLI-entry parity coverage and both option forms.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round2:N-1"
+    ],
+    "diff_since": "sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:5803fee5dc2a68e87af93f25f95f37aca7cbc6b2ec4df12f7a19f0471f8d9f11",
+      "to": "sha256:22f985faf794edfa5d3dcc7324f4cadf61dc2ff79a5da20d7852b93e01cf5ba6"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-3-audit"
 }
 ```
