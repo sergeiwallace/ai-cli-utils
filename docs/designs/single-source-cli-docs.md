@@ -213,8 +213,8 @@ The wiki carries everything in the repository's documentation, in two parts. The
 comes first in the sidebar: the README (split into Home, Installation, Quick Start, Usage and
 Configuration pages), the generated CLI reference, the narrative CLI guide, the guides and tools
 docs, the architecture doc, CONTRIBUTING, SECURITY and the CHANGELOG. The project-records part
-follows: one wiki page for every other tracked Markdown file anywhere in the repository and every
-other tracked file under `docs/` (designs, plans, research, audits, bug write-ups, procedures,
+follows: one wiki page for every other tracked Markdown file anywhere in the repository, every
+other tracked file under `docs/` and any other tracked document such as `LICENSE` (designs, plans, research, audits, bug write-ups, procedures,
 analyses, linked text artifacts, reference configuration and the rest), grouped by folder. A
 non-Markdown document is rendered in a fenced block whose language comes from its suffix. Each
 group has a generated index page that lists its pages with titles selected by one deterministic
@@ -222,14 +222,19 @@ chain: a non-empty frontmatter `title`, then the first `#` heading, then the nor
 Page names are derived from the repository path, so two files with the same basename never collide
 in the wiki's flat namespace.
 
-The builder derives the coverage universe from `git ls-files`; the manifest cannot narrow it. A
-build test fails if any tracked Markdown file anywhere in the repository or any tracked file under
-`docs/` is assigned to no page or group, or to more than one. The only exclusions are tracked
-machine files that are not documents (for example receipt `.jsonl` files, validator configuration,
-YAML invariant registers and the generated wiki manifest's own build output). Each exclusion is an
-exact repository path with a non-empty reviewable reason; exclusion globs are forbidden. This
-makes every current documentation artifact either published or intentionally accounted for, and a
-new file cannot be silently omitted.
+The builder derives the coverage universe from `git ls-files`, and the universe is every tracked
+file; the manifest cannot narrow it. Each tracked file is either published, by exactly one page or
+group, or excluded by one entry of a short class list in the manifest. A class entry is a path
+pattern for files that are not documents, with a reviewable reason: package source and tests
+(`src/**/*.py`, `tests/**`), maintenance scripts and hooks (`scripts/**`, `.githooks/**`),
+configuration and data (`*.toml`, `*.yaml`, `*.yml`, `*.json`, `*.jsonl`, `*.lock`, dotfiles), and
+binary or generated assets (`assets/**` images, `demo/**` media, `src/ai_cli/data/**` non-Markdown
+files). A file that is a document but matches no page or group, such as the top-level `LICENSE`,
+therefore matches no exclusion either, and the build test fails naming it. The test also fails if a
+file is published twice, or is both published and excluded. Deciding coverage by "published unless
+excluded as a non-document class" instead of by a list of document locations means a new kind of
+document cannot be left out because nobody thought to name its location. The initial manifest
+publishes `LICENSE` as its own page.
 
 A workflow, `.github/workflows/wiki.yml`, runs on every push to `main` and allows manual dispatch
 only as a retry for `refs/heads/main`. The publication job has an explicit
@@ -305,20 +310,29 @@ glob = "**/*.md"
 name = "Other documentation artifacts"  # catch-all for remaining docs/ files
 glob = "docs/**/*"
 
+[[page]]
+name = "License"
+source = "LICENSE"            # a document with no suffix; rendered as text
+
+# Non-document classes. Every tracked file is published unless one of these matches it.
 [[exclude]]
-source = "docs/research/.markdownlint.yaml"  # exact paths only; no globs
-reason = "Machine configuration for the Markdown validator, not reader documentation"
+pattern = "src/**/*.py"
+reason = "Package source code, documented through the generated CLI reference"
+
+[[exclude]]
+pattern = "*.toml"
+reason = "Configuration and data files, not reader documentation"
 ```
 
 Each page has `name` and exactly one of `source` or `generated`; `sections` is valid only with
 `source`. Each group has `name` and `glob`; a file matched by an explicit page or an earlier group
 is not repeated by a later one. Group globs are matched against the tracked-file inventory,
 including dot-directories. Markdown sources render as Markdown; other UTF-8 sources render in a
-fenced block. Each exclusion has an exact `source` and a non-empty `reason`, and applies only to the
-derived coverage universe. The generator rejects an unknown key, a duplicate name, a missing
-source file, a missing section, an unknown `generated` value, a group whose glob matches nothing,
-an exclusion glob, an empty exclusion reason and an exclusion of a generated or untracked path,
-naming the entry.
+fenced block. Each exclusion has a `pattern` naming a class of non-document files and a
+non-empty `reason`. A Markdown file is a document by definition, so no exclusion may match a `.md`
+file. The generator rejects an unknown key, a duplicate name, a missing source file, a missing
+section, an unknown `generated` value, a group or exclusion whose pattern matches no tracked file,
+an empty exclusion reason and an exclusion that matches a Markdown file, naming the entry.
 
 The description, summary and generator interfaces:
 
@@ -344,8 +358,8 @@ scripts/generate_docs.py
 ## Integration
 
 The generator imports the CLI's root group directly and needs no network, configuration file or
-installed console script. The wiki builder reads only tracked files and derives its documentation
-coverage universe from every tracked Markdown file plus every tracked file under `docs/`. The
+installed console script. The wiki builder reads only tracked files, and its coverage universe is
+every tracked file (`git ls-files`). The
 public-hygiene tests scan
 every source the wiki publishes and specifically reject private workflow metadata in public design
 documents, so the wiki exposes nothing the repository does not already publish. The project
@@ -526,9 +540,8 @@ rollout is outside this design.
       non-zero naming the page and build nothing.
     - [ ] If a group's glob matches no file, or a group lacks `name` or `glob`, then the builder
       shall exit non-zero naming the group and build nothing.
-    - [ ] If an exclusion is not an exact tracked path in the derived coverage universe, has an
-      empty reason, or uses a glob, then the builder shall exit non-zero naming the exclusion and
-      build nothing.
+    - [ ] If an exclusion matches no tracked file, matches a Markdown file, or has an empty
+      reason, then the builder shall exit non-zero naming the exclusion and build nothing.
   - **T-3.2 Page build**
     - [ ] When the wiki is built, it shall write one file per manifest page plus `_Sidebar.md` and
       `_Footer.md`, and the sidebar shall list the pages in manifest order.
@@ -540,11 +553,11 @@ rollout is outside this design.
       URL.
     - [ ] When the built tree is scanned, every relative link shall resolve to a built page, and the
       test shall fail naming any link that does not.
-    - [ ] When the wiki is built, every tracked Markdown file anywhere in the repository and every
-      tracked file under `docs/` shall be published by exactly one page or group, except exact
-      machine-file exclusions with non-empty reasons; the test shall fail naming any file that is
-      published by none or by more than one. Focused fixtures shall cover Markdown in a hidden
-      directory, Markdown outside `docs/`, and a linked non-Markdown artifact under `docs/`.
+    - [ ] When the wiki is built, every tracked file shall be either published by exactly one page
+      or group or matched by an exclusion class, and never both; the test shall fail naming any
+      file that is neither, published twice, or both. Focused fixtures shall cover a top-level
+      document with no suffix (such as `LICENSE`), Markdown in a hidden directory, Markdown outside
+      `docs/`, and a linked non-Markdown artifact under `docs/`.
     - [ ] When a group is built, it shall write one page per matched file, named from the file's
       repository path so that no two pages collide, and one index page listing each member page.
       The index label shall use the first non-empty value in this order: frontmatter `title`, first
