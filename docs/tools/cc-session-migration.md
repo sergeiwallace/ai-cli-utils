@@ -22,10 +22,20 @@ directories**, and neither launch can see the other's history.
 `ai c 2` (bare mode) resumes a session like this:
 
 1. compute the worktree path (creating `.worktrees/myproject-2` if needed),
-2. scan **that worktree's** project directory for a transcript whose first
-   `customTitle` record equals the ai_name (`myproject-2`),
-3. `touch` the match and launch `claude --continue` (which picks the most
-   recently modified transcript in the project directory).
+2. scan **that worktree's** project directory for the newest transcript whose
+   current (last) `customTitle` equals the ai_name (`myproject-2`),
+3. launch `claude --resume <session-id>` with the match's UUID.
+
+The tmux session supervisor resolves its resume target the same way, through
+`ai internal resolve-continue-target <worktree> <ai_name>`.
+
+After `ai migrate-session OLD NEW`, a session that was still running when it was
+migrated writes its old title back into its transcript, so the transcript it
+lives in reads OLD and the scan in step 2 misses it. When this host's
+`session-migrations.jsonl` records a migration from OLD to NEW, the resume takes
+the newest transcript currently titled OLD instead, as long as every transcript
+titled NEW was started after that migration. A transcript titled NEW that is
+older than the migration is the session's own retitled history and still wins.
 
 So if the conversation you want was actually run at the repo root — e.g. a plain
 `claude --name myproject-2` after `ai c 2` failed to launch — its transcript sits
