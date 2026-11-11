@@ -412,8 +412,8 @@ class. That change spans every producer of a key, so this code is expected to be
 ### 5. Verify that resume actually resolves it
 
 Adoption runs the **same lookup the launcher performs** — a newest-first scan of
-the destination project directory for the first transcript whose first
-`customTitle` matches — and reports the file it found:
+the destination project directory for the first transcript whose current
+(last) `customTitle` matches — and reports the file it found:
 
 ```
 resolve probe: `ai c` finds ~/.claude/projects/<dest-slug>/<uuid>.jsonl
@@ -423,7 +423,10 @@ If that is not the file adoption just wrote, the command prints
 `post-adopt check FAILED` and **exits non-zero**. The probe reports failure
 whenever adoption did nothing at all, landed the transcript in the wrong project
 directory, or left it under the wrong title — the three ways adoption can appear
-to succeed while resume still misses.
+to succeed while resume still misses. A transcript whose current `agentName` names
+another session is a miss too: Claude Code restores the session's name from its last
+`agent-name` record on resume, so the session would come back under that name.
+`ai migrate-session` runs the same probe and prints `post-migrate check FAILED`.
 
 Manually:
 
@@ -501,7 +504,7 @@ ai c myrepo-box-3                             # resume under the new name
 | Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/migrate-session/wt-OLD`, which stays, so a refused rename never loses it |
 | `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
-| `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` OLD rewritten to NEW, stale worktree binding cleared (step 2b) |
+| `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` and `agentName` OLD rewritten to NEW, stale worktree binding cleared (step 2b); `--finish` and a re-run find and rewrite a transcript still carrying either |
 | `memory/.held-output-OLD-NN-<slug>.md` replay files in the main tree's and the slot's project directories | renamed to `.held-output-NEW-NN-<slug>.md`, bodies byte-identical; an existing target is skipped |
 | `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried; the old directory is removed when only `.highwatermark`/`.lock` remain, else left with a warning naming what it holds |
 | `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
