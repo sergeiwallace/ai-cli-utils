@@ -723,20 +723,24 @@ class ResumeMove:
     """One resume artifact, and what the adoption decided to do with it.
 
     ``dest`` is None exactly when nothing is renamed — a lock that is removed, or
-    one left alone. Every action other than ``"move"`` mutates nothing.
+    one left alone. Only ``"move"``, ``"merge"`` and ``"remove-stale-lock"`` mutate
+    anything. ``kept`` is the epoch a ``"merge"`` leaves in ``dest``.
     """
 
     source: Path
     dest: Path | None
     action: str
+    kept: int | None = None
 
     def describe(self) -> str:
         where = f"{self.source.parent.name}/{self.source.name}"
         # `dest` is None for every action that renames nothing, so it is narrowed here
         # rather than assumed from the action name -- the two are only kept in step by
         # construction, and a type checker cannot see that.
-        if self.dest is not None and self.action in ("move", "conflict"):
+        if self.dest is not None and self.action in ("move", "merge", "conflict"):
             renamed = f"{where} -> {self.dest.name}"
+            if self.action == "merge":
+                return f"{renamed} merged (keeps the later timestamp {self.kept})"
             return renamed if self.action == "move" else f"{renamed} SKIPPED (target exists)"
         if self.action == "remove-stale-lock":
             return f"{where} removed (lock, no live holder)"
@@ -832,6 +836,27 @@ def _lock_state(path: Path, lsof_fn: Callable[[str], str] | None = None) -> str:
     return "held" if any(line.strip().isdigit() for line in str(output).splitlines()) else "stale"
 
 
+def _marker_epoch(path: Path) -> int | None:
+    """The one epoch a ``pollers/*.notified`` marker holds, or None if it is not one.
+
+    The marker records when a dead poller's fault was announced; its writer stores
+    ``f"{int(time.time())}\\n"`` and its reader only tests that the file exists.
+    """
+    if path.parent.name != "pollers" or path.suffix != ".notified":
+        return None
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if re.fullmatch(r"[0-9]+", text) else None
+
+
+def _merged_epoch(*paths: Path) -> int | None:
+    """The later epoch when every path is a parseable ``.notified`` marker, else None."""
+    epochs = [_marker_epoch(path) for path in paths]
+    return None if None in epochs else max(e for e in epochs if e is not None)
+
+
 def migrate_resume_artifacts(
     old_key: str,
     new_key: str,
@@ -853,7 +878,10 @@ def migrate_resume_artifacts(
 
     An existing target is never overwritten. It is reported as a ``"conflict"``
     and left alone, because the destination artifact belongs to whoever already
-    holds the new name and is the only copy of it.
+    holds the new name and is the only copy of it. The one exception is a poller
+    ``.notified`` marker whose source and target each hold one epoch: both mean
+    "this fault was announced", so the ``"merge"`` keeps the later epoch under the
+    new name and removes the source. A marker holding anything else conflicts.
     """
     if not old_key or not new_key or old_key == new_key:
         return []
@@ -871,19 +899,31 @@ def migrate_resume_artifacts(
             if state == "unprovable":
                 planned.append(ResumeMove(source=source, dest=None, action="unprovable-lock"))
                 continue
-        planned.append(ResumeMove(source=source, dest=dest, action="conflict" if dest.exists() else "move"))
+        if not dest.exists():
+            planned.append(ResumeMove(source=source, dest=dest, action="move"))
+            continue
+        kept = _merged_epoch(source, dest)
+        planned.append(ResumeMove(source=source, dest=dest, action="conflict" if kept is None else "merge", kept=kept))
 
     if dry_run:
         return planned
 
-    # Only ``"move"`` reaches a rename and only ``"remove-stale-lock"`` reaches an
-    # unlink. Every other action is inert by construction rather than by a check
-    # placed next to the mutation.
+    # Only ``"move"`` and ``"merge"`` reach a rename, and only ``"merge"`` and
+    # ``"remove-stale-lock"`` an unlink. Every other action is inert by construction
+    # rather than by a check placed next to the mutation.
     for move in planned:
         if move.action == "move":
             assert move.dest is not None
             move.dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.move(str(move.source), str(move.dest))
+        elif move.action == "merge":
+            assert move.dest is not None
+            # The source survives only when it holds the later epoch; the target is
+            # then replaced whole, so the kept marker is the bytes its writer wrote.
+            if _marker_epoch(move.source) == move.kept:
+                move.source.replace(move.dest)
+            else:
+                move.source.unlink()
         elif move.action == "remove-stale-lock":
             move.source.unlink(missing_ok=True)
     return planned
@@ -944,19 +984,27 @@ def rekey_name_artifacts(
         tasks_moved += merge_task_namespace(claude_home / "tasks" / namespace, claude_home / "tasks" / target, dry_run)
 
     resume_moves: list[ResumeMove] = []
-    claimed: set[Path] = set()
+    claimed: dict[Path, ResumeMove] = {}
     for source_key in resume_keys:
         for move in migrate_resume_artifacts(source_key, target, claude_home=claude_home, dry_run=dry_run):
             # A dry run moves nothing, so a second key claiming a destination the
             # first already planned would not see it there and would report two
-            # moves where a real run performs one move and one conflict. Tracking
-            # the claims keeps the preview honest about what the real run will do,
+            # moves where a real run performs one move and one conflict (or, for a
+            # poller marker, a merge with what the first key left). Tracking the
+            # claims keeps the preview honest about what the real run will do,
             # which is the only reason to offer a preview at all.
-            if dry_run and move.action == "move" and move.dest is not None:
-                if move.dest in claimed:
-                    move = ResumeMove(source=move.source, dest=move.dest, action="conflict")
-                else:
-                    claimed.add(move.dest)
+            if dry_run and move.action in ("move", "merge") and move.dest is not None:
+                dest = move.dest
+                earlier = claimed.get(dest)
+                if earlier is not None:
+                    kept = _merged_epoch(move.source, earlier.source)
+                    if kept is not None and earlier.kept is not None:
+                        kept = max(kept, earlier.kept)
+                    move = ResumeMove(
+                        source=move.source, dest=dest, action="conflict" if kept is None else "merge", kept=kept
+                    )
+                if move.action != "conflict":
+                    claimed[dest] = move
             resume_moves.append(move)
     return tasks_moved, resume_moves
 
