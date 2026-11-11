@@ -40,7 +40,9 @@ def pinned_python(code: str) -> list[str]:
     """Use the loaded installation, ignoring PATH, PYTHONPATH and the project directory."""
     if not _PYTHON.is_file() or not (_PACKAGE_ROOT / "ai_cli" / "main.py").is_file():
         raise ValueError("the lifecycle Python installation is unavailable")
-    return [str(_PYTHON), "-I", "-c", f"import sys; sys.path.insert(0, {str(_PACKAGE_ROOT)!r}); {code}"]
+    # Forward slashes: a POSIX shell layer on Windows halves doubled backslashes in arguments.
+    root = _PACKAGE_ROOT.as_posix()
+    return [_PYTHON.as_posix(), "-I", "-c", f"import sys; sys.path.insert(0, {root!r}); {code}"]
 
 
 def _stop(process: subprocess.Popen) -> None:

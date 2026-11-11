@@ -61,7 +61,7 @@ def lifecycle_command(path: Path) -> list[str]:
     """Pin both the installation and registry before project exports can redirect them."""
     return pinned_python(
         f"from pathlib import Path; from ai_cli import session_registry as registry; "
-        f"registry.registry_path = lambda: Path({str(path)!r}); from ai_cli.main import cli; cli()"
+        f"registry.registry_path = lambda: Path({path.as_posix()!r}); from ai_cli.main import cli; cli()"
     )
 
 
@@ -72,8 +72,8 @@ def session_state_functions(name: str) -> str:
     host = record.get("owning_host") or cfg.get("machine", {}).get("host_id") or doc["machine"]
     context = {
         "command": lifecycle_command(registry.registry_path()),
-        "registry_path": str(registry.registry_path()),
-        "safety_path": str(state.tombstone_path(name, host)),
+        "registry_path": registry.registry_path().as_posix(),
+        "safety_path": state.tombstone_path(name, host).as_posix(),
         "policy": persistence_settings(cfg),
     }
     helper = pinned_python("from ai_cli.session_lifecycle import main; main()")
