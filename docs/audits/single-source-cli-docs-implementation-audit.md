@@ -79,7 +79,7 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `impl-audit active; round 1` |
+| Stage cursor | `impl-audit active; round 2` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
@@ -88,7 +88,7 @@ ledger-version: 1
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| impl-audit | 1 | sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3 | 0 | 4 | 1 | round1:F-1, round1:F-2, round1:F-3, round1:JA-1, round1:JA-2 | full | no |
+| impl-audit | 2 | sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3 | 0 | 1 | 0 | round2:N-1 | verify | yes |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -927,5 +927,280 @@ None.
     "kind": "full"
   },
   "source_event_id": "round-1-audit"
+}
+```
+
+## Round 2 — Verification
+
+### R2 Summary
+
+All five Round 1 findings were independently rerun against the recorded fix commit and the current
+head. F-1, F-2, F-3, JA-1 and JA-2 are fixed: the fix commit passed all 184 focused tests, its wiki
+builder produced 242 pages, and the four focused behavior probes now return the required results.
+JA-1 is fixed as originally framed because unsafe source content is rejected rather than published.
+
+One new `MAJOR` integration regression remains. The Round 1 audit record added after the fix commit
+contains content rejected by the new publication gate. The current head therefore cannot build a
+wiki artifact. This is N-1 rather than a recurrence of JA-1: the confidentiality boundary now fails
+closed, but the audit output and public wiki pipeline are not closed under composition. No
+authoritative ask entry was dropped, narrowed, broadened, rejected, deferred or inverted.
+
+### R2.1 Round 1 JA verification
+
+| ID | Verdict | Evidence |
+|---|---|---|
+| JA-1 | FIXED | `scripts/wiki_build.py:420-435` scans every planned source after receipt sanitization and raises `WikiError` on any remaining count. An archive of fix commit `ada23f6d` passed all 184 focused tests and built 242 pages. A synthetic forbidden-source test at `tests/test_wiki_build.py:363-370` confirms that only safe path/count diagnostics are emitted. |
+| JA-2 | FIXED | `tests/test_cli_option_forms.py:9-20` now traverses `scripts.generate_docs.walk()`, whose first entry is the root (`scripts/generate_docs.py:54-66`). The long-only root regression at `tests/test_cli_option_forms.py:30-36` reports the injected root option; the real tree has 361 visible option records and zero violations. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Evidence |
+|---|---|---|
+| F-1 | FIXED | `_LayoutGroup.resolve_command` reserves only `list`, `profiles` and `validate` (`src/ai_cli/main.py:6911-6919`). An isolated invocation of `layout _apply` exited 0 and called the unchanged layout implementation with `('_apply',)`; the regression row is at `tests/test_cli_self_parsing.py:47-65`. |
+| F-2 | FIXED | `_lines_outside_fences()` retains the opening character and exact run length and accepts only a same-character close at least that long (`scripts/wiki_build.py:110-123`). Both four-backtick and four-tilde probes exposed only the real post-fence section and kept the inner heading in code. |
+| F-3 | FIXED | `build_wiki()` computes the expected flat Markdown set and removes only obsolete `*.md` outputs (`scripts/wiki_build.py:451-455`). The seeded-obsolete-page regression at `tests/test_wiki_build.py:352-360` passed and preserved every expected byte. |
+
+### R2.3 AD-N decisions verification
+
+None. Round 1 opened no decision.
+
+### R2.4 NEW issues surfaced
+
+#### N-1 — MAJOR — The audit record makes the current wiki build fail closed
+
+**Location:** `docs/audits/single-source-cli-docs-implementation-audit.md:37,55-57,303-305,425`;
+publication gate at `scripts/wiki_build.py:420-435`; trusted-main invocation at
+`.github/workflows/wiki.yml:44-47`.
+
+**What the Round 1 Resolution Pass required:** “Aggregate scan of every published text source
+reports zero forbidden values without excluding documentation.”
+
+**Exact evidence:** The current builder reports only safe aggregate diagnostics:
+
+```text
+generate_docs: published sources fail public-content policy: docs/audits/single-source-cli-docs-implementation-audit.md (private tracker references: 2, private environment references: 1)
+current_builder_exit=1 output_created=no
+```
+
+The referenced source values are deliberately not repeated here. The source commit itself built
+successfully; the later Round 1 audit-record commit introduced the rejected content.
+
+**Why it matters:** The workflow executes this exact build on every trusted `main` push. At the
+current head it exits before artifact upload, so the requested automatically generated wiki cannot
+publish even though the confidentiality gate correctly prevents a leak.
+
+**Verification command:**
+
+```bash
+tmp_dir=$(mktemp -d)
+UV_CACHE_DIR="$tmp_dir/uv-cache" PYTHONDONTWRITEBYTECODE=1 \
+  uv run python scripts/generate_docs.py --check --wiki-out "$tmp_dir/wiki" \
+  --repository example/myproject
+status=$?
+printf 'current_builder_exit=%s output_created=%s\n' \
+  "$status" "$([[ -d "$tmp_dir/wiki" ]] && echo yes || echo no)"
+rm -r "$tmp_dir"
+exit "$status"
+```
+
+**Verification note:** **CONFIRMED** on commit `5e804061`. The command exited 1 and created no
+output directory. A safe aggregate plan scan found exactly one violating source among 226 planned
+sources: this audit document, with two tracker-reference lines and one environment-reference line.
+
+**Recommendation:** Keep the publisher fail closed. Make the audit-carrier rendering used in this
+public repository emit public-safe template text and provenance from the start, then scrub the
+existing audit document without removing its finding history. Add an integration regression that
+renders a representative audit carrier and proves the repository wiki build succeeds without
+excluding documentation.
+
+### R2 Recommendations
+
+**MUST be fixed before merge or wiki publication:**
+
+- N-1: make the tracked audit record pass the same public-content gate as every other wiki source.
+
+**SHOULD be fixed before the next audit round:**
+
+- Add the audit-carrier-to-wiki integration regression so a later round cannot recreate this gap.
+
+**Can be folded into a follow-up:**
+
+- The already-declared live wiki capability check remains a post-merge operational gate; it does
+  not resolve N-1.
+
+### R2 Verification Matrix
+
+| Finding | Reproduced command/probe | Actual result | Status |
+|---|---|---|---|
+| F-1 | Isolated root CLI invocation of `layout _apply` with the implementation patched | Exit 0; called with `('_apply',)` | FIXED |
+| F-2 | `split_sections()` with four-character backtick and tilde outer fences containing three-character inner fences | Both returned only `Real`; both kept `Still code` in the preamble/code region | FIXED |
+| JA-1 | Focused suite and wiki build from an archive of `ada23f6d` | `184 passed`; `wiki: 242 pages` | FIXED |
+| JA-2 | Inject a long-only option on a synthetic root and scan the real tree | Probe reported `--probe-only`; real tree: 361 visible, 0 violations | FIXED |
+| F-3 | Seed `Obsolete.md`, rebuild into the same synthetic output directory | Focused regression: `1 passed`; obsolete page absent | FIXED |
+| N-1 | Current `generate_docs.py --check --wiki-out` plus focused current-head suite | Builder exit 1/no output; suite: 178 passed, 2 failed, 4 errors, all from the rejected audit source | CONFIRMED |
+
+**Verified: 6/6 dispositions reproduce.** The unchanged design digest is
+`sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3`.
+
+### R2 Already-Correct Items
+
+- The shared-source requirement remains implemented: Click declarations feed runtime help and the
+  generated reference, and `--check` finds no reference or README drift before the wiki gate runs.
+- Full descriptions and short/long option-form enforcement remain covered by focused tests.
+- The wiki still plans every tracked documentation source; no document exclusion was added to fix
+  the public-content problem.
+- The publication gate reports safe paths and counts, not matched private values.
+- The builder remains deterministic for valid sources and removes obsolete generated Markdown.
+- The generated Markdown remains suitable as a future website input; no LLM was added to the
+  generation path.
+
+### R2 Files Read
+
+**Audit contract and subject**
+
+- Canonical audit `STUB.md` and `TEMPLATE.md` — full read before verification.
+- `docs/audits/single-source-cli-docs-implementation-audit.md` — full Round 1 history and receipt.
+- `docs/designs/single-source-cli-docs.md` — full target and founding-ask coverage.
+
+**Implementation and policy**
+
+- `AGENTS.md`; `scripts/generate_docs.py`; `scripts/wiki_build.py`;
+  `scripts/publication_hygiene.py`; `src/ai_cli/main.py` (layout implementation).
+- `docs/wiki/pages.toml`; `.github/workflows/wiki.yml`.
+
+**Tests**
+
+- `tests/test_cli_option_forms.py`; `tests/test_cli_self_parsing.py`;
+  `tests/test_wiki_build.py`; `tests/test_public_repo_hygiene.py`.
+
+### R2 Commands Run
+
+- Repository status, commit graph, target digest and `ada23f6d` diff inspection.
+- Five isolated Round 1 disposition probes recorded in the verification matrix.
+- Current-head safe aggregate publication scan and direct wiki build.
+- Archived-fix-commit focused suite and wiki build: 184 passed, 242 pages.
+- Current-head focused suite: 178 passed, 2 failed and 4 errors, all attributable to N-1.
+
+### R2 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": "layout-dynamic-name-routing",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-layout",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-1",
+      "fingerprint": "fp:layout-hidden-apply-reserved",
+      "id": "F-1",
+      "reachable_behavior": "Invoking the layout command with the valid name _apply exits with usage status instead of applying that layout.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": "markdown-fence-boundaries",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "wiki-builder",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-2",
+      "fingerprint": "fp:wiki-fence-opening-length-lost",
+      "id": "F-2",
+      "reachable_behavior": "A valid longer outer Markdown fence containing a shorter fence exposes code headings and hides real post-fence sections.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": "public-package-content-hygiene",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "wiki-publication",
+        "violation_kind": "requirement-violation"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:JA-1",
+      "fingerprint": "fp:wiki-publishes-private-doc-metadata",
+      "id": "JA-1",
+      "reachable_behavior": "The main-branch wiki publisher includes tracked documentation containing content forbidden on this public package's surfaces.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": "option-short-long-parity",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cli-invariant-tests",
+        "violation_kind": "missing-enforcement"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:JA-2",
+      "fingerprint": "fp:root-options-omitted-from-form-test",
+      "id": "JA-2",
+      "reachable_behavior": "A long-only root option passes the test that claims to enforce short and long forms across the command tree.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": "wiki-output-tree-equivalence",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "wiki-builder",
+        "violation_kind": "stale-output"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:F-3",
+      "fingerprint": "fp:wiki-build-leaves-stale-pages",
+      "id": "F-3",
+      "reachable_behavior": "Rebuilding into an existing output directory leaves an obsolete Markdown page in the generated tree.",
+      "severity": "minor",
+      "submitted_severity": "minor"
+    },
+    {
+      "cluster": {
+        "invariant_id": "public-content-pipeline-closure",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "audit-wiki-integration",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:audit-round-output-blocks-wiki",
+      "id": "N-1",
+      "reachable_behavior": "On the current head the trusted-main wiki build exits before artifact creation because the tracked audit record violates the publication policy.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {
+    "round2:N-1": "The regression blocks publication but fails closed without leaking content, causing data loss, or creating an unrecoverable state."
+  },
+  "new_by_severity": {
+    "critical": 0,
+    "major": 1,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round1:F-1",
+      "round1:F-2",
+      "round1:F-3",
+      "round1:JA-1",
+      "round1:JA-2"
+    ],
+    "diff_since": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3",
+    "diff_summary": {
+      "changed": false,
+      "from": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3",
+      "to": "sha256:75bb65ec5f2465ac95e326f5068319e751044d37abe674dbca57534b6b3acce3"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-2-audit"
 }
 ```
