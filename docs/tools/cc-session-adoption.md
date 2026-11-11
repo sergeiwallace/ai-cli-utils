@@ -561,6 +561,28 @@ running; stop a running one with `ai sessions stop NAME` first. A hook that refu
 other parts and hooks still run, and the command exits 1 so it is re-run. `-n` prints its
 plan with nothing written.
 
+`--finish` needs only one name. `ai migrate-session NEW --finish`, the old name,
+NEW's first name (`cleo` in `myrepo-box-cleo`) or `ai migrate-session --finish -t
+cleo` looks the name up in this host's `session-migrations.jsonl` (in the state
+directory), as the OLD or NEW of a recorded pair or the first name of its NEW, and
+finishes that pair in the repo the row records, whatever the current directory;
+`-r` overrides the recorded repo. A positional name and `-t` together must both
+match the same pair. A name matching no recorded pair exits 2 naming the ledger it
+searched; one matching several exits 2 and lists `ai migrate-session OLD NEW
+--finish -r <repo>` for each. Both names given positionally also take the recorded
+repo, and keep the current directory's repo when no row names them.
+
+The migrated session relaunches under the `ai` on `PATH`, not the build running the
+migration, so before writing anything every migration (`--finish` and `--to-name`
+included; `--beads-only` excepted) asks that `ai` for the migration record format it
+reads (`ai internal get-migration-format`). A build from before that probe answers
+none, read as 0. When the number is lower than the format this build writes, it runs
+`ai update --force` and asks again; when the update fails, cannot run, or still
+leaves an older build, or when the probe cannot tell (no `ai` on `PATH`, a timeout),
+the command exits 2 naming the build and `ai update --force`, with nothing written.
+`-n` names the skew and updates nothing. Each ledger row carries the format it was
+written in as `"format"`.
+
 `--finish` also re-keys the Beads issues still assigned to OLD, but only when this
 host's `session-migrations.jsonl` (in the state directory) has a row naming
 exactly that pair. An assignee carries no host and other machines share the
