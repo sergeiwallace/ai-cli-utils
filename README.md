@@ -771,6 +771,13 @@ State owned by other tools joins the same run through a hook file in
 it is skipped and reported as pending instead), and runs after the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
 `ai adopt-session` that retitles the session runs the same hooks the same way.
 
+`ai c NEW` never starts a session whose recorded migration is partial. Before the
+worktree or the session exists, it finishes any migration to NEW this host recorded
+unfinished and re-plans the ones recorded finished. If a part is still left, it starts
+nothing, prints the parts left and the `ai migrate-session OLD NEW --finish -r REPO`
+command, and exits 1. `-P/--allow-partial-migration` starts it anyway and writes the
+parts left into the launch log ([details](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-migrate-session)).
+
 A session that is finished for good has its home slot retired by its owner with
 `ai retire-session NAME`; no automatic reap removes a session home. The command
 refuses while the session runs (a Claude Code process, its tmux session, or a
@@ -903,7 +910,9 @@ the registry; configured publication uses the existing publisher. Dry runs write
 Use `ai sessions relaunch <slug>` to explicitly restart one stopped session owned by this host,
 detached through its recorded recipe, even if boot relaunch is disabled or its policy is `never`.
 Live, unknown, foreign and incomplete records are refused; `-d/--dry-run` previews without changes,
-and a slug cannot be combined with `-b/--boot`. Use `ai sessions policy <slug> <auto|never|always>`
+and a slug cannot be combined with `-b/--boot`. Both forms refuse a session whose recorded migration
+is partial, as `ai c` does, relaunch the rest and exit 1; `-P/--allow-partial-migration` overrides
+that. Use `ai sessions policy <slug> <auto|never|always>`
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
 
