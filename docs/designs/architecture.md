@@ -215,6 +215,8 @@ Base and upstream are resolved together, from one call, so they can never disagr
 
 Note that `git worktree add -b <branch> <remote-tracking-ref>` attaches an upstream *by itself* via git's default `branch.autoSetupMerge`, so it is a second upstream writer in this path: declining to attach one has to actively clear it.
 
+A probe launch (`ai c -t`) is the one exception to `.worktrees/`: its worktree is made under the per-user state directory, outside the repository, and it is never recorded in the canonical-worktree registry, never given a first name and never relaunched at boot. Design: [probe-sessions.md](probe-sessions.md).
+
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 
 **Cursor-based CC token tracking** — `cc_usage.py` tracks last-seen `occurred_at` per session UUID in `cc-usage-cursor.json`. Only entries newer than the cursor are pushed. Idempotent: core-cli ingest deduplicates by `event_id`.
