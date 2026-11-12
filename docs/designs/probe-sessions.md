@@ -94,6 +94,15 @@ name, reach or host a canonical session. `-W/--no-worktree` is accepted: the pro
 runs in the current directory and creates no worktree at all. `-d/--dry-run` plans the
 probe title and writes nothing.
 
+A probe also exits 1, before it touches any worktree, when its title already belongs to
+a canonical session: a non-probe run record of that name, a `<repo>/.worktrees/<title>`
+directory, or a `wt-<title>` branch checked out outside the probe directory. Without that
+refusal the worktree code would relocate the canonical checkout into the probe directory.
+It exits 1 too when the configured state directory puts the probe directory inside the
+repository. An ordinary launch that takes a probe's title clears the probe marks, so its
+record is boot-relaunched again. Free probe slots are found from tmux sessions, or, for a
+bare launch, from live worktrees in both `.worktrees/` and the probe directory.
+
 ### Removing a probe
 
 A probe worktree is scratch. Nothing records it as a session home, so the ordinary
