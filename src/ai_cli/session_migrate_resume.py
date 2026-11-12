@@ -43,6 +43,7 @@ PARTS = (
     "leftover slot",
     "agent container",
     "beads issue",
+    "beads store",
 )
 
 
@@ -186,6 +187,8 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
             status = f"{'' if move.action.startswith('skipped:') else 'skipped: '}{move.action} {move.dest}".strip()
         elif move.action == "report" and not move.kind.startswith("hook "):
             status = "skipped: informational"
+        elif move.action == "publish needed":
+            status = "skipped: publish needed, no publish command is configured"
         else:
             status = "would do" if result.dry_run else "done now"
         assign(move.kind, status)

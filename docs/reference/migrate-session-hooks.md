@@ -110,6 +110,24 @@ name has changed. `ai audit-sessions` adopts through the same code path.
 - Without `--dry-run`, perform the move and print what moved. A second run after
   success should find nothing to do and exit 0.
 - Never prompt: standard input is not connected to the operator.
+- When NEW already holds its own copy of something OLD still holds, keep NEW's and move
+  OLD's into an archive rather than refusing, merging or deleting it, and print one
+  `migrate-archived: <path>` line per file archived on the live run (see below).
+
+## Archived files
+
+A live run may print, once for each file it archived, a line naming where it now is:
+
+```text
+migrate-archived: /home/user/.local/state/notes/archive/2026-01-01/myrepo-3-to-myrepo-box-3/notes.db
+```
+
+`migrate-session` lists each one as `hook <name>: <path> (archived OLD, NEW kept)`
+instead of relaying the line, and appends one ledger row with `"archive_recorded":
+true` whose `archived` list names each file as `{"part": "hook <name>", "archive":
+<path>}`. The core archives its own displaced files the same way, under
+`session-migration-archive/` in its state directory. The hook's next `--dry-run` must
+find nothing of OLD's left and report `migrate-status: done`.
 
 Implementation: `src/ai_cli/session_migrate_hooks.py`, called from
 `src/ai_cli/session_migrate.py` and `src/ai_cli/session_adopt.py`; tests in
@@ -149,3 +167,41 @@ that a lease, snapshot, lock or checkout stays usable until execution; the
 agent-mail snapshot warning calls out freshness checks explicitly. Hook authors
 must recheck those conditions when applying, return nonzero if incomplete, and
 never report `done` while a shipping step remains.
+
+## Publishing a re-keyed Beads store
+
+The Beads re-key runs `bd --sandbox`, so the issues it moves stay local to each
+store until the store is published. A host names the command that publishes a
+store in one file under the same config directory:
+
+| OS | File |
+|---|---|
+| Linux, macOS | `$XDG_CONFIG_HOME/ai-cli-utils/migrate-session-publish.d/beads.toml` |
+| Windows | `%APPDATA%\ai-cli-utils\migrate-session-publish.d\beads.toml` |
+
+```toml
+argv = ["python3", "~/bin/publish_store.py", "--repo", "{store}"]
+```
+
+`argv` is the program and its arguments, never a shell string. Every `{store}` is
+replaced by the store's directory (the directory holding `.beads/`), and the
+argv must name it at least once. A leading `~` in the program is expanded, and a
+`.py` program runs under the interpreter that runs `ai`, as for hooks. The file is
+read when the command runs.
+
+After a run re-keys issues in a store, it runs the command once for that store,
+with the store as its working directory, then reads the store again:
+
+| Outcome | Store line | `beads store` part | Exit |
+|---|---|---|---|
+| Exit 0, no issue left on OLD | `(published: <n> re-keyed)` | `done now` | unchanged |
+| Exit 0, an issue still on OLD | `(published: <n> re-keyed)` plus a `NOT converged` warning | `failed: ...` | 1 |
+| Non-zero exit, or a timeout | `(publish failed: exit <code>)` plus a `FAILED` warning quoting stderr | `failed: ...` | 1 |
+| Malformed file, or no `{store}` | `(publish failed: ...)` naming the file and the field | `failed: ...` | 1 |
+| No file | `(publish needed: <n> re-keyed, local until the store is published)` | `skipped: publish needed, no publish command is configured` | unchanged |
+
+A run that exits 1 here writes no `finished` row. The run records each publish
+that succeeded in `session-migration-issues.jsonl`, so repeating the same
+`ai migrate-session` or `--finish` command publishes again every store an earlier
+run re-keyed and no publish has confirmed since, even when no issue is left to
+re-key. The command must therefore be safe to repeat.

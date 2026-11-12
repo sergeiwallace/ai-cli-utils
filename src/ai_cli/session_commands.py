@@ -360,6 +360,57 @@ def _owned_record(doc: dict, slug: str) -> dict:
     raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host")
 
 
+@sessions.command(
+    "wind-down",
+    help="Stop a running session for a maintenance window, recording maintenance_wind_down so the "
+    "boot relaunch or a named relaunch brings it back",
+)
+@click.argument("slug", callback=_session_slug)
+@click.option(
+    "-t",
+    "--timeout",
+    type=click.FloatRange(min=0),
+    default=STOP_TIMEOUT_SECONDS,
+    show_default=True,
+    help="Seconds to wait for the session to exit",
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Check the session and print the plan without writing or stopping")
+def wind_down(slug, timeout, dry_run):
+    """Record the wind-down cause first, then end the session through its wrapper's clean exit."""
+    selected = {}
+
+    def change(doc):
+        record = _owned_record(doc, slug)
+        alive = registry._local_session_alive(slug)
+        if alive is None:
+            raise click.ClickException(f"{slug}: tmux liveness could not be established")
+        if not alive:
+            raise click.ClickException(f"{slug}: not running; nothing to wind down")
+        if not state.valid_boot_recipe(record):
+            raise click.ClickException(f"{slug}: unsupported or incomplete boot recipe; it could not be relaunched")
+        if not dry_run:
+            state.request_wind_down(record)
+        selected.update(deepcopy(record))
+        return True
+
+    if dry_run:
+        change(registry.load_registry())
+        output.emit(output.Tag.SESSIONS, "session", f"{slug}: would record {state.WIND_DOWN_CAUSE} and stop it")
+        return
+    registry._mutate(change, timeout=2)
+    engine = selected["boot_recipe"]["engine"]
+    report = stop_session(slug.removeprefix(f"{engine}-"), timeout=timeout)
+    if not report.stopped:
+        raise click.ClickException(f"{slug}: still running after {timeout:g}s: {', '.join(report.remaining)}")
+    record = _owned_record(registry.load_registry(), slug)
+    settled = state.cause(record, registry.current_boot_id())
+    if state.run_state(record) != "exited" or settled != state.WIND_DOWN_CAUSE:
+        raise click.ClickException(
+            f"{slug}: stopped, but its record shows {state.run_state(record)} with cause {settled}"
+        )
+    output.emit(output.Tag.SESSIONS, "session", f"{slug}: stopped; exit cause {settled} recorded")
+
+
 @sessions.command("policy")
 @click.argument("slug", callback=_session_slug)
 @click.argument("policy", type=click.Choice(["auto", "never", "always"]))

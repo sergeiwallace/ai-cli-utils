@@ -242,7 +242,9 @@ def watch_tmux_directory(directory: Path) -> Iterator[None]:
 
     The detached watcher sees EOF when this worker exits or closes its pipe. It
     remembers descendants while the server runs, including setsid heartbeat
-    tickers which a process-group reap cannot reach. Never use a shared directory.
+    tickers which a process-group reap cannot reach, and at the end also kills every
+    process still in a session it saw, which catches a child orphaned between two
+    snapshots. Never use a shared directory.
     """
     assert directory.is_dir() and not directory.is_symlink() and not list(directory.iterdir()), (
         "watch only a new, empty private directory"
@@ -306,44 +308,130 @@ def _watch_tmux_directory(directory: Path, tmux: str) -> None:
     while not select.select([sys.stdin], [], [], 0.05)[0]:
         snapshot()
     snapshot()
-    # Stop parents before taking a final descendant snapshot so none can spawn
-    # another child during cleanup. psutil pins identity with PID + creation time.
-    # A process this user may not inspect or signal (macOS /bin/ps is setuid root, and the
-    # session's suspend watchdog polls it) raises AccessDenied. It must not abort the walk:
-    # that left the already-stopped tree alive and the directory behind (AI-CLI-57fp).
-    pending = list(owned)
-    while pending:
-        process = pending.pop()
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            process.ppid()
-            process.cwd()
-            process.suspend()
-            for child in process.children(recursive=True):
-                if child not in owned:
-                    owned.add(child)
-                    pending.append(child)
+    sessions: set[int] = set()
     for process in owned:
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            process.kill()
-    deadline = monotonic() + _REAP_TIMEOUT
-    while True:
-        alive = []
-        for process in owned:
-            with contextlib.suppress(psutil.NoSuchProcess):
-                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
-                    alive.append(process)
-        if not alive:
-            break
-        assert monotonic() < deadline, "tmux descendants survived cleanup"
-        sleep(0.01)
+        with contextlib.suppress(OSError):
+            sessions.add(os.getsid(process.pid))
+    _end_owned(owned, sessions, psutil.Process().create_time(), "tmux descendants survived cleanup")
     # This exact directory was created empty by the caller and checked before use.
     if directory.exists():
         assert directory.is_dir() and not directory.is_symlink()
         shutil.rmtree(directory)
 
 
+def _session_members(sessions: set[int], born_after: float) -> set[psutil.Process]:
+    """Every live process in one of ``sessions`` that started no earlier than ``born_after``.
+
+    A process keeps its session id through every fork, exec and ``setpgid``, and through
+    being orphaned, so this finds what a descendant walk cannot: a child that moved to a
+    group of its own and whose parent then died, as the session wrapper's parked exec
+    helper does. A session id cannot be handed out again while any process still holds
+    it, and ``born_after`` rejects a process from before the watched session existed.
+    """
+    sessions = sessions - {os.getsid(0)}
+    found: set[psutil.Process] = set()
+    if not sessions:
+        return found
+    for process in psutil.process_iter():
+        with contextlib.suppress(OSError, psutil.Error):
+            if os.getsid(process.pid) in sessions and process.create_time() >= born_after:
+                found.add(process)
+    return found
+
+
+def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float, failure: str) -> None:
+    """Stop, then kill, every owned process, its descendants and every member of ``sessions``."""
+    # Stop parents before taking a final descendant snapshot so none can spawn
+    # another child during cleanup. psutil pins identity with PID + creation time.
+    # A process this user may not inspect or signal (macOS /bin/ps is setuid root, and the
+    # session's suspend watchdog polls it) raises AccessDenied. It must not abort the walk:
+    # that left the already-stopped tree alive and the directory behind.
+    # On macOS psutil can also raise a bare ProcessLookupError (from sysctl) for a process
+    # that exited between listing and inspection; that is the same "already gone" case.
+    pending = list(owned)
+    while pending:
+        while pending:
+            process = pending.pop()
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                process.ppid()
+                process.cwd()
+                process.suspend()
+                for child in process.children(recursive=True):
+                    if child not in owned:
+                        owned.add(child)
+                        pending.append(child)
+        # A member that was running when the walk started may have forked since, so sweep
+        # until a pass finds no member that is not already stopped.
+        pending = list(_session_members(sessions, born_after) - owned)
+        owned.update(pending)
+    for process in owned:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+            process.kill()
+    deadline = monotonic() + _REAP_TIMEOUT
+    while True:
+        alive = []
+        for process in owned:
+            with contextlib.suppress(psutil.NoSuchProcess, ProcessLookupError):
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    alive.append(process)
+        if not alive:
+            break
+        assert monotonic() < deadline, failure
+        sleep(0.01)
+
+
+@contextlib.contextmanager
+def watch_session(leader: subprocess.Popen) -> Iterator[None]:
+    """End every process in ``leader``'s session on exit, and also if this process dies.
+
+    For a child started with ``start_new_session=True`` that goes on to build a process
+    tree of its own, such as a session wrapper that respawns its children. A ``finally:``
+    reap does not run when the run is killed or an xdist worker dies, and the tree then
+    outlives the run. The detached watcher sees EOF on its stdin in every one of those
+    cases, because this process holds the only write end, and kills the session's
+    members by pinned identity: never a pattern and never a bare process group.
+    """
+    if os.name != "posix":
+        yield
+        return
+    watcher = _REAL_POPEN(
+        [sys.executable, str(Path(__file__).resolve()), "--session", str(leader.pid)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert watcher.stdin is not None and watcher.stdout is not None
+    try:
+        assert watcher.stdout.readline() == b"ready\n", "session cleanup watcher did not start"
+        yield
+    finally:
+        watcher.stdin.close()
+        watcher.stdout.close()
+        assert watcher.wait(timeout=30) == 0, "session cleanup watcher failed"
+
+
+def _watch_session(leader_pid: int) -> None:
+    """Own the session ``leader_pid`` leads until stdin closes, then end all of it."""
+    leader = psutil.Process(leader_pid)
+    assert os.getsid(leader_pid) == leader_pid, "watch only a session leader"
+    # Read while the leader is alive: on macOS psutil does not cache it, and asking after
+    # the leader exits raises NoSuchProcess, which failed the watcher in CI.
+    born_after = leader.create_time()
+    owned = {leader}
+    print("ready", flush=True)
+    # The session sweep at the end finds every member that kept the session; tracking the
+    # tree as it runs also catches a descendant that calls setsid() itself.
+    while not select.select([sys.stdin], [], [], 0.5)[0]:
+        with contextlib.suppress(psutil.Error):
+            owned.update(leader.children(recursive=True))
+    _end_owned(owned, {leader_pid}, born_after, "session members survived cleanup")
+
+
 if __name__ == "__main__":
-    _watch_tmux_directory(Path(sys.argv[1]), sys.argv[2])
+    if sys.argv[1] == "--session":
+        _watch_session(int(sys.argv[2]))
+    else:
+        _watch_tmux_directory(Path(sys.argv[1]), sys.argv[2])
 
 
 # Exited children whose Popen objects must outlive the test that asked for their pid.

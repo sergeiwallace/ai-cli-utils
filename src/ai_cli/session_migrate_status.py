@@ -51,8 +51,41 @@ def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]
     return replan_live(repo_root, old, new, **kwargs)[0]
 
 
+def moved_on(new: str, repo_root: Path, state: Path) -> tuple[str, Path] | None:
+    """``(name, slot)`` NEW's slot moved on to, when the ledger records NEW's own later migration.
+
+    Followed through each later migration this host records in ``repo_root``, to a slot that
+    exists. ``None`` when NEW's slot is there, no row records NEW migrated on, or the chain
+    ends at a slot that does not exist: a missing slot is then reported, never assumed moved.
+    """
+    if (repo_root / ".worktrees" / new).is_dir():
+        return None
+    onward = {
+        row["old"]: (row["new"], Path(row["worktree"]))
+        for row in m._ledger_rows(state)
+        if not m.bookkeeping_row(row)
+        and row.get("repo") == str(repo_root)
+        and all(isinstance(row.get(key), str) for key in ("old", "new", "worktree"))
+    }
+    name, seen = new, {new}
+    while name in onward:
+        name, slot = onward[name]
+        if name in seen:
+            return None
+        seen.add(name)
+        if slot.is_dir():
+            return name, slot
+    return None
+
+
 def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str]:
-    """:func:`replan`, and the live-session refusal a writing run would raise, or ``""``."""
+    """:func:`replan`, and the live-session refusal a writing run would raise, or ``""``.
+
+    A pair whose NEW slot :func:`moved_on` has nothing left to plan in that slot.
+    """
+    state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
+    if moved_on(new, repo_root, state) is not None:
+        return {}, ""
     passed = {key: value for key, value in kwargs.items() if key in _REPLAN_KWARGS}
     try:
         plan = m.finish_session(repo_root, old, new, dry_run=True, record_finish=False, **passed)
@@ -62,12 +95,12 @@ def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dic
 
 
 def _bookkeeping(row: dict) -> bool:
-    """Whether a ledger row only notes a delivered context or the transcripts a run recorded.
+    """Whether a ledger row only notes a delivered context, recorded transcripts or archived files.
 
-    Neither is a migration, so neither makes a pair pending, as
+    None is a migration, so none makes a pair pending, as
     :func:`ai_cli.session_migrate.pending_finishes` also reads them.
     """
-    return row.get("context_announced") is True or row.get("transcripts_recorded") is True
+    return m.bookkeeping_row(row)
 
 
 def finish_state(old: str, new: str, state: Path) -> str | None:
@@ -153,6 +186,10 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
             f"migration {result.old} -> {result.new} NOT finished: a re-plan still finds {named}; "
             f"run `{finish_command(result.old, result.new, repo_root)}` once they are resolved"
         )
+        return
+    if any(status.startswith("failed:") for status in result.parts.values()):
+        # A part this run failed that a re-plan cannot see, such as a Beads store re-keyed
+        # locally whose publish failed, still leaves the pair unfinished.
         return
     if m._migration_evidence(result.old, result.new, state) and finish_state(result.old, result.new, state) != (
         "verified"

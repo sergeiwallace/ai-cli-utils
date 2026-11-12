@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai sessions wind-down <slug>` stops a running session for a scheduled maintenance window and
+  records the new exit cause `maintenance_wind_down`, so `ai sessions relaunch --boot` brings it
+  back after the next boot. It marks the record first, then stops the session through its
+  wrapper's normal clean exit, which keeps that cause instead of `manual_exit`. `-t/--timeout`
+  bounds the wait and `-d/--dry-run` previews it. A window that ends without a reboot runs
+  `ai sessions relaunch <slug>` for each session it wound down. The new cause is in the default
+  `session_relaunch.causes`; a profile that lists its own causes must add it. Terminal restore
+  treats it like `host_reboot`.
 - `ai -h` and every group's help (`ai sessions -h`, `ai sync -h` and the rest) now print each
   command's complete description, every sentence and paragraph, wrapped under the command name,
   instead of a first sentence cut off with "...". Help uses up to 100 columns on a terminal wider
@@ -59,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrows it to the pair whose OLD, NEW or NEW's first name it is, and a pair whose slot is gone
   reads `partial`. It exits 1 if any pair is partial and 2 on a usage error. `-R/--remote` runs
   the same status on the default remote machine over ssh and prints its rows.
+- `ai migrate-session` publishes each Beads store it re-keyed when the host configures a publish
+  command in `migrate-session-publish.d/beads.toml` (an `argv` naming the `{store}` placeholder).
+  It runs the command once per changed store after the re-key, then re-reads the store: a
+  non-zero exit, or an issue still on the old name, reads `failed` and the run exits 1 with no
+  `finished` row, and the next run of the same pair publishes that store again. A host with no
+  publish command keeps the `publish needed` line, now also in the parts table, and exits 0.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
@@ -101,6 +115,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   log too.
 
 ### Fixed
+
+- `ai migrate-session --finish` now converges when the session already ran under its new name
+  and holds its own copy of something the old name still holds. Before, a resume log or
+  hand-off written under the new name ("resume artifact ... was NOT re-keyed: ... already
+  exists"), or a hook refusing because the new name already has an identity, failed every
+  re-run the same way. The new name's copy is kept; the old name's moves into a dated archive
+  under the state directory (`session-migration-archive/`), is recorded in the migration ledger
+  and is never deleted, and the part reads `archived OLD, NEW kept`. A hook names each file it
+  archived on a `migrate-archived: <path>` line. `-n` plans each archive and moves nothing.
+- `ai migrate-session -s` and `--finish -a` read a recorded pair as complete when its new slot
+  is gone because the ledger records that name's own later migration to a slot that exists,
+  instead of `slot (missing: ...)` forever. A gone slot with no such record still reads missing.
 
 - A migrated session that Claude Code had once run in the background now keeps its new name when
   `ai c NEW -r` resumes it. Claude Code keeps a job record for such a session under

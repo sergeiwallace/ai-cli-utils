@@ -10,11 +10,15 @@ off); an explicit, user-typed `ai quota watch start` always registers.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from process_wait import scaled
 
 from ai_cli import process_manager
 
@@ -172,6 +176,57 @@ def test_given_claude_launch_when_reaper_start_is_scheduled_then_launch_does_not
         stdout=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+_REPLACING_THEN_REAL_REAPER_TESTS = """
+from unittest.mock import Mock
+
+import pytest
+
+from ai_cli import process_manager
+
+REAL_START = process_manager._start_stale_session_reaper_for_launch
+
+
+def test_replaces_the_reaper_start(monkeypatch):
+    monkeypatch.setattr(process_manager, "_start_stale_session_reaper_for_launch", Mock())
+
+
+@pytest.mark.real_reaper_spawn
+def test_then_sees_the_real_reaper_start():
+    assert process_manager._start_stale_session_reaper_for_launch is REAL_START
+"""
+
+
+def test_given_a_test_monkeypatching_the_reaper_start_when_a_real_reaper_test_runs_next_then_it_gets_the_real_function(
+    tmp_path,
+):
+    """The suite's reaper no-op must not outlive the test that overrode it on one worker.
+
+    Run as a real pytest session, in a fixed order, with the suite's own conftest loaded as a
+    plugin: the order xdist and random ordering only reach some of the time.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "test_reaper_order.py").write_text(_REPLACING_THEN_REAL_REAPER_TESTS, encoding="utf-8")
+    tests_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(tests_dir), str(tests_dir.parent / "src"), env.get("PYTHONPATH")])
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:randomly", "-p", "conftest", "-q"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=scaled(120),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout, result.stdout
 
 
 @pytest.mark.real_reaper_spawn

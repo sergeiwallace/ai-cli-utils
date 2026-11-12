@@ -3,13 +3,15 @@
 A ``pollers/<key>__<id>.notified`` marker holds one epoch: when that poller's fault was
 last announced. A session relaunched under its new name before the migration finished
 can leave one under each name. The two say the same thing, so the finish keeps the later
-timestamp under the new name instead of refusing; every other resume artifact found
-under both names still refuses.
+timestamp under the new name instead of refusing. Every other resume artifact found
+under both names keeps NEW's copy and archives OLD's (``test_session_migrate_converge``),
+a marker that holds no epoch included.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import test_session_migrate
@@ -26,6 +28,12 @@ def _ledger_finished(slot) -> list[dict]:
     path = slot["state"] / "session-migrations.jsonl"
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     return [row for row in rows if row.get("finished")]
+
+
+def _archived(slot) -> list[dict]:
+    path = slot["state"] / "session-migrations.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [entry for row in rows if row.get("archive_recorded") for entry in row["archived"]]
 
 
 def _part(out: str, name: str) -> str:
@@ -84,7 +92,7 @@ def test_given_a_notified_marker_under_both_names_when_finished_then_the_later_t
     assert _ledger_finished(slot) != []
 
 
-def test_given_a_notified_marker_and_an_outbox_file_under_both_names_when_finished_then_only_the_outbox_conflicts(
+def test_given_a_notified_marker_and_an_outbox_file_under_both_names_when_finished_then_only_the_outbox_is_archived(
     slot, stores
 ):
     _moved_but_unfinished(slot, stores)
@@ -99,30 +107,31 @@ def test_given_a_notified_marker_and_an_outbox_file_under_both_names_when_finish
 
     assert _everything(slot) == before
     assert f"pollers/{old_marker.name} -> {new_marker.name} merged" in out
-    assert f"resume artifact {old_outbox} was NOT re-keyed: {new_outbox} already exists" in err
-    assert f"{old_marker} was NOT re-keyed" not in err
+    assert f"resume: {old_outbox} (archive OLD, keep NEW: " in out
+    assert "NOT re-keyed" not in out + err
 
     code, out, err = _finish(slot["repo"], "-y")
 
-    assert code == 1, out + err
-    assert not old_marker.exists()
+    assert code == 0, out + err
+    assert not old_marker.exists() and not old_outbox.exists()
     assert new_marker.read_text(encoding="utf-8") == f"{LATER}\n"
-    assert old_outbox.read_text(encoding="utf-8") == "a later hand-off\n"
     assert new_outbox.read_text(encoding="utf-8") == "hand-off\n"
-    resume = _part(out, "resume")
-    assert resume.startswith("failed: ") and str(old_outbox) in resume, resume
-    assert str(old_marker) not in resume
-    assert _ledger_finished(slot) == []
+    [archived] = _archived(slot)
+    assert archived["source"] == str(old_outbox)
+    assert Path(archived["archive"]).read_text(encoding="utf-8") == "a later hand-off\n"
+    assert _part(out, "resume") == "done now"
+    assert _ledger_finished(slot) != []
 
 
-def test_given_a_notified_marker_that_holds_no_epoch_when_finished_then_it_still_conflicts(slot, stores):
+def test_given_a_notified_marker_that_holds_no_epoch_when_finished_then_old_is_archived_not_merged(slot, stores):
     _moved_but_unfinished(slot, stores)
     old_marker, new_marker = _markers(slot, "not a timestamp\n", f"{EARLIER}\n")
 
     code, out, err = _finish(slot["repo"], "-y")
 
-    assert code == 1, out + err
-    assert old_marker.read_text(encoding="utf-8") == "not a timestamp\n"
+    assert code == 0, out + err
+    assert not old_marker.exists()
     assert new_marker.read_text(encoding="utf-8") == f"{EARLIER}\n"
-    assert f"resume artifact {old_marker} was NOT re-keyed: {new_marker} already exists" in err
-    assert _part(out, "resume").startswith("failed: ")
+    [archived] = _archived(slot)
+    assert Path(archived["archive"]).read_text(encoding="utf-8") == "not a timestamp\n"
+    assert _part(out, "resume") == "done now"

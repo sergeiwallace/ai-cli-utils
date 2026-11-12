@@ -10,10 +10,17 @@ migration by dropping a TOML file into ``<config dir>/migrate-session.d/``::
 ``argv + ["--old", OLD, "--new", NEW]``: with ``--dry-run`` while it plans (a
 non-zero exit refuses the whole migration before anything is written, except under
 ``--finish``, where only that hook is skipped and reported as pending), then
-without it after every core move (a non-zero exit is reported as ``FAILED``).
+without it after every core move (a non-zero exit is reported as ``FAILED``). A live
+run that keeps NEW's own copy and archives OLD's prints ``migrate-archived: <path>`` for
+each file it archived, and the migration ledger records it.
 ``adopt-session`` runs the same hooks under the same contract whenever an adoption
 changes the session's name. The contract is documented in
 ``docs/reference/migrate-session-hooks.md``.
+
+A host can also name the command that publishes a Beads store the migration re-keyed,
+in ``<config dir>/migrate-session-publish.d/beads.toml``::
+
+    argv = ["python3", "~/bin/publish_store.py", "--repo", "{store}"]
 """
 
 from __future__ import annotations
@@ -27,6 +34,9 @@ from pathlib import Path
 from . import config as _config
 
 HOOKS_DIRNAME = "migrate-session.d"
+PUBLISH_DIRNAME = "migrate-session-publish.d"
+BEADS_PUBLISH_FILE = "beads.toml"
+STORE_PLACEHOLDER = "{store}"
 
 
 class HookConfigError(ValueError):
@@ -90,14 +100,48 @@ def load_hooks(directory: Path | None = None) -> list[Hook]:
     return hooks
 
 
-def _command(hook: Hook, old: str, new: str, dry_run: bool) -> list[str]:
-    program, *args = hook.argv
+def _program(argv: tuple[str, ...]) -> list[str]:
+    program, *args = argv
     if program.startswith("~"):
         program = str(Path(program).expanduser())
     # Windows cannot execute a .py file directly, so a Python program runs under the
     # interpreter running `ai`, on every OS alike.
     prefix = [sys.executable] if program.lower().endswith(".py") else []
-    return [*prefix, program, *args, "--old", old, "--new", new, *(["--dry-run"] if dry_run else [])]
+    return [*prefix, program, *args]
+
+
+def _command(hook: Hook, old: str, new: str, dry_run: bool) -> list[str]:
+    return [*_program(hook.argv), "--old", old, "--new", new, *(["--dry-run"] if dry_run else [])]
+
+
+def load_beads_publish(directory: Path | None = None) -> tuple[str, ...] | None:
+    """The configured Beads publish argv, or None when this host configures none.
+
+    Read at call time from ``<config dir>/migrate-session-publish.d/beads.toml``. Raises
+    :class:`HookConfigError` for a file that is not TOML, has no ``argv`` list of strings,
+    or never names the ``{store}`` placeholder.
+    """
+    path = (
+        directory if directory is not None else _config.get_xdg_config_home() / PUBLISH_DIRNAME
+    ) / BEADS_PUBLISH_FILE
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise HookConfigError(f"publish file {path} is not readable TOML: {exc}") from exc
+    argv = data.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv) or not argv[0]:
+        raise HookConfigError(f"publish file {path}: field 'argv' must be a non-empty list of strings")
+    if not any(STORE_PLACEHOLDER in arg for arg in argv):
+        raise HookConfigError(f"publish file {path}: field 'argv' must name the {STORE_PLACEHOLDER} placeholder")
+    return tuple(argv)
+
+
+def publish_command(argv: tuple[str, ...], store: Path) -> list[str]:
+    """``argv`` with every ``{store}`` replaced by the store's directory, ready to run."""
+    return _program(tuple(arg.replace(STORE_PLACEHOLDER, str(store)) for arg in argv))
 
 
 def run_hook(hook: Hook, old: str, new: str, *, dry_run: bool, cwd: Path | None = None) -> HookRun:
@@ -155,6 +199,15 @@ def plan_hooks(
 def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
     """Run every planned hook live, in order; one failure never stops the rest."""
     return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks if hook.status != "done"]
+
+
+#: The line a live run prints once per file it archived, its path after the prefix.
+ARCHIVED_PREFIX = "migrate-archived: "
+
+
+def archived_paths(run: HookRun) -> dict[str, str]:
+    """``{archived path: its line}`` for each ``migrate-archived:`` line of a live run."""
+    return {line.removeprefix(ARCHIVED_PREFIX).strip(): line for line in run.lines if line.startswith(ARCHIVED_PREFIX)}
 
 
 def refusal_warning(run: HookRun) -> str:

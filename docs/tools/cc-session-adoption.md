@@ -527,7 +527,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
 | `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
-| Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing: each store it changed is named `publish needed`, and publishing it is a separate step. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
+| Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing. A host that configures a publish command (`migrate-session-publish.d/beads.toml`, see `docs/reference/migrate-session-hooks.md`) has it run once per changed store and the store re-read, and a failed publish or an issue still on OLD exits 1; without one, each store it changed is named `publish needed`. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
 | State of other tools | each hook in `migrate-session.d/` is planned with `--dry-run` (a refusal refuses the migration; under `--finish` it only skips that hook, reported as pending) and run after the core moves ([hook contract](../reference/migrate-session-hooks.md)) |
 
 ### Per-session state found left under OLD (AI-CLI-2oes)
@@ -559,7 +559,20 @@ locks; held-output and memory files; the task namespace and resume tree; every h
 and refuses while `.worktrees/OLD` is still a registered slot or either session is
 running; stop a running one with `ai sessions stop NAME` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
-other parts and hooks still run, and the command exits 1 so it is re-run. `-n` prints its
+other parts and hooks still run, and the command exits 1 so it is re-run.
+
+When NEW already holds its own copy of something OLD still holds, NEW's copy is kept,
+since it belongs to the session now running under NEW, and OLD's is neither merged
+into it nor deleted. It moves into a dated archive under the state directory,
+`session-migration-archive/<UTC date>/OLD-to-NEW/<part>/`, never over a file already
+archived there, and a ledger row with `"archive_recorded": true` lists each archived
+file as `{part, source, archive, kept}`. The part then counts as done, its line reading
+`archived OLD, NEW kept`, so a second `--finish` finds nothing left. The core does this
+for a resume artifact (a `logs/NEW.log` NEW wrote while `logs/OLD.log` was still
+there); a hook does it for its own state and names each file it archived on a
+`migrate-archived: <path>` line (`docs/reference/migrate-session-hooks.md`), which the
+same ledger row records. `-n` plans each archive as `archive OLD, keep NEW` and moves
+nothing. `-n` prints its
 plan with nothing written, and runs while either session is live: its first line,
 `live session: ...`, names the running session and says a writing run refuses until it
 is stopped with `ai sessions stop NAME`. The writing run keeps that refusal and exits 2
@@ -657,7 +670,10 @@ myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | partial | slot lock (woul
 
 A pair reads `complete` when its re-plan finds nothing left, and `partial` with each
 part left otherwise; a pair whose repo or `.worktrees/NEW` is gone reads `partial`
-with `slot (missing: ...)`. `-a/--all` re-plans the verified pairs too. A NAME
+with `slot (missing: ...)`, unless the ledger records NEW's own later migration in the
+same repo to a slot that exists (followed through each later rename). Such a pair reads
+`complete`, its parts column naming the slot it moved on to and the ledger that says so;
+its OLD-keyed parts are not re-planned, since there is no NEW slot to plan them in. `-a/--all` re-plans the verified pairs too. A NAME
 (`--status NAME`, or OLD and NEW) narrows the listing to the pairs it names, matched
 as `--finish` matches one name: the pair's OLD, its NEW or NEW's first name; a NAME
 matching no pair exits 2. It runs while NEW is live, since its plan is a `--finish`

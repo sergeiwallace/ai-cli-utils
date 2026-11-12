@@ -25,7 +25,8 @@ tasks, memory and resume hand-off:
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``adopt-session``
   uses for the same two; the old namespace directory is removed once only its
-  bookkeeping remains;
+  bookkeeping remains. A resume artifact NEW already holds its own copy of keeps NEW's
+  copy: OLD's moves into the dated archive (:func:`archive_dir`), recorded in the ledger;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
   session maps, the iTerm2 restore registry and the ``launch-logs/`` files of a launch
@@ -870,8 +871,18 @@ MIGRATION_LEDGER = "session-migrations.jsonl"
 #: row whose ``format`` is higher than this build's is running a build too old for that record.
 MIGRATION_FORMAT = 1
 
+#: Where a migration files OLD's copy of an artifact NEW already holds its own copy of, under
+#: the state directory: ``<archive>/<UTC date>/<old>-to-<new>/<part>/...``. NEW's copy is
+#: authoritative, as the live session's; OLD's is neither merged into it nor deleted.
+MIGRATION_ARCHIVE = "session-migration-archive"
+
+#: The action of a planned archive, and of one done; the second is the part's evidence.
+ARCHIVE_PLANNED = "archive OLD, keep NEW"
+ARCHIVE_DONE = "archived OLD, NEW kept"
+
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
+_PUBLISH_TIMEOUT = 600
 
 #: The argv prefix that runs bd.
 BD_COMMAND: tuple[str, ...] = ("bd",)
@@ -905,6 +916,8 @@ class _Store:
     comments: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
     state: Path | None = None
+    #: Re-keyed by an earlier run of this pair that no publish has confirmed since.
+    unpublished: bool = False
 
 
 def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
@@ -917,36 +930,40 @@ def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
     return found
 
 
+def _held_by(path: Path, old: str) -> tuple[list[str], str | None]:
+    """The store's non-closed issues assigned to exactly ``old``, or why they could not be read."""
+    try:
+        listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], _one_line(str(exc))
+    if listed.returncode != 0:
+        return [], _one_line(listed.stderr or f"bd exited {listed.returncode}")
+    try:
+        rows = json.loads(listed.stdout or "null")
+    except json.JSONDecodeError as exc:
+        return [], f"bd list printed no JSON ({exc})"
+    if not isinstance(rows, list):
+        return [], "bd list printed no issue list"
+    return [
+        str(row["id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
+    ], None
+
+
 def _plan_beads(old: str, new: str, stores: list[Path], state: Path) -> list[_Store]:
     """Read each store's issues held by ``old``: exactly that name, any status but closed."""
-    from .session_migrate_issues import inspect_comments, intents
+    from .session_migrate_issues import inspect_comments, intents, unpublished
 
     recorded = intents(state, old, new)
+    waiting = unpublished(state, old, new)
     planned: list[_Store] = []
     for path in dict.fromkeys([*stores, *recorded]):
-        store = _Store(path, state=state)
+        store = _Store(path, state=state, unpublished=path in waiting)
         planned.append(store)
-        try:
-            listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            store.error = _one_line(str(exc))
+        store.issues, store.error = _held_by(path, old)
+        if store.error is not None:
             continue
-        if listed.returncode != 0:
-            store.error = _one_line(listed.stderr or f"bd exited {listed.returncode}")
-            continue
-        try:
-            rows = json.loads(listed.stdout or "null")
-        except json.JSONDecodeError as exc:
-            store.error = f"bd list printed no JSON ({exc})"
-            continue
-        if not isinstance(rows, list):
-            store.error = "bd list printed no issue list"
-            continue
-        store.issues = [
-            str(row["id"])
-            for row in rows
-            if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
-        ]
         try:
             inspect_comments(store, old, new, recorded.get(path, set()))
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
@@ -983,7 +1000,11 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
     """
     from .session_migrate_issues import note, remember
 
-    for store in [s for s in stores if s.error is None and (s.issues or s.comments)]:
+    try:
+        publish: tuple[str, ...] | Exception | None = _hooks.load_beads_publish()
+    except _hooks.HookConfigError as exc:
+        publish = exc
+    for store in [s for s in stores if s.error is None and (s.issues or s.comments or (s.unpublished and publish))]:
         if store.state is None:
             raise MigrationError(f"missing issue migration intent directory for {store.path}")
         remember(store.state, store.path, old, new, store.issues)
@@ -1012,15 +1033,65 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
                 noted = subprocess.CompletedProcess([], 1, "", str(exc))
             if noted.returncode != 0:
                 result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
-        if changed or comments:
-            result.moves.append(
-                PlannedMove(
-                    "beads store",
-                    str(store.path),
-                    f"{changed} re-keyed, local until the store is published",
-                    "publish needed",
+        if publish is None:
+            if changed or comments:
+                result.moves.append(
+                    PlannedMove(
+                        "beads store",
+                        str(store.path),
+                        f"{changed} re-keyed, local until the store is published",
+                        "publish needed",
+                    )
                 )
-            )
+            continue
+        _publish_store(publish, old, new, store, changed, result)
+
+
+def _publish_store(
+    publish: tuple[str, ...] | Exception, old: str, new: str, store: _Store, changed: int, result: MigrationResult
+) -> None:
+    """Run the configured publish command once for ``store``, then re-read it for issues still on ``old``.
+
+    A refused or failed publish, or an issue still on ``old`` after it, is a ``FAILED`` or
+    ``NOT`` warning, so the run exits 1 and records no ``finished`` row; the next run of the
+    same pair publishes the store again.
+    """
+    from .session_migrate_issues import remember_published
+
+    where = f"beads store {store.path}"
+    if isinstance(publish, Exception):
+        result.moves.append(PlannedMove("beads store", str(store.path), _one_line(str(publish)), "publish failed"))
+        result.warnings.append(f"{where} publish FAILED: {_one_line(str(publish))}")
+        return
+    env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+    try:
+        ran = subprocess.run(
+            _hooks.publish_command(publish, store.path),
+            cwd=store.path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=_PUBLISH_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        ran = subprocess.CompletedProcess([], 127, "", str(exc))
+    if ran.returncode != 0:
+        why = _one_line(ran.stderr or ran.stdout or "(no output)")
+        result.moves.append(PlannedMove("beads store", str(store.path), f"exit {ran.returncode}", "publish failed"))
+        result.warnings.append(
+            f"{where} publish FAILED (exit {ran.returncode}): {why} -- re-run the same migrate-session command"
+        )
+        return
+    if store.state is not None:
+        remember_published(store.state, store.path, old, new)
+    left, error = _held_by(store.path, old)
+    if error is not None:
+        result.warnings.append(f"{where} was published but FAILED to re-read: {error}")
+    elif left:
+        result.warnings.append(f"{where} was published but still holds {', '.join(left)} on {old}: NOT converged")
+    result.moves.append(PlannedMove("beads store", str(store.path), f"{changed} re-keyed", "published"))
 
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
@@ -1037,6 +1108,43 @@ def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: o
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
         ledger.flush()
         os.fsync(ledger.fileno())
+
+
+def archive_dir(state: Path, old: str, new: str) -> Path:
+    """Today's archive directory for the pair: see :data:`MIGRATION_ARCHIVE`."""
+    return state / MIGRATION_ARCHIVE / datetime.now(UTC).strftime("%Y-%m-%d") / f"{old}-to-{new}"
+
+
+def _archive_target(directory: Path, name: str) -> Path:
+    """``directory / name``, or the first ``name.N`` free there: an archived file is never replaced."""
+    target = directory / name
+    index = 1
+    while os.path.lexists(target):
+        target = directory / f"{name}.{index}"
+        index += 1
+    return target
+
+
+def _archive_file(source: Path, directory: Path) -> Path:
+    """Move ``source`` into ``directory`` under a free name; returns where it now is."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = _archive_target(directory, source.name)
+    shutil.move(str(source), str(target))
+    return target
+
+
+def _record_archived(state: Path, old: str, new: str, repo_root: Path, archived: list[dict]) -> None:
+    """One bookkeeping row naming each file this run archived: ``{part, source, archive, kept}``."""
+    if archived:
+        _append_ledger(state, old, new, repo_root, archived=archived, archive_recorded=True)
+
+
+def bookkeeping_row(row: dict) -> bool:
+    """Whether a ledger row only notes a delivered context, the transcripts a run recorded or what it archived.
+
+    None of them is a migration, so none makes a pair pending or recorded.
+    """
+    return any(row.get(key) is True for key in ("context_announced", "transcripts_recorded", "archive_recorded"))
 
 
 def _record_migration(
@@ -1132,10 +1240,7 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
     """Whether this host already records a migration from ``old`` to ``new``."""
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
     return any(
-        row.get("old") == old
-        and row.get("new") == new
-        and not row.get("finished")
-        and row.get("transcripts_recorded") is not True
+        row.get("old") == old and row.get("new") == new and not row.get("finished") and not bookkeeping_row(row)
         for row in _ledger_rows(state)
     )
 
@@ -1236,7 +1341,7 @@ def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str,
         old, repo = row.get("old"), row.get("repo")
         if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
             continue
-        if row.get("context_announced") is True or row.get("transcripts_recorded") is True:
+        if bookkeeping_row(row):
             continue
         if row.get("finished") is True:
             pending.pop(old, None)
@@ -1572,7 +1677,7 @@ def _start_session(
         if warning:
             result.warnings.append(warning)
 
-    _apply_task_rekey(old, new, home, result, state)
+    _apply_task_rekey(old, new, home, result, state, repo_root)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1580,7 +1685,7 @@ def _start_session(
         _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
-    _run_live_hooks(hooks, old, new, repo_root, result)
+    _run_live_hooks(hooks, old, new, repo_root, result, state)
     _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     _apply_beads(old, new, beads, result)
 
@@ -1594,7 +1699,11 @@ def _start_session(
 
 
 def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
-    """Plan the task-namespace and resume-tree rekey, and turn every planned conflict into a warning."""
+    """Plan the task-namespace and resume-tree rekey.
+
+    A namespace conflict is a warning. A resume artifact NEW already holds its own copy of is
+    planned as an archive of OLD's copy (:data:`ARCHIVE_PLANNED`), never a re-key over NEW's.
+    """
     old_ns = home / "tasks" / old
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
@@ -1613,11 +1722,14 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, st
     for item in result.moves:
         if item.action == "conflict":
             result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
+    archive = archive_dir(state, old, new) / "resume"
     for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
-        result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+        target = _archive_target(archive / conflict.source.parent.name, conflict.source.name)
+        result.moves.append(PlannedMove("resume", str(conflict.source), str(target), ARCHIVE_PLANNED))
+    result.resume_moves = [m for m in result.resume_moves if m.action != "conflict"]
 
 
-def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
+def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path, repo_root: Path) -> None:
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
     from .session_migrate_tasks import apply
@@ -1626,6 +1738,17 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
     _tasks, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[], resume_keys=[old], claude_home=home, dry_run=False
     )
+    archive = archive_dir(state, old, new) / "resume"
+    archived = []
+    for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
+        target = _archive_file(conflict.source, archive / conflict.source.parent.name)
+        archived.append(
+            {"part": "resume", "source": str(conflict.source), "archive": str(target), "kept": str(conflict.dest)}
+        )
+    result.resume_moves = [m for m in result.resume_moves if m.action != "conflict"]
+    result.moves = [m for m in result.moves if m.action != ARCHIVE_PLANNED]
+    result.moves += [PlannedMove("resume", row["source"], row["archive"], ARCHIVE_DONE) for row in archived]
+    _record_archived(state, old, new, repo_root, archived)
     if result.task_moves or hwm:
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
         new_ns.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1642,15 +1765,23 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
             old_ns.rmdir()
 
 
-def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult) -> None:
+def _run_live_hooks(
+    hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult, state: Path
+) -> None:
     result.moves += [
         PlannedMove(f"hook {hook.name}", "", "", "already done") for hook in hooks if hook.status == "done"
     ]
+    archived = []
     for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
-        result.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "apply"))
-        result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
+        kind = f"hook {run.hook.name}"
+        result.moves.append(PlannedMove(kind, "", "", "apply"))
+        paths = _hooks.archived_paths(run)
+        result.moves += [PlannedMove(kind, line, "", "report") for line in run.lines if line not in paths.values()]
+        result.moves += [PlannedMove(kind, path, "", ARCHIVE_DONE) for path in paths]
+        archived += [{"part": kind, "archive": path} for path in paths]
         if not run.ok:
             result.warnings.append(_hooks.failure_warning(run))
+    _record_archived(state, old, new, repo_root, archived)
 
 
 def finish_session(
@@ -1802,7 +1933,7 @@ def finish_session(
             str(new_wt),
         )
     _remove_stale_locks(lock_moves)
-    _apply_task_rekey(old, new, home, result, state)
+    _apply_task_rekey(old, new, home, result, state, repo_root)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1810,7 +1941,7 @@ def finish_session(
         _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
-    _run_live_hooks(hooks, old, new, repo_root, result)
+    _run_live_hooks(hooks, old, new, repo_root, result, state)
     _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result)

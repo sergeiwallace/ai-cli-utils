@@ -9,8 +9,9 @@ from pathlib import Path
 JOURNAL = "session-migration-issues.jsonl"
 
 
-def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
-    found: dict[Path, set[str]] = {}
+def _rows(state: Path, old: str, new: str) -> list[dict]:
+    """The pair's journal rows that name a store, in the order they were written."""
+    rows: list[dict] = []
     path = state / JOURNAL
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -18,23 +19,51 @@ def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(row, dict) or row.get("old") != old or row.get("new") != new:
-                continue
-            if isinstance(row.get("store"), str) and isinstance(row.get("issues"), list):
-                found.setdefault(Path(row["store"]), set()).update(i for i in row["issues"] if isinstance(i, str))
+            if (
+                isinstance(row, dict)
+                and row.get("old") == old
+                and row.get("new") == new
+                and isinstance(row.get("store"), str)
+            ):
+                rows.append(row)
+    return rows
+
+
+def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
+    found: dict[Path, set[str]] = {}
+    for row in _rows(state, old, new):
+        if isinstance(row.get("issues"), list):
+            found.setdefault(Path(row["store"]), set()).update(i for i in row["issues"] if isinstance(i, str))
     return found
 
 
-def remember(state: Path, store: Path, old: str, new: str, issues: list[str]) -> None:
-    missing = set(issues) - intents(state, old, new).get(store, set())
-    if not missing:
-        return
+def unpublished(state: Path, old: str, new: str) -> set[Path]:
+    """Each store whose last re-key intent has no later ``published`` row."""
+    pending: dict[Path, bool] = {}
+    for row in _rows(state, old, new):
+        if isinstance(row.get("issues"), list):
+            pending[Path(row["store"])] = True
+        elif row.get("published") is True:
+            pending[Path(row["store"])] = False
+    return {store for store, waiting in pending.items() if waiting}
+
+
+def _append(state: Path, row: dict) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"old": old, "new": new, "store": str(store), "issues": sorted(missing)}
     with (state / JOURNAL).open("a", encoding="utf-8") as out:
         out.write(json.dumps(row) + "\n")
         out.flush()
         os.fsync(out.fileno())
+
+
+def remember(state: Path, store: Path, old: str, new: str, issues: list[str]) -> None:
+    missing = set(issues) - intents(state, old, new).get(store, set())
+    if missing:
+        _append(state, {"old": old, "new": new, "store": str(store), "issues": sorted(missing)})
+
+
+def remember_published(state: Path, store: Path, old: str, new: str) -> None:
+    _append(state, {"old": old, "new": new, "store": str(store), "published": True})
 
 
 def note(old: str, new: str) -> str:
