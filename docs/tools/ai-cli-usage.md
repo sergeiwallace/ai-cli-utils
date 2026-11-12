@@ -86,7 +86,7 @@ Behaviour is split across focused modules so `main.py` stays thin:
 ### ai c
 
 ```bash
-ai c [N|LABEL|NAME] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
+ai c [N|LABEL|NAME|TITLE] [-r] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
@@ -96,6 +96,19 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   names on, `myrepo-box-review-1` without.
 - `NAME` — a human name this repo already holds on this host reattaches to that session
   (`ai c ada`); a positional name never creates one.
+- `-r`/`--resume`: resume the existing session NAME or TITLE names, or refuse. TITLE is
+  the full title with either suffix style: a first name (`myrepo-box-ada`) or a legacy
+  index from before human names (`myrepo-box-2`, `myrepo-box-chief-1`). A running tmux
+  session is attached. A stopped one, with its worktree or Claude Code transcript still on
+  disk, is relaunched under the same title, which resumes its worktree, branch and
+  conversation. When nothing holds the name, the launch exits 1 before it reserves a name,
+  creates a worktree, branch or transcript, or asks a remote host to allocate one, and
+  lists the closest existing titles and the command that starts a new session. An
+  unreadable name registry refuses with its read error. With `-R`, the remote host answers
+  the same question for its own sessions (`ai c myrepo-box-ada -R -r`); the chief of staff
+  resumes with `ai cos -r` or `ai cos -R -r`. With `-d`, the plan is the attach, the
+  relaunch or the refusal; a remote dry run contacts no host, so the remote host decides
+  at launch. Design: [session-resume-by-name.md](../designs/session-resume-by-name.md).
 - `-N`/`--name NAME` — name the new session with this first name. It is checked like a picked
   one; a name not yet in the name database asks to be added. Never passed to the engine.
 - `-w`/`--with-name`, `-u`/`--no-name` — with a label, keep or drop the first name for this launch.
@@ -135,6 +148,9 @@ The name records which machine launched the session. `ai c <name> -R` attaches t
 session of that name on the remote host whichever way it was launched, so a session the
 remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
 `c-r-` session; only a slot with no live session is allocated as `c-r-`.
+Without `-r`, a positional word that is not an existing title labels a NEW session, and the
+launch prints `new session <title>` before it creates a worktree or a tmux session, so a
+mistyped resume (`ai c cos` meant as `ai c <title> -r`) is visible.
 
 Every alias lookup refreshes the local host identity before naming, including engine
 launches, `ai cos`, remote allocation, migration, audit labels and name commands.

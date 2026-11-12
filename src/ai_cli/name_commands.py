@@ -424,7 +424,11 @@ def list_names_command(as_json: bool) -> None:
     if as_json:
         _out.raw(Untagged.JSON, json.dumps([{**row, "running": running(row)} for row in rows], sort_keys=True))
         return
-    if not rows:
+    from .session_locate import unregistered_sessions
+
+    held = {str(row.get("title")) for row in rows if row.get("title")}
+    unregistered = unregistered_sessions(_projects_root(), held)
+    if not rows and not unregistered:
         _out.emit(Tag.NAMES, "list", "no names are held")
         return
     lines = []
@@ -433,6 +437,13 @@ def list_names_command(as_json: bool) -> None:
         lines.append(
             f"{row['token']:<6} {row.get('title') or '-'!s:<32} {row.get('machine')!s:<16} "
             f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {row.get('reserved_at')}{state}"
+        )
+    # Sessions named before the registry hold no row, so they are listed from this
+    # host's tmux and worktrees, each with the command that resumes it.
+    for session in unregistered:
+        state = "running" if session["tmux"] else "stopped"
+        lines.append(
+            f"{'-':<6} {session['title']:<32} {host:<16} {'-':<12} {'no name':<8} {state}; {session['resume']}"
         )
     _out.emit(Tag.NAMES, "list", "\n".join(lines))
 
@@ -493,8 +504,8 @@ def locate_session_command(query: str, as_json: bool) -> None:
     located = session_locate.locate(registry, query.lower(), _host(), projects_root=_projects_root())
     if as_json:
         _out.raw(Untagged.JSON, json.dumps(located.as_json(), sort_keys=True))
-        sys.exit(0 if located.row is not None else 1)
-    if located.row is None:
+        sys.exit(0 if located.row is not None or located.local is not None else 1)
+    if located.row is None and located.local is None:
         _out.error(Tag.NAMES, "locate", f"no session holds {query}; `ai list-names` lists every held name")
         sys.exit(1)
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))

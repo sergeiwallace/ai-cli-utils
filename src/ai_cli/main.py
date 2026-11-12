@@ -2227,7 +2227,7 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal allocate-session-name <engine> <project_prefix> <name>",
+                "Usage: ai internal allocate-session-name <engine> <project_prefix> <name> [--resume]",
                 err=True,
             )
             sys.exit(1)
@@ -2240,6 +2240,32 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
         naming_prefix = launch_naming.prefix
+        if "--resume" in argv[4:]:
+            # A resume names an existing session on this host, or nothing: it never
+            # reserves a name, so a NAME no session holds is refused here rather than
+            # minted and then "resumed" by the launch that follows.
+            project_dir = _config._find_project_dir(project) if project else None
+            try:
+                repo_root = project_dir if project_dir and project_dir.is_dir() else _session.detect_repo_root()
+                target = _resolve_resume_target(
+                    engine,
+                    naming_prefix,
+                    project_prefix,
+                    name,
+                    is_remote=True,
+                    bare=not use_tmux,
+                    repo_root=Path(repo_root) if repo_root else None,
+                    reporter=_launch_reporter.active(),
+                )
+            except (RuntimeError, _session.SessionSlotAmbiguityError) as exc:
+                _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+                sys.exit(1)
+            if target.session:
+                session_id, ai_name = target.session, _session._session_slot_name(engine, target.session)
+            else:
+                session_id, ai_name = _session_id(engine, target.title, True), target.title
+            _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
+            sys.exit(0)
         # The remote host names and reserves the session, so the row's machine is the
         # host that can see the worktree and release the name.
         session_id, ai_name = _resolve_session_identity(
@@ -3978,32 +4004,164 @@ def _title_held_here(snapshot, naming_prefix: str, positional, host: str) -> str
     return None
 
 
-def _held_title_without_session(naming_prefix: str, name: str) -> str | None:
-    """The title this machine holds for ``name`` here, for -r to relaunch when no session runs it."""
+def _held_title(naming_prefix: str, clean: str):
+    """``(title this machine holds for clean, positional)``; the title is None when no row here holds it.
+
+    Raises :class:`ai_cli.name_registry.RegistryError` when the registry cannot be read:
+    a resume must refuse on that, never read it as "nothing is held".
+    """
     from . import name_registry as _names
     from . import session_title
 
-    try:
-        registry = _names.discover().registry
-    except _names.RegistryError:
-        return None
+    registry = _names.discover().registry
     if registry is None:
-        return None
+        return None, None
     try:
         snapshot = registry.snapshot()
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
-    positional = session_title.classify_positional(
-        _session._slot_name(name, naming_prefix), _names.known_names(registry)
-    )
+    positional = session_title.classify_positional(clean, _names.known_names(registry))
     if positional.kind != "title" or positional.name is None:
-        return None
+        return None, positional
     host = _session_naming.host_id()
     title = _session_naming.compose_session_name(naming_prefix, positional.value)
     row = snapshot.rows.get(positional.name) or {}
     if row.get("title") == title and row.get("machine") == host:
+        return title, positional
+    return _title_held_here(snapshot, naming_prefix, positional, host), positional
+
+
+@dataclass(frozen=True)
+class _ResumeTarget:
+    """What ``-r NAME`` reaches: a running tmux session to attach, or a stopped title to relaunch."""
+
+    session: str = ""
+    title: str = ""
+
+
+def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str | None:
+    """``title`` as its worktree is named on disk, or as its saved Claude Code transcript is titled.
+
+    A registry row alone is not evidence: the allocator writes one seconds before the
+    session exists, and a resume that trusted it relaunched a name minted for a typo.
+    """
+    if not title or repo_root is None:
+        return None
+    matches = _session._matching_worktrees(Path(repo_root) / _session.WORKTREE_DIR, title)
+    if len(matches) > 1:
+        joined = ", ".join(str(path) for path in matches)
+        raise _session.SessionSlotAmbiguityError(f"ambiguous existing worktrees for {title}: {joined}")
+    if matches:
+        return matches[0].name
+    if engine == "c" and _find_cc_session_candidates_by_title(Path(repo_root), title):
         return title
-    return _title_held_here(snapshot, naming_prefix, positional, host)
+    return None
+
+
+def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path | None") -> list[str]:
+    """Every title a resume could reach here: live tmux sessions and session worktrees of this repository."""
+    titles = set()
+    for session_name in _session._tmux_session_names():
+        title = _session._session_slot_name(engine, session_name)
+        if any(title.casefold().startswith(f"{prefix.casefold()}-") for prefix in prefixes):
+            titles.add(title)
+    if repo_root is not None:
+        with contextlib.suppress(OSError):
+            titles.update(path.name for path in (Path(repo_root) / _session.WORKTREE_DIR).iterdir() if path.is_dir())
+    return sorted(titles)
+
+
+def _resolve_resume_target(
+    engine: str,
+    naming_prefix: str,
+    legacy_prefix: str,
+    name: str,
+    *,
+    is_remote: bool,
+    bare: bool,
+    repo_root: "Path | None",
+    reporter: LaunchReporter,
+) -> _ResumeTarget:
+    """The existing session ``-r NAME`` names, or a refusal that has reserved and created nothing.
+
+    In order: a running tmux session (any suffix style, local or ``-r`` form, the full
+    title or just its slot); then a stopped session, proved by its worktree or transcript,
+    under the title this machine holds for NAME in the registry, the title NAME composes,
+    or NAME's legacy form from before the host alias joined the name. Nothing here writes.
+    """
+    import difflib
+
+    from . import name_registry as _names
+
+    remote_seg = "-r" if is_remote else ""
+    prefix = f"{engine}{remote_seg}-{naming_prefix}-"
+    clean = _session._slot_name(name, naming_prefix) if name else ""
+    # A full tmux name (what the remote allocator hands back) is matched as given; a
+    # title typed in full is reduced to its slot so the prefix is not applied twice.
+    query = name if name and _session.session_name_for(prefix, name) == name else clean
+    if not bare:
+        session = _session.resolve_session(prefix, query)
+        if not session and legacy_prefix.casefold() != naming_prefix.casefold():
+            # Migration window: a session named before the host alias joined the name.
+            session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+        if session:
+            return _ResumeTarget(session=session)
+    wanted = _session_naming.compose_session_name(naming_prefix, clean) if clean else f"{prefix}*"
+    positional = None
+    if clean:
+        try:
+            held, positional = _held_title(naming_prefix, clean)
+        except _names.RegistryError as exc:
+            _naming_exit(
+                reporter,
+                f"cannot resume {name}: the session-name registry cannot be read ({exc}). "
+                "Nothing was reserved or created, and no new name is allocated in its place.",
+                1,
+            )
+        candidates = [held, wanted]
+        if legacy_prefix.casefold() != naming_prefix.casefold():
+            candidates.append(
+                _session_naming.compose_session_name(legacy_prefix, _session._slot_name(name, legacy_prefix))
+            )
+        for candidate in candidates:
+            found = _session_evidence(engine, repo_root, candidate or "")
+            if found:
+                return _ResumeTarget(title=found)
+    host = _session_naming.host_id()
+    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix), repo_root)
+    close = difflib.get_close_matches(wanted, pool, n=5, cutoff=0.6) or pool[:5]
+    holds = "tmux session or worktree" if engine != "c" else "tmux session, worktree or transcript"
+    if positional is not None and positional.kind == "title":
+        new_command = f"ai {engine} --name {positional.name}"
+    else:
+        new_command = f"ai {engine} {name}".rstrip()
+    lines = [
+        f"no session named {wanted} exists on {host}: no {holds} holds it. Nothing was reserved or created.",
+        f"  closest existing sessions here: {', '.join(close)}"
+        if close
+        else f"  no session of this repository exists on {host}",
+        f"  to start a NEW session instead, run `{new_command}` without -r"
+        + (" (with -R, from the machine that launches it)" if is_remote else ""),
+    ]
+    if not is_remote:
+        lines.append(f"  a session on the remote host is resumed with -R: `ai {engine} TITLE -R -r`")
+    _naming_exit(reporter, "\n".join(lines), 1)
+
+
+def _new_session_note(engine: str, name: str, naming_prefix: str, title: str) -> str | None:
+    """The line saying a positional word started a NEW session, when the title is not what was typed.
+
+    ``ai c cos`` meant as a resume and ``ai c cos`` meant as a label look the same; the
+    reserved title (``...-cos-rae``) is the only difference, so it is said before anything
+    is created rather than discovered afterwards.
+    """
+    typed = _session._slot_name(name, naming_prefix) if name else ""
+    if not typed or title.casefold().endswith(typed.casefold()):
+        return None
+    return (
+        f"new session {title}: '{name}' is not the title of an existing session, so it labels a new one; "
+        f"to resume an existing session instead, run `ai {engine} TITLE -r`"
+    )
 
 
 def _reattach_title(
@@ -4534,9 +4692,6 @@ def _do_session_launch(
         else:
             reporter.detail("compact", compact_transport.detail)
 
-    engine_short = engine
-    remote_seg = "-r" if is_remote else ""
-
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
@@ -4700,20 +4855,29 @@ def _do_session_launch(
             remote_pane_session = _request_remote_chief_session(preflight_ssh_args, remote_shell, remote_args or [])
             reporter.phase("session").outcome(f"{remote_pane_session or name} (the remote host selects its chief)")
         else:
-            with reporter.phase("session", "allocating remote session") as _session_phase:
+            # With -r the remote host is asked for the existing session NAME names, and it
+            # refuses rather than reserving one when there is none.
+            _session_step = "finding the remote session to resume" if resume else "allocating remote session"
+            with reporter.phase("session", _session_step) as _session_phase:
                 try:
-                    remote_session_id, _ = _request_remote_session_allocation(
+                    remote_session_id, remote_ai_name = _request_remote_session_allocation(
                         preflight_ssh_args,
                         engine,
                         remote_prefix,
                         name,
                         remote_shell,
-                        [*_naming_cli_args(naming or _NamingRequest()), "--project", remote_project],
+                        [
+                            *_naming_cli_args(naming or _NamingRequest()),
+                            "--project",
+                            remote_project,
+                            *(["--resume"] if resume else []),
+                        ],
                     )
                 except RuntimeError as exc:
                     reporter.error("session", str(exc))
                     sys.exit(1)
-                _session_phase.outcome(f"resolved {remote_session_id}")
+                _new_note = None if resume else _new_session_note(engine, name, remote_prefix, remote_ai_name)
+                _session_phase.outcome(_new_note or f"resolved {remote_session_id}")
         if remote_session_id:
             for _naming_arg in _remote_launch_naming_args(naming or _NamingRequest()):
                 remote_cmd += f" {_naming_arg}"
@@ -4963,7 +5127,6 @@ def _do_session_launch(
         reporter.error("session", str(exc))
         sys.exit(1)
     naming_prefix = launch_naming.prefix
-    prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
 
     worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
 
@@ -4985,9 +5148,51 @@ def _do_session_launch(
             reporter=reporter,
         )
 
-    if dry_run:
+    # -r/--resume NAME reaches an existing session or refuses, and it is decided HERE,
+    # above the dry-run exit and every write: a resume that fell through to naming
+    # reserved a fresh first name for a NAME no session held.
+    resume_target: _ResumeTarget | None = None
+    if resume and replay_recipe is None:
         try:
-            session_id, ai_name = resolve_identity(plan_only=True)
+            _resume_root = _session.detect_repo_root()
+        except RuntimeError:
+            _resume_root = None
+        try:
+            resume_target = _resolve_resume_target(
+                engine,
+                naming_prefix,
+                project_prefix,
+                name,
+                is_remote=is_remote,
+                bare=bare,
+                repo_root=Path(_resume_root) if _resume_root else None,
+                reporter=reporter,
+            )
+        except _session.SessionSlotAmbiguityError as exc:
+            reporter.error("resume", str(exc))
+            sys.exit(1)
+
+    if dry_run:
+        if resume_target is not None and resume_target.session:
+            _out.emit(
+                Tag.PLAN,
+                "plan",
+                "\n".join(
+                    [
+                        "dry run -- nothing was created, started, or reaped.",
+                        f"  engine     {_engine_display_name(engine)}",
+                        f"  action     attach to tmux session {resume_target.session}",
+                        "  created    nothing",
+                    ]
+                ),
+            )
+            return
+        try:
+            session_id, ai_name = (
+                (_session_id(engine, resume_target.title, is_remote), resume_target.title)
+                if resume_target is not None
+                else resolve_identity(plan_only=True)
+            )
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
@@ -5024,38 +5229,24 @@ def _do_session_launch(
     # worktrees requires tmux; the two concerns were only ever coupled by the
     # order of these statements.
 
-    # -r/--resume means "re-attach to the running tmux session". In bare mode
-    # there is no tmux session to attach to, and the engine's own conversation
-    # resume is already applied unconditionally below, so the flag is a no-op
-    # rather than an error.
-    if resume and not bare:
-        session = _session.resolve_session(prefix, name)
-        if not session:
-            # Migration window: a session named before the host alias joined the name.
-            session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
-        # A title this machine holds with no session running it (the session died, or
-        # never started) is relaunched under the same title. A name held by another
-        # machine, or not held at all, is still refused.
-        held_title = None if session or not name else _held_title_without_session(naming_prefix, name)
-        if held_title:
-            reporter.detail("resume", f"no tmux session runs {held_title}; relaunching it under the title it holds")
-        elif not session:
-            reporter.error(
-                "resume",
-                f"no running session to resume: '{_session.session_name_for(prefix, name) if name else prefix + '*'}' "
-                "is not a tmux session on this host; drop -r/--resume to start it",
-            )
-            sys.exit(1)
-        else:
-            _session_launch_state.reattach(session)
-            if not is_remote:
-                _track_launch(reporter, kind="local", name=name, session_name=session)
-            reporter.handoff(engine=_engine_display_name(engine), session=session)
-            _resume_suspended_panes(session)
-            if not attach:
-                _report_detached_launch(session, reporter)
-                return
-            _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
+    # -r/--resume attaches to the running tmux session it resolved above. A stopped
+    # session it resolved is relaunched under its own title below, which resumes its
+    # worktree and conversation; in bare mode that relaunch is the only form.
+    if resume_target is not None and resume_target.title:
+        reporter.phase("resume").outcome(
+            f"no tmux session runs {resume_target.title}; relaunching it from its worktree and conversation"
+        )
+    if resume_target is not None and resume_target.session:
+        session = resume_target.session
+        _session_launch_state.reattach(session)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session)
+        reporter.handoff(engine=_engine_display_name(engine), session=session)
+        _resume_suspended_panes(session)
+        if not attach:
+            _report_detached_launch(session, reporter)
+            return
+        _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -5067,6 +5258,8 @@ def _do_session_launch(
         if replay_recipe is not None:
             session_id = replay_recipe["session_name"]
             ai_name = session_id.removeprefix(f"{engine}-").removeprefix("r-")
+        elif resume_target is not None:
+            session_id, ai_name = _session_id(engine, resume_target.title, is_remote), resume_target.title
         else:
             session_id, ai_name = resolve_identity(plan_only=False)
     except _session.SessionSlotAmbiguityError as exc:
@@ -5085,7 +5278,12 @@ def _do_session_launch(
         is_remote=is_remote,
         reporter=reporter,
     )
-    reporter.phase("session").outcome(f"resolved {ai_name}")
+    _new_note = (
+        _new_session_note(engine, name, naming_prefix, ai_name)
+        if replay_recipe is None and resume_target is None
+        else None
+    )
+    reporter.phase("session").outcome(_new_note or f"resolved {ai_name}")
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched.
     _finish_recorded_migrations(ai_name, reporter, allow_partial=allow_partial_migration)
@@ -6064,7 +6262,15 @@ def _session_options(func):
     """Decorator that adds the shared session-launch options."""
     func = click.pass_context(func)
     func = click.argument("name", required=False, default="")(func)
-    func = click.option("-r", "--resume", is_flag=True, help="Resume an existing session")(func)
+    func = click.option(
+        "-r",
+        "--resume",
+        is_flag=True,
+        help=(
+            "Resume the existing session NAME names (its title, first name or index; running or stopped). "
+            "Refuses, creating nothing, when no session holds NAME"
+        ),
+    )(func)
     func = click.option("-o", "--once", is_flag=True, help="Run once without tmux auto-resume loop")(func)
     func = click.option("-b", "--bare", is_flag=True, help="Run bare tool without tmux at all")(func)
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
@@ -6545,7 +6751,12 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
         "--finish -y` would, and one recorded finished is re-planned. If any is still partial, "
         "the launch is refused: it starts nothing, prints the parts left and the --finish "
-        "command, and exits 1. -P/--allow-partial-migration starts the session anyway."
+        "command, and exits 1. -P/--allow-partial-migration starts the session anyway.\n\n"
+        "Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one "
+        "on the remote host. TITLE is the session's title, ending in a first name "
+        "(myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. "
+        "Without -r, a NAME that is not an existing title labels a NEW session, and the "
+        "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`."
     ),
 )
 @_session_options
