@@ -8759,6 +8759,8 @@ def _print_retirement(result) -> None:
             "retire",
             f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}",
         )
+    if result.session_rows:
+        _out.emit(Tag.RETIRE, "retire", f"  session registry: drop {result.session_rows} row(s) for {result.name}")
     _out.emit(Tag.RETIRE, "retire", f"  ledger: append to {result.ledger}")
     if result.project_dir is not None:
         _out.emit(Tag.RETIRE, "retire", f"  Claude Code project dir left in place: {result.project_dir}")
