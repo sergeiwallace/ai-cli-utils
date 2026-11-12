@@ -3950,7 +3950,7 @@ def _resolve_session_identity(
         return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
-    except (_names.NoNameListError, _names.PolicyUnknownError) as exc:
+    except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
         _naming_exit(reporter, str(exc), 1)
     except _session_naming.NamePoolExhaustedError as exc:
         _naming_exit(reporter, str(exc), 1)

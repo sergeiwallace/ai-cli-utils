@@ -97,7 +97,8 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
 - `NAME` — a human name this repo already holds on this host reattaches to that session
   (`ai c ada`); a positional name never creates one.
 - `-N`/`--name NAME` — name the new session with this first name. It is checked like a picked
-  one; a name not yet in the name database asks to be added. Never passed to the engine.
+  one; a name not yet in the name database asks to be added. It need not be approved, but an
+  `excluded` name is refused. A picked name is always an approved one. Never passed to the engine.
 - `-w`/`--with-name`, `-u`/`--no-name` — with a label, keep or drop the first name for this launch.
 - `-S`/`--session-names`, `-I`/`--no-session-names` — use human names or index names for this
   launch, whatever the config says.

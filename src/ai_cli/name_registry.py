@@ -12,6 +12,9 @@ database:
     allocation applies.
 ``available/manual/<name>.json``
     one file per name added by hand.
+``available/status.json``
+    each name's approval status; a name absent from it needs review, and only an
+    approved name is ever picked.
 ``migrations/<old-title>.json``
     one file per rename.
 
@@ -58,6 +61,7 @@ NAMES_DIR = "names"
 NAMES_TXT = "available/names.txt"
 GENERATION_JSON = "available/generation.json"
 MANUAL_DIR = "available/manual"
+STATUS_JSON = "available/status.json"
 MIGRATIONS_DIR = "migrations"
 
 ROW_SCHEMA = 1
@@ -117,6 +121,10 @@ _POLICY_TABLES: dict[str, frozenset[str] | None] = {
 }
 POLICY_SCHEMA = 1
 
+STATUS_SCHEMA = 1
+NAME_STATUSES = ("approved", "needs-review", "excluded")
+DEFAULT_STATUS = "needs-review"
+
 
 class RegistryError(RuntimeError):
     """The registry could not be used for this operation."""
@@ -140,6 +148,10 @@ class PolicyUnknownError(RegistryError):
 
 class NoNameListError(RegistryError):
     """The registry has no usable available-name list."""
+
+
+class NameStatusError(RegistryError):
+    """The registry's name-status record is missing or unreadable, so no name counts as approved."""
 
 
 def utc_now() -> str:
@@ -379,6 +391,28 @@ class Snapshot:
     names: list[str] | None = None
     generation: dict | None = None
     fetched: bool = True
+    statuses: dict[str, dict] | None = None
+    status_problem: str | None = None
+
+    def _require_statuses(self) -> dict[str, dict]:
+        if self.status_problem is not None:
+            raise NameStatusError(
+                f"cannot read the registry's {STATUS_JSON}, so no name is treated as approved: {self.status_problem}"
+            )
+        if self.statuses is None:
+            raise NameStatusError(
+                f"the registry has no {STATUS_JSON}, so no name is approved; approve names with "
+                "`ai set-name-status approved NAME...`"
+            )
+        return self.statuses
+
+    def status_of(self, name: str) -> str:
+        """``name``'s approval status; a name the record does not list needs review."""
+        return self._require_statuses().get(name, {}).get("status", DEFAULT_STATUS)
+
+    def approved(self) -> frozenset[str]:
+        """Every name the status record approves; refuses when the record is missing or unreadable."""
+        return frozenset(name for name, entry in self._require_statuses().items() if entry["status"] == "approved")
 
     @property
     def policy(self) -> dict:
@@ -419,6 +453,8 @@ def parse_tree(files: dict[str, bytes], blobs: dict[str, str], tip: str | None, 
             snapshot.names = [line.strip() for line in data.decode("utf-8").splitlines() if line.strip()]
         elif path == GENERATION_JSON:
             snapshot.generation = json.loads(data)
+        elif path == STATUS_JSON:
+            snapshot.statuses, snapshot.status_problem = parse_statuses(data)
         elif str(parts.parent) == NAMES_DIR and parts.suffix == ".json":
             snapshot.rows[parts.stem] = json.loads(data)
             snapshot.blobs[parts.stem] = blobs.get(path, "")
@@ -427,6 +463,27 @@ def parse_tree(files: dict[str, bytes], blobs: dict[str, str], tip: str | None, 
         elif str(parts.parent) == MIGRATIONS_DIR and parts.suffix == ".json":
             snapshot.migrations[parts.stem] = json.loads(data)
     return snapshot
+
+
+def parse_statuses(data: bytes) -> tuple[dict[str, dict] | None, str | None]:
+    """``(statuses, None)`` from a status record, or ``(None, problem)`` when it cannot be used."""
+    try:
+        record = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+    if not isinstance(record, dict) or record.get("schema") != STATUS_SCHEMA:
+        return None, f"expected an object with schema {STATUS_SCHEMA}"
+    names = record.get("names")
+    if not isinstance(names, dict):
+        return None, "its names is not an object"
+    for name, entry in names.items():
+        if not isinstance(entry, dict) or entry.get("status") not in NAME_STATUSES:
+            return None, f"{name} has no status among {', '.join(NAME_STATUSES)}"
+    return names, None
+
+
+def status_record(statuses: dict[str, dict]) -> bytes:
+    return encode_json({"schema": STATUS_SCHEMA, "names": statuses})
 
 
 def row_path(token: str) -> str:
@@ -677,11 +734,14 @@ class LocalRegistry(Registry):
 
     def _seed(self) -> None:
         available = self.root / NAMES_TXT
-        if available.exists():
-            return
-        available.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(name_list.DATA_DIR / name_list.NAMES_FILE, available)
-        shutil.copyfile(name_list.DATA_DIR / name_list.GENERATION_FILE, self.root / GENERATION_JSON)
+        status = self.root / STATUS_JSON
+        if not available.exists():
+            available.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(name_list.DATA_DIR / name_list.NAMES_FILE, available)
+            shutil.copyfile(name_list.DATA_DIR / name_list.GENERATION_FILE, self.root / GENERATION_JSON)
+        if not status.exists():
+            status.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(name_list.DATA_DIR / name_list.STATUS_FILE, status)
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
@@ -985,6 +1045,7 @@ def pick_request(
         manual=frozenset(snapshot.manual),
         passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
         max_edit_distance=int(confusable.get("max_edit_distance", 1)),
+        approved=snapshot.approved(),
     )
     return request, [warning] if warning else []
 
@@ -996,6 +1057,7 @@ def _spare_writes(
     from . import session_naming
 
     policy = snapshot.policy
+    approved = snapshot.approved()
     shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
     writes: dict[str, bytes | None] = {}
     added: list[str] = []
@@ -1017,6 +1079,7 @@ def _spare_writes(
             manual=frozenset(snapshot.manual),
             passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
             max_edit_distance=int(policy.get("confusable", {}).get("max_edit_distance", 1)),
+            approved=approved,
         )
         try:
             name = session_naming.pick_name(request, rng).name
@@ -1082,6 +1145,8 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     holder = snapshot.holder(name)
     if holder:
         return "held", f"{name} is held by {holder}"
+    if snapshot.status_of(name) == "excluded":
+        return "excluded", f"{name} is excluded from use (`ai list-names --pool` lists each name's status)"
     if _TOKEN_RE.fullmatch(name):
         held = held_tokens(snapshot)
         if int(policy.get("confusable", {}).get("max_edit_distance", 1)):
@@ -1225,6 +1290,43 @@ def remove_name(registry: Registry, name: str) -> None:
     registry.transact(build)
 
 
+def set_name_status(registry: Registry, names: list[str], status: str, *, set_by: str) -> list[str]:
+    """Give every name in ``names`` the approval ``status`` in one write; returns the names it changed.
+
+    Refuses the whole call when any name is not in the name database, and never
+    overwrites a status record it cannot read. With no record, it creates one.
+    """
+    if status not in NAME_STATUSES:
+        raise WriteRefusedError(f"{status!r} is not a name status; use one of {', '.join(NAME_STATUSES)}")
+
+    def build(snapshot: Snapshot) -> Change | None:
+        if snapshot.status_problem is not None:
+            raise WriteRefusedError(
+                f"cannot read the registry's {STATUS_JSON}, so it is left as it is: {snapshot.status_problem}"
+            )
+        unknown = sorted({name for name in names if name not in snapshot.available})
+        if unknown:
+            raise WriteRefusedError(
+                "; ".join(f"{name} is not in the name database" for name in unknown)
+                + "; add each with `ai add-name NAME` first. Nothing was written"
+            )
+        statuses = dict(snapshot.statuses or {})
+        changed = sorted({name for name in names if statuses.get(name, {}).get("status") != status})
+        if not changed and snapshot.statuses is not None:
+            return None
+        now = utc_now()
+        for name in changed:
+            statuses[name] = {"status": status, "set_by": set_by, "set_at": now}
+        return Change(
+            {STATUS_JSON: status_record(dict(sorted(statuses.items())))},
+            f"session-names: set-name-status {status} {' '.join(changed) or '(record created)'} ({set_by})",
+            result=changed,
+        )
+
+    change = registry.transact(build)
+    return change.result if change is not None else []  # type: ignore[return-value]
+
+
 def last_known_snapshot(registry: Registry) -> Snapshot:
     """The last fetched tip, fetched once first when this checkout has never fetched the registry.
 
@@ -1357,16 +1459,21 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
     """
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
+        approved = snapshot.approved()
         spool = read_spool()
         free = sorted(
-            (row for row in snapshot.rows_of(slot.machine, "spare") if row["token"] not in spool),
+            (
+                row
+                for row in snapshot.rows_of(slot.machine, "spare")
+                if row["token"] not in spool and row["token"] in approved
+            ),
             key=lambda row: (len(row["token"]), row["token"]),
         )
         if not free:
             because = f" ({cause})" if cause else ""
             raise SparesExhaustedError(
-                f"the registry is unreachable{because} and this machine has no unactivated spare name left; "
-                "once online, "
+                f"the registry is unreachable{because} and this machine has no unactivated spare name left "
+                "that is approved; once online, "
                 "run `ai reconcile-names` to publish the activations and replenish the spares"
             )
         spare = free[0]
@@ -1777,9 +1884,14 @@ def reconcile(
                 migrations=tip.migrations,
                 names=tip.names,
                 generation=tip.generation,
+                statuses=tip.statuses,
+                status_problem=tip.status_problem,
             )
             slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
-            top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            try:
+                top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            except NameStatusError:
+                top_up, added = {}, []
             writes.update(top_up)
             if not writes:
                 return None

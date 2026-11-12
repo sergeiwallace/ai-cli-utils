@@ -91,7 +91,34 @@ def policy_commit(repo: Path) -> str:
     return git(repo, "log", "-1", "--format=%H", "--", "config/session-names.toml")
 
 
-def publish_list(registry: reg.Registry, names: list[str], policy: dict, commit: str | None) -> None:
+STATUS_JSON = "available/status.json"
+
+
+def status_bytes(statuses: dict[str, str]) -> bytes:
+    """The name-status record ``ai set-name-status`` writes, for ``{name: status}``."""
+    record = {
+        "schema": 1,
+        "names": {
+            name: {"status": status, "set_by": "fixture", "set_at": "2026-01-01T00:00:00Z"}
+            for name, status in sorted(statuses.items())
+        },
+    }
+    return (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+
+
+def write_status(registry: reg.Registry, data: bytes | None) -> None:
+    """Replace the registry's name-status record with ``data``, or delete it when None."""
+    registry.transact(lambda snapshot: reg.Change({STATUS_JSON: data}, "session-names: status (fixture)"))
+
+
+def publish_list(
+    registry: reg.Registry,
+    names: list[str],
+    policy: dict,
+    commit: str | None,
+    statuses: dict[str, str] | None = None,
+) -> None:
+    """Publish ``names`` and a status record; with no ``statuses`` every published name is approved."""
     record = {
         "schema": 1,
         "policy": policy,
@@ -104,6 +131,7 @@ def publish_list(registry: reg.Registry, names: list[str], policy: dict, commit:
             {
                 reg.NAMES_TXT: name_list.render_names(sorted(names)).encode(),
                 reg.GENERATION_JSON: name_list.render_record(record).encode(),
+                STATUS_JSON: status_bytes(dict.fromkeys(names, "approved") if statuses is None else statuses),
             },
             "session-names: generate (fixture)",
         )
@@ -156,6 +184,7 @@ def build_fleet(
     names: list[str] | None = None,
     policy_toml: str = POLICY_TOML,
     publish: bool = True,
+    statuses: dict[str, str] | None = None,
 ) -> Fleet:
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -180,7 +209,9 @@ def build_fleet(
     monkeypatch.setattr(reg, "common_words", lambda policy, **_: frozenset({"may", "art", "sun"}))
     registry = registry_for(repo)
     if publish:
-        publish_list(registry, list(names if names is not None else NAMES), policy_of(repo), policy_commit(repo))
+        publish_list(
+            registry, list(names if names is not None else NAMES), policy_of(repo), policy_commit(repo), statuses
+        )
     return Fleet(tmp=tmp_path, projects=projects, remote=remote, repo=repo, registry=registry)
 
 

@@ -133,6 +133,30 @@ def remove_name_command(name: str) -> None:
     _out.emit(Tag.NAMES, "remove", f"removed {value} from the name database")
 
 
+@click.command(
+    "set-name-status",
+    help=(
+        "Session names: set the approval status of one or more names; only approved names are picked, "
+        "needs-review is every name nobody has ruled on, excluded is never used but stays listed"
+    ),
+)
+@click.argument("status", type=click.Choice(reg.NAME_STATUSES))
+@click.argument("names", nargs=-1, required=True)
+def set_name_status_command(status: str, names: tuple[str, ...]) -> None:
+    registry = open_registry()
+    values = [name.lower() for name in names]
+    try:
+        changed = reg.set_name_status(registry, values, status, set_by=_added_by())
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    unchanged = sorted(set(values) - set(changed))
+    lines = [f"{status}: {', '.join(changed)}"] if changed else []
+    if unchanged:
+        lines.append(f"already {status}, nothing written for: {', '.join(unchanged)}")
+    _out.emit(Tag.NAMES, "set", "\n".join(lines))
+
+
 @click.command("show-name-config", help="Session names: print each naming setting, its value and the layer that set it")
 def show_name_config_command() -> None:
     from . import session_title
@@ -392,9 +416,36 @@ def check_names_command(as_json: bool) -> None:
     _out.emit(Tag.NAMES, "check", "\n".join(lines))
 
 
-@click.command("list-names", help="Session names: list every held name with its title, host, client and kind")
+def _list_pool(snapshot: reg.Snapshot, as_json: bool) -> None:
+    """Every name in the database with its approval status and holder; exit 3 when the record is unusable."""
+    try:
+        statuses = {name: snapshot.status_of(name) for name in sorted(snapshot.available)}
+    except reg.NameStatusError as exc:
+        _out.error(Tag.NAMES, "list", str(exc))
+        sys.exit(EXIT_UNREADABLE)
+    if as_json:
+        entries = [
+            {"name": name, "status": status, "held_by": snapshot.holder(name)} for name, status in statuses.items()
+        ]
+        _out.raw(Untagged.JSON, json.dumps(entries, sort_keys=True))
+        return
+    counts = ", ".join(f"{value} {list(statuses.values()).count(value)}" for value in reg.NAME_STATUSES)
+    lines = [f"{name:<6} {status:<13} {snapshot.holder(name) or '-'}" for name, status in statuses.items()]
+    _out.emit(Tag.NAMES, "list", "\n".join([*lines, f"{len(statuses)} names: {counts}"]))
+
+
+@click.command(
+    "list-names",
+    help="Session names: list every held name with its title, host, client, kind and approval status",
+)
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
-def list_names_command(as_json: bool) -> None:
+@click.option(
+    "-p",
+    "--pool",
+    is_flag=True,
+    help="List every name in the database instead, with its approval status (approved, needs-review, excluded)",
+)
+def list_names_command(as_json: bool, pool: bool) -> None:
     from .session import _tmux_session_names
 
     registry = open_registry()
@@ -409,9 +460,17 @@ def list_names_command(as_json: bool) -> None:
             err=True,
             level=_out.Level.WARNING,
         )
+    if pool:
+        _list_pool(snapshot, as_json)
+        return
     host = _host()
     live = set(_tmux_session_names())
     rows = sorted(snapshot.rows.values(), key=lambda row: (str(row.get("machine")), row["token"]))
+    try:
+        statuses = {row["token"]: snapshot.status_of(row["token"]) for row in rows}
+    except reg.NameStatusError as exc:
+        _out.emit(Tag.NAMES, "list", f"{exc}; statuses show as -", err=True, level=_out.Level.WARNING)
+        statuses = {}
 
     def running(row: dict) -> bool | None:
         """Whether this machine runs the row's session; None for another machine's row or a spare."""
@@ -422,7 +481,13 @@ def list_names_command(as_json: bool) -> None:
         )
 
     if as_json:
-        _out.raw(Untagged.JSON, json.dumps([{**row, "running": running(row)} for row in rows], sort_keys=True))
+        _out.raw(
+            Untagged.JSON,
+            json.dumps(
+                [{**row, "running": running(row), "status": statuses.get(row["token"])} for row in rows],
+                sort_keys=True,
+            ),
+        )
         return
     if not rows:
         _out.emit(Tag.NAMES, "list", "no names are held")
@@ -432,7 +497,8 @@ def list_names_command(as_json: bool) -> None:
         state = {True: " running", False: " stopped", None: ""}[running(row)]
         lines.append(
             f"{row['token']:<6} {row.get('title') or '-'!s:<32} {row.get('machine')!s:<16} "
-            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {row.get('reserved_at')}{state}"
+            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {statuses.get(row['token'], '-'):<13} "
+            f"{row.get('reserved_at')}{state}"
         )
     _out.emit(Tag.NAMES, "list", "\n".join(lines))
 
@@ -615,6 +681,7 @@ COMMANDS = (
     add_name_command,
     remove_name_command,
     show_name_config_command,
+    set_name_status_command,
     reconcile_names_command,
     release_name_command,
     reassign_name_command,

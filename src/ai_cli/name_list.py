@@ -43,6 +43,7 @@ DATA_DIR = Path(__file__).parent / "data" / "session-names"
 NAMES_FILE = "names.txt"
 GENERATION_FILE = "generation.json"
 NON_NAMES_FILE = "non-names.txt"
+STATUS_FILE = "status.json"
 DOWNLOAD_TIMEOUT_S = 60
 
 _NAME_RE = re.compile(r"[a-z]+")

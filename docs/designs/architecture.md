@@ -54,6 +54,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `direnv_setup.py` | Portable checks and approval helpers for project `.envrc` files |
 | `git_repair.py` | Detects and repairs missing tracked symlinks, phantom deletions, and bare-worktree configuration |
 | `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
+| `name_registry.py` | The human session-name registry: one git ref (or a local directory) holding the available names, each name's approval status, held names and renames; every write is a fetched-tip commit pushed without force. Only approved names are picked ([session-name-approval-status.md](session-name-approval-status.md)) |
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
