@@ -893,9 +893,10 @@ def test_given_issues_assigned_to_old_when_migrated_then_new_holds_each_and_the_
 
 # A stand-in for the configured publish command: it logs its argv, its cwd and the assignees the
 # fake bd store holds when it runs, then exits with the code ``exit`` names (``revert`` first
-# hands TST-1 back to the old name, as a pull of someone else's change would).
+# hands TST-1 back to the old name, as a pull of someone else's change would; ``sleep`` holds it
+# that many seconds first, as a slow push would).
 _FAKE_PUBLISH = """\
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 
 db = Path(os.environ["FAKE_BD_DB"])
@@ -908,6 +909,8 @@ with open(os.environ["FAKE_PUBLISH_LOG"], "a") as log:
 if control.get("revert"):
     next(i for i in data["stores"][store] if i["id"] == "TST-1")["assignee"] = control["revert"]
     db.write_text(json.dumps(data))
+if control.get("sleep"):
+    time.sleep(control["sleep"])
 if control["exit"]:
     print(f"publish refused: exit {control['exit']}", file=sys.stderr)
     sys.exit(control["exit"])
@@ -988,6 +991,37 @@ def test_given_a_publish_that_exits_non_zero_when_finished_then_the_run_exits_1_
     assert len(_publish_calls(publish)) == 6
     assert _part(out, "beads store") == "done now"
     assert len(_ledger_finished(slot)) == 1
+
+
+def test_given_a_publish_slower_than_its_configured_timeout_when_migrated_then_the_store_reads_timed_out(
+    stores, publish, slot
+):
+    publish["config"].write_text(publish["config"].read_text(encoding="utf-8") + "timeout_s = 1\n", encoding="utf-8")
+    publish["control"].write_text(json.dumps({"exit": 0, "sleep": 30}), encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} publish FAILED (timed out after 1 s)" in err
+    assert "exit 127" not in out + err
+    assert f"beads store: {stores['repo']} (publish failed: timed out after 1 s)" in out, out
+    assert _part(out, "beads store").startswith("failed: ")
+    assert _ledger_finished(slot) == []
+
+
+@pytest.mark.parametrize("value", ["0", "-5", '"600"', "true"])
+def test_given_a_publish_file_with_a_bad_timeout_when_migrated_then_the_store_reads_failed_naming_the_field(
+    stores, publish, value
+):
+    publish["config"].write_text(
+        publish["config"].read_text(encoding="utf-8") + f"timeout_s = {value}\n", encoding="utf-8"
+    )
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert "field 'timeout_s' must be a positive number of seconds" in err
+    assert _publish_calls(publish) == []
 
 
 def test_given_a_published_store_still_holding_an_issue_on_old_when_migrated_then_the_run_exits_1(stores, publish):

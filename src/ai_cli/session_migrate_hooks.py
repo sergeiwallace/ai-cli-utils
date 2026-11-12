@@ -21,6 +21,7 @@ A host can also name the command that publishes a Beads store the migration re-k
 in ``<config dir>/migrate-session-publish.d/beads.toml``::
 
     argv = ["python3", "~/bin/publish_store.py", "--repo", "{store}"]
+    timeout_s = 600   # optional; seconds one publish may run
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ HOOKS_DIRNAME = "migrate-session.d"
 PUBLISH_DIRNAME = "migrate-session-publish.d"
 BEADS_PUBLISH_FILE = "beads.toml"
 STORE_PLACEHOLDER = "{store}"
+#: Seconds one publish may run when its file names no ``timeout_s``.
+DEFAULT_PUBLISH_TIMEOUT_S = 600.0
 
 
 class HookConfigError(ValueError):
@@ -53,6 +56,14 @@ class Hook:
     argv: tuple[str, ...]
     path: Path
     status: str = "pending"
+
+
+@dataclass(frozen=True)
+class BeadsPublish:
+    """The configured command that publishes a re-keyed Beads store, and how long it may run."""
+
+    argv: tuple[str, ...]
+    timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S
 
 
 @dataclass
@@ -114,12 +125,13 @@ def _command(hook: Hook, old: str, new: str, dry_run: bool) -> list[str]:
     return [*_program(hook.argv), "--old", old, "--new", new, *(["--dry-run"] if dry_run else [])]
 
 
-def load_beads_publish(directory: Path | None = None) -> tuple[str, ...] | None:
-    """The configured Beads publish argv, or None when this host configures none.
+def load_beads_publish(directory: Path | None = None) -> BeadsPublish | None:
+    """The configured Beads publish command, or None when this host configures none.
 
     Read at call time from ``<config dir>/migrate-session-publish.d/beads.toml``. Raises
     :class:`HookConfigError` for a file that is not TOML, has no ``argv`` list of strings,
-    or never names the ``{store}`` placeholder.
+    never names the ``{store}`` placeholder, or has a ``timeout_s`` that is not a positive
+    number of seconds.
     """
     path = (
         directory if directory is not None else _config.get_xdg_config_home() / PUBLISH_DIRNAME
@@ -136,7 +148,10 @@ def load_beads_publish(directory: Path | None = None) -> tuple[str, ...] | None:
         raise HookConfigError(f"publish file {path}: field 'argv' must be a non-empty list of strings")
     if not any(STORE_PLACEHOLDER in arg for arg in argv):
         raise HookConfigError(f"publish file {path}: field 'argv' must name the {STORE_PLACEHOLDER} placeholder")
-    return tuple(argv)
+    timeout = data.get("timeout_s", DEFAULT_PUBLISH_TIMEOUT_S)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+        raise HookConfigError(f"publish file {path}: field 'timeout_s' must be a positive number of seconds")
+    return BeadsPublish(tuple(argv), float(timeout))
 
 
 def publish_command(argv: tuple[str, ...], store: Path) -> list[str]:

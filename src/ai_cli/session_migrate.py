@@ -883,7 +883,6 @@ ARCHIVE_DONE = "archived OLD, NEW kept"
 
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
-_PUBLISH_TIMEOUT = 600
 
 #: The argv prefix that runs bd.
 BD_COMMAND: tuple[str, ...] = ("bd",)
@@ -1002,7 +1001,7 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
     from .session_migrate_issues import note, remember
 
     try:
-        publish: tuple[str, ...] | Exception | None = _hooks.load_beads_publish()
+        publish: _hooks.BeadsPublish | Exception | None = _hooks.load_beads_publish()
     except _hooks.HookConfigError as exc:
         publish = exc
     for store in [s for s in stores if s.error is None and (s.issues or s.comments or (s.unpublished and publish))]:
@@ -1049,13 +1048,15 @@ def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResu
 
 
 def _publish_store(
-    publish: tuple[str, ...] | Exception, old: str, new: str, store: _Store, changed: int, result: MigrationResult
+    publish: _hooks.BeadsPublish | Exception, old: str, new: str, store: _Store, changed: int, result: MigrationResult
 ) -> None:
     """Run the configured publish command once for ``store``, then re-read it for issues still on ``old``.
 
-    A refused or failed publish, or an issue still on ``old`` after it, is a ``FAILED`` or
-    ``NOT`` warning, so the run exits 1 and records no ``finished`` row; the next run of the
-    same pair publishes the store again.
+    A refused, failed or timed-out publish, or an issue still on ``old`` after it, is a
+    ``FAILED`` or ``NOT`` warning, so the run exits 1 and records no
+    ``finished`` row; the next run of the same pair publishes the store again. A timeout
+    stops only the command itself: a process it started may still be publishing, and is left
+    to finish, because the next run's publish is safe to repeat.
     """
     from .session_migrate_issues import remember_published
 
@@ -1065,19 +1066,30 @@ def _publish_store(
         result.warnings.append(f"{where} publish FAILED: {_one_line(str(publish))}")
         return
     env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+    command = _hooks.publish_command(publish.argv, store.path)
+    seconds = f"{publish.timeout_s:g} s"
     try:
         ran = subprocess.run(
-            _hooks.publish_command(publish, store.path),
+            command,
             cwd=store.path,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             env=env,
-            timeout=_PUBLISH_TIMEOUT,
+            timeout=publish.timeout_s,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        ran = subprocess.CompletedProcess([], 127, "", str(exc))
+    except subprocess.TimeoutExpired:
+        result.moves.append(PlannedMove("beads store", str(store.path), f"timed out after {seconds}", "publish failed"))
+        result.warnings.append(
+            f"{where} publish FAILED (timed out after {seconds}): {_one_line(' '.join(command))} -- a push it started may still"
+            " be running; re-run the same migrate-session command once it ends, or raise timeout_s in the publish file"
+        )
+        return
+    except OSError as exc:
+        result.moves.append(PlannedMove("beads store", str(store.path), "could not start", "publish failed"))
+        result.warnings.append(f"{where} publish FAILED: could not start {command[0]}: {_one_line(str(exc))}")
+        return
     if ran.returncode != 0:
         why = _one_line(ran.stderr or ran.stdout or "(no output)")
         result.moves.append(PlannedMove("beads store", str(store.path), f"exit {ran.returncode}", "publish failed"))
