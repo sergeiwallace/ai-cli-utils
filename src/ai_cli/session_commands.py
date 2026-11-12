@@ -164,7 +164,7 @@ def publish(now, tick):
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
 def list_sessions(as_json):
     session_reconcile.reconcile()
-    session_reconcile.age_out(probe_remote=True)
+    session_reconcile.age_out()
     records = [
         {
             "name": r["name"],
