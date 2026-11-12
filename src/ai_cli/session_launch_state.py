@@ -20,6 +20,7 @@ def register_launch(
     extra_args: list[str],
     project_prefix: str = "",
     new_start: bool = False,
+    probe: bool = False,
 ) -> None:
     cfg = config.load_config()
     host = cfg.get("machine", {}).get("host_id") or state.registry.load_registry()["machine"]
@@ -54,6 +55,7 @@ def register_launch(
         },
         host=host,
         new_start=new_start,
+        probe=probe,
     )
     # Unit installation is independent of on_boot and never delays a lifecycle write.
     if state.settings()["publish"]["repo"] and os.name != "nt":

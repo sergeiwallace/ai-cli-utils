@@ -286,6 +286,7 @@ ai g <name>            # Start/resume Gemini CLI session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
+ai c -t [NAME]         # Throwaway probe or test session: no name, no canonical worktree, no boot relaunch
 ai c -b/--bare         # Run bare (no tmux wrapper)
 ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
@@ -339,6 +340,29 @@ session: `ai c cos` starts `myrepo-box-cos-rae`. The launch says so in its `new 
 line before it creates a worktree or a tmux session, so a mistyped resume is visible.
 `ai locate-session TITLE` and `ai list-names` also report the sessions named before the
 registry, each with the command that resumes it.
+
+#### Probe and test sessions
+
+```bash
+ai c -t                         # myrepo-box-probe-1
+ai c -t smoke -b                # myrepo-box-probe-smoke-1, bare
+ai c -t -d                      # plan the probe launch; writes nothing
+```
+
+`-t/--probe` launches a session for a probe or a test run that nothing treats as a
+session home. It is named by index under the `probe` label and reserves no first name.
+Its worktree is made outside the repository, under the per-user state directory
+(`probe-worktrees/<repo>-<digest>/<title>`), and is not recorded in the canonical-worktree
+registry, so deletion guards do not protect it and an editor scanning the repository does
+not find it. Its run record is never relaunched at boot, the iTerm2 restore skips it, and
+`ai iterm2 sessions --prune` drops it once the session is gone. `-t` refuses `-r`, `-N`,
+`-w`, `-u`, `-S`, `-F` and `-R`, each of which would name, reach or host a canonical
+session; run `ai c -t` on the remote host itself for a remote probe.
+
+Once the probe has exited, remove its worktree and branch with the ordinary git
+commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`).
+The launcher never removes them itself. Design:
+[docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
 
 #### Restarting an idle Claude Code session
 

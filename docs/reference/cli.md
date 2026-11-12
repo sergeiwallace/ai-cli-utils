@@ -240,6 +240,8 @@ Launch a Claude Code session. A migration to the session's name that this host r
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
+For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and it can be removed like any scratch worktree once it exits.
+
 Arguments:
 
 - `[NAME]`
@@ -266,6 +268,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-j` | `--json` |  | Print restart results as JSON |
@@ -462,6 +465,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -500,6 +504,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -566,6 +571,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -900,6 +906,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
