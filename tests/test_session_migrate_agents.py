@@ -242,6 +242,63 @@ def test_given_git_refuses_one_agent_worktree_when_migrated_then_it_warns_contin
     assert _branches(fleet["other"]) == [f"wt/{OLD}/leaf-a", f"wt/{NEW}/leaf-b"]
 
 
+def _venv_in_root(root: Path, name: str, worktree: Path) -> Path:
+    """A venv kept outside its worktree, carrying an editable install of it and a deep package tree."""
+    venv = root / name
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "pkg-1.0.dist-info").mkdir(parents=True)
+    (site / "__editable__.pkg.pth").write_text(f"{worktree}/src\n", encoding="utf-8")
+    (site / "pkg-1.0.dist-info" / "direct_url.json").write_text(
+        json.dumps({"url": f"file://{worktree}", "dir_info": {"editable": True}}), encoding="utf-8"
+    )
+    deep = site / "heavypkg" / "driver" / "package" / "lib"
+    for i in range(3):
+        (deep / f"mod{i}").mkdir(parents=True)
+        (deep / f"mod{i}" / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    return venv
+
+
+def test_given_agent_venvs_in_a_shared_venv_root_when_migrated_then_only_the_sessions_install_records_are_read(
+    fleet, tmp_path
+):
+    venvs = tmp_path / "local-io" / "venvs"
+    own = _venv_in_root(venvs, "otherrepo--leaf-a", fleet["leaf_a"])
+    unrelated = _venv_in_root(venvs, "otherrepo--unrelated-1", fleet["other"] / ".worktrees" / "unrelated-1")
+    try:
+        (fleet["leaf_a"] / ".venv").symlink_to(own, target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform cannot create directory symlinks")
+    listed: list[Path] = []
+    real_scandir, real_listdir = os.scandir, os.listdir
+
+    def _record(path):
+        if isinstance(path, (str, os.PathLike)):
+            listed.append(Path(os.fspath(path)).resolve())
+
+    def scandir(path="."):
+        _record(path)
+        return real_scandir(path)
+
+    def listdir(path="."):
+        _record(path)
+        return real_listdir(path)
+
+    with patch("os.scandir", scandir), patch("os.listdir", listdir):
+        code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_a = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    site = own / "lib" / "python3.12" / "site-packages"
+    assert (site / "__editable__.pkg.pth").read_text(encoding="utf-8") == f"{new_a}/src\n"
+    assert json.loads((site / "pkg-1.0.dist-info" / "direct_url.json").read_text(encoding="utf-8"))["url"] == (
+        f"file://{new_a}"
+    )
+    heavy = (site / "heavypkg").resolve()
+    assert [p for p in listed if p == heavy or heavy in p.parents] == []
+    assert [p for p in listed if p == unrelated.resolve() or unrelated.resolve() in p.parents] == []
+
+
 def test_given_a_destination_branch_exists_when_migrated_then_that_entry_is_skipped_and_left(fleet):
     other = fleet["other"]
     _git("branch", f"wt/{NEW}/leaf-b", "main", cwd=other)

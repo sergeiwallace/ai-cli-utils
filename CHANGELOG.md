@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
+  environment looking for files that name the old path. It now reads only the `.pth` files at the
+  top of each site-packages directory and the `direct_url.json` in each `*.dist-info` directory,
+  which is everywhere those records can live. A venv holding a package with a large bundled data
+  tree (a browser driver, node modules) made planning take many minutes on a busy disk.
 - A hand-chosen session name (`ai migrate-session --to-name NAME`, a launch with `--name NAME`,
   `ai adopt-session`) that is one of this machine's own unactivated spares is now taken by
   activating that spare in place, with this machine's spares topped back up in the same registry

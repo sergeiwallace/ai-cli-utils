@@ -39,10 +39,27 @@ def _candidates(venv: Path):
         folder = venv / sub
         if folder.is_dir():
             yield from (p for p in sorted(folder.iterdir()) if p.is_file() and not p.is_symlink())
-    for base, _dirs, files in os.walk(venv / "lib") if (venv / "lib").is_dir() else ():
-        for name in files:
-            if name.endswith(_NAMED_SUFFIXES) or name in _NAMED_BASENAMES:
-                yield Path(base) / name
+    for site in _site_packages(venv):
+        for path in sorted(site.iterdir()):
+            if path.name.endswith(_NAMED_SUFFIXES) and path.is_file():
+                yield path
+            elif path.name.endswith(".dist-info"):
+                yield from (path / name for name in _NAMED_BASENAMES if (path / name).is_file())
+
+
+def _site_packages(venv: Path) -> list[Path]:
+    """The venv's site-packages directories, on either platform layout.
+
+    ``.pth`` files are honoured only at the top of a site-packages directory and ``direct_url.json``
+    only in a ``*.dist-info`` directory beside them, so nothing below that is read: a package's own
+    data tree (a bundled browser driver, node modules) can hold tens of thousands of files.
+    """
+    found: dict[Path, Path] = {}
+    for pattern in ("lib/*/site-packages", "Lib/site-packages"):
+        for site in sorted(venv.glob(pattern)):
+            if site.is_dir():
+                found.setdefault(site.resolve(), site)
+    return list(found.values())
 
 
 def _pattern(old_forms: list[str]) -> re.Pattern[bytes]:
