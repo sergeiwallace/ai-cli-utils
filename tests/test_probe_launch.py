@@ -159,6 +159,8 @@ def test_given_a_probe_launch_with_a_label_when_it_starts_then_the_label_follows
     assert code == 0, err
     assert env.started[0][0].name == f"{STEM}-probe-smoke-1"
     assert env.name_rows() == {}
+    assert f"probe session {STEM}-probe-smoke-1" in err
+    assert "to resume an existing session" not in err
 
 
 # --- AC-2: a probe's leftovers live outside .worktrees/ and are reapable once it exits ---------

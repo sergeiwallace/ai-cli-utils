@@ -5280,11 +5280,14 @@ def _do_session_launch(
         is_remote=is_remote,
         reporter=reporter,
     )
-    _new_note = (
-        _new_session_note(engine, name, naming_prefix, ai_name)
-        if replay_recipe is None and resume_target is None
-        else None
-    )
+    if probe:
+        _new_note = f"probe session {ai_name}: no first name, never relaunched, not a canonical session"
+    else:
+        _new_note = (
+            _new_session_note(engine, name, naming_prefix, ai_name)
+            if replay_recipe is None and resume_target is None
+            else None
+        )
     reporter.phase("session").outcome(_new_note or f"resolved {ai_name}")
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched.
