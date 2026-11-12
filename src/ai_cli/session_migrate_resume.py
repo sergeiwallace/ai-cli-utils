@@ -23,6 +23,7 @@ PARTS = (
     "session-home marker",
     "agent worktree",
     "agent branch",
+    "agent project dir",
     "project dir",
     "transcript title",
     "job name",
