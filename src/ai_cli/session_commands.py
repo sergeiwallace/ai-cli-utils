@@ -357,7 +357,9 @@ def _owned_record(doc: dict, slug: str) -> dict:
     for record in matches:
         if record.get("kind") == "local" and record.get("owning_host") == host:
             return record
-    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host")
+    owners = sorted({str(r.get("owning_host")) for r in matches if r.get("kind") == "local"})
+    detail = f"; its owning_host is {', '.join(map(repr, owners))} and this host is {host!r}" if owners else ""
+    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host{detail}")
 
 
 @sessions.command(
@@ -386,8 +388,9 @@ def wind_down(slug, timeout, dry_run):
             raise click.ClickException(f"{slug}: tmux liveness could not be established")
         if not alive:
             raise click.ClickException(f"{slug}: not running; nothing to wind down")
-        if not state.valid_boot_recipe(record):
-            raise click.ClickException(f"{slug}: unsupported or incomplete boot recipe; it could not be relaunched")
+        refusal = state.boot_recipe_refusal(record)
+        if refusal:
+            raise click.ClickException(f"{slug}: {refusal}; it could not be relaunched")
         if not dry_run:
             state.request_wind_down(record)
         selected.update(deepcopy(record))
@@ -528,8 +531,9 @@ def _relaunch_named(slug: str, *, dry_run: bool, allow_partial_migration: bool =
         if alive is not False:
             reason = "tmux session already exists" if alive else "tmux liveness could not be established"
             raise click.ClickException(f"{slug}: {reason}")
-        if not state.valid_boot_recipe(record):
-            raise click.ClickException(f"{slug}: unsupported or incomplete boot recipe")
+        refusal = state.boot_recipe_refusal(record)
+        if refusal:
+            raise click.ClickException(f"{slug}: {refusal}")
         if not dry_run:
             now = registry._now()
             record.update(
@@ -582,6 +586,10 @@ def relaunch(slug, boot, dry_run, allow_partial_migration):
 
     A session whose recorded migration is partial is refused, with the parts left and the
     command that finishes it; the others still relaunch, and the command exits 1.
+
+    A session whose boot recipe cannot replay is refused as "unsupported or incomplete boot
+    recipe: " followed by the first field that failed, in a dry run too. A session recorded
+    under another host id is refused naming both host ids.
     """
     if boot == (slug is not None):
         raise click.UsageError("provide either a session name or --boot, never both")
