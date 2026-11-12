@@ -109,6 +109,9 @@ def env(tmp_path, monkeypatch, interactive_terminal, tmux_available):  # noqa: F
         raise SystemExit(0)
 
     def handoff(_program, argv):
+        if "new-session" in argv:
+            # --once hands the terminal to `tmux new-session` itself.
+            state.live.append(argv[argv.index("-s") + 1])
         state.attached.append(list(argv))
         raise SystemExit(0)
 
@@ -372,3 +375,19 @@ def test_given_a_running_tmux_probe_when_its_slot_is_launched_again_then_it_atta
     assert code == 0, err
     assert env.attached[attaches:] == [["tmux", "attach-session", "-d", "-t", f"c-{STEM}-probe-1"]]
     assert env.tracked == []
+
+
+def test_given_a_canonical_worktree_with_the_probe_title_and_no_record_when_a_probe_launches_then_it_stays_put(env):
+    """A session's checkout under .worktrees/ is never moved into the probe directory."""
+    code, _out, err = run_cli([*LAUNCH, "probe", "-I"])
+    assert code == 0, err
+    canonical = env.started[0][0]
+    registry.registry_path().unlink()
+
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+
+    assert code == 1, err
+    assert "-t/--probe" in err
+    assert len(env.started) == 1
+    assert (canonical / "README.md").is_file()
+    assert canonical.resolve().as_posix() in git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
