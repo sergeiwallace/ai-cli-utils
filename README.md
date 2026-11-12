@@ -895,6 +895,24 @@ off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 
+### Listing sessions
+
+```bash
+ai sessions                       # Running sessions of this host and its paired host, as a table
+ai sessions list -a/--all         # Add exited and unknown sessions
+ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
+ai sessions list -g/--group-by status -s/--sort-by changed,name
+ai sessions list -j/--json        # This host's registry records, unchanged by the options above
+```
+
+The table groups rows by host (this host first) and puts running sessions at the top of each
+group. Other hosts' rows come from the snapshots each host publishes with `ai sessions publish`
+(see [Session boot relaunch](#session-boot-relaunch)); a host that does not publish is not shown,
+and the time of each snapshot is printed under the table. The pair is `[sessions_list] pair_host`,
+or the default `[remote.machines]` alias when that is empty. The defaults are the `[sessions_list]`
+table of `config.toml`, read on every call and documented in
+[docs/reference/sessions-list-defaults.toml](docs/reference/sessions-list-defaults.toml).
+
 ### Remote sessions
 
 ```bash

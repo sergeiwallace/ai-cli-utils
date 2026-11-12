@@ -23,6 +23,7 @@ there, not here.
   - [ai cos](#ai-cos)
   - [ai ls](#ai-ls)
   - [ai attach](#ai-attach)
+  - [ai sessions](#ai-sessions)
   - [ai reconnect](#ai-reconnect)
   - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
@@ -526,6 +527,42 @@ ai attach <session-name>
 Thin wrapper: validates the session exists, then replaces the current process with `tmux attach-session -t <name>` via `os.execvp`.
 
 Exits with error if no session named `<session-name>` exists.
+
+### ai sessions
+
+```bash
+ai sessions [list] [-a] [-S host|pair|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
+```
+
+Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
+with the columns `HOST`, `SESSION`, `STATUS`, `CAUSE`, `CHANGED` and `RELAUNCH`, grouped by host
+with this host first, and sorted by status (`running`, `relaunched`, `unknown`, `exited`) and then
+by name. Only running sessions are listed unless `-a/--all` is given.
+
+- `-S/--scope`: `host` is this host; `pair` (the default) adds the paired host; `fleet` adds every
+  host that publishes. This host's rows come from its live registry; other hosts' rows come from
+  the snapshots each host pushes with `ai sessions publish` to `[session_relaunch.publish] repo`,
+  fetched with a 15-second bound. A host that does not publish is not shown, and each snapshot's
+  time is printed under the table.
+- `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
+  keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
+- `-j/--json` prints this host's registry records exactly as before; it ignores the other options
+  and refuses `-S pair` and `-S fleet`.
+
+The defaults live in the `[sessions_list]` table of `config.toml`, read on every call, with a flag
+overriding each:
+
+```toml
+[sessions_list]
+group_by = "host"
+sort_by = ["status", "name"]
+show_all = false
+scope = "pair"
+pair_host = ""  # empty: the default [remote.machines] alias
+```
+
+[docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
+each key.
 
 ### ai reconnect
 
