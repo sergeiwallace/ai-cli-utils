@@ -320,7 +320,6 @@ _WORKTREE_SESSION_PLACEHOLDER = re.compile(r"<[^<>/]+>(?:-<[^<>/]+>)*")
 # scrubbed file has to leave the set.
 _PROVENANCE_DOC_BASELINE = frozenset(
     {
-        Path("docs/audits/ai-cli-6xud-name-registry-run-ledger.md"),
         Path("docs/designs/iterm2-cross-machine-vscode-routing.md"),
         Path("docs/designs/user-behavior-telemetry.md"),
         Path("docs/designs/vscode-terminal-tab-naming.md"),
