@@ -149,15 +149,25 @@ def test_given_retention_in_config_when_listed_then_it_is_read_at_call_time(gone
     assert _list(config) == kept
 
 
-def test_given_minute_worker_when_it_ticks_then_old_gone_rows_are_removed(gone, monkeypatch):
-    monkeypatch.setattr("ai_cli.config.load_config", lambda **_kw: CONFIG)
-    _write(_exited("c-session-1"))
+def _tick() -> None:
+    """One pass of the minute worker, the background entry point."""
 
     def stop(_seconds):
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
         run_stale_session_reaper({}, reaper_factory=lambda *a, **kw: Mock(), sleep=stop)
+
+
+@pytest.fixture
+def worker(gone, monkeypatch):
+    monkeypatch.setattr("ai_cli.config.load_config", lambda **_kw: CONFIG)
+    return gone
+
+
+def test_given_minute_worker_when_it_ticks_then_old_gone_rows_are_removed(worker):
+    _write(_exited("c-session-1"))
+    _tick()
     assert _names() == []
 
 
@@ -166,7 +176,7 @@ def _remote(name: str, **fields) -> dict:
 
 
 @pytest.fixture
-def probes(gone, monkeypatch):
+def probes(worker, monkeypatch):
     """The remote host's answer for each session; every call is counted."""
     answers: dict[str, bool | None] = {}
     calls: list[str] = []
@@ -179,33 +189,51 @@ def probes(gone, monkeypatch):
     return answers, calls
 
 
-def test_given_client_row_for_a_session_renamed_on_its_host_when_listed_then_it_is_removed(probes):
+def test_given_stale_remote_rows_when_listed_then_no_host_is_dialled_and_rows_are_unchanged(probes):
+    answers, calls = probes
+    answers["c-r-session-1"] = False
+    _write(_remote("c-r-session-1"), _remote("c-r-session-2", ended_at=_ago(240)))
+    before = registry.registry_path().read_bytes()
+    assert _list() == ["c-r-session-1", "c-r-session-2"]
+    assert calls == []
+    assert registry.registry_path().read_bytes() == before
+
+
+def test_given_client_row_for_a_session_renamed_on_its_host_when_worker_ticks_then_it_is_removed(probes):
     answers, calls = probes
     answers["c-r-session-1"] = False
     answers["c-r-session-2"] = True
     _write(_remote("c-r-session-1"), _remote("c-r-session-2"))
-    assert _list() == ["c-r-session-2"]
+    _tick()
+    assert _names() == ["c-r-session-2"]
     assert calls == ["c-r-session-1", "c-r-session-2"]
+    assert "probed_at" in registry.load_registry()["sessions"][0]
 
 
-def test_given_remote_probe_inconclusive_when_listed_twice_then_row_is_kept_and_probed_once(probes):
+def test_given_unreachable_host_when_worker_ticks_twice_then_rows_are_kept_stamped_and_dialled_once(probes):
     _answers, calls = probes
     _write(_remote("c-r-session-1"), _remote("c-r-session-2"))
-    assert _list() == ["c-r-session-1", "c-r-session-2"]
-    assert _list() == ["c-r-session-1", "c-r-session-2"]
+    _tick()
+    _tick()
+    assert _names() == ["c-r-session-1", "c-r-session-2"]
+    assert all(r.get("probed_at") for r in registry.load_registry()["sessions"])
     # One unreachable host costs one dial per pass, and the next pass waits out the retention.
     assert calls == ["c-r-session-1"]
 
 
-def test_given_remote_row_with_a_live_launcher_or_recent_change_when_listed_then_it_is_not_probed(probes):
+def test_given_remote_row_with_a_live_launcher_or_recent_change_when_worker_ticks_then_it_is_not_probed(probes):
     _answers, calls = probes
     _write(_remote("c-r-session-1", launcher_pid=os.getpid(), launched_at=_ago(0)), _remote("c-r-session-2", hours=1))
-    assert _list() == ["c-r-session-1", "c-r-session-2"]
+    _tick()
+    assert _names() == ["c-r-session-1", "c-r-session-2"]
     assert calls == []
 
 
-def test_given_remote_row_with_a_clean_exit_past_retention_when_listed_then_it_is_removed_without_a_probe(probes):
+def test_given_remote_row_with_a_clean_exit_past_retention_when_worker_ticks_then_it_is_removed_without_a_probe(
+    probes,
+):
     _answers, calls = probes
     _write(_remote("c-r-session-1", ended_at=_ago(240)))
-    assert _list() == []
+    _tick()
+    assert _names() == []
     assert calls == []
