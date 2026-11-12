@@ -136,8 +136,12 @@ def _find(doc: dict, name: str) -> dict:
     raise ValueError(f"session {name!r} is not registered; refusing an untracked transition")
 
 
-def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> dict:
-    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach."""
+def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:
+    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
+
+    A ``probe`` session is marked as one and its relaunch policy is ``never``, so boot
+    replay vetoes it and a prune drops its row once its session is gone.
+    """
     result = {}
 
     def upsert(doc):
@@ -161,6 +165,8 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
         else:
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
+        if probe:
+            existing.update(probe=True, relaunch="never")
         existing.setdefault("relaunch", "auto")
         result.update(existing)
         return True

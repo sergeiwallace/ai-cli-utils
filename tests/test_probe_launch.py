@@ -78,7 +78,8 @@ def env(tmp_path, monkeypatch, interactive_terminal):
     def fake_run(*args, **kwargs):
         command = list(args[0] if args else kwargs["args"])
         if command[:1] == ["tmux"]:
-            return make_subprocess_result(1)
+            # No tmux session runs: the launch is bare, and an exited session has none.
+            return make_subprocess_result(1, "", "can't find session")
         return guarded_run(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -187,6 +188,16 @@ def test_given_a_probe_that_exited_when_dead_records_are_pruned_then_its_row_is_
     assert env.session_rows() == []
 
 
+def test_given_a_bare_probe_still_running_when_dead_records_are_pruned_then_its_row_is_kept(env):
+    """A bare session has no tmux session, so "tmux has none" alone would prune a live probe."""
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+    assert code == 0, err
+    assert run_state.mark_running(f"c-{STEM}-probe-1")
+
+    assert registry.prune() == []
+    assert [row["name"] for row in env.session_rows()] == [f"c-{STEM}-probe-1"]
+
+
 def test_given_an_ordinary_session_that_exited_when_dead_records_are_pruned_then_its_boot_row_is_kept(env):
     code, _out, err = run_cli([*LAUNCH])
     assert code == 0, err
@@ -218,7 +229,7 @@ def test_given_a_probe_launch_with_a_canonical_naming_flag_when_run_then_it_refu
 
     code, _out, err = run_cli([*LAUNCH, "-t", *extra])
 
-    assert code == 2, err
+    assert code == 1, err
     assert "-t/--probe" in err
     assert env.started == []
     assert env.fleet.tip() == tip

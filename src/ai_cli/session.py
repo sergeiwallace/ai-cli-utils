@@ -22,6 +22,7 @@ from .config import (
     _get_projects_dir,
     get_current_project_name,
     get_worktree_upstream_branches,
+    get_xdg_state_home,
     load_project_registry,
     resolve_project_prefix,
 )
@@ -1242,31 +1243,45 @@ def _initialize_worktree(
     _authorize_session_worktree_envrc(repo_root, worktree_path)
 
 
+def probe_worktree_base(repo_root: Path) -> Path:
+    """Where ``ai c -t/--probe`` puts its worktrees for ``repo_root``: outside the repository.
+
+    A per-user state directory, keyed by the repository's name and a digest of its path
+    so two checkouts that share a name never share probe slots. Outside the repository,
+    an editor that scans the workspace for repositories never finds a probe, and nothing
+    that treats ``<repo>/.worktrees/<name>`` as a session home ever sees one.
+    """
+    digest = hashlib.sha256(str(Path(repo_root).resolve()).encode()).hexdigest()[:8]
+    return get_xdg_state_home() / "probe-worktrees" / f"{Path(repo_root).name}-{digest}"
+
+
 @overload
 def create_worktree(
-    ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None
+    ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None, probe: bool = False
 ) -> Path | None: ...
 
 
 @overload
 def create_worktree(
-    ai_name: str, *, with_status: Literal[True], repo_root: Path | None = None
+    ai_name: str, *, with_status: Literal[True], repo_root: Path | None = None, probe: bool = False
 ) -> tuple[Path, bool] | None: ...
 
 
 @overload
 def create_worktree(
-    ai_name: str, *, with_status: bool, repo_root: Path | None = None
+    ai_name: str, *, with_status: bool, repo_root: Path | None = None, probe: bool = False
 ) -> Path | tuple[Path, bool] | None: ...
 
 
 def create_worktree(
-    ai_name: str, *, with_status: bool = False, repo_root: Path | None = None
+    ai_name: str, *, with_status: bool = False, repo_root: Path | None = None, probe: bool = False
 ) -> Path | tuple[Path, bool] | None:
     """Create or reuse a session worktree.
 
     With ``with_status=True``, return ``(path, created)`` so launch output can
-    describe the operation that actually occurred.
+    describe the operation that actually occurred. With ``probe=True`` the worktree
+    is made under :func:`probe_worktree_base`, outside the repository, instead of
+    ``<repo>/.worktrees/``.
     """
     repo_root = repo_root or detect_repo_root()
     if not repo_root:
@@ -1277,7 +1292,7 @@ def create_worktree(
     # Check + repair BEFORE any worktree op, regardless of what corrupted it.
     repair_bare_worktree_config(repo_root)
 
-    wt_dir = repo_root / WORKTREE_DIR / ai_name
+    wt_dir = (probe_worktree_base(repo_root) if probe else repo_root / WORKTREE_DIR) / ai_name
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
     lock_path = wt_dir.parent / f".{ai_name}.lock"
     import portalocker
@@ -1441,15 +1456,16 @@ def _is_session_worktree_slot(repo_root: Path, directory: Path) -> bool:
 
     Path containment, deliberately, rather than asking git whether something is a
     worktree: the question is not "is this a worktree" but "did this tool make
-    it". Only ``<repo>/.worktrees/<name>`` qualifies. The repository root, any
+    it". Only ``<repo>/.worktrees/<name>`` and a probe slot under
+    :func:`probe_worktree_base` qualify. The repository root, any
     parent that merely happens to hold an ``.envrc``, and a worktree registered
     from some other directory are all somebody else's to approve.
     """
-    slots = repo_root / WORKTREE_DIR
+    slots = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root))
     try:
-        return directory.resolve().parent == slots.resolve()
+        return directory.resolve().parent in {slot.resolve() for slot in slots}
     except OSError:
-        return directory.parent == slots
+        return directory.parent in slots
 
 
 def _matches_repository_root_envrc(repo_root: Path, worktree_dir: Path) -> bool:

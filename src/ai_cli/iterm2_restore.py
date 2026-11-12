@@ -76,6 +76,8 @@ def _disabled_by(config: dict, startup: bool) -> str | None:
 def _skip_rule(record: dict, settings: dict, only: str | None) -> str | None:
     kind = record.get("kind")
     name = str(record.get("name", ""))
+    if record.get("probe"):
+        return "probe session"
     if only and kind != only:
         return f"--only {only}"
     if kind == "local" and not settings["include_local"]:

@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai c -t/--probe [NAME]` (and `ai g`, `ai p`, `ai cx`) launches a throwaway probe or test
+  session that nothing treats as a session home. It is titled `<prefix>-probe[-NAME]-N` by index
+  and reserves no first name. Its worktree is made under the per-user state directory
+  (`probe-worktrees/<repo>-<digest>/`), outside the repository, and is not recorded in the
+  canonical-worktree registry. Its run record is never relaunched at boot, is skipped by the
+  iTerm2 restore, and is dropped by the next prune once its session is gone. `-t` refuses
+  `-r`, `-N`, `-w`, `-u`, `-S`, `-F` and `-R`, since each would name, reach or host a canonical
+  session. Before this, a probe launched as an ordinary `ai c` slot held a name, a protected
+  worktree under `.worktrees/` and a boot-relaunch row like any real session.
 - `ai sessions wind-down <slug>` stops a running session for a scheduled maintenance window and
   records the new exit cause `maintenance_wind_down`, so `ai sessions relaunch --boot` brings it
   back after the next boot. It marks the record first, then stops the session through its
