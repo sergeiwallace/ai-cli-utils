@@ -19,11 +19,13 @@ import json
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from conftest import make_subprocess_result, run_cli
 from name_fleet import REPO, build_fleet, git
+from test_cli import tmux_available  # noqa: F401
 
 from ai_cli import iterm2_restore, session_naming
 from ai_cli import session_registry as registry
@@ -31,7 +33,8 @@ from ai_cli import session_run_state as run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path
 
 STEM = f"{REPO}-tst"
-LAUNCH = ["ai", "c", "--project-prefix", REPO, "-D", "-b"]
+TMUX_LAUNCH = ["ai", "c", "--project-prefix", REPO, "-D"]
+LAUNCH = [*TMUX_LAUNCH, "-b"]
 
 
 class Env:
@@ -39,6 +42,9 @@ class Env:
         self.fleet = fleet
         self.repo = repo
         self.started: list[tuple[Path, list[str]]] = []
+        self.live: list[str] = []
+        self.attached: list[list[str]] = []
+        self.tracked: list[str] = []
 
     def canonical_paths(self) -> list[str]:
         path = get_canonical_worktree_registry_path()
@@ -54,7 +60,7 @@ class Env:
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch, interactive_terminal):
+def env(tmp_path, monkeypatch, interactive_terminal, tmux_available):  # noqa: F811
     own_host_id = session_naming.host_id
     fleet = build_fleet(tmp_path, monkeypatch)
     monkeypatch.setattr(session_naming, "host_id", own_host_id)
@@ -78,8 +84,18 @@ def env(tmp_path, monkeypatch, interactive_terminal):
     def fake_run(*args, **kwargs):
         command = list(args[0] if args else kwargs["args"])
         if command[:1] == ["tmux"]:
-            # No tmux session runs: the launch is bare, and an exited session has none.
-            return make_subprocess_result(1, "", "can't find session")
+            target = command[-1].lstrip("=") if len(command) > 2 else ""
+            if command[1] == "has-session":
+                return make_subprocess_result(*((0,) if target in state.live else (1, "", "can't find session")))
+            if command[1] == "list-sessions":
+                return make_subprocess_result(0, "\n".join(state.live) + "\n")
+            if command[1] == "list-panes":
+                session = command[command.index("-t") + 1].lstrip("=")
+                return make_subprocess_result(*((0, "0\n") if session in state.live else (1, "", "can't find session")))
+            if command[1] == "new-session":
+                state.live.append(command[command.index("-s") + 1])
+                return make_subprocess_result(0, "$42\n")
+            return make_subprocess_result(0)
         return guarded_run(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -92,9 +108,31 @@ def env(tmp_path, monkeypatch, interactive_terminal):
         state.started.append((Path(target_root), list(command)))
         raise SystemExit(0)
 
+    def handoff(_program, argv):
+        state.attached.append(list(argv))
+        raise SystemExit(0)
+
+    real_track = registry.track_launch
+
+    def track(**kwargs):
+        state.tracked.append(kwargs["name"])
+        return real_track(**kwargs)
+
+    monkeypatch.setattr(registry, "track_launch", track)
+
     with ExitStack() as stack:
         for target, kwargs in (
             ("ai_cli.main._exec_with_direnv", {"side_effect": start_engine}),
+            ("ai_cli.main._exec_handoff", {"side_effect": handoff}),
+            (
+                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                {"return_value": SimpleNamespace(session_id="$42")},
+            ),
+            ("ai_cli.main._iterm2._emit_iterm2_profile_setup", {}),
+            ("ai_cli.main._iterm2._configure_tmux_for_iterm2", {}),
+            ("ai_cli.main._iterm2._rename_tmux_window", {}),
+            ("ai_cli.main._start_session_wake_watcher", {}),
+            ("ai_cli.main._resume_suspended_panes", {}),
             ("ai_cli.main.pull_rebase_autostash", {"return_value": (make_subprocess_result(0), None)}),
             ("ai_cli.main._refresh_claude_plugins", {}),
             ("ai_cli.session.cleanup_stale_sessions", {}),
@@ -247,3 +285,90 @@ def test_given_a_probe_launch_when_dry_run_then_the_plan_names_the_probe_and_wri
     assert f"{STEM}-probe-1" in out
     assert env.started == [] and env.fleet.tip() == tip
     assert env.canonical_paths() == [] and env.session_rows() == []
+
+
+# --- Review fixes ------------------------------------------------------------------------------
+
+
+def test_given_a_running_bare_probe_when_a_second_bare_probe_launches_then_it_takes_the_next_slot(env):
+    """A bare launch finds free slots from worktrees on disk; a probe's live there, outside .worktrees/."""
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+    assert code == 0, err
+    first = env.started[0][0]
+
+    with patch(
+        "ai_cli.session._worktree_has_live_session", side_effect=lambda path: Path(path).resolve() == first.resolve()
+    ):
+        code, _out, err = run_cli([*LAUNCH, "-t"])
+
+    assert code == 0, err
+    assert [cwd.name for cwd, _command in env.started] == [f"{STEM}-probe-1", f"{STEM}-probe-2"]
+
+
+def test_given_a_canonical_session_with_the_probe_title_when_a_probe_launches_then_it_refuses_and_keeps_the_row(
+    env,
+):
+    code, _out, err = run_cli([*LAUNCH, "probe", "-I"])
+    assert code == 0, err
+    assert [row["name"] for row in env.session_rows()] == [f"c-{STEM}-probe-1"]
+
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+
+    assert code == 1, err
+    assert f"c-{STEM}-probe-1" in err and "-t/--probe" in err
+    assert len(env.started) == 1
+    [row] = env.session_rows()
+    assert not row.get("probe") and row["relaunch"] == "auto"
+    assert _boot_relaunchable([row]) == [f"c-{STEM}-probe-1"]
+
+
+def test_given_a_probe_row_when_an_ordinary_launch_takes_its_title_then_the_row_is_canonical_again(env):
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+    assert code == 0, err
+
+    code, _out, err = run_cli([*LAUNCH, "probe-1", "-I"])
+
+    assert code == 0, err
+    [row] = env.session_rows()
+    assert not row.get("probe") and row["relaunch"] == "auto"
+    assert _boot_relaunchable([row]) == [f"c-{STEM}-probe-1"]
+
+
+def test_given_a_state_directory_inside_the_repository_when_a_probe_launches_then_it_refuses_creating_nothing(
+    env, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.session.get_xdg_state_home", lambda: env.repo / ".state")
+
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+
+    assert code == 1, err
+    assert "inside the repository" in err
+    assert env.started == []
+    assert not (env.repo / ".state").exists()
+    assert env.session_rows() == []
+
+
+@pytest.mark.parametrize("extra", [[], ["-o"]], ids=["supervised", "once"])
+def test_given_a_tmux_launch_when_it_starts_then_only_an_ordinary_session_is_tracked_for_iterm2(env, extra):
+    code, _out, err = run_cli([*TMUX_LAUNCH, *extra, "-I"])
+    assert code == 0, err
+    assert env.tracked == [f"c-{STEM}-1"]
+
+    code, _out, err = run_cli([*TMUX_LAUNCH, *extra, "-t"])
+
+    assert code == 0, err
+    assert f"c-{STEM}-probe-1" in env.live
+    assert env.tracked == [f"c-{STEM}-1"]
+    assert env.canonical_paths() and all("probe" not in path for path in env.canonical_paths())
+
+
+def test_given_a_running_tmux_probe_when_its_slot_is_launched_again_then_it_attaches_untracked(env):
+    code, _out, err = run_cli([*TMUX_LAUNCH, "-t"])
+    assert code == 0, err
+    attaches = len(env.attached)
+
+    code, _out, err = run_cli([*TMUX_LAUNCH, "-t", "1"])
+
+    assert code == 0, err
+    assert env.attached[attaches:] == [["tmux", "attach-session", "-d", "-t", f"c-{STEM}-probe-1"]]
+    assert env.tracked == []
