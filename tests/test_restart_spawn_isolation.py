@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from process_wait import scaled
 
 
 @pytest.mark.parametrize(
@@ -55,7 +56,7 @@ def test_given_restart_mocks_when_tests_finish_then_spawn_functions_are_restored
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=300,
+        timeout=scaled(300),
         check=False,
     )
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-2000:]
