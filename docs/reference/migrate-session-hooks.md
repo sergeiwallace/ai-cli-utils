@@ -181,13 +181,16 @@ store in one file under the same config directory:
 
 ```toml
 argv = ["python3", "~/bin/publish_store.py", "--repo", "{store}"]
+timeout_s = 600
 ```
 
 `argv` is the program and its arguments, never a shell string. Every `{store}` is
 replaced by the store's directory (the directory holding `.beads/`), and the
 argv must name it at least once. A leading `~` in the program is expanded, and a
-`.py` program runs under the interpreter that runs `ai`, as for hooks. The file is
-read when the command runs.
+`.py` program runs under the interpreter that runs `ai`, as for hooks.
+`timeout_s` is optional: the seconds one publish may run, a positive number, 600
+when it is absent. A large store pushed from a loaded host can need longer. The
+file is read when the command runs.
 
 After a run re-keys issues in a store, it runs the command once for that store,
 with the store as its working directory, then reads the store again:
@@ -196,8 +199,10 @@ with the store as its working directory, then reads the store again:
 |---|---|---|---|
 | Exit 0, no issue left on OLD | `(published: <n> re-keyed)` | `done now` | unchanged |
 | Exit 0, an issue still on OLD | `(published: <n> re-keyed)` plus a `NOT converged` warning | `failed: ...` | 1 |
-| Non-zero exit, or a timeout | `(publish failed: exit <code>)` plus a `FAILED` warning quoting stderr | `failed: ...` | 1 |
-| Malformed file, or no `{store}` | `(publish failed: ...)` naming the file and the field | `failed: ...` | 1 |
+| Non-zero exit | `(publish failed: exit <code>)` plus a `FAILED` warning quoting stderr | `failed: ...` | 1 |
+| Ran past `timeout_s` | `(publish failed: timed out after <n> s)` plus a `FAILED (timed out after <n> s)` warning naming the command; a push the command started may still be running and is left to finish | `failed: ...` | 1 |
+| Program cannot be started | `(publish failed: could not start)` plus a `FAILED` warning naming the program | `failed: ...` | 1 |
+| Malformed file, no `{store}`, or a bad `timeout_s` | `(publish failed: ...)` naming the file and the field | `failed: ...` | 1 |
 | No file | `(publish needed: <n> re-keyed, local until the store is published)` | `skipped: publish needed, no publish command is configured` | unchanged |
 
 A run that exits 1 here writes no `finished` row. The run records each publish
