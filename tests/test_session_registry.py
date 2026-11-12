@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import TEST_BOOT_ID, remote_allocation_reply, run_cli
+from process_ownership import reap, spawn_owned
 
 from ai_cli import session_registry
 from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
@@ -392,7 +393,7 @@ def test_given_a_launch_mid_write_when_a_second_launch_records_then_both_records
     second: list[subprocess.Popen] = []
 
     def write_after_second_launch_started(path, doc):
-        second.append(subprocess.Popen([sys.executable, "-c", _CHILD_WRITER, "second", "1"], env=env))
+        second.append(spawn_owned([sys.executable, "-c", _CHILD_WRITER, "second", "1"], env=env))
         try:
             second[0].wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -400,18 +401,24 @@ def test_given_a_launch_mid_write_when_a_second_launch_records_then_both_records
         real_write(path, doc)
 
     monkeypatch.setattr(session_registry, "_write", write_after_second_launch_started)
-    session_registry.record_launch(
-        kind="local",
-        name="c-myproject-first",
-        relaunch_argv=["ai", "c", "first"],
-        cwd=None,
-        remote=None,
-        tty="",
-        iterm_session_id=None,
-        launcher_pid=0,
-        config=_PERSISTENCE_DEFAULTS,
-    )
-    assert second[0].wait(timeout=60) == 0
+    try:
+        session_registry.record_launch(
+            kind="local",
+            name="c-myproject-first",
+            relaunch_argv=["ai", "c", "first"],
+            cwd=None,
+            remote=None,
+            tty="",
+            iterm_session_id=None,
+            launcher_pid=0,
+            config=_PERSISTENCE_DEFAULTS,
+        )
+        assert second[0].wait(timeout=60) == 0
+    finally:
+        # Outside the patched callback, so a failure inside the write or the final wait
+        # cannot leave the second writer running after this test.
+        for writer in second:
+            reap(writer)
 
     assert {record["name"] for record in _sessions(state_home)} == {"c-myproject-first", "c-myproject-second-0"}
 
