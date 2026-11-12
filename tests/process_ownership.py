@@ -80,7 +80,13 @@ def spawn_owned(command: list[str], **kwargs: Any) -> subprocess.Popen:
     collisions = sorted(set(kwargs) & set(group_spawn_kwargs()))
     if collisions:
         raise TypeError(f"spawn_owned owns the process group; do not pass {', '.join(collisions)}")
-    return subprocess.Popen(command, **group_spawn_kwargs(), **kwargs)
+    proc = subprocess.Popen(command, **group_spawn_kwargs(), **kwargs)
+    if sys.platform != "win32":
+        # The child leads a group of its own, whose id is its pid. Remember it: once the
+        # leader exits and is reaped its pid no longer names a group, so a later reap
+        # could not otherwise reach a grandchild that outlived it.
+        proc.owned_pgid = proc.pid
+    return proc
 
 
 def spawn_owned_python(*code: str, **kwargs: Any) -> subprocess.Popen:
@@ -140,23 +146,44 @@ def reap(proc: subprocess.Popen) -> None:
     child is not left a zombie — a zombie keeps its ``/proc/<pid>`` entry and
     would therefore still read as *live*.
 
+    Ends only when the group has no members left, not when its leader has exited,
+    because a grandchild that ignores ``SIGTERM`` can outlive the leader.
+
     Safe to call more than once, and on a process that has already exited.
     """
     if sys.platform == "win32":
         _reap_windows(proc)
         return
 
-    try:
-        group = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        group = None
+    # The group recorded at spawn, because the leader's pid stops naming a group once
+    # it has exited and been reaped, while a grandchild can outlive it in that group.
+    group = getattr(proc, "owned_pgid", None)
+    if not isinstance(group, int):
+        try:
+            group = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError):
+            group = None
     # Refuse to signal our own group even if the spawn somehow did not detach:
     # that would take down the test runner rather than the child.
     if group == os.getpgrp():
         group = None
 
+    def alive() -> bool:
+        # Poll first: an exited but unreaped leader is a zombie, which still counts as a
+        # member of its group.
+        leader_running = proc.poll() is None
+        if group is None:
+            return leader_running
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return leader_running
+        return True
+
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if proc.poll() is not None:
+        if not alive():
             break
         try:
             if group is not None:
@@ -165,10 +192,9 @@ def reap(proc: subprocess.Popen) -> None:
                 proc.send_signal(sig)
         except (ProcessLookupError, PermissionError):
             break
-        try:
-            proc.wait(timeout=_REAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            continue
+        deadline = monotonic() + _REAP_TIMEOUT
+        while alive() and monotonic() < deadline:
+            sleep(0.02)
     # Bounded: a child that survives SIGKILL (stuck in an uninterruptible write)
     # must fail the test with a traceback, not hold the job to its time cap.
     proc.wait(timeout=_REAP_TIMEOUT)
