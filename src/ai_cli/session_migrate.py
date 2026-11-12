@@ -34,8 +34,9 @@ tasks, memory and resume hand-off:
 * the chief-of-staff registration ``ai cos`` wrote, when it names the old session
   (``state/chief-session.json`` and ``registry.json``'s chief fields), unless its tmux
   target is live;
-* the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` and its
-  ``wt/<old>/*`` branches in every repo under ``projects_dir``
+* the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` or
+  ``<host>--<old>-agents/``, their Claude Code project directories (a reaped worktree's
+  included) and its ``wt/<old>/*`` branches in every repo under ``projects_dir``
   (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
 * every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
@@ -1530,6 +1531,7 @@ def _start_session(
         old_wt=old_wt,
         new_wt=new_wt,
         live_cwds=live_cwds,
+        claude_home=home,
     )
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     if new_pd.exists():
@@ -1873,6 +1875,7 @@ def finish_session(
         old_wt=old_wt.resolve(strict=False),
         new_wt=new_wt,
         live_cwds=live_cwds,
+        claude_home=home,
     )
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
