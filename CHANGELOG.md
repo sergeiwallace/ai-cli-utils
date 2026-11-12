@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c NAME -r` (and `-R -r`) reaches the existing session NAME names, whether its title ends
+  in a first name or a legacy index, or exits 1 before reserving a name or creating anything. A
+  NAME no session held used to be reserved a fresh first name by the remote allocator, which the
+  remote side then "resumed" by creating its worktree. The refusal lists the closest existing
+  titles and the command that starts a new session; a stopped session is relaunched from its
+  worktree or transcript; `-r --dry-run` plans the attach, the relaunch or the refusal. Without
+  `-r`, a positional word that is not an existing title prints `new session <title>` first.
+- `ai locate-session` and `ai list-names` report sessions named before the session-name
+  registry, from this host's worktrees and tmux sessions, with the command that resumes each.
+
 - `ai migrate-session --finish` now converges when the session already ran under its new name
   and holds its own copy of something the old name still holds. Before, a resume log or
   hand-off written under the new name ("resume artifact ... was NOT re-keyed: ... already
