@@ -4108,7 +4108,9 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
         title = slot.title_for(value.lower())
         if verdict in ("held", "confusable", "word", "limits"):
             _naming_exit(reporter, f"dry run: {reason}", 2)
-        note = "would ask to add it to the name database" if verdict == "unknown" else "free"
+        note = {"unknown": "would ask to add it to the name database", "spare": "this machine's spare"}.get(
+            verdict, "free"
+        )
         reporter.phase("session").outcome(f"planned {title} ({note}; reserves nothing)")
         return _session_id(engine, title, is_remote), title
     io = name_prompt.PromptIO(
@@ -7855,7 +7857,7 @@ def _migrate_one_to_name(
         words = _names.common_words(snapshot.policy) if name else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
-            if verdict != "ok":
+            if verdict not in ("ok", "spare"):
                 if verdict == "unknown":
                     reason += f"; add it with `ai add-name {name}` first"
                 raise AdoptionError(reason)

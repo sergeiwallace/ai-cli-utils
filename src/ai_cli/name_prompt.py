@@ -130,7 +130,7 @@ def _decide(
     verdict, reason = reg.check_hand_chosen(snapshot, candidate, slot, words)
     if verdict in ("held", "confusable", "word", "limits"):
         return _refuse(io, reason)
-    if verdict == "ok":
+    if verdict in ("ok", "spare"):
         return candidate, False
     out_of_limits = reg.limits_reason(candidate, snapshot.policy)
     if from_free:
