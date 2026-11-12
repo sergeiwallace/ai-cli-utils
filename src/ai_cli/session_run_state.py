@@ -56,45 +56,67 @@ def cause(record: dict, boot_id: str | None = None) -> str:
     return "host_reboot" if stored != boot_id else "terminal_quit_or_crash"
 
 
-def valid_boot_recipe(record: dict) -> bool:
-    """Accept structured owning-host recipes, never terminal history or shell text."""
+BOOT_RECIPE_REFUSAL = "unsupported or incomplete boot recipe"
+_ENGINES = ("c", "g", "p", "cx")
+
+
+def _string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(arg, str) and "\0" not in arg for arg in value)
+
+
+def boot_recipe_problem(record: dict) -> str | None:
+    """The first field that keeps a record's boot recipe from replaying, None when it replays.
+
+    Only structured owning-host recipes are accepted, never terminal history or shell text.
+    """
     recipe = record.get("boot_recipe")
     if not isinstance(recipe, dict):
-        return False
+        return "the record has no boot_recipe"
     engine = recipe.get("engine")
     name = recipe.get("session_name")
     options = recipe.get("options")
-    if (
-        engine not in ("c", "g", "p", "cx")
-        or not isinstance(name, str)
-        or not re.fullmatch(r"[A-Za-z0-9_-]+", name)
-        or name != record.get("name")
-        or not name.startswith(f"{engine}-")
-        or recipe.get("owning_host") != record.get("owning_host")
-        or not recipe.get("owning_host")
-        or not isinstance(recipe.get("cwd"), str)
-        or not Path(recipe["cwd"]).is_absolute()
-        or not isinstance(recipe.get("project"), str)
-        or not isinstance(options, dict)
-        or options.get("remote")
-    ):
-        return False
+    host = recipe.get("owning_host")
+    cwd = recipe.get("cwd")
+    if engine not in _ENGINES:
+        return f"engine {engine!r} is not one of {', '.join(_ENGINES)}"
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        return f"session_name {name!r} is not a valid session name"
+    if name != record.get("name"):
+        return f"session_name {name!r} differs from the record name {record.get('name')!r}"
+    if not name.startswith(f"{engine}-"):
+        return f"session_name {name!r} does not start with the engine prefix {engine + '-'!r}"
+    if not host:
+        return "owning_host is missing"
+    if host != record.get("owning_host"):
+        return f"owning_host {host!r} differs from the record's owning_host {record.get('owning_host')!r}"
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        return f"cwd {cwd!r} is not an absolute path"
+    if not isinstance(recipe.get("project"), str):
+        return "project is not a string"
+    if not isinstance(options, dict):
+        return "options is not a mapping"
+    if options.get("remote"):
+        return "options.remote is set"
     for key in ("argv", "extra_args"):
-        value = recipe.get(key)
-        if not isinstance(value, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in value):
-            return False
+        if not _string_list(recipe.get(key)):
+            return f"{key} is not a list of strings"
     if recipe["argv"][:2] != ["ai", engine]:
-        return False
+        return f"argv does not start with 'ai {engine}'"
     if options.get("bare"):
-        command = recipe.get("command")
-        return (
-            isinstance(recipe.get("shell"), str)
-            and bool(recipe["shell"])
-            and isinstance(command, list)
-            and bool(command)
-            and all(isinstance(arg, str) and "\0" not in arg for arg in command)
-        )
-    return True
+        shell, command = recipe.get("shell"), recipe.get("command")
+        if not (isinstance(shell, str) and shell and _string_list(command) and command):
+            return "a bare recipe needs a non-empty shell and command list"
+    return None
+
+
+def valid_boot_recipe(record: dict) -> bool:
+    return boot_recipe_problem(record) is None
+
+
+def boot_recipe_refusal(record: dict) -> str | None:
+    """``unsupported or incomplete boot recipe: <field reason>``, None when the recipe replays."""
+    problem = boot_recipe_problem(record)
+    return None if problem is None else f"{BOOT_RECIPE_REFUSAL}: {problem}"
 
 
 def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive: bool | None) -> str | None:
@@ -119,9 +141,7 @@ def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive:
         return f"policy {policy} forbids boot relaunch"
     if settled not in cfg["causes"]:
         return f"cause {settled} is disabled by profile"
-    if not valid_boot_recipe(record):
-        return "unsupported or incomplete boot recipe"
-    return None
+    return boot_recipe_refusal(record)
 
 
 def tombstone_path(name: str, host: str) -> Path:

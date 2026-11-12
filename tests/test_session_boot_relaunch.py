@@ -113,7 +113,7 @@ def test_given_safety_tombstone_when_checked_then_boot_refuses_before_liveness(b
 @pytest.mark.parametrize("missing", ["cwd", "session_name", "options", "engine", "owning_host", "argv"])
 def test_given_incomplete_recipe_when_checked_then_ac_2_10_replay_is_refused(boot_record, missing):
     del boot_record["boot_recipe"][missing]
-    assert decide(boot_record) == "unsupported or incomplete boot recipe"
+    assert decide(boot_record).startswith("unsupported or incomplete boot recipe: ")
 
 
 def test_given_missing_boot_identity_when_checked_then_unknown_is_refused(boot_record):
@@ -723,3 +723,61 @@ def test_given_the_override_when_relaunch_runs_then_the_partial_session_starts_a
     logs = sorted((main._config.get_xdg_state_home() / "launch-logs").glob(f"{PARTIAL}-*.log"))
     assert len(logs) == 1
     assert "parts left: migration (failed:" in logs[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]])
+@pytest.mark.parametrize(
+    ("recipe_change", "reason"),
+    [
+        (
+            {"session_name": "c-myproject-old-1"},
+            "session_name 'c-myproject-old-1' differs from the record name 'c-myproject-host-1'",
+        ),
+        ({"engine": "x"}, "engine 'x' is not one of c, g, p, cx"),
+        (
+            {"engine": "g", "argv": ["ai", "g", "c-myproject-host-1"]},
+            "session_name 'c-myproject-host-1' does not start with the engine prefix 'g-'",
+        ),
+        ({"owning_host": "host-old"}, "owning_host 'host-old' differs from the record's owning_host 'host-a'"),
+        ({"cwd": "relative/dir"}, "cwd 'relative/dir' is not an absolute path"),
+        ({"project": None}, "project is not a string"),
+        ({"options": {"remote": True}}, "options.remote is set"),
+        ({"argv": ["ai", "g", "c-myproject-host-1"]}, "argv does not start with 'ai c'"),
+        ({"extra_args": "--model"}, "extra_args is not a list of strings"),
+        ({"options": {"bare": True}}, "a bare recipe needs a non-empty shell and command list"),
+    ],
+)
+def test_given_one_bad_recipe_field_when_named_relaunch_then_refusal_names_that_field(
+    named_cli, monkeypatch, recipe_change, reason, dry_run
+):
+    registry._mutate(lambda doc: doc["sessions"][0]["boot_recipe"].update(recipe_change) or True)
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: False)
+    result = named_cli.invoke("c-myproject-host-1", *dry_run)
+    assert result.exit_code != 0
+    assert f"c-myproject-host-1: unsupported or incomplete boot recipe: {reason}" in result.output
+    assert not named_cli.launches
+
+
+def test_given_record_owned_under_another_host_id_when_named_relaunch_then_refusal_names_both_hosts(
+    named_cli, monkeypatch
+):
+    def rehost(doc):
+        doc["sessions"][0]["owning_host"] = "host-old"
+        doc["sessions"][0]["boot_recipe"]["owning_host"] = "host-old"
+        return True
+
+    registry._mutate(rehost)
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: False)
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code != 0
+    assert "foreign or remote session; not owned by this host" in result.output
+    assert "its owning_host is 'host-old' and this host is 'host-a'" in result.output
+    assert not named_cli.launches
+
+
+@pytest.mark.parametrize("missing", ["cwd", "session_name", "owning_host", "argv", "options", "engine"])
+def test_given_recipe_missing_a_field_when_boot_checked_then_veto_names_it(boot_record, missing):
+    del boot_record["boot_recipe"][missing]
+    veto = decide(boot_record)
+    assert veto.startswith("unsupported or incomplete boot recipe: ")
+    assert missing in veto.removeprefix("unsupported or incomplete boot recipe: ")
