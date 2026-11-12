@@ -149,6 +149,7 @@ class Untagged(StrEnum):
     HELP = "Click-rendered help text, the CLI's reference documentation"
     SERVICE_UNIT = "exact service-unit text and installation plan for inspection"
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
+    TABLE = "an aligned table a person reads; a tag on each row would break its columns"
 
 
 class Level(StrEnum):
@@ -898,6 +899,42 @@ def raw(reason: Untagged, text: str, *, err: bool = False, file: TextIO | None =
         _close_open_lines()
         stream.write(f"{text}\n" if nl else text)
         stream.flush()
+
+
+#: Width a table renders at when it is not written to a terminal, so a piped row never wraps.
+_UNBOUNDED_TABLE_WIDTH = 100_000
+
+
+def table(headers: Sequence[str], groups: Sequence[Sequence[Sequence[str]]], *, file: TextIO | None = None) -> None:
+    """Print ``groups`` of rows as one ``rich.table`` with a header row and a rule between groups.
+
+    Written untagged and without colour. On a terminal the table fits its width; on a pipe
+    it is as wide as its longest row, so each row stays one line for ``grep``.
+    """
+    import shutil
+
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
+
+    stream = _stream(False, file)
+    width = shutil.get_terminal_size().columns if _is_tty(stream) else _UNBOUNDED_TABLE_WIDTH
+    console = Console(
+        file=stream, width=width, color_system=None, markup=False, highlight=False, emoji=False, legacy_windows=False
+    )
+    grid = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False)
+    for header in headers:
+        grid.add_column(Text(header), overflow="fold")
+    for group in groups:
+        for index, row in enumerate(group):
+            grid.add_row(*(Text(cell) for cell in row), end_section=index == len(group) - 1)
+    with console.capture() as captured:
+        console.print(grid)
+    lines = [line.rstrip() for line in captured.get().splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    raw(Untagged.TABLE, "\n".join(lines), file=stream)
 
 
 def _parse_record(line: str) -> Record | None:

@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,6 +170,76 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
         # Only exception types are safe: runner errors can include credentials.
         detail = str(exc) if type(exc) is RuntimeError else type(exc).__name__
         return _result(False, f"session publication failed ({detail})")
+
+
+#: Bound on the one fetch ``ai sessions list`` makes for other hosts' snapshots.
+SNAPSHOT_FETCH_TIMEOUT_SECONDS = 15
+_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+@dataclass(frozen=True)
+class Snapshots:
+    """Each published host's parsed snapshot, and why any could not be read fresh."""
+
+    hosts: dict[str, dict]
+    problem: str = ""
+
+
+def read_snapshots() -> Snapshots:
+    """Every host's published snapshot, fetched from the publication remote into ``refs/session-state/``.
+
+    A failed fetch falls back to the refs fetched before, and says so in ``problem``.
+    """
+    cfg = state.settings()["publish"]
+    if not cfg["repo"]:
+        return Snapshots({}, "no publication repo is configured ([session_relaunch.publish] repo)")
+    repo = Path(cfg["repo"]).expanduser()
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SNAPSHOT_FETCH_TIMEOUT_SECONDS,
+        )
+
+    problem = ""
+    try:
+        # Git stderr can contain credential-bearing URLs, so it is never shown.
+        fetched = git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--prune",
+            "--",
+            cfg["remote"],
+            f"+{cfg['ref_prefix']}*:refs/session-state/*",
+        )
+        if fetched.returncode:
+            problem = "fetching published snapshots failed; showing the last fetched ones"
+    except subprocess.TimeoutExpired:
+        problem = "fetching published snapshots timed out; showing the last fetched ones"
+    except OSError as exc:
+        return Snapshots({}, f"published snapshots cannot be read ({type(exc).__name__})")
+    hosts: dict[str, dict] = {}
+    try:
+        listed = git("for-each-ref", "--format=%(refname:strip=2)", "refs/session-state/")
+        for host in listed.stdout.split() if listed.returncode == 0 else []:
+            if not _HOST.fullmatch(host):
+                continue
+            shown = git("show", f"refs/session-state/{host}:sessions/{host}.toml")
+            if shown.returncode:
+                continue
+            try:
+                doc = tomllib.loads(shown.stdout)
+            except tomllib.TOMLDecodeError:
+                continue
+            if isinstance(doc.get("sessions"), dict):
+                hosts[host] = doc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        problem = f"published snapshots cannot be read ({type(exc).__name__})"
+    return Snapshots(hosts, problem)
 
 
 # Outcomes a healthy once-a-minute tick reaches; only a failed or refused attempt warns.
