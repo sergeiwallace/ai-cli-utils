@@ -548,7 +548,9 @@ class TestProjectPrefixRegistry:
 
 
 def _relaunch_causes_config(tmp_path, monkeypatch, causes: str) -> None:
+    # Windows reads the config directory from APPDATA, everywhere else from XDG_CONFIG_HOME.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "xdg"))
     config_dir = tmp_path / "xdg" / "ai-cli-utils"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text(f"[session_relaunch]\ncauses = {causes}\n")
