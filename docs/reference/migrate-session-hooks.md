@@ -110,6 +110,24 @@ name has changed. `ai audit-sessions` adopts through the same code path.
 - Without `--dry-run`, perform the move and print what moved. A second run after
   success should find nothing to do and exit 0.
 - Never prompt: standard input is not connected to the operator.
+- When NEW already holds its own copy of something OLD still holds, keep NEW's and move
+  OLD's into an archive rather than refusing, merging or deleting it, and print one
+  `migrate-archived: <path>` line per file archived on the live run (see below).
+
+## Archived files
+
+A live run may print, once for each file it archived, a line naming where it now is:
+
+```text
+migrate-archived: /home/user/.local/state/notes/archive/2026-01-01/myrepo-3-to-myrepo-box-3/notes.db
+```
+
+`migrate-session` lists each one as `hook <name>: <path> (archived OLD, NEW kept)`
+instead of relaying the line, and appends one ledger row with `"archive_recorded":
+true` whose `archived` list names each file as `{"part": "hook <name>", "archive":
+<path>}`. The core archives its own displaced files the same way, under
+`session-migration-archive/` in its state directory. The hook's next `--dry-run` must
+find nothing of OLD's left and report `migrate-status: done`.
 
 Implementation: `src/ai_cli/session_migrate_hooks.py`, called from
 `src/ai_cli/session_migrate.py` and `src/ai_cli/session_adopt.py`; tests in
