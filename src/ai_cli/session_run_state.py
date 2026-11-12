@@ -156,8 +156,14 @@ def _find(doc: dict, name: str) -> dict:
     raise ValueError(f"session {name!r} is not registered; refusing an untracked transition")
 
 
-def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> dict:
-    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach."""
+def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:
+    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
+
+    A ``probe`` session is marked as one and its relaunch policy is ``never``, so boot
+    replay vetoes it and a prune drops its row once its session is gone. An ordinary new
+    start of a probe's record clears both marks; the launch refuses a probe whose title
+    a canonical record already holds, so a probe never reaches one here.
+    """
     result = {}
 
     def upsert(doc):
@@ -173,6 +179,9 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
                 launcher_pid=os.getpid(),
             )
             doc["sessions"].append(existing)
+        if new_start and not probe and existing.pop("probe", None):
+            # An ordinary launch that takes a probe's title makes the record canonical again.
+            existing["relaunch"] = "auto"
         if new_start:
             existing["boot_recipe"] = recipe
             existing["cwd"] = recipe["cwd"]
@@ -181,6 +190,8 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
         else:
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
+        if probe:
+            existing.update(probe=True, relaunch="never")
         existing.setdefault("relaunch", "auto")
         result.update(existing)
         return True
