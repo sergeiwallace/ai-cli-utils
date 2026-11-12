@@ -241,8 +241,11 @@ jobs:
     #
     # macOS runners are the slowest and the most expensive per minute, so bound a
     # hang rather than discovering it on the bill. Healthy runs reached 19 minutes by
-    # 2026-10, so the cap sits well above that.
-    timeout-minutes: 30
+    # 2026-10. By 2026-11 the suite had grown: healthy runs on main took 27 and 29
+    # minutes, and another main run and both attempts of a pull request were cancelled
+    # at the old 30-minute cap at 98-99% with no failing test. The cap is 45 so a
+    # healthy run clears it with room, and a real hang still stops well before an hour.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
