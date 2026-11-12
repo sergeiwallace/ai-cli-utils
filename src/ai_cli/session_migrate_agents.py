@@ -11,7 +11,13 @@ after ``ai migrate-session`` renames its slot, so this module moves them too:
 * every local ``wt/<old>/<leaf>`` branch becomes ``wt/<new>/<leaf>`` through
   :func:`ai_cli.branch_rename.rename_branch_anchored`, so its tip is anchored first;
 * every ``branch.*.<prefix>-session-home`` marker naming the old slot or a moved
-  worktree is rewritten to the new path, under the branch's new name.
+  worktree is rewritten to the new path, under the branch's new name;
+* a worktree on a ``wt/<old>/`` (or already renamed ``wt/<new>/``) branch under a
+  host-prefixed container ``<host>--<old>-agents/`` moves to ``<host>--<new>-agents/``;
+* every Claude Code project directory whose slug embeds an old-name agents container,
+  in either form, moves to the new slug with its transcripts' cwd repointed, its
+  worktree reaped or not. One whose transcript records a cwd outside such a container
+  is someone else's and stays; one whose new slug is taken is reported, never merged.
 
 ``<prefix>`` is ``[worktree] marker_prefix``, the namespace the environment's worktree
 tooling writes its markers and its ``<prefix>-provenance.json`` record under. Unset,
@@ -115,10 +121,27 @@ class WorktreeOwnership:
 
 
 @dataclass
+class AgentProjectDir:
+    """One Claude Code project directory whose slug embeds an old-name agents container."""
+
+    source: Path
+    dest: Path
+    old_root: Path
+    new_root: Path
+
+    @property
+    def conflict(self) -> bool:
+        return os.path.lexists(self.dest)
+
+
+@dataclass
 class AgentPlan:
     entries: list[AgentEntry] = field(default_factory=list)
     markers: list[AgentMarker] = field(default_factory=list)
     containers: list[Path] = field(default_factory=list)
+    #: ``<host>--<old>-agents`` containers a planned worktree moves out of, removed once empty.
+    host_containers: list[Path] = field(default_factory=list)
+    project_dirs: list[AgentProjectDir] = field(default_factory=list)
 
     def renames(self, repo: Path) -> dict[str, str]:
         """The branch renames planned in ``repo``."""
@@ -290,6 +313,80 @@ def _repos(projects_dir: Path, slot_repo: Path) -> list[Path]:
     return found
 
 
+def _host_containers(slots: Path, old: str, new: str) -> list[tuple[Path, Path]]:
+    """``(<host>--<old>-agents, <host>--<new>-agents)`` for each host prefix either side has on disk."""
+    pattern = re.compile(rf"(?P<host>.+)--(?:{re.escape(old)}|{re.escape(new)})-agents")
+    hosts = sorted(
+        {match["host"] for child in slots.iterdir() if child.is_dir() and (match := pattern.fullmatch(child.name))}
+        if slots.is_dir()
+        else set()
+    )
+    return [(slots / f"{host}--{old}-agents", slots / f"{host}--{new}-agents") for host in hosts]
+
+
+#: Claude Code caps a project slug at this length and ends a longer one in a hash of the whole
+#: path, so a capped slug cannot be renamed by swapping its container's part.
+PROJECT_SLUG_CAP = 200
+
+
+def _slug(path: Path | str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(path))
+
+
+def _recorded_cwd(project: Path) -> Path | None:
+    """The first top-level ``cwd`` any transcript in ``project`` records; None when none does."""
+    for transcript in sorted(project.glob("*.jsonl")):
+        with contextlib.suppress(OSError, UnicodeDecodeError), transcript.open(encoding="utf-8") as stream:
+            for raw in stream:
+                with contextlib.suppress(ValueError):
+                    record = json.loads(raw)
+                    if isinstance(record, dict) and isinstance(record.get("cwd"), str):
+                        return Path(record["cwd"])
+    return None
+
+
+def _plan_project_dirs(slots: Path, old: str, new: str, claude_home: Path, keep: list[Path]) -> list[AgentProjectDir]:
+    """Each Claude Code project directory whose slug embeds an old-name agents container in ``slots``.
+
+    Its worktree may be gone: the directory is found by its name, and a transcript's recorded
+    cwd, when one has one, must lie in the container the name points at. ``keep`` are the
+    worktrees that stay where they are, whose directories stay with them.
+    """
+    projects = claude_home / "projects"
+    if not projects.is_dir():
+        return []
+    root = _slug(slots) + "-"
+    names = {f"{old}-agents": f"{new}-agents"}
+    names |= {o.name: n.name for o, n in _host_containers(slots, old, new)}
+    kept = {_slug(path) for path in keep}
+    found: list[AgentProjectDir] = []
+    for project in sorted(projects.iterdir()):
+        name = project.name
+        if not project.is_dir() or not name.startswith(root) or len(name) > PROJECT_SLUG_CAP:
+            continue
+        cwd = _recorded_cwd(project)
+        if cwd is not None:
+            parts = cwd.parts[len(slots.parts) :] if cwd.parts[: len(slots.parts)] == slots.parts else ()
+            container = parts[0] if parts else ""
+            if container != f"{old}-agents" and not container.endswith(f"--{old}-agents"):
+                continue
+            names.setdefault(container, container[: -len(f"{old}-agents")] + f"{new}-agents")
+            candidates = [container]
+        else:
+            candidates = list(names)
+        for container in candidates:
+            prefix = root + _slug(container)
+            if name != prefix and not name.startswith(prefix + "-"):
+                continue
+            if any(name == k or name.startswith(k + "-") for k in kept):
+                break
+            dest = projects / (root + _slug(names[container]) + name[len(prefix) :])
+            if len(dest.name) <= PROJECT_SLUG_CAP:
+                found.append(AgentProjectDir(project, dest, slots / container, slots / names[container]))
+            break
+    return found
+
+
 def plan_agents(
     old: str,
     new: str,
@@ -299,9 +396,11 @@ def plan_agents(
     old_wt: Path,
     new_wt: Path,
     live_cwds: list[tuple[int, Path]],
+    claude_home: Path | None = None,
 ) -> AgentPlan:
-    """Plan every agent worktree, branch and marker move; writes nothing."""
+    """Plan every agent worktree, branch, marker and agent project directory move; writes nothing."""
     plan = AgentPlan()
+    home = claude_home if claude_home is not None else Path.home() / ".claude"
     prefix, new_prefix = f"wt/{old}/", f"wt/{new}/"
     for repo in _repos(projects_dir, slot_repo):
         listed = _git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{prefix}")
@@ -323,7 +422,15 @@ def plan_agents(
 
         repo_entries: list[AgentEntry] = []
         recovered: dict[Path, Path] = {}
+        host_pairs = _host_containers(container.parent, old, new)
         for path, branch in worktrees:
+            # A host-prefixed container is matched by name alone, so only a worktree on one of
+            # this session's branches is taken from it.
+            ours = bool(branch) and branch.startswith((prefix, new_prefix))
+            source, target = next(
+                ((o, n) for o, n in host_pairs if ours and (o in path.parents or n in path.parents)),
+                (container, new_container),
+            )
             flat = (
                 path.parent == container.parent
                 and path.name.startswith(f"{old}-")
@@ -336,16 +443,18 @@ def plan_agents(
                 and branch
                 and branch.startswith((prefix, new_prefix))
             )
-            if container in path.parents:
-                dest = new_container / path.relative_to(container)
+            if source in path.parents:
+                dest = target / path.relative_to(source)
+                if source != container and source not in plan.host_containers:
+                    plan.host_containers.append(source)
             elif new_flat:
                 dest = path
                 recovered[path.with_name(old + path.name[len(new) :])] = path
             elif flat:
                 dest = path.with_name(new + path.name[len(old) :])
-            elif new_container in path.parents:
+            elif target in path.parents:
                 dest = path
-                recovered[container / path.relative_to(new_container)] = path
+                recovered[source / path.relative_to(target)] = path
             else:
                 continue
             entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
@@ -395,6 +504,8 @@ def plan_agents(
         # the migration, and nothing else removes a directory still named for the old session.
         if any(e.worktree for e in repo_entries) or container.is_dir():
             plan.containers.append(container)
+        staying = [e.worktree for e in repo_entries if e.worktree and not e.moves] + [cwd for _pid, cwd in live_cwds]
+        plan.project_dirs += _plan_project_dirs(container.parent, old, new, home, staying)
 
         moved = {e.worktree: e.dest for e in repo_entries if e.worktree and e.moves}
         pattern = session_home_pattern()
@@ -436,7 +547,9 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
     for m in plan.markers:
         key = renamed_key(m.key, (renames or {}).get(m.repo, plan.renames(m.repo)))
         lines.append(("session-home marker", f"{m.key} ({m.repo})", f"{key} = {m.value}", "rewrite"))
-    for container in plan.containers:
+    for p in plan.project_dirs:
+        lines.append(("agent project dir", str(p.source), str(p.dest), "conflict" if p.conflict else "move"))
+    for container in plan.containers + plan.host_containers:
         lines.append(("agent container", str(container), "", "removed once empty"))
     return lines
 
@@ -485,6 +598,24 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
         res = _git(m.repo, "config", key, m.value)
         if res.returncode != 0:
             warnings.append(f"session-home marker {key} in {m.repo} FAILED to rewrite: {(res.stderr or '').strip()}")
-    for container in plan.containers:
+    warnings += _apply_project_dirs(plan.project_dirs)
+    for container in plan.containers + plan.host_containers:
         _remove_if_empty(container)
     return done, warnings
+
+
+def _apply_project_dirs(project_dirs: list[AgentProjectDir]) -> list[str]:
+    """Rename each planned project directory whose target is still free and repoint its transcripts' cwd."""
+    from .session_migrate import _rewrite_transcript_cwd
+
+    warnings: list[str] = []
+    for p in project_dirs:
+        if p.conflict:
+            continue
+        try:
+            p.source.rename(p.dest)
+            for transcript in sorted(p.dest.glob("*.jsonl")):
+                _rewrite_transcript_cwd(transcript, str(p.old_root), str(p.new_root))
+        except OSError as exc:
+            warnings.append(f"agent project dir {p.source} FAILED to move to {p.dest}: {exc}")
+    return warnings

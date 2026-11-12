@@ -500,3 +500,148 @@ def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_th
     assert code == 2
     assert "still running" in out + err
     assert snapshot_tree(leftover["second"]) == before
+
+
+# Every path that embeds the old session's agents container moves with it: a container named
+# ``<host>--<old>-agents`` as well as ``<old>-agents``, and the Claude Code project directory of
+# an agent whose worktree was reaped before the migration.
+
+HOST_CONTAINER = f"myhost--{OLD}-agents"
+NEW_HOST_CONTAINER = f"myhost--{NEW}-agents"
+
+
+def _slug(path: Path) -> str:
+    return "".join(c if c.isascii() and c.isalnum() else "-" for c in str(path))
+
+
+def _project_dir(cwd: Path, sid: str = "abc123") -> Path:
+    project = Path.home() / ".claude" / "projects" / _slug(cwd)
+    project.mkdir(parents=True)
+    (project / f"{sid}.jsonl").write_text(json.dumps({"type": "user", "cwd": str(cwd)}) + "\n", encoding="utf-8")
+    return project
+
+
+@pytest.fixture
+def host_fleet(fleet):
+    leaf = fleet["other"] / ".worktrees" / HOST_CONTAINER / "leaf-h"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf-h", cwd=fleet["other"])
+    fleet["leaf_h"] = leaf
+    return fleet
+
+
+def test_given_a_host_prefixed_agent_worktree_when_dry_run_then_its_move_is_listed_and_nothing_changes(host_fleet):
+    before = snapshot_tree(host_fleet["projects"])
+
+    code, out, err = _migrate(host_fleet, "-n")
+
+    assert code == 0, out + err
+    new_h = host_fleet["other"] / ".worktrees" / NEW_HOST_CONTAINER / "leaf-h"
+    assert f"agent worktree: {host_fleet['leaf_h']} -> {new_h}" in out
+    assert snapshot_tree(host_fleet["projects"]) == before
+
+
+def test_given_a_host_prefixed_agent_worktree_when_migrated_then_directory_and_branch_follow_the_new_name(host_fleet):
+    code, out, err = _migrate(host_fleet, "-y")
+
+    assert code == 0, out + err
+    other = host_fleet["other"]
+    new_h = other / ".worktrees" / NEW_HOST_CONTAINER / "leaf-h"
+    assert f"worktree {new_h.as_posix()}\n" in _registered(other)
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_h).strip() == f"wt/{NEW}/leaf-h"
+    assert not (other / ".worktrees" / HOST_CONTAINER).exists()
+
+
+def test_given_a_host_prefixed_worktree_whose_branch_was_already_renamed_when_finished_then_it_moves(fleet):
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    other = fleet["other"]
+    stranded = other / ".worktrees" / HOST_CONTAINER / "leaf-x"
+    _git("worktree", "add", "-q", str(stranded), "-b", f"wt/{NEW}/leaf-x", cwd=other)
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    new_x = other / ".worktrees" / NEW_HOST_CONTAINER / "leaf-x"
+    assert f"worktree {new_x.as_posix()}\n" in _registered(other)
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_x).strip() == f"wt/{NEW}/leaf-x"
+    assert not stranded.exists()
+
+
+def test_given_a_host_prefixed_container_holding_another_sessions_worktree_when_migrated_then_it_is_left(fleet):
+    other = fleet["other"]
+    foreign = other / ".worktrees" / HOST_CONTAINER / "leaf-f"
+    _git("worktree", "add", "-q", str(foreign), "-b", "wt/session-1/leaf-f", cwd=other)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert f"worktree {foreign.as_posix()}\n" in _registered(other)
+    assert f"agent worktree: {foreign}" not in out
+
+
+@pytest.mark.parametrize("container", [f"{OLD}-agents", HOST_CONTAINER])
+def test_given_a_reaped_agents_project_dir_when_dry_run_then_its_move_is_listed_and_nothing_changes(fleet, container):
+    gone = fleet["other"] / ".worktrees" / container / "gone-leaf"
+    project = _project_dir(gone)
+    before = snapshot_tree(project.parent)
+
+    code, out, err = _migrate(fleet, "-n")
+
+    assert code == 0, out + err
+    dest = project.parent / _slug(gone.parent.with_name(container.replace(OLD, NEW)) / "gone-leaf")
+    assert f"agent project dir: {project} -> {dest}" in out
+    assert snapshot_tree(project.parent) == before
+
+
+@pytest.mark.parametrize("container", [f"{OLD}-agents", HOST_CONTAINER])
+def test_given_a_reaped_agents_project_dir_when_migrated_then_it_moves_to_the_new_slug(fleet, container):
+    gone = fleet["other"] / ".worktrees" / container / "gone-leaf"
+    project = _project_dir(gone)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_gone = gone.parent.with_name(container.replace(OLD, NEW)) / "gone-leaf"
+    dest = project.parent / _slug(new_gone)
+    assert not project.exists()
+    record = json.loads((dest / "abc123.jsonl").read_text(encoding="utf-8"))
+    assert record["cwd"] == str(new_gone)
+
+
+def test_given_a_reaped_agents_project_dir_when_finished_then_it_moves_to_the_new_slug(fleet):
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    gone = fleet["other"] / ".worktrees" / HOST_CONTAINER / "gone-leaf"
+    project = _project_dir(gone)
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    assert not project.exists()
+    assert (project.parent / _slug(gone.parent.with_name(NEW_HOST_CONTAINER) / "gone-leaf")).is_dir()
+
+
+def test_given_the_new_agents_project_dir_exists_when_migrated_then_the_collision_is_reported_and_both_kept(fleet):
+    gone = fleet["other"] / ".worktrees" / f"{OLD}-agents" / "gone-leaf"
+    project = _project_dir(gone)
+    taken = _project_dir(fleet["other"] / ".worktrees" / f"{NEW}-agents" / "gone-leaf", sid="def456")
+    before = (snapshot_tree(project), snapshot_tree(taken))
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 1, out + err
+    assert f"agent project dir: {project} -> {taken} SKIPPED (target exists)" in out
+    assert (snapshot_tree(project), snapshot_tree(taken)) == before
+
+
+def test_given_a_project_dir_whose_transcript_records_another_cwd_when_migrated_then_it_is_left(fleet):
+    # ``<old>-agents-extra-agents`` slugs to a name that starts with ``<old>-agents``'s own slug.
+    elsewhere = fleet["other"] / ".worktrees" / f"{OLD}-agents-extra-agents" / "leaf-z"
+    project = _project_dir(elsewhere)
+    before = snapshot_tree(project)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert snapshot_tree(project) == before
+    assert str(project) not in out
