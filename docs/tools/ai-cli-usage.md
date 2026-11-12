@@ -87,6 +87,7 @@ Behaviour is split across focused modules so `main.py` stays thin:
 
 ```bash
 ai c [N|LABEL|NAME|TITLE] [-r] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
+ai c -t [NAME] [-b] [-W] [-p PROJECT] [-d|--dry-run]
 ```
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
@@ -109,6 +110,15 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   resumes with `ai cos -r` or `ai cos -R -r`. With `-d`, the plan is the attach, the
   relaunch or the refusal; a remote dry run contacts no host, so the remote host decides
   at launch. Design: [session-resume-by-name.md](../designs/session-resume-by-name.md).
+- `-t`/`--probe`: launch a throwaway probe or test session that nothing treats as a
+  session home. It is titled `myrepo-box-probe-1` (`myrepo-box-probe-NAME-1` with a NAME)
+  by index and reserves no first name. Its worktree is made under the per-user state
+  directory (`probe-worktrees/<repo>-<digest>/<title>`), outside the repository, and is not
+  recorded as a canonical session worktree. Its run record is never relaunched at boot,
+  the iTerm2 restore skips it, and `ai iterm2 sessions --prune` drops it once the session
+  is gone. Refused with `-r`, `-N`, `-w`, `-u`, `-S`, `-F` and `-R`. Remove the worktree
+  with `git worktree remove` once the probe has exited. Design:
+  [probe-sessions.md](../designs/probe-sessions.md).
 - `-N`/`--name NAME` — name the new session with this first name. It is checked like a picked
   one; a name not yet in the name database asks to be added. Never passed to the engine.
 - `-w`/`--with-name`, `-u`/`--no-name` — with a label, keep or drop the first name for this launch.
