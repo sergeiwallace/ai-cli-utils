@@ -1067,9 +1067,12 @@ class TestCliResumePath:
                 with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.resolve_session", return_value=None):
-                            with pytest.raises(SystemExit) as exc:
-                                cli()
-                            assert exc.value.code == 1
+                            # The refusal lists this host's sessions as close matches.
+                            with patch("ai_cli.session._tmux_session_names", return_value=[]):
+                                with pytest.raises(SystemExit) as exc:
+                                    cli()
+                                assert exc.value.code == 1
+        assert "Nothing was reserved or created" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("tmux_available")
