@@ -391,3 +391,25 @@ def test_given_a_canonical_worktree_with_the_probe_title_and_no_record_when_a_pr
     assert len(env.started) == 1
     assert (canonical / "README.md").is_file()
     assert canonical.resolve().as_posix() in git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
+
+
+def test_given_a_probe_worktree_when_an_ordinary_launch_takes_its_title_then_neither_checkout_moves(env):
+    """A probe's branch is its own: the session gets a fresh checkout, the probe's stays where it was.
+
+    Sharing ``wt-<title>`` made the ordinary launch relocate the probe's checkout into
+    ``.worktrees/``: Linux allowed it (moving a directory a process stands in), and
+    Windows refused it with "Permission denied", failing the launch.
+    """
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+    assert code == 0, err
+    probe = env.started[0][0]
+
+    code, _out, err = run_cli([*LAUNCH, "probe-1", "-I"])
+
+    assert code == 0, err
+    session = env.started[1][0]
+    assert session.parent == env.repo / ".worktrees"
+    assert (probe / "README.md").is_file()
+    listed = git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
+    assert f"worktree {probe.resolve().as_posix()}" in listed
+    assert git(probe, "branch", "--show-current") != git(session, "branch", "--show-current")
