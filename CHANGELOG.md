@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
   remove a local row once tmux and the process table prove its session gone and it has not
   changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier
-  boot counts from this boot's start). A client-side remote row past the retention whose
-  launcher is gone is removed when the remote host reports no such tmux session, which clears
-  rows for sessions renamed or retired on their own host. `ai retire-session` drops the retired
-  session's rows.
+  boot counts from this boot's start). The minute worker, never the list, also removes a
+  client-side remote row past the retention whose launcher is gone when the remote host
+  reports no such tmux session, which clears rows for sessions renamed or retired on their own
+  host. `ai retire-session` drops the retired session's rows.
 - `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
   environment looking for files that name the old path. It now reads only the records at the top
   of each site-packages directory (`.pth` files, legacy `.egg-link` files and the

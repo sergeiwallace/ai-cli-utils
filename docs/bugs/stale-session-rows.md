@@ -81,11 +81,13 @@ the minute worker. It removes a local row only when tmux and the process table
 both prove its session gone, no deny-boot safety file exists, and the row has not
 changed for `[session_registry] stale_row_retention_hours` (default 72, read on
 every call, 0 turns it off). A row from an earlier boot counts from this boot's
-start, so boot relaunch keeps its window. `ai sessions list` also handles remote
-rows past the retention whose launcher is gone: a recorded clean exit removes it,
-otherwise one ssh `tmux has-session` removes it only on proved absence, and an
-unsettled row is stamped `probed_at` so it waits another retention. Removal skips
-any row that changed after the pass read it.
+start, so boot relaunch keeps its window. The minute worker alone also handles
+remote rows past the retention whose launcher is gone: a recorded clean exit
+removes it, otherwise one ssh `tmux has-session` removes it only on proved
+absence, and an unsettled row is stamped `probed_at` so it waits another
+retention. `ai sessions list` never dials a host: an unreachable host could hold
+an interactive list for up to 20 s. Removal skips any row that changed after the
+pass read it.
 
 `ai retire-session NAME` now drops this machine's local rows for NAME (every
 engine and `-r` variant) after the checkout is removed, and its plan and dry run
