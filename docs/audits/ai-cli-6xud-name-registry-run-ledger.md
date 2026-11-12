@@ -47,8 +47,8 @@ ledger-version: 1
 | Target commit (base) | `b05f3432`, rebased onto `5192e13e` at 02:40Z (picks up the resumable migrate-session change and the spare-release fix to `name_registry.py`) |
 | Orchestrator worktree | the orchestrating session's own session worktree |
 | Orchestrator branch | that worktree's session branch |
-| Stage cursor | `doc-audit done: audit-converged; round 6` (receipt at `c92ac765`); design doc `docs/designs/session-name-registry-dolt.md`; research doc on main at `aadd96ac` (PR #500); next `implement` |
-| Last completed integration boundary | research, landed on main as `aadd96ac` (PR #500) |
+| Stage cursor | `research converged (round 1 plus critic fold); doc stage next`; research doc `docs/research/session-name-registry-storage.md` at `35a96b40` |
+| Last completed integration boundary | none |
 
 ## Transition verdicts
 
@@ -56,7 +56,6 @@ ledger-version: 1
 |---|---:|---|---|---|---|---|
 | `entry->research` | 0 | `research-run` | `explicit` | The owner asked for a full-breadth and full-depth research doc on git-tracked storage before the design. R2 and R3 also fire. | `session` | `6da3d70e` |
 | `research->doc` | 1 | `converged` | `rubric` | none | `session` | `35a96b40` |
-| `doc->doc-audit` | 6 | `audit-converged` | `rubric` | none open; epoch 0 halted on recurrence at round 2, epoch 1 converged at round 6 | `session` | `c92ac765` |
 
 ## Children dispatched
 
@@ -66,8 +65,6 @@ ledger-version: 1
 | 2 | AI-CLI-6xud.2 | `6xud-storage-landscape` | `researcher`, read-only | claude / opus / n/a | none, writes no file | cited survey of alternatives | returned; child closed |
 | 3 | AI-CLI-6xud.3 | `6xud-registry-inventory` | `Explore`, read-only | claude / opus / n/a | none, writes no file | line-cited inventory of the current registry and prior art | returned; child closed |
 | 4 | AI-CLI-6xud.4 | `6xud-research-critic` | `researcher`, read-only, non-author | claude / opus / n/a | none, writes no file | five-perspective critic findings (gap G5) | returned 21 findings (2 high); all folded in at `35a96b40`; child closed |
-| 5 | AI-CLI-6xud.5 | `6xud-doc-audit` | audit loop, `audit_loop.py run --stage doc-audit` | codex / audit / high | the session worktree | audit doc and receipt | epoch 0 halted-recurrence at round 2; epoch 1 converged at round 6 |
-| 6 | AI-CLI-6xud.5.1 | `6xud-doc-fix` | `engineer` | claude / opus / default | preflight worktree on the session branch | root fix of IC-2, JA-2, JA-3 | `434c4c3c`, fast-forwarded; child closed |
 
 <!-- doc:region name="run_history" kind="append_only" -->
 
@@ -96,17 +93,5 @@ ledger-version: 1
   history-cap setting is 2.4.1+, the lock-fallback issue closed by documentation, JSON keys merge
   cleanly). G1 to G6 re-run over the whole doc: none open. `research->doc` round 1 recorded
   `converged` at `35a96b40`.
-
-- 2026-11-11 ~04:15Z: research landed on main through PR #500 (`aadd96ac`, squash tree
-  verified). The doc stage's prepare ran against that snapshot, the orchestrator authored the
-  design doc (nine decisions resolved in automated mode, none escalated; two open questions for
-  the owner, neither blocking Phases 1 to 3), and complete passed. Validator, markdown lint,
-  decision-coverage ToC and founding-ask fidelity checks all clean.
-- 2026-11-11 04:46Z: the doc-audit loop halted on recurrence at round 2: round-1 findings IC-2, JA-2
-  and JA-3 came back after a fix that had patched the cited lines only.
-- 2026-11-11 23:56Z: an Opus leaf fixed the three at their root (`434c4c3c`); the driver recorded
-  `resume-after-fix` and started spec epoch 1.
-- 2026-11-12 00:34Z: epoch 1 converged at round 6 with no open finding (`c92ac765`). Two cx
-  launches in between were refused at machine-contention HOLD and re-run once it cleared.
 
 <!-- /doc:region name="run_history" -->
