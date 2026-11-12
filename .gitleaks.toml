@@ -1,0 +1,7 @@
+title = "ai-cli-utils secret scanning policy"
+
+# Use gitleaks' built-in credential rules. Committing this file also makes gitleaks the
+# detector of record for tools that look for a repository policy before falling back to
+# a stricter pattern scan of every tracked file.
+[extend]
+useDefault = true
