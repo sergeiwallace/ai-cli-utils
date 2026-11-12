@@ -702,3 +702,27 @@ def test_given_a_project_dir_whose_transcript_records_another_cwd_when_migrated_
     assert code == 0, out + err
     assert snapshot_tree(project) == before
     assert str(project) not in out
+
+
+def test_given_editable_finder_and_egg_link_records_when_migrated_then_both_name_the_new_worktree(fleet, tmp_path):
+    venvs = tmp_path / "local-io" / "venvs"
+    own = _venv_in_root(venvs, "otherrepo--leaf-a", fleet["leaf_a"])
+    site = own / "lib" / "python3.12" / "site-packages"
+    old = fleet["leaf_a"]
+    (site / "__editable___pkg_1_0_finder.py").write_text(
+        f"MAPPING = {{'pkg': '{old}/src/pkg'}}\nNAMESPACES = {{}}\n", encoding="utf-8"
+    )
+    (site / "legacypkg.egg-link").write_text(f"{old}\n.\n", encoding="utf-8")
+    try:
+        (old / ".venv").symlink_to(own, target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform cannot create directory symlinks")
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_a = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    assert (site / "__editable___pkg_1_0_finder.py").read_text(encoding="utf-8") == (
+        f"MAPPING = {{'pkg': '{new_a}/src/pkg'}}\nNAMESPACES = {{}}\n"
+    )
+    assert (site / "legacypkg.egg-link").read_text(encoding="utf-8") == f"{new_a}\n.\n"

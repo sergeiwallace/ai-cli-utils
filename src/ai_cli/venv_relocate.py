@@ -17,7 +17,11 @@ from pathlib import Path
 
 _SCRIPT_DIRS = ("bin", "Scripts")
 _NAMED_FILES = ("pyvenv.cfg",)
-_NAMED_SUFFIXES = (".pth",)
+# Top-level site-packages records that can hold an absolute path to an installed project: a
+# ``.pth`` path file, a legacy setuptools ``.egg-link``, and the module a PEP 660 editable install
+# imports from its ``__editable__`` ``.pth`` (``__editable___<name>_finder.py``).
+_NAMED_SUFFIXES = (".pth", ".egg-link")
+_EDITABLE_FINDER = ("__editable___", "_finder.py")
 _NAMED_BASENAMES = ("direct_url.json",)
 _MAX_BYTES = 1_000_000
 
@@ -41,18 +45,24 @@ def _candidates(venv: Path):
             yield from (p for p in sorted(folder.iterdir()) if p.is_file() and not p.is_symlink())
     for site in _site_packages(venv):
         for path in sorted(site.iterdir()):
-            if path.name.endswith(_NAMED_SUFFIXES) and path.is_file():
+            if _is_top_level_record(path.name) and path.is_file():
                 yield path
             elif path.name.endswith(".dist-info"):
                 yield from (path / name for name in _NAMED_BASENAMES if (path / name).is_file())
 
 
+def _is_top_level_record(name: str) -> bool:
+    prefix, suffix = _EDITABLE_FINDER
+    return name.endswith(_NAMED_SUFFIXES) or (name.startswith(prefix) and name.endswith(suffix))
+
+
 def _site_packages(venv: Path) -> list[Path]:
     """The venv's site-packages directories, on either platform layout.
 
-    ``.pth`` files are honoured only at the top of a site-packages directory and ``direct_url.json``
-    only in a ``*.dist-info`` directory beside them, so nothing below that is read: a package's own
-    data tree (a bundled browser driver, node modules) can hold tens of thousands of files.
+    ``.pth`` and ``.egg-link`` files and editable finder modules live only at the top of a
+    site-packages directory, and ``direct_url.json`` only in a ``*.dist-info`` directory beside
+    them, so nothing below that is read: a package's own data tree (a bundled browser driver, node
+    modules) can hold tens of thousands of files.
     """
     found: dict[Path, Path] = {}
     for pattern in ("lib/*/site-packages", "Lib/site-packages"):
