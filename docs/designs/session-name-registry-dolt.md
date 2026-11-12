@@ -251,8 +251,8 @@ neither). A rerun of `migrate-session` can resume a rename; a reconcile pass can
 | T30 | session-active or label-active | release | an absence test fails, the row changed since the test, or an `intent` row names its title | unchanged | kept held, with the reason ("a recorded rename of this session has not completed" for the last case) |
 | T31 | session-intent | release | true | unchanged | kept held: a recorded rename of this session has not completed |
 | T32 | session-migrating | release | true | unchanged | refused with exit 2, telling the user to run the same `migrate-session` command again |
-| T33 | absent or spare-reserved | quarantine-spare | cutover import is running with Dolt writes disabled, and the token is a spare in the frozen tree or in a host cache inventory | cutover-quarantined | the spare is held but cannot be activated or released by ordinary lifecycle commands |
-| T34 | session-active, session-intent, session-migrating, label-active or cutover-quarantined | quarantine-spare | true | unchanged | the existing row is kept exactly as it is; nothing written |
+| T33 | absent | quarantine-spare | cutover import is running with Dolt writes disabled, and the token is a cache-only spare in a host cache inventory | cutover-quarantined | the spare is held but cannot be activated or released by ordinary lifecycle commands |
+| T34 | spare-reserved, session-active, session-intent, session-migrating, label-active or cutover-quarantined | quarantine-spare | true | unchanged | the existing row is kept exactly as it is; nothing written |
 | T35 | cutover-quarantined | reconcile-quarantine | every registered host has installed the new client and its old spool and cached spare inventory was reconciled | spare-reserved or session-active | the row becomes the reconciled old spare or activation; the runbook records the source evidence |
 | T36 | cutover-quarantined | activate-spare, migrate-to-own-spare, release, spare-release or reassign | true | unchanged | refused as quarantined with exit 2 |
 | T37 | any state but absent | foreign-edit | the editing host is not the row's `machine` and the event is not an authorized `reassign` | unchanged | refused with exit 2; nothing written |
@@ -278,7 +278,7 @@ cutover-quarantined):
 | reassign | T38 | T27, T28 | T27, T28 | T27, T28 | T27, T28 | T27, T28 | T36 |
 | release | T38 | T10, T11 | T29, T30 | T31 | T32 | T29, T30 | T36 |
 | spare-release | T38 | T10, T11 | T38 | T38 | T38 | T38 | T36 |
-| quarantine-spare | T33, T38 | T33 | T34 | T34 | T34 | T34 | T34 |
+| quarantine-spare | T33, T38 | T34 | T34 | T34 | T34 | T34 | T34 |
 | reconcile-quarantine | T38 | T38 | T38 | T38 | T38 | T38 | T35 |
 | foreign-edit | T38 | T37 | T37 | T37 | T37 | T37 | T37 |
 
@@ -724,6 +724,7 @@ asserting both the pick result and the hand-choice result.
   - **T-4.2 Import, quarantine and seed** — on one host, import every row from the exact frozen tip unchanged. Then consider the union of all host cache spare inventories by token: when the frozen tip already has that token, its row is authoritative and remains unchanged; only a cache-only spare token is inserted as `cutover-quarantined`. Seed verdicts while Dolt writes remain disabled.
     - [ ] When import completes, every old session and label hold shall exist unchanged, every cache-only token an old offline client could activate shall be occupied by a quarantined Dolt hold, every cached token already present at the frozen tip shall remain occupied by that authoritative frozen row, and no ordinary Dolt allocation shall yet be accepted.
     - [ ] Given a stale host cache that calls a token an unactivated spare while the frozen tip holds that token as an active session, an integration test shall prove that import keeps the active row byte-for-byte, inserts no duplicate or quarantine row for the token, and continues to report the token as occupied.
+    - [ ] Given a frozen reserved spare and a different cache-only spare, an integration test shall prove that import keeps the frozen spare row byte-for-byte unchanged while inserting the cache-only token as `cutover-quarantined`.
     - [ ] Before seed writes, the runbook shall load the owner-approved oracle from its pinned commit, verify its canonical digest against the independently stored expected digest, and compare every normalized candidate row with the oracle. A mismatch in the original or corrected list's count or membership, the replacement, the superseded entry, the separate addition, any scoped verdict or rejection, or the digest shall block the flip.
     - [ ] When validation succeeds, `check-names` in cutover mode shall exit 0 and `list-names` shall show counts equal to the frozen tree plus the attested seed and cache-only quarantines.
   - **T-4.3 Enable and roll out** — after every registered host is upgraded, reconcile each quarantine from its captured cache/spool evidence, verify no old registry process is running, switch policy to the Dolt backend, and set `meta.writes_enabled = 1` in the enabling Dolt commit. Sessions are told before the freeze and after the last host.
