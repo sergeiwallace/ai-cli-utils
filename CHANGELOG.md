@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hand-chosen session name (`ai migrate-session --to-name NAME`, a launch with `--name NAME`,
+  `ai adopt-session`) that is one of this machine's own unactivated spares is now taken by
+  activating that spare in place, with this machine's spares topped back up in the same registry
+  commit. Before, it was refused as held, and the only way round was to release the name and
+  reserve it again, which another machine could race. A spare of another machine, or one an
+  offline launch already took, is still refused as held. A `--name` dry run reports the name as
+  this machine's spare and reserves nothing.
 - Reconcile vanished local sessions from the current boot instead of leaving their run records
   running indefinitely. The existing minute worker and session list/publication/enrol/stop paths
   retain an unknown exit with liveness evidence; live, uncertain, foreign and earlier-boot records

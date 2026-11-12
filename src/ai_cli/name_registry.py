@@ -1067,10 +1067,14 @@ def reserve_picked(
     return change.result  # type: ignore[return-value]
 
 
-def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozenset[str]) -> tuple[str, str]:
+def check_hand_chosen(
+    snapshot: Snapshot, name: str, slot: Slot, words: frozenset[str], *, spool: dict[str, dict] | None = None
+) -> tuple[str, str]:
     """``(verdict, reason)`` for a name chosen by hand, under the snapshot's published policy.
 
-    The checks run in the order the hand-chosen flow states them: ``held``, then
+    A held name that is an unactivated spare of the slot's own machine, and not in that
+    machine's offline ``spool`` (read from disk when None), is ``spare``: the reservation
+    takes it by activating the row. Any other held name is ``held``. Then come
     ``confusable`` (one edit from a held name, or a strict-prefix title pair), then
     ``word``. A name in the database is then ``ok`` inside the limits and ``limits``
     outside them; a name not in the database is ``unknown`` whatever its length,
@@ -1081,6 +1085,8 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     policy = snapshot.policy
     holder = snapshot.holder(name)
     if holder:
+        if _is_own_spare(snapshot, name, slot, read_spool() if spool is None else spool):
+            return "spare", f"{name} is this machine's spare"
         return "held", f"{name} is held by {holder}"
     if _TOKEN_RE.fullmatch(name):
         held = held_tokens(snapshot)
@@ -1110,6 +1116,52 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     return ("limits", reason) if reason else ("ok", "")
 
 
+def _is_own_spare(snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict]) -> bool:
+    row = snapshot.rows.get(name)
+    return row is not None and row["kind"] == "spare" and row.get("machine") == slot.machine and name not in spool
+
+
+def _take_own_spare(
+    snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict], words: frozenset[str] | None
+) -> tuple[dict, dict[str, bytes | None], list[str]]:
+    """The session row this machine's spare ``name`` becomes, the writes that activate it and
+    refill the pool to ``offline_spares``, and the spares added."""
+    title = slot.title_for(name)
+    row = activate_spare(
+        snapshot.rows[name],
+        title=title,
+        repo=slot.repo,
+        repo_alias=slot.repo_alias,
+        label=slot.label,
+        client=slot.client,
+        worktree=slot.worktree_for(title),
+    )
+    writes: dict[str, bytes | None] = {row_path(name): checked_row(row)}
+    remaining = replace(snapshot, rows={token: r for token, r in snapshot.rows.items() if token != name})
+    spares, added = _spare_writes(remaining, slot, held_tokens(snapshot, spool), words, None)
+    writes.update(spares)
+    return row, writes, added
+
+
+class _SpoolLockNeeded(Exception):
+    """A build found this machine's own spare while ``spool.lock`` was not held."""
+
+
+def _transact_hand_chosen(registry: Registry, build_for: Callable[[bool], Callable[[Snapshot], Change]]) -> Change:
+    """Run a hand-chosen build, again under ``spool.lock`` when it would take this machine's own spare.
+
+    Only the own-spare path takes the lock, as an offline activation does, so an offline
+    launch on this machine cannot take the same spare between the spool read and the push.
+    """
+    try:
+        change = registry.transact(build_for(False))
+    except _SpoolLockNeeded:
+        with spool_lock(lock_wait(registry)):
+            change = registry.transact(build_for(True))
+    assert change is not None
+    return change
+
+
 def limits_text(policy: dict) -> str:
     low, high = name_list.limits(policy)
     return f"the configured limit is {low} to {high} letters (config/session-names.toml [limits])"
@@ -1134,10 +1186,22 @@ def reserve_hand_chosen(
 
     The checks run again on every fetched tip; a name another writer made unusable in
     the meantime raises :class:`HandChosenRefusedError` with the reason the new tip gave.
+    A name that is this machine's own spare is activated in place, under ``spool.lock``
+    so an offline launch cannot take it meanwhile.
     """
 
-    def build(snapshot: Snapshot) -> Change:
-        verdict, reason = check_hand_chosen(snapshot, name, slot, words)
+    def build_for(locked: bool) -> Callable[[Snapshot], Change]:
+        return lambda snapshot: build(snapshot, locked)
+
+    def build(snapshot: Snapshot, locked: bool) -> Change:
+        spool = read_spool()
+        verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool)
+        if verdict == "spare":
+            if not locked:
+                raise _SpoolLockNeeded
+            row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+            reservation = Reservation(name, row["title"], row, spares_added=added)
+            return Change(writes, f"session-names: activate {name} ({row['title']}@{slot.machine})", result=reservation)
         if verdict not in ("ok", "unknown") or (verdict == "unknown" and not add):
             raise HandChosenRefusedError(verdict, reason)
         if verdict == "unknown":
@@ -1165,9 +1229,7 @@ def reserve_hand_chosen(
         reservation = Reservation(name, title, row, added_to_database=verdict == "unknown")
         return Change(writes, f"session-names: reserve {name} ({title}@{slot.machine})", result=reservation)
 
-    change = registry.transact(build)
-    assert change is not None
-    return change.result  # type: ignore[return-value]
+    return _transact_hand_chosen(registry, build_for).result  # type: ignore[return-value]
 
 
 def _manual_record(name: str, added_by: str, via: str, reason: str | None) -> dict:
@@ -1960,13 +2022,29 @@ def reserve_for_migration(
     """Reserve the migration's new name and declare the rename as ``intent``, in one commit."""
     from . import session_naming
 
-    def build(snapshot: Snapshot) -> Change:
+    def build_for(locked: bool) -> Callable[[Snapshot], Change]:
+        return lambda snapshot: build(snapshot, locked)
+
+    def build(snapshot: Snapshot, locked: bool) -> Change:
         if name is None:
             request, warnings = pick_request(registry, snapshot, slot, max_length=max_length, words=words)
             pick = session_naming.pick_name(request, rng)
             chosen, tier = pick.name, pick.tier
         else:
-            verdict, reason = check_hand_chosen(snapshot, name, slot, words)
+            spool = read_spool()
+            verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool)
+            if verdict == "spare":
+                if not locked:
+                    raise _SpoolLockNeeded
+                row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+                writes[migration_path(old_title)] = encode_json(
+                    migration_record(old_title, row["title"], slot.machine, slot.client)
+                )
+                return Change(
+                    writes,
+                    f"session-names: activate {name} ({row['title']}@{slot.machine}) for the rename of {old_title}",
+                    result=Reservation(name, row["title"], row, spares_added=added),
+                )
             if verdict != "ok":
                 raise HandChosenRefusedError(
                     verdict, reason if verdict != "unknown" else f"{reason}; add it with `ai add-name {name}` first"
@@ -1993,9 +2071,7 @@ def reserve_for_migration(
             result=Reservation(chosen, title, row, warnings=warnings),
         )
 
-    change = registry.transact(build)
-    assert change is not None
-    return change.result  # type: ignore[return-value]
+    return _transact_hand_chosen(registry, build_for).result  # type: ignore[return-value]
 
 
 def complete_migration(registry: Registry, old_title: str, machine: str) -> bool:
