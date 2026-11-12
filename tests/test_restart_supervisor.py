@@ -7,7 +7,6 @@ agent client, registry or messaging service outside this test is used.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -22,9 +21,9 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import reap_tree, watch_session
 
 from ai_cli import config, main, session_restart, session_run_state
-from ai_cli.process_probe import probe_for
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
@@ -328,33 +327,14 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
     )
     (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
     try:
-        # This shared-module patch must unwind before the conftest spawn guard.
-        with patch.object(session_restart.subprocess, "run", fixture_run):
-            yield root, script, process
+        # The wrapper respawns its children for good, so it must end with this test even
+        # when the test process is killed and this finally never runs.
+        with watch_session(process):
+            # This shared-module patch must unwind before the conftest spawn guard.
+            with patch.object(session_restart.subprocess, "run", fixture_run):
+                yield root, script, process
     finally:
-        # Only test-owned PIDs are eligible. Capture births before signalling;
-        # never use a group or a pattern, even for fixture cleanup.
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.Error:
-            children = []
-        targets = [(child.pid, probe_for().capture_identity(child.pid)) for child in children]
-        targets.append((process.pid, probe_for().capture_identity(process.pid)))
-        for pid, identity in reversed(targets):
-            if identity is not None and probe_for().capture_identity(pid) == identity:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGTERM)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=5)
-        for pid, identity in targets:
-            if (
-                identity is not None
-                and probe_for().capture_identity(pid) == identity
-                and not probe_for().has_ended(pid)
-            ):
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGKILL)
-        process.wait(timeout=5)
+        reap_tree(process)
         diagnostics.close()
 
 

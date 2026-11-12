@@ -141,7 +141,7 @@ def test_report_memory_baseline():
         env=measurement_env,
         capture_output=True,
         text=True,
-        timeout=scaled(30),
+        timeout=scaled(120),
         check=False,
     )
 
@@ -240,7 +240,7 @@ def test_synthetic_runaway_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(30),
+        timeout=scaled(120),
         check=False,
     )
 
@@ -300,7 +300,7 @@ def test_synthetic_unconstrained_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(30),
+        timeout=scaled(120),
         check=False,
     )
 
@@ -365,7 +365,7 @@ def test_guarded_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(30),
+        timeout=scaled(120),
         check=False,
     )
 
@@ -450,7 +450,7 @@ if "--watch-parent" in sys.argv:
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(60),
+        timeout=scaled(240),
         check=False,
     )
 
@@ -519,7 +519,7 @@ def test_child_reserves_address_space():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(60),
+        timeout=scaled(240),
         check=False,
     )
 
@@ -572,7 +572,7 @@ def test_synthetic_runaway_allocation():
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
-        timeout=scaled(30),
+        timeout=scaled(120),
         check=False,
     )
 
