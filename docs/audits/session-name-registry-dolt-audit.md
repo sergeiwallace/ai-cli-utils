@@ -79,16 +79,16 @@ ledger-version: 1
 
 | Field | Value |
 |---|---|
-| Stage cursor | `doc-audit done: halted-recurrence; round 2` |
+| Stage cursor | `doc-audit active; round 3` |
 | Promotion | `blocked` |
 <!-- doc:region name="loop_receipt" kind="generated" -->
 ## Status Summary
 
-**Loop state:** halted-recurrence — NOT promotion ready
+**Loop state:** active — NOT promotion ready
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | New MINOR | Open blocking | Scope | Stable |
 |---|---:|---|---:|---:|---:|---|---|---|
-| doc-audit | 2 | sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf | 0 | 1 | 0 | round1:IC-2, round1:JA-2, round1:JA-3, round2:N-1 | verify | no |
+| doc-audit | 3 | sha256:293ea751caba79c7134b3b9fe7c9800ad5b92fbf84ebf5197d0adbaa0a272bf4 | 0 | 0 | 0 | round1:JA-3, round2:N-1 | verify | no |
 <!-- /doc:region name="loop_receipt" -->
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -1184,5 +1184,266 @@ row wins, no duplicate is inserted, and the token remains occupied.
     "kind": "verify"
   },
   "source_event_id": "round-2-audit"
+}
+```
+
+## Round 3 — Verification
+
+**Round 3 auditor:** Codex independent verification (the wrapper did not expose a concrete model ID)
+
+**Round 3 date:** 2026-11-11
+
+**Round 3 scope:** Verify the four-item driver backlog against target digest
+`sha256:293ea751caba79c7134b3b9fe7c9800ad5b92fbf84ebf5197d0adbaa0a272bf4` and inspect
+the revised lifecycle, migration, seed, and cutover text for regressions. This was append-only; the
+target was not edited.
+
+### R3 Summary
+
+IC-2 and JA-2 are fixed. JA-3 remains open-blocking: the revised arithmetic correctly separates
+the corrected 20-entry list from the additional approval, but the cited authoritative record does
+not enumerate the original 20, so the exact membership still cannot be independently derived or
+tested. N-1 also remains open-blocking: T34 now gives the frozen-tip row precedence, while T-4.2
+still requires every colliding cached spare to become a quarantined row. No new finding was opened.
+Promotion remains blocked on JA-3 and N-1.
+
+### R3 Rubric Verdicts
+
+| Rubric row | Verdict | Evidence |
+|---|---|---|
+| Current-registry and approval-branch parity is carried into ACs | **PASS for the revised backlog items (CONFIRMED)** | Digit-bearing labels and reassignment are explicit in AC-SM-HOLD and T-1.1/T-1.4 (`docs/designs/session-name-registry-dolt.md:184-301,564-604`). Clean failure, partial failure, completion-publication failure, and all four recovery observations are explicit in T16-T26 and T-1.5 (lines 237-247, 606-621). |
+| Claim protocol gives exactly one winner, including identical payloads | **PASS (CONFIRMED)** | The protocol requires an attempt-unique claimant, forbids merge after a rejected push, and requires claimant read-back (`docs/designs/session-name-registry-dolt.md:322-348`); T-1.2 separately tests simultaneous and otherwise-identical claims (lines 572-578). |
+| Cutover cannot leave two stores accepting writes | **PASS (CONFIRMED)** | T-4.1 keeps Dolt `writes_enabled = 0` while every host is locked and the old tip is frozen; T-4.3 probes old-online, old-cached-offline, and new-Dolt writes at every checkpoint and permits only Dolt after the enabling commit (`docs/designs/session-name-registry-dolt.md:719-730`). N-1 concerns contradictory imported row state while both stores are fenced, not a second accepting writer. |
+| Dolt and SQLite share one schema | **PASS (CONFIRMED)** | One logical schema renders both dialects, SQLite foreign keys are enabled and read back, JSON text is checked, and T-1.1 requires a generated valid/invalid matrix to agree on both engines (`docs/designs/session-name-registry-dolt.md:424-522,564-571`). |
+| Every AC is independently testable and falsifiable | **FAIL (CONFIRMED)** | T-4.2 asks the runbook to derive the original 20 entries from a record that states only the count, replacement, and separate addition, so exact membership has no cited oracle (lines 690-702, 723-726; founding ask A001 lines 22-24, 37). T-4.2 also requires a stale-cache collision to be both an unchanged active row and a quarantined hold, contradicting T34 (lines 254-255, 723-726). |
+| Public document contains no private host, session, tool, or project name | **PASS (CONFIRMED)** | Full-file inspection and the Round 2 private-identifier scan, re-run unchanged, found no private identifier. |
+
+### R3 Backlog Verification
+
+| ID | Verdict | Disposition | Verification note |
+|---|---|---|---|
+| IC-2 | PASS | fixed | The shared constraint now uses `[a-z]+` for session/spare tokens and `[a-z0-9]*[a-z][a-z0-9]*` for label tokens; T3 accepts `abc2`, T27/T28 cover reassignment, and T-1.1/T-1.4 require backend-parity tests (`docs/designs/session-name-registry-dolt.md:184-301,469-490,564-604`). |
+| JA-2 | PASS | fixed | T16-T26 and T-1.5 now specify clean no-survivor release, partial-survivor marking, completion-push failure, resume/reconcile observations N/O/B/Z, idempotency, guarded release, and backend-parametrized durable-boundary tests (`docs/designs/session-name-registry-dolt.md:211-247,606-621`). |
+| JA-3 | FAIL | open-blocking | The 20-plus-one arithmetic is corrected, but A001 identifies only “20 pre-approved names plus” the additional entry and the replacement; it does not enumerate the original 20. T-3.2 and T-4.2 nevertheless require independent derivation from that record (`docs/designs/session-name-registry-dolt.md:690-702,723-726`), so an arbitrary 20-entry set with the named structural properties can satisfy every published AC. |
+| N-1 | PARTIAL | open-blocking | T34 now says a colliding frozen `session-active`/intent/migrating/label row stays unchanged (`docs/designs/session-name-registry-dolt.md:254-255`). T-4.2 still says every spare in the frozen/cache union is imported “as `cutover-quarantined`” and every offline-activatable token is occupied “by a quarantined Dolt hold” (lines 723-724), which cannot hold for that same collision. |
+
+### R3 Outstanding Finding Notes
+
+#### JA-3: The exact approved seed still has no derivable membership oracle — `MAJOR`
+
+**Location:** founding ask A001 lines 22-24 and 37;
+`docs/designs/session-name-registry-dolt.md:690-702,723-726`
+
+**Exact evidence:**
+
+> `the owner's pre-approved list of 20 entries`
+>
+> `the runbook shall independently derive from the authoritative requirement record the corrected 20-entry list`
+
+The record supplies the count, the replacement, and the separate addition, but not the other
+members of the original 20. A digest computed from a candidate manifest proves only that the
+manifest is internally stable; without a pinned expected set or digest, it does not prove that the
+candidate contains the owner's set.
+
+**Why it matters:** The cutover can approve the wrong 20 names while every structural and digest AC
+passes. That drops explicit owner approvals and remains blocking ask drift.
+
+**Verification command:**
+
+```bash
+ask_record=$(rg -l 'body_sha256: c109bb425e48032ef88afa4f4906fe4f40f088e862efe460b018e062be404690' /data/projects/*/docs/asks 2>/dev/null | head -1); sed -n '22,24p;37p' "$ask_record"
+sed -n '690,702p;723,726p' docs/designs/session-name-registry-dolt.md
+```
+
+**Recommended fix:** Designate a private, authoritative exact-set manifest recovered from the prior
+feedback and pin its canonical digest in an authoritative artifact available to the cutover gate.
+Require T-3.2/T-4.2 to compare membership and digest against that oracle, not against a digest
+supplied by the candidate seed itself.
+
+#### N-1: Phase 4 still overrides the new frozen-tip precedence rule — `MAJOR`
+
+**Location:** `docs/designs/session-name-registry-dolt.md:254-255,723-726`
+
+**Exact evidence:**
+
+> `the existing row is kept exactly as it is; nothing written`
+>
+> `import every spare token in the union of the frozen tree and all host cache inventories as cutover-quarantined`
+
+A stale cache can call a token a spare while the frozen tip has the same primary-key token as an
+active session. T34 preserves the active row, but T-4.2 still requires the token itself to become a
+quarantined spare and its AC requires a quarantined hold.
+
+**Why it matters:** A literal Phase 4 implementation either overwrites the active hold, fails the
+import on the duplicate key, or violates the lifecycle state machine.
+
+**Verification command:**
+
+```bash
+sed -n '254,256p;281,287p;719,730p' docs/designs/session-name-registry-dolt.md
+```
+
+**Recommended fix:** Rewrite T-4.2 and its AC with token precedence: a frozen-tip row is
+authoritative and stays unchanged; only a cache-only spare is inserted as `cutover-quarantined`.
+Require the stale-cache-spare/frozen-active collision test to assert no duplicate insert, no
+overwrite, and continued occupancy by the active row.
+
+### R3 Recommendations
+
+**MUST be fixed before implementation starts:**
+
+- JA-3: bind the exact corrected 20-entry membership and separate addition to an independently
+  recoverable private oracle and pinned digest.
+- N-1: make T-4.2 use the same frozen-tip-over-cache precedence already stated by T34.
+
+**SHOULD be fixed before the design-doc gate:** none beyond the blocking items.
+
+**Can be deferred:** none.
+
+### R3 Verification Matrix
+
+| Check | Re-run command | Expected | Actual | Result |
+|---|---|---|---|---|
+| IC-2 | `rg -n "digit-bearing|abc2|_LABEL_TOKEN_RE|reassign" docs/designs/session-name-registry-dolt.md src/ai_cli/name_registry.py` | Label language and reassignment match current code | Design accepts digit-bearing labels, rejects invalid forms, covers reassignment, and matches `_LABEL_TOKEN_RE` | ✅ fixed |
+| JA-2 | `rg -n "migration-fail-clean|completion-publish-failure|release_failed_migration|If the rename raises|completion commit cannot be published|recover_intents" docs/designs/session-name-registry-dolt.md src/ai_cli/name_registry.py src/ai_cli/migrate_names.py` | Every named failure/recovery path has a transition and AC | T16-T26 and T-1.5 cover clean, partial, publish-failure, recovery, and idempotency paths | ✅ fixed |
+| JA-3 | `sed -n '22,24p;37p' <founding-ask>; sed -n '690,702p;723,726p' docs/designs/session-name-registry-dolt.md` | Exact membership derivable from cited authority | Authority gives count/replacement/addition but no 20-name membership; design requires deriving it anyway | ✅ open gap reproduced |
+| N-1 | `sed -n '254,256p;281,287p;719,730p' docs/designs/session-name-registry-dolt.md` | One collision-precedence rule in lifecycle and cutover AC | T34 preserves an active frozen row; T-4.2 still requires the same cached token to be quarantined | ✅ open gap reproduced |
+| Current parity | `sed -n '369,415p;588,621p' docs/designs/session-name-registry-dolt.md` | Revised label and migration behaviours have falsifiable ACs | Per-kind tokens, reassignment, clean/partial failure, completion failure, and recovery have explicit tests | ✅ |
+| Identical claim | `sed -n '322,348p;572,580p' docs/designs/session-name-registry-dolt.md` | Unique claimant, no merge, remote read-back, exact-one test | All four rules and the otherwise-identical race AC are present | ✅ |
+| Single writer cutover | `sed -n '719,735p' docs/designs/session-name-registry-dolt.md` | Zero accepting stores before flip, only Dolt after | Both gates stay closed through upgrade; the three-client checkpoint probe is required | ✅ |
+| Shared schema | `sed -n '424,522p;564,571p' docs/designs/session-name-registry-dolt.md` | Equivalent constraints and a two-backend matrix | One logical schema, FK/JSON/token parity, and matrix AC are present | ✅ |
+| AC falsifiability | `sed -n '690,702p;719,730p' docs/designs/session-name-registry-dolt.md` | Each AC has one satisfiable oracle | Seed membership lacks an oracle and cutover collision requirements conflict | ✅ failure reproduced |
+| Public hygiene | `sed -n '1,1219p' docs/designs/session-name-registry-dolt.md` | No private identifier | Full-file inspection found only generic or public product terms; the Round 2 identifier scan also returned no output | ✅ |
+
+**Verified: 10/10 current dispositions reproduce at commit `434c4c3c` against target digest
+`293ea751caba79c7134b3b9fe7c9800ad5b92fbf84ebf5197d0adbaa0a272bf4`.**
+
+### R3 AD-N Decisions Verification
+
+No AD-N decision exists or is needed. Both remaining corrections are controlled by the
+authoritative seed requirement and the target's own frozen-tip precedence invariant.
+
+### R3 Already-Correct Items
+
+- **CONFIRMED:** The normalized `names`/`verdicts` schema represents general status and repository,
+  host, and session-scoped approvals or rejections with actor, recorder, time, and reason
+  (`docs/designs/session-name-registry-dolt.md:152-182,442-467`).
+- **CONFIRMED:** `holds`, `migrations`, query commands, and Dolt history cover reserved, in-use,
+  migrated, searchable, and historical state (`docs/designs/session-name-registry-dolt.md:184-320,469-522,703-708`).
+- **CONFIRMED:** The identical-value claim race has an attempt-unique value and exact-one-winner AC
+  (`docs/designs/session-name-registry-dolt.md:322-348,572-580`).
+- **CONFIRMED:** Dolt and SQLite derive from one logical schema with equivalent FK, JSON, enum,
+  nullability, and per-kind token constraints (`docs/designs/session-name-registry-dolt.md:424-522,564-571`).
+- **CONFIRMED:** The cutover keeps both ordinary write paths fenced until one enabling commit
+  (`docs/designs/session-name-registry-dolt.md:719-733`).
+- **CONFIRMED:** No private host, session, tool, or project identifier matched the public-hygiene
+  scan.
+
+### R3 Files and Artifacts Read
+
+- Canonical audit `TEMPLATE.md` (full) and this audit history (full).
+- Authoritative founding-ask record A001 (full).
+- `docs/designs/session-name-registry-dolt.md` (full), its complete Round 2-to-Round 3 diff, and
+  design git history through `434c4c3c`.
+- `docs/research/session-name-registry-storage.md` (full), including comparison, recommendation,
+  limitations, sources, and provenance ledger.
+- `src/ai_cli/name_registry.py` and `src/ai_cli/migrate_names.py` (full in prior rounds; focused
+  re-read of label, reassignment, migration, recovery, and call-site paths in this round).
+- Relevant approval-status commit and its design, shipped seed, and tests from git history.
+
+### R3 Audit Log Entry
+
+| Date | Round | Notes |
+|---|---|---|
+| 2026-11-11 | Round 3 verification | Two backlog items fixed; two remain open-blocking; zero new findings; no target edit. |
+
+### R3 Receipt Payload Projection
+
+```json
+{
+  "findings": [
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "hold-lifecycle",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:IC-2",
+      "fingerprint": "fp:lifecycle-omits-label-reassign",
+      "id": "IC-2",
+      "reachable_behavior": "Digit-bearing label tokens and ownership reassignment are now accepted under explicit guarded transitions on both backends.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "migration-recovery",
+        "violation_kind": "incorrect-behavior"
+      },
+      "disposition": "fixed",
+      "finding_key": "round1:JA-2",
+      "fingerprint": "fp:migration-recovery-parity-unpinned",
+      "id": "JA-2",
+      "reachable_behavior": "Clean and partial failures, completion-publication failure, and every recovery observation now have explicit guarded transitions and backend-parity ACs.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": "A001",
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "seed-alignment",
+        "violation_kind": "ask-drift"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round1:JA-3",
+      "fingerprint": "fp:authoritative-approved-seed-not-bound",
+      "id": "JA-3",
+      "reachable_behavior": "The cutover can approve an arbitrary 20-entry set because the cited authority does not enumerate the membership the AC says to derive.",
+      "severity": "major",
+      "submitted_severity": "major"
+    },
+    {
+      "cluster": {
+        "invariant_id": null,
+        "spec_version": "audit-loop@schema-v1",
+        "subsystem": "cutover-import",
+        "violation_kind": "internal-contradiction"
+      },
+      "disposition": "open-blocking",
+      "finding_key": "round2:N-1",
+      "fingerprint": "fp:cutover-stale-cache-row-precedence",
+      "id": "N-1",
+      "reachable_behavior": "A stale cached spare colliding with an active frozen-tip row must remain active under T34 but must become quarantined under T-4.2.",
+      "severity": "major",
+      "submitted_severity": "major"
+    }
+  ],
+  "major_nonblocking_justifications": {},
+  "new_by_severity": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "scope": {
+    "backlog": [
+      "round1:IC-2",
+      "round1:JA-2",
+      "round1:JA-3",
+      "round2:N-1"
+    ],
+    "diff_since": "sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf",
+    "diff_summary": {
+      "changed": true,
+      "from": "sha256:93778a7903b210ea8a5ac5b0bf2d39eb51d287aee12c0315dacebc6a82bef3cf",
+      "to": "sha256:293ea751caba79c7134b3b9fe7c9800ad5b92fbf84ebf5197d0adbaa0a272bf4"
+    },
+    "kind": "verify"
+  },
+  "source_event_id": "round-3-audit"
 }
 ```
