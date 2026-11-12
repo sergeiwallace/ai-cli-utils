@@ -840,6 +840,13 @@ ref_prefix = "refs/heads/fleet-sessions/"
 debounce_seconds = 60
 host = ""
 
+[session_registry]
+## Hours a session row stays in `ai sessions list` once its session is proved gone
+## (no tmux session and no agent process; for a remote row, the host's tmux has no
+## such session). A row from an earlier boot counts from this boot's start. Read on
+## every call; 0 keeps every row.
+# stale_row_retention_hours = 72
+
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
 ## default. `ai c` starts its Circus watcher when needed. On native Windows,
