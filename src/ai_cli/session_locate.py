@@ -112,7 +112,22 @@ def locate(registry: reg.Registry, query: str, host: str, *, projects_root: Path
         notes.append(stale_tip)
     row = _row_for(snapshot, query)
     if row is None:
-        return Located(None, None, None, None, notes, stale_tip)
+        held = {str(held_row.get("title")) for held_row in snapshot.rows.values() if held_row.get("title")}
+        found = next((s for s in unregistered_sessions(projects_root, held) if s["title"] == query), None)
+        if found is None:
+            return Located(None, None, None, None, notes, stale_tip)
+        local = {
+            "state": "active" if found["tmux"] else "inactive",
+            "tmux": found["tmux"],
+            "worktree": found["worktree"],
+            "worktree_exists": found["worktree"] is not None,
+            "transcript": None,
+            "unregistered": True,
+            "title": found["title"],
+            "resume": found["resume"],
+        }
+        notes.append("named before the session-name registry: no row holds it, so it has no first name")
+        return Located(None, local, None, None, notes, stale_tip)
     title, machine = str(row.get("title") or row.get("token")), str(row.get("machine"))
     local = liveness = None
     if machine == host:
@@ -152,7 +167,14 @@ def liveness_reading(liveness: dict, target: str) -> str:
 def describe(located: Located) -> list[str]:
     row = located.row
     if row is None:
-        return []
+        local = located.local
+        if local is None:
+            return []
+        lines = [f"{local['title']}: unregistered session on this host"]
+        lines.append(f"state      {local['state']}" + (f" (tmux {local['tmux']})" if local["tmux"] else ""))
+        lines.append(f"worktree   {local['worktree'] or 'none'}")
+        lines.append(f"resume     {local['resume']}")
+        return lines + [f"note       {note}" for note in located.notes]
     title, machine = row.get("title") or row.get("token"), row.get("machine")
     lines = [f"{row['token']}: {title} on {machine} ({row.get('client') or 'no client'}, {row['kind']})"]
     if located.local is not None:
@@ -171,6 +193,56 @@ def describe(located: Located) -> list[str]:
             lines.append(f"send with  {command}")
     lines += [f"note       {note}" for note in located.notes]
     return lines
+
+
+def _engine_and_title(session_name: str) -> tuple[str, str]:
+    for engine in ENGINES:
+        for form in (f"{engine}-r-", f"{engine}-"):
+            if session_name.startswith(form):
+                return engine, session_name[len(form) :]
+    return "", ""
+
+
+def _index_title(title: str) -> bool:
+    head, _, tail = title.rpartition("-")
+    return bool(head) and tail.isdigit()
+
+
+def unregistered_sessions(projects_root: Path, held_titles: set[str]) -> list[dict]:
+    """The sessions on this host that no registry row names: those named before the registry.
+
+    Such a session has an index title (``{repo-alias}-{host-alias}-[{label}-]{N}``) and is
+    proved by a worktree under ``<repo>/.worktrees/`` or a live tmux session. Each entry
+    carries the command that resumes it, since no name tool can reach it by a first name.
+    """
+    found: dict[str, dict] = {}
+    try:
+        repos = sorted(path for path in projects_root.iterdir() if (path / ".worktrees").is_dir())
+    except OSError:
+        repos = []
+    for repo in repos:
+        try:
+            children = sorted((repo / ".worktrees").iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and _index_title(child.name) and child.name not in held_titles:
+                found.setdefault(
+                    child.name,
+                    {"title": child.name, "repo": repo.name, "worktree": str(child), "tmux": None, "engine": "c"},
+                )
+    for session_name in _tmux_sessions():
+        engine, title = _engine_and_title(session_name)
+        if title and _index_title(title) and title not in held_titles:
+            entry = found.setdefault(
+                title, {"title": title, "repo": None, "worktree": None, "tmux": None, "engine": engine}
+            )
+            entry["tmux"], entry["engine"] = session_name, engine
+    for entry in found.values():
+        entry["resume"] = f"ai {entry['engine']} {entry['title']} -r" + (
+            f" -p {entry['repo']}" if entry["repo"] else ""
+        )
+    return sorted(found.values(), key=lambda entry: entry["title"])
 
 
 def tip_age(registry: reg.Registry) -> str | None:
