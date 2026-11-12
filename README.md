@@ -360,7 +360,7 @@ not find it. Its run record is never relaunched at boot, the iTerm2 restore skip
 session; run `ai c -t` on the remote host itself for a remote probe.
 
 Once the probe has exited, remove its worktree and branch with the ordinary git
-commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d wt-<title>`).
+commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`).
 The launcher never removes them itself. Design:
 [docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
 

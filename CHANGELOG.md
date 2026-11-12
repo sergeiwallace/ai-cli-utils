@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session that nothing treats as a session home. It is titled `<prefix>-probe[-NAME]-N` by index
   and reserves no first name. Its worktree is made under the per-user state directory
   (`probe-worktrees/<repo>-<digest>/`), outside the repository, and is not recorded in the
-  canonical-worktree registry. Its run record is never relaunched at boot, is skipped by the
+  canonical-worktree registry; its branch is `probe-<title>`, never a session's `wt-<title>`. Its run record is never relaunched at boot, is skipped by the
   iTerm2 restore, and is dropped by `ai iterm2 sessions --prune` once its session is gone. `-t` refuses
   `-r`, `-N`, `-w`, `-u`, `-S`, `-F` and `-R`, since each would name, reach or host a canonical
   session. It also refuses, before touching any worktree, a title a canonical session already

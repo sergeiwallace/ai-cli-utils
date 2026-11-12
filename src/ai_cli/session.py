@@ -1244,6 +1244,11 @@ def _initialize_worktree(
     _authorize_session_worktree_envrc(repo_root, worktree_path)
 
 
+SESSION_BRANCH_PREFIX = "wt-"
+#: A probe worktree's branch is ``probe-<title>``, never a session's ``wt-<title>``.
+PROBE_BRANCH_PREFIX = "probe-"
+
+
 def probe_worktree_base(repo_root: Path) -> Path:
     """Where ``ai c -t/--probe`` puts its worktrees for ``repo_root``: outside the repository.
 
@@ -1308,12 +1313,16 @@ def create_worktree(
     repair_bare_worktree_config(repo_root)
 
     wt_dir = (_require_probe_base_outside(repo_root) if probe else repo_root / WORKTREE_DIR) / ai_name
+    # A probe's branch has its own prefix, so a session and a probe that share a title never
+    # share a branch, and neither launch finds the other's checkout holding its branch and
+    # relocates it (a move Windows refuses while a process stands in the directory).
+    branch_name = f"{PROBE_BRANCH_PREFIX if probe else SESSION_BRANCH_PREFIX}{ai_name}"
     if probe:
-        # The relocation below would move a canonical session's checkout into the probe
-        # directory when the two share a title; a probe refuses instead.
+        # Only a canonical session checks out wt-<title>, and the relocation below would
+        # move its checkout into the probe directory; a probe refuses instead.
         canonical = repo_root / WORKTREE_DIR / ai_name
-        holder = _worktree_holding_branch(repo_root, f"wt-{ai_name}")
-        if canonical.exists() or (holder is not None and holder.resolve().parent != wt_dir.parent.resolve()):
+        holder = _worktree_holding_branch(repo_root, f"{SESSION_BRANCH_PREFIX}{ai_name}")
+        if canonical.exists() or holder is not None:
             raise RuntimeError(
                 f"{ai_name} is a canonical session's slot ({holder or canonical}), and a -t/--probe launch "
                 "never takes one over or moves it. Give the probe its own label: `ai c -t NAME`."
@@ -1329,7 +1338,7 @@ def create_worktree(
             # Verify it is still registered as a valid worktree; clear this slot's own
             # stale entry first. Compare filesystem identity too: on a case-insensitive
             # filesystem, a differently-cased prefix can spell the same live checkout.
-            _remove_stale_slot_registrations(repo_root, wt_dir, f"wt-{ai_name}")
+            _remove_stale_slot_registrations(repo_root, wt_dir, branch_name)
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if registered is not None:
                 branch = _current_branch(registered)
@@ -1377,7 +1386,7 @@ def create_worktree(
                     f"recovered orphaned directory: moved {wt_dir} -> {recovered_path} (not deleted; review manually)"
                 )
 
-            branch = f"wt-{ai_name}"
+            branch = branch_name
             # Resolve base AND upstream in one call BEFORE creating anything: an unresolvable
             # one leaves no half-made worktree directory behind, and a single resolution means
             # the two can never disagree about which branch the session integrates through.

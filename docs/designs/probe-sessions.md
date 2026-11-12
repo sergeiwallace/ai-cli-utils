@@ -76,8 +76,10 @@ anything:
 `<state>` is the per-user state directory (`$XDG_STATE_HOME/ai-cli-utils`, or
 `%LOCALAPPDATA%\ai-cli-utils` on Windows). The `<digest>` is the first eight hex digits of
 a SHA-256 of the repository's resolved path, so two checkouts with the same name never
-share probe slots. The branch is `wt-<title>` as for any session worktree, and the
-worktree's `.envrc` is approved the same way as a `.worktrees/` slot's.
+share probe slots. The branch is `probe-<title>`, never a session's `wt-<title>`, so a
+session and a probe that share a title never share a branch and neither launch moves
+the other's checkout. The worktree's `.envrc` is approved the same way as a
+`.worktrees/` slot's.
 
 The run record keeps its boot recipe because the session supervisor refuses to start an
 engine without one. `relaunch: never` makes `boot_veto` refuse it. `iterm2_restore`
@@ -96,7 +98,7 @@ probe title and writes nothing.
 
 A probe also exits 1, before it touches any worktree, when its title already belongs to
 a canonical session: a non-probe run record of that name, a `<repo>/.worktrees/<title>`
-directory, or a `wt-<title>` branch checked out outside the probe directory. Without that
+directory, or a checked-out `wt-<title>` branch. Without that
 refusal the worktree code would relocate the canonical checkout into the probe directory.
 It exits 1 too when the configured state directory puts the probe directory inside the
 repository. An ordinary launch that takes a probe's title clears the probe marks, so its
@@ -110,7 +112,7 @@ worktree tools remove it once its session has exited:
 
 ```bash
 git -C <repo> worktree remove <state>/probe-worktrees/<repo>-<digest>/<title>
-git -C <repo> branch -d wt-<title>
+git -C <repo> branch -d probe-<title>
 ```
 
 `ai retire-session` is for session homes under `.worktrees/` and does not handle probes.
