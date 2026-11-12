@@ -378,10 +378,11 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
         repo_root = None
     if not repo_root:
         return 1
-    wt_base = repo_root / WORKTREE_DIR
+    # A probe slot lives under the probe directory, not .worktrees/, and is occupied the same way.
+    wt_bases = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root))
     i = 1
     while True:
-        candidates = _matching_worktrees(wt_base, f"{ai_prefix}{i}")
+        candidates = [path for base in wt_bases for path in _matching_worktrees(base, f"{ai_prefix}{i}")]
         if not candidates or not any(_worktree_has_live_session(candidate) for candidate in candidates):
             return i
         i += 1
@@ -1255,6 +1256,20 @@ def probe_worktree_base(repo_root: Path) -> Path:
     return get_xdg_state_home() / "probe-worktrees" / f"{Path(repo_root).name}-{digest}"
 
 
+def _require_probe_base_outside(repo_root: Path) -> Path:
+    """:func:`probe_worktree_base`, refused when a configured state directory puts it inside ``repo_root``."""
+    base = probe_worktree_base(repo_root)
+    root = Path(repo_root).resolve()
+    resolved = base.resolve()
+    if resolved == root or root in resolved.parents:
+        raise RuntimeError(
+            f"the probe worktree directory {base} is inside the repository {repo_root}, where it would "
+            "be scanned and treated like the repository's own files. Point the state directory "
+            "(XDG_STATE_HOME, or LOCALAPPDATA on Windows) outside the repository."
+        )
+    return base
+
+
 @overload
 def create_worktree(
     ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None, probe: bool = False
@@ -1292,7 +1307,17 @@ def create_worktree(
     # Check + repair BEFORE any worktree op, regardless of what corrupted it.
     repair_bare_worktree_config(repo_root)
 
-    wt_dir = (probe_worktree_base(repo_root) if probe else repo_root / WORKTREE_DIR) / ai_name
+    wt_dir = (_require_probe_base_outside(repo_root) if probe else repo_root / WORKTREE_DIR) / ai_name
+    if probe:
+        # The relocation below would move a canonical session's checkout into the probe
+        # directory when the two share a title; a probe refuses instead.
+        canonical = repo_root / WORKTREE_DIR / ai_name
+        holder = _worktree_holding_branch(repo_root, f"wt-{ai_name}")
+        if canonical.exists() or (holder is not None and holder.resolve().parent != wt_dir.parent.resolve()):
+            raise RuntimeError(
+                f"{ai_name} is a canonical session's slot ({holder or canonical}), and a -t/--probe launch "
+                "never takes one over or moves it. Give the probe its own label: `ai c -t NAME`."
+            )
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
     lock_path = wt_dir.parent / f".{ai_name}.lock"
     import portalocker

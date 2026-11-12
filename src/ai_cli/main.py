@@ -3461,6 +3461,18 @@ def _relaunch_argv(name: str, session_name: str) -> list[str]:
     return [*argv, session_name]
 
 
+def _holds_canonical_record(session_name: str) -> bool:
+    """Whether this machine's session registry holds a non-probe record for ``session_name``."""
+    try:
+        sessions = _session_registry.load_registry()["sessions"]
+    except Exception:
+        return False
+    return any(
+        record.get("kind") == "local" and record.get("name") == session_name and not record.get("probe")
+        for record in sessions
+    )
+
+
 def _track_launch(
     reporter: LaunchReporter, *, kind: str, name: str, session_name: str, remote: dict | None = None
 ) -> str | None:
@@ -5289,6 +5301,14 @@ def _do_session_launch(
             else None
         )
     reporter.phase("session").outcome(_new_note or f"resolved {ai_name}")
+    if probe and _holds_canonical_record(session_id):
+        reporter.error(
+            "session",
+            f"{session_id} is the title of a canonical session this machine records, and a "
+            f"{'/'.join(PROBE_OPTS)} launch never takes one over. Nothing was created. "
+            f"Give the probe its own label: `ai {engine} {PROBE_OPTS[0]} NAME`.",
+        )
+        sys.exit(1)
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched.
     _finish_recorded_migrations(ai_name, reporter, allow_partial=allow_partial_migration)

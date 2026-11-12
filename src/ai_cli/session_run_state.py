@@ -160,7 +160,9 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
     """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
 
     A ``probe`` session is marked as one and its relaunch policy is ``never``, so boot
-    replay vetoes it and a prune drops its row once its session is gone.
+    replay vetoes it and a prune drops its row once its session is gone. An ordinary new
+    start of a probe's record clears both marks; the launch refuses a probe whose title
+    a canonical record already holds, so a probe never reaches one here.
     """
     result = {}
 
@@ -177,6 +179,9 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
                 launcher_pid=os.getpid(),
             )
             doc["sessions"].append(existing)
+        if new_start and not probe and existing.pop("probe", None):
+            # An ordinary launch that takes a probe's title makes the record canonical again.
+            existing["relaunch"] = "auto"
         if new_start:
             existing["boot_recipe"] = recipe
             existing["cwd"] = recipe["cwd"]
