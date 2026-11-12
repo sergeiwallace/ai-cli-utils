@@ -1479,6 +1479,8 @@ Relaunch recorded sessions detached, without a terminal application.
 
 A session whose recorded migration is partial is refused, with the parts left and the command that finishes it; the others still relaunch, and the command exits 1.
 
+A session whose boot recipe cannot replay is refused as "unsupported or incomplete boot recipe: " followed by the first field that failed, in a dry run too. A session recorded under another host id is refused naming both host ids.
+
 Arguments:
 
 - `[SLUG]`
