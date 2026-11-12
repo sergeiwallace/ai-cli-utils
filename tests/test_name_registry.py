@@ -8,6 +8,7 @@ here reaches the network or a real remote.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import subprocess
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from process_ownership import reap, spawn_owned
 
 from ai_cli import config as _config
 from ai_cli import name_list, session_naming
@@ -575,17 +577,21 @@ def test_given_two_offline_launches_and_one_spare_when_both_run_then_exactly_one
     import os
 
     env = dict(os.environ)
-    children = [
-        subprocess.Popen(
-            [sys.executable, "-c", _TAKE_SPARE_CHILD, str(fleet.repo), REF, HOST],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        for _ in range(2)
-    ]
-    outcomes = [json.loads(child.communicate(timeout=60)[0]) for child in children]
+    with contextlib.ExitStack() as stack:
+        children = []
+        for _ in range(2):
+            child = spawn_owned(
+                [sys.executable, "-c", _TAKE_SPARE_CHILD, str(fleet.repo), REF, HOST],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            # Owned the moment it exists, so a failed second spawn, a timeout or a bad
+            # result below cannot leave a worker running after this test.
+            stack.callback(reap, child)
+            children.append(child)
+        outcomes = [json.loads(child.communicate(timeout=60)[0]) for child in children]
 
     assert sorted("took" in outcome for outcome in outcomes) == [False, True]
     refused = next(outcome for outcome in outcomes if "refused" in outcome)
