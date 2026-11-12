@@ -342,12 +342,12 @@ def _session_members(sessions: set[int], born_after: float) -> set[psutil.Proces
 def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float, failure: str) -> None:
     """Stop, then kill, every owned process, its descendants and every member of ``sessions``."""
     # Stop parents before taking a final descendant snapshot so none can spawn
-    # On macOS psutil can also raise a bare ProcessLookupError (from sysctl) for a process
-    # that exited between listing and inspection; that is the same "already gone" case.
     # another child during cleanup. psutil pins identity with PID + creation time.
     # A process this user may not inspect or signal (macOS /bin/ps is setuid root, and the
     # session's suspend watchdog polls it) raises AccessDenied. It must not abort the walk:
     # that left the already-stopped tree alive and the directory behind.
+    # On macOS psutil can also raise a bare ProcessLookupError (from sysctl) for a process
+    # that exited between listing and inspection; that is the same "already gone" case.
     pending = list(owned)
     while pending:
         while pending:
@@ -414,6 +414,9 @@ def _watch_session(leader_pid: int) -> None:
     """Own the session ``leader_pid`` leads until stdin closes, then end all of it."""
     leader = psutil.Process(leader_pid)
     assert os.getsid(leader_pid) == leader_pid, "watch only a session leader"
+    # Read while the leader is alive: on macOS psutil does not cache it, and asking after
+    # the leader exits raises NoSuchProcess, which failed the watcher in CI.
+    born_after = leader.create_time()
     owned = {leader}
     print("ready", flush=True)
     # The session sweep at the end finds every member that kept the session; tracking the
@@ -421,7 +424,7 @@ def _watch_session(leader_pid: int) -> None:
     while not select.select([sys.stdin], [], [], 0.5)[0]:
         with contextlib.suppress(psutil.Error):
             owned.update(leader.children(recursive=True))
-    _end_owned(owned, {leader_pid}, leader.create_time(), "session members survived cleanup")
+    _end_owned(owned, {leader_pid}, born_after, "session members survived cleanup")
 
 
 if __name__ == "__main__":
