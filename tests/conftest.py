@@ -1779,7 +1779,7 @@ def _restore_process_working_directory():
 
 
 @pytest.fixture(autouse=True)
-def _no_real_session_reaper_spawn(request):
+def _no_real_session_reaper_spawn(request, monkeypatch):
     """Keep a test's local `ai c` launch from starting the real stale-session reaper.
 
     Every local Claude launch calls ``_start_stale_session_reaper_for_launch``, which
@@ -1789,12 +1789,16 @@ def _no_real_session_reaper_spawn(request):
     (measured: four "stale-session-reaper: failed to start" lines after
     tests/test_chief_of_staff.py passed). Tests that drive the scheduler itself opt out
     with the ``real_reaper_spawn`` marker and mock ``subprocess.Popen`` themselves.
+
+    The no-op goes on the test's own monkeypatch stack, not a ``patch`` context. Earlier
+    autouse fixtures already requested ``monkeypatch``, so its undo runs after this
+    fixture's teardown: a ``patch`` context restored the real function first, and then a
+    test's own ``monkeypatch.setattr`` of the same name put this no-op back, leaving it
+    installed for every later test on that worker.
     """
     if request.node.get_closest_marker("real_reaper_spawn"):
-        yield
         return
-    with patch("ai_cli.process_manager._start_stale_session_reaper_for_launch"):
-        yield
+    monkeypatch.setattr("ai_cli.process_manager._start_stale_session_reaper_for_launch", MagicMock())
 
 
 @pytest.fixture(autouse=True)
