@@ -62,7 +62,7 @@ def test_given_this_machines_own_spare_when_migrated_to_it_then_the_spare_is_act
     assert code == 0, out + err
     new = f"{STEM}-cleo"
     history = git(fleet.remote, "log", "--format=%H", REF).splitlines()
-    reserving = next(commit for commit in history if f"migrations/{OLD}.json" in fleet.changed(commit))
+    reserving = next(commit for commit in reversed(history) if f"migrations/{OLD}.json" in fleet.changed(commit))
     assert "names/cleo.json" in fleet.changed(reserving)
     rows = _rows_at(fleet.remote, reserving)
     taken = rows["cleo"]
