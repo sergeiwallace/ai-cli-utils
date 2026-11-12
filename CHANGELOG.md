@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrows it to the pair whose OLD, NEW or NEW's first name it is, and a pair whose slot is gone
   reads `partial`. It exits 1 if any pair is partial and 2 on a usage error. `-R/--remote` runs
   the same status on the default remote machine over ssh and prints its rows.
+- `ai migrate-session` publishes each Beads store it re-keyed when the host configures a publish
+  command in `migrate-session-publish.d/beads.toml` (an `argv` naming the `{store}` placeholder).
+  It runs the command once per changed store after the re-key, then re-reads the store: a
+  non-zero exit, or an issue still on the old name, reads `failed` and the run exits 1 with no
+  `finished` row, and the next run of the same pair publishes that store again. A host with no
+  publish command keeps the `publish needed` line, now also in the parts table, and exits 0.
 - `ai sessions stop <name>` ends a managed session so its wrapper does not relaunch the agent,
   which a plain `/exit` inside the session cannot do. It writes the wrapper's stop marker for every
   tmux session hosting the name while its wrapper runs, sends SIGTERM to the session's one Claude
