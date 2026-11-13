@@ -814,15 +814,16 @@ launch path of every host".
 - Measured fast enough: a read 0.23 s, a write with commit 0.19 s on the fleet's version.
 
 **Cons:**
-- One process per call, so a command that needs several queries pays several starts; batch them
+- One process per call, so a command that needs several queries pays several starts. Batch them
   into one script per call.
-- Dolt's own lock falls back to read-only for a second opener; mitigated by the host file lock and
+- Dolt's own lock falls back to read-only for a second opener. Mitigated by the host file lock and
   the commit check.
 
 ##### (b) Per-host `dolt sql-server` with PyMySQL
 
 **Pros:**
-- One connection serves many queries; real transactions.
+- One connection serves many queries.
+- Real transactions.
 - PyMySQL is pure Python and MIT licensed.
 
 **Cons:**
@@ -835,7 +836,7 @@ launch path of every host".
 - Already running on fleet hosts.
 
 **Cons:**
-- Couples the registry to another tool's server, version and incidents; the tracker's own records
+- Couples the registry to another tool's server, version and incidents. The tracker's own records
   show a five-hour outage from a schema migration on its shared server.
 - Absent on public installs and on any host without the tracker.
 
@@ -866,8 +867,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - A separate ref and the info branch off keep it apart from the tracker.
 
 **Cons:**
-- The repository carries two Dolt databases; anyone reading its refs must know which is which.
-- Pushes to the repository count against one rate limit; a few a day is far below it.
+- The repository carries two Dolt databases. Anyone reading its refs must know which is which.
+- Pushes to the repository count against one rate limit. A few a day is far below it.
 
 ##### (b) A dedicated private repository
 
@@ -875,8 +876,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - Complete isolation from the tracker.
 
 **Cons:**
-- A new repository to create, grant on every host and keep credentials for; an outward-facing
-  setup step on each host.
+- A new repository to create, grant on every host and keep credentials for.
+- An outward-facing setup step on each host.
 
 ##### (c) A table in the tracker's database
 
@@ -884,8 +885,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - No second database.
 
 **Cons:**
-- Ties the registry's schema and history to the tracker's migrations and its incidents; rejected
-  by the research doc's placement condition.
+- Ties the registry's schema and history to the tracker's migrations and its incidents.
+- Rejected by the research doc's placement condition.
 
 ##### Recommendation
 
@@ -920,7 +921,8 @@ cell cleanly.
 ##### (b) A JSON column of allow and deny lists per name
 
 **Pros:**
-- Matches the owner's first suggestion literally; one row per name.
+- Matches the owner's first suggestion literally.
+- One row per name.
 
 **Cons:**
 - Actor and time per entry need a nested structure the engine does not check.
@@ -932,8 +934,8 @@ cell cleanly.
 - Smallest first build.
 
 **Cons:**
-- Drops an explicit founding-ask requirement (rejection per repository, host or session); not
-  permitted.
+- Drops an explicit founding-ask requirement (rejection per repository, host or session), which is
+  not permitted.
 
 ##### Recommendation
 
@@ -959,10 +961,11 @@ ref per name would give one winner by construction.
 
 **Pros:**
 - One store and one write per claim.
-- The protocol is today's `transact` loop; measured one winner in 20 of 20 concurrent races.
+- The protocol is today's `transact` loop.
+- Measured one winner in 20 of 20 concurrent races.
 
 **Cons:**
-- Correctness depends on every writer following the protocol; mitigated because the package is
+- Correctness depends on every writer following the protocol. Mitigated because the package is
   the only writer and tests pin each rule.
 
 ##### (b) A create-if-absent ref per name, plus Dolt for everything else (hybrid H1)
@@ -995,11 +998,12 @@ may not have `dolt`. Today such installs keep the JSON tree in a local directory
 ##### (a) A local SQLite database with the same schema
 
 **Pros:**
-- Python's standard library; works on Windows, macOS and Linux with no install step.
+- Python's standard library.
+- Works on Windows, macOS and Linux with no install step.
 - The same tables and constraints, so status and verdicts work the same way.
 
 **Cons:**
-- A second dialect of the schema to keep in step; mitigated by one module emitting both and the
+- A second dialect of the schema to keep in step. Mitigated by one module emitting both and the
   parity tests running on both backends.
 - No row history, which public users do not need.
 
@@ -1045,7 +1049,7 @@ Release 2.4.1 made the git-remote history cap a setting; 2.7.0 changed merge sto
 - Every behaviour this design needs was measured on it.
 
 **Cons:**
-- The data ref's git history stays capped at 64 commits; harmless, because Dolt's own history
+- The data ref's git history stays capped at 64 commits. Harmless, because Dolt's own history
   survives, as measured.
 
 ##### (b) 2.4.1 or later
@@ -1091,8 +1095,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
   host cache remains held in Dolt quarantine.
 
 **Cons:**
-- Named launches pause while all hosts are quiesced, inventoried and upgraded; offline activation
-  is deliberately disabled during that window.
+- Named launches pause while all hosts are quiesced, inventoried and upgraded.
+- Offline activation is deliberately disabled during that window.
 
 ##### (b) A dual-write period
 
@@ -1100,8 +1104,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 - No pause.
 
 **Cons:**
-- Two sources of truth and a reconciliation step; a backward-compatibility path the project's
-  pre-1.0 rule forbids.
+- Two sources of truth and a reconciliation step.
+- A backward-compatibility path the project's pre-1.0 rule forbids.
 
 ##### (c) Gradual, host by host
 
@@ -1134,7 +1138,8 @@ cutover those files stop changing.
 ##### (a) Through `ai list-names --json`, `ai list-migrations --json` and `ai find-names --json`
 
 **Pros:**
-- One access path and one owner of the schema; a schema change cannot silently break a reader.
+- One access path and one owner of the schema.
+- A schema change cannot silently break a reader.
 
 **Cons:**
 - Each reader needs the package installed, which every fleet host already has.
@@ -1170,7 +1175,7 @@ verdicts usually arrive through an agent session relaying them.
 - Answers "who approved this" and "which session wrote it" separately.
 
 **Cons:**
-- The actor is self-declared on the command line; there is no identity check, as today.
+- The actor is self-declared on the command line. There is no identity check, as today.
 
 ##### (b) The agent session only
 
