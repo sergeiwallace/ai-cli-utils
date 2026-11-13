@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import session_migrate as m
-from .venv_relocate import needs_relocation
+from .venv_relocate import needs_relocation, repoint_checkout_record, stale_checkout_record
 
 # Include absent optional parts so dry and real runs expose the same inventory.
 PARTS = (
     "worktree",
     "name registry",
     "virtual environment",
+    "venv back-pointer",
     "branch",
     "canonical registry",
     "provenance owner",
@@ -114,6 +115,9 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
     venv = new_wt / ".venv"
     if needs_relocation(venv, old_wt):
         add("virtual environment", venv, new_wt, lambda: m.relocate_venv(venv, old_wt, new_wt))
+    record = stale_checkout_record(venv, old_wt)
+    if record is not None:
+        add("venv back-pointer", record, new_wt, lambda: repoint_checkout_record(record, old_wt, new_wt))
     old_pd, new_pd = m.cc_project_dir(old_wt, home), m.cc_project_dir(new_wt, home)
     if old_pd.exists() and new_pd.exists():
         raise m.MigrationError(f"both project directories exist: {old_pd} and {new_pd}; refusing to merge")

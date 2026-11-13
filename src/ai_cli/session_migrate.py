@@ -125,7 +125,7 @@ from .session_adopt import (
     rekey_name_artifacts,
     retitle_transcript,
 )
-from .venv_relocate import relocate_venv
+from .venv_relocate import relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
@@ -1870,6 +1870,9 @@ def _start_session(
     has_venv = (old_wt / ".venv").is_dir()
     if has_venv:
         moves.append(PlannedMove("virtual environment", str(old_wt / ".venv"), str(new_wt / ".venv"), "rewrite"))
+    slot_record = stale_checkout_record(old_wt / ".venv", old_wt)
+    if slot_record is not None:
+        moves.append(PlannedMove("venv back-pointer", str(slot_record), str(new_wt), "rewrite"))
 
     # The canonical branch is renamed whether the slot has it checked out or parks it
     # while a topic branch is checked out: either way it still names the old session.
@@ -1974,6 +1977,11 @@ def _start_session(
                 f"virtual environment FAILED: {new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
                 f"with `uv sync --reinstall`"
             )
+    if slot_record is not None:
+        try:
+            repoint_checkout_record(slot_record, old_wt, new_wt)
+        except (OSError, UnicodeDecodeError) as exc:
+            result.warnings.append(f"venv back-pointer {slot_record} FAILED to name {new_wt}: {_one_line(str(exc))}")
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:

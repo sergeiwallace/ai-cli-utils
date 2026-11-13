@@ -750,8 +750,9 @@ notify_on_exit = true
 enabled = true
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
-## its <prefix>-provenance.json file. `ai migrate-session` rewrites them; unset, it leaves
-## no such markers to rewrite.
+## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
+## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
+## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
 
 [direnv]
