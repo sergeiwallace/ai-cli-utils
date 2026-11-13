@@ -310,3 +310,13 @@ def test_given_a_heartbeat_write_in_flight_when_cleanup_runs_then_it_is_stopped_
         reap(ticker)
         if process is not None:
             reap(process)
+
+
+def test_given_agent_setup_before_launch_when_script_generated_then_run_time_clock_starts_at_launch():
+    script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
+    run_agent = script.split("    run_agent() {", 1)[1].split("    # BEGIN SHELL RETURN agent-wait", 1)[0]
+    clock = run_agent.index("start_ts=$(date +%s)")
+    # Setup that can take seconds on a loaded host must come before the clock starts.
+    assert run_agent.index("direnv export bash") < clock
+    assert run_agent.index("refresh_plugins()") < clock
+    assert clock < run_agent.index('"$@" <&0 &')
