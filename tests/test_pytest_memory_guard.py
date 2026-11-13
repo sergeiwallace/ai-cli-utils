@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from process_wait import scaled
 
 _FORCE_WATCHDOG_PLUGIN = "force_pytest_memory_guard_watchdog"
 _RUNAWAY_COMPLETED = "the runaway xdist worker completed past its memory ceiling"
@@ -18,6 +17,12 @@ _BASELINE_MARGIN_MB = 64
 _ALLOCATION_MB = _BASELINE_MARGIN_MB * 2
 _ALLOCATION_CHUNKS = _ALLOCATION_MB // 8
 _CHILD_RESERVATION_BYTES = 8 * 1024 * _MIB
+# Each child pytest takes seconds on an idle host and no assertion depends on how
+# long it takes, so its timeout only catches a hang. A load scale sampled before
+# the child starts cannot cover a stall that begins after it: one child ran past
+# scaled(120) at a sampled scale of 2.25 (270 s). A fixed cap well past any
+# stall still fails a hung child in bounded time.
+_CHILD_PYTEST_HANG_SECONDS = 900
 _HAS_PSUTIL = importlib.util.find_spec("psutil") is not None
 _HAS_RANDOMLY = importlib.util.find_spec("pytest_randomly") is not None
 _KEEP_TEST_ORDER = ["--randomly-dont-reorganize"] if _HAS_RANDOMLY else []
@@ -141,7 +146,7 @@ def test_report_memory_baseline():
         env=measurement_env,
         capture_output=True,
         text=True,
-        timeout=scaled(120),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -240,7 +245,7 @@ def test_synthetic_runaway_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(120),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -300,7 +305,7 @@ def test_synthetic_unconstrained_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(120),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -365,7 +370,7 @@ def test_guarded_allocation():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(120),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -450,7 +455,7 @@ if "--watch-parent" in sys.argv:
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(240),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -519,7 +524,7 @@ def test_child_reserves_address_space():
         env=env,
         capture_output=True,
         text=True,
-        timeout=scaled(240),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
@@ -572,7 +577,7 @@ def test_synthetic_runaway_allocation():
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
-        timeout=scaled(120),
+        timeout=_CHILD_PYTEST_HANG_SECONDS,
         check=False,
     )
 
