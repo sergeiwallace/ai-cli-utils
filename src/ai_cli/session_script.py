@@ -431,7 +431,7 @@ def get_engine_script(
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
     # BEGIN RUN STATE supervisor-generation
-      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
       export AI_CLI_RUN_GENERATION
     # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
@@ -508,6 +508,12 @@ def get_engine_script(
       fi
       _heartbeat_pid=""
       _supervisor_cleanup() {{
+    # BEGIN RUN STATE cleanup-exit
+        # EXIT also runs after terminal loss or an unexpectedly killed child.
+        if [[ ! -f "$_ai_state_dir/session-final-exit-$tmux_session" ]]; then
+          _ai_persist_exit terminal_quit_or_crash '{{"source":"supervisor cleanup"}}'
+        fi
+    # END RUN STATE
         _ai_close_progress
         [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
         [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
@@ -518,6 +524,16 @@ def get_engine_script(
           "$_ai_state_dir/session-agent-exits-$tmux_session" "$_ai_reload_reason_file"
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
+    # BEGIN TMUX CLEANUP
+        if $_supervisor_tmux_ownership_established; then
+          _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
+          if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
+            _ai_emit info cleanup "refusing to kill tmux session: ownership fence mismatch"
+          fi
+        else
+          _ai_emit info cleanup "skipping tmux session cleanup because supervisor ownership was not established"
+        fi
+    # END TMUX CLEANUP
       }}
       _supervisor_wait_for_child() {{
         # `wait` is interrupted by a trapped signal in Bash and zsh. Keep
@@ -653,6 +669,11 @@ def get_engine_script(
           kill -TERM "$_child_pid" 2>/dev/null || true
           _supervisor_wait_for_child || true
         fi
+    # BEGIN RUN STATE supervisor-term
+        # Persistence failure exits this shell, so first stop the child that
+        # holds the pane and inherited output pipes.
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 0
       }}
       _supervisor_terminating=false
@@ -664,6 +685,11 @@ def get_engine_script(
       trap '_supervisor_record_winch' WINCH
       trap '_supervisor_term' TERM
       trap '_supervisor_cleanup' EXIT
+    # BEGIN RUN STATE exit-tmux-binding
+      if $_supervisor_tmux_ownership_established; then
+        ai sessions _bind-exit-tmux "$tmux_session" "$AI_CLI_RUN_GENERATION" "$_supervisor_tmux_session_id" "$generation_token" || exit 1
+      fi
+    # END RUN STATE
       _supervisor_script="$0"
       _supervisor_terminal_fd=""
       if [[ -t 0 ]]; then
@@ -793,14 +819,6 @@ def get_engine_script(
           _reload_count=0
         fi
       done
-      if $_supervisor_tmux_ownership_established; then
-        _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
-        if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
-          _ai_emit info cleanup "refusing to kill tmux session: ownership fence mismatch"
-        fi
-      else
-        _ai_emit info cleanup "skipping tmux session cleanup because supervisor ownership was not established"
-      fi
       exit 0
     fi
     # BEGIN RUN STATE child-stderr-restore
@@ -843,7 +861,7 @@ def get_engine_script(
         printf 'session %s: %s; not retrying\\n' "$tmux_session" "$1" >&2
         exit 77
       }}
-      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --launch-metadata {shlex.quote(_generation_meta)}); then
+      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}); then
         printf '0\\n' > "$_begin_failures_file" || _begin_stop "cannot reset generation failure counter"
       else
         _begin_failures=$((10#$_begin_failures + 1))

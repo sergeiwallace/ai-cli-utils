@@ -18,6 +18,29 @@ from . import session_run_state as state
 START_GRACE_SECONDS = 60
 
 
+def _could_run_session(executable: str | None) -> bool:
+    if not executable:
+        return True
+    executable = executable.lower().removesuffix(".exe")
+    return executable.startswith("python") or executable in {
+        "claude",
+        "codex",
+        "gemini",
+        "pi",
+        "node",
+        "nodejs",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "dash",
+        "ksh",
+        "pwsh",
+        "powershell",
+        "cmd",
+    }
+
+
 def _process_alive(record: dict) -> bool | None:
     """Check agents, exact generated wrappers, and the recorded launcher; fail closed.
 
@@ -29,7 +52,7 @@ def _process_alive(record: dict) -> bool | None:
     script = str(registry.registry_path().parent / "sessions" / f"{name}.sh")
     try:
         user = psutil.Process().username()
-        for process in psutil.process_iter(["pid", "username", "status"]):
+        for process in psutil.process_iter(["pid", "username", "status", "name"]):
             info = process.info
             if info["pid"] == os.getpid() or info["status"] == psutil.STATUS_ZOMBIE:
                 continue
@@ -42,9 +65,16 @@ def _process_alive(record: dict) -> bool | None:
                     launched = datetime.fromisoformat(record["launched_at"].replace("Z", "+00:00"))
                     if process.create_time() <= launched.timestamp() + 1:
                         return True
-                argv = process.cmdline()
+                try:
+                    argv = process.cmdline()
+                except psutil.AccessDenied:
+                    argv = None
                 if not argv:
-                    return None
+                    # Missing arguments on a possible agent or wrapper are unknown;
+                    # unrelated processes cannot block this session's absence proof.
+                    if _could_run_session(info.get("name")):
+                        return None
+                    continue
                 if "--ai-cli-heartbeat-ticker" in argv:
                     continue
                 if script in argv:
@@ -57,17 +87,29 @@ def _process_alive(record: dict) -> bool | None:
                     "session-reaper" in argv or "internal" in argv or ("sessions" in argv and "publish" in argv)
                 ):
                     continue
-                # Only agent executables use an inherited marker as identity.
-                if not (
-                    executable in {"claude", "codex", "gemini", "pi", "node", "nodejs"}
-                    or executable.startswith("python")
+                # Interpreters also run unrelated helpers with inherited markers.
+                # Require an agent entry point before interpreting those markers.
+                agents = {"claude", "codex", "gemini", "pi"}
+                entry = argv[1].replace("\\", "/") if len(argv) > 1 else ""
+                interpreted_agent = Path(entry).stem in agents or any(
+                    package in entry
+                    for package in (
+                        "/@anthropic-ai/claude-code/",
+                        "/@openai/codex/",
+                        "/@google/gemini-cli/",
+                        "/pi-coding-agent/",
+                    )
+                )
+                if executable not in agents and not (
+                    (executable in {"node", "nodejs"} or executable.startswith("python")) and interpreted_agent
                 ):
                     continue
+                if any(flag == "--name" and value == agent_name for flag, value in pairwise(argv)):
+                    return True
                 environment = process.environ()
                 if (
                     environment.get("AI_TMUX_SESSION") == name
                     or environment.get("CLAUDE_CODE_TASK_LIST_ID") == agent_name
-                    or any(flag == "--name" and value == agent_name for flag, value in pairwise(argv))
                 ):
                     return True
             except psutil.NoSuchProcess:
@@ -77,6 +119,26 @@ def _process_alive(record: dict) -> bool | None:
     except (psutil.Error, OSError):
         return None
     return False
+
+
+def liveness_blocker(record: dict) -> str:
+    """Explain a migration refusal using current owning-host liveness evidence."""
+    if record.get("kind") != "local" or not record.get("boot_id"):
+        return "liveness is unprovable on this host: owning-boot evidence is unavailable"
+    if registry._local_session_alive(record["name"]) is True:
+        return f"live tmux session {record['name']}"
+    try:
+        for process in psutil.process_iter(["pid", "status"]):
+            if process.info["pid"] != record.get("launcher_pid") or process.info["status"] == psutil.STATUS_ZOMBIE:
+                continue
+            launched = datetime.fromisoformat(record["launched_at"].replace("Z", "+00:00"))
+            if process.create_time() <= launched.timestamp() + 1:
+                return f"live launcher pid {process.info['pid']}"
+        if _process_alive(record) is True:
+            return "live agent or session wrapper process"
+    except (psutil.Error, OSError, ValueError, KeyError):
+        pass
+    return "liveness is unprovable; inspect the launcher, tmux and process evidence"
 
 
 def reconcile(*, names: set[str] | None = None) -> None:

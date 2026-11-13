@@ -31,6 +31,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai cx`](#ai-cx) | Launch a Codex session |
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
+| [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai g`](#ai-g) | Launch a Gemini CLI session |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -537,6 +538,25 @@ Check the native binaries ai-cli-utils needs, installing what it can
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-n` | `--dry-run` |  | Report status only; install nothing |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai exit-session
+
+```text
+ai exit-session [OPTIONS] [NAME]
+```
+
+Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified ancestor session record. Older supervisors without recorded process identities must first be relaunched. Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. Remote mirrors use an acknowledged owning-host generation receipt.
+
+Arguments:
+
+- `[NAME]`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-r` | `--remote` |  | Request an owning-host exit through the recorded remote mirror |
+| `-t` | `--timeout` | `FLOAT RANGE` | Seconds per teardown wait  [default: 5.0; x>=0] |
+| `-d` | `--dry-run` |  | Show the verified exit without writing or signalling |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai g

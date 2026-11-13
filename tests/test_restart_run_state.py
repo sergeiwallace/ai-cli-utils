@@ -77,6 +77,16 @@ def test_given_outside_insertion_edit_when_ac_i_2_compared_then_program_is_rejec
     assert not session_restart._compatible(changed, current)
 
 
+@pytest.mark.parametrize("program", ["legacy", "current"])
+def test_given_tmux_cleanup_edit_when_program_compared_then_upgrade_is_refused(programs, program):
+    legacy, current = programs
+    assert session_restart._compatible(legacy, current)
+    source = legacy if program == "legacy" else current
+    changed = source.replace("kill-session -t", "display-message -t")
+    assert changed != source
+    assert not session_restart._compatible(changed, current)
+
+
 def test_given_outside_insertion_edit_when_ac_i_2_gate_runs_then_no_action_is_taken(world):
     code, report, _ = world.cli("-Y", world.record["sessionId"])
     assert code == 0 and report["reason"] == "ready"

@@ -4980,7 +4980,9 @@ def _do_session_launch(
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
-            _track_launch(reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote)
+            _record_id = _track_launch(
+                reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
+            )
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
@@ -4993,6 +4995,7 @@ def _do_session_launch(
                         tailscale_host=host,
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
+                        on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     )
                 )
             finally:
@@ -5028,6 +5031,7 @@ def _do_session_launch(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
 
@@ -6301,6 +6305,89 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json, event
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
+
+
+def _receive_remote_exit(record_id):
+    from .session_exit import receive_remote_exit
+
+    return receive_remote_exit(record_id)
+
+
+@_cli_group.command(
+    "exit-session",
+    help="Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified "
+    "ancestor session record. Older supervisors without recorded process identities must first be relaunched. "
+    "Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. "
+    "Remote mirrors use an acknowledged owning-host generation receipt.",
+)
+@click.argument("name", required=False)
+@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit through the recorded remote mirror")
+@click.option(
+    "-t", "--timeout", default=5.0, type=click.FloatRange(min=0), show_default=True, help="Seconds per teardown wait"
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Show the verified exit without writing or signalling")
+def cmd_exit_session(name, remote, timeout, dry_run):
+    import math
+
+    from . import session_exit
+    from . import session_run_state as state
+
+    if not math.isfinite(timeout):
+        raise click.BadParameter("must be finite", param_hint="--timeout")
+    try:
+        mirror = session_exit.remote_mirror(name)
+        if mirror:
+            session_exit.request_remote_exit(mirror, timeout=timeout, dry_run=dry_run)
+            _out.emit(
+                Tag.SESSION,
+                "exit",
+                f"{name}: "
+                + ("Would exit on owning host" if dry_run else "exited; owning-host generation acknowledged"),
+            )
+            return
+        if remote:
+            raise ValueError("remote receipts require a named remote mirror; remote exit unresolved")
+        row, targets, self_exit = session_exit.resolve_exit(name)
+        name = row["name"]
+        if dry_run:
+            _out.emit(Tag.SESSION, "exit", f"Would exit {name}; verified targets: {targets}")
+            return
+        agent = session_exit.ProcessIdentity(**targets["agent"]) if targets.get("agent") else None
+        supervisor = session_exit.ProcessIdentity(**targets["supervisor"]) if targets.get("supervisor") else None
+        tmux = session_exit.TmuxIdentity(**targets["tmux"]) if targets.get("tmux") else None
+        if self_exit:
+            state.request_manual_exit(name, host=row["owning_host"], generation=row["generation"], targets=targets)
+            _out.emit(Tag.SESSION, "exit", f"{name}: exited in registry; handing teardown to an independent worker")
+            session_exit.detach_cleanup(name, host=row["owning_host"], generation=row["generation"], timeout=timeout)
+            return
+        result = session_exit.exit_session(
+            name,
+            host=row["owning_host"],
+            generation=row["generation"],
+            timeout=timeout,
+            agent=agent,
+            supervisor=supervisor,
+            tmux=tmux,
+        )
+        if not result.complete:
+            detail = (
+                "registry committed; cleanup incomplete"
+                if result.registry_committed
+                else "exit not committed; nothing signalled"
+            )
+            raise click.ClickException(f"{name}: {detail}: {'; '.join(result.errors)}")
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        session_exit.psutil.Error,
+        _session_registry.RegistryError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        prefix = "cannot verify current session: " if name is None else ""
+        raise click.ClickException(prefix + str(exc)) from exc
+    _out.emit(Tag.SESSION, "exit", f"{name}: exited; verified process cleanup complete")
 
 
 @_cli_group.command("clear-restart-request", help="Clear a fenced restart request after its recorded target has exited")
@@ -8114,7 +8201,9 @@ def _migrate_one_to_name(
             machine=host,
             client="claude-code",
         )
-        snapshot = registry.snapshot(fetch=not dry_run)
+        # Preview the current holds too: a cached list can omit a confusable name
+        # that the writing run would fetch and refuse before reserving anything.
+        snapshot = registry.snapshot()
         notes: list[str] = []
         if dry_run:
             snapshot, notes = _names.dry_run_snapshot(registry, snapshot)

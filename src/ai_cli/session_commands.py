@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import click
+import psutil
 
 from . import (
     output,
@@ -72,16 +73,40 @@ def mark(name, status, cause, evidence, generation, sequence):
         raise click.UsageError("-e/--evidence must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise click.UsageError("-e/--evidence must be a JSON object")
+    if status == "exited" and generation:
+        row = state._find(registry.load_registry(), name)
+        if (
+            row.get("generation") == generation
+            and state.run_state(row) == "exited"
+            and state.exit_teardown(row).get("generation") == generation
+        ):
+            # The exit worker already committed the final state. Preserve its
+            # cleanup targets and errors while the supervisor acknowledges it.
+            return
     if not state.mark(
         name, status, cause=cause or "unknown", evidence=parsed, generation=generation, sequence=sequence
     ):
         raise click.ClickException("session state persistence refused; retry before returning to the shell")
 
 
+@sessions.command("_exit-receipt", hidden=True)
+@click.argument("name")
+@click.argument("generation", required=False)
+@click.argument("timeout", type=click.FloatRange(min=0), default=5.0)
+def exit_receipt(name, generation, timeout):
+    from .session_exit import owning_receipt
+
+    try:
+        output.raw(Untagged.JSON, json.dumps(owning_receipt(name, generation, timeout)))
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
 @click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
-def begin(name, launch_metadata):
+@click.option("--supervisor-pid", type=int, hidden=True)
+def begin(name, launch_metadata, supervisor_pid):
     # Acquisition precedes the generated shell's terminal reset. A previous
     # agent may have left extended keys enabled, encoding Ctrl+C as text. Use
     # the controlling terminal: stdout is a captured generation-token reply.
@@ -148,12 +173,48 @@ def begin(name, launch_metadata):
             if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
                 raise ValueError("invalid launch recovery recipe")
         heal_live_sessions()
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
+        import psutil
+
+        supervisor = None
+        if supervisor_pid is not None:
+            parent = psutil.Process(supervisor_pid)
+            supervisor = {"pid": parent.pid, "started_at": parent.create_time()}
+        output.raw(
+            Untagged.INTERNAL_REPLY,
+            state.begin(name, recovery_recipe=recipe, supervisor=supervisor),
+        )
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
     finally:
         if previous_int is not None:
             signal.signal(signal.SIGINT, previous_int)
+
+
+@sessions.command("_bind-exit-tmux", hidden=True)
+@click.argument("name")
+@click.argument("generation")
+@click.argument("session_id")
+@click.argument("token")
+def bind_exit_tmux(name, generation, session_id, token):
+    from .session_exit import TmuxIdentity, _tmux_server
+
+    if not re.fullmatch(r"\$[0-9]+", session_id) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise click.ClickException("invalid tmux identity")
+    if _tmux_server(TmuxIdentity(session_id, token)) is None:
+        raise click.ClickException("tmux ownership is absent")
+
+    def bind(doc):
+        row = state._find(doc, name)
+        supervisor = row.get("supervisor_identity") or {}
+        if row.get("generation") != generation or supervisor.get("generation") != generation:
+            raise ValueError("stale supervisor generation")
+        supervisor["tmux"] = {"session_id": session_id, "generation": token}
+        return True
+
+    try:
+        registry._mutate(bind, timeout=2)
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @sessions.command("_sequence", hidden=True)
@@ -354,6 +415,17 @@ def _pane_pids(tmux_session: str) -> list[int]:
     return [int(token) for token in (listed.stdout or "").split() if token.isdigit()]
 
 
+def _slot_processes(probe, supervisors: dict[int, object]) -> set[int]:
+    """The pids running under ``supervisors``, read only while each supervisor is still the captured process."""
+    found: set[int] = set()
+    for pid, identity in supervisors.items():
+        with contextlib.suppress(psutil.Error):
+            children = {child.pid for child in psutil.Process(pid).children(recursive=True)}
+            if probe.capture_identity(pid) == identity:
+                found |= children
+    return found
+
+
 def _agent_identity(probe, session) -> object | None:
     """The process identity of a live Claude Code record, or None when the record cannot prove it."""
     try:
@@ -379,9 +451,10 @@ def stop_session(
     A supervisor generated by ``session_script.py`` treats an agent exit as a restart
     unless its stop marker exists, and deletes that marker when it starts, so the
     marker is written only for a tmux session whose supervisor is running now. Then
-    each Claude Code process recorded under ``name`` is sent SIGTERM, by its pid and
-    only when its record's ``procStart`` proves which process holds that pid. The
-    call returns once nothing is left in the slot or ``timeout`` elapses.
+    each Claude Code process recorded under ``name``, or running under one of those
+    supervisors whatever name its record carries (as after a rename), is sent SIGTERM,
+    by its pid and only when its record's ``procStart`` proves which process holds
+    that pid. The call returns once nothing is left in the slot or ``timeout`` elapses.
     """
     from .session_adopt import live_sessions
     from .session_migrate import _session_variants, _tmux_names
@@ -406,8 +479,13 @@ def stop_session(
         report.marked.append(tmux_session)
         report.supervisors.extend(live)
         tracked.update(live)
+    slot = _slot_processes(probe, tracked)
+
+    def in_slot(session) -> bool:
+        return session.name == name or session.pid in slot
+
     for session in live_sessions(claude_home):
-        if session.name != name:
+        if not in_slot(session):
             continue
         identity = _agent_identity(probe, session)
         if identity is None:
@@ -425,7 +503,7 @@ def stop_session(
             if not probe.has_ended(pid) and probe.capture_identity(pid) == tracked[pid]
         ]
         for session in live_sessions(claude_home):
-            if session.name != name:
+            if not in_slot(session):
                 continue
             if session.pid in report.signalled or _agent_identity(probe, session) is not None:
                 found.append(f"Claude Code pid {session.pid}")

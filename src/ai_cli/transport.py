@@ -250,6 +250,7 @@ def run_ssh_with_reconnect(
     auth_backoff_seconds: float = 30.0,
     max_auth_backoff_seconds: float = 900.0,
     auth_fault_patterns: Sequence[str] = DEFAULT_AUTH_FAULT_PATTERNS,
+    on_exit_receipt: Callable[[], bool] | None = None,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -343,6 +344,10 @@ def run_ssh_with_reconnect(
                         stderr_tail = tee.close()
                 # A signal forwarded to ssh ends the attempt; unwind rather than reconnect.
                 raise_if_terminated()
+                if on_exit_receipt is not None and on_exit_receipt():
+                    returncode = 0
+                    verdict = "clean_exit"
+                    break
                 if stderr_tail:
                     last_error = stderr_tail
                 if returncode in _SSH_OPERATOR_EXIT_CODES:
@@ -736,6 +741,7 @@ async def _run_transport_loop(
     tailscale_host: str = "",
     diagnostic_ssh_args: list[str] | None = None,
     remote_diagnostic_file: str = "",
+    on_exit_receipt: Callable[[], bool] | None = None,
 ) -> None:
     """Run the mosh/SSH transport loop with VPN-aware switching.
 
@@ -840,6 +846,8 @@ async def _run_transport_loop(
                 raise_if_terminated()
                 transport_file.unlink(missing_ok=True)
 
+                if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
+                    return
                 if vpn_changed.is_set():
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True)
                     continue
@@ -920,6 +928,8 @@ async def _run_transport_loop(
                             proc2.wait()
                         transport_file.unlink(missing_ok=True)
                         raise_if_terminated()
+                        if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
+                            return
                         if proc2.returncode == 0:
                             return  # SSH succeeded
                         if vpn_changed.is_set():
