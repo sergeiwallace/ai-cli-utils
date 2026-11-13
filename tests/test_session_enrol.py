@@ -84,7 +84,9 @@ def add_record(world, **changes):
 
 
 @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
-def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_and_policy_change(enrolled_world, engine):
+def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_changes_and_policy_survives(
+    enrolled_world, engine
+):
     w = enrolled_world
     w.name = f"{engine}-myproject-1"
     before = add_record(w, relaunch_argv=["ai", engine, "1", "-p", "myproject", "--once"])
@@ -97,7 +99,7 @@ def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_and_policy_
     assert recipe["engine"] == engine and recipe["project"] == "myproject"
     assert recipe["options"]["once"]
     after = registry.load_registry()["sessions"][0]
-    assert after == before | {"boot_recipe": recipe, "relaunch": "never"}
+    assert after == before | {"boot_recipe": recipe}
     assert state.valid_boot_recipe(after)
     w.signal.assert_not_called()
     w.command.assert_not_called()
@@ -110,7 +112,8 @@ def test_given_generated_script_when_enrolled_then_ac_e_2_record_and_recipe_pres
     recipe = json.loads(result.output)
     record = registry.load_registry()["sessions"][0]
     assert record["name"] == w.name and record["kind"] == "local"
-    assert record["relaunch"] == "never" and record["boot_recipe"] == recipe
+    assert (record["relaunch"], record["relaunch_set_by"]) == ("auto", "default")
+    assert record["boot_recipe"] == recipe
     assert recipe["owning_host"] == "host-a" and recipe["cwd"] == str(w.cwd)
     assert recipe["project"] == "myproject"
     assert recipe["options"]["is_remote"] and recipe["options"]["sandbox"]

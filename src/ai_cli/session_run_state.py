@@ -144,6 +144,21 @@ def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive:
     return boot_recipe_refusal(record)
 
 
+def default_relaunch(record: dict) -> None:
+    """Give ``record`` the automatic boot policy unless one was chosen for it.
+
+    ``relaunch_set_by`` records who wrote ``relaunch``: ``owner`` for ``ai sessions policy``,
+    ``default`` for an automatic writer (launch, enrolment, recovery, repair).
+    The automatic policy is ``never`` for a probe and ``auto`` for every other session. It
+    replaces only a missing policy or one an automatic writer set. An owner's value, and an
+    unattributed value written before ``relaunch_set_by`` existed, are left as they are;
+    ``ai sessions repair-policy`` is the one place that judges an unattributed ``never``.
+    """
+    if "relaunch" in record and record.get("relaunch_set_by") != "default":
+        return
+    record.update(relaunch="never" if record.get("probe") else "auto", relaunch_set_by="default")
+
+
 def tombstone_path(name: str, host: str) -> Path:
     key = hashlib.sha256(f"{host}\0{name}".encode()).hexdigest()
     return registry.registry_path().parent / "session-safety" / f"{key}.json"
@@ -159,10 +174,11 @@ def _find(doc: dict, name: str) -> dict:
 def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:
     """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
 
-    A ``probe`` session is marked as one and its relaunch policy is ``never``, so boot
-    replay vetoes it and a prune drops its row once its session is gone. An ordinary new
-    start of a probe's record clears both marks; the launch refuses a probe whose title
-    a canonical record already holds, so a probe never reaches one here.
+    A ``probe`` session is marked as one and its default relaunch policy is ``never``, so
+    boot replay vetoes it and a prune drops its row once its session is gone. An ordinary
+    new start of a probe's record clears the mark and gives it the default ``auto``; the
+    launch refuses a probe whose title a canonical record already holds, so a probe never
+    reaches one here. A policy its owner set survives both.
     """
     result = {}
 
@@ -179,9 +195,9 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
                 launcher_pid=os.getpid(),
             )
             doc["sessions"].append(existing)
-        if new_start and not probe and existing.pop("probe", None):
+        if new_start and not probe and existing.pop("probe", None) and existing.get("relaunch_set_by") != "owner":
             # An ordinary launch that takes a probe's title makes the record canonical again.
-            existing["relaunch"] = "auto"
+            existing.update(relaunch="auto", relaunch_set_by="default")
         if new_start:
             existing["boot_recipe"] = recipe
             existing["cwd"] = recipe["cwd"]
@@ -191,8 +207,8 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
         if probe:
-            existing.update(probe=True, relaunch="never")
-        existing.setdefault("relaunch", "auto")
+            existing["probe"] = True
+        default_relaunch(existing)
         result.update(existing)
         return True
 
@@ -265,8 +281,7 @@ def begin(
                 record = matches[0]
             if not record.get("boot_recipe"):
                 record.update(boot_recipe=recovery_recipe, owning_host=host)
-                # Recover tracking without opting a pre-feature session into boot replay.
-                record.setdefault("relaunch", "never")
+                default_relaunch(record)
         record = _find(doc, name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")
