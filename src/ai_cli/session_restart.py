@@ -932,6 +932,18 @@ def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
     def normalize(text: str) -> str:
+        # Teardown moved into EXIT cleanup so abnormal returns fence tmux too.
+        # Compare its body at the original location, rather than ignoring it:
+        # changing the ownership fence must still make a program uncertifiable.
+        cleanup = re.search(r"(?ms)^    # BEGIN TMUX CLEANUP\n(.*?)^    # END TMUX CLEANUP\n", text)
+        if cleanup:
+            text = text[: cleanup.start()] + text[cleanup.end() :]
+            body = re.sub(r"(?m)^  ", "", cleanup[1])
+            text = text.replace(
+                "      done\n      exit 0\n    fi\n",
+                "      done\n" + body + "      exit 0\n    fi\n",
+                1,
+            )
         text = re.sub(
             r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH)[^\n]*\n.*?^    # END \1\n",
             "",

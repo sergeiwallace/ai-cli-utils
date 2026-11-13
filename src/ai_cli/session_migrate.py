@@ -631,8 +631,11 @@ def _plan_iterm2(old: str) -> list[PlannedMove]:
     except _session_registry.RegistryError:
         return []
     hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
-    if any(run_state(record) == "running" for record in hits):
-        raise MigrationError("session run state is still running; run `ai sessions list` to reconcile liveness first")
+    for record in hits:
+        if run_state(record) == "running":
+            from .session_reconcile import liveness_blocker
+
+            raise MigrationError(f"session run state is still running: {liveness_blocker(record)}")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]

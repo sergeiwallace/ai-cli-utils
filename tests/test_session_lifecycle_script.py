@@ -3,6 +3,7 @@
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -147,3 +148,115 @@ def test_given_no_python_on_path_when_lifecycle_marks_then_state_is_persisted(sh
     assert record["run_state"] == status
     if status == "exited":
         assert record["supervisor_exit"]["cause"] == "manual_exit"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor signals")
+@pytest.mark.parametrize("action", ["term", "cleanup"])
+def test_running_supervisor_when_teardown_runs_then_exit_is_persisted(shell_environment, action):
+    from process_ownership import reap, spawn_owned, spawn_owned_sleeper
+
+    shell, env, name, tmp_path = shell_environment
+    generation = env["AI_CLI_RUN_GENERATION"]
+    assert state.mark_running(name, generation=generation)
+    script = get_engine_script("c", "session-1", name, "c-session-", "myproject")
+    cleanup = script.split("      _supervisor_cleanup() {", 1)[1].split("      _supervisor_wait_for_child()", 1)[0]
+    term = script.split("      _supervisor_term() {", 1)[1].split("      _supervisor_terminating=false", 1)[0]
+    child = spawn_owned_sleeper()
+    process = None
+    try:
+        body = session_state_functions(name) + (
+            f"\ntmux_session={name}\nai_name=session-1\n"
+            f"_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
+            '_ai_reload_reason_file="$_ai_state_dir/reload"\n_heartbeat_pid=""\n_supervisor_tmux_ownership_established=false\n'
+            "_ai_close_progress() { :; }\n_ai_emit() { :; }\n"
+            '_supervisor_wait_for_child() { while kill -0 "$_child_pid" 2>/dev/null; do sleep 0.02; done; }\n'
+            f"_child_pid={child.pid}\n_supervisor_terminating=false\n"
+            "_supervisor_cleanup() {"
+            + cleanup
+            + "\n_supervisor_term() {"
+            + term
+            + "\ntrap '_supervisor_cleanup' EXIT\n"
+            + (
+                "trap '_supervisor_term' TERM\nprintf 'ready\\n'\nwhile true; do sleep 0.02; done\n"
+                if action == "term"
+                else "exit 0\n"
+            )
+        )
+        probe = tmp_path / "teardown.sh"
+        probe.write_text(body)
+        process = spawn_owned([shell, str(probe)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if action == "term":
+            assert process.stdout.readline() == b"ready\n"
+            process.send_signal(signal.SIGTERM)
+            child.wait(timeout=scaled(10))
+        stdout, stderr = process.communicate(timeout=scaled(20))
+        assert process.returncode == 0, stderr.decode()
+        record = registry.load_registry()["sessions"][0]
+        assert record["run_state"] == "exited"
+        assert record["supervisor_exit"]["cause"] == ("manual_exit" if action == "term" else "terminal_quit_or_crash")
+    finally:
+        reap(child)
+        if process is not None:
+            reap(process)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor signals and process groups")
+def test_given_exit_persistence_failure_when_supervisor_terminates_then_child_stops_and_pipes_close(
+    shell_environment, monkeypatch
+):
+    from process_ownership import reap, spawn_owned, spawn_owned_python
+
+    shell, env, name, tmp_path = shell_environment
+    monkeypatch.setattr(
+        "ai_cli.session_lifecycle_script.lifecycle_command",
+        lambda _path: [sys.executable, "-c", "raise SystemExit(1)"],
+    )
+    monkeypatch.setattr(
+        "ai_cli.session_lifecycle_script.persistence_settings",
+        lambda _cfg: {
+            "deadline_seconds": 0.3,
+            "command_timeout_seconds": 0.1,
+            "backoff_seconds": 0.05,
+            "max_backoff_seconds": 0.05,
+        },
+    )
+    script = get_engine_script("c", "session-1", name, "c-session-", "myproject")
+    term = script.split("      _supervisor_term() {", 1)[1].split("      _supervisor_terminating=false", 1)[0]
+    body = session_state_functions(name) + (
+        f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
+        f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)' &\n"
+        "_child_pid=$!\n_supervisor_terminating=false\n"
+        '_supervisor_wait_for_child() { wait "$_child_pid"; }\n'
+        "_supervisor_term() {" + term + "\n_supervisor_term\n"
+    )
+    # The child inherits the shell's pipes and process group, as in a real pane.
+    # A sibling in another group must survive the supervisor's termination.
+    sibling = spawn_owned_python("import time; time.sleep(30)")
+    process = spawn_owned([shell, "-c", body], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = process.communicate(timeout=scaled(5))
+        assert process.returncode == 77, stderr.decode()
+        assert b"exit persistence failed" in stderr
+        assert stdout == b""
+        assert sibling.poll() is None
+        assert state.tombstone_path(name, "host-a").exists()
+    finally:
+        reap(process)
+        reap(sibling)
+
+
+def test_committed_manual_exit_when_supervisor_acknowledges_then_teardown_evidence_survives(shell_environment):
+    shell, env, name, tmp_path = shell_environment
+    generation = env["AI_CLI_RUN_GENERATION"]
+    state.request_manual_exit(
+        name, host="host-a", generation=generation, targets={"agent": None, "supervisor": None, "tmux": None}
+    )
+    before = registry.registry_path().read_bytes()
+    body = session_state_functions(name) + (
+        f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
+        "_ai_persist_exit terminal_quit_or_crash '{}'\n"
+    )
+    result = subprocess.run([shell, "-c", body], env=env, capture_output=True, timeout=scaled(40), check=False)
+    assert result.returncode == 0
+    assert registry.registry_path().read_bytes() == before
+    assert not state.tombstone_path(name, "host-a").exists()

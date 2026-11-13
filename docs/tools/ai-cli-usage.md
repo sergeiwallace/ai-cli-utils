@@ -97,6 +97,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai cx`](../reference/cli.md#ai-cx) | Launch a Codex session |
 | [`ai deploy`](../reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
+| [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai g`](../reference/cli.md#ai-g) | Launch a Gemini CLI session |
 | [`ai iterm2`](../reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](../reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |

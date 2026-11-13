@@ -73,16 +73,40 @@ def mark(name, status, cause, evidence, generation, sequence):
         raise click.UsageError("-e/--evidence must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise click.UsageError("-e/--evidence must be a JSON object")
+    if status == "exited" and generation:
+        row = state._find(registry.load_registry(), name)
+        if (
+            row.get("generation") == generation
+            and state.run_state(row) == "exited"
+            and state.exit_teardown(row).get("generation") == generation
+        ):
+            # The exit worker already committed the final state. Preserve its
+            # cleanup targets and errors while the supervisor acknowledges it.
+            return
     if not state.mark(
         name, status, cause=cause or "unknown", evidence=parsed, generation=generation, sequence=sequence
     ):
         raise click.ClickException("session state persistence refused; retry before returning to the shell")
 
 
+@sessions.command("_exit-receipt", hidden=True)
+@click.argument("name")
+@click.argument("generation", required=False)
+@click.argument("timeout", type=click.FloatRange(min=0), default=5.0)
+def exit_receipt(name, generation, timeout):
+    from .session_exit import owning_receipt
+
+    try:
+        output.raw(Untagged.JSON, json.dumps(owning_receipt(name, generation, timeout)))
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
 @click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
-def begin(name, launch_metadata):
+@click.option("--supervisor-pid", type=int, hidden=True)
+def begin(name, launch_metadata, supervisor_pid):
     # Acquisition precedes the generated shell's terminal reset. A previous
     # agent may have left extended keys enabled, encoding Ctrl+C as text. Use
     # the controlling terminal: stdout is a captured generation-token reply.
@@ -149,12 +173,48 @@ def begin(name, launch_metadata):
             if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
                 raise ValueError("invalid launch recovery recipe")
         heal_live_sessions()
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
+        import psutil
+
+        supervisor = None
+        if supervisor_pid is not None:
+            parent = psutil.Process(supervisor_pid)
+            supervisor = {"pid": parent.pid, "started_at": parent.create_time()}
+        output.raw(
+            Untagged.INTERNAL_REPLY,
+            state.begin(name, recovery_recipe=recipe, supervisor=supervisor),
+        )
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
     finally:
         if previous_int is not None:
             signal.signal(signal.SIGINT, previous_int)
+
+
+@sessions.command("_bind-exit-tmux", hidden=True)
+@click.argument("name")
+@click.argument("generation")
+@click.argument("session_id")
+@click.argument("token")
+def bind_exit_tmux(name, generation, session_id, token):
+    from .session_exit import TmuxIdentity, _tmux_server
+
+    if not re.fullmatch(r"\$[0-9]+", session_id) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise click.ClickException("invalid tmux identity")
+    if _tmux_server(TmuxIdentity(session_id, token)) is None:
+        raise click.ClickException("tmux ownership is absent")
+
+    def bind(doc):
+        row = state._find(doc, name)
+        supervisor = row.get("supervisor_identity") or {}
+        if row.get("generation") != generation or supervisor.get("generation") != generation:
+            raise ValueError("stale supervisor generation")
+        supervisor["tmux"] = {"session_id": session_id, "generation": token}
+        return True
+
+    try:
+        registry._mutate(bind, timeout=2)
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @sessions.command("_sequence", hidden=True)
