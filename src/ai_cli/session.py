@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -977,7 +978,8 @@ def registered_worktrees(repo_root: Path) -> list[Path]:
             # still gets a chance to run rather than the caller erroring out
             # before it can check whether there's real content to protect.
             return []
-        raise RuntimeError(f"could not list registered git worktrees for {repo_root}: {stderr}")
+        detail = f"{_exit_status(res.returncode)} {stderr}" if stderr == _NO_STDERR else stderr
+        raise RuntimeError(f"could not list registered git worktrees for {repo_root}: {detail}")
     return [
         Path(line[len("worktree ") :].strip()).resolve()
         for line in (res.stdout or "").splitlines()
@@ -985,12 +987,26 @@ def registered_worktrees(repo_root: Path) -> list[Path]:
     ]
 
 
+_NO_STDERR = "(no stderr output)"
+
+
 def _git_stderr(res: subprocess.CompletedProcess) -> str:
     """Return command stderr as safe, single-line diagnostic text."""
     stderr = res.stderr or ""
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")
-    return " ".join(stderr.split()) or "(no stderr output)"
+    return " ".join(stderr.split()) or _NO_STDERR
+
+
+def _exit_status(returncode: int) -> str:
+    """``exit N``, or ``killed by signal N (NAME)`` for the negative code of a signalled process."""
+    if returncode >= 0:
+        return f"exit {returncode}"
+    try:
+        name = f" ({signal.Signals(-returncode).name})"
+    except ValueError:
+        name = ""
+    return f"killed by signal {-returncode}{name}"
 
 
 def _contains_git_checkout(directory: Path) -> Path | None:

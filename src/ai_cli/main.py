@@ -3556,21 +3556,45 @@ class PartialMigrationRefusal(SystemExit):
         self.reason = reason
 
 
-def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter, *, allow_partial: bool = False) -> None:
+def _finish_recorded_migrations(
+    ai_name: str,
+    reporter: LaunchReporter,
+    *,
+    allow_partial: bool = False,
+    attaching_live: Callable[[], bool] = lambda: False,
+) -> None:
     """Refuse the launch of ``ai_name`` while any migration to it this host recorded is partial.
 
-    Each recorded pair whose NEW is ``ai_name`` is judged once, whatever its ledger row says.
-    A pair with no ``finished`` row is finished here, since the launch is the one moment the
-    new session is known not to be running, and that finish's own re-plan is the verdict. A
-    pair recorded finished is re-planned read-only, so one a later process dirtied is caught.
-    A finish that refuses, raises or leaves any part refuses the launch with the parts left
-    and the ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``)
-    is given: the session then starts and the parts left go into the launch log. A ledger row
-    in a format newer than this build reads refuses the launch, override or not. Every
-    refusal raises :class:`PartialMigrationRefusal`.
+    Each recorded pair whose NEW is ``ai_name`` is judged once, by its latest ledger row. A
+    pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
+    and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
+    with no ``finished`` row is finished here, since the launch is the one moment the new
+    session is known not to be running, and that finish's own re-plan is the verdict. A pair
+    whose ``finished`` row carries no ``verified`` is re-planned read-only. A finish that
+    refuses, raises or leaves any part refuses the launch with the parts left and the
+    ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
+    given: the session then starts and the parts left go into the launch log.
+
+    When ``attaching_live()`` says the launch attaches to an ``ai_name`` already running
+    (asked once, and only for a pair not verified), no writing finish can run: each pair not
+    verified is re-planned read-only, and a part left is one warning naming the ``--finish``
+    command to run once the session exits, never a refusal. A ledger row in a format newer
+    than this build reads refuses the launch, override or not. Every refusal raises
+    :class:`PartialMigrationRefusal`. Each pair, and each slow step of its finish or
+    re-plan, prints a line as it starts and ends.
     """
     from .session_migrate import MIGRATION_FORMAT, finish_session, pending_finishes
-    from .session_migrate_status import finish_command, left_after, newest_format, recorded_pairs, replan
+    from .session_migrate_status import (
+        finish_command,
+        finish_state,
+        left_after,
+        newest_format,
+        recorded_pairs,
+        replan,
+    )
+
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
 
     state = _config.get_xdg_state_home()
     newest = newest_format(ai_name, state)
@@ -3583,12 +3607,24 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter, *, allow
         raise PartialMigrationRefusal(reason)
     pending = dict(pending_finishes(ai_name, state))
     partial: list[tuple[str, Path, dict[str, str]]] = []
+    live: bool | None = None
     for old, repo in recorded_pairs(ai_name, state):
-        if old not in pending:
-            left = replan(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
+        pair = f"migration {old} -> {ai_name}"
+        if finish_state(old, ai_name, state) == "verified":
+            progress(f"{pair}: verified finished earlier, not re-planned (re-check: `ai migrate-session -s -a`)")
+            continue
+        if live is None:
+            live = attaching_live()
+        if old not in pending or live:
+            why = f"{ai_name} is running, so it cannot be finished now" if live else "not verified"
+            progress(f"{pair}: re-planning read-only ({why})")
+            left = replan(repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress)
         else:
+            progress(f"{pair}: finishing")
             try:
-                result = finish_session(repo, old, ai_name, regenerate_script=_engine_script_from_meta)
+                result = finish_session(
+                    repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
+                )
             except Exception as exc:  # a finish that raises is a part left, never a launch
                 left = {"migration": f"failed: {' '.join(str(exc).split()) or type(exc).__name__}"}
             else:
@@ -3608,12 +3644,19 @@ def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter, *, allow
                 f"({ALLOW_PARTIAL_MIGRATION_OPTS[1]}); parts left: {named}",
             )
             continue
+        if live:
+            reporter.warning(
+                "migrate",
+                f"attaching to the running {ai_name} with the migration {old} -> {ai_name} partial; "
+                f"parts left: {named}; once {ai_name} exits, finish it with `{finish_command(old, ai_name, repo)}`",
+            )
+            continue
         reporter.error(
             "migrate",
             f"refusing to launch {ai_name}: the migration {old} -> {ai_name} is partial; parts left: {named}; "
             f"finish it with `{finish_command(old, ai_name, repo)}`, then launch again",
         )
-    if partial and not allow_partial:
+    if partial and not (allow_partial or live):
         raise PartialMigrationRefusal(
             "; ".join(
                 f"migration {old} -> {ai_name} partial, run `{finish_command(old, ai_name, repo)}`"
@@ -3739,8 +3782,14 @@ def _auto_migrate_legacy_launch(
             f"kept legacy session {old}: {old} -> {target} is already recorded; finish with `{manual} --finish -y`",
         )
         return session_id, ai_name
+
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
+
     try:
-        plan = migrate_session(repo_root, old, target, dry_run=True, regenerate_script=_engine_script_from_meta)
+        plan = migrate_session(
+            repo_root, old, target, dry_run=True, regenerate_script=_engine_script_from_meta, progress=progress
+        )
     except Exception as exc:
         reason = " ".join(str(exc).split()) or type(exc).__name__
         reporter.warning("migrate", f"kept legacy session {old}: {reason}; migrate manually with `{manual}`")
@@ -3752,7 +3801,7 @@ def _auto_migrate_legacy_launch(
         )
         return session_id, ai_name
     try:
-        result = migrate_session(repo_root, old, target, regenerate_script=_engine_script_from_meta)
+        result = migrate_session(repo_root, old, target, regenerate_script=_engine_script_from_meta, progress=progress)
     except Exception as exc:
         reason = " ".join(str(exc).split()) or type(exc).__name__
         reporter.warning("migrate", f"automatic migration {old} -> {target} failed: {reason}; retry with `{manual}`")
@@ -5334,8 +5383,18 @@ def _do_session_launch(
         )
         sys.exit(1)
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
-    # migration raises here, before the worktree, tmux or engine is touched.
-    _finish_recorded_migrations(ai_name, reporter, allow_partial=allow_partial_migration)
+    # migration raises here, before the worktree, tmux or engine is touched. A launch that
+    # will attach to NEW's live tmux session (the same test the worktree sync makes below)
+    # cannot finish anything, so a part left only warns: refusing it would leave the running
+    # session unreachable while `--finish` refuses it for being live.
+    _finish_recorded_migrations(
+        ai_name,
+        reporter,
+        allow_partial=allow_partial_migration,
+        attaching_live=lambda: (
+            replay_recipe is None and not bare and not use_sandbox and _tmux_session_has_live_pane(session_id)
+        ),
+    )
     if engine == "c":
         _queue_migration_context(ai_name, session_id, reporter)
 
@@ -6937,9 +6996,12 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     help=(
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
-        "--finish -y` would, and one recorded finished is re-planned. If any is still partial, "
-        "the launch is refused: it starts nothing, prints the parts left and the --finish "
-        "command, and exits 1. -P/--allow-partial-migration starts the session anyway.\n\n"
+        "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
+        "re-checks it), and one recorded finished without verification is re-planned. If any is "
+        "still partial, the launch is refused: it starts nothing, prints the parts left and the "
+        "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
+        "When the session is already running, nothing can be finished, so attaching to it warns "
+        "with the parts left and the --finish command to run once it exits.\n\n"
         "Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one "
         "on the remote host. TITLE is the session's title, ending in a first name "
         "(myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. "
@@ -8155,11 +8217,17 @@ def _migration_stem(repo_root: Path) -> str:
     )
 
 
+def _migrate_progress(line: str) -> None:
+    """One progress line of a slow ``ai migrate-session`` step, on stderr at default verbosity."""
+    _out.emit(Tag.MIGRATE, "migrate", line, err=True)
+
+
 def _migrate_session_for_names(repo_root: Path, old: str, new: str, **kwargs):
     from .session_migrate import migrate_session
 
     if kwargs.get("regenerate_script") is None:
         kwargs["regenerate_script"] = _engine_script_from_meta
+    kwargs.setdefault("progress", _migrate_progress)
     return migrate_session(repo_root, old, new, **kwargs)
 
 
@@ -8592,7 +8660,7 @@ def _replan_recorded(old: str, new: str, repo: Path) -> tuple[dict[str, str], st
         if moved_on(new, repo, _config.get_xdg_state_home()) is not None:
             return {}, "", True
         return {"slot": f"missing: {slot} does not exist"}, "", False
-    left, live = replan_live(repo, old, new)
+    left, live = replan_live(repo, old, new, progress=_migrate_progress)
     return left, live, UNPLANNED not in left
 
 
@@ -8690,7 +8758,9 @@ def _finish_all_recorded(*, dry_run: bool, yes: bool) -> int:
             return 1
     for old, new, repo in todo:
         try:
-            result = finish_session(repo, old, new, regenerate_script=_engine_script_from_meta)
+            result = finish_session(
+                repo, old, new, regenerate_script=_engine_script_from_meta, progress=_migrate_progress
+            )
         except LiveSessionError as exc:
             left, _live, _planned = _replan_recorded(old, new, repo)
             rows[(old, new, repo)] = (f"skipped: live ({_one_line(str(exc))})", left)
@@ -8909,10 +8979,16 @@ def cmd_migrate_session(
 
     def _run(preview: bool):
         if beads_only:
-            return rekey_beads(repo_root, old, new, dry_run=preview)
-        if finish:
-            return finish_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
-        return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
+            return rekey_beads(repo_root, old, new, dry_run=preview, progress=_migrate_progress)
+        run = finish_session if finish else migrate_session
+        return run(
+            repo_root,
+            old,
+            new,
+            dry_run=preview,
+            regenerate_script=_engine_script_from_meta,
+            progress=_migrate_progress,
+        )
 
     try:
         result = _run(True)

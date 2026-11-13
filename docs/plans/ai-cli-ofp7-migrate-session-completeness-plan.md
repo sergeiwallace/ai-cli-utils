@@ -423,6 +423,15 @@ The acceptance names `-a` as optional, so (a) keeps every listed requirement: `-
 migration. The Con is mitigated by the launch guard (T-04), which re-plans a pair at its own launch
 whatever its row says, so a dirtied verified pair is caught before it can start.
 
+> **Revised 2026-11-12 (AI-CLI-1xoj):** the launch guard no longer re-plans a pair whose latest row
+> is a verified `finished`. That row is the proof of record. Re-proving it at every launch made
+> launch availability depend on every Beads store and every hook on the host: an unreadable store
+> in another repo, or `git worktree list` failing there, refused the launch of a migration an empty
+> re-plan had already proved finished, after minutes of silent re-planning. `ai migrate-session
+> --status -a` and `--finish` remain the way to re-check a verified pair, so a verified pair a later
+> process dirtied is now found by those, not at launch. Pending pairs are still finished at launch,
+> and `finished` rows without `verified` are still re-planned there.
+
 ---
 
 <a id="d-3"></a>
