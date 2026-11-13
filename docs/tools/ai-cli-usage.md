@@ -63,6 +63,7 @@ started.
 | `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
+| `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
 | `ai cos -r` | Resume this machine's chief-of-staff session |
 | `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
 <!-- start-resume-attach:end -->

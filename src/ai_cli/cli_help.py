@@ -29,6 +29,11 @@ START_RESUME_ATTACH = (
         "creating nothing, when no session holds NAME",
     ),
     ("ai c NAME -R -r", "The same on the default remote machine; -m ALIAS picks another configured machine"),
+    (
+        "ai c -t NAME",
+        "Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is "
+        "never a session home and it is never relaunched at boot",
+    ),
     ("ai cos -r", "Resume this machine's chief-of-staff session"),
     (
         "ai sessions",
