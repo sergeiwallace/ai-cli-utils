@@ -139,3 +139,88 @@ def test_given_an_unreadable_registry_when_names_are_checked_then_it_exits_3(fle
 
     assert result.exit_code == 3
     assert "the over-limit check did not run" in result.output
+
+
+# --- sync-names: regenerate only from a newer policy (T-1.4) ------------------------------------
+
+REGENERATED = ["ada", "eve", "ida", "otto"]
+
+
+@pytest.fixture
+def generated(monkeypatch):
+    """``name_list.generate`` without downloads: the decision under test is when it runs, not what it fetches."""
+    calls: list[dict] = []
+
+    def generate(policy, *, fetch=None, policy_commit=None, policy_committed_at=None):
+        calls.append(policy)
+        record = {
+            "schema": 1,
+            "policy": policy,
+            "policy_digest": name_list.policy_digest(policy),
+            "policy_commit": policy_commit,
+            "count": len(REGENERATED),
+            "generated_at": "2026-01-01T00:00:00Z",
+        }
+        return name_list.Generation(names=list(REGENERATED), record=record)
+
+    monkeypatch.setattr(name_list, "generate", generate)
+    return calls
+
+
+def _commit_policy(repo, transform) -> str:
+    from name_fleet import git
+
+    path = repo / reg.POLICY_MARKER
+    path.write_text(transform(path.read_text()))
+    git(repo, "commit", "-qam", "policy change")
+    git(repo, "push", "-q", "origin", "HEAD:main")
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.registry_backends("dolt")  # a local registry has no policy revision; see the SQLite case below
+def test_given_a_newer_policy_revision_when_syncing_then_one_commit_republishes_only_the_list_and_its_record(
+    fleet, generated
+):
+    commit = _commit_policy(fleet.repo, lambda text: text.replace("pick_floor = 10", "pick_floor = 9"))
+
+    result = reg.sync_names(fleet.registry, local_policy=reg.local_policy(fleet.registry))
+
+    assert result.published and result.state == "local-newer"
+    assert fleet.changed(fleet.history()[0]) == {reg.NAMES_TXT, reg.GENERATION_JSON}
+    after = fleet.snapshot()
+    assert after.generation["policy_commit"] == commit
+    assert set(REGENERATED) <= set(after.names)
+
+
+@pytest.mark.registry_backends("dolt")
+def test_given_the_same_or_an_older_policy_revision_when_syncing_then_the_registry_is_unchanged(fleet, generated):
+    tip = fleet.tip()
+    same = reg.sync_names(fleet.registry, local_policy=reg.local_policy(fleet.registry))
+    assert not same.published and same.state == "same"
+    assert fleet.tip() == tip
+    from name_fleet import clone, registry_for
+
+    ahead = clone(fleet.remote, fleet.tmp / "ahead")
+    commit = _commit_policy(ahead, lambda text: text.replace("pick_floor = 10", "pick_floor = 8"))
+    publish_list(
+        registry_for(ahead, path=fleet.tmp / "ahead.dolt"), list(NAMES), reg.local_policy(fleet.registry), commit
+    )
+    tip = fleet.tip()
+
+    older = reg.sync_names(fleet.registry, local_policy=reg.local_policy(fleet.registry))
+
+    assert not older.published and older.state == "local-older"
+    assert fleet.tip() == tip
+    assert generated == []
+
+
+@pytest.mark.registry_backends("sqlite")
+def test_given_a_local_policy_when_synced_twice_then_only_the_first_regenerates(fleet, generated):
+    first = reg.sync_names(fleet.registry, local_policy=reg.local_policy(fleet.registry))
+    tip = fleet.tip()
+
+    second = reg.sync_names(fleet.registry, local_policy=reg.local_policy(fleet.registry))
+
+    assert first.published and len(generated) == 1
+    assert not second.published
+    assert fleet.tip() == tip
