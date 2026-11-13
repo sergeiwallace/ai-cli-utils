@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
+from process_ownership import reap, spawn_owned_sleeper
 
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
@@ -83,12 +84,7 @@ def test_given_orphan_process_when_it_dies_without_callback_then_next_observatio
 ):
     import psutil
 
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        cwd=tmp_path,
-        env={**os.environ, "AI_TMUX_SESSION": "c-session-1"},
-        start_new_session=True,
-    )
+    child = spawn_owned_sleeper(60, str(registry.registry_path().parent / "sessions/c-session-1.sh"))
     try:
         process = psutil.Process(child.pid)
         process.info = {"pid": child.pid, "username": process.username(), "status": process.status()}
@@ -100,9 +96,7 @@ def test_given_orphan_process_when_it_dies_without_callback_then_next_observatio
         assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
         assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
     finally:
-        if child.poll() is None:
-            child.kill()
-        child.wait(timeout=10)
+        reap(child)
 
 
 @pytest.mark.parametrize(
@@ -187,7 +181,7 @@ def test_given_unreadable_process_table_when_listed_then_running_is_preserved(st
             raise psutil.AccessDenied(42)
         process = Mock()
         process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running"}
-        process.cmdline.return_value = ["python", "example.py"]
+        process.cmdline.return_value = ["claude"]
         process.environ.side_effect = psutil.AccessDenied(42)
         yield process
 
@@ -320,3 +314,60 @@ def test_given_new_run_that_vanishes_when_next_minute_passes_then_worker_settles
         with pytest.raises(KeyboardInterrupt):
             run_stale_session_reaper({}, reaper_factory=lambda *a, **kw: Mock(), sleep=pause)
     assert ticks == ["running", "exited"]
+
+
+@pytest.mark.parametrize("arguments", ["empty", "unreadable"])
+def test_unrelated_process_when_arguments_unavailable_then_dead_session_settles(stale_record, monkeypatch, arguments):
+    import psutil
+
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": "helper"}
+    if arguments == "empty":
+        process.cmdline.return_value = []
+    else:
+        process.cmdline.side_effect = psutil.AccessDenied(42)
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
+
+
+@pytest.mark.parametrize("executable", ["python", "node", "nodejs"])
+def test_helper_when_session_markers_are_inherited_then_dead_session_settles(stale_record, monkeypatch, executable):
+    import psutil
+
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": executable}
+    process.cmdline.return_value = [executable, "helper.py", "--name", "session-1"]
+    process.environ.return_value = {"AI_TMUX_SESSION": "c-session-1", "CLAUDE_CODE_TASK_LIST_ID": "session-1"}
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
+
+
+@pytest.mark.parametrize("executable", ["claude", "node", "python"])
+def test_possible_agent_when_arguments_unreadable_then_liveness_remains_unknown(stale_record, monkeypatch, executable):
+    import psutil
+
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": executable}
+    process.cmdline.side_effect = psutil.AccessDenied(42)
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+    before = registry.registry_path().read_bytes()
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "argv", [["node", "/packages/@anthropic-ai/claude-code/cli.js"], ["python", "claude.py"], ["claude"]]
+)
+def test_agent_entry_point_when_session_marker_matches_then_running_is_preserved(stale_record, monkeypatch, argv):
+    import psutil
+
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": argv[0]}
+    process.cmdline.return_value = argv
+    process.environ.return_value = {"AI_TMUX_SESSION": "c-session-1"}
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+    before = registry.registry_path().read_bytes()
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.registry_path().read_bytes() == before

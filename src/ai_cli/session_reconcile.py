@@ -29,7 +29,7 @@ def _process_alive(record: dict) -> bool | None:
     script = str(registry.registry_path().parent / "sessions" / f"{name}.sh")
     try:
         user = psutil.Process().username()
-        for process in psutil.process_iter(["pid", "username", "status"]):
+        for process in psutil.process_iter(["pid", "username", "status", "name"]):
             info = process.info
             if info["pid"] == os.getpid() or info["status"] == psutil.STATUS_ZOMBIE:
                 continue
@@ -42,9 +42,35 @@ def _process_alive(record: dict) -> bool | None:
                     launched = datetime.fromisoformat(record["launched_at"].replace("Z", "+00:00"))
                     if process.create_time() <= launched.timestamp() + 1:
                         return True
-                argv = process.cmdline()
+                try:
+                    argv = process.cmdline()
+                except psutil.AccessDenied:
+                    executable = (info.get("name") or "").lower().removesuffix(".exe")
+                    if (
+                        not executable
+                        or executable
+                        in {
+                            "claude",
+                            "codex",
+                            "gemini",
+                            "pi",
+                            "node",
+                            "nodejs",
+                            "sh",
+                            "bash",
+                            "zsh",
+                            "fish",
+                            "dash",
+                            "ksh",
+                        }
+                        or executable.startswith("python")
+                    ):
+                        return None
+                    continue
                 if not argv:
-                    return None
+                    # Empty argv is normal for kernel tasks. An identified launcher
+                    # was checked above; no empty argv can identify an agent/wrapper.
+                    continue
                 if "--ai-cli-heartbeat-ticker" in argv:
                     continue
                 if script in argv:
@@ -57,17 +83,29 @@ def _process_alive(record: dict) -> bool | None:
                     "session-reaper" in argv or "internal" in argv or ("sessions" in argv and "publish" in argv)
                 ):
                     continue
-                # Only agent executables use an inherited marker as identity.
-                if not (
-                    executable in {"claude", "codex", "gemini", "pi", "node", "nodejs"}
-                    or executable.startswith("python")
+                # Interpreters also run unrelated helpers with inherited markers.
+                # Require an agent entry point before interpreting those markers.
+                agents = {"claude", "codex", "gemini", "pi"}
+                entry = argv[1].replace("\\", "/") if len(argv) > 1 else ""
+                interpreted_agent = Path(entry).stem in agents or any(
+                    package in entry
+                    for package in (
+                        "/@anthropic-ai/claude-code/",
+                        "/@openai/codex/",
+                        "/@google/gemini-cli/",
+                        "/@mariozechner/pi-coding-agent/",
+                    )
+                )
+                if executable not in agents and not (
+                    (executable in {"node", "nodejs"} or executable.startswith("python")) and interpreted_agent
                 ):
                     continue
+                if any(flag == "--name" and value == agent_name for flag, value in pairwise(argv)):
+                    return True
                 environment = process.environ()
                 if (
                     environment.get("AI_TMUX_SESSION") == name
                     or environment.get("CLAUDE_CODE_TASK_LIST_ID") == agent_name
-                    or any(flag == "--name" and value == agent_name for flag, value in pairwise(argv))
                 ):
                     return True
             except psutil.NoSuchProcess:
