@@ -651,7 +651,11 @@ def get_engine_script(
       _supervisor_preserve_pane() {{
         # A script launched as tmux's pane command has no interactive shell
         # parent to return to. Keep that pane and replace its supervisor below.
-        if [[ -t 0 ]] && _supervisor_restore_terminal; then
+        # Failed-start guards also return 77, but persist an unknown exit cause.
+        # Preserve the pane only for a deliberate stop, never a failed launch.
+        if [[ -t 0 ]] && \\
+          [[ "$(cat "$_ai_state_dir/session-final-exit-$tmux_session" 2>/dev/null)" == manual_exit ]] && \\
+          _supervisor_restore_terminal; then
           _supervisor_return_to_shell=true
         fi
       }}
@@ -821,7 +825,6 @@ def get_engine_script(
     # BEGIN RUN STATE startup-failure
         if (( _child_status == 76 )); then
           _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
-          _supervisor_preserve_pane
           break
         fi
     # END RUN STATE
@@ -1649,9 +1652,11 @@ with open(path, 'w') as f:
 
     # BEGIN SHELL RETURN interrupt-exit
       # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
-      # neither that clean exit nor status 130 is a crash to auto-restart.
-      if {{ $agent_attempted && (( agent_exit_code == 0 || agent_exit_code == 130 )); }} || \\
-        [[ $({_relaunch_policy_command} 2>/dev/null) == never ]]; then
+      # a healthy clean exit or status 130 is a deliberate stop. Short clean
+      # exits still reach the existing quick-failure guard below. The supervisor
+      # applies policy after failed-start guards have recorded their cause.
+      if $agent_attempted && (( agent_exit_code == 130 || \\
+        (agent_exit_code == 0 && $(date +%s) - start_ts >= 3) )); then
         _ai_final_manual_exit
         exit 77
       fi

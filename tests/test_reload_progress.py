@@ -337,6 +337,11 @@ class Session:
             time.sleep(0.1)
         pytest.fail(f"the shell never started; screen: {self.rows()}")
 
+    def exit_shell(self) -> None:
+        self.wait_for_shell()
+        os.write(self._master, b"exit\n")
+        assert self.wait_for_exit() == 0
+
     def stopped(self) -> list[str]:
         self._track()
         found = []
@@ -399,6 +404,32 @@ def session_factory(tmp_path):
 
 def _reload_rows(rows: list[str]) -> list[int]:
     return [index for index, row in enumerate(rows) if _RELOAD_ROW in row]
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_given_quick_agent_exit_when_startup_fails_then_session_ends_without_interactive_shell(
+    session_factory, monkeypatch, exit_code
+):
+    original = Session._fakes
+
+    def fakes(bin_dir, *args):
+        original(bin_dir, *args)
+        agent = bin_dir / "claude"
+        source = agent.read_text(encoding="utf-8")
+        assert "sys.exit(1)" in source
+        agent.write_text(source.replace("sys.exit(1)", f"sys.exit({exit_code})"), encoding="utf-8")
+
+    monkeypatch.setattr(Session, "_fakes", staticmethod(fakes))
+    session = session_factory(reload_on=(), agent_runs=(0.0,), renderer=False)
+    deadline = time.monotonic() + _CEILING_SECONDS
+    while session.process.poll() is None and time.monotonic() < deadline:
+        if b"Returning to an interactive shell." in session.received:
+            pytest.fail(f"a failed start opened an interactive shell; screen: {session.rows()}")
+        time.sleep(0.1)
+    assert session.wait_for_exit() == 0
+    assert len(session.agents()) == 1
+    assert b"exited too quickly" in session.received
+    assert b"Returning to an interactive shell." not in session.received
 
 
 def test_given_repeated_reloads_on_a_pty_when_the_supervisor_restarts_then_one_row_updates_in_place(
