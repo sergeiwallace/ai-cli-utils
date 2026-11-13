@@ -396,3 +396,27 @@ def test_linux_without_tmux_when_launcher_is_dead_then_absence_or_unknown_is_rep
     else:
         assert registry.registry_path().read_bytes() == before
         assert _LOCAL_SESSION_ALIVE("c-session-1") is None
+
+
+@pytest.mark.parametrize("entry", ["list", "boot-relaunch"])
+def test_same_boot_veto_when_run_is_provably_dead_then_record_reconciles_to_exited(stale_record, monkeypatch, entry):
+    boot = stale_record["boot_id"]
+    registry._mutate(lambda doc: doc["sessions"][0].update(relaunched_boot_id=boot) or True)
+    monkeypatch.setattr(
+        state.config,
+        "load_config",
+        lambda **kw: {"machine": {"host_id": "host-a"}, "session_relaunch": {"on_boot": True}},
+    )
+    row = registry.load_registry()["sessions"][0]
+    assert (
+        state.boot_veto(row, cfg=state.settings(), host="host-a", boot_id=boot, alive=False)
+        == "already attempted in this boot"
+    )
+    result = CliRunner().invoke(
+        _cli_group, ["sessions", *(["list", "-j"] if entry == "list" else ["relaunch", "--boot"])]
+    )
+    assert result.exit_code == 0, result.output
+    settled = registry.load_registry()["sessions"][0]
+    assert settled["run_state"] == "exited"
+    assert settled["relaunched_boot_id"] == boot
+    assert settled["generation"] == stale_record["generation"]
