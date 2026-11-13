@@ -215,7 +215,7 @@ after changing a command's help, never edit it by hand.
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
-| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client and kind |
+| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](docs/reference/cli.md#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
 | [`ai ls`](docs/reference/cli.md#ai-ls) | List tmux sessions (fzf picker when available) |
 | [`ai memory`](docs/reference/cli.md#ai-memory) | Memory-file watchers and helpers |
@@ -270,6 +270,8 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](docs/reference/cli.md#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |

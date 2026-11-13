@@ -3998,7 +3998,7 @@ def _resolve_session_identity(
         return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
-    except (_names.NoNameListError, _names.PolicyUnknownError) as exc:
+    except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
         _naming_exit(reporter, str(exc), 1)
     except _session_naming.NamePoolExhaustedError as exc:
         _naming_exit(reporter, str(exc), 1)
@@ -4286,7 +4286,7 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
     if dry_run:
         verdict, reason = _names.check_hand_chosen(snapshot, value.lower(), slot, words)
         title = slot.title_for(value.lower())
-        if verdict in ("held", "confusable", "word", "limits"):
+        if verdict in ("held", "rejected", "confusable", "word", "limits"):
             _naming_exit(reporter, f"dry run: {reason}", 2)
         note = {"unknown": "would ask to add it to the name database", "spare": "this machine's spare"}.get(
             verdict, "free"
@@ -8261,14 +8261,14 @@ def _migrate_one_to_name(
             return 0
         words = _names.common_words(snapshot.policy) if name else frozenset()
         if name:
-            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
+            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
             if verdict not in ("ok", "spare"):
                 if verdict == "unknown":
                     reason += f"; add it with `ai add-name {name}` first"
                 raise AdoptionError(reason)
             planned = name
         else:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
+            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, session=old)
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
             repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True

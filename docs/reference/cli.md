@@ -41,7 +41,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
-| [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client and kind |
+| [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
 | [`ai ls`](#ai-ls) | List tmux sessions (fzf picker when available) |
 | [`ai memory`](#ai-memory) | Memory-file watchers and helpers |
@@ -96,6 +96,8 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](#ai-spend) | Usage-cost reports |
@@ -723,11 +725,12 @@ Session names: count the free names per length and the letter tiers the picker w
 ai list-names [OPTIONS]
 ```
 
-Session names: list every held name with its title, host, client and kind
+Session names: list every held name with its title, host, client, kind and general status
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print the rows as JSON |
+| `-p` | `--pool` |  | List every name in the database instead, with its general status and holder |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai locate-session
@@ -1560,6 +1563,47 @@ Arguments:
 |---|---|---|---|
 | `-t` | `--timeout` | `FLOAT RANGE` | Seconds to wait for the session to exit  [default: 30.0; x>=0] |
 | `-d` | `--dry-run` |  | Check the session and print the plan without writing or stopping |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai set-name-status
+
+```text
+ai set-name-status [OPTIONS] {unreviewed|rejected|approved} NAMES...
+```
+
+Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand
+
+Arguments:
+
+- `{unreviewed|rejected|approved}`
+- `NAMES...`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-a` | `--actor` | `TEXT` | Who decided, for example the owner whose verdict this records  [required] |
+| `-r` | `--reason` | `TEXT` | Why, recorded with each name's status |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai set-name-verdict
+
+```text
+ai set-name-verdict [OPTIONS] {approved|rejected} NAMES...
+```
+
+Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand
+
+Arguments:
+
+- `{approved|rejected}`
+- `NAMES...`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-s` | `--scope` | `[repo\|host\|session]` | What the verdict applies to  [required] |
+| `-v` | `--value` | `TEXT` | The repository name, host id or session title  [required] |
+| `-a` | `--actor` | `TEXT` | Who decided  [required] |
+| `-r` | `--reason` | `TEXT` | Why, recorded with each verdict |
+| `-d` | `--delete` |  | Remove the verdict instead of setting it |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai setup

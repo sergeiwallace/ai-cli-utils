@@ -460,6 +460,10 @@ def resolve_launch_naming(
     return LaunchNaming(repo_alias, None, "", True)
 
 
+NOT_APPROVED = "not approved (unreviewed or rejected)"
+REJECTED_HERE = "rejected for this repository, host or session"
+
+
 class NamePoolExhaustedError(RuntimeError):
     """No candidate survives the filters; the message names each filter and what it removed."""
 
@@ -483,6 +487,8 @@ class PickRequest:
     ``myrepo-box-review-``); ``stem`` is ``{repo-alias}-{host-alias}``. ``held`` is every
     token the registry and this machine's spool hold; ``held_titles`` their titles.
     ``manual`` is the names added by hand, a candidate only when ``passes_static`` says so.
+    ``approved`` is the names whose general status is approved; when set, no other name
+    is a candidate. ``rejected`` is the names a scoped verdict rejects for this launch.
     """
 
     generated: frozenset[str]
@@ -500,6 +506,8 @@ class PickRequest:
     manual: frozenset[str] = frozenset()
     passes_static: Callable[[str], bool] | None = None
     max_edit_distance: int = 1
+    approved: frozenset[str] | None = None
+    rejected: frozenset[str] = frozenset()
 
 
 def alias_letters(repo_alias: str) -> frozenset[str]:
@@ -548,6 +556,8 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
     """The free candidates for ``request``, and how many each filter removed."""
     removed = dict.fromkeys(
         (
+            NOT_APPROVED,
+            REJECTED_HERE,
             "outside the length limits",
             "denylisted",
             "added by hand and failing the static filters",
@@ -562,20 +572,24 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
     manual = {name for name in request.manual if name not in request.generated}
     candidates: list[str] = []
     for name in sorted(request.generated | manual):
-        if not _NAME_SEGMENT_RE.fullmatch(name) or not request.min_length <= len(name) <= request.max_length:
-            removed[keys[0]] += 1
-        elif name in request.denylist:
-            removed[keys[1]] += 1
-        elif name in manual and not (request.passes_static and request.passes_static(name)):
+        if request.approved is not None and name not in request.approved:
+            removed[NOT_APPROVED] += 1
+        elif name in request.rejected:
+            removed[REJECTED_HERE] += 1
+        elif not _NAME_SEGMENT_RE.fullmatch(name) or not request.min_length <= len(name) <= request.max_length:
             removed[keys[2]] += 1
-        elif name in request.held:
+        elif name in request.denylist:
             removed[keys[3]] += 1
-        elif request.max_edit_distance and any(one_edit_apart(name, held) for held in request.held):
+        elif name in manual and not (request.passes_static and request.passes_static(name)):
             removed[keys[4]] += 1
-        elif name in request.reserved_words:
+        elif name in request.held:
             removed[keys[5]] += 1
-        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+        elif request.max_edit_distance and any(one_edit_apart(name, held) for held in request.held):
             removed[keys[6]] += 1
+        elif name in request.reserved_words:
+            removed[keys[7]] += 1
+        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+            removed[keys[8]] += 1
         else:
             candidates.append(name)
     return candidates, removed
@@ -593,6 +607,17 @@ def pick_name(request: PickRequest, rng: random.Random | None = None) -> NamePic
     candidates, removed = name_candidates(request)
     if not candidates:
         considered = len(request.generated | request.manual)
+        if request.approved is not None:
+            approved = considered - removed[NOT_APPROVED]
+            reasons = "; ".join(
+                f"{reason}: {count}" for reason, count in removed.items() if count and reason != NOT_APPROVED
+            )
+            raise NamePoolExhaustedError(
+                f"no approved session name is free: {approved} of the {considered} names in the database are "
+                f"approved, and every one was filtered out ({reasons or 'none'}); the rest are unreviewed or "
+                "rejected. Approve more with `ai set-name-status -a ACTOR approved NAME...` "
+                "(`ai list-names --pool` lists each name's status)"
+            )
         reasons = "; ".join(f"{reason}: {count}" for reason, count in removed.items() if count)
         raise NamePoolExhaustedError(
             f"no free session name: all {considered} names in the database were filtered out ({reasons or 'none'})"

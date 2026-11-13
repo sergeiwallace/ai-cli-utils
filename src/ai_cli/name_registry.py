@@ -145,6 +145,17 @@ class NoNameListError(RegistryError):
     """The registry has no usable available-name list."""
 
 
+class NameStatusError(RegistryError):
+    """The registry's name-status data is missing or unreadable, so no name counts as approved."""
+
+
+NAME_STATUSES = ("unreviewed", "rejected", "approved")
+# The values the earlier approval-status record used, as an import reads them.
+LEGACY_STATUSES = {"excluded": "rejected", "needs-review": "unreviewed"}
+SCOPE_KINDS = ("repo", "host", "session")
+VERDICT_VALUES = ("approved", "rejected")
+
+
 def utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -406,6 +417,36 @@ class Snapshot:
     def available(self) -> frozenset[str]:
         """Every name that may be used: the generated list plus every name added by hand."""
         return frozenset(self.names or ()) | frozenset(self.manual)
+
+    def _require_statuses(self) -> dict[str, dict]:
+        if self.statuses is None:
+            raise NameStatusError(f"the registry at {self.tip or 'this host'} keeps no name status")
+        missing = sorted(name for name in self.available if name not in self.statuses)
+        if missing:
+            raise NameStatusError(
+                f"the registry has no status for {', '.join(missing[:5])}{' and more' if len(missing) > 5 else ''}, "
+                "so no name is treated as approved"
+            )
+        unreadable = sorted(name for name, entry in self.statuses.items() if entry.get("status") not in NAME_STATUSES)
+        if unreadable:
+            raise NameStatusError(
+                f"cannot read the status of {', '.join(unreadable[:5])} (not one of {', '.join(NAME_STATUSES)}), "
+                "so no name is treated as approved: update ai-cli-utils"
+            )
+        return self.statuses
+
+    def status_of(self, name: str) -> str:
+        """``name``'s general status; a name outside the pool is unreviewed."""
+        return self._require_statuses().get(name, {}).get("status", "unreviewed")
+
+    def approved(self) -> frozenset[str] | None:
+        """Every name approved in general; None on a store with no status model (the git tree)."""
+        if self.statuses is None:
+            return None
+        return frozenset(name for name, entry in self._require_statuses().items() if entry["status"] == "approved")
+
+    def verdicts_for(self, name: str) -> dict[tuple[str, str], dict]:
+        return {(kind, value): entry for (held, kind, value), entry in (self.verdicts or {}).items() if held == name}
 
     def generated(self) -> frozenset[str]:
         if not self.names:
@@ -940,6 +981,57 @@ def policy_source(registry: Registry) -> str:
     return str(registry.policy_file) if isinstance(registry, FleetRegistry) else "the local config"
 
 
+def rejecting_scope(snapshot: Snapshot, name: str, slot: Slot, session: str | None = None) -> str | None:
+    """The scope a verdict rejects ``name`` in for this launch (``host box-one``), or None.
+
+    The launch's scopes are its repository, its host and its session: the session a
+    migration renames (``session``), or the title the new session would get.
+    """
+    sessions = {slot.title_for(name), *([session] if session else [])}
+    for (kind, value), entry in sorted(snapshot.verdicts_for(name).items()):
+        if entry.get("verdict") != "rejected":
+            continue
+        if (kind == "repo" and value == slot.repo) or (kind == "host" and value == slot.machine):
+            return f"{kind} {value}"
+        if kind == "session" and value in sessions:
+            return f"session {value}"
+    return None
+
+
+def session_approves(snapshot: Snapshot, name: str, slot: Slot, session: str | None = None) -> bool:
+    """Whether a verdict approves ``name`` for the launching session."""
+    sessions = {slot.title_for(name), *([session] if session else [])}
+    return any(
+        kind == "session" and value in sessions and entry.get("verdict") == "approved"
+        for (kind, value), entry in snapshot.verdicts_for(name).items()
+    )
+
+
+def scoped_rejections(snapshot: Snapshot, slot: Slot, session: str | None = None) -> frozenset[str]:
+    """Every pool name a verdict rejects for this launch."""
+    names = {held for held, _kind, _value in (snapshot.verdicts or {})}
+    return frozenset(name for name in names if rejecting_scope(snapshot, name, slot, session))
+
+
+def hand_choice_refusal(
+    snapshot: Snapshot, name: str, slot: Slot, session: str | None = None
+) -> tuple[str, str] | None:
+    """``("rejected", reason)`` when the status model refuses a hand-chosen ``name``, else None.
+
+    A scoped rejection for the launch's repository, host or session refuses first; a
+    general rejection refuses unless a verdict approves the name for this session. An
+    unreviewed name may be chosen by hand. A store with no status model refuses nothing.
+    """
+    if snapshot.statuses is None:
+        return None
+    scope = rejecting_scope(snapshot, name, slot, session)
+    if scope:
+        return "rejected", f"{name} is rejected for {scope} (`ai find-names -k KIND` lists scoped verdicts)"
+    if snapshot.status_of(name) == "rejected" and not session_approves(snapshot, name, slot, session):
+        return "rejected", f"{name} is rejected as a session name (`ai list-names --pool` lists each name's status)"
+    return None
+
+
 def pick_request(
     registry: Registry,
     snapshot: Snapshot,
@@ -949,8 +1041,13 @@ def pick_request(
     max_length: int | None = None,
     words: frozenset[str] | None = None,
     extra_held: frozenset[str] = frozenset(),
+    session: str | None = None,
 ):
-    """The picker's request for ``slot`` under the published policy, and any warning it raised."""
+    """The picker's request for ``slot`` under the published policy, and any warning it raised.
+
+    Only approved names are candidates, and none a verdict rejects for this launch;
+    ``session`` is the session a migration renames. Unusable status data refuses.
+    """
     from . import session_naming
 
     policy = snapshot.policy
@@ -974,6 +1071,8 @@ def pick_request(
         manual=frozenset(snapshot.manual),
         passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
         max_edit_distance=int(confusable.get("max_edit_distance", 1)),
+        approved=snapshot.approved(),
+        rejected=scoped_rejections(snapshot, slot, session),
     )
     return request, [warning] if warning else []
 
@@ -985,6 +1084,11 @@ def _spare_writes(
     from . import session_naming
 
     policy = snapshot.policy
+    approved = snapshot.approved()
+    host_rejected = frozenset(
+        held for held, kind, value in (snapshot.verdicts or {})
+        if kind == "host" and value == slot.machine and snapshot.verdicts[(held, kind, value)].get("verdict") == "rejected"
+    )  # fmt: skip
     shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
     writes: dict[str, bytes | None] = {}
     added: list[str] = []
@@ -1006,6 +1110,8 @@ def _spare_writes(
             manual=frozenset(snapshot.manual),
             passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
             max_edit_distance=int(policy.get("confusable", {}).get("max_edit_distance", 1)),
+            approved=approved,
+            rejected=host_rejected,
         )
         try:
             name = session_naming.pick_name(request, rng).name
@@ -1057,13 +1163,20 @@ def reserve_picked(
 
 
 def check_hand_chosen(
-    snapshot: Snapshot, name: str, slot: Slot, words: frozenset[str], *, spool: dict[str, dict] | None = None
+    snapshot: Snapshot,
+    name: str,
+    slot: Slot,
+    words: frozenset[str],
+    *,
+    spool: dict[str, dict] | None = None,
+    session: str | None = None,
 ) -> tuple[str, str]:
     """``(verdict, reason)`` for a name chosen by hand, under the snapshot's published policy.
 
     A held name that is an unactivated spare of the slot's own machine, and not in that
     machine's offline ``spool`` (read from disk when None), is ``spare``: the reservation
-    takes it by activating the row. Any other held name is ``held``. Then come
+    takes it by activating the row. Any other held name is ``held``. Then ``rejected``
+    (:func:`hand_choice_refusal`; ``session`` is the session a migration renames), then come
     ``confusable`` (one edit from a held name, or a strict-prefix title pair), then
     ``word``. A name in the database is then ``ok`` inside the limits and ``limits``
     outside them; a name not in the database is ``unknown`` whatever its length,
@@ -1077,6 +1190,9 @@ def check_hand_chosen(
         if _is_own_spare(snapshot, name, slot, read_spool() if spool is None else spool):
             return "spare", f"{name} is this machine's spare"
         return "held", f"{name} is held by {holder}"
+    refusal = hand_choice_refusal(snapshot, name, slot, session)
+    if refusal:
+        return refusal
     if _TOKEN_RE.fullmatch(name):
         held = held_tokens(snapshot)
         if int(policy.get("confusable", {}).get("max_edit_distance", 1)):
@@ -1276,6 +1392,113 @@ def remove_name(registry: Registry, name: str) -> None:
     registry.transact(build)
 
 
+def _unknown_names(snapshot: Snapshot, names: list[str]) -> list[str]:
+    return sorted({name for name in names if name not in snapshot.available})
+
+
+def set_name_status(
+    registry: Registry,
+    names: list[str],
+    status: str,
+    *,
+    actor: str,
+    recorded_by: str,
+    reason: str | None = None,
+    legacy: bool = False,
+) -> list[str]:
+    """Give every name in ``names`` the general ``status`` in one commit; returns the names it changed.
+
+    Refuses the whole call when any name is outside the pool. ``legacy`` accepts the
+    earlier record's ``excluded`` and ``needs-review``, stored as ``rejected`` and
+    ``unreviewed``; the public command passes only the three canonical values.
+    """
+    from . import name_schema
+
+    if legacy:
+        status = LEGACY_STATUSES.get(status, status)
+    if status not in NAME_STATUSES:
+        raise WriteRefusedError(f"{status!r} is not a name status; use one of {', '.join(NAME_STATUSES)}")
+
+    def build(snapshot: Snapshot) -> Change | None:
+        if snapshot.statuses is None:
+            raise WriteRefusedError("this registry keeps no name status; it arrives with the database registry")
+        unknown = _unknown_names(snapshot, names)
+        if unknown:
+            raise WriteRefusedError(
+                "; ".join(f"{name} is not in the name database" for name in unknown)
+                + "; add each with `ai add-name NAME` first. Nothing was written"
+            )
+        stamp = utc_now()
+        entry = {"status": status, "actor": actor, "recorded_by": recorded_by, "set_at": stamp, "reason": reason}
+        changed = sorted({name for name in names if snapshot.statuses.get(name, {}).get("status") != status})
+        if not changed:
+            return None
+        writes: dict[str, bytes | None] = {
+            name_schema.status_path(name): name_schema.canonical(entry).encode() for name in changed
+        }
+        return Change(writes, f"session-names: set-name-status {status} {' '.join(changed)} ({actor})", result=changed)
+
+    change = registry.transact(build)
+    return change.result if change is not None else []  # type: ignore[return-value]
+
+
+def set_name_verdict(
+    registry: Registry,
+    names: list[str],
+    verdict: str,
+    *,
+    scope_kind: str,
+    scope_value: str,
+    actor: str,
+    recorded_by: str,
+    reason: str | None = None,
+    delete: bool = False,
+) -> list[str]:
+    """Write one scoped verdict per name, keyed by name and scope, in one commit; or remove them.
+
+    With ``delete``, only a verdict whose value is ``verdict`` is removed. Refuses the
+    whole call when the scope kind is unknown or any name is outside the pool.
+    """
+    from . import name_schema
+
+    if scope_kind not in SCOPE_KINDS:
+        raise WriteRefusedError(f"{scope_kind!r} is not a verdict scope; use one of {', '.join(SCOPE_KINDS)}")
+    if verdict not in VERDICT_VALUES:
+        raise WriteRefusedError(f"{verdict!r} is not a verdict; use one of {', '.join(VERDICT_VALUES)}")
+    if not scope_value:
+        raise WriteRefusedError("a verdict needs the repository, host or session it applies to")
+
+    def build(snapshot: Snapshot) -> Change | None:
+        if snapshot.verdicts is None:
+            raise WriteRefusedError("this registry keeps no verdicts; they arrive with the database registry")
+        unknown = _unknown_names(snapshot, names)
+        if unknown:
+            raise WriteRefusedError(
+                "; ".join(f"{name} is not in the name database" for name in unknown) + ". Nothing was written"
+            )
+        writes: dict[str, bytes | None] = {}
+        entry = {"verdict": verdict, "actor": actor, "recorded_by": recorded_by, "set_at": utc_now(), "reason": reason}
+        for name in sorted(set(names)):
+            current = snapshot.verdicts.get((name, scope_kind, scope_value))
+            path = name_schema.verdict_path(name, scope_kind, scope_value)
+            if delete:
+                if current is not None and current.get("verdict") == verdict:
+                    writes[path] = None
+            elif current is None or current.get("verdict") != verdict or current.get("reason") != reason:
+                writes[path] = name_schema.canonical(entry).encode()
+        if not writes:
+            return None
+        action = "remove" if delete else "set"
+        return Change(
+            writes,
+            f"session-names: {action} {verdict} for {scope_kind} {scope_value}: {' '.join(sorted(set(names)))} ({actor})",
+            result=sorted(name_schema.parse_verdict_path(path)[0] for path in writes),
+        )
+
+    change = registry.transact(build)
+    return change.result if change is not None else []  # type: ignore[return-value]
+
+
 def last_known_snapshot(registry: Registry) -> Snapshot:
     """The last fetched tip, fetched once first when this checkout has never fetched the registry.
 
@@ -1408,15 +1631,22 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
     """
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
+        approved = snapshot.approved()
         spool = read_spool()
         free = sorted(
-            (row for row in snapshot.rows_of(slot.machine, "spare") if row["token"] not in spool),
+            (
+                row
+                for row in snapshot.rows_of(slot.machine, "spare")
+                if row["token"] not in spool
+                and (approved is None or row["token"] in approved)
+                and not rejecting_scope(snapshot, row["token"], slot)
+            ),
             key=lambda row: (len(row["token"]), row["token"]),
         )
         if not free:
             because = f" ({cause})" if cause else ""
             raise SparesExhaustedError(
-                f"the registry is unreachable{because} and this machine has no unactivated spare name left; "
+                f"the registry is unreachable{because} and this machine has no unactivated approved spare name left; "
                 "once online, "
                 "run `ai reconcile-names` to publish the activations and replenish the spares"
             )
@@ -1707,6 +1937,7 @@ class ReconcileReport:
     spares_added: list[str] = field(default_factory=list)
     held: dict[str, str] = field(default_factory=dict)
     recovered: list[str] = field(default_factory=list)
+    top_up_skipped: str | None = None
 
 
 def _renaming(snapshot: Snapshot, row: dict) -> bool:
@@ -1824,7 +2055,11 @@ def reconcile(
                 tip, rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out}
             )
             slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
-            top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            try:
+                top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            except NameStatusError as exc:
+                top_up, added = {}, []
+                report.top_up_skipped = f"{exc}; no unverified spare was created"
             writes.update(top_up)
             if not writes:
                 return None
@@ -2010,12 +2245,14 @@ def reserve_for_migration(
 
     def build(snapshot: Snapshot, locked: bool) -> Change:
         if name is None:
-            request, warnings = pick_request(registry, snapshot, slot, max_length=max_length, words=words)
+            request, warnings = pick_request(
+                registry, snapshot, slot, max_length=max_length, words=words, session=old_title
+            )
             pick = session_naming.pick_name(request, rng)
             chosen, tier = pick.name, pick.tier
         else:
             spool = read_spool()
-            verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool)
+            verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool, session=old_title)
             if verdict == "spare":
                 if not locked:
                     raise _SpoolLockNeeded

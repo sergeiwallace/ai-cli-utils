@@ -454,3 +454,80 @@ def test_given_a_title_held_by_another_machine_when_resumed_by_name_then_it_is_s
 
     assert exited.value.code == 1
     assert "no session named" in capsys.readouterr().err
+
+
+# --- the general status and the picker (AC-DT-ELIG, T-2.1) -------------------------------------
+
+_DATABASES = pytest.mark.registry_backends("sqlite", "dolt")
+
+
+@_DATABASES
+def test_given_some_names_approved_when_a_session_launches_then_it_and_its_spare_are_approved_names(
+    tmp_path, monkeypatch, launch
+):
+    approved = {"milo", "nora"}
+    fleet = build_fleet(tmp_path, monkeypatch, statuses=dict.fromkeys(approved, "approved"))
+
+    token = named(launch).rsplit("-", 1)[-1]
+
+    assert token in approved
+    assert set(fleet.rows()) <= approved
+
+
+@_DATABASES
+def test_given_every_approved_name_held_when_launching_then_it_exits_1_naming_the_shortfall_and_the_command(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch, statuses={"milo": "approved"})
+    reg.reserve_hand_chosen(
+        fleet.other_machine(),
+        "milo",
+        reg.Slot(repo=REPO, repo_alias=REPO, host_alias="two", label=None, machine=OTHER_HOST, client="codex"),
+        add=False,
+        via="add-name",
+        added_by="o@two",
+        words=frozenset(),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    err = capsys.readouterr().err
+    assert caught.value.code == 1
+    assert "no approved session name is free" in err
+    assert f"1 of the {len(NAMES)} names in the database are approved" in err
+    assert "ai set-name-status" in err
+    assert set(fleet.rows()) == {"milo"}
+
+
+@_DATABASES
+def test_given_a_rejected_name_when_launching_then_it_is_never_picked_nor_taken_by_hand(
+    tmp_path, monkeypatch, launch, capsys
+):
+    fleet = build_fleet(tmp_path, monkeypatch, names=[*NAMES, "lee"], statuses={"lee": "rejected", "milo": "approved"})
+
+    assert named(launch) == f"{STEM}-milo"
+    with pytest.raises(SystemExit) as caught:
+        launch(naming=main._NamingRequest(custom="lee"))
+
+    assert caught.value.code == 2
+    assert "lee is rejected" in capsys.readouterr().err
+    assert "lee" not in fleet.rows()
+
+
+@_DATABASES
+def test_given_unreadable_status_data_when_launching_then_it_exits_1_taking_nothing(
+    tmp_path, monkeypatch, launch, capsys
+):
+    from test_session_name_status import corrupt_status
+
+    fleet = build_fleet(tmp_path, monkeypatch)
+    corrupt_status(fleet, "milo")
+    before = fleet.tip()
+
+    with pytest.raises(SystemExit) as caught:
+        launch()
+
+    assert caught.value.code == 1
+    assert "milo" in capsys.readouterr().err
+    assert fleet.tip() == before

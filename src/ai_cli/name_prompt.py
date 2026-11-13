@@ -128,7 +128,7 @@ def _decide(
     """``(name, add)`` to reserve, or None to ask the free-text question."""
     snapshot = registry.snapshot()
     verdict, reason = reg.check_hand_chosen(snapshot, candidate, slot, words)
-    if verdict in ("held", "confusable", "word", "limits"):
+    if verdict in ("held", "rejected", "confusable", "word", "limits"):
         return _refuse(io, reason)
     if verdict in ("ok", "spare"):
         return candidate, False

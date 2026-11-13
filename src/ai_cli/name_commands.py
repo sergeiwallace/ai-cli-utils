@@ -259,6 +259,7 @@ def reconcile_names_command(title: str | None, dry_run: bool, as_json: bool) -> 
         "spares_released": report.spares_released,
         "spares_added": report.spares_added,
         "held": report.held,
+        "top_up_skipped": report.top_up_skipped,
     }
     if as_json:
         _out.raw(Untagged.JSON, json.dumps(summary, sort_keys=True))
@@ -269,6 +270,8 @@ def reconcile_names_command(title: str | None, dry_run: bool, as_json: bool) -> 
         lines.append(f"{verb} spares outside the limits: {', '.join(report.spares_released)}")
     if report.spares_added:
         lines.append(f"added spares: {', '.join(report.spares_added)}")
+    if report.top_up_skipped:
+        lines.append(f"spare top-up skipped: {report.top_up_skipped}")
     lines += [f"published: {name}" for name in report.published]
     lines += [f"recovered: {item}" for item in report.recovered]
     lines += [f"held: {token}: {why}" for token, why in sorted(report.held.items())]
@@ -392,9 +395,107 @@ def check_names_command(as_json: bool) -> None:
     _out.emit(Tag.NAMES, "check", "\n".join(lines))
 
 
-@click.command("list-names", help="Session names: list every held name with its title, host, client and kind")
+@click.command(
+    "set-name-status",
+    help=(
+        "Session names: set the general status of one or more names in one commit; only approved names are "
+        "picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand"
+    ),
+)
+@click.option("-a", "--actor", required=True, help="Who decided, for example the owner whose verdict this records")
+@click.option("-r", "--reason", default=None, help="Why, recorded with each name's status")
+@click.argument("status", type=click.Choice(reg.NAME_STATUSES))
+@click.argument("names", nargs=-1, required=True)
+def set_name_status_command(actor: str, reason: str | None, status: str, names: tuple[str, ...]) -> None:
+    registry = open_registry()
+    values = [name.lower() for name in names]
+    try:
+        changed = reg.set_name_status(registry, values, status, actor=actor, recorded_by=_added_by(), reason=reason)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    unchanged = sorted(set(values) - set(changed))
+    lines = [f"{status}: {', '.join(changed)}"] if changed else []
+    if unchanged:
+        lines.append(f"already {status}, nothing written for: {', '.join(unchanged)}")
+    _out.emit(Tag.NAMES, "set", "\n".join(lines))
+
+
+@click.command(
+    "set-name-verdict",
+    help=(
+        "Session names: approve or reject names for one repository, host or session only; a scoped rejection "
+        "keeps the name out of picks there, a session approval lets that session take it by hand"
+    ),
+)
+@click.option(
+    "-s", "--scope", "scope_kind", required=True, type=click.Choice(reg.SCOPE_KINDS), help="What the verdict applies to"
+)
+@click.option("-v", "--value", "scope_value", required=True, help="The repository name, host id or session title")
+@click.option("-a", "--actor", required=True, help="Who decided")
+@click.option("-r", "--reason", default=None, help="Why, recorded with each verdict")
+@click.option("-d", "--delete", is_flag=True, help="Remove the verdict instead of setting it")
+@click.argument("verdict", type=click.Choice(reg.VERDICT_VALUES))
+@click.argument("names", nargs=-1, required=True)
+def set_name_verdict_command(
+    scope_kind: str,
+    scope_value: str,
+    actor: str,
+    reason: str | None,
+    delete: bool,
+    verdict: str,
+    names: tuple[str, ...],
+) -> None:
+    registry = open_registry()
+    values = [name.lower() for name in names]
+    try:
+        changed = reg.set_name_verdict(
+            registry,
+            values,
+            verdict,
+            scope_kind=scope_kind,
+            scope_value=scope_value,
+            actor=actor,
+            recorded_by=_added_by(),
+            reason=reason,
+            delete=delete,
+        )
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    action = "removed" if delete else verdict
+    if changed:
+        _out.emit(Tag.NAMES, "set", f"{action} for {scope_kind} {scope_value}: {', '.join(changed)}")
+    else:
+        _out.emit(Tag.NAMES, "set", f"nothing to change for {scope_kind} {scope_value}")
+
+
+def _list_pool(snapshot: reg.Snapshot, as_json: bool) -> None:
+    """Every name in the database with its general status and holder; exit 3 when status is unusable."""
+    try:
+        statuses = {name: snapshot.status_of(name) for name in sorted(snapshot.available)}
+    except reg.NameStatusError as exc:
+        _out.error(Tag.NAMES, "list", str(exc))
+        sys.exit(EXIT_UNREADABLE)
+    if as_json:
+        entries = [
+            {"name": name, "status": status, "held_by": snapshot.holder(name)} for name, status in statuses.items()
+        ]
+        _out.raw(Untagged.JSON, json.dumps(entries, sort_keys=True))
+        return
+    counts = ", ".join(f"{value} {list(statuses.values()).count(value)}" for value in reg.NAME_STATUSES)
+    lines = [f"{name:<6} {status:<11} {snapshot.holder(name) or '-'}" for name, status in statuses.items()]
+    _out.emit(Tag.NAMES, "list", "\n".join([*lines, f"{len(statuses)} names: {counts}"]))
+
+
+@click.command(
+    "list-names", help="Session names: list every held name with its title, host, client, kind and general status"
+)
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
-def list_names_command(as_json: bool) -> None:
+@click.option(
+    "-p", "--pool", is_flag=True, help="List every name in the database instead, with its general status and holder"
+)
+def list_names_command(as_json: bool, pool: bool) -> None:
     from .session import _tmux_session_names
 
     registry = open_registry()
@@ -409,9 +510,22 @@ def list_names_command(as_json: bool) -> None:
             err=True,
             level=_out.Level.WARNING,
         )
+    if pool:
+        if snapshot.statuses is None:
+            _out.error(Tag.NAMES, "list", "this registry keeps no name status; it arrives with the database registry")
+            sys.exit(EXIT_UNREADABLE)
+        _list_pool(snapshot, as_json)
+        return
     host = _host()
     live = set(_tmux_session_names())
     rows = sorted(snapshot.rows.values(), key=lambda row: (str(row.get("machine")), row["token"]))
+    try:
+        statuses = (
+            {row["token"]: snapshot.status_of(row["token"]) for row in rows} if snapshot.statuses is not None else {}
+        )
+    except reg.NameStatusError as exc:
+        _out.emit(Tag.NAMES, "list", f"{exc}; statuses show as -", err=True, level=_out.Level.WARNING)
+        statuses = {}
 
     def running(row: dict) -> bool | None:
         """Whether this machine runs the row's session; None for another machine's row or a spare."""
@@ -422,7 +536,13 @@ def list_names_command(as_json: bool) -> None:
         )
 
     if as_json:
-        _out.raw(Untagged.JSON, json.dumps([{**row, "running": running(row)} for row in rows], sort_keys=True))
+        _out.raw(
+            Untagged.JSON,
+            json.dumps(
+                [{**row, "running": running(row), "status": statuses.get(row["token"])} for row in rows],
+                sort_keys=True,
+            ),
+        )
         return
     from .session_locate import unregistered_sessions
 
@@ -436,7 +556,8 @@ def list_names_command(as_json: bool) -> None:
         state = {True: " running", False: " stopped", None: ""}[running(row)]
         lines.append(
             f"{row['token']:<6} {row.get('title') or '-'!s:<32} {row.get('machine')!s:<16} "
-            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {row.get('reserved_at')}{state}"
+            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {statuses.get(row['token'], '-'):<11} "
+            f"{row.get('reserved_at')}{state}"
         )
     # Sessions named before the registry hold no row, so they are listed from this
     # host's tmux and worktrees, each with the command that resumes it.
@@ -626,6 +747,8 @@ COMMANDS = (
     add_name_command,
     remove_name_command,
     show_name_config_command,
+    set_name_status_command,
+    set_name_verdict_command,
     reconcile_names_command,
     release_name_command,
     reassign_name_command,
