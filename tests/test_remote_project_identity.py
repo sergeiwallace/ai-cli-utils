@@ -10,6 +10,12 @@ from ai_cli import config, main
 def project_registries(tmp_path, monkeypatch):
     fleet = tmp_path / "fleet.toml"
     fleet.write_text('[[projects]]\nname = "project-a"\ntask_prefix = "pa"\n')
+    # A prefix clash is refused only when both projects are checked out on this host, so these
+    # projects exist on disk: every conflict below is a real one for this machine.
+    projects_dir = tmp_path / "projects"
+    for name in ("project-a", "project-b", "pa"):
+        (projects_dir / name).mkdir(parents=True)
+    monkeypatch.setattr(config, "_get_projects_dir", lambda: projects_dir)
     monkeypatch.setattr(config, "get_fleet_registry_path", lambda: fleet)
     monkeypatch.setattr(config, "load_project_registry", list)
     monkeypatch.setattr(config, "_registry_entries", dict)
