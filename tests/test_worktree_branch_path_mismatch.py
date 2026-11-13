@@ -211,3 +211,24 @@ def test_given_a_detached_worktree_when_probed_then_it_is_not_reported_as_holdin
 
     assert _worktree_holding_branch(repo, "wt-session-7") == held
     assert _worktree_holding_branch(repo, "HEAD") is None
+
+
+def test_given_the_misplaced_checkout_holds_compiled_modules_when_relocated_then_its_caches_are_removed(
+    repo, monkeypatch
+):
+    """Each ``.pyc`` names the old directory in ``co_filename``, so a relocation drops the caches."""
+    import importlib.util
+    import py_compile
+
+    monkeypatch.chdir(repo)
+    wrong = _misplaced_session_worktree(repo, "session-5", "session-5r")
+    for package in (wrong / "pkg", wrong / ".venv" / "lib" / "dep"):
+        package.mkdir(parents=True)
+        source = package / "mod.py"
+        source.write_text("x = 1\n")
+        py_compile.compile(str(source), cfile=importlib.util.cache_from_source(str(source)), doraise=True)
+
+    slot = create_worktree("session-5")
+
+    assert not (slot / "pkg" / "__pycache__").exists()
+    assert list((slot / ".venv" / "lib" / "dep" / "__pycache__").glob("*.pyc")), "a venv's caches are kept"

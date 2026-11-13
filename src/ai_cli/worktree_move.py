@@ -10,17 +10,26 @@ directory, so ``git status`` in the moved worktree fails on the first submodule.
 :func:`move_worktree` therefore tries ``git worktree move`` first and falls back only on
 that one refusal: rename the directory, ``git worktree repair`` it, then repoint each
 submodule's ``core.worktree`` at its new location. A locked worktree is never moved.
+
+A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` names
+the old directory, so anything reading source through a code object finds nothing.
+:func:`purge_moved_bytecode` removes those caches after every successful move. A checkout
+moved before that can be cleaned by hand: ``python -m ai_cli.worktree_move <checkout>...``.
 """
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .git_repair import _git_env
 
 _SUBMODULE_REFUSAL = "containing submodules"
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -65,10 +74,45 @@ def _repoint_submodules(repo: Path, admin: Path, old: Path, new: Path) -> list[s
     return errors
 
 
+def _tracked_bytecode(checkout: Path) -> set[Path]:
+    listed = _git(checkout, "ls-files", "-z", "--", ":(glob)**/__pycache__/**").stdout or ""
+    return {checkout / name for name in listed.split("\0") if name}
+
+
+def purge_moved_bytecode(checkout: Path) -> None:
+    """Remove the stale ``__pycache__`` bytecode a ``git worktree move`` carried into ``checkout``.
+
+    Only ``*.pyc``/``*.pyo`` files inside a ``__pycache__`` directory go, then that directory if
+    it is left empty. Skipped: any virtual environment (``.venv`` or a directory holding
+    ``pyvenv.cfg``), any nested git checkout (a submodule), every file git tracks, and every
+    symlink, which is never followed out of the checkout. Python rebuilds the caches on import.
+    """
+    tracked = _tracked_bytecode(checkout)
+    for root, dirs, _files in os.walk(checkout):
+        here = Path(root)
+        if here != checkout and ((here / "pyvenv.cfg").exists() or (here / ".git").exists()):
+            dirs.clear()
+            continue
+        dirs[:] = [d for d in dirs if d not in (".git", ".venv") and not (here / d).is_symlink()]
+        if here.name != "__pycache__":
+            continue
+        for entry in here.iterdir():
+            if (
+                entry.suffix in _BYTECODE_SUFFIXES
+                and not entry.is_symlink()
+                and entry.is_file()
+                and entry not in tracked
+            ):
+                entry.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):  # still holds a tracked or unrecognised file
+            here.rmdir()
+
+
 def move_worktree(repo: Path, source: Path, dest: Path) -> tuple[bool, str]:
     """Move worktree ``source`` to ``dest``. Returns ``(moved, git's stderr or our reason)``."""
     moved = _git(repo, "worktree", "move", str(source), str(dest))
     if moved.returncode == 0:
+        purge_moved_bytecode(dest)
         return True, ""
     stderr = (moved.stderr or "").strip()
     if _SUBMODULE_REFUSAL not in stderr:
@@ -90,4 +134,36 @@ def move_worktree(repo: Path, source: Path, dest: Path) -> tuple[bool, str]:
     errors = _repoint_submodules(repo, Path(admin), old, new) if admin else ["could not resolve the worktree's git dir"]
     if errors:
         return False, f"moved {old} to {new} and repaired it, but a submodule was not repointed: {'; '.join(errors)}"
+    purge_moved_bytecode(new)
     return True, ""
+
+
+def _refusal(path: Path) -> str | None:
+    if not path.is_dir():
+        return f"{path} is not an existing directory"
+    top = _git(path, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != path.resolve():
+        return f"{path} is not the top of a git checkout"
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m ai_cli.worktree_move",
+        description="Remove the stale __pycache__ bytecode a worktree move carried into each checkout.",
+    )
+    parser.add_argument("checkouts", nargs="+", type=Path, metavar="checkout")
+    args = parser.parse_args(argv)
+    refusals = [why for why in map(_refusal, args.checkouts) if why]
+    if refusals:
+        for why in refusals:
+            print(f"refused: {why}; nothing was purged", file=sys.stderr)
+        return 2
+    for checkout in args.checkouts:
+        purge_moved_bytecode(checkout.resolve())
+        print(f"purged stale bytecode caches in {checkout.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
