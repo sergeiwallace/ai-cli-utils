@@ -55,7 +55,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
-from .cli_help import HelpGroup
+from .cli_help import HelpGroup, RootHelpGroup
 from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -6247,7 +6247,7 @@ class _ChiefFlagCommand(click.Command):
         return parser
 
 
-class _ChiefAliasGroup(HelpGroup):
+class _ChiefAliasGroup(RootHelpGroup):
     """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
@@ -6268,7 +6268,10 @@ class _ChiefAliasGroup(HelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
+    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+    Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
+    prints a command's full help."""
     _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
@@ -7610,7 +7613,7 @@ def cmd_color(color_arg):
 
 @_cli_group.command(
     "migrate-transcript",
-    help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
+    help="Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree",
 )
 @click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("-t", "--title", default="", help="Select the source session by its customTitle (session name)")

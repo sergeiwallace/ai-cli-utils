@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the CLI reference and the README command index from the ``ai`` command tree.
+"""Generate the CLI reference, and the command index of README and the CLI guide, from the ``ai`` tree.
 
 The help written in each command's Click declaration is the only source. This script
-renders it into ``docs/reference/cli.md`` (every byte generated) and into the region of
-``README.md`` between the ``cli-index`` markers (no other byte touched). With
-``-c/--check`` it writes nothing and exits 1 with a diff when either file is stale.
+renders it into ``docs/reference/cli.md`` (every byte generated), and into the regions of
+``README.md`` and ``docs/tools/ai-cli-usage.md`` between the ``cli-index`` markers and the
+``start-resume-attach`` markers (no other byte touched). With ``-c/--check`` it writes
+nothing and exits 1 with a diff when any of the three files is stale.
 
 Usage:
   uv run python scripts/generate_docs.py           # rewrite both files
@@ -31,8 +32,11 @@ else:  # run as `python scripts/generate_docs.py`
 REPO = Path(__file__).resolve().parents[1]
 REFERENCE = "docs/reference/cli.md"
 README = "README.md"
+GUIDE = "docs/tools/ai-cli-usage.md"
 BEGIN = "<!-- cli-index:begin -->"
 END = "<!-- cli-index:end -->"
+START_BEGIN = "<!-- start-resume-attach:begin -->"
+START_END = "<!-- start-resume-attach:end -->"
 REGENERATE = "uv run python scripts/generate_docs.py"
 
 
@@ -96,6 +100,15 @@ def render_index(root: click.Group, link_base: str) -> str:
         lines.append(
             f"| [`{entry.path}`]({link_base}#{anchor(entry.path)}) | {_cell(command_summary(entry.command))} |"
         )
+    return "\n".join(lines) + "\n"
+
+
+def render_start() -> str:
+    """The "Start, resume, attach" rows ``ai -h`` prints, as a table."""
+    from ai_cli.cli_help import START_RESUME_ATTACH
+
+    lines = ["| Command | What it does |", "|---|---|"]
+    lines += [f"| `{command}` | {_cell(text)} |" for command, text in START_RESUME_ATTACH]
     return "\n".join(lines) + "\n"
 
 
@@ -166,13 +179,19 @@ def render_reference(root: click.Group) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def replace_region(text: str, region: str, name: str) -> str:
+def replace_region(text: str, region: str, name: str, begin: str = BEGIN, end: str = END) -> str:
     """``text`` with only the bytes between the markers replaced by ``region``."""
-    if text.count(BEGIN) != 1 or text.count(END) != 1 or text.index(BEGIN) > text.index(END):
-        raise GenerateError(f"{name}: needs exactly one {BEGIN} followed by exactly one {END}")
-    head, rest = text.split(BEGIN, 1)
-    _, tail = rest.split(END, 1)
-    return f"{head}{BEGIN}\n{region}{END}{tail}"
+    if text.count(begin) != 1 or text.count(end) != 1 or text.index(begin) > text.index(end):
+        raise GenerateError(f"{name}: needs exactly one {begin} followed by exactly one {end}")
+    head, rest = text.split(begin, 1)
+    _, tail = rest.split(end, 1)
+    return f"{head}{begin}\n{region}{end}{tail}"
+
+
+def _with_regions(repo: Path, rel: str, index_link_base: str, root: click.Group) -> str:
+    text = (repo / rel).read_text(encoding="utf-8")
+    text = replace_region(text, render_index(root, index_link_base), rel)
+    return replace_region(text, render_start(), rel, START_BEGIN, START_END)
 
 
 def _root() -> click.Group:
@@ -183,10 +202,10 @@ def _root() -> click.Group:
 
 def expected(repo: Path, root: click.Group) -> dict[str, str]:
     """Each generated file's path and the content it should have."""
-    readme = (repo / README).read_text(encoding="utf-8")
     return {
         REFERENCE: render_reference(root),
-        README: replace_region(readme, render_index(root, REFERENCE), README),
+        README: _with_regions(repo, README, REFERENCE, root),
+        GUIDE: _with_regions(repo, GUIDE, "../reference/cli.md", root),
     }
 
 

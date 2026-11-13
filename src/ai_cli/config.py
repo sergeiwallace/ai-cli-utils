@@ -840,6 +840,23 @@ ref_prefix = "refs/heads/fleet-sessions/"
 debounce_seconds = 60
 host = ""
 
+[sessions_list]
+## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on
+## every call; a flag on the command overrides each one. Reference:
+## docs/reference/sessions-list-defaults.toml.
+## Column the table groups rows by: "host", "status", "relaunch" or "none".
+group_by = "host"
+## Sort keys, first key first: "status" (running, relaunched, unknown, exited), "name",
+## "changed" (newest first), "host" (this host first) and "relaunch".
+sort_by = ["status", "name"]
+## false lists running sessions only; true adds exited and unknown ones (-a/--all).
+show_all = false
+## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
+## host that publishes its sessions to [session_relaunch.publish] repo).
+scope = "pair"
+## The paired host's id; empty means the default [remote.machines] alias.
+pair_host = ""
+
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
 ## default. `ai c` starts its Circus watcher when needed. On native Windows,
