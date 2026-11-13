@@ -784,18 +784,18 @@ def test_given_an_old_agent_container_holding_a_moving_agent_worktree_when_dry_r
 
 
 @pytest.mark.parametrize("flags", [("-n",), ("-y",)])
-def test_given_an_old_agent_container_holding_a_file_when_migrated_or_dry_run_then_both_name_it_kept_and_exit_1(
-    slot, flags
-):
+def test_given_an_old_agent_container_holding_a_file_when_migrated_or_dry_run_then_its_move_is_reported(slot, flags):
     container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
     container.mkdir(parents=True)
     (container / "notes.txt").write_text("keep me\n")
 
     code, out, err = _migrate(slot["repo"], *flags)
 
-    assert code == 1, out + err
-    assert f"agent container: {container} (kept: holds notes.txt)" in out
-    assert (container / "notes.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert code == 0, out + err
+    target = container.with_name(f"{NEW}-agents") / "notes.txt"
+    assert f"agent container file: {container / 'notes.txt'} -> {target}" in out
+    location = container / "notes.txt" if "-n" in flags else target
+    assert location.read_text(encoding="utf-8") == "keep me\n"
 
 
 def test_given_a_watcher_lock_naming_a_live_pid_when_migrated_then_it_is_left_alone(slot):

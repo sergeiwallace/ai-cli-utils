@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and publish, the scan of other repos and the verifying re-plan.
 - `could not list registered git worktrees` names git's exit status, or the signal that ended
   it, when git printed nothing on stderr.
+- `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
+  bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
+  its code objects, so tools reading source through them found nothing until the caches were
+  rebuilt. Caches inside a virtual environment or a nested checkout, files git tracks and
+  anything behind a symlink are left alone; Python rebuilds the rest on the next import.
+  A checkout moved before this fix can be cleaned by hand with
+  `python -m ai_cli.worktree_move <checkout>...`.
 - `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
   remove a local row once tmux and the process table prove its session gone and it has not
   changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier

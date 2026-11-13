@@ -1796,7 +1796,10 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
     projects = data.get("projects", [])
 
-    # Schema validation: name and task_prefix required, both unique
+    fleet_path = get_fleet_registry_path()
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+
+    # Names are unique; only aliases not superseded by the fleet must be unique.
     names_seen: set[str] = set()
     prefixes_seen: dict[str, str] = {}
     for p in projects:
@@ -1810,6 +1813,10 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         if name_lower in names_seen:
             _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
+        names_seen.add(name_lower)
+        fleet_entry = fleet_entries.get(name_lower)
+        if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix_lower:
+            continue
         if prefix_lower in prefixes_seen:
             _out.error(
                 Tag.CONFIG,
@@ -1818,7 +1825,6 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
                 "Fix: assign unique task prefixes to these projects.",
             )
             sys.exit(1)
-        names_seen.add(name_lower)
         prefixes_seen[prefix_lower] = name
 
     _registry_cache = projects
@@ -1978,34 +1984,77 @@ def get_project_aliases() -> dict:
     return {prefix: name for prefix, name in registered_project_names().items() if prefix != name.lower()}
 
 
+_warned_stale_project_aliases: set[tuple[str, str, str, str]] = set()
+# Prefix clashes already reported this process, so a launch warns once, not once per lookup.
+_warned_absent_alias_conflicts: set[tuple[str, str, str]] = set()
+
+
 def registered_project_names() -> dict[str, str]:
     """Map every registered task prefix (lowercased) to the project name ``-p`` accepts for it.
 
     Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
     and includes the root-keyed ``[project_registry]`` table (keyed by the root's
     directory name, which is what ``resolve_project_prefix_by_name`` matches there).
-    Tier order matches that resolver; conflicting project names are refused. Raises
+    Fleet entries supersede stale per-machine aliases for the same project, with
+    a warning once per process. Two other projects that share a prefix are refused only
+    when both have a checkout on this host; a registry shared across machines may name a
+    project that is not here, and that clash cannot mislead anything on this machine, so the
+    present project owns the prefix and a warning names the absent one. Raises
     :class:`ProjectPrefixError` when a registry cannot be read.
     """
     names: dict[str, str] = {}
 
+    def present(name: str) -> bool:
+        return _find_project_dir(name).is_dir()
+
     def add(prefix: str, name: str) -> None:
         key = prefix.lower()
         previous = names.get(key)
-        if previous is not None and previous.casefold() != name.casefold():
+        if previous is None:
+            names[key] = name
+            return
+        if previous.casefold() == name.casefold():
+            return
+        if present(previous) and present(name):
             raise ProjectPrefixError(
                 f"Conflicting project aliases for prefix {prefix!r}: {previous!r} and {name!r}. "
                 "Fix: assign unique task prefixes in the project registries on both machines."
             )
-        names.setdefault(key, name)
+        winner, loser = (name, previous) if present(name) and not present(previous) else (previous, name)
+        names[key] = winner
+        warning_key = (key, winner.casefold(), loser.casefold())
+        if warning_key not in _warned_absent_alias_conflicts:
+            _warned_absent_alias_conflicts.add(warning_key)
+            _out.warning(
+                Tag.CONFIG,
+                "load",
+                f"Prefix {prefix!r} is registered for both {previous!r} and {name!r}, and not both are "
+                f"checked out on this host; using {winner!r}. Fix: assign unique task prefixes in the "
+                "shared registry.",
+            )
 
     fleet_path = get_fleet_registry_path()
-    if fleet_path is not None and fleet_path.is_file():
-        for entry in _projects_table_entries(fleet_path).values():
-            add(entry["prefix"], entry["name"])
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+    for entry in fleet_entries.values():
+        add(entry["prefix"], entry["name"])
     for p in load_project_registry():
         if p.get("task_prefix") and p.get("name"):
-            add(str(p["task_prefix"]), str(p["name"]))
+            prefix, name = str(p["task_prefix"]), str(p["name"])
+            fleet_entry = fleet_entries.get(name.lower())
+            if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix.lower():
+                source = str(_get_project_registry_path())
+                warning_key = (source, name.lower(), prefix.lower(), fleet_entry["prefix"])
+                if warning_key not in _warned_stale_project_aliases:
+                    _out.warning(
+                        Tag.CONFIG,
+                        "load",
+                        f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
+                        f"the fleet registry declares {fleet_entry['prefix']!r}. "
+                        f"Edit the project's task_prefix in {source} to match the fleet registry.",
+                    )
+                    _warned_stale_project_aliases.add(warning_key)
+                continue
+            add(prefix, name)
     for root, entry in _registry_entries().items():
         add(entry["prefix"], Path(root).name)
     return names
