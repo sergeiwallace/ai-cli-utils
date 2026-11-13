@@ -23,13 +23,13 @@ described in T-3.2 and T-4.2. This index is non-authoritative; the raw request g
 | General approval, separate session approval, and reserved, migrated and in-use tracking | [Data Model](#data-model): `names.status`, session-scoped `verdicts`, `holds` and `migrations`; [D-3](#d-3) |
 | Never reviewed, generally rejected, generally approved but not approved for a session, and approvals or rejections per repository, host or session | The four states are derived in [Status model](#status-model). Scoped decisions are normalized `verdicts` rows, as resolved in [D-3](#d-3) |
 | The database must be git tracked | The canonical Dolt database and its row history live on a git remote ref ([D-2](#d-2)); this is a requirement, not an open question |
-| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 applies the substitution inside the 20-entry pre-approved list (the replacement in, the superseded entry out, still 20) and approves every entry for picking and migration; a separately pinned, owner-approved private oracle fixes the exact membership, and T-4.2 checks the candidate seed against it before the flip |
+| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 applies the substitution to the migration conversion table the owner was shown (the replacement in, the superseded entry out with no approval) and gives every name in the corrected table a session-scoped approval for the session the table proposed it for, so that session's migration can take it while the picker never offers it on that approval ([D-10](#d-10)); a separately pinned, owner-approved private oracle fixes the exact membership and each entry's session, and T-4.2 checks the candidate seed against it before the flip |
 | Use the best git-tracked database, with Dolt selected after research | Answered by the research recommendation; this design builds on Dolt |
 | Replace the JSON-ref system with a robust schema and searchable data | The old store is retired in [Phase 4](#phase-4-fleet-cutover), constraints are in [Data Model](#data-model), and T-3.4 supplies SQL-backed search |
 | A package dependency is acceptable; compare SQLite and other candidates | The research compared the candidates. Dolt is the fleet dependency ([D-6](#d-6)); SQLite is the no-fleet fallback with the same logical schema ([D-5](#d-5)) |
-| Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 recovers the earlier feedback into a separately pinned private oracle and requires the candidate seed to match it exactly |
+| Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 has the run's oracle-recovery task, owned by the run's orchestrating session, recover the earlier feedback into a separately pinned private oracle, owner-approved before the Phase 4 seed write, and requires the candidate seed to match it exactly ([D-10](#d-10)) |
 | Authoring and routing constraints | Handled by the orchestration outside this public product design; they do not change runtime behaviour |
-| Provide approved and needs-review statuses and seed the 20 pre-approved names plus one more name | `unreviewed` is needs-review, `approved` is approved. T-3.2 binds the one additional name as a separate part of the private oracle, beyond the corrected 20-entry list, for exactly 21 approvals; T-4.2 checks both parts and their exact membership |
+| Provide approved and needs-review statuses and seed the owner's pre-approved names plus one more name | `unreviewed` is needs-review, `approved` is approved. T-3.2 binds the pre-approved list and the one additional name as separate parts of the private oracle, alongside the corrected conversion table; the pre-approved list and the addition are general approvals and the table's names are session-scoped approvals for their own sessions' migrations, with no fixed count in this design, and T-4.2 checks every part and its exact membership ([D-10](#d-10)) |
 | Research candidates beyond the initially suggested stores | Satisfied by the converged research document |
 
 **Status:** DRAFT
@@ -86,6 +86,7 @@ described in T-3.2 and T-4.2. This index is non-authoritative; the raw request g
   - [D-7: Cutover shape](#d-7)
   - [D-8: How other tools read the registry](#d-8)
   - [D-9: Who is recorded as the actor](#d-9)
+  - [D-10: Which names the seed approves, at what scope, and when the oracle is recovered](#d-10)
 - [Open Questions](#open-questions)
 - [Feedback Rounds](#feedback-rounds)
 - [Approval Log](#approval-log)
@@ -687,20 +688,23 @@ asserting both the pick result and the hand-choice result.
     - [ ] When run against a registry tree, the system shall write one Dolt commit holding every pool name, manual name, held row and migration record from that tree, and a second run shall report nothing to import.
     - [ ] When the import completes, the system shall print counts that match the tree: names, manual names, held rows by kind, migrations by state.
     - [ ] If the tree has a row that fails today's validator, then the system shall refuse the whole import and name the row.
-  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. Before Phase 3 begins, the prior approval feedback shall be recovered into a separate private oracle at `config/session-name-approvals.oracle.toml`. The owner shall approve that oracle's exact normalized rows at a pinned fleet-repository commit, and a separate authoritative cutover metadata record shall store that commit and the oracle's canonical SHA-256. The candidate seed file is not the oracle, and neither its own digest nor an expected digest stored inside it can establish the approved membership. The founding ask states two separate approval facts, and the oracle's approved set is built from both, in this order:
-    1. the owner's pre-approved list of 20 entries, with the one substitution the owner named applied inside it: the superseded entry is removed and its named replacement takes its place, so the corrected list still has exactly 20 entries;
-    2. the one entry the owner approved separately, in addition to that list, which is neither the superseded entry nor a member of the corrected list.
+  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. The seed is checked against a separate private oracle at `config/session-name-approvals.oracle.toml` in the fleet repository, which holds the owner's earlier approval feedback recovered from the sessions it was given to. The owner shall approve that oracle's exact normalized rows at a pinned fleet-repository commit, and a separate authoritative cutover metadata record shall store that commit and the oracle's canonical SHA-256. The candidate seed file is not the oracle, and neither its own digest nor an expected digest stored inside it can establish the approved membership. Recovering the oracle is the run's oracle-recovery task: the run's orchestrating session owns it, tracks it as a child issue of the run's issue, and finishes it, with the owner's approval recorded, before the T-4.2 seed write in Phase 4 ([D-10](#d-10)). Phase 3 builds and tests the seed command and its oracle validation against generic test fixtures and does not need the real oracle.
 
-    The approved set is the corrected 20-entry list plus the separate addition: exactly 21 entries. The oracle records the original and corrected 20-entry lists, the replacement and superseded entries, the separate addition, and every recovered scoped verdict and rejection. The candidate manifest records the same parts and carries its actor and reasons. Canonical SHA-256 values are computed over sorted normalized rows. Every approved entry is approved for migration as well as for picking, because general approval is what both the picker and `migrate-session` read.
-    - [ ] When seeded, the system shall load the oracle from the separately pinned commit, verify that its recomputed canonical digest equals the digest in the authoritative cutover metadata record, and require the candidate manifest's normalized rows to equal the oracle's normalized rows exactly. It shall then apply, with the file's actor, exactly 21 general approvals: the 20 entries of the corrected list, the replacement among them, and the separate addition. It shall leave the superseded entry without an approval, apply every oracle-scoped verdict, and convert every oracle-denylisted name to `rejected`, all in one commit.
+    The seed applies every approval the owner gave, each at the scope the owner gave it and each kept as its own part of the oracle:
+    1. the owner's pre-approved list, as general approvals;
+    2. the entry the owner approved separately, in addition to that list, as a general approval;
+    3. every name the owner approved in the migration conversion table the owner was shown, each as a session-scoped approval for the session the table proposed it for, with the owner's named substitution applied to that table: the superseded entry is removed and gets no approval, and its replacement is approved for the session the superseded entry was proposed for.
+
+    Each part 3 row records the name and its target session: the session that `migrate-session OLD --to-name NAME` renames, identified as OLD. The table approved a name for that one session's migration, not for general use, so a part 3 entry is a `verdicts` row with `scope_kind = 'session'`, `scope_value` set to its target session and `verdict = 'approved'`, and it changes no general status. Under AC-DT-ELIG that session's hand-chosen migration accepts the name whatever its general status (R2, R4 or R6), unless a scoped rejection matches (R1), and the picker never offers the name on that verdict, to that session or any other (R4 and R6 offer nothing). A part 3 name that is also in part 1 or part 2 keeps its general approval as well. The oracle also records the original conversion table with each entry's target session, the superseded entry and the replacement, every name the owner excluded, every recovered scoped verdict, and the owner's explicit answer for any approved name that the exclusions or the fleet denylist also list. This design fixes no count of approved names: the pinned oracle and its separately stored digest fix the exact membership and counts. The candidate manifest records the same parts and carries its actor and reasons. Canonical SHA-256 values are computed over sorted normalized rows.
+    - [ ] When seeded, the system shall load the oracle from the separately pinned commit, verify that its recomputed canonical digest equals the digest in the authoritative cutover metadata record, and require each part of the candidate manifest to equal the oracle's part exactly. It shall then, with the file's actor and in one commit, apply one general approval for every name in the pre-approved list and for the separate addition; apply one session-scoped `approved` verdict for every entry of the corrected conversion table, with its target session as the scope value, and no general approval for it unless the name is also in the pre-approved list or is the separate addition; leave the superseded entry without an approval of either kind; set every excluded name and every denylisted name to `rejected`, except a name whose recorded owner answer approves it, which the seed approves at the scope that answer gives; and apply every oracle-scoped verdict.
+    - [ ] Given a seeded fixture where a name is only in the corrected conversion table, a test shall prove that the picker never offers it, to its target session or to any other session, that `migrate-session` of its target session to that name is accepted even when the name's general status is `rejected` (R6), and that another session's hand-chosen migration to it is decided as if the verdict were absent (R3 or R5); a companion fixture shall prove that a name in both the table and the pre-approved list is offered by the picker.
     - [ ] When an approved entry is not yet in the pool, the seed shall add it as a `manual` name, with the file's actor and reason, in the same commit as its approval, so no owner approval is dropped.
     - [ ] When a denylisted name is held, the system shall keep the hold and add a session-scoped `approved` verdict for its holder.
     - [ ] If a scoped verdict or a rejection in the seed file names a name outside the pool, then the system shall refuse the whole seed.
-    - [ ] If the corrected list does not have exactly 20 entries, omits the replacement, still contains the superseded entry, or has a duplicate, then the cutover validation shall fail before any seed row is written.
-    - [ ] If the separate addition is missing, is a member of the corrected list, equals the superseded entry, or more than one addition is listed, then the cutover validation shall fail before any seed row is written.
-    - [ ] If the superseded entry is not a member of the owner's original 20-entry list, then the cutover validation shall fail before any seed row is written and report that the substitution cannot be applied as recorded.
-    - [ ] If the oracle, its pinned commit or its separately stored expected digest is missing or inaccessible, if the oracle's recomputed digest differs from that expected digest, or if any normalized candidate row differs from the oracle, then validation shall fail before any seed row is written.
-    - [ ] Given a candidate with exactly 20 structurally valid corrected-list entries, one structurally valid separate addition and a self-consistent digest, if any entry differs from the pinned oracle, then a regression test shall prove that validation rejects it without writing a row; a companion test shall prove that the exact oracle-derived candidate is accepted.
+    - [ ] If the superseded entry is not a member of the original conversion table, is still a member of the corrected table, or is a member of the pre-approved list or the separate addition, if the replacement is absent from the corrected table, if the replacement's target session differs from the superseded entry's, or if any corrected-table entry has no target session, then the cutover validation shall fail before any seed row is written and report that the substitution cannot be applied as recorded.
+    - [ ] If a name in an approved part is also an excluded name or listed by the fleet denylist, and the oracle records no explicit owner answer for it, then the cutover validation shall fail before any seed row is written and name that conflict; it shall neither approve nor reject the name.
+    - [ ] If the oracle, its pinned commit or its separately stored expected digest is missing or inaccessible, if the oracle's recomputed digest differs from that expected digest, or if any part of the candidate (the pre-approved list, the separate addition, the original or corrected conversion table, including any entry's target session, the exclusions, the owner answers or the scoped verdicts) differs from the oracle's part, then validation shall fail before any seed row is written.
+    - [ ] Given a structurally valid candidate with a self-consistent digest, if any entry of any part differs from the pinned fixture oracle, then a regression test shall prove that validation rejects it without writing a row; a companion test shall prove that the exact oracle-derived candidate is accepted.
   - **T-3.3 `list-migrations`** — `ai list-migrations -j/--json`.
     - [ ] When run, the system shall list every migration row with its state, as JSON with `--json`.
   - **T-3.4 `find-names`** — `ai find-names -s/--status S -k/--scope KIND -v/--value VALUE -m/--machine M -t/--state STATE -j/--json`.
@@ -713,8 +717,9 @@ asserting both the pick result and the hand-choice result.
 
 - **Scope:** the switch on every fleet host, the fleet repository's readers, and rollback.
 - **Deliverables:**
-  - Fleet repository (private): `config/session-names.toml` at schema 2, the seed file, the readers
-    changed per [Integration](#integration), and the cutover runbook.
+  - Fleet repository (private): `config/session-names.toml` at schema 2, the seed file, the
+    owner-approved oracle and its cutover metadata record (from the run's oracle-recovery task,
+    T-3.2), the readers changed per [Integration](#integration), and the cutover runbook.
   - This repository: a release carrying Phases 1 to 3.
 - **Tasks + acceptance criteria:**
   - **T-4.1 Drain and freeze** — announce the freeze, quiesce allocation processes and hold both registry and spool locks on every registered host, drain the old spools, then publish a policy snapshot with `schema = 2` to the old registry branch. Keep the Dolt `meta.writes_enabled` gate at `0` throughout.
@@ -725,7 +730,8 @@ asserting both the pick result and the hand-choice result.
     - [ ] When import completes, every old session and label hold shall exist unchanged, every cache-only token an old offline client could activate shall be occupied by a quarantined Dolt hold, every cached token already present at the frozen tip shall remain occupied by that authoritative frozen row, and no ordinary Dolt allocation shall yet be accepted.
     - [ ] Given a stale host cache that calls a token an unactivated spare while the frozen tip holds that token as an active session, an integration test shall prove that import keeps the active row byte-for-byte, inserts no duplicate or quarantine row for the token, and continues to report the token as occupied.
     - [ ] Given a frozen reserved spare and a different cache-only spare, an integration test shall prove that import keeps the frozen spare row byte-for-byte unchanged while inserting the cache-only token as `cutover-quarantined`.
-    - [ ] Before seed writes, the runbook shall load the owner-approved oracle from its pinned commit, verify its canonical digest against the independently stored expected digest, and compare every normalized candidate row with the oracle. A mismatch in the original or corrected list's count or membership, the replacement, the superseded entry, the separate addition, any scoped verdict or rejection, or the digest shall block the flip.
+    - [ ] If the run's oracle-recovery task is not finished with the owner's approval of the oracle recorded, then the cutover shall stop before any seed write with Dolt writes disabled.
+    - [ ] Before seed writes, the runbook shall load the owner-approved oracle from its pinned commit, verify its canonical digest against the independently stored expected digest, and compare every part of the candidate with the oracle's part. A mismatch in the pre-approved list, the separate addition, the original or corrected conversion table or any entry's target session, the superseded entry or the replacement, the exclusions, the owner answers, any scoped verdict, or the digest, or an approved name that the exclusions or the fleet denylist also list with no recorded owner answer, shall block the flip.
     - [ ] When validation succeeds, `check-names` in cutover mode shall exit 0 and `list-names` shall show counts equal to the frozen tree plus the attested seed and cache-only quarantines.
   - **T-4.3 Enable and roll out** — after every registered host is upgraded, reconcile each quarantine from its captured cache/spool evidence, verify no old registry process is running, switch policy to the Dolt backend, and set `meta.writes_enabled = 1` in the enabling Dolt commit. Sessions are told before the freeze and after the last host.
     - [ ] At every cutover checkpoint, an integration test shall attempt an old online write, an old cached offline-spare activation and a new Dolt write; zero stores shall accept ordinary allocation before the enabling commit, and only Dolt shall accept it afterward.
@@ -749,7 +755,7 @@ asserting both the pick result and the hand-choice result.
 | 3 | Phase 1 | Access path, D-1, D-6 | - [ ] | |
 | 4 | Phase 1 | Public installs, D-5 | - [ ] | |
 | 5 | Phase 2 | Status model, D-3, D-9 | - [ ] | |
-| 6 | Phase 3 | Import, seed and queries | - [ ] | |
+| 6 | Phase 3 | Import, seed and queries, D-10 | - [ ] | |
 | 7 | Phase 4 | Cutover, D-2, D-7, D-8 | - [ ] | |
 
 **Audit completed:**
@@ -766,6 +772,7 @@ asserting both the pick result and the hand-choice result.
 | 6 | The registry and the issue tracker interfere in one repository | One overwrites the other's info branch or ref | Separate ref; info branch off; separate clone; no shared server (D-2) |
 | 7 | The cutover window stalls launches | Sessions cannot get new names | Both stores reject ordinary writes until every host is upgraded; old cached spares are quarantined; the window is announced and rollback is rehearsed |
 | 8 | A hand edit in SQL bypasses the client | A case twin or invalid row | Constraints in the table itself, not only in the client |
+| 9 | The seed approves a different set from the one the owner approved, or the oracle is not ready when Phase 4 starts | Owner-approved names left unapproved, or a name approved without the owner's word or wider than the owner approved it | Each owner approval is seeded at the scope it was given: the pre-approved list and the separate addition as general approvals, each conversion-table name as a session-scoped approval for its own session's migration, which the picker never offers; each part is checked against the pinned, owner-approved oracle; conflicts with exclusions or the denylist block until the owner answers; the run's oracle-recovery task has a named owner and T-4.2 stops the cutover until it is done (D-10) |
 
 <!-- /doc:region name="overview" -->
 
@@ -777,21 +784,22 @@ asserting both the pick result and the hand-choice result.
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
-| D-1 | Access path from the package to Dolt | (a) `dolt` CLI subprocess, (b) per-host `dolt sql-server` with PyMySQL, (c) the issue tracker's shared server | (a) | (a) | No | No server on the launch path, no new Python dependency, no coupling to the tracker | ✅ Resolved |
-| D-2 | Where the registry database lives | (a) own ref in the fleet repository, (b) a dedicated private repository, (c) a table in the tracker's database | (a) | (a) | No | Same access and transport as today, isolated by ref | ✅ Resolved |
-| D-3 | How status and verdicts are stored | (a) normalized `names` plus `verdicts`, (b) a JSON column per name, (c) status only, verdicts later | (a) | (a) | No | Per-verdict actor, time, history and plain SQL search | ✅ Resolved |
-| D-4 | How a claim gets one winner | (a) Dolt alone under the claim protocol, (b) a claim ref per name plus Dolt (hybrid H1) | (a) | (a) | No | One store; the protocol is today's loop; measured 20 of 20 | ✅ Resolved |
-| D-5 | Public installs with no fleet | (a) local SQLite with the same schema, (b) local Dolt, (c) keep the JSON file tree | (a) | (a) | No | Works with no extra install on every platform | ✅ Resolved |
-| D-6 | Dolt version floor | (a) 2.3.4, the fleet's version, (b) 2.4.1, (c) latest 2.7.x | (a) | (a) | No | No forced upgrade of the tracker's binary; nothing needed is newer | ✅ Resolved |
-| D-7 | Cutover shape | (a) one frozen window, (b) dual-write period, (c) per-host gradual | (a) | (a) | No | One store at a time; old clients fail closed by policy schema | ✅ Resolved |
-| D-8 | How other tools read the registry | (a) through the `ai` CLI's JSON, (b) direct Dolt reads | (a) | (a) | No | One access path, one schema owner | ✅ Resolved |
-| D-9 | Who is recorded as the actor | (a) separate `actor` and `recorded_by`, (b) the agent session only | (a) | (a) | No | The owner's verdicts are relayed by agents; both facts matter | ✅ Resolved |
+| D-1 | Access path from the package to Dolt | (a) `dolt` CLI subprocess, (b) per-host `dolt sql-server` with PyMySQL, (c) the issue tracker's shared server | (a) | (a) | No | No server on the launch path, no new Python dependency, no coupling to the tracker | ✅ Resolved by Claude |
+| D-2 | Where the registry database lives | (a) own ref in the fleet repository, (b) a dedicated private repository, (c) a table in the tracker's database | (a) | (a) | No | Same access and transport as today, isolated by ref | ✅ Resolved by Claude |
+| D-3 | How status and verdicts are stored | (a) normalized `names` plus `verdicts`, (b) a JSON column per name, (c) status only, verdicts later | (a) | (a) | No | Per-verdict actor, time, history and plain SQL search | ✅ Resolved by Claude |
+| D-4 | How a claim gets one winner | (a) Dolt alone under the claim protocol, (b) a claim ref per name plus Dolt (hybrid H1) | (a) | (a) | No | One store; the protocol is today's loop; measured 20 of 20 | ✅ Resolved by Claude |
+| D-5 | Public installs with no fleet | (a) local SQLite with the same schema, (b) local Dolt, (c) keep the JSON file tree | (a) | (a) | No | Works with no extra install on every platform | ✅ Resolved by Claude |
+| D-6 | Dolt version floor | (a) 2.3.4, the fleet's version, (b) 2.4.1, (c) latest 2.7.x | (a) | (a) | No | No forced upgrade of the tracker's binary; nothing needed is newer | ✅ Resolved by Claude |
+| D-7 | Cutover shape | (a) one frozen window, (b) dual-write period, (c) per-host gradual | (a) | (a) | No | One store at a time; old clients fail closed by policy schema | ✅ Resolved by Claude |
+| D-8 | How other tools read the registry | (a) through the `ai` CLI's JSON, (b) direct Dolt reads | (a) | (a) | No | One access path, one schema owner | ✅ Resolved by Claude |
+| D-9 | Who is recorded as the actor | (a) separate `actor` and `recorded_by`, (b) the agent session only | (a) | (a) | No | The owner's verdicts are relayed by agents; both facts matter | ✅ Resolved by Claude |
+| D-10 | Which names the seed approves, at what scope, and when the oracle is recovered | (a) the pre-approved list with the substitution inside it plus one addition, (b) every owner approval at the scope the owner gave it, pinned by the oracle, (c) approve the whole pool, (d) every owner approval as a general approval | (b) | (b) | No | (a) contradicts the record and narrows an explicit requirement; (c) and (d) broaden it | ✅ Resolved by Claude |
 
 ### Decision Details
 
 <a id="d-1"></a>
 
-#### D-1: Access path from the package to Dolt — ✅ Approved: (a) `dolt` CLI subprocess
+#### D-1: Access path from the package to Dolt — ✅ Resolved by Claude: (a) `dolt` CLI subprocess
 
 **Context.** The package is a short-lived CLI run at every session launch on several hosts. Dolt
 offers a CLI and a MySQL-protocol server; the fleet's issue tracker already runs one shared server
@@ -806,15 +814,16 @@ launch path of every host".
 - Measured fast enough: a read 0.23 s, a write with commit 0.19 s on the fleet's version.
 
 **Cons:**
-- One process per call, so a command that needs several queries pays several starts; batch them
+- One process per call, so a command that needs several queries pays several starts. Batch them
   into one script per call.
-- Dolt's own lock falls back to read-only for a second opener; mitigated by the host file lock and
+- Dolt's own lock falls back to read-only for a second opener. Mitigated by the host file lock and
   the commit check.
 
 ##### (b) Per-host `dolt sql-server` with PyMySQL
 
 **Pros:**
-- One connection serves many queries; real transactions.
+- One connection serves many queries.
+- Real transactions.
 - PyMySQL is pure Python and MIT licensed.
 
 **Cons:**
@@ -827,14 +836,14 @@ launch path of every host".
 - Already running on fleet hosts.
 
 **Cons:**
-- Couples the registry to another tool's server, version and incidents; the tracker's own records
+- Couples the registry to another tool's server, version and incidents. The tracker's own records
   show a five-hour outage from a schema migration on its shared server.
 - Absent on public installs and on any host without the tracker.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) `dolt` CLI subprocess per call
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) `dolt` CLI subprocess per call
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-1; decision-topic=registry-dolt-access-path; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=the-package-reaches-dolt-through-the-cli-only; applicability=scope:fleet-registry; outcome-id=cli-subprocess; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The CLI keeps the launch path free of a server, which answers the earlier design's main objection,
@@ -845,7 +854,7 @@ check in the claim protocol.
 
 <a id="d-2"></a>
 
-#### D-2: Where the registry database lives — ✅ Approved: (a) own ref in the fleet repository
+#### D-2: Where the registry database lives — ✅ Resolved by Claude: (a) own ref in the fleet repository
 
 **Context.** The registry's rows carry host names, repositories and session ids, so it must stay in
 a private repository. The fleet repository already holds the registry branch and the issue
@@ -858,8 +867,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - A separate ref and the info branch off keep it apart from the tracker.
 
 **Cons:**
-- The repository carries two Dolt databases; anyone reading its refs must know which is which.
-- Pushes to the repository count against one rate limit; a few a day is far below it.
+- The repository carries two Dolt databases. Anyone reading its refs must know which is which.
+- Pushes to the repository count against one rate limit. A few a day is far below it.
 
 ##### (b) A dedicated private repository
 
@@ -867,8 +876,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - Complete isolation from the tracker.
 
 **Cons:**
-- A new repository to create, grant on every host and keep credentials for; an outward-facing
-  setup step on each host.
+- A new repository to create, grant on every host and keep credentials for.
+- An outward-facing setup step on each host.
 
 ##### (c) A table in the tracker's database
 
@@ -876,13 +885,13 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 - No second database.
 
 **Cons:**
-- Ties the registry's schema and history to the tracker's migrations and its incidents; rejected
-  by the research doc's placement condition.
+- Ties the registry's schema and history to the tracker's migrations and its incidents.
+- Rejected by the research doc's placement condition.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) its own ref in the fleet repository
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) its own ref in the fleet repository
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-2; decision-topic=registry-dolt-placement; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=registry-on-own-dolt-ref-of-fleet-repository; applicability=scope:fleet-registry; outcome-id=own-ref; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The registry keeps the access it has today and is isolated by ref, clone and the info-branch
@@ -892,7 +901,7 @@ setting. The cost is knowing which of two Dolt refs is which, which the policy f
 
 <a id="d-3"></a>
 
-#### D-3: How general status and scoped verdicts are stored — ✅ Approved: (a) normalized tables
+#### D-3: How general status and scoped verdicts are stored — ✅ Resolved by Claude: (a) normalized tables
 
 **Context.** The owner asked for a general status, scoped rejections by repository, host or
 session, and suggested "maybe can store a json which can track white list / black list etc.
@@ -912,7 +921,8 @@ cell cleanly.
 ##### (b) A JSON column of allow and deny lists per name
 
 **Pros:**
-- Matches the owner's first suggestion literally; one row per name.
+- Matches the owner's first suggestion literally.
+- One row per name.
 
 **Cons:**
 - Actor and time per entry need a nested structure the engine does not check.
@@ -924,13 +934,13 @@ cell cleanly.
 - Smallest first build.
 
 **Cons:**
-- Drops an explicit founding-ask requirement (rejection per repository, host or session); not
-  permitted.
+- Drops an explicit founding-ask requirement (rejection per repository, host or session), which is
+  not permitted.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) a `status` column on `names` plus a `verdicts` table
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) a `status` column on `names` plus a `verdicts` table
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-3; decision-topic=registry-status-storage; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=status-column-plus-normalized-verdicts-table; applicability=scope:fleet-registry; outcome-id=normalized; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The owner asked for "whatever is robust", and offered JSON as one possibility. A normalized table
@@ -941,7 +951,7 @@ join is one indexed lookup per pick.
 
 <a id="d-4"></a>
 
-#### D-4: How a claim gets exactly one winner — ✅ Approved: (a) Dolt alone under the claim protocol
+#### D-4: How a claim gets exactly one winner — ✅ Resolved by Claude: (a) Dolt alone under the claim protocol
 
 **Context.** Every git-backed option gets uniqueness from the push compare-and-swap. Dolt merges
 identical-value claims cleanly, so a client that merges a lost push can believe it won. A claim
@@ -951,10 +961,11 @@ ref per name would give one winner by construction.
 
 **Pros:**
 - One store and one write per claim.
-- The protocol is today's `transact` loop; measured one winner in 20 of 20 concurrent races.
+- The protocol is today's `transact` loop.
+- Measured one winner in 20 of 20 concurrent races.
 
 **Cons:**
-- Correctness depends on every writer following the protocol; mitigated because the package is
+- Correctness depends on every writer following the protocol. Mitigated because the package is
   the only writer and tests pin each rule.
 
 ##### (b) A create-if-absent ref per name, plus Dolt for everything else (hybrid H1)
@@ -968,8 +979,8 @@ ref per name would give one winner by construction.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) Dolt alone, under the claim protocol
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) Dolt alone, under the claim protocol
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-4; decision-topic=registry-claim-uniqueness; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-claim-protocol; applicability=scope:fleet-registry; outcome-id=protocol; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The protocol is cheaper than a second store at a few claims a day, and the spare path takes most
@@ -979,7 +990,7 @@ launches off the network. T-1.2 pins the identical-value case so a regression fa
 
 <a id="d-5"></a>
 
-#### D-5: Public installs with no fleet repository — ✅ Approved: (a) local SQLite with the same schema
+#### D-5: Public installs with no fleet repository — ✅ Resolved by Claude: (a) local SQLite with the same schema
 
 **Context.** The package is public and cross-platform; a public user has no fleet repository and
 may not have `dolt`. Today such installs keep the JSON tree in a local directory.
@@ -987,11 +998,12 @@ may not have `dolt`. Today such installs keep the JSON tree in a local directory
 ##### (a) A local SQLite database with the same schema
 
 **Pros:**
-- Python's standard library; works on Windows, macOS and Linux with no install step.
+- Python's standard library.
+- Works on Windows, macOS and Linux with no install step.
 - The same tables and constraints, so status and verdicts work the same way.
 
 **Cons:**
-- A second dialect of the schema to keep in step; mitigated by one module emitting both and the
+- A second dialect of the schema to keep in step. Mitigated by one module emitting both and the
   parity tests running on both backends.
 - No row history, which public users do not need.
 
@@ -1013,8 +1025,8 @@ may not have `dolt`. Today such installs keep the JSON tree in a local directory
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) a local SQLite database with the same schema
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) a local SQLite database with the same schema
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-5; decision-topic=registry-public-fallback; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=public-installs-use-sqlite-with-shared-schema; applicability=scope:public-install; outcome-id=sqlite; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 SQLite gives public users the same model with nothing to install. The second dialect is held in
@@ -1024,7 +1036,7 @@ step by generating both from one module and running every registry test on both 
 
 <a id="d-6"></a>
 
-#### D-6: Dolt version floor — ✅ Approved: (a) 2.3.4
+#### D-6: Dolt version floor — ✅ Resolved by Claude: (a) 2.3.4
 
 **Context.** Once a newer Dolt feature version writes a database, older clients cannot read it, so
 every fleet host must run a compatible binary. The fleet runs 2.3.4 today for the issue tracker.
@@ -1037,7 +1049,7 @@ Release 2.4.1 made the git-remote history cap a setting; 2.7.0 changed merge sto
 - Every behaviour this design needs was measured on it.
 
 **Cons:**
-- The data ref's git history stays capped at 64 commits; harmless, because Dolt's own history
+- The data ref's git history stays capped at 64 commits. Harmless, because Dolt's own history
   survives, as measured.
 
 ##### (b) 2.4.1 or later
@@ -1059,8 +1071,8 @@ Release 2.4.1 made the git-remote history cap a setting; 2.7.0 changed merge sto
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) 2.3.4
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) 2.3.4
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-6; decision-topic=registry-dolt-version-floor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=dolt-floor-equals-fleet-version; applicability=scope:fleet-registry; outcome-id=2.3.4; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The floor matches what every fleet host already runs, so the cutover needs no binary upgrade. The
@@ -1070,7 +1082,7 @@ floor is a value in `meta`, so raising it later is one migration.
 
 <a id="d-7"></a>
 
-#### D-7: Cutover shape — ✅ Approved: (a) one frozen window
+#### D-7: Cutover shape — ✅ Resolved by Claude: (a) one frozen window
 
 **Context.** Several hosts allocate names. Two stores accepting writes at once would let one name
 be held in each. Old clients already refuse a policy snapshot with an unknown schema.
@@ -1083,8 +1095,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
   host cache remains held in Dolt quarantine.
 
 **Cons:**
-- Named launches pause while all hosts are quiesced, inventoried and upgraded; offline activation
-  is deliberately disabled during that window.
+- Named launches pause while all hosts are quiesced, inventoried and upgraded.
+- Offline activation is deliberately disabled during that window.
 
 ##### (b) A dual-write period
 
@@ -1092,8 +1104,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 - No pause.
 
 **Cons:**
-- Two sources of truth and a reconciliation step; a backward-compatibility path the project's
-  pre-1.0 rule forbids.
+- Two sources of truth and a reconciliation step.
+- A backward-compatibility path the project's pre-1.0 rule forbids.
 
 ##### (c) Gradual, host by host
 
@@ -1105,8 +1117,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) one frozen window
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) one frozen window
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-7; decision-topic=registry-cutover-shape; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-gated-frozen-window; applicability=scope:fleet-registry; outcome-id=frozen-window; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 A short pause is the price of never having two stores accept writes. The policy freeze stops
@@ -1118,7 +1130,7 @@ new client. The rollback is rehearsed before the real window.
 
 <a id="d-8"></a>
 
-#### D-8: How other tools read the registry — ✅ Approved: (a) through the `ai` CLI's JSON
+#### D-8: How other tools read the registry — ✅ Resolved by Claude: (a) through the `ai` CLI's JSON
 
 **Context.** Four tools in the fleet repository read the old tree's files directly. After the
 cutover those files stop changing.
@@ -1126,7 +1138,8 @@ cutover those files stop changing.
 ##### (a) Through `ai list-names --json`, `ai list-migrations --json` and `ai find-names --json`
 
 **Pros:**
-- One access path and one owner of the schema; a schema change cannot silently break a reader.
+- One access path and one owner of the schema.
+- A schema change cannot silently break a reader.
 
 **Cons:**
 - Each reader needs the package installed, which every fleet host already has.
@@ -1141,8 +1154,8 @@ cutover those files stop changing.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) through the `ai` CLI's JSON output
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) through the `ai` CLI's JSON output
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-8; decision-topic=registry-external-readers; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=external-readers-use-cli-json; applicability=scope:fleet-registry; outcome-id=cli-json; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Keeping one access path means the Dolt-specific settings live in one place.
@@ -1151,7 +1164,7 @@ Keeping one access path means the Dolt-specific settings live in one place.
 
 <a id="d-9"></a>
 
-#### D-9: Who is recorded as the actor — ✅ Approved: (a) separate `actor` and `recorded_by`
+#### D-9: Who is recorded as the actor — ✅ Resolved by Claude: (a) separate `actor` and `recorded_by`
 
 **Context.** Approvals today record only the agent session that ran the command. The owner's
 verdicts usually arrive through an agent session relaying them.
@@ -1162,7 +1175,7 @@ verdicts usually arrive through an agent session relaying them.
 - Answers "who approved this" and "which session wrote it" separately.
 
 **Cons:**
-- The actor is self-declared on the command line; there is no identity check, as today.
+- The actor is self-declared on the command line. There is no identity check, as today.
 
 ##### (b) The agent session only
 
@@ -1174,12 +1187,100 @@ verdicts usually arrive through an agent session relaying them.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) separate `actor` and `recorded_by`
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) separate `actor` and `recorded_by`
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-9; decision-topic=registry-verdict-actor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=actor-and-recorder-stored-separately; applicability=scope:fleet-registry; outcome-id=two-fields; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 `--actor` is required for `set-name-status` and `set-name-verdict`; `recorded_by` is filled from
 the session automatically.
+
+---
+
+<a id="d-10"></a>
+
+#### D-10: Which names the seed approves, at what scope, and when the oracle is recovered — ✅ Resolved by Claude: (b) every owner approval at the scope the owner gave it, pinned by the oracle
+
+**Context.** The owner gave approvals in more than one place: a pre-approved list, one name approved
+separately in addition to it, and a migration conversion table the owner was shown, with one name in
+that table replaced and every name in it approved to migrate. The first two are approvals of names in
+general. The table approved each name for the migration of the one session it was proposed for. An
+earlier revision of this design applied the substitution inside the pre-approved list and capped the
+seed at that list plus the one addition. The record does not support that reading: the superseded
+entry is not in the pre-approved list, the substitution was stated for the table, and the earlier
+seed plan approved many more names, excluded a name, and found an owner-approved name on the fleet
+denylist. A later revision fixed the membership but made every table name a general approval, which
+the picker reads, so a name approved for one session's migration could be offered to an unrelated
+new session. The first revision also required the earlier feedback to be recovered "before Phase 3
+begins" and named no one to do it.
+
+##### (a) The pre-approved list with the substitution inside it, plus one addition
+
+**Pros:**
+- A small, fixed approved set that is easy to state.
+
+**Cons:**
+- Contradicts the record: validation would refuse the real seed, because the superseded entry is not
+  in the pre-approved list.
+- Leaves names the owner approved in the conversion table, some already held by migrated sessions,
+  without any approval; that narrows an explicit requirement.
+
+##### (b) Every owner approval at the scope the owner gave it, each part pinned by the oracle
+
+**Pros:**
+- The pre-approved list and the separate addition become general approvals, which the picker and
+  every hand-chosen name read.
+- Each conversion-table name becomes a session-scoped approval for the session the table proposed
+  it for, so that session's `migrate-session --to-name` accepts it (AC-DT-ELIG R2, R4 or R6) and the
+  picker never offers it on that approval. This keeps the general and session-specific approvals the
+  owner asked to be tracked separately.
+- Each part, including each table entry's target session, is checked on its own against the
+  owner-approved oracle, so a wrong or missing name or session in any part blocks the seed.
+- An approved name that the exclusions or the fleet denylist also list waits for the owner's answer,
+  so no conflict is settled silently.
+
+**Cons:**
+- The public design cannot state the size of the approved set. The private oracle and its digest
+  carry it.
+- The oracle must record a target session for every table entry. Mitigated by the T-3.2 validation
+  that refuses a table entry with no target session, or a replacement whose session differs from the
+  superseded entry's.
+- Phase 4 depends on the oracle-recovery task finishing. Mitigated by naming its owner, tracking it
+  as a child issue of the run, and having T-4.2 stop the cutover until it is done.
+
+##### (c) Approve the whole pool
+
+**Pros:**
+- No oracle to recover.
+
+**Cons:**
+- Approves names the owner never reviewed, which broadens the owner's approvals and makes the
+  `unreviewed` status meaningless at the start.
+
+##### (d) Every owner approval, all as general approvals
+
+**Pros:**
+- One kind of approval to seed and check.
+
+**Cons:**
+- Turns a name approved for one session's migration into a name the picker may offer to any
+  session, which broadens that approval and merges the general and session-specific approvals the
+  owner asked to keep apart.
+
+##### Recommendation
+
+> **Decision:** ✅ Resolved by Claude — (b) every owner approval at the scope the owner gave it, pinned by the oracle
+<!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-10; decision-topic=registry-seed-approved-set; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=seed-applies-each-owner-approval-at-its-given-scope-pinned-by-oracle; applicability=scope:fleet-registry; outcome-id=scoped-union-oracle; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+Option (a) contradicts the record and narrows an explicit requirement; options (c) and (d) broaden
+it. Option (b) approves exactly what the owner approved, at the scope the owner approved it, with the
+owner's substitution applied where the owner stated it, and leaves the exact membership and each
+table entry's session to the pinned oracle and its separately stored digest. The oracle's recovery is
+the run's oracle-recovery task, owned by the run's orchestrating session and finished with the
+owner's approval before the T-4.2 seed write in Phase 4. Phase 3 needs only generic fixtures, so the
+earlier "before Phase 3 begins" precondition moves to T-4.2. Confidence: high; the eligibility table
+already lets a session-approved name through that session's hand-chosen migration and keeps it out of
+picks.
 
 ---
 
@@ -1193,9 +1294,11 @@ the session automatically.
 None. "Git tracked" is satisfied by the canonical Dolt database and row history stored on a git
 remote ref. The exact private seed is not discretionary: T-3.2 requires the recovered approval
 feedback to be fixed in an owner-approved oracle at a pinned commit with its digest stored in a
-separate authoritative cutover record. The candidate's 21 approved entries must equal that oracle's
-corrected 20-entry list (one named substitution inside the original 20) plus its separately approved
-addition, and T-4.2 blocks cutover on any row or digest mismatch.
+separate authoritative cutover record. Each of the candidate's approved parts must equal that
+oracle's part: the pre-approved list and the separately approved addition, seeded as general
+approvals, and the conversion table with the owner's substitution applied to it, seeded as
+session-scoped approvals for each entry's own session. T-4.2 blocks cutover on any part or digest
+mismatch ([D-10](#d-10)).
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
@@ -1219,5 +1322,8 @@ addition, and T-4.2 blocks cutover on any row or digest mismatch.
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-11-11 | D-1 to D-9 | Resolved during automated design review; none required owner input |
+| 2026-11-12 | D-10 | Resolved during automated design review after a scope-alignment review found the seed narrowed the owner's approvals |
+| 2026-11-13 | D-10 | Revised during automated design review after an audit found the conversion-table names promoted to general approval: each is now a session-scoped approval for its own session's migration, option (d) records the rejected reading, and the label reads Resolved by Claude, since no human approved it |
+| 2026-11-13 | D-1 to D-9 | Relabelled as AI-resolved: the orchestrating session resolved them in automated mode during the doc stage on 2026-11-11, and no human approved them |
 
 <!-- /doc:region name="approval_log" -->
