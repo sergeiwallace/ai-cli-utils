@@ -2115,10 +2115,11 @@ def _restore_record_needs_rename(record: dict, old: str, new: str, old_wt: Path)
         return False
     argv = record.get("relaunch_argv") or []
     recipe = record.get("boot_recipe") or {}
+    renames = dict(zip(_session_variants(old), _session_variants(new), strict=True))
     return (
         record.get("cwd") == str(old_wt)
         or recipe.get("cwd") == str(old_wt)
-        or any(arg in old_names or arg == old for arg in argv)
+        or _rename_relaunch_argv(argv, new, renames) != argv
     )
 
 
