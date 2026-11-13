@@ -58,6 +58,8 @@ def refresh_session(monkeypatch, tmp_path, session_factory):  # noqa: F811
                 f"    with Path({str(tmp_path / 'agent-started')!r}).open('a') as log: log.write(str(os.getpid()) + '\\n')\n"
                 f"    if {reconfigure!r}: Path(os.environ['XDG_CONFIG_HOME'], 'ai-cli-utils', 'config.toml').write_text('[launch]\\nrefresh_plugins = [\"{OTHER}\"]\\n')\n"
                 f"    time.sleep(3.2 if {restart!r} and not any(row[0] == 'start' for row in previous) else 600)\n"
+                # A successful TUI exit now returns to a shell; simulate a crash to exercise refresh on restart.
+                "    sys.exit(1)\n"
             )
             if absent:
                 stub = bin_dir / "claude"

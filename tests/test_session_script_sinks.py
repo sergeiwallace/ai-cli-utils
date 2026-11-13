@@ -27,7 +27,7 @@ from test_output_sinks import _event_fields, _fields
 from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
 
 DIRENV_TEXT = "direnv could not load"
-CLEANUP_TEXT = "skipping tmux session cleanup because supervisor ownership was not established"
+SHELL_TEXT = "Auto-restart stopped. Returning to an interactive shell."
 _SEED = "launch log started for session test-session"
 # The script's own plain line when the renderer cannot run: a stamp, then `[session] <op>: ...`.
 _FALLBACK = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} \[session\] direnv: Warning: ")
@@ -94,16 +94,16 @@ def test_given_a_session_script_warning_when_emitted_then_terminal_log_and_telem
 
 def _info_and_warning_session(start, launch_log: Path, config: str = "") -> Session:
     # Child 1 fails its direnv export (a warning) and runs the agent; child 2 finds an exit
-    # request, so the supervisor ends with its cleanup info line.
+    # request, so the supervisor emits the shell-return info line. Exit that shell to end the test.
     session = start(
         reload_on=(),
-        agent_runs=(2.0, 600.0),
+        agent_runs=(4.0, 600.0),
         launch_log=launch_log,
         direnv_fails=True,
         exit_on_cron=2,
         config=config,
     )
-    session.wait_for_exit()
+    session.exit_shell()
     return session
 
 
@@ -113,8 +113,8 @@ def test_given_a_session_script_info_line_when_emitted_then_the_terminal_and_log
 ):
     session = _info_and_warning_session(session_factory, launch_log)
 
-    [terminal] = _containing(_terminal_lines(session), CLEANUP_TEXT)
-    [logged] = _containing(_log(launch_log), CLEANUP_TEXT)
+    [terminal] = _containing(_terminal_lines(session), SHELL_TEXT)
+    [logged] = _containing(_log(launch_log), SHELL_TEXT)
     assert _fields(logged) == _fields(terminal)
     assert _fields(terminal)["level"] == "info", terminal
     events = _telemetry(session)
@@ -131,10 +131,10 @@ def test_given_a_file_sink_min_level_of_warning_when_the_script_emits_then_the_l
         session_factory, launch_log, config='[output.sinks.file]\nmin_level = "warning"\n'
     )
 
-    assert _containing(_terminal_lines(session), CLEANUP_TEXT), session.rows()
+    assert _containing(_terminal_lines(session), SHELL_TEXT), session.rows()
     lines = _log(launch_log)
     assert _containing(lines, DIRENV_TEXT), lines
-    assert not _containing(lines, CLEANUP_TEXT), lines
+    assert not _containing(lines, SHELL_TEXT), lines
 
 
 def test_given_reloads_past_both_thresholds_when_rendered_then_only_the_escalated_rows_are_stored(

@@ -190,6 +190,9 @@ def begin(name, launch_metadata, supervisor_pid):
             signal.signal(signal.SIGINT, previous_int)
 
 
+_BIND_TMUX_ATTEMPTS = 4
+
+
 @sessions.command("_bind-exit-tmux", hidden=True)
 @click.argument("name")
 @click.argument("generation")
@@ -200,7 +203,18 @@ def bind_exit_tmux(name, generation, session_id, token):
 
     if not re.fullmatch(r"\$[0-9]+", session_id) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
         raise click.ClickException("invalid tmux identity")
-    if _tmux_server(TmuxIdentity(session_id, token)) is None:
+    # This runs before the supervisor starts its child, and a failure ends the launch, so a tmux
+    # server that is merely slow to answer on a loaded host must not be mistaken for a missing one.
+    server = None
+    for attempt in range(_BIND_TMUX_ATTEMPTS):
+        try:
+            server = _tmux_server(TmuxIdentity(session_id, token))
+            break
+        except ValueError as exc:
+            if attempt == _BIND_TMUX_ATTEMPTS - 1:
+                raise click.ClickException(str(exc)) from exc
+            time.sleep(0.5)
+    if server is None:
         raise click.ClickException("tmux ownership is absent")
 
     def bind(doc):

@@ -2114,10 +2114,11 @@ class TestGetEngineScript:
             "c", "session-1", "c-session-1", "c-session-", "session", worktree_dir=f"/tmp/project; touch {marker}"
         )
         assert f"cd -- '/tmp/project; touch {marker}'" in script
+        # Both the child body and the returned interactive shell use the quoted cd.
         # The value also appears in session metadata and both generation-acquisition
-        # payloads. Each JSON blob is shell-quoted as a single argument, so those
-        # copies are not executable-context duplicates of the guarded cd above.
-        assert script.count("touch /tmp/marker") == 4
+        # payloads, each shell-quoted as a single JSON argument.
+        assert script.count(f"cd -- '/tmp/project; touch {marker}'") == 2
+        assert script.count("touch /tmp/marker") == 5
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")

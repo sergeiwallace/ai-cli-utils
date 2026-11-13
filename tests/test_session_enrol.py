@@ -332,11 +332,12 @@ def test_given_enrolled_remote_session_when_restarted_then_ac_e_7_activation_gat
     session = old_session.replace("c-", "c-r-", 1)
     script = w.script.with_name(f"{session}.sh")
     meta = w.meta | {"session": session, "is_remote": True}
+    # Render against the registry the supervisor will own: its policy reader is pinned.
+    monkeypatch.setattr(registry, "registry_path", lambda: w.root / "enrol-registry.json")
     script.write_text(main._engine_script_from_meta(meta), encoding="utf-8")
     (script.parent.parent / f"session-meta-{session}.json").write_text(json.dumps(meta), encoding="utf-8")
     w.record["tmux"] = w.record["tmux"].replace(old_session, session)
     w.write()
-    monkeypatch.setattr(registry, "registry_path", lambda: w.root / "enrol-registry.json")
     monkeypatch.setenv("AI_HOST", "host-a")
     monkeypatch.setattr(session_enrol, "inspect_pane", lambda name: (str(w.cwd), ["bash", str(script)]))
     result = CliRunner().invoke(main._cli_group, ["sessions", "enrol", session])
@@ -358,7 +359,7 @@ def test_given_enrolled_remote_session_when_restarted_then_ac_e_7_activation_gat
     gate = Mock(wraps=session_restart.activation_gate)
     monkeypatch.setattr(session_restart, "activation_gate", gate)
     code, report, _ = w.cli("-X", w.record["sessionId"])
-    assert gate.call_count > 0
+    assert gate.call_count > 0, report
     if activation:
         assert code == 0 and report["reason"] == "restarted", report
         assert report["local"] == "VERIFIED" and report["peer"] == "VERIFIED"
