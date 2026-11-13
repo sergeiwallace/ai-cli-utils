@@ -240,6 +240,7 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
     except session_list_view.ViewError as exc:
         raise click.UsageError(str(exc)) from exc
     session_reconcile.reconcile()
+    session_reconcile.age_out()
     doc = registry.load_registry()
     records = [
         {

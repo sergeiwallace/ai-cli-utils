@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from conftest import run_cli, snapshot_tree
 
+from ai_cli import session_registry
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir
 from ai_cli.config import get_xdg_state_home
@@ -346,3 +347,39 @@ def test_given_a_retired_name_reissued_with_a_new_tip_when_retired_again_then_bo
         {f"{ANCHORS}/{BRANCH}": first_tip},
         {second_anchor: second_tip},
     ]
+
+
+def _session_rows(*names: str) -> None:
+    path = session_registry.registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"id": f"id-{n}", "kind": "local", "name": n, "run_state": "exited", "boot_recipe": {"session_name": n}}
+        for n in names
+    ]
+    path.write_text(json.dumps({"schema": 2, "machine": "box", "sessions": rows}), encoding="utf-8")
+
+
+def _session_row_names() -> list[str]:
+    return [r["name"] for r in session_registry.load_registry()["sessions"]]
+
+
+def test_given_session_registry_rows_for_the_name_when_retired_then_only_those_rows_are_dropped(slot):
+    _session_rows(f"c-{NAME}", f"c-r-{NAME}", "c-myrepo-4")
+    code, out, err = _retire(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert _session_row_names() == ["c-myrepo-4"]
+    assert "session registry: drop 2 row(s)" in out
+
+
+def test_given_session_registry_rows_for_the_name_when_dry_run_then_rows_stay_and_the_plan_names_them(slot):
+    _session_rows(f"c-{NAME}", "c-myrepo-4")
+    code, out, err = _retire(slot["repo"], "-n")
+    assert code == 0, out + err
+    assert _session_row_names() == [f"c-{NAME}", "c-myrepo-4"]
+    assert "session registry: drop 1 row(s)" in out
+
+
+def test_given_its_tmux_session_still_exists_when_retiring_then_its_session_row_stays(slot):
+    _session_rows(f"c-{NAME}")
+    _refused(slot, "-y", tmux=[f"c-{NAME}"])
+    assert _session_row_names() == [f"c-{NAME}"]

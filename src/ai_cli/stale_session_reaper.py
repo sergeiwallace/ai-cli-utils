@@ -549,9 +549,11 @@ def run_stale_session_reaper(
     reaper = reaper_factory(config, state_home=state_home)
     pause = sleep or time.sleep
     while True:
-        from .session_reconcile import reconcile
+        from .session_reconcile import age_out, reconcile
 
         reconcile()
+        # Only this background pass dials remote hosts; an interactive list never waits on ssh.
+        age_out(probe_remote=True)
         try:
             reaper.evaluate_once()
         except Exception:
