@@ -266,8 +266,10 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
             raise ValueError(
                 "cannot verify current session: session record does not identify one owning-host registry row"
             )
-        name = matches[0]["name"]
-    row = state._find(doc, name)
+        resolved_name = matches[0]["name"]
+    else:
+        resolved_name = name
+    row = state._find(doc, resolved_name)
     if row.get("owning_host") != host or not row.get("generation"):
         raise ValueError("session host or generation cannot be verified")
     saved = state.exit_teardown(row)
@@ -306,13 +308,14 @@ def detach_cleanup(name: str, *, host: str, generation: str, timeout: float) -> 
         f"result = exit_session({name!r}, host={host!r}, generation={generation!r}, timeout={timeout!r}); "
         "sys.exit(0 if result.complete else 1)"
     )
-    kwargs = (
-        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if sys.platform == "win32"
-        else {"start_new_session": True}
-    )
+    creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     return subprocess.Popen(
-        pinned_python(code), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
+        pinned_python(code),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+        start_new_session=sys.platform != "win32",
     )
 
 
@@ -409,7 +412,7 @@ def _accept_receipt(snapshot: dict, receipt: dict) -> bool:
 
     def update(doc):
         row = next((r for r in doc["sessions"] if r.get("id") == snapshot["id"]), None)
-        if row != snapshot:
+        if row is None or row != snapshot:
             raise ValueError("client mirror changed while awaiting receipt")
         row.update(receipt)
         row["exit_receipt_client_id"] = snapshot["id"]

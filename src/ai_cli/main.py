@@ -6332,21 +6332,22 @@ def cmd_exit_session(name, remote, timeout, dry_run):
         if dry_run:
             _out.emit(Tag.SESSION, "exit", f"Would exit {name}; verified targets: {targets}")
             return
-        kwargs = {
-            key: cls(**targets[key]) if targets.get(key) else None
-            for key, cls in (
-                ("agent", session_exit.ProcessIdentity),
-                ("supervisor", session_exit.ProcessIdentity),
-                ("tmux", session_exit.TmuxIdentity),
-            )
-        }
+        agent = session_exit.ProcessIdentity(**targets["agent"]) if targets.get("agent") else None
+        supervisor = session_exit.ProcessIdentity(**targets["supervisor"]) if targets.get("supervisor") else None
+        tmux = session_exit.TmuxIdentity(**targets["tmux"]) if targets.get("tmux") else None
         if self_exit:
             state.request_manual_exit(name, host=row["owning_host"], generation=row["generation"], targets=targets)
             _out.emit(Tag.SESSION, "exit", f"{name}: exited in registry; handing teardown to an independent worker")
             session_exit.detach_cleanup(name, host=row["owning_host"], generation=row["generation"], timeout=timeout)
             return
         result = session_exit.exit_session(
-            name, host=row["owning_host"], generation=row["generation"], timeout=timeout, **kwargs
+            name,
+            host=row["owning_host"],
+            generation=row["generation"],
+            timeout=timeout,
+            agent=agent,
+            supervisor=supervisor,
+            tmux=tmux,
         )
         if not result.complete:
             detail = (
