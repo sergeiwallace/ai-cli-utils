@@ -34,7 +34,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -114,8 +113,12 @@ _POLICY_TABLES: dict[str, frozenset[str] | None] = {
         {"words_url", "words_digest", "words_member", "max_edit_distance", "extra_words", "keep_names"}
     ),
     "repos": None,
+    "registry_backend": None,
+    "registry_dolt_ref": None,
 }
 POLICY_SCHEMA = 1
+# The policy schema a fleet on the Dolt database publishes; the git-tree store refuses it.
+DOLT_POLICY_SCHEMA = 2
 
 
 class RegistryError(RuntimeError):
@@ -348,10 +351,14 @@ def unknown_policy_keys(policy: dict) -> list[str]:
     return unknown
 
 
-def require_known_policy(policy: dict) -> dict:
-    """``policy`` itself, or :class:`PolicyUnknownError` naming what this version cannot apply."""
+def require_known_policy(policy: dict, schemas: tuple[int, ...] = (POLICY_SCHEMA,)) -> dict:
+    """``policy`` itself, or :class:`PolicyUnknownError` naming what this version cannot apply.
+
+    ``schemas`` are the policy schemas the registry backend in use applies: a schema
+    another backend publishes refuses here exactly as an unknown one does.
+    """
     schema = policy.get("schema", POLICY_SCHEMA)
-    if schema != POLICY_SCHEMA:
+    if schema not in schemas:
         raise PolicyUnknownError(
             f"the published naming policy has schema {schema!r}, which this version does not know: update ai-cli-utils"
         )
@@ -379,13 +386,21 @@ class Snapshot:
     names: list[str] | None = None
     generation: dict | None = None
     fetched: bool = True
+    # The claim value each hold carries; only the database backends record one.
+    claimants: dict[str, str] = field(default_factory=dict)
+    # Each pool name's general status and each scoped verdict; None on the git-tree store,
+    # which has no status model.
+    statuses: dict[str, dict] | None = None
+    verdicts: dict[tuple[str, str, str], dict] | None = None
+    meta: dict[str, str] = field(default_factory=dict)
+    policy_schemas: tuple[int, ...] = (POLICY_SCHEMA,)
 
     @property
     def policy(self) -> dict:
         """The published policy every allocation applies; refuses when none is usable."""
         if self.generation is None or not isinstance(self.generation.get("policy"), dict):
             raise NoNameListError(f"the registry has no {GENERATION_JSON}; run `ai sync-names` to publish one")
-        return require_known_policy(self.generation["policy"])
+        return require_known_policy(self.generation["policy"], self.policy_schemas)
 
     @property
     def available(self) -> frozenset[str]:
@@ -461,39 +476,38 @@ class Registry:
 
     kind = ""
     location = ""
+    policy_schemas: tuple[int, ...] = (POLICY_SCHEMA,)
 
     def __init__(self, *, timeout_s: float = DEFAULT_TIMEOUT_S, attempts: int = DEFAULT_ATTEMPTS) -> None:
         self.timeout_s = timeout_s
         self.attempts = attempts
+        self.last_claimants: dict[str, str] = {}
 
     def snapshot(self, *, fetch: bool = True) -> Snapshot:
         raise NotImplementedError
 
-    def transact(self, build: Build) -> Change | None:
+    def transact(self, build: Build, *, exempt: bool = False) -> Change | None:
         """Run ``build`` against the current tip and publish its change, retrying on a lost race.
 
         ``build`` is the operation's complete guard plus the writes it implies. It runs
         again from scratch against every new tip, so a precondition another writer broke
         in the meantime is seen and either refused or, for a picked name, picked again.
         Returns the published change, or None when ``build`` decided nothing needs writing.
+        ``exempt`` lets an import or seed write while a database's writes are turned off.
         """
         raise NotImplementedError
 
 
-class GitRegistry(Registry):
-    """The shared registry: one ref of a sibling repository, written with plumbing."""
+class FleetRegistry(Registry):
+    """A registry shared through a sibling repository that ships ``config/session-names.toml``."""
 
     kind = "fleet"
 
-    def __init__(
-        self, repo: Path, *, ref: str, remote: str, policy_file: Path, timeout_s: float, attempts: int
-    ) -> None:
+    def __init__(self, repo: Path, *, remote: str, policy_file: Path, timeout_s: float, attempts: int) -> None:
         super().__init__(timeout_s=timeout_s, attempts=attempts)
         self.repo = repo
-        self.ref = ref
         self.remote = remote
         self.policy_file = policy_file
-        self.location = f"{remote} {ref} ({repo})"
 
     # -- git plumbing
     def _env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -548,6 +562,17 @@ class GitRegistry(Registry):
             return _config.read_registry_push_timeout(_config.load_config(read_only=True))
         except ValueError as exc:
             raise RegistryError(str(exc)) from exc
+
+
+class GitRegistry(FleetRegistry):
+    """The shared registry as a git tree: one ref of a sibling repository, written with plumbing."""
+
+    def __init__(
+        self, repo: Path, *, ref: str, remote: str, policy_file: Path, timeout_s: float, attempts: int
+    ) -> None:
+        super().__init__(repo, remote=remote, policy_file=policy_file, timeout_s=timeout_s, attempts=attempts)
+        self.ref = ref
+        self.location = f"{remote} {ref} ({repo})"
 
     def _fetch(self) -> str | None:
         # Offering only the last fetched tip keeps negotiation from walking every local ref,
@@ -652,7 +677,8 @@ class GitRegistry(Registry):
             return False
         raise RegistryUnreachableError(f"could not push {self.ref} to {self.remote}: {output.strip()}")
 
-    def transact(self, build: Build) -> Change | None:
+    def transact(self, build: Build, *, exempt: bool = False) -> Change | None:
+        del exempt
         for _attempt in range(self.attempts):
             snapshot = self.snapshot()
             change = build(snapshot)
@@ -663,70 +689,6 @@ class GitRegistry(Registry):
         raise RegistryContendedError(
             f"the registry write lost the race to other writers {self.attempts} times in a row; nothing was written"
         )
-
-
-class LocalRegistry(Registry):
-    """The registry of an install with no shared one: the same tree as files, under a lock."""
-
-    kind = "local"
-
-    def __init__(self, root: Path, *, timeout_s: float = DEFAULT_TIMEOUT_S, attempts: int = DEFAULT_ATTEMPTS) -> None:
-        super().__init__(timeout_s=timeout_s, attempts=attempts)
-        self.root = root
-        self.location = str(root)
-
-    def _seed(self) -> None:
-        available = self.root / NAMES_TXT
-        if available.exists():
-            return
-        available.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(name_list.DATA_DIR / name_list.NAMES_FILE, available)
-        shutil.copyfile(name_list.DATA_DIR / name_list.GENERATION_FILE, self.root / GENERATION_JSON)
-
-    @contextlib.contextmanager
-    def _locked(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        try:
-            with portalocker.Lock(str(self.root / "registry.lock"), mode="a", timeout=self.timeout_s * self.attempts):
-                yield
-        except portalocker.exceptions.LockException as exc:
-            raise RegistryContendedError(f"the local registry {self.root} stayed locked; nothing was written") from exc
-
-    def _read(self) -> Snapshot:
-        files: dict[str, bytes] = {}
-        if self.root.is_dir():
-            for path in self.root.rglob("*"):
-                relative = path.relative_to(self.root).as_posix()
-                if path.is_file() and not relative.endswith(".lock") and not path.name.startswith("."):
-                    files[relative] = path.read_bytes()
-        blobs = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
-        return parse_tree(files, blobs, tip=None)
-
-    def snapshot(self, *, fetch: bool = True) -> Snapshot:
-        del fetch
-        with self._locked():
-            self._seed()
-            return self._read()
-
-    def transact(self, build: Build) -> Change | None:
-        with self._locked():
-            self._seed()
-            change = build(self._read())
-            if change is None or not change.writes:
-                return None
-            for relative, data in change.writes.items():
-                target = self.root / relative
-                if data is None:
-                    target.unlink(missing_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                fd, staged = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                Path(staged).replace(target)
-            return change
 
 
 # --- discovery -------------------------------------------------------------------------
@@ -769,8 +731,8 @@ def read_policy_file(path: Path) -> dict:
         raise RegistryError(f"cannot read {path}: {exc}") from exc
 
 
-def local_registry_root() -> Path:
-    return _config.get_xdg_data_home() / "session-names"
+def local_registry_path() -> Path:
+    return _config.get_xdg_data_home() / "session-names.sqlite3"
 
 
 def discover() -> Discovery:
@@ -785,8 +747,12 @@ def discover() -> Discovery:
         policy_file = repo / POLICY_MARKER
         if policy_file.is_file():
             policy = read_policy_file(policy_file)
-            ref = policy.get("registry_ref")
             remote = policy.get("registry_remote", "origin")
+            if policy.get("registry_backend") == "dolt":
+                return Discovery(_dolt_registry(repo, policy, policy_file))
+            if policy.get("registry_backend") not in (None, "git"):
+                raise RegistryError(f"{policy_file} names registry_backend {policy.get('registry_backend')!r}")
+            ref = policy.get("registry_ref")
             if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
                 raise RegistryError(f"{policy_file} names no registry_ref under refs/heads/")
             return Discovery(
@@ -805,7 +771,30 @@ def discover() -> Discovery:
             f"the repository that ships {FLEET_PROJECTS_MARKER.as_posix()} has no {POLICY_MARKER.as_posix()}: "
             "its checkout predates human session names, so index names are kept",
         )
-    return Discovery(LocalRegistry(local_registry_root()))
+    from .name_sqlite import SqliteRegistry
+
+    return Discovery(SqliteRegistry(local_registry_path()))
+
+
+def _dolt_registry(repo: Path, policy: dict, policy_file: Path) -> Registry:
+    from .name_dolt import DEFAULT_DOLT_REF, DoltRegistry
+
+    if policy.get("schema") != DOLT_POLICY_SCHEMA:
+        raise RegistryError(f"{policy_file} selects the Dolt registry, which needs schema = {DOLT_POLICY_SCHEMA}")
+    ref = policy.get("registry_dolt_ref", DEFAULT_DOLT_REF)
+    if not isinstance(ref, str) or not ref.startswith("refs/dolt/") or ref == "refs/dolt/data":
+        raise RegistryError(
+            f"{policy_file} names registry_dolt_ref {ref!r}: it must be its own ref under refs/dolt/, "
+            "never refs/dolt/data"
+        )
+    return DoltRegistry(
+        repo,
+        dolt_ref=ref,
+        remote=str(policy.get("registry_remote", "origin")),
+        policy_file=policy_file,
+        timeout_s=float(policy.get("publish_timeout_s", DEFAULT_TIMEOUT_S)),
+        attempts=int(policy.get("publish_attempts", DEFAULT_ATTEMPTS)),
+    )
 
 
 # --- allocation ------------------------------------------------------------------------
@@ -948,7 +937,7 @@ def held_titles(snapshot: Snapshot, spool: dict[str, dict] | None = None) -> fro
 
 
 def policy_source(registry: Registry) -> str:
-    return str(registry.policy_file) if isinstance(registry, GitRegistry) else "the local config"
+    return str(registry.policy_file) if isinstance(registry, FleetRegistry) else "the local config"
 
 
 def pick_request(
@@ -1296,7 +1285,7 @@ def last_known_snapshot(registry: Registry) -> Snapshot:
     empty registry. Never call it under a lock others wait on.
     """
     snapshot = registry.snapshot(fetch=False)
-    if isinstance(registry, GitRegistry) and snapshot.tip is None:
+    if isinstance(registry, FleetRegistry) and snapshot.tip is None:
         return registry.snapshot()
     return snapshot
 
@@ -1495,7 +1484,7 @@ class SyncResult:
     count: int | None = None
 
 
-def policy_revision(registry: GitRegistry) -> tuple[str | None, str | None]:
+def policy_revision(registry: FleetRegistry) -> tuple[str | None, str | None]:
     """The commit that last changed the policy file in this checkout, and its committer time."""
     relative = registry.policy_file.relative_to(registry.repo).as_posix()
     result = registry._git("log", "-1", "--format=%H%x00%cI", "HEAD", "--", relative, check=False)
@@ -1506,7 +1495,7 @@ def policy_revision(registry: GitRegistry) -> tuple[str | None, str | None]:
     return commit, committed_at
 
 
-def ancestry_state(registry: GitRegistry, ref_commit: str | None, local_commit: str | None) -> str:
+def ancestry_state(registry: FleetRegistry, ref_commit: str | None, local_commit: str | None) -> str:
     """One of :data:`ANCESTRY_STATES`, comparing the ref's recorded policy revision with this checkout's."""
     if not local_commit or not ref_commit:
         return "incomparable"
@@ -1539,7 +1528,7 @@ def sync_names(
     """
     digest = name_list.policy_digest(local_policy)
     commit = committed_at = None
-    if isinstance(registry, GitRegistry):
+    if isinstance(registry, FleetRegistry):
         with contextlib.suppress(RegistryError):
             registry._git(
                 "fetch", "--no-tags", "--quiet", registry.remote, timeout=registry.fetch_timeout_s(), check=False
@@ -1550,7 +1539,7 @@ def sync_names(
     def decide(snapshot: Snapshot) -> tuple[str, bool]:
         if snapshot.generation is None:
             state = "local-newer"
-        elif isinstance(registry, GitRegistry):
+        elif isinstance(registry, FleetRegistry):
             state = ancestry_state(registry, snapshot.generation.get("policy_commit"), commit)
         else:
             state = "local-newer"
@@ -1605,7 +1594,7 @@ def local_policy(registry: Registry) -> dict:
     On a shared registry the two length limits come only from that file. A local
     install takes them from ``[session_names]`` in config.toml, then the defaults.
     """
-    if isinstance(registry, GitRegistry):
+    if isinstance(registry, FleetRegistry):
         return name_list.fleet_policy(read_policy_file(registry.policy_file))
     policy = json.loads(json.dumps(name_list.DEFAULT_POLICY))
     table = _config.load_config().get("session_names", {})

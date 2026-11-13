@@ -2148,3 +2148,20 @@ def hold_file_lock(path: Path):
         yield release
     finally:
         release()
+
+
+@pytest.fixture(params=["git", "sqlite", "dolt"])
+def registry_backend(request, monkeypatch):
+    """Run a session-name test once per registry backend; see ``tests/name_fleet.py``.
+
+    A run without the ``dolt`` program reports the Dolt case as skipped, never as passed;
+    in CI, where the workflow installs it, a missing binary fails the test instead.
+    """
+    import name_fleet
+
+    if request.param == "dolt" and shutil.which("dolt") is None:
+        if os.environ.get("CI"):
+            pytest.fail("the dolt program is not installed, and CI must run every Dolt registry test")
+        pytest.skip("the dolt program is not installed: the Dolt registry case was not run")
+    monkeypatch.setattr(name_fleet, "BACKEND", request.param)
+    return request.param

@@ -664,7 +664,11 @@ def test_given_a_row_breaking_its_kind_invariants_when_written_then_it_is_refuse
         reg.checked_row(row)
 
 
-def test_given_no_sibling_registry_when_discovered_then_the_local_registry_is_used_under_a_lock(tmp_path, monkeypatch):
+def test_given_no_sibling_registry_when_discovered_then_the_local_sqlite_registry_is_used_under_a_lock(
+    tmp_path, monkeypatch
+):
+    from ai_cli.name_sqlite import SqliteRegistry
+
     projects = tmp_path / "projects"
     (projects / "plainrepo").mkdir(parents=True)
     monkeypatch.setenv("PROJECTS_DIR", str(projects))
@@ -674,17 +678,17 @@ def test_given_no_sibling_registry_when_discovered_then_the_local_registry_is_us
 
     registry = reg.discover().registry
 
-    assert isinstance(registry, reg.LocalRegistry)
+    assert isinstance(registry, SqliteRegistry)
     # The data home is $XDG_DATA_HOME/ai-cli-utils on POSIX and %LOCALAPPDATA%\ai-cli-utils on Windows.
-    assert registry.root == _config.get_xdg_data_home() / "session-names"
+    assert registry.path == _config.get_xdg_data_home() / "session-names.sqlite3"
     reservation = reg.reserve_picked(registry, _slot(), words=frozenset())
-    assert (registry.root / "names" / f"{reservation.name}.json").is_file()
+    assert reservation.name in reg.discover().registry.snapshot().rows
     assert reservation.name in name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
     import portalocker
 
     registry.timeout_s, registry.attempts = 0.2, 1
     with (
-        portalocker.Lock(str(registry.root / "registry.lock"), mode="a", timeout=1),
+        portalocker.Lock(str(registry.path.with_suffix(".lock")), mode="a", timeout=1),
         pytest.raises(reg.RegistryContendedError),
     ):
         reg.reserve_picked(registry, _slot(), words=frozenset())

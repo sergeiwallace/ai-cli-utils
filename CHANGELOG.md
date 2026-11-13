@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The session-name registry can live in a Dolt database on its own ref of the fleet repository
+  (`registry_backend = "dolt"` with `schema = 2` in `config/session-names.toml`), reached through
+  the `dolt` program. Every write is guarded in the statement itself, pushed without force and read
+  back from the remote tip before it counts. An install with no fleet repository now keeps its
+  registry in a local SQLite file with the same tables and constraints, seeded with the shipped
+  name list.
 - `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
   `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
   session. Rows are grouped by host, this host first, with running sessions at the top of each

@@ -143,8 +143,8 @@ def show_name_config_command() -> None:
         _out.error(Tag.NAMES, "config", str(exc))
         sys.exit(1)
     registry = discovery.registry
-    fleet = isinstance(registry, reg.GitRegistry)
-    policy_config = reg.read_policy_file(registry.policy_file) if isinstance(registry, reg.GitRegistry) else None
+    fleet = isinstance(registry, reg.FleetRegistry)
+    policy_config = reg.read_policy_file(registry.policy_file) if isinstance(registry, reg.FleetRegistry) else None
     source = reg.policy_source(registry) if registry else "config/session-names.toml"
     try:
         settings = session_title.resolve_settings(
@@ -183,7 +183,7 @@ def show_name_config_command() -> None:
     for key in ("pick_floor", "low_water", "offline_spares", "publish_timeout_s", "publish_attempts"):
         lines.append(f"{key:<18} {policy.get(key)!s:<8} ({layer})")
     lines.append(f"max_edit_distance  {policy.get('confusable', {}).get('max_edit_distance')!s:<8} ({layer})")
-    if isinstance(registry, reg.GitRegistry):
+    if isinstance(registry, reg.FleetRegistry):
         generation = snapshot.generation or {}
         commit, _committed_at = reg.policy_revision(registry)
         local_digest = name_list.policy_digest(reg.local_policy(registry))

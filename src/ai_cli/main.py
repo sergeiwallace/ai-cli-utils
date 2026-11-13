@@ -3926,7 +3926,9 @@ def _resolve_session_identity(
         _naming_exit(reporter, str(exc), 1)
     registry = discovery.registry
     host = _session_naming.host_id()
-    policy_config = _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.GitRegistry) else None
+    policy_config = (
+        _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.FleetRegistry) else None
+    )
     try:
         settings = session_title.resolve_settings(
             enabled_flag=naming.session_names,
