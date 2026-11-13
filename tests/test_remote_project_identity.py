@@ -45,3 +45,20 @@ def test_given_profile_disagreement_when_remote_allocates_then_it_refuses_before
     )
     assert code == 1
     assert "project-a" in output and "project-b" in output and "Fix:" in output
+
+
+def test_given_duplicate_legacy_prefix_when_aliases_resolve_then_both_projects_and_remedy_are_reported(
+    tmp_path, monkeypatch, capsys
+):
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text(
+        '[[projects]]\nname = "project-a"\ntask_prefix = "pa"\n[[projects]]\nname = "project-b"\ntask_prefix = "PA"\n'
+    )
+    monkeypatch.setattr(config, "get_fleet_registry_path", lambda: None)
+    monkeypatch.setattr(config, "_get_project_registry_path", lambda: legacy)
+    monkeypatch.setattr(config, "_registry_cache", None)
+    with pytest.raises(SystemExit) as error:
+        config.get_project_aliases()
+    assert error.value.code == 1
+    output = capsys.readouterr().err
+    assert "project-a" in output and "project-b" in output and "Fix:" in output

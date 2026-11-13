@@ -1798,7 +1798,7 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
     # Schema validation: name and task_prefix required, both unique
     names_seen: set[str] = set()
-    prefixes_seen: set[str] = set()
+    prefixes_seen: dict[str, str] = {}
     for p in projects:
         name = p.get("name", "")
         prefix = p.get("task_prefix", "")
@@ -1811,10 +1811,15 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
             _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
         if prefix_lower in prefixes_seen:
-            _out.error(Tag.CONFIG, "load", f"duplicate task_prefix in registry: {prefix}")
+            _out.error(
+                Tag.CONFIG,
+                "load",
+                f"duplicate task_prefix {prefix!r} in registry: {prefixes_seen[prefix_lower]!r} and {name!r}. "
+                "Fix: assign unique task prefixes to these projects.",
+            )
             sys.exit(1)
         names_seen.add(name_lower)
-        prefixes_seen.add(prefix_lower)
+        prefixes_seen[prefix_lower] = name
 
     _registry_cache = projects
     return projects
