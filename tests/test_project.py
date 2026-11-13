@@ -166,12 +166,12 @@ class TestProjectHelpers:
 
     def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
         toml_file = tmp_path / "registry.toml"
-        toml_content = b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n\n[[projects]]\nname = "ai-dojo"\ntask_prefix = "AD"\n'
+        toml_content = b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n\n[[projects]]\nname = "example-app"\ntask_prefix = "AD"\n'
         toml_file.write_bytes(toml_content)
         with patch("ai_cli.config._get_project_registry_path", return_value=toml_file):
             result = get_project_aliases()
         assert result["mp"] == "myproject"
-        assert result["ad"] == "ai-dojo"
+        assert result["ad"] == "example-app"
 
     def test_get_project_aliases_when_no_registry_then_empty(self):
         # Both sources must be absent. Patching only the legacy path is not enough since
@@ -229,10 +229,7 @@ class TestProjectHelpers:
             result = get_project_aliases()
         assert result["wa"] == "webapp"
 
-    def test_get_project_aliases_when_sources_disagree_then_fleet_registry_wins(self, tmp_path):
-        # AI-CLI-dosx AC4. The fleet registry is tier 1 of resolve_project_prefix_by_name, so
-        # the alias map must not resolve a prefix to a project that the prefix resolver would
-        # then disagree about — that combination sends a session to the wrong repository.
+    def test_given_conflicting_registries_when_aliases_resolve_then_both_projects_are_reported(self, tmp_path):
         fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "myproject"\ntask_prefix = "mp"\n')
         legacy = tmp_path / "legacy.toml"
         legacy.write_text('[[projects]]\nname = "other-project"\ntask_prefix = "MP"\n')
@@ -240,8 +237,9 @@ class TestProjectHelpers:
             patch("ai_cli.config._get_project_registry_path", return_value=legacy),
             patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
         ):
-            result = get_project_aliases()
-        assert result["mp"] == "myproject"
+            with pytest.raises(ValueError, match=r"myproject.*other-project|other-project.*myproject") as error:
+                get_project_aliases()
+        assert "unique" in str(error.value)
 
     def test_get_project_aliases_when_prefix_equals_name_then_no_self_alias(self, tmp_path):
         # AI-CLI-dosx AC5 — pre-existing behaviour, pinned so the new source cannot regress it.

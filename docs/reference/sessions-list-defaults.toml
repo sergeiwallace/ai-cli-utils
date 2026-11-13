@@ -1,6 +1,22 @@
 ## ai-cli-utils `ai sessions list` defaults: the [sessions_list] table of
 ## ~/.config/ai-cli-utils/config.toml (%APPDATA%\ai-cli-utils\config.toml on Windows).
 ## These are the built-in values; `ai` writes the same block into a new config.toml.
+##
+## Session names and the RELAUNCH column describe different things:
+## - A local launch uses c-<title> (g-, p- or cx- for the other engines).
+## - A launch initiated on another host uses c-r-<title> on its destination.
+##   First launch, stopped-session resume, migration and boot replay retain that origin.
+##   Reattaching an already running session preserves its existing name, even if it
+##   lacks the r segment; nothing is killed or renamed to change its origin.
+## - New owning-host records default to auto, including remote-origin destinations.
+##   A migration or reattach preserves an explicit policy. Boot replay also requires
+##   session_relaunch.on_boot = true (false by default) and an eligible exit cause.
+## - The initiating host's remote transport record cannot boot-launch an agent;
+##   only the destination's owning-host recipe can do that. The r segment also keeps
+##   terminal-session adoption from treating the destination as a local attachment.
+## - Imported/enrolled sessions default to never until the owner enables replay;
+##   probes always use never. A named relaunch is an explicit request and may replay
+##   a never-policy session when it has a valid recipe and is proved stopped.
 
 [sessions_list]
 ## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on

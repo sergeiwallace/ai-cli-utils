@@ -620,7 +620,7 @@ def _plan_hooks(
     return hooks
 
 
-def _plan_iterm2(old: str) -> list[PlannedMove]:
+def _plan_iterm2(old: str, new: str, old_wt: Path) -> list[PlannedMove]:
     from .session_reconcile import reconcile
     from .session_run_state import run_state
 
@@ -630,7 +630,7 @@ def _plan_iterm2(old: str) -> list[PlannedMove]:
         doc = _session_registry.load_registry()
     except _session_registry.RegistryError:
         return []
-    hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
+    hits = [r for r in doc["sessions"] if _restore_record_needs_rename(r, old, new, old_wt)]
     for record in hits:
         if run_state(record) == "running":
             from .session_reconcile import liveness_blocker
@@ -1930,7 +1930,7 @@ def _start_session(
     moves += state_moves
     map_moves = _plan_session_maps(old, new, home, state)
     moves += map_moves
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     moves += iterm2_moves
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += launcher_moves
@@ -2242,7 +2242,7 @@ def finish_session(
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
     lock_moves = _plan_slot_lock(repo_root, old)
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
@@ -2394,21 +2394,61 @@ def _apply_iterm2(old: str, new: str, old_wt: Path, new_wt: Path) -> None:
     def change(doc: dict) -> bool:
         changed = False
         for record in doc["sessions"]:
-            if not _names_old_session(record, renames):
+            if not _restore_record_needs_rename(record, old, new, old_wt):
                 continue
             if record.get("name") in renames:
                 record["name"] = renames[record["name"]]
-                argv = record.get("relaunch_argv")
-                if isinstance(argv, list) and argv:
-                    # The relaunch line ends with the session's slot or full name, and a full
-                    # name maps back to its own slot, so naming the new session is exact.
-                    argv[-1] = new
+            argv = record.get("relaunch_argv")
+            if isinstance(argv, list) and argv:
+                record["relaunch_argv"] = _rename_relaunch_argv(argv, new, renames)
+            if record.get("cwd") == str(old_wt):
+                record["cwd"] = str(new_wt)
             # A record renamed before AI-CLI-uzur still carries the old recipe; --finish repairs it.
             _rename_boot_recipe(record.get("boot_recipe"), renames, old_wt, new_wt)
             changed = True
         return changed
 
     _session_registry._mutate(change)
+
+
+def _rename_relaunch_argv(argv: list[str], new: str, renames: dict[str, str]) -> list[str]:
+    """Replace the declared session argument, preserving options on either side of it."""
+    from .main import _cli_group
+
+    command = _cli_group.commands.get(argv[1]) if len(argv) >= 2 else None
+    if command is None:
+        return argv
+    with command.make_context(argv[1], argv[2:], resilient_parsing=True) as context:
+        name = context.params.get("name")
+    if not name or name == new or name in renames.values():
+        return argv
+    for index in range(2, len(argv)):
+        if argv[index] != name:
+            continue
+        probe = [*argv]
+        probe[index] = "migration-session-argument"
+        with command.make_context(argv[1], probe[2:], resilient_parsing=True) as context:
+            if context.params.get("name") == probe[index]:
+                probe[index] = renames.get(name, new)
+                return probe
+    return argv
+
+
+def _restore_record_needs_rename(record: dict, old: str, new: str, old_wt: Path) -> bool:
+    """Include partially repaired records whose name moved but whose launch fields did not."""
+    old_names = set(_session_variants(old))
+    if _names_old_session(record, old_names):
+        return True
+    if not _names_old_session(record, set(_session_variants(new))):
+        return False
+    argv = record.get("relaunch_argv") or []
+    recipe = record.get("boot_recipe") or {}
+    renames = dict(zip(_session_variants(old), _session_variants(new), strict=True))
+    return (
+        record.get("cwd") == str(old_wt)
+        or recipe.get("cwd") == str(old_wt)
+        or _rename_relaunch_argv(argv, new, renames) != argv
+    )
 
 
 def _names_old_session(record: object, names: Container[str]) -> bool:

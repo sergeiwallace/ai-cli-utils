@@ -2233,6 +2233,12 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
+        try:
+            if project:
+                _config.validate_remote_project(project, project_prefix)
+        except _config.ProjectPrefixError as exc:
+            _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+            sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
@@ -3501,11 +3507,12 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
         reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
-def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
+def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote: bool = False) -> str:
     """Name the machine this launcher runs on and the one the session will run on (AI-CLI-x5vn)."""
     local = _config.detect_machine_profile()["host_id"]
     if remote_cfg is None:
-        return f"launcher on {local}; session on {local} (local)"
+        origin = "remote origin" if is_remote else "local"
+        return f"launcher on {local}; session on {local} ({origin})"
     host = str(remote_cfg.get("host") or "")
     if remote_alias and host and remote_alias != host:
         return f"launcher on {local}; session on {remote_alias} ({host}, remote)"
@@ -4200,7 +4207,7 @@ def _reattach_title(
     existing = (
         _session._resolve_explicit_tmux_slot(engine, naming_prefix, positional.value)
         if use_tmux
-        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value)
+        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value, is_remote=is_remote)
     )
     if existing:
         return existing
@@ -4242,7 +4249,7 @@ def _reserve_label_title(
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
-                else _session._resolve_explicit_bare_slot(engine, slot.stem, label)
+                else _session._resolve_explicit_bare_slot(engine, slot.stem, label, is_remote=is_remote)
             )
             return existing or (_session_id(engine, title, is_remote), title)
         _naming_exit(reporter, f"the label's last token {token} is held by {snapshot.holder(token)}", 2)
@@ -4435,7 +4442,11 @@ def _do_session_launch(
         # -p names the repo the session runs in, so its .envrc decides, not the cwd's.
         _direnv_root = Path.cwd()
         if project and not remote:
-            _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project, project))
+            try:
+                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+            except _config.ProjectPrefixError as exc:
+                reporter.error("request", str(exc))
+                sys.exit(1)
             if _named_dir.is_dir():
                 _direnv_root = _named_dir
         _direnv_result = _direnv_setup.ensure_direnv(_direnv_root, config, auto_install=not dry_run)
@@ -4445,8 +4456,7 @@ def _do_session_launch(
         if _direnv_result.installed:
             reporter.detail("direnv", _direnv_result.detail or "ready")
 
-    # Auto-promote to remote mode when running directly on a non-Mac host so
-    # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
+    # Only the explicit remote-origin flag marks a session launched by another host.
     if replay_recipe is None:
         is_remote = _session._resolve_is_remote(is_remote)
 
@@ -4459,7 +4469,7 @@ def _do_session_launch(
         except _config.RemoteMachineError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
-    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias))
+    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias, is_remote=is_remote))
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
@@ -4484,9 +4494,9 @@ def _do_session_launch(
         if "/" in project or "\\" in project:
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        _lp_aliases = _config.get_project_aliases()
-        _lp_name = _lp_aliases.get(project, project)
         try:
+            _lp_aliases = _config.get_project_aliases()
+            _lp_name = _lp_aliases.get(project.lower(), project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -4508,6 +4518,12 @@ def _do_session_launch(
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
+    if is_remote and project:
+        try:
+            _config.validate_remote_project(project, project_prefix)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
@@ -4741,12 +4757,16 @@ def _do_session_launch(
         port = str(remote_cfg.get("port", 22))
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
-        aliases = _config.get_project_aliases()
+        try:
+            aliases = _config.get_project_aliases()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project, raw_project)
+        remote_project = aliases.get(raw_project.lower(), raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
@@ -6014,7 +6034,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = f"{'remote' if remote or is_remote else 'local'}, {'bare' if bare else 'tmux'}"
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,

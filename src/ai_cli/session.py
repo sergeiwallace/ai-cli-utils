@@ -323,7 +323,9 @@ def _matching_worktrees(worktree_base: Path, ai_name: str) -> list[Path]:
         return []
 
 
-def _resolve_explicit_bare_slot(engine_short: str, project_prefix: str, slot: str) -> tuple[str, str] | None:
+def _resolve_explicit_bare_slot(
+    engine_short: str, project_prefix: str, slot: str, *, is_remote: bool = False
+) -> tuple[str, str] | None:
     try:
         repo_root = detect_repo_root()
     except RuntimeError:
@@ -336,7 +338,7 @@ def _resolve_explicit_bare_slot(engine_short: str, project_prefix: str, slot: st
         raise SessionSlotAmbiguityError(f"ambiguous existing worktrees for slot {project_prefix}-{slot}: {joined}")
     if candidates:
         ai_name = candidates[0].name
-        return f"{engine_short}-{ai_name}", ai_name
+        return f"{engine_short}{'-r' if is_remote else ''}-{ai_name}", ai_name
     return None
 
 
@@ -706,7 +708,7 @@ def build_session_name(
     def _existing(prefix: str, slot: str) -> tuple[str, str] | None:
         if use_tmux:
             return _resolve_explicit_tmux_slot(engine_short, prefix, slot)
-        return _resolve_explicit_bare_slot(engine_short, prefix, slot)
+        return _resolve_explicit_bare_slot(engine_short, prefix, slot, is_remote=is_remote)
 
     clean_name = _slot_name(name, project_prefix)
 

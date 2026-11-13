@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -152,7 +153,7 @@ def test_given_live_or_unprovable_run_when_migration_preflights_then_running_is_
         guard, "unprovable"
     )
     with pytest.raises(MigrationError, match=blocker):
-        _plan_iterm2("session-1")
+        _plan_iterm2("session-1", "session-2", Path("/nonexistent/old-worktree"))
     assert registry.registry_path().read_bytes() == before
 
 
