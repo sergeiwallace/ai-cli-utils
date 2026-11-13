@@ -8,9 +8,12 @@ agent worktree under ``.worktrees/<old>-agents/`` on ``wt/<old>/leaf-a``, a park
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import py_compile
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -758,3 +761,88 @@ def test_given_a_direct_url_in_file_uri_form_when_relocated_then_the_uri_names_t
     assert (site / "__editable__.pkg.pth").read_text(encoding="utf-8") == f"{new}/src\n"
     assert sorted(changed) == sorted([record, site / "__editable__.pkg.pth"])
     assert relocate_venv(tmp_path / "venv", old, new) == []
+
+
+# A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` still
+# names the old, now missing, directory: anything reading source through a code object then
+# finds nothing. The migration removes those caches (Python rebuilds them on the next import),
+# but never inside a virtual environment, never a file git tracks and never through a symlink.
+
+
+def _compiled(directory: Path, name: str = "mod") -> Path:
+    """A module under ``directory`` with its bytecode compiled beside it; returns the ``.pyc``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    source = directory / f"{name}.py"
+    source.write_text("def f():\n    return 1\n", encoding="utf-8")
+    return Path(py_compile.compile(str(source), cfile=importlib.util.cache_from_source(str(source)), doraise=True))
+
+
+def _caches(root: Path) -> list[str]:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("__pycache__"))
+
+
+@pytest.fixture
+def compiled_fleet(fleet, tmp_path, monkeypatch):
+    # With a cache prefix set, bytecode is written elsewhere and no __pycache__ exists to check.
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    slot, leaf_c = fleet["slot"], fleet["leaf_c"]
+    _compiled(slot / "pkg")
+    _compiled(slot / "pkg" / "sub")
+    _compiled(leaf_c / "src")
+    _compiled(slot / ".venv" / "lib" / "site-packages" / "dep")
+    _compiled(slot / "tools" / "env" / "lib" / "dep")
+    (slot / "tools" / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    # A tracked file under a __pycache__ path, committed on the agent branch, with an untracked
+    # compiled sibling in the same directory.
+    tracked = leaf_c / "fixtures" / "__pycache__" / "kept.pyc"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_bytes(b"tracked fixture\n")
+    _git("add", "-f", str(tracked), cwd=leaf_c)
+    _git("commit", "-qm", "tracked cache fixture", cwd=leaf_c)
+    (tracked.parent / "untracked.pyc").write_bytes(b"stale\n")
+    fleet["tracked"] = tracked.relative_to(leaf_c)
+    return fleet
+
+
+def test_given_moved_checkouts_with_compiled_modules_when_migrated_then_no_cache_is_left_outside_a_venv(
+    compiled_fleet,
+):
+    code, out, err = _migrate(compiled_fleet, "-y")
+    assert code == 0, out + err
+
+    new_slot = compiled_fleet["repo"] / ".worktrees" / NEW
+    new_c = compiled_fleet["repo"] / ".worktrees" / f"{NEW}-agents" / "leaf-c"
+    assert _caches(new_slot) == [
+        ".venv/lib/site-packages/dep/__pycache__",
+        "tools/env/lib/dep/__pycache__",
+    ]
+    assert list((new_slot / ".venv" / "lib" / "site-packages" / "dep" / "__pycache__").glob("*.pyc"))
+    assert list((new_slot / "tools" / "env" / "lib" / "dep" / "__pycache__").glob("*.pyc"))
+    assert (new_slot / "pkg" / "mod.py").is_file()
+    assert _caches(new_c) == ["fixtures/__pycache__"]
+    tracked = new_c / compiled_fleet["tracked"]
+    assert tracked.read_bytes() == b"tracked fixture\n"
+    assert sorted(p.name for p in tracked.parent.iterdir()) == ["kept.pyc"]
+    assert _git("status", "--porcelain", "--untracked-files=all", cwd=new_c) == "?? src/mod.py\n"
+
+
+def test_given_a_symlink_to_an_outside_cache_when_migrated_then_the_outside_cache_survives(
+    fleet, tmp_path, monkeypatch
+):
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform does not let the test create a directory symlink")
+    outside = tmp_path / "shared"
+    pyc = _compiled(outside / "lib")
+    (fleet["slot"] / "linked").symlink_to(outside, target_is_directory=True)
+    (fleet["slot"] / "linkedcache").symlink_to(pyc.parent, target_is_directory=True)
+
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+
+    assert pyc.is_file()
+    new_slot = fleet["repo"] / ".worktrees" / NEW
+    assert (new_slot / "linked").is_symlink()
+    assert (new_slot / "linkedcache").is_symlink()
