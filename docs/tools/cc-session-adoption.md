@@ -645,15 +645,29 @@ remote side of `-R`, and a detached replay of NEW's recorded recipe by
 before the worktree or the session exists, judges every pair migrated to NEW once.
 A pair with no later `finished` row is finished: the same planner, hooks and Beads
 rule as `--finish -y`, verified by that run's own re-plan. That covers a migration
-made while NEW was live, which `--finish` itself could never complete. A pair the
-ledger records finished, verified or not, is re-planned read-only, so one a later
-process dirtied is caught. If any pair is still partial, because its finish refused,
+made while NEW was live, which `--finish` itself could never complete. A pair whose
+latest row is a verified `finished` is trusted and not re-planned: that row is the
+proof of record, and `--status -a` or `--finish` re-checks it on demand. A pair
+whose `finished` row carries no `verified` is re-planned read-only. Before each pair
+the launch prints a line naming it and what it is about to do, and while the finish
+or re-plan runs it prints a line as each slow step starts and as it ends with its
+elapsed time: each hook's dry run and live run, each Beads store's read, re-key and
+publish, the scan of other repos and the verifying re-plan. `ai migrate-session`
+prints the same lines. If any pair is still partial, because its finish refused,
 raised or left a part, the launch is refused: it starts nothing, prints one line per
 pair naming the parts left and the `ai migrate-session OLD NEW --finish -r REPO`
 command, records nothing, and exits 1. `ai sessions relaunch` refuses each such
 session the same way, records the refusal as its relaunch reason, still relaunches
 the others, and exits 1. A ledger row naming NEW in a migration record format newer
 than the running `ai` reads refuses the launch with `ai update --force`.
+
+A launch that will attach to NEW's tmux session while it has a live pane cannot
+finish anything, since a writing finish refuses a live session. It re-plans each pair
+that is not verified read-only instead, and a pair still partial is one warning
+naming the parts left and the `--finish` command to run once NEW exits; the launch
+then attaches. Refusing it would leave the running session unreachable while
+`--finish` refuses it for being live. A bare or `--sandbox` launch, which replaces
+rather than attaches, and a launch of a stopped NEW are judged as above.
 
 `-P/--allow-partial-migration` on `ai c` (and `ai g`/`ai p`/`ai cx`, forwarded to
 the remote side of `-R`) and on `ai sessions relaunch` starts the session anyway.

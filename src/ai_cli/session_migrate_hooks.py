@@ -33,6 +33,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import config as _config
+from .session_migrate_progress import Progress, timed
 
 HOOKS_DIRNAME = "migrate-session.d"
 PUBLISH_DIRNAME = "migrate-session-publish.d"
@@ -177,14 +178,20 @@ def run_hook(hook: Hook, old: str, new: str, *, dry_run: bool, cwd: Path | None 
 
 
 def plan_hooks(
-    old: str, new: str, *, cwd: Path | None = None, refused: list[HookRun] | None = None
+    old: str,
+    new: str,
+    *,
+    cwd: Path | None = None,
+    refused: list[HookRun] | None = None,
+    progress: Progress | None = None,
 ) -> tuple[list[Hook], list[HookRun]]:
     """Load every hook and run each with ``--dry-run``, before anything is written.
 
     Raises :class:`HookRefusal` for a malformed hook file or the first hook that
     exits non-zero, quoting its stderr; the caller must then write nothing. When
     ``refused`` is given, a hook that exits non-zero is appended to it and left out of
-    the plan instead, and the other hooks are still planned.
+    the plan instead, and the other hooks are still planned. Each hook's dry run is
+    reported through ``progress`` as it starts and ends.
     """
     try:
         hooks = load_hooks()
@@ -192,7 +199,9 @@ def plan_hooks(
         raise HookRefusal(f"{exc} -- refusing before any write") from exc
     runs: list[HookRun] = []
     for hook in hooks:
-        run = run_hook(hook, old, new, dry_run=True, cwd=cwd)
+        with timed(progress, f"hook {hook.name}", "planning (--dry-run)") as step:
+            run = run_hook(hook, old, new, dry_run=True, cwd=cwd)
+            step.outcome = "planned" if run.ok else f"refused (exit {run.returncode})"
         if not run.ok and refused is not None:
             refused.append(run)
             continue
@@ -211,9 +220,20 @@ def plan_hooks(
     return planned, runs
 
 
-def run_hooks(hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None) -> list[HookRun]:
-    """Run every planned hook live, in order; one failure never stops the rest."""
-    return [run_hook(hook, old, new, dry_run=False, cwd=cwd) for hook in hooks if hook.status != "done"]
+def run_hooks(
+    hooks: list[Hook], old: str, new: str, *, cwd: Path | None = None, progress: Progress | None = None
+) -> list[HookRun]:
+    """Run every planned hook live, in order; one failure never stops the rest.
+
+    Each run is reported through ``progress`` as it starts and ends.
+    """
+    runs = []
+    for hook in [hook for hook in hooks if hook.status != "done"]:
+        with timed(progress, f"hook {hook.name}", "running") as step:
+            run = run_hook(hook, old, new, dry_run=False, cwd=cwd)
+            step.outcome = f"{'ran' if run.ok else 'failed'} (exit {run.returncode})"
+        runs.append(run)
+    return runs
 
 
 #: The line a live run prints once per file it archived, its path after the prefix.
