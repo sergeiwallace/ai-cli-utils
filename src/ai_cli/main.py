@@ -8181,7 +8181,9 @@ def _migrate_one_to_name(
             machine=host,
             client="claude-code",
         )
-        snapshot = registry.snapshot(fetch=not dry_run)
+        # Preview the current holds too: a cached list can omit a confusable name
+        # that the writing run would fetch and refuse before reserving anything.
+        snapshot = registry.snapshot()
         notes: list[str] = []
         if dry_run:
             snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
