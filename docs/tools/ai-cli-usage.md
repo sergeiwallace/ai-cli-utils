@@ -153,13 +153,14 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai sessions enrol`](../reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
 | [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](../reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
-| [`ai sessions policy`](../reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
+| [`ai sessions policy`](../reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](../reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
 | [`ai sessions publish-timer`](../reference/cli.md#ai-sessions-publish-timer) | Manage the background publication timer |
 | [`ai sessions publish-timer install`](../reference/cli.md#ai-sessions-publish-timer-install) | Install and enable the background timer that publishes session state; removes it instead when no publication repo is configured |
 | [`ai sessions publish-timer status`](../reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](../reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](../reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions repair-policy`](../reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](../reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](../reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
 | [`ai setup`](../reference/cli.md#ai-setup) | Run interactive setup wizard |
@@ -549,7 +550,9 @@ ai sessions [list] [-a] [-S host|pair|fleet] [-g host|status|relaunch|none] [-s 
 Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
 with the columns `HOST`, `SESSION`, `STATUS`, `CAUSE`, `CHANGED` and `RELAUNCH`, grouped by host
 with this host first, and sorted by status (`running`, `relaunched`, `unknown`, `exited`) and then
-by name. Only running sessions are listed unless `-a/--all` is given.
+by name. Only running sessions are listed unless `-a/--all` is given. `CHANGED` is the time of the
+session's last run-state change; a policy change does not move it. `RELAUNCH` is the boot relaunch
+policy (`auto`, `always` or `never`).
 
 - `-S/--scope`: `host` is this host; `pair` (the default) adds the paired host; `fleet` adds every
   host that publishes. This host's rows come from its live registry; other hosts' rows come from
@@ -559,7 +562,8 @@ by name. Only running sessions are listed unless `-a/--all` is given.
 - `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
   keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
 - `-j/--json` prints this host's registry records exactly as before; it ignores the other options
-  and refuses `-S pair` and `-S fleet`.
+  and refuses `-S pair` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
+  registry file itself ([fields](../iterm2-persistence.md)).
 
 The defaults live in the `[sessions_list]` table of `config.toml`, read on every call, with a flag
 overriding each:
@@ -575,6 +579,29 @@ pair_host = ""  # empty: the default [remote.machines] alias
 
 [docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
 each key.
+
+### ai sessions policy
+
+```bash
+ai sessions policy <slug> <auto|never|always>
+ai sessions repair-policy [-d]
+```
+
+`ai sessions policy` sets a local session's boot relaunch policy as its owner's choice: it writes
+`relaunch`, `relaunch_set_by = "owner"` and `relaunch_changed_at`, and queues publication. It does
+not touch `changed_at`, so `ai sessions list` keeps showing the last run-state change under
+`CHANGED`. No launch, enrolment or recovery replaces an owner's policy. Without one, a session gets
+the default: `never` for a probe, `auto` for every other session, with
+`relaunch_set_by = "default"`. Exiting or stopping a session records its exit cause and never
+changes its policy; a `manual_exit` or `unknown` cause keeps it down at boot whatever the policy.
+
+`ai sessions repair-policy` is a one-time repair for records written by older releases, which gave
+every enrolled or recovered session `never` without recording who chose it. It sets each local,
+non-probe record of this host whose policy is `never` and has no `relaunch_set_by` to `auto` with
+`relaunch_set_by = "default"`, and prints one line per record. `-d/--dry-run` prints the same lines
+and writes nothing. A second run changes nothing. A `never` set by hand before the
+`relaunch_set_by` field existed looks the same as the old default and is repaired too; set it
+again with `ai sessions policy <slug> never`.
 
 ### ai reconnect
 

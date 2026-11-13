@@ -112,7 +112,7 @@ def test_given_a_child_when_single_run_finishes_then_its_exit_status_is_reported
 
 
 @pytest.mark.parametrize("policy", ["auto", "never", "always"])
-def test_given_local_record_when_policy_changes_then_ac_4_1_only_policy_and_time_change_and_publish(
+def test_given_local_record_when_policy_changes_then_ac_4_1_only_policy_owner_and_policy_time_change_and_publish(
     publishing, runner, monkeypatch, policy
 ):
     _, remote, _, _ = publishing
@@ -123,13 +123,13 @@ def test_given_local_record_when_policy_changes_then_ac_4_1_only_policy_and_time
     assert result.exit_code == 0, result.output
     after = registry.load_registry()
     expected = deepcopy(before["sessions"])
-    expected[0].update(relaunch=policy, changed_at="2026-01-02T03:04:05Z")
+    expected[0].update(relaunch=policy, relaunch_set_by="owner", relaunch_changed_at="2026-01-02T03:04:05Z")
     assert after["sessions"] == expected
     assert after["dirty_revision"] == before["dirty_revision"] + 1
     assert runner.invoke(_cli_group, ["sessions", "publish", "--tick"]).exit_code == 0
     published = snapshot(remote)["sessions"]["c-session-1"]
     assert published["relaunch"] == policy
-    assert published["changed_at"] == "2026-01-02T03:04:05Z"
+    assert published["changed_at"] == before["sessions"][0]["changed_at"]
 
 
 @pytest.mark.parametrize("slug", ["", "bad.name", "bad/name", "bad name", "bad;name", "bad\n", "é"])
