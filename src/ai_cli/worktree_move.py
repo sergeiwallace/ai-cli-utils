@@ -10,10 +10,15 @@ directory, so ``git status`` in the moved worktree fails on the first submodule.
 :func:`move_worktree` therefore tries ``git worktree move`` first and falls back only on
 that one refusal: rename the directory, ``git worktree repair`` it, then repoint each
 submodule's ``core.worktree`` at its new location. A locked worktree is never moved.
+
+A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` names
+the old directory, so anything reading source through a code object finds nothing.
+:func:`purge_moved_bytecode` removes those caches after every successful move.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -21,6 +26,7 @@ from pathlib import Path
 from .git_repair import _git_env
 
 _SUBMODULE_REFUSAL = "containing submodules"
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -65,10 +71,45 @@ def _repoint_submodules(repo: Path, admin: Path, old: Path, new: Path) -> list[s
     return errors
 
 
+def _tracked_bytecode(checkout: Path) -> set[Path]:
+    listed = _git(checkout, "ls-files", "-z", "--", ":(glob)**/__pycache__/**").stdout or ""
+    return {checkout / name for name in listed.split("\0") if name}
+
+
+def purge_moved_bytecode(checkout: Path) -> None:
+    """Remove the stale ``__pycache__`` bytecode a ``git worktree move`` carried into ``checkout``.
+
+    Only ``*.pyc``/``*.pyo`` files inside a ``__pycache__`` directory go, then that directory if
+    it is left empty. Skipped: any virtual environment (``.venv`` or a directory holding
+    ``pyvenv.cfg``), any nested git checkout (a submodule), every file git tracks, and every
+    symlink, which is never followed out of the checkout. Python rebuilds the caches on import.
+    """
+    tracked = _tracked_bytecode(checkout)
+    for root, dirs, _files in os.walk(checkout):
+        here = Path(root)
+        if here != checkout and ((here / "pyvenv.cfg").exists() or (here / ".git").exists()):
+            dirs.clear()
+            continue
+        dirs[:] = [d for d in dirs if d not in (".git", ".venv") and not (here / d).is_symlink()]
+        if here.name != "__pycache__":
+            continue
+        for entry in here.iterdir():
+            if (
+                entry.suffix in _BYTECODE_SUFFIXES
+                and not entry.is_symlink()
+                and entry.is_file()
+                and entry not in tracked
+            ):
+                entry.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):  # still holds a tracked or unrecognised file
+            here.rmdir()
+
+
 def move_worktree(repo: Path, source: Path, dest: Path) -> tuple[bool, str]:
     """Move worktree ``source`` to ``dest``. Returns ``(moved, git's stderr or our reason)``."""
     moved = _git(repo, "worktree", "move", str(source), str(dest))
     if moved.returncode == 0:
+        purge_moved_bytecode(dest)
         return True, ""
     stderr = (moved.stderr or "").strip()
     if _SUBMODULE_REFUSAL not in stderr:
@@ -90,4 +131,5 @@ def move_worktree(repo: Path, source: Path, dest: Path) -> tuple[bool, str]:
     errors = _repoint_submodules(repo, Path(admin), old, new) if admin else ["could not resolve the worktree's git dir"]
     if errors:
         return False, f"moved {old} to {new} and repaired it, but a submodule was not repointed: {'; '.join(errors)}"
+    purge_moved_bytecode(new)
     return True, ""
