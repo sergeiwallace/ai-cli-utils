@@ -1246,6 +1246,30 @@ class TestCreateWorktree:
             with pytest.raises(RuntimeError, match="Permission denied"):
                 registered_worktrees(tmp_path)
 
+    # A fake ``git`` found on PATH by bare name; Windows resolves only ``git.exe`` there.
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs a shebang script found as bare `git` on PATH")
+    @pytest.mark.parametrize(
+        ("body", "status"),
+        [("exit 128", "exit 128"), ("kill -9 $$", "killed by signal 9 (SIGKILL)")],
+    )
+    def test_given_git_fails_with_no_stderr_when_worktrees_are_listed_then_the_error_names_the_exit_status(
+        self, tmp_path, monkeypatch, body, status
+    ):
+        from ai_cli.session import registered_worktrees
+
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "git").write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        (fake / "git").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        with pytest.raises(RuntimeError) as raised:
+            registered_worktrees(tmp_path)
+
+        assert str(raised.value) == (
+            f"could not list registered git worktrees for {tmp_path}: {status} (no stderr output)"
+        )
+
     def test_create_worktree_when_no_repo_then_returns_none(self):
         with patch("ai_cli.session.detect_repo_root", return_value=None):
             result = create_worktree("session-1")
