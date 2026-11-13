@@ -4,12 +4,13 @@ import asyncio
 import json
 import shlex
 import subprocess
+import sys
 from unittest.mock import AsyncMock, Mock
 
 import psutil
 import pytest
 from click.testing import CliRunner
-from process_ownership import reap, spawn_owned_sleeper
+from process_ownership import reap, spawn_owned, spawn_owned_sleeper
 
 from ai_cli import session_exit, transport
 from ai_cli import session_registry as registry
@@ -58,7 +59,7 @@ def remote_run(tmp_path, monkeypatch):
             if argv[0] != "ssh":
                 return real_run(argv, **kwargs)
             calls.append(argv)
-            args = shlex.split(argv[-1])
+            args = shlex.split(argv[-1].partition("; ")[2] or argv[-1])
             assert args[:3] == ["ai", "sessions", "_exit-receipt"]
             with monkeypatch.context() as owner:
                 owner.setattr(registry, "registry_path", lambda: owner_path)
@@ -95,7 +96,7 @@ def test_remote_unacknowledged_when_exit_requested_then_mirror_stays_unresolved(
         if failure == "malformed":
             return subprocess.CompletedProcess(argv, 0, "{}", "")
         answer = original(argv, **kw)
-        if len(shlex.split(argv[-1])) > 4:
+        if len(shlex.split(argv[-1].partition("; ")[2] or argv[-1])) > 4:
             receipt = json.loads(answer.stdout)
             receipt["generation"] = "replacement"
             answer.stdout = json.dumps(receipt)
@@ -174,3 +175,35 @@ def test_remote_replacement_when_fenced_request_arrives_then_new_run_survives(re
         assert state._find(registry.load_registry(), "c-session-1")["generation"] == replacement
     assert proc.poll() is None
     assert json.loads(client.read_text())["sessions"][0]["run_state"] == "running"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX remote-shell fixture")
+def test_remote_shell_without_user_path_when_receipt_requested_then_installed_cli_is_resolved(
+    remote_run, monkeypatch, tmp_path
+):
+    _, generation, _, _, _ = remote_run
+    home = tmp_path / "remote-home"
+    executable = home / ".local/bin/ai"
+    executable.parent.mkdir(parents=True)
+    receipt = {"name": "c-session-1", "owning_host": "host-a", "generation": generation, "run_state": "running"}
+    executable.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(json.dumps(receipt)) + "\n")
+    executable.chmod(0o755)
+
+    def ssh(argv, **kw):
+        assert argv[0] == "ssh"
+        child = spawn_owned(
+            ["/bin/sh", "-c", argv[-1]],
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = child.communicate(timeout=5)
+            return subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
+        finally:
+            reap(child)
+
+    monkeypatch.setattr(subprocess, "run", ssh)
+    row = registry.load_registry()["sessions"][0]
+    assert session_exit._remote_receipt(row) == receipt

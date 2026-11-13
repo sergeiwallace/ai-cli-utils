@@ -377,7 +377,11 @@ def _remote_receipt(row: dict, *, generation: str | None = None, timeout: float 
     if generation:
         command += [generation, str(timeout)]
     done = subprocess.run(
-        [*args, shlex.join(command)], capture_output=True, text=True, check=False, timeout=15 + 2 * timeout
+        [*args, 'export PATH="$HOME/.local/bin:$PATH"; ' + shlex.join(command)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15 + 2 * timeout,
     )
     if done.returncode:
         raise ValueError("owning host did not acknowledge the exit receipt")
