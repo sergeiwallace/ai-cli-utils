@@ -138,6 +138,7 @@ class Session:
         worktree.mkdir()
         home = tmp_path / "home"
         (home / "zdotdir").mkdir(parents=True)
+        (home / "zdotdir" / ".zshrc").write_text("", encoding="utf-8")
         config_dir = tmp_path / "config" / "ai-cli-utils"
         config_dir.mkdir(parents=True)
         if config:
@@ -262,6 +263,7 @@ class Session:
                 "sys.stdout.write(f'agent-output {index + 1}\\n')\n"
                 "sys.stdout.flush()\n"
                 "time.sleep(runs[min(index, len(runs) - 1)])\n"
+                "sys.exit(1)\n"
             ),
             # With an owned tmux session the supervisor's ownership fence passes silently at exit,
             # so nothing but its EXIT trap can close a row it left open.
@@ -324,6 +326,16 @@ class Session:
         assert code is not None, f"the session never ended; screen: {self.rows()}"
         self._reader.join(timeout=scaled(10))
         return code
+
+    def wait_for_shell(self) -> None:
+        deadline = time.monotonic() + _CEILING_SECONDS
+        while time.monotonic() < deadline:
+            self._track()
+            if b"Returning to an interactive shell." in self.received:
+                return
+            assert self.process.poll() is None, f"the session ended early; screen: {self.rows()}"
+            time.sleep(0.1)
+        pytest.fail(f"the shell never started; screen: {self.rows()}")
 
     def stopped(self) -> list[str]:
         self._track()
@@ -449,26 +461,22 @@ def test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_o
         next_text = "agent-output 1"
     elif closer == "record":
         # The second child finds a recorded double Ctrl+C and exits before closing the row, so the
-        # supervisor's own closing message is the next line written.
+        # supervisor's shell handoff is the next line written.
         session = session_factory(reload_on=(1,), exit_on_cron=2)
-        session.wait_for_exit()
-        next_text = "skipping tmux session cleanup"
+        session.wait_for_shell()
+        next_text = "Auto-restart stopped. Returning to an interactive shell."
     else:
         session = session_factory(reload_on=(1,), exit_on_cron=2, own_tmux_session=True)
-        session.wait_for_exit()
-        next_text = None
+        session.wait_for_shell()
+        next_text = "Auto-restart stopped. Returning to an interactive shell."
     screen = session.screen()
     rows = [row.rstrip() for row in screen.display]
 
     reload_rows = _reload_rows(rows)
     assert len(reload_rows) == 1, rows
     assert re.search(r"reloading \(attempt 1, \d+s\)$", rows[reload_rows[0]]), rows
-    if next_text is None:
-        assert (screen.cursor.y, screen.cursor.x) == (reload_rows[0] + 1, 0), rows
-        assert rows[reload_rows[0] + 1] == "", rows
-    else:
-        assert any(row.startswith(next_text) or f" {next_text}" in row for row in rows[reload_rows[0] + 1 :]), rows
-        assert next_text not in rows[reload_rows[0]], rows
+    assert any(row.startswith(next_text) or f" {next_text}" in row for row in rows[reload_rows[0] + 1 :]), rows
+    assert next_text not in rows[reload_rows[0]], rows
 
 
 def test_given_redirected_output_when_reloads_repeat_then_each_is_one_plain_counted_line(session_factory):
@@ -504,10 +512,10 @@ def test_given_tostop_on_the_pty_when_reloads_repeat_then_the_supervisor_is_neve
     assert "attempt 3" in session.rows()[_reload_rows(session.rows())[0]]
 
 
-def test_given_a_reload_then_a_normal_agent_exit_when_reloading_again_then_the_count_restarts_at_1(
+def test_given_a_reload_then_an_agent_failure_when_reloading_again_then_the_count_restarts_at_1(
     session_factory,
 ):
-    # Child 1 reloads, child 2 runs an agent that exits normally after 4s, child 3 reloads, child 4 runs.
+    # Child 1 reloads, child 2 runs an agent that fails after 4s, child 3 reloads, child 4 runs.
     session = session_factory(reload_on=(1, 3), agent_runs=(4.0, 600.0))
     session.wait_for_agents(2)
     rows = session.rows()

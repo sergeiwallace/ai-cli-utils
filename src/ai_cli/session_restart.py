@@ -939,9 +939,12 @@ def _compatible(source: str, expected: str) -> bool:
         if cleanup:
             text = text[: cleanup.start()] + text[cleanup.end() :]
             body = re.sub(r"(?m)^  ", "", cleanup[1])
+            ending = "      done\n      exit 0\n    fi\n"
+            if ending not in text:
+                ending = "      done\n    # BEGIN SHELL HANDOFF interactive\n"
             text = text.replace(
-                "      done\n      exit 0\n    fi\n",
-                "      done\n" + body + "      exit 0\n    fi\n",
+                ending,
+                "      done\n" + body + ending.removeprefix("      done\n"),
                 1,
             )
         text = re.sub(
@@ -959,7 +962,27 @@ def _compatible(source: str, expected: str) -> bool:
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
-    return normalize(source) == normalize(expected)
+    normalized_source = normalize(source)
+    if normalized_source == normalize(expected):
+        return True
+    # Also recognize the exact earlier wrapper. Transform only our trusted
+    # expected template: ignoring these regions in a running source would let
+    # arbitrary edits to its shell handoff or signal handling pass inspection.
+    earlier = re.sub(
+        r"(?ms)^    # BEGIN SHELL HANDOFF agent-wait\n.*?^    # END SHELL HANDOFF\n",
+        '      wait "$active_agent_pid"\n      agent_exit_code=$?\n',
+        expected,
+    )
+    earlier = re.sub(r"(?ms)^    # BEGIN SHELL HANDOFF[^\n]*\n.*?^    # END SHELL HANDOFF\n", "", earlier)
+    earlier = earlier.replace(
+        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
+        "if $_supervisor_tmux_ownership_established; then",
+    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
+    earlier = earlier.replace(
+        "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
+        "if (( _child_status == 77 || _child_status == 79 )); then",
+    )
+    return normalized_source == normalize(earlier)
 
 
 def _tmux_pane_environment(session: str) -> dict[str, str]:
