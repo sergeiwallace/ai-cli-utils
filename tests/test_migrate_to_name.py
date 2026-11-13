@@ -496,23 +496,41 @@ class _Killed(BaseException):
     """The process dying at a durable boundary: no ``except Exception`` handler sees it."""
 
 
-@pytest.mark.parametrize("boundary", ["intent-committed", "rename-finished"])
+@pytest.mark.parametrize("boundary", ["intent-committed", "between-artifact-moves", "rename-finished"])
 def test_given_a_migration_killed_at_a_durable_boundary_when_run_again_then_it_reaches_the_completed_rows(
     fleet, monkeypatch, boundary
 ):
-    seam = "_migrate_session_for_names" if boundary == "intent-committed" else "_complete_migration_for_names"
-    real = getattr(main, seam)
     killed: list[str] = []
+    if boundary == "between-artifact-moves":
+        import shutil
 
-    def die_once(*args, **kwargs):
-        if not killed and not kwargs.get("dry_run"):
-            killed.append(boundary)
-            raise _Killed
-        return real(*args, **kwargs)
+        real_move = shutil.move
+        moved: list[str] = []
 
-    monkeypatch.setattr(main, seam, die_once)
+        def die_between_moves(source, dest, *args, **kwargs):
+            # One of the session's own artifacts has moved; the process dies before the next.
+            if not killed and OLD in str(source):
+                if moved:
+                    killed.append(boundary)
+                    raise _Killed
+                moved.append(str(source))
+            return real_move(source, dest, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "move", die_between_moves)
+    else:
+        seam = "_migrate_session_for_names" if boundary == "intent-committed" else "_complete_migration_for_names"
+        real = getattr(main, seam)
+
+        def die_once(*args, **kwargs):
+            if not killed and not kwargs.get("dry_run"):
+                killed.append(boundary)
+                raise _Killed
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(main, seam, die_once)
     with pytest.raises(_Killed):
         migrate(fleet, OLD, "--to-name", "cleo")
+    assert killed == [boundary]
     assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"
     assert fleet.rows()["cleo"]["state"] == "active"
 
