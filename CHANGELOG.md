@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client-side remote row past the retention whose launcher is gone when the remote host
   reports no such tmux session, which clears rows for sessions renamed or retired on their own
   host. `ai retire-session` drops the retired session's rows.
+- `ai sessions stop NAME` now also sends SIGTERM to a Claude Code process running under a wrapper
+  it marked when that process's record names another session, as it does after a rename. Before,
+  it signalled only records named NAME, so it waited out its timeout naming only the wrapper, and
+  the agent had to exit by itself. Such a process is still signalled only when its record's start
+  time proves its pid; one that cannot be proved is named as still running and is not signalled.
 - `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
   environment looking for files that name the old path. It now reads only the records at the top
   of each site-packages directory (`.pth` files, legacy `.egg-link` files and the
