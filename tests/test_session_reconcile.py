@@ -374,12 +374,11 @@ def test_agent_entry_point_when_session_marker_matches_then_running_is_preserved
 
 
 @pytest.mark.parametrize("server", [False, True, None])
-def test_linux_without_tmux_when_launcher_is_dead_then_absence_or_unknown_is_reported(
+def test_given_missing_tmux_when_launcher_is_dead_then_absence_or_unknown_is_reported(
     stale_record, monkeypatch, server
 ):
     import psutil
 
-    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(registry, "_local_session_alive", _LOCAL_SESSION_ALIVE)
     monkeypatch.setattr(registry.subprocess, "run", Mock(side_effect=FileNotFoundError("tmux")))
     process = Mock()
@@ -398,7 +397,16 @@ def test_linux_without_tmux_when_launcher_is_dead_then_absence_or_unknown_is_rep
         assert _LOCAL_SESSION_ALIVE("c-session-1") is None
 
 
-@pytest.mark.parametrize("entry", ["list", "boot-relaunch"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "list",
+        pytest.param(
+            "boot-relaunch",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="boot relaunch requires macOS or Linux"),
+        ),
+    ],
+)
 def test_same_boot_veto_when_run_is_provably_dead_then_record_reconciles_to_exited(stale_record, monkeypatch, entry):
     boot = stale_record["boot_id"]
     registry._mutate(lambda doc: doc["sessions"][0].update(relaunched_boot_id=boot) or True)
