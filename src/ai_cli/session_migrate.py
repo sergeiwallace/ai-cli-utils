@@ -37,7 +37,9 @@ tasks, memory and resume hand-off:
 * the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` or
   ``<host>--<old>-agents/``, their Claude Code project directories (a reaped worktree's
   included) and its ``wt/<old>/*`` branches in every repo under ``projects_dir``
-  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
+  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in; an
+  entry of an ``<old>-agents`` container no registered worktree accounts for is archived
+  by rename into :data:`MIGRATION_ARCHIVE`, unless some process works in it;
 * every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
   that proves it clean and landed, and kept and named, failing the run, otherwise; and
@@ -769,18 +771,127 @@ def _holds_a_file(path: Path, moving: Container[Path] = ()) -> bool:
     return any(_holds_a_file(child, moving) for child in path.iterdir())
 
 
+#: The part an entry of an old agent container that no registered worktree accounts for is archived under.
+CONTAINER_ENTRY = "agent container entry"
+
+
+def _unregistered_entries(container: Path, moving: Container[Path]) -> list[Path]:
+    """Each directory in ``container`` holding a file that is not, and holds no, registered worktree.
+
+    Its registration was pruned (a ``.git`` file naming a ``.git/worktrees/<name>`` that is gone)
+    or never made. Empty when the repo's ``git worktree list`` cannot be read, so a listing failure
+    never makes a live worktree look unregistered.
+    """
+    listed = _git(container.parent.parent, "worktree", "list", "--porcelain")
+    if listed.returncode != 0:
+        return []
+    registered = [
+        Path(line[len("worktree ") :]).resolve() for line in listed.stdout.splitlines() if line.startswith("worktree ")
+    ]
+    return [
+        child
+        for child in sorted(container.iterdir())
+        if child.is_dir()
+        and not child.is_symlink()
+        and child not in moving
+        and not any(path == child or child in path.parents for path in registered)
+        and _holds_a_file(child, moving)
+    ]
+
+
+def _process_cwds() -> list[tuple[int, Path]]:
+    """``(pid, cwd)`` of every process whose cwd this user may read, whatever program it runs."""
+    import psutil
+
+    found: list[tuple[int, Path]] = []
+    for process in psutil.process_iter(["pid", "cwd"]):
+        cwd = process.info.get("cwd")
+        if cwd:
+            found.append((process.info["pid"], Path(cwd)))
+    return found
+
+
+def _same_filesystem(path: Path, target: Path) -> bool:
+    """Whether ``target``, or its nearest existing ancestor, is on ``path``'s filesystem."""
+    probe = target
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return path.stat().st_dev == probe.stat().st_dev
+    except OSError:
+        return False
+
+
+def _entry_archive(container: Path, state: Path, old: str, new: str) -> Path:
+    """Where an unregistered entry of ``container`` is archived, always by a rename on its own filesystem.
+
+    The session-migration archive (:func:`archive_dir`) when it shares the container's
+    filesystem; otherwise the same layout under ``<repo>/.worktrees/<archive>``, since a move
+    across filesystems would copy the entry and delete the original.
+    """
+    archive = archive_dir(state, old, new) / "agent-container"
+    if _same_filesystem(container, archive):
+        return archive
+    return container.parent / MIGRATION_ARCHIVE / archive.relative_to(state / MIGRATION_ARCHIVE)
+
+
+def _archive_entries(
+    container: Path, entries: list[Path], *, dry_run: bool, state: Path, old: str, new: str
+) -> tuple[list[PlannedMove], list[dict]]:
+    """Archive each unregistered ``entries`` of ``container`` by rename; a failed rename keeps it, named."""
+    directory = _entry_archive(container, state, old, new)
+    moves: list[PlannedMove] = []
+    archived: list[dict] = []
+    for entry in entries:
+        target = _archive_target(directory, entry.name)
+        if dry_run:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archive"))
+            continue
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            entry.rename(target)
+        except OSError as exc:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), f"archive failed: {_one_line(str(exc))}", "kept"))
+            continue
+        moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archived"))
+        archived.append({"part": CONTAINER_ENTRY, "source": str(entry), "archive": str(target)})
+    return moves, archived
+
+
 def _sweep_containers(
-    containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool, moving: Container[Path] = ()
+    containers: list[Path],
+    live_cwds: list[tuple[int, Path]],
+    *,
+    dry_run: bool,
+    state: Path,
+    old: str,
+    new: str,
+    repo_root: Path,
+    moving: Container[Path] = (),
 ) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
-    A container already gone is not listed: the agent plan's own line covers it. A preview
-    passes the agent worktrees the run ``moving`` out, so it names the fate the run reaches.
+    Each entry no registered worktree accounts for is archived first (:func:`_archive_entries`),
+    unless some process works in one: then the container is kept, naming it. A container
+    already gone is not listed: the agent plan's own line covers it. A preview passes the agent
+    worktrees the run ``moving`` out, so it names the fate the run reaches.
     """
     moves: list[PlannedMove] = []
+    archived: list[dict] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
-        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child, moving))
+        entries = [] if holder is not None else _unregistered_entries(container, moving)
+        cwds = _process_cwds() if entries else []
+        busy = [(pid, entry.name) for entry in entries if (pid := _agents._holder(entry, cwds)) is not None]
+        if busy:
+            works = "; ".join(f"pid {pid} works in {name}" for pid, name in busy)
+            moves.append(PlannedMove("agent container", str(container), works, "kept"))
+            continue
+        entry_moves, done = _archive_entries(container, entries, dry_run=dry_run, state=state, old=old, new=new)
+        moves += entry_moves
+        archived += done
+        gone = {Path(move.source) for move in entry_moves if move.action in ("archive", "archived")}
+        held = sorted(child.name for child in container.iterdir() if child not in gone and _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
         elif held:
@@ -790,6 +901,7 @@ def _sweep_containers(
         else:
             _agents._remove_if_empty(container)
             moves.append(PlannedMove("agent container", str(container), "empty", "removed"))
+    _record_archived(state, old, new, repo_root, archived)
     return moves
 
 
@@ -833,7 +945,9 @@ def clean_leftovers(
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, dry_run)
-    result.moves += _sweep_containers(_containers(old, repos), live_cwds, dry_run=dry_run)
+    result.moves += _sweep_containers(
+        _containers(old, repos), live_cwds, dry_run=dry_run, state=state, old=old, new=new, repo_root=repo_root
+    )
     _record_kept(leftovers, result)
     if not dry_run:
         _apply_beads(old, new, beads, result)
@@ -850,13 +964,23 @@ def _clean_other_repos(
     state: Path,
     proc_dir: Path | None,
     tmux: list[str],
+    repo_root: Path,
 ) -> None:
     """After a home migration: retire the other repos' old-name slots and report every container's fate."""
     if not result.dry_run:
         result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, result.dry_run)
     moving = {e.worktree for e in agent_plan.entries if e.worktree and e.moves} if result.dry_run else set()
-    result.moves += _sweep_containers(agent_plan.containers, live_cwds, dry_run=result.dry_run, moving=moving)
+    result.moves += _sweep_containers(
+        agent_plan.containers,
+        live_cwds,
+        dry_run=result.dry_run,
+        state=state,
+        old=result.old,
+        new=result.new,
+        repo_root=repo_root,
+        moving=moving,
+    )
     _record_kept(leftovers, result)
 
 
@@ -1629,7 +1753,7 @@ def _start_session(
     hooks = _plan_hooks(old, new, repo_root, moves)
     beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     _describe_beads(old, new, beads, result)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
@@ -1928,7 +2052,7 @@ def finish_session(
     beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
