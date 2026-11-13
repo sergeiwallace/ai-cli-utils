@@ -96,7 +96,7 @@ def exit_receipt(name, generation, timeout):
     from .session_exit import owning_receipt
 
     try:
-        click.echo(json.dumps(owning_receipt(name, generation, timeout)))
+        output.raw(Untagged.JSON, json.dumps(owning_receipt(name, generation, timeout)))
     except (ValueError, OSError, registry.RegistryError) as exc:
         raise click.ClickException(str(exc)) from exc
 
