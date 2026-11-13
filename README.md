@@ -156,6 +156,24 @@ ai sync push
 
 ## Usage
 
+### Start, resume, attach
+
+How to start a session and get back to one. `ai -h` prints the same rows. When a session's tmux
+session is already running, `ai c NAME` attaches to it, so `ai attach` is not needed for a session
+`ai` started.
+
+<!-- start-resume-attach:begin -->
+| Command | What it does |
+|---|---|
+| `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
+| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
+| `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
+| `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
+| `ai cos -r` | Resume this machine's chief-of-staff session |
+| `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
+<!-- start-resume-attach:end -->
+
 ### Command index
 
 Every `ai` command and what it does. Each links to its section of the generated
@@ -202,7 +220,7 @@ after changing a command's help, never edit it by hand.
 | [`ai memory`](docs/reference/cli.md#ai-memory) | Memory-file watchers and helpers |
 | [`ai memory watch`](docs/reference/cli.md#ai-memory-watch) | Run the memory-file watcher daemon |
 | [`ai migrate-session`](docs/reference/cli.md#ai-migrate-session) | Rename a session already registered in an `ai` slot. |
-| [`ai migrate-transcript`](docs/reference/cli.md#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another (e.g. |
+| [`ai migrate-transcript`](docs/reference/cli.md#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree |
 | [`ai notifications`](docs/reference/cli.md#ai-notifications) | Notification delivery and history |
 | [`ai notifications list`](docs/reference/cli.md#ai-notifications-list) | List configured notification channels |
 | [`ai notifications log`](docs/reference/cli.md#ai-notifications-log) | Show notification history |
@@ -234,13 +252,13 @@ after changing a command's help, never edit it by hand.
 | [`ai session-reaper start`](docs/reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](docs/reference/cli.md#ai-session-reaper-status) | Show stale-session reaper status |
 | [`ai session-reaper stop`](docs/reference/cli.md#ai-session-reaper-stop) | Stop the stale-session reaper |
-| [`ai sessions`](docs/reference/cli.md#ai-sessions) | Session run state and publication |
+| [`ai sessions`](docs/reference/cli.md#ai-sessions) | List sessions and manage their run state, relaunch and publication. |
 | [`ai sessions boot-unit`](docs/reference/cli.md#ai-sessions-boot-unit) | Manage the one-shot boot relaunch service (macOS and Linux) |
 | [`ai sessions boot-unit install`](docs/reference/cli.md#ai-sessions-boot-unit-install) | Write the boot relaunch service and enable it, or disable and remove it, as session_relaunch.on_boot (or -b/--on-boot) asks |
 | [`ai sessions boot-unit status`](docs/reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](docs/reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](docs/reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List the sessions in the registry with their run state, exit cause, last change and relaunch policy |
+| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](docs/reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](docs/reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
 | [`ai sessions publish`](docs/reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -286,6 +304,7 @@ ai g <name>            # Start/resume Gemini CLI session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
+ai c -t [NAME]         # Throwaway probe or test session: no name, no canonical worktree, no boot relaunch
 ai c -b/--bare         # Run bare (no tmux wrapper)
 ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
@@ -339,6 +358,29 @@ session: `ai c cos` starts `myrepo-box-cos-rae`. The launch says so in its `new 
 line before it creates a worktree or a tmux session, so a mistyped resume is visible.
 `ai locate-session TITLE` and `ai list-names` also report the sessions named before the
 registry, each with the command that resumes it.
+
+#### Probe and test sessions
+
+```bash
+ai c -t                         # myrepo-box-probe-1
+ai c -t smoke -b                # myrepo-box-probe-smoke-1, bare
+ai c -t -d                      # plan the probe launch; writes nothing
+```
+
+`-t/--probe` launches a session for a probe or a test run that nothing treats as a
+session home. It is named by index under the `probe` label and reserves no first name.
+Its worktree is made outside the repository, under the per-user state directory
+(`probe-worktrees/<repo>-<digest>/<title>`), and is not recorded in the canonical-worktree
+registry, so deletion guards do not protect it and an editor scanning the repository does
+not find it. Its run record is never relaunched at boot, the iTerm2 restore skips it, and
+`ai iterm2 sessions --prune` drops it once the session is gone. `-t` refuses `-r`, `-N`,
+`-w`, `-u`, `-S`, `-F` and `-R`, each of which would name, reach or host a canonical
+session; run `ai c -t` on the remote host itself for a remote probe.
+
+Once the probe has exited, remove its worktree and branch with the ordinary git
+commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`).
+The launcher never removes them itself. Design:
+[docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
 
 #### Restarting an idle Claude Code session
 
@@ -877,6 +919,24 @@ skips the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval
 off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
+
+### Listing sessions
+
+```bash
+ai sessions                       # Running sessions of this host and its paired host, as a table
+ai sessions list -a/--all         # Add exited and unknown sessions
+ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
+ai sessions list -g/--group-by status -s/--sort-by changed,name
+ai sessions list -j/--json        # This host's registry records, unchanged by the options above
+```
+
+The table groups rows by host (this host first) and puts running sessions at the top of each
+group. Other hosts' rows come from the snapshots each host publishes with `ai sessions publish`
+(see [Session boot relaunch](#session-boot-relaunch)); a host that does not publish is not shown,
+and the time of each snapshot is printed under the table. The pair is `[sessions_list] pair_host`,
+or the default `[remote.machines]` alias when that is empty. The defaults are the `[sessions_list]`
+table of `config.toml`, read on every call and documented in
+[docs/reference/sessions-list-defaults.toml](docs/reference/sessions-list-defaults.toml).
 
 ### Remote sessions
 

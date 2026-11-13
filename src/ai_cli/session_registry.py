@@ -257,6 +257,7 @@ def _new_record(
 
 DURABLE_FIELDS = (
     "relaunch",
+    "probe",
     "relaunched_boot_id",
     "boot_decision",
     "relaunch_decision",
@@ -495,6 +496,21 @@ def _death_reason(record: dict, probe_remote: bool, remote_config: dict) -> str 
     return None
 
 
+def _bare_probe_running(record: dict) -> bool:
+    """A bare probe has no tmux session to ask, so its own process, in this boot, is the evidence."""
+    import psutil
+
+    recipe = record.get("boot_recipe") or {}
+    pid = record.get("launcher_pid")
+    return bool(
+        (recipe.get("options") or {}).get("bare")
+        and record.get("run_state") == "running"
+        and record.get("boot_id") == current_boot_id()
+        and isinstance(pid, int)
+        and psutil.pid_exists(pid)
+    )
+
+
 def prune(
     *, probe_remote: bool = False, remote_config: dict | None = None, dry_run: bool = False
 ) -> list[tuple[dict, str]]:
@@ -502,6 +518,7 @@ def prune(
 
     Local: ``tmux has-session`` fails (a detached session is alive). Remote: a clean exit
     was recorded, or ``probe_remote`` asked the remote tmux and it has no such session.
+    A record with a boot recipe is kept for boot relaunch, unless it is a probe session's.
     With ``dry_run`` the same verdicts are returned and the registry is not written.
     """
     if not registry_path().exists():
@@ -519,7 +536,8 @@ def prune(
     def drop(doc: dict) -> bool:
         kept = []
         for record in doc["sessions"]:
-            if record.get("id") in verdicts and not record.get("boot_recipe"):
+            prunable = not record.get("boot_recipe") or (record.get("probe") and not _bare_probe_running(record))
+            if record.get("id") in verdicts and prunable:
                 removed.append((record, verdicts[record.get("id")]))
             else:
                 kept.append(record)

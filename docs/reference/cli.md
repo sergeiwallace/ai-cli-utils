@@ -46,7 +46,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai memory`](#ai-memory) | Memory-file watchers and helpers |
 | [`ai memory watch`](#ai-memory-watch) | Run the memory-file watcher daemon |
 | [`ai migrate-session`](#ai-migrate-session) | Rename a session already registered in an `ai` slot. |
-| [`ai migrate-transcript`](#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another (e.g. |
+| [`ai migrate-transcript`](#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree |
 | [`ai notifications`](#ai-notifications) | Notification delivery and history |
 | [`ai notifications list`](#ai-notifications-list) | List configured notification channels |
 | [`ai notifications log`](#ai-notifications-log) | Show notification history |
@@ -78,13 +78,13 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](#ai-session-reaper-status) | Show stale-session reaper status |
 | [`ai session-reaper stop`](#ai-session-reaper-stop) | Stop the stale-session reaper |
-| [`ai sessions`](#ai-sessions) | Session run state and publication |
+| [`ai sessions`](#ai-sessions) | List sessions and manage their run state, relaunch and publication. |
 | [`ai sessions boot-unit`](#ai-sessions-boot-unit) | Manage the one-shot boot relaunch service (macOS and Linux) |
 | [`ai sessions boot-unit install`](#ai-sessions-boot-unit-install) | Write the boot relaunch service and enable it, or disable and remove it, as session_relaunch.on_boot (or -b/--on-boot) asks |
 | [`ai sessions boot-unit status`](#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](#ai-sessions-list) | List the sessions in the registry with their run state, exit cause, last change and relaunch policy |
+| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -128,6 +128,8 @@ ai [OPTIONS] [COMMAND] [ARGS]...
 ```
 
 Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+Every command and subcommand is listed below with its one-line use; `ai COMMAND -h` prints a command's full help.
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -240,6 +242,8 @@ Launch a Claude Code session. A migration to the session's name that this host r
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
+For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and it can be removed like any scratch worktree once it exits.
+
 Arguments:
 
 - `[NAME]`
@@ -266,6 +270,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-j` | `--json` |  | Print restart results as JSON |
@@ -462,6 +467,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -500,6 +506,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -566,6 +573,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -807,7 +815,7 @@ Arguments:
 ai migrate-transcript [OPTIONS] DEST
 ```
 
-Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)
+Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree
 
 Arguments:
 
@@ -900,6 +908,7 @@ Arguments:
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
 | `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -1280,10 +1289,10 @@ Stop the stale-session reaper
 ## ai sessions
 
 ```text
-ai sessions [OPTIONS] COMMAND [ARGS]...
+ai sessions [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-Session run state and publication
+List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, grouped by host, active first
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1366,11 +1375,15 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List the sessions in the registry with their run state, exit cause, last change and relaunch policy
+List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. -j/--json prints this host's registry records unchanged
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-j` | `--json` |  | Print JSON |
+| `-j` | `--json` |  | Print this host's registry records as JSON |
+| `-a` | `--all` |  | Include exited and unknown sessions |
+| `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
+| `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
+| `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai sessions mark

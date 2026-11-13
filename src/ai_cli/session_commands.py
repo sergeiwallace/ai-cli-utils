@@ -16,7 +16,14 @@ from pathlib import Path
 
 import click
 
-from . import output, session_boot_unit, session_publish_timer, session_reconcile, session_state_publish
+from . import (
+    output,
+    session_boot_unit,
+    session_list_view,
+    session_publish_timer,
+    session_reconcile,
+    session_state_publish,
+)
 from . import session_registry as registry
 from . import session_run_state as state
 from .cli_help import HelpGroup
@@ -26,9 +33,18 @@ from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_enrol import enrol, heal_live_sessions
 
 
-@click.group("sessions", cls=HelpGroup, help="Session run state and publication")
-def sessions():
-    pass
+@click.group(
+    "sessions",
+    cls=HelpGroup,
+    invoke_without_command=True,
+    help="List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs "
+    "`ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, "
+    "grouped by host, active first",
+)
+@click.pass_context
+def sessions(ctx):
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(list_sessions)
 
 
 sessions.add_command(enrol)
@@ -157,14 +173,75 @@ def publish(now, tick):
     output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
+def _local_host(doc: dict) -> str:
+    return state.config.load_config(read_only=True).get("machine", {}).get("host_id") or doc["machine"]
+
+
+def _pair_host(view: dict) -> tuple[str, str]:
+    """The paired host id and, when there is none, why."""
+    if view["pair_host"]:
+        return view["pair_host"], ""
+    try:
+        alias = state.config.resolve_remote_machine_alias(state.config.load_config(read_only=True))
+    except state.config.RemoteMachineError as exc:
+        return "", f"no pair host: {exc}"
+    if not alias:
+        return "", "no pair host: set [sessions_list] pair_host or a [remote.machines] default"
+    return alias, ""
+
+
+def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
+    rows = []
+    for name, fields in doc["sessions"].items():
+        if not isinstance(fields, dict):
+            continue
+        rows.append(
+            session_list_view.Row(
+                host=host,
+                name=str(name),
+                status=str(fields.get("run_state") or "unknown"),
+                cause=str(fields.get("cause") or ""),
+                changed=str(fields.get("changed_at") or ""),
+                relaunch=str(fields.get("relaunch") or "auto"),
+            )
+        )
+    return rows
+
+
 @sessions.command(
     "list",
-    help="List the sessions in the registry with their run state, exit cause, last change and relaunch policy",
+    help="List sessions as a table grouped by host, active sessions first: this host's running sessions and, "
+    "with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; "
+    "-S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] "
+    "defaults in config.toml. -j/--json prints this host's registry records unchanged",
 )
-@click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
-def list_sessions(as_json):
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print this host's registry records as JSON")
+@click.option("-a", "--all", "show_all", is_flag=True, default=None, help="Include exited and unknown sessions")
+@click.option(
+    "-S",
+    "--scope",
+    type=click.Choice(session_list_view.SCOPES),
+    help="Hosts to list: this host, this host and its pair, or every host that publishes its sessions",
+)
+@click.option("-g", "--group-by", type=click.Choice(session_list_view.GROUP_KEYS), help="Column to group rows by")
+@click.option(
+    "-s",
+    "--sort-by",
+    metavar="KEYS",
+    help=f"Comma-separated sort keys, first key first: {', '.join(session_list_view.SORT_KEYS)}",
+)
+def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_by=None):
+    if as_json and scope in ("pair", "fleet"):
+        raise click.UsageError("-j/--json prints this host's registry only; drop -S/--scope or -j")
+    try:
+        view = session_list_view.settings()
+        if sort_by is not None:
+            view["sort_by"] = session_list_view.parse_sort(sort_by, "-s/--sort-by")
+    except session_list_view.ViewError as exc:
+        raise click.UsageError(str(exc)) from exc
     session_reconcile.reconcile()
     session_reconcile.age_out()
+    doc = registry.load_registry()
     records = [
         {
             "name": r["name"],
@@ -173,13 +250,54 @@ def list_sessions(as_json):
             "changed_at": r.get("changed_at", ""),
             "relaunch": r.get("relaunch", "auto"),
         }
-        for r in registry.load_registry()["sessions"]
+        for r in doc["sessions"]
     ]
     if as_json:
         output.raw(Untagged.JSON, json.dumps(records))
+        return
+    local = _local_host(doc)
+    rows = [
+        session_list_view.Row(
+            host=local,
+            name=r["name"],
+            status=r["run_state"],
+            cause=r["cause"],
+            changed=r["changed_at"],
+            relaunch=r["relaunch"],
+        )
+        for r in records
+    ]
+    notes = []
+    scope = scope or view["scope"]
+    if scope != "host":
+        wanted, why = _pair_host(view) if scope == "pair" else (None, "")
+        if why:
+            notes.append(why)
+        if wanted != "":
+            snapshots = session_state_publish.read_snapshots()
+            if snapshots.problem:
+                notes.append(snapshots.problem)
+            hosts = sorted(h for h in snapshots.hosts if h != local and (wanted is None or h == wanted))
+            if wanted is not None and wanted != local and wanted not in snapshots.hosts and not snapshots.problem:
+                notes.append(f"{wanted}: no published snapshot")
+            for host in hosts:
+                published = snapshots.hosts[host]
+                rows += _snapshot_rows(host, published)
+                notes.append(f"{host}: published snapshot from {published.get('published_at') or 'an unknown time'}")
+    group = group_by or view["group_by"]
+    everything = view["show_all"] if show_all is None else show_all
+    groups = session_list_view.arrange(
+        rows, local_host=local, group_by=group, sort_by=view["sort_by"], show_all=everything
+    )
+    if groups:
+        headers, cells = session_list_view.table(groups, group)
+        output.table(headers, cells)
     else:
-        for record in records:
-            output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
+        shown = "sessions" if everything else "running sessions"
+        hint = "" if everything else "; -a/--all shows every row"
+        output.emit(output.Tag.SESSIONS, "list", f"no {shown} recorded{hint}")
+    for note in notes:
+        output.emit(output.Tag.SESSIONS, "list", note)
 
 
 _SESSION_SLUG = r"[A-Za-z0-9_-]+"

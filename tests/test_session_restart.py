@@ -23,7 +23,6 @@ import psutil
 import pytest
 from conftest import run_cli
 from process_ownership import owned_process
-from process_wait import scaled
 
 from ai_cli import config, main
 from ai_cli import session_restart as restart
@@ -361,9 +360,11 @@ def world(tmp_path, monkeypatch):
             "term_grace_seconds": 0,
             "relaunch_timeout_seconds": 0,
             # With both waits at zero, the floor is all the time a request has for
-            # the simulated restart around them. Stretch it by how busy the host is,
-            # not the waits themselves, which tests that wait them out would use up.
-            "request_lifetime_floor_seconds": scaled(1),
+            # the simulated restart around them. No test waits it out (expiry tests
+            # set expires_at themselves), so it is generous rather than scaled: a
+            # load scale sampled at setup, capped at 4x, cannot cover a stall that
+            # starts after it, and a 4 s floor expired mid-restart under one.
+            "request_lifetime_floor_seconds": 600,
             "cooldown_seconds": 0,
         }
     }

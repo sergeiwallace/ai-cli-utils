@@ -12,7 +12,7 @@ import sys
 import time
 import uuid as uuid_module
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, cast
 
@@ -55,7 +55,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
-from .cli_help import HelpGroup
+from .cli_help import HelpGroup, RootHelpGroup
 from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -3461,6 +3461,18 @@ def _relaunch_argv(name: str, session_name: str) -> list[str]:
     return [*argv, session_name]
 
 
+def _holds_canonical_record(session_name: str) -> bool:
+    """Whether this machine's session registry holds a non-probe record for ``session_name``."""
+    try:
+        sessions = _session_registry.load_registry()["sessions"]
+    except Exception:
+        return False
+    return any(
+        record.get("kind") == "local" and record.get("name") == session_name and not record.get("probe")
+        for record in sessions
+    )
+
+
 def _track_launch(
     reporter: LaunchReporter, *, kind: str, name: str, session_name: str, remote: dict | None = None
 ) -> str | None:
@@ -3526,6 +3538,7 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
 #: The launch override for a partial migration. Per invocation only: never read from
 #: config or the environment, and never written into a boot recipe.
 ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
+PROBE_OPTS = ("-t", "--probe")
 
 
 class PartialMigrationRefusal(SystemExit):
@@ -4361,6 +4374,7 @@ def _do_session_launch(
     attach: bool = True,
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
+    probe: bool = False,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -5278,12 +5292,23 @@ def _do_session_launch(
         is_remote=is_remote,
         reporter=reporter,
     )
-    _new_note = (
-        _new_session_note(engine, name, naming_prefix, ai_name)
-        if replay_recipe is None and resume_target is None
-        else None
-    )
+    if probe:
+        _new_note = f"probe session {ai_name}: no first name, never relaunched, not a canonical session"
+    else:
+        _new_note = (
+            _new_session_note(engine, name, naming_prefix, ai_name)
+            if replay_recipe is None and resume_target is None
+            else None
+        )
     reporter.phase("session").outcome(_new_note or f"resolved {ai_name}")
+    if probe and _holds_canonical_record(session_id):
+        reporter.error(
+            "session",
+            f"{session_id} is the title of a canonical session this machine records, and a "
+            f"{'/'.join(PROBE_OPTS)} launch never takes one over. Nothing was created. "
+            f"Give the probe its own label: `ai {engine} {PROBE_OPTS[0]} NAME`.",
+        )
+        sys.exit(1)
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched.
     _finish_recorded_migrations(ai_name, reporter, allow_partial=allow_partial_migration)
@@ -5303,7 +5328,11 @@ def _do_session_launch(
             repair_bare_worktree_config(_repair_root)
         with reporter.phase("worktree", "creating isolated worktree") as _worktree_phase:
             try:
-                worktree_result = _session.create_worktree(ai_name, with_status=True)
+                worktree_result = (
+                    _session.create_worktree(ai_name, with_status=True, probe=True)
+                    if probe
+                    else _session.create_worktree(ai_name, with_status=True)
+                )
             except RuntimeError as exc:
                 reporter.error(
                     "worktree",
@@ -5338,14 +5367,19 @@ def _do_session_launch(
             )
         from .canonical_worktrees import CanonicalWorktreeRegistryError, register_canonical_worktree
 
-        try:
-            registry_action, registry_path = register_canonical_worktree(
-                worktree_path, engine=engine, session_name=session_id
-            )
-        except CanonicalWorktreeRegistryError as exc:
-            reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
-            sys.exit(1)
-        reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
+        if probe:
+            # A probe's worktree is scratch: recording it would tell every deletion guard
+            # it is a session home that must never be reaped.
+            reporter.detail("worktree", "probe worktree: not recorded as a canonical session worktree")
+        else:
+            try:
+                registry_action, registry_path = register_canonical_worktree(
+                    worktree_path, engine=engine, session_name=session_id
+                )
+            except CanonicalWorktreeRegistryError as exc:
+                reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
+                sys.exit(1)
+            reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
         # A launch that is about to ATTACH to a running engine must leave its checkout's
         # git state alone: the sync below resets the index, rebases the branch and
         # stashes/pops uncommitted edits, all under an agent that is working in that
@@ -5518,6 +5552,7 @@ def _do_session_launch(
                     "is_remote": is_remote,
                 },
                 extra_args=list(extra_args),
+                probe=probe,
             )
         except Exception as exc:
             reporter.error("session", f"cannot persist session launch state: {type(exc).__name__}; launch refused")
@@ -5607,7 +5642,7 @@ def _do_session_launch(
             replay_recipe["shell"] if replay_recipe is not None and replay_bare else _session_shell_or_exit()
         )
         _direnv = _direnv_prefix(target_root)
-        if not is_remote and not detached:
+        if not is_remote and not detached and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if replay_bare and replay_recipe is not None:
             command = replay_recipe["command"]
@@ -5787,7 +5822,7 @@ def _do_session_launch(
         )
         if (active_window.stdout or "").strip() != "wake-watch":
             _iterm2._rename_tmux_window(session_id, ai_name)
-        if not is_remote:
+        if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
@@ -5918,7 +5953,7 @@ def _do_session_launch(
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
         if not is_remote:
             _start_session_wake_watcher(config, identity.session_id, ai_name)
-        if not is_remote:
+        if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if not attach:
             _report_detached_launch(session_id, reporter)
@@ -5961,6 +5996,7 @@ def _session_command(engine: str):
         remote_args=(),
         naming=None,
         allow_partial_migration=False,
+        probe=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -6037,6 +6073,7 @@ def _session_command(engine: str):
                 attach=sys.stdin.isatty(),
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
+                probe=probe,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -6210,7 +6247,7 @@ class _ChiefFlagCommand(click.Command):
         return parser
 
 
-class _ChiefAliasGroup(HelpGroup):
+class _ChiefAliasGroup(RootHelpGroup):
     """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
@@ -6231,7 +6268,10 @@ class _ChiefAliasGroup(HelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
+    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+    Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
+    prints a command's full help."""
     _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
@@ -6272,6 +6312,15 @@ def _session_options(func):
         ),
     )(func)
     func = click.option("-o", "--once", is_flag=True, help="Run once without tmux auto-resume loop")(func)
+    func = click.option(
+        *PROBE_OPTS,
+        "probe",
+        is_flag=True,
+        help=(
+            "Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree "
+            "outside the repository that is not a canonical session worktree, no boot relaunch"
+        ),
+    )(func)
     func = click.option("-b", "--bare", is_flag=True, help="Run bare tool without tmux at all")(func)
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
@@ -6684,6 +6733,36 @@ def _prepare_chief_launch(
     return []
 
 
+def _probe_naming(naming: _NamingRequest, options: dict, *, chief: bool) -> _NamingRequest:
+    """The naming a ``-t/--probe`` launch takes: an index title under the ``probe`` label.
+
+    A probe is never a canonical session, so every flag that would name, reach or host
+    one is refused before anything is written. ``options["name"]`` becomes ``probe`` or
+    ``probe-NAME``, and the launch names it by index, never from the name registry.
+    """
+    conflicts = [
+        flag
+        for flag, given in (
+            ("-r/--resume", options.get("resume")),
+            ("-N/--name", naming.custom),
+            ("-w/--with-name", naming.with_name),
+            ("-u/--no-name", naming.no_name),
+            ("-S/--session-names", naming.session_names is True),
+            ("-F/--chief", chief),
+            ("-R/--remote", options.get("remote")),
+        )
+        if given
+    ]
+    if conflicts:
+        raise click.UsageError(
+            f"{'/'.join(PROBE_OPTS)} launches a throwaway session that holds no first name and is never "
+            f"resumed, relaunched or hosted remotely, so it cannot be combined with {', '.join(conflicts)}"
+        )
+    name = str(options.get("name") or "")
+    options["name"] = f"probe-{name}" if name else "probe"
+    return replace(naming, session_names=False)
+
+
 def _dispatch_session(engine: str, ctx, options: dict) -> None:
     """Route one engine command's options to the ordinary or the chief-of-staff launch.
 
@@ -6719,6 +6798,8 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"{name!r} looks like a chief-of-staff name but is not {chief_name} or {chief_name}-N; "
             f"launch the chief as `ai c {chief_name}[-N]`, or add a suffix with `ai c --chief SUFFIX`"
         )
+    if options.get("probe"):
+        naming = _probe_naming(naming, options, chief=chief)
     remote_args: list[str] = []
     try:
         if chief:
@@ -6756,7 +6837,9 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "on the remote host. TITLE is the session's title, ending in a first name "
         "(myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. "
         "Without -r, a NAME that is not an existing title labels a NEW session, and the "
-        "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`."
+        "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.\n\n"
+        "For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a "
+        "session home, and it can be removed like any scratch worktree once it exits."
     ),
 )
 @_session_options
@@ -7530,7 +7613,7 @@ def cmd_color(color_arg):
 
 @_cli_group.command(
     "migrate-transcript",
-    help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
+    help="Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree",
 )
 @click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("-t", "--title", default="", help="Select the source session by its customTitle (session name)")
