@@ -472,3 +472,21 @@ def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_na
     assert "no available/generation.json; run `ai sync-names` to publish one" in out + err
     assert _registry_refs(unpublished) == before
     assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
+
+
+def test_given_a_migration_incomplete_hold_when_a_clean_failure_release_is_asked_then_it_refuses_keeping_it(fleet):
+    named = reg.Slot(
+        repo="myrepo", repo_alias="myrepo", host_alias="box", label=None, machine=HOST, client="claude-code"
+    )
+    reservation = reg.reserve_for_migration(fleet.registry, named, OLD, name="cleo", max_length=None, words=frozenset())
+    survivors = [{"kind": "worktree", "identifier": f".worktrees/{reservation.title}"}]
+    reg.mark_migration_incomplete(fleet.registry, OLD, HOST, survivors)
+    tip = fleet.tip()
+
+    with pytest.raises(reg.WriteRefusedError, match="migration-incomplete"):
+        reg.release_failed_migration(fleet.registry, OLD, HOST)
+
+    assert fleet.tip() == tip
+    row = fleet.rows()["cleo"]
+    assert row["state"] == "migration-incomplete" and row["recovery"] == survivors
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"

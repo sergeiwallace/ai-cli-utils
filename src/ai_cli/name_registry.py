@@ -2344,6 +2344,11 @@ def release_failed_migration(registry: Registry, old_title: str, machine: str) -
         new_token = str(record["new_title"]).rsplit("-", 1)[-1]
         writes: dict[str, bytes | None] = {migration_path(old_title): None}
         row = snapshot.rows.get(new_token)
+        if row is not None and row.get("state") == "migration-incomplete":
+            raise WriteRefusedError(
+                f"{new_token} is migration-incomplete: its recorded survivors are under {record['new_title']}, so it "
+                "is not released; run the same `ai migrate-session` command again"
+            )
         if row is not None and row.get("title") == record["new_title"] and row.get("machine") == machine:
             writes[row_path(new_token)] = None
         return Change(writes, f"session-names: release {new_token} after the failed rename of {old_title}")
