@@ -371,3 +371,28 @@ def test_agent_entry_point_when_session_marker_matches_then_running_is_preserved
     before = registry.registry_path().read_bytes()
     assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
     assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("server", [False, True, None])
+def test_linux_without_tmux_when_launcher_is_dead_then_absence_or_unknown_is_reported(
+    stale_record, monkeypatch, server
+):
+    import psutil
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(registry, "_local_session_alive", _LOCAL_SESSION_ALIVE)
+    monkeypatch.setattr(registry.subprocess, "run", Mock(side_effect=FileNotFoundError("tmux")))
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": "tmux: server"}
+    if server is None:
+        monkeypatch.setattr(psutil, "process_iter", Mock(side_effect=psutil.AccessDenied(42)))
+    else:
+        monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process] if server else []))
+    before = registry.registry_path().read_bytes()
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    if server is False:
+        assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
+        assert _LOCAL_SESSION_ALIVE("c-session-1") is False
+    else:
+        assert registry.registry_path().read_bytes() == before
+        assert _LOCAL_SESSION_ALIVE("c-session-1") is None
