@@ -97,6 +97,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tmux
           tmux -V
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/dolt.tar.gz" https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-linux-amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/dolt.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/dolt-linux-amd64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dolt-linux-amd64/bin/dolt" version
       - run: uv sync --locked --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
@@ -196,6 +206,18 @@ jobs:
       # for tmux's sake), and naming the interpreter is what keeps uv from
       # picking that one up. The version-sync check reads these flags too, so
       # they cannot drift away from `.python-version`.
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-windows-amd64.zip -OutFile "$env:RUNNER_TEMP\dolt.zip"
+          Expand-Archive "$env:RUNNER_TEMP\dolt.zip" -DestinationPath "$env:RUNNER_TEMP\dolt"
+          $bin = Get-ChildItem -Recurse -Filter dolt.exe "$env:RUNNER_TEMP\dolt" | Select-Object -First 1
+          $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & $bin.FullName version
       - shell: msys2 {0}
         run: uv sync --locked --dev --python 3.14
       # `pytest_ci_shard` picks this shard's tests by a hash of each node id, so the two
@@ -269,5 +291,15 @@ jobs:
       # converse too: it fails a run that skips a tmux test while tmux IS usable,
       # so this install going missing can no longer pass as a smaller green run.
       - run: brew install tmux
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/dolt.tar.gz" https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-darwin-arm64.tar.gz
+          tar -xzf "$RUNNER_TEMP/dolt.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/dolt-darwin-arm64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dolt-darwin-arm64/bin/dolt" version
       - run: uv sync --locked --dev
       - run: uv run pytest --tb=short -q
