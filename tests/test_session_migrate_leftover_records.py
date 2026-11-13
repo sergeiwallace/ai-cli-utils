@@ -18,6 +18,7 @@ Every test drives the real command on the shared fixture slot.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -146,7 +147,9 @@ def test_given_a_process_working_in_a_pruned_entry_when_finished_then_the_contai
         worker.wait()
 
     assert code == 1, out + err
-    assert f"pid {worker_pid} works in pruned-leaf" in out
+    # Either process of a launcher pair works in the entry, so either may be the one named.
+    named = {int(pid) for pid in re.findall(r"pid (\d+) works in pruned-leaf", out)}
+    assert named and named <= {worker.pid, worker_pid}, out
     assert (container / "pruned-leaf" / "work.txt").is_file()
     assert (container / "bare-leaf" / "sub" / "notes.md").is_file()
 
