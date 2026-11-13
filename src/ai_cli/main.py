@@ -4722,7 +4722,7 @@ def _do_session_launch(
     # refuses to nest ("sessions should be nested with care"). That refusal used to come
     # at the very end, after a name was reserved and the worktree synchronized, leaving
     # the name held by a session that never ran. Refuse here, above every write.
-    if not remote and not bare and attach and os.environ.get("TMUX"):
+    if not remote and not bare and attach and not detached and os.environ.get("TMUX"):
         reporter.error(
             "tmux",
             "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"

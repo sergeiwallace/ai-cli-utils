@@ -489,7 +489,7 @@ def stop_session(
             continue
         marker = int_exit_marker(tmux_session)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        marker.write_text("stop\n", encoding="utf-8")
         report.marked.append(tmux_session)
         report.supervisors.extend(live)
         tracked.update(live)
