@@ -88,6 +88,19 @@ def mark(name, status, cause, evidence, generation, sequence):
         raise click.ClickException("session state persistence refused; retry before returning to the shell")
 
 
+@sessions.command("_exit-receipt", hidden=True)
+@click.argument("name")
+@click.argument("generation", required=False)
+@click.argument("timeout", type=click.FloatRange(min=0), default=5.0)
+def exit_receipt(name, generation, timeout):
+    from .session_exit import owning_receipt
+
+    try:
+        click.echo(json.dumps(owning_receipt(name, generation, timeout)))
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
 @click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")

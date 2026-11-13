@@ -314,3 +314,142 @@ def detach_cleanup(name: str, *, host: str, generation: str, timeout: float) -> 
     return subprocess.Popen(
         pinned_python(code), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
     )
+
+
+def owning_receipt(name: str, generation: str | None = None, timeout: float = 5) -> dict:
+    """Read an owning-host generation, optionally tearing down that exact run."""
+    local_host = (
+        state.config.load_config(read_only=True).get("machine", {}).get("host_id")
+        or registry.load_registry()["machine"]
+    )
+    row = state._find(registry.load_registry(), name)
+    if row.get("owning_host") != local_host or not row.get("generation"):
+        raise ValueError("owning host or generation cannot be verified")
+    if generation:
+        if row["generation"] != generation:
+            raise ValueError("session generation changed; nothing signalled")
+        row, targets, self_exit = resolve_exit(name)
+        if self_exit:
+            raise ValueError("remote teardown must run outside the target session")
+        result = exit_session(
+            name,
+            host=local_host,
+            generation=generation,
+            timeout=timeout,
+            agent=ProcessIdentity(**targets["agent"]) if targets.get("agent") else None,
+            supervisor=ProcessIdentity(**targets["supervisor"]) if targets.get("supervisor") else None,
+            tmux=TmuxIdentity(**targets["tmux"]) if targets.get("tmux") else None,
+        )
+        if not result.complete:
+            raise ValueError("remote cleanup unresolved: " + "; ".join(result.errors))
+        row = state._find(registry.load_registry(), name)
+    return {
+        key: row.get(key)
+        for key in (
+            "name",
+            "owning_host",
+            "generation",
+            "run_state",
+            "changed_at",
+            "ended_at",
+            "transition_seq",
+            "exit",
+            "supervisor_exit",
+        )
+    }
+
+
+def _remote_receipt(row: dict, *, generation: str | None = None, timeout: float = 5) -> dict:
+    import json
+    import shlex
+    from pathlib import Path
+
+    remote = row.get("remote") or {}
+    machine = state.config.get_remote_machine(state.config.load_config(read_only=True), remote.get("alias") or "")
+    host = machine.get("vpn_host") or machine.get("host")
+    if not host or not remote.get("session"):
+        raise ValueError("remote host or session is missing")
+    args = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(machine.get("port", 22))]
+    if machine.get("identity_file"):
+        args += ["-i", str(Path(machine["identity_file"]).expanduser())]
+    args.append(f"{machine['user']}@{host}" if machine.get("user") else host)
+    command = ["ai", "sessions", "_exit-receipt", remote["session"]]
+    if generation:
+        command += [generation, str(timeout)]
+    done = subprocess.run(
+        [*args, shlex.join(command)], capture_output=True, text=True, check=False, timeout=15 + 2 * timeout
+    )
+    if done.returncode:
+        raise ValueError("owning host did not acknowledge the exit receipt")
+    receipt = json.loads(done.stdout)
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("name") != remote["session"]
+        or not isinstance(receipt.get("generation"), str)
+        or not receipt["generation"]
+        or not receipt.get("owning_host")
+        or receipt.get("run_state") not in {"running", "exited", "unknown"}
+        or (generation and receipt["generation"] != generation)
+        or (row.get("owning_host") and row["owning_host"] != receipt["owning_host"])
+    ):
+        raise ValueError("invalid owning-host generation receipt")
+    return receipt
+
+
+def _accept_receipt(snapshot: dict, receipt: dict) -> bool:
+    teardown = state.exit_teardown(receipt)
+    if receipt["run_state"] != "exited" or teardown.get("generation") != receipt["generation"]:
+        return False
+    if not teardown.get("complete") or not receipt.get("ended_at"):
+        raise ValueError("owning-host exit committed; cleanup remains unresolved")
+
+    def update(doc):
+        row = next((r for r in doc["sessions"] if r.get("id") == snapshot["id"]), None)
+        if row != snapshot:
+            raise ValueError("client mirror changed while awaiting receipt")
+        row.update(receipt)
+        return True
+
+    registry._mutate(update, timeout=2)
+    return True
+
+
+def remote_mirror(name: str | None) -> dict | None:
+    """An explicit remote mirror is the only authority for selecting a remote host."""
+    if name is None:
+        return None
+    rows = [r for r in registry.load_registry()["sessions"] if r.get("kind") == "remote" and r.get("name") == name]
+    if len(rows) > 1:
+        raise ValueError("multiple remote mirrors match; remote exit unresolved")
+    return rows[0] if rows else None
+
+
+def request_remote_exit(row: dict, *, timeout: float, dry_run: bool = False) -> None:
+    """Fence an owning-host exit and acknowledge it without signalling the client shell."""
+    try:
+        receipt = _remote_receipt(row, timeout=timeout)
+        if dry_run:
+            return
+        receipt = _remote_receipt(row, generation=receipt["generation"], timeout=timeout)
+        if not _accept_receipt(row, receipt):
+            raise ValueError("owning host did not acknowledge a completed exit")
+    except (ValueError, OSError, subprocess.SubprocessError, registry.RegistryError, LockException) as exc:
+        raise ValueError(f"remote exit unresolved: {exc}") from exc
+
+
+def receive_remote_exit(record_id: str) -> bool:
+    """Check for a manual-exit receipt before either transport retries a connection."""
+    import click
+
+    row = next((r for r in registry.load_registry()["sessions"] if r.get("id") == record_id), None)
+    if row is None or row.get("kind") != "remote":
+        return False
+    try:
+        receipt = _remote_receipt(row)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        # Unreachable hosts prove nothing; ordinary transport recovery still applies.
+        return False
+    try:
+        return _accept_receipt(row, receipt)
+    except (ValueError, OSError, registry.RegistryError, LockException) as exc:
+        raise click.ClickException(f"remote exit unresolved: {exc}") from exc

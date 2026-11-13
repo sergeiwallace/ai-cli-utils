@@ -4960,7 +4960,9 @@ def _do_session_launch(
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
-            _track_launch(reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote)
+            _record_id = _track_launch(
+                reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
+            )
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
@@ -4973,6 +4975,7 @@ def _do_session_launch(
                         tailscale_host=host,
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
+                        on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     )
                 )
             finally:
@@ -5008,6 +5011,7 @@ def _do_session_launch(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
 
@@ -6283,15 +6287,21 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json, event
         ctx.exit(0)
 
 
+def _receive_remote_exit(record_id):
+    from .session_exit import receive_remote_exit
+
+    return receive_remote_exit(record_id)
+
+
 @_cli_group.command(
     "exit-session",
     help="Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified "
     "ancestor session record. Older supervisors without recorded process identities must first be relaunched. "
     "Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. "
-    "Remote receipts are not yet supported.",
+    "Remote mirrors use an acknowledged owning-host generation receipt.",
 )
 @click.argument("name", required=False)
-@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit (not yet available)")
+@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit through the recorded remote mirror")
 @click.option(
     "-t", "--timeout", default=5.0, type=click.FloatRange(min=0), show_default=True, help="Seconds per teardown wait"
 )
@@ -6302,11 +6312,21 @@ def cmd_exit_session(name, remote, timeout, dry_run):
     from . import session_exit
     from . import session_run_state as state
 
-    if remote:
-        raise click.ClickException("Remote receipts arrive in a later implementation; remote exit is not yet available")
     if not math.isfinite(timeout):
         raise click.BadParameter("must be finite", param_hint="--timeout")
     try:
+        mirror = session_exit.remote_mirror(name)
+        if mirror:
+            session_exit.request_remote_exit(mirror, timeout=timeout, dry_run=dry_run)
+            _out.emit(
+                Tag.SESSION,
+                "exit",
+                f"{name}: "
+                + ("Would exit on owning host" if dry_run else "exited; owning-host generation acknowledged"),
+            )
+            return
+        if remote:
+            raise ValueError("remote receipts require a named remote mirror; remote exit unresolved")
         row, targets, self_exit = session_exit.resolve_exit(name)
         name = row["name"]
         if dry_run:
