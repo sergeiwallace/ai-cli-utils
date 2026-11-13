@@ -79,6 +79,26 @@ def _process_alive(record: dict) -> bool | None:
     return False
 
 
+def liveness_blocker(record: dict) -> str:
+    """Explain a migration refusal using current owning-host liveness evidence."""
+    if record.get("kind") != "local":
+        return "liveness is unprovable on this host"
+    if registry._local_session_alive(record["name"]) is True:
+        return f"live tmux session {record['name']}"
+    try:
+        for process in psutil.process_iter(["pid", "status"]):
+            if process.info["pid"] != record.get("launcher_pid") or process.info["status"] == psutil.STATUS_ZOMBIE:
+                continue
+            launched = datetime.fromisoformat(record["launched_at"].replace("Z", "+00:00"))
+            if process.create_time() <= launched.timestamp() + 1:
+                return f"live launcher pid {process.info['pid']}"
+        if _process_alive(record) is True:
+            return "live agent or session wrapper process"
+    except (psutil.Error, OSError, ValueError, KeyError):
+        pass
+    return "liveness is unprovable; inspect the launcher, tmux and process evidence"
+
+
 def reconcile(*, names: set[str] | None = None) -> None:
     """Probe without the registry lock, then settle only unchanged records.
 

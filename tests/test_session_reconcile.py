@@ -154,7 +154,10 @@ def test_given_live_or_unprovable_run_when_migration_preflights_then_running_is_
     else:
         monkeypatch.setattr(psutil, "process_iter", Mock(side_effect=psutil.AccessDenied(42)))
     before = registry.registry_path().read_bytes()
-    with pytest.raises(MigrationError, match="run state is still running"):
+    blocker = {"tmux": "live tmux session", "agent": "live agent", "launcher": "live launcher pid"}.get(
+        guard, "unprovable"
+    )
+    with pytest.raises(MigrationError, match=blocker):
         _plan_iterm2("session-1")
     assert registry.registry_path().read_bytes() == before
 
