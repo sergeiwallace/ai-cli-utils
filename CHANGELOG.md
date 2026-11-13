@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c NEW` no longer re-plans a migration whose ledger row is a verified `finished`. That
+  re-plan read every Beads store, hook and repo on the host, so an unrelated failure there
+  refused the launch of a migration already proved finished, after minutes with no output.
+  `ai migrate-session -s -a` and `--finish` still re-check a verified pair. A launch that
+  attaches to an already running NEW now warns with the parts left and the `--finish` command
+  instead of refusing, since a finish cannot run against a live session.
+- The launch guard and `ai migrate-session` print a line as each slow migration step starts and
+  ends with its elapsed time: each hook's dry run and live run, each Beads store's read, re-key
+  and publish, the scan of other repos and the verifying re-plan.
+- `could not list registered git worktrees` names git's exit status, or the signal that ended
+  it, when git printed nothing on stderr.
 - `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
   bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
   its code objects, so tools reading source through them found nothing until the caches were
