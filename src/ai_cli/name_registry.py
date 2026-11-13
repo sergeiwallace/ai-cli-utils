@@ -1654,7 +1654,8 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
         if not free:
             because = f" ({cause})" if cause else ""
             raise SparesExhaustedError(
-                f"the registry is unreachable{because} and this machine has no unactivated approved spare name left; "
+                f"the registry is unreachable{because} and this machine has no unactivated spare name left "
+                "that is approved; "
                 "once online, "
                 "run `ai reconcile-names` to publish the activations and replenish the spares"
             )

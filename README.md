@@ -716,7 +716,12 @@ A name is picked from the name database: a generated list of first names of 3 to
 letters with common English words removed, plus any name added by hand. The picker
 never hands out a held name, a name one typo away from a held name, or a name whose
 title would be a prefix of another session's. A name you choose with `-N` passes the
-same checks. If it is not in the database yet, `ai` asks
+same checks. On a database registry (the local SQLite one, or the fleet's Dolt one) each
+name also has a general status, `unreviewed`, `rejected` or `approved`, and may be approved
+or rejected for one repository, host or session only. The picker hands out only approved
+names that no verdict rejects for the launch, and refuses when the status data cannot be
+read. A name you choose needs no approval, but a rejected one needs a session approval,
+and a scoped rejection always refuses it. If it is not in the database yet, `ai` asks
 `cleo is not in the name database. Add it? [y/n]`. Answering `n`, or choosing a name
 that is refused, leads to `Name to use instead, or "auto" to pick one:`, which takes
 another name (added without a second question) or `auto`. A value outside the limits
@@ -747,8 +752,12 @@ The registry is the first repository under the projects directory that ships
 `config/session-names.toml`. That file names a git ref, and every machine reserves
 names on it with a fast-forward push, so two machines can never take the same name.
 It also sets the length limits for every machine that uses it, plus per-host
-`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With no such
-repository, the registry is a local directory seeded with the shipped list.
+`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With
+`registry_backend = "dolt"` and `schema = 2` the registry is a Dolt database on its own ref
+of that repository's remote (`registry_dolt_ref`, default `refs/dolt/session-names`), reached
+through the `dolt` program, which each such machine needs installed. With no such
+repository, the registry is a local SQLite file seeded with the shipped list, every name
+approved.
 `ai show-name-config` prints each setting with the layer that set it.
 
 Offline, a launch takes one of the spare names its machine reserved earlier and
@@ -768,7 +777,13 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. An unactivated spare has no worktree or transcript to test, so it is released when no offline launch has taken it and only by the host that holds it. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
-| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. |
+| `ai list-names [-j/--json] [-p/--pool]` | Every held name with its title, host, client, kind and general status, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. `-p/--pool` lists every name in the database with its status and holder. |
+| `ai set-name-status -a/--actor WHO [-r/--reason TEXT] STATUS NAME...` | Set the general status (`unreviewed`, `rejected` or `approved`) of every name given, in one write; refuses the whole call when one is not in the database. |
+| `ai set-name-verdict -s/--scope repo\|host\|session -v/--value V -a/--actor WHO [-r/--reason TEXT] [-d/--delete] VERDICT NAME...` | Approve or reject names for one repository, host or session only, or remove that verdict. |
+| `ai find-names [-s/--status S] [-k/--scope KIND] [-v/--value V] [-m/--machine M] [-t/--state STATE] [-H/--history NAME] [-j/--json]` | Names matching every filter, with their verdicts and holder; `-H/--history` lists every past value of one name (fleet Dolt registry only). |
+| `ai list-migrations [-j/--json]` | Every recorded rename and its state. |
+| `ai import-names [-f/--from-ref REF] [-d/--dry-run]` | Copy the git-ref registry into the fleet's Dolt database in one commit, printing what it holds; a second run finds nothing to import. |
+| `ai seed-name-verdicts -f/--file PATH` | Apply the owner's approvals from a seed file, each at the scope it was given, once the file matches the owner-approved oracle the fleet repository pins. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
 | `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |
