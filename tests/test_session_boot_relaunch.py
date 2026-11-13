@@ -320,6 +320,25 @@ def test_given_detached_boot_launch_when_attach_used_later_then_ac_2_5_existing_
     handoff.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", boot_record["name"]])
 
 
+def test_given_remote_origin_recipe_when_replayed_then_tmux_and_wrapper_keep_the_remote_identity(
+    detached_launch, boot_record
+):
+    name = "c-r-myproject-host-1"
+    boot_record["name"] = name
+    recipe = boot_record["boot_recipe"]
+    recipe["session_name"] = name
+    recipe["options"]["is_remote"] = True
+    recipe["argv"][2] = name
+    recipe["argv"].append("--is-remote")
+    session_commands._launch_recipe(boot_record)
+    calls, script = detached_launch
+    created = [argv for argv, _ in calls if argv[:2] == ["tmux", "new-session"]]
+    assert len(created) == 1
+    assert created[0][created[0].index("-s") + 1] == name
+    assert script.call_args.args[2] == name
+    assert script.call_args.kwargs["is_remote"] is True
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_given_running_shutdown_record_when_boot_cli_replays_then_ac_2_1_detached_tmux_is_created(
     boot_cli, detached_launch, monkeypatch, platform

@@ -169,6 +169,74 @@ def _everything(slot) -> dict:
     return trees
 
 
+@pytest.mark.parametrize("finish", [False, True])
+@pytest.mark.parametrize("argument", [f"c-{OLD}", "3"])
+def test_given_saved_launch_directory_when_migrated_then_restore_uses_the_new_worktree(slot, finish, argument):
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    record = doc["sessions"][0]
+    record["cwd"] = str(slot["wt"])
+    record["relaunch_argv"] = ["ai", "c", argument, "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    if finish:
+        doc = json.loads(path.read_text())
+        doc["sessions"][0]["cwd"] = str(slot["wt"])
+        path.write_text(json.dumps(doc))
+        code, out, err = _migrate(slot["repo"], "--finish", "-y")
+        assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    assert record["cwd"] == record["boot_recipe"]["cwd"] == str(new_wt)
+    assert record["relaunch_argv"] == [
+        "ai",
+        "c",
+        f"c-{NEW}" if argument.startswith("c-") else NEW,
+        "-p",
+        "myrepo",
+        "-D",
+    ]
+    assert _git("branch", "--show-current", cwd=new_wt).strip() == f"wt-{NEW}"
+    assert (slot["claude"] / "tasks" / NEW).is_dir()
+
+
+def test_given_remote_origin_slot_when_migrated_then_boot_and_wrapper_keep_remote_names(slot):
+    meta_path = slot["state"] / f"session-meta-c-{OLD}.json"
+    meta = json.loads(meta_path.read_text())
+    meta.update(session=f"c-r-{OLD}", is_remote=True, prefix="c-r-myrepo-")
+    remote_meta = slot["state"] / f"session-meta-c-r-{OLD}.json"
+    meta_path.rename(remote_meta)
+    remote_meta.write_text(json.dumps(meta))
+    registry_path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(registry_path.read_text())
+    record = doc["sessions"][0]
+    record["name"] = record["boot_recipe"]["session_name"] = f"c-r-{OLD}"
+    record["boot_recipe"]["options"]["is_remote"] = True
+    record["boot_recipe"]["argv"][2] = f"c-r-{OLD}"
+    record["boot_recipe"]["argv"].append("--is-remote")
+    registry_path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    meta = json.loads((slot["state"] / f"session-meta-c-r-{NEW}.json").read_text())
+    record = json.loads(registry_path.read_text())["sessions"][0]
+    assert meta["session"] == record["name"] == record["boot_recipe"]["session_name"] == f"c-r-{NEW}"
+    assert meta["is_remote"] is record["boot_recipe"]["options"]["is_remote"] is True
+
+
+def test_given_renamed_record_with_stale_numeric_resume_when_finished_then_launch_argument_is_repaired(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    doc["sessions"][0]["relaunch_argv"] = ["ai", "c", "3", "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "--finish", "-y")
+    assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    assert record["relaunch_argv"] == ["ai", "c", NEW, "-p", "myrepo", "-D"]
+
+
 def test_given_running_restore_record_when_migrated_then_refused_before_any_artifact_moves(slot):
     path = slot["state"] / "iterm2-sessions.json"
     document = json.loads(path.read_text())
