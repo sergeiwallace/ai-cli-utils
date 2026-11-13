@@ -48,7 +48,7 @@ def test_given_unregistered_launch_when_generation_recovers_then_exact_local_rec
     record = registry.load_registry()["sessions"][0]
     assert record["name"] == name and record["kind"] == "local"
     assert record["generation"] == result.output.strip()
-    assert record["relaunch"] == "never"
+    assert (record["relaunch"], record["relaunch_set_by"]) == ("auto", "default")
     assert state.valid_boot_recipe(record)
     assert record["boot_recipe"]["options"]["is_remote"] is remote
     assert record["boot_recipe"]["cwd"] == meta["worktree_dir"]
@@ -65,7 +65,7 @@ def test_given_existing_record_when_generation_recovers_then_policy_and_ownershi
 
     def prepare(doc):
         record = doc["sessions"][0]
-        record.update(relaunch="always", custom="keep")
+        record.update(relaunch="always", relaunch_set_by="owner", custom="keep")
         if existing != "recipe":
             record.pop("boot_recipe")
         if existing == "foreign":

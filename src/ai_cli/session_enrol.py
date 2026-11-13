@@ -197,7 +197,8 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
         current_record = current_matches[0] if current_matches else prepared_record
         if not current_matches:
             doc["sessions"].append(current_record)
-        current_record.update(boot_recipe=recipe, owning_host=recipe["owning_host"], relaunch="never")
+        current_record.update(boot_recipe=recipe, owning_host=recipe["owning_host"])
+        state.default_relaunch(current_record)
         return True
 
     registry._mutate(change, timeout=2)
@@ -356,7 +357,7 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
         if not current:
             doc["sessions"].append(record)
         record.update(boot_recipe=recipe, owning_host=host)
-        record.setdefault("relaunch", "never")
+        state.default_relaunch(record)
         return True
 
     registry._mutate(change, timeout=2)

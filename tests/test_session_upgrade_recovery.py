@@ -144,7 +144,7 @@ def test_given_old_retrying_supervisor_when_package_changes_then_script_and_regi
     assert tmux("display-message", "-p", "#{pane_pid}").stdout.strip() == leader
     document = json.loads(registry.registry_path().read_text(encoding="utf-8"))
     assert len(document["sessions"]) == 1
-    assert document["sessions"][0]["relaunch"] == "never"
+    assert document["sessions"][0]["relaunch"] == "auto"
 
 
 def test_given_old_acquisition_and_extended_keys_when_terminal_interrupts_then_supervisor_stops_without_respawn(
