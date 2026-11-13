@@ -25,7 +25,7 @@ slot = test_session_migrate.slot
 FOREIGN = f"{UUID[:8]}-ffff-4000-8000-00000000000f"
 
 
-def _job(slot, session_id: str = UUID, name: str = OLD) -> Path:
+def _job(slot, session_id: str = UUID, name: str = OLD, cwd: Path | None = None) -> Path:
     record = slot["claude"] / "jobs" / session_id[:8] / "state.json"
     record.parent.mkdir(parents=True, exist_ok=True)
     job = {
@@ -35,7 +35,7 @@ def _job(slot, session_id: str = UUID, name: str = OLD) -> Path:
         "sessionId": session_id,
         "resumeSessionId": session_id,
         "backend": "daemon",
-        "cwd": str(slot["wt"]),
+        "cwd": str(cwd or slot["wt"]),
     }
     record.write_text(json.dumps(job, indent=2), encoding="utf-8")
     return record
@@ -128,7 +128,8 @@ def test_given_a_resume_that_wrote_old_after_the_migration_when_finished_then_th
 
 
 def test_given_another_sessions_job_record_under_the_same_short_id_when_migrated_then_it_is_left_alone(slot):
-    record = _job(slot, session_id=FOREIGN)
+    # Outside the slot: a record whose cwd lies in the moved slot has that cwd repointed whoever owns it.
+    record = _job(slot, session_id=FOREIGN, cwd=slot["repo"])
     before = record.read_bytes()
 
     code, out, err = _migrate(slot["repo"], "-y")
