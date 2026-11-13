@@ -840,6 +840,13 @@ ref_prefix = "refs/heads/fleet-sessions/"
 debounce_seconds = 60
 host = ""
 
+[session_registry]
+## Hours a session row stays in `ai sessions list` once its session is proved gone
+## (no tmux session and no agent process; for a remote row, the host's tmux has no
+## such session). A row from an earlier boot counts from this boot's start. Read on
+## every call; 0 keeps every row.
+# stale_row_retention_hours = 72
+
 [sessions_list]
 ## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on
 ## every call; a flag on the command overrides each one. Reference:
