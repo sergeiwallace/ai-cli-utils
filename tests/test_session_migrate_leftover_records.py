@@ -18,8 +18,6 @@ Every test drives the real command on the shared fixture slot.
 from __future__ import annotations
 
 import json
-import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -127,7 +125,7 @@ def test_given_a_process_working_in_a_pruned_entry_when_finished_then_the_contai
     try:
         code, out, err = _finish(slot["repo"], "-y")
     finally:
-        os.kill(worker.pid, signal.SIGKILL)
+        worker.kill()
         worker.wait()
 
     assert code == 1, out + err
@@ -228,7 +226,10 @@ def test_given_sub_agent_records_left_by_an_earlier_migration_when_finished_then
         code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     records = _new_subagents(slot)
-    assert json.loads((records / "agent-amoved.meta.json").read_text())["worktreePath"].endswith(f"{OLD}-agents/leaf")
+    assert Path(json.loads((records / "agent-amoved.meta.json").read_text())["worktreePath"]).parts[-2:] == (
+        f"{OLD}-agents",
+        "leaf",
+    )
 
     code, out, err = _status(slot)
     assert code == 1, out + err
