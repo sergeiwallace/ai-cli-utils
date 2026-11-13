@@ -20,6 +20,8 @@ from ai_cli import name_registry as reg
 
 STEM = "myrepo-box"  # the legacy slot myrepo-3 predates the host alias in names
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch, slot):  # noqa: F811
@@ -45,10 +47,10 @@ def test_given_a_stopped_session_when_migrated_to_a_chosen_name_then_the_reservi
     assert (fleet.slot["repo"] / ".worktrees" / new).is_dir()
     record = json.loads(fleet.file(f"migrations/{OLD}.json"))
     assert record["status"] == "complete" and record["new_title"] == new
-    history = git(fleet.remote, "log", "--format=%H", "refs/heads/fleet-session-names/registry").splitlines()
+    history = fleet.history()
     reserving = next(commit for commit in history if "names/cleo.json" in fleet.changed(commit))
     assert f"migrations/{OLD}.json" in fleet.changed(reserving)
-    assert json.loads(git(fleet.remote, "show", f"{reserving}:migrations/{OLD}.json"))["status"] == "intent"
+    assert json.loads(fleet.file(f"migrations/{OLD}.json", at=reserving))["status"] == "intent"
     assert fleet.rows()["cleo"]["source"] == "migrated"
 
 
@@ -423,6 +425,7 @@ def _registry_refs(fleet) -> tuple[str, str]:
     )
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 def test_given_no_published_generation_when_the_host_sweep_dry_runs_then_it_plans_from_the_shipped_list(
     unpublished,
 ):
@@ -436,6 +439,7 @@ def test_given_no_published_generation_when_the_host_sweep_dry_runs_then_it_plan
     assert _registry_refs(unpublished) == before
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 def test_given_no_published_generation_when_one_session_dry_runs_to_a_name_then_a_shipped_name_is_planned(
     unpublished,
 ):
@@ -454,6 +458,7 @@ def test_given_no_published_generation_when_one_session_dry_runs_to_a_name_then_
     assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 @pytest.mark.parametrize("args", [("--to-name",), ("--all", "--to-names")])
 def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_naming_sync_names(unpublished, args):
     before = _registry_refs(unpublished)

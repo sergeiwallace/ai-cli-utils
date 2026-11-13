@@ -17,6 +17,8 @@ from name_fleet import HOST, NAMES, OTHER_HOST, REPO, STEM, build_fleet, git, po
 from ai_cli import main, output
 from ai_cli import name_registry as reg
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 
 class _Named(Exception):
     def __init__(self, ai_name: str) -> None:
@@ -240,6 +242,7 @@ def test_given_the_reserve_fails_with_a_spare_left_when_launching_then_the_warni
     assert any(f"offline: using reserved spare {spare}" in line and str(failure) in line for line in logged)
 
 
+@pytest.mark.registry_backends("git")  # a push URL apart from the fetch URL is git-only; Dolt has one remote URL
 def test_given_a_failing_push_and_no_spare_when_launching_then_the_refusal_names_the_push(
     tmp_path, monkeypatch, launch, capsys
 ):
@@ -308,6 +311,7 @@ def _fresh_clone_fleet(tmp_path, monkeypatch):
     return fleet
 
 
+@pytest.mark.registry_backends("git")  # the git store's own ref; test_name_dolt covers a host with no Dolt clone yet
 def test_given_a_clone_that_never_fetched_the_registry_when_launching_then_it_fetches_and_reserves_a_pick(
     tmp_path, monkeypatch, launch
 ):
@@ -320,6 +324,7 @@ def test_given_a_clone_that_never_fetched_the_registry_when_launching_then_it_fe
     assert fleet.rows()[token]["machine"] == HOST
 
 
+@pytest.mark.registry_backends("git")  # the git store's own ref; test_name_dolt covers a host with no Dolt clone yet
 def test_given_a_clone_that_never_fetched_the_registry_when_a_name_is_asked_for_then_it_is_reserved(
     tmp_path, monkeypatch, launch
 ):
@@ -331,6 +336,7 @@ def test_given_a_clone_that_never_fetched_the_registry_when_a_name_is_asked_for_
     assert fleet.rows()["cleo"]["machine"] == HOST
 
 
+@pytest.mark.registry_backends("git")  # the git store's own ref; test_name_dolt covers a host with no Dolt clone yet
 def test_given_a_clone_that_never_fetched_the_registry_when_dry_running_then_it_plans_and_reserves_nothing(
     tmp_path, monkeypatch, launch, capsys
 ):
@@ -349,6 +355,7 @@ def test_given_a_clone_that_never_fetched_the_registry_when_dry_running_then_it_
     [(None, False), (main._NamingRequest(custom="cleo"), False), (None, True)],
     ids=["picked", "custom", "dry-run"],
 )
+@pytest.mark.registry_backends("git")  # the git store's own ref; test_name_dolt covers a host with no Dolt clone yet
 def test_given_a_clone_that_never_fetched_the_registry_and_it_unreachable_when_launching_then_it_exits_75_taking_nothing(
     tmp_path, monkeypatch, launch, capsys, naming, dry_run
 ):

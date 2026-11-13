@@ -15,12 +15,24 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from name_fleet import HOST, OTHER_HOST, REPO, STEM, build_fleet, git, policy_commit, policy_of, publish_list
+from name_fleet import (
+    HOST,
+    OTHER_HOST,
+    REPO,
+    STEM,
+    build_fleet,
+    git,
+    policy_commit,
+    publish_list,
+    unrelated_write,
+)
 
 from ai_cli import name_registry as reg
 from ai_cli import session_clients
 from ai_cli.cc_migrate import cc_project_dir
 from ai_cli.main import _cli_group
+
+pytestmark = pytest.mark.usefixtures("registry_backend")
 
 
 @pytest.fixture
@@ -311,6 +323,7 @@ def test_given_a_spare_an_offline_launch_took_when_released_by_hand_then_it_refu
     assert fleet.rows()[taken.name]["kind"] == "spare"
 
 
+@pytest.mark.registry_backends("git")  # a database's own checks refuse a session row without a client
 def test_given_a_session_row_without_a_client_when_released_by_hand_then_it_still_refuses(fleet):
     _repo(fleet)
     _session(fleet, "cleo")
@@ -336,7 +349,7 @@ def test_given_a_reassignment_when_it_succeeds_then_the_row_stays_held_with_only
     after = fleet.rows()["cleo"]
     assert {key for key in reg.ROW_FIELDS if before[key] != after[key]} == {"machine"}
     assert after["machine"] == OTHER_HOST
-    assert "host renamed" in git(fleet.remote, "log", "-1", "--format=%s", "refs/heads/fleet-session-names/registry")
+    assert "host renamed" in fleet.message()
     reconcile()
     assert "cleo" in fleet.rows(), "a reassigned row is not this host's to release"
 
@@ -355,7 +368,7 @@ def test_given_an_unknown_host_id_when_reassigning_then_it_is_refused(fleet, mon
 
 
 def _narrow(fleet, high: int = 3) -> None:
-    policy = policy_of(fleet.repo)
+    policy = json.loads(json.dumps(fleet.registry.snapshot().policy))
     policy["limits"]["max_name_length"] = high
     publish_list(fleet.registry, ["ada", "bob", "cyd", "eve", "ivy"], policy, policy_commit(fleet.repo))
 
@@ -438,8 +451,8 @@ _RELEASE_RACE_CHILD = textwrap.dedent(
     from pathlib import Path
     from ai_cli import name_registry as reg
     repo = Path(sys.argv[1])
-    registry = reg.GitRegistry(repo, ref="refs/heads/fleet-session-names/registry", remote="origin",
-                               policy_file=repo / reg.POLICY_MARKER, timeout_s=10, attempts=3)
+    registry = reg.discover().registry
+    registry.timeout_s, registry.attempts = 10, 3
     slot = reg.Slot(repo="myrepo", repo_alias="myrepo", host_alias="box", label=None, machine=sys.argv[2],
                     client="claude-code")
     started = time.monotonic()
@@ -452,6 +465,7 @@ _RELEASE_RACE_CHILD = textwrap.dedent(
 )
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_a_spare_release_holding_the_lock_when_an_offline_launch_wants_a_spare_then_it_never_takes_the_released_one(
     fleet, monkeypatch
 ):
@@ -465,10 +479,11 @@ def test_given_a_spare_release_holding_the_lock_when_an_offline_launch_wants_a_s
         )
     )
     _narrow(fleet)
-    real_push = reg.GitRegistry._push
+    cls = type(fleet.registry)
+    real_push = cls._push
     seen: dict = {}
 
-    def push(self, commit):
+    def push(self, *args):
         if self.repo == fleet.repo and "child" not in seen:
             # Between the release's final spool check and its push: an offline launch starts,
             # and another machine lands a write first so the push is refused and retried.
@@ -481,10 +496,10 @@ def test_given_a_spare_release_holding_the_lock_when_an_offline_launch_wants_a_s
             time.sleep(1.0)
             seen["waiting"] = seen["child"].poll() is None
             other = fleet.other_machine("racer")
-            other.transact(lambda s: reg.Change({"README.md": b"racer\n"}, "unrelated (fixture)"))
-        return real_push(self, commit)
+            other.transact(lambda s: reg.Change(unrelated_write(other), "unrelated (fixture)"))
+        return real_push(self, *args)
 
-    monkeypatch.setattr(reg.GitRegistry, "_push", push)
+    monkeypatch.setattr(cls, "_push", push)
 
     code, summary = reconcile()
     outcome = json.loads(seen["child"].communicate(timeout=60)[0])
@@ -608,21 +623,24 @@ def test_given_a_row_rewritten_while_it_is_probed_when_reconciled_then_it_is_hel
 
 
 def _land_before_push(monkeypatch, fleet, conflicting):
-    real_push = reg.GitRegistry._push
+    """Land ``conflicting`` on the remote just before this machine's first push."""
+    cls = type(fleet.registry)
+    real_push = cls._push
     outcomes: list[bool] = []
 
-    def push(self, commit):
+    def push(self, *args):
         if self.repo == fleet.repo and not outcomes:
             conflicting()
-        result = real_push(self, commit)
+        result = real_push(self, *args)
         if self.repo == fleet.repo:
             outcomes.append(result)
         return result
 
-    monkeypatch.setattr(reg.GitRegistry, "_push", push)
+    monkeypatch.setattr(cls, "_push", push)
     return outcomes
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_a_reassignment_landing_first_when_a_release_retries_then_the_row_is_kept(fleet, monkeypatch):
     _repo(fleet)
     _session(fleet, "cleo")
@@ -638,6 +656,7 @@ def test_given_a_reassignment_landing_first_when_a_release_retries_then_the_row_
     assert fleet.rows()["cleo"]["machine"] == OTHER_HOST
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_a_re_reservation_landing_first_when_a_release_retries_then_the_new_row_is_kept(fleet, monkeypatch):
     _repo(fleet)
     _session(fleet, "cleo")
@@ -662,6 +681,7 @@ def test_given_a_re_reservation_landing_first_when_a_release_retries_then_the_ne
     assert fleet.rows()["cleo"]["machine"] == OTHER_HOST
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_this_hosts_row_rewritten_first_when_a_release_retries_then_the_rewritten_row_is_kept(fleet, monkeypatch):
     _repo(fleet)
     _session(fleet, "cleo")
@@ -681,6 +701,7 @@ def test_given_this_hosts_row_rewritten_first_when_a_release_retries_then_the_re
     assert fleet.rows()["cleo"]["client"] == "codex"
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_a_reassignment_landing_first_when_the_spool_is_published_then_the_entry_is_kept(fleet, monkeypatch):
     fleet.registry.transact(
         lambda s: reg.Change(
@@ -709,6 +730,7 @@ def test_given_a_reassignment_landing_first_when_the_spool_is_published_then_the
     assert fleet.rows()["lola"]["kind"] == "spare"
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_given_a_migration_intent_landing_first_when_a_release_retries_then_the_renamed_row_is_kept(fleet, monkeypatch):
     _repo(fleet)
     _session(fleet, "cleo")

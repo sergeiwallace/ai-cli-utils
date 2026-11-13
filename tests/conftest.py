@@ -2165,3 +2165,15 @@ def registry_backend(request, monkeypatch):
         pytest.skip("the dolt program is not installed: the Dolt registry case was not run")
     monkeypatch.setattr(name_fleet, "BACKEND", request.param)
     return request.param
+
+
+def pytest_collection_modifyitems(config, items):
+    """Collect a test marked ``registry_backends(...)`` only for the backends it names."""
+    kept, dropped = [], []
+    for item in items:
+        marker = item.get_closest_marker("registry_backends")
+        backend = getattr(getattr(item, "callspec", None), "params", {}).get("registry_backend")
+        (dropped if marker and backend and backend not in marker.args else kept).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept

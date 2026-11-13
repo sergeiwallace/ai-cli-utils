@@ -1820,14 +1820,8 @@ def reconcile(
                     writes[row_path(token)] = None
                     spares_out.append(token)
             held = held_tokens(tip, current_spool) - set(released) - set(spares_out)
-            remaining = Snapshot(
-                tip=tip.tip,
-                rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out},
-                blobs=tip.blobs,
-                manual=tip.manual,
-                migrations=tip.migrations,
-                names=tip.names,
-                generation=tip.generation,
+            remaining = replace(
+                tip, rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out}
             )
             slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
             top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)

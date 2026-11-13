@@ -22,6 +22,8 @@ from name_fleet import HOST, OTHER_HOST, REPO, build_fleet
 from ai_cli import name_prompt
 from ai_cli import name_registry as reg
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 WORDS = frozenset({"may", "sun"})
 SLOT = reg.Slot(repo=REPO, repo_alias=REPO, host_alias="box", label=None, machine=HOST, client="claude-code")
 OTHER_SLOT = reg.Slot(repo=REPO, repo_alias=REPO, host_alias="two", label=None, machine=OTHER_HOST, client="codex")
@@ -262,21 +264,24 @@ def test_t17_given_end_of_input_or_ctrl_c_at_a_question_when_answered_then_it_ex
 
 
 def _land_first(monkeypatch, fleet, conflicting):
-    real_push = reg.GitRegistry._push
+    """Land ``conflicting`` on the remote just before this machine's first push."""
+    cls = type(fleet.registry)
+    real_push = cls._push
     pushes: list[bool] = []
 
-    def push(self, commit):
+    def push(self, *args):
         if self is fleet.registry and not pushes:
             conflicting()
-        result = real_push(self, commit)
+        result = real_push(self, *args)
         if self is fleet.registry:
             pushes.append(result)
         return result
 
-    monkeypatch.setattr(reg.GitRegistry, "_push", push)
+    monkeypatch.setattr(cls, "_push", push)
     return pushes
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_t19_given_the_name_taken_before_the_push_with_a_terminal_when_written_then_the_new_reason_is_shown(
     fleet, monkeypatch
 ):
@@ -289,6 +294,7 @@ def test_t19_given_the_name_taken_before_the_push_with_a_terminal_when_written_t
     assert reader.asked[-1] == QUESTION
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_t20_given_the_name_taken_before_the_push_without_a_terminal_when_written_then_it_exits_two(fleet, monkeypatch):
     _land_first(monkeypatch, fleet, lambda: hold(fleet, "cleo"))
 
@@ -298,6 +304,7 @@ def test_t20_given_the_name_taken_before_the_push_without_a_terminal_when_writte
     assert "cleo is held by" in outcome.message
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry has no publish step to race
 def test_t21_given_the_picked_name_taken_before_the_push_when_written_then_it_picks_again(fleet, monkeypatch):
     hold(fleet, "cleo")
     taken: list[str] = []
@@ -397,8 +404,7 @@ _CHILD = textwrap.dedent(
     from ai_cli import config, main, name_prompt
     from ai_cli import name_registry as reg
     repo = Path(sys.argv[1])
-    registry = reg.GitRegistry(repo, ref=sys.argv[2], remote="origin", policy_file=repo / reg.POLICY_MARKER,
-                               timeout_s=15, attempts=5)
+    registry = reg.discover().registry
     slot = reg.Slot(repo="myrepo", repo_alias="myrepo", host_alias="box", label=None, machine="box-one",
                     client="claude-code")
     io = name_prompt.PromptIO(terminal=config._can_prompt(), ask=main._prompt_line,

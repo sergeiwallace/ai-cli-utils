@@ -132,6 +132,7 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-n auto -p pytest_memory_guard"
 markers = [
+    "registry_backends(*names): collect a registry_backend-parametrized test only for these backends",
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
     "real_nats: test drives NATSClient.connect itself (opts out of the conftest connection block)",

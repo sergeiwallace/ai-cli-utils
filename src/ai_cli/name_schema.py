@@ -501,10 +501,22 @@ def _insert(table: str, db: dict, dialect: str, key: str) -> Statement:
     return Statement(sql, tuple(db[column] for column in columns) + where_params, key)
 
 
-def _update(table: str, old: dict, new: dict, dialect: str, key: str) -> Statement:
-    changed = [column for column in TABLE[table].column_names if column in new and new[column] != old.get(column)]
+def _comparable(column: str, value: object) -> object:
+    if TABLE_COLUMN_KIND.get(column) == "json" and isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _update(table: str, old: dict, new: dict, dialect: str, key: str) -> Statement | None:
+    """The guarded update, or None when ``new`` changes nothing: an update that changes no
+    column affects no row, and the read-back after the write still checks the value."""
+    changed = [
+        column
+        for column in TABLE[table].column_names
+        if column in new and _comparable(column, new[column]) != _comparable(column, old.get(column))
+    ]
     if not changed:
-        changed = list(TABLE[table].key)
+        return None
     assignments = ", ".join(f"{column} = {_value_sql(column, dialect)}" for column in changed)
     where, where_params = _equals(list(TABLE[table].column_names), old, dialect)
     return Statement(
@@ -515,6 +527,11 @@ def _update(table: str, old: dict, new: dict, dialect: str, key: str) -> Stateme
 def _delete(table: str, old: dict, dialect: str, key: str) -> Statement:
     where, params = _equals(list(TABLE[table].column_names), old, dialect)
     return Statement(f"delete from {table} where {where}", params, key)
+
+
+def _stage(statements: list[Statement], statement: Statement | None) -> None:
+    if statement is not None:
+        statements.append(statement)
 
 
 def _name_db(name: str, origin: str, **fields: object) -> dict:
@@ -559,7 +576,7 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
                 claimants[path] = claimant
                 staged["holds"].append(_insert("holds", hold_to_db(row, claimant), dialect, path))
             else:
-                staged["holds"].append(_update("holds", old, hold_to_db(row, old["claimant"]), dialect, path))
+                _stage(staged["holds"], _update("holds", old, hold_to_db(row, old["claimant"]), dialect, path))
             intended[path] = row
         elif path.startswith(f"{reg.MIGRATIONS_DIR}/"):
             title = path[len(reg.MIGRATIONS_DIR) + 1 :].removesuffix(".json")
@@ -575,7 +592,7 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
             if old is None:
                 staged["migrations"].append(_insert("migrations", new, dialect, path))
             elif old != new:
-                staged["migrations"].append(_update("migrations", old, new, dialect, path))
+                _stage(staged["migrations"], _update("migrations", old, new, dialect, path))
         elif path.startswith(f"{reg.MANUAL_DIR}/"):
             name = path[len(reg.MANUAL_DIR) + 1 :].removesuffix(".json")
             old = tables.names.get(name)
@@ -597,7 +614,7 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
                 staged["manual"].append(_insert("names", db, dialect, path))
             else:
                 db = {**old, "origin": "manual", **fields}
-                staged["manual"].append(_update("names", old, db, dialect, path))
+                _stage(staged["manual"], _update("names", old, db, dialect, path))
             names_after[name] = db
             intended[path] = manual_from_db(db)
         elif path == reg.NAMES_TXT:
@@ -648,7 +665,7 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
                 "status_set_at": entry.get("set_at"),
                 "status_reason": entry.get("reason"),
             }
-            staged["status"].append(_update("names", old, new, dialect, path))
+            _stage(staged["status"], _update("names", old, new, dialect, path))
             names_after[name] = new
             intended[path] = status_from_db(new)
         elif path.startswith(f"{VERDICTS_DIR}/"):
@@ -665,7 +682,7 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
             if old is None:
                 staged["verdicts"].append(_insert("verdicts", new, dialect, path))
             elif old != new:
-                staged["verdicts"].append(_update("verdicts", old, new, dialect, path))
+                _stage(staged["verdicts"], _update("verdicts", old, new, dialect, path))
             intended[path] = verdict_from_db(new)
         elif path.startswith(f"{META_DIR}/"):
             key = path[len(META_DIR) + 1 :]
@@ -674,8 +691,8 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
             if old_value is None:
                 staged["meta"].append(_insert("meta", {"k": key, "v": value}, dialect, path))
             elif old_value != value:
-                staged["meta"].append(
-                    _update("meta", {"k": key, "v": old_value}, {"k": key, "v": value}, dialect, path)
+                _stage(
+                    staged["meta"], _update("meta", {"k": key, "v": old_value}, {"k": key, "v": value}, dialect, path)
                 )
             intended[path] = value
         else:

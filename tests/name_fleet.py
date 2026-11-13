@@ -133,7 +133,25 @@ def policy_commit(repo: Path) -> str | None:
     return git(repo, "log", "-1", "--format=%H", "--", "config/session-names.toml") or None
 
 
-def publish_list(registry: reg.Registry, names: list[str], policy: dict, commit: str | None) -> None:
+def status_writes(statuses: dict[str, str]) -> dict[str, bytes | None]:
+    """The writes that give each name its general status, as ``ai set-name-status`` records it."""
+    from ai_cli import name_schema
+
+    entry = {"actor": "fixture", "recorded_by": "fixture", "set_at": "2026-01-01T00:00:00Z", "reason": None}
+    return {
+        name_schema.status_path(name): name_schema.canonical({**entry, "status": status}).encode()
+        for name, status in sorted(statuses.items())
+    }
+
+
+def publish_list(
+    registry: reg.Registry,
+    names: list[str],
+    policy: dict,
+    commit: str | None,
+    statuses: dict[str, str] | None = None,
+) -> None:
+    """Publish ``names``; on a database registry each gets a status, approved unless ``statuses`` says otherwise."""
     record = {
         "schema": 1,
         "policy": policy,
@@ -141,16 +159,23 @@ def publish_list(registry: reg.Registry, names: list[str], policy: dict, commit:
         "policy_commit": commit,
         "count": len(names),
     }
-    registry.transact(
-        lambda snapshot: reg.Change(
-            {
-                reg.NAMES_TXT: name_list.render_names(sorted(names)).encode(),
-                reg.GENERATION_JSON: name_list.render_record(record).encode(),
-            },
-            "session-names: generate (fixture)",
-        ),
-        exempt=True,
-    )
+    writes: dict[str, bytes | None] = {
+        reg.NAMES_TXT: name_list.render_names(sorted(names)).encode(),
+        reg.GENERATION_JSON: name_list.render_record(record).encode(),
+    }
+    if not isinstance(registry, reg.GitRegistry):
+        wanted = dict.fromkeys(names, "approved") if statuses is None else dict(statuses)
+        writes.update(status_writes({name: status for name, status in wanted.items() if status != "unreviewed"}))
+    registry.transact(lambda snapshot: reg.Change(writes, "session-names: generate (fixture)"), exempt=True)
+
+
+def unrelated_write(registry: reg.Registry) -> dict[str, bytes | None]:
+    """A write that touches no name, hold or rename, so a race with it changes nothing a guard reads."""
+    if isinstance(registry, reg.GitRegistry):
+        return {"README.md": b"racer\n"}
+    from ai_cli import name_schema
+
+    return {name_schema.meta_path("fixture_racer"): str(id(registry)).encode()}
 
 
 def render_file(snapshot: reg.Snapshot, path: str) -> str | None:
@@ -165,6 +190,16 @@ def render_file(snapshot: reg.Snapshot, path: str) -> str | None:
     if records is None or parts.stem not in records:
         return None
     return reg.encode_json(records[parts.stem]).decode()
+
+
+def logical_files(snapshot: reg.Snapshot) -> dict[str, str]:
+    """Every record of ``snapshot`` keyed by the path the git-tree store keeps it at."""
+    paths = [reg.NAMES_TXT, reg.GENERATION_JSON]
+    paths += [reg.row_path(token) for token in snapshot.rows]
+    paths += [reg.manual_path(name) for name in snapshot.manual]
+    paths += [reg.migration_path(title) for title in snapshot.migrations]
+    files = {path: render_file(snapshot, path) for path in paths}
+    return {path: text for path, text in files.items() if text is not None}
 
 
 @dataclass
@@ -224,6 +259,26 @@ class Fleet:
     def _index(self, commit: str) -> int:
         return next(index for index, item in enumerate(self.commits) if item.id == commit)
 
+    def rows_at(self, commit: str) -> dict[str, dict]:
+        """The held rows as of ``commit``."""
+        if self.backend == "git":
+            listing = git(self.remote, "ls-tree", "--name-only", f"{commit}:names")
+            return {
+                path.removesuffix(".json"): json.loads(git(self.remote, "show", f"{commit}:names/{path}"))
+                for path in listing.splitlines()
+                if path
+            }
+        rows: dict[str, dict] = {}
+        for item in self.commits[: self._index(commit) + 1]:
+            for path, data in item.writes.items():
+                if path.startswith(f"{reg.NAMES_DIR}/"):
+                    token = path[len(reg.NAMES_DIR) + 1 :].removesuffix(".json")
+                    if data is None:
+                        rows.pop(token, None)
+                    else:
+                        rows[token] = json.loads(data)
+        return rows
+
     def tip(self) -> str:
         if self.backend == "git":
             return git(self.remote, "rev-parse", REF)
@@ -246,6 +301,19 @@ class Fleet:
         if self.backend == "git":
             target = commit or self.tip()
             return set(git(self.remote, "diff-tree", "--no-commit-id", "--name-only", "-r", target).splitlines())
+        if commit is None:
+            # A write from another process never reaches the spy: compare the store itself.
+            replayed: dict[str, str] = {}
+            for item in self.commits:
+                for path, data in item.writes.items():
+                    if data is None:
+                        replayed.pop(path, None)
+                    else:
+                        replayed[path] = data.decode()
+            current = logical_files(self.snapshot())
+            differs = {path for path in set(current) | set(replayed) if current.get(path) != replayed.get(path)}
+            if differs:
+                return differs
         found = self.commits[self._index(commit)] if commit else self.commits[-1]
         return set(found.writes)
 
@@ -262,18 +330,23 @@ class Fleet:
         if self.backend == "sqlite":
             return registry_for(self.repo, backend="sqlite")
         checkout = clone(self.remote, self.tmp / name)
-        return registry_for(checkout, path=self.tmp / f"{name}.dolt" if self.backend == "dolt" else None)
+        path = self.tmp / f"{name}.dolt" if self.backend == "dolt" else None
+        return registry_for(checkout, backend=self.backend, path=path)
 
 
 def _spy_on_commits(monkeypatch, fleet: Fleet) -> None:
     """Record every change a database backend commits, as the git-tree store's history would show it."""
     cls = type(fleet.registry)
     original = cls.transact
+    current: dict[str, bytes | None] = {}
 
     def transact(self, build, *, exempt: bool = False):
         change = original(self, build, exempt=exempt)
         if change is not None:
-            fleet.commits.append(Commit(f"c{len(fleet.commits) + 1}", dict(change.writes), change.message))
+            # As a tree diff would, leave out a record rewritten with the bytes it already had.
+            writes = {path: data for path, data in change.writes.items() if current.get(path, b"") != data}
+            current.update(change.writes)
+            fleet.commits.append(Commit(f"c{len(fleet.commits) + 1}", writes, change.message))
         return change
 
     monkeypatch.setattr(cls, "transact", transact)
@@ -287,6 +360,7 @@ def build_fleet(
     policy_toml: str = POLICY_TOML,
     publish: bool = True,
     backend: str | None = None,
+    statuses: dict[str, str] | None = None,
 ) -> Fleet:
     backend = backend or BACKEND
     if backend == "dolt":
@@ -327,6 +401,7 @@ def build_fleet(
             list(names if names is not None else NAMES),
             policy_of(repo, policy_toml),
             policy_commit(repo) if backend != "sqlite" else None,
+            statuses,
         )
     return fleet
 

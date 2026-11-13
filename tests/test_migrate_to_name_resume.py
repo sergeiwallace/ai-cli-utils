@@ -17,6 +17,8 @@ fleet = test_migrate_to_name.fleet
 slot = test_session_migrate.slot
 hooks = test_session_migrate_hooks.hooks
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 
 def test_given_a_named_plan_with_a_conflicting_artifact_when_previewed_then_completion_is_not_reported(fleet):
     (fleet.slot["state"] / f"cc-resume-prompt-c-{STEM}-cleo").write_text("unrelated prompt")
