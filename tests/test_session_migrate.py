@@ -168,6 +168,38 @@ def _everything(slot) -> dict:
     return trees
 
 
+@pytest.mark.parametrize("finish", [False, True])
+@pytest.mark.parametrize("argument", [f"c-{OLD}", "3"])
+def test_given_saved_launch_directory_when_migrated_then_restore_uses_the_new_worktree(slot, finish, argument):
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    record = doc["sessions"][0]
+    record["cwd"] = str(slot["wt"])
+    record["relaunch_argv"] = ["ai", "c", argument, "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    if finish:
+        doc = json.loads(path.read_text())
+        doc["sessions"][0]["cwd"] = str(slot["wt"])
+        path.write_text(json.dumps(doc))
+        code, out, err = _migrate(slot["repo"], "--finish", "-y")
+        assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    assert record["cwd"] == record["boot_recipe"]["cwd"] == str(new_wt)
+    assert record["relaunch_argv"] == [
+        "ai",
+        "c",
+        f"c-{NEW}" if argument.startswith("c-") else NEW,
+        "-p",
+        "myrepo",
+        "-D",
+    ]
+    assert _git("branch", "--show-current", cwd=new_wt).strip() == f"wt-{NEW}"
+    assert (slot["claude"] / "tasks" / NEW).is_dir()
+
+
 def test_given_running_restore_record_when_migrated_then_refused_before_any_artifact_moves(slot):
     path = slot["state"] / "iterm2-sessions.json"
     document = json.loads(path.read_text())
