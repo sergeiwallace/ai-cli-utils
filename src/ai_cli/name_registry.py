@@ -153,6 +153,8 @@ NAME_STATUSES = ("unreviewed", "rejected", "approved")
 # The values the earlier approval-status record used, as an import reads them.
 LEGACY_STATUSES = {"excluded": "rejected", "needs-review": "unreviewed"}
 SCOPE_KINDS = ("repo", "host", "session")
+# A spare the cutover import holds for an old offline client; ordinary commands never release it.
+QUARANTINED = "cutover-quarantined"
 VERDICT_VALUES = ("approved", "rejected")
 
 
@@ -2026,6 +2028,9 @@ def reconcile(
         if title is None:
             policy = snapshot.policy
             for row in snapshot.rows_of(machine, "spare"):
+                # A cutover-quarantined spare stays held until the cutover reconciles it.
+                if row.get("state") == QUARANTINED:
+                    continue
                 if row["token"] not in spool and _over_limits(row["token"], policy):
                     spares[row["token"]] = snapshot.blobs.get(row["token"], "")
         if dry_run:
@@ -2056,6 +2061,7 @@ def reconcile(
                 if (
                     row is not None
                     and row["kind"] == "spare"
+                    and row.get("state") != QUARANTINED
                     and tip.blobs.get(token) == blob
                     and row.get("machine") == machine
                     and token not in current_spool

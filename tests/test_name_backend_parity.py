@@ -224,3 +224,41 @@ def test_given_a_local_policy_when_synced_twice_then_only_the_first_regenerates(
     assert first.published and len(generated) == 1
     assert not second.published
     assert fleet.tip() == tip
+
+
+# --- a cutover-quarantined spare ----------------------------------------------------------------
+
+
+def _quarantine(fleet, token: str) -> None:
+    """Hold ``token`` as a quarantined spare, as the cutover import writes it; no client path writes one."""
+    import sqlite3
+
+    from ai_cli import name_dolt
+    from ai_cli import name_schema as schema
+
+    db = schema.hold_to_db(reg.spare_row(name=token, host_alias="box", machine=HOST), f"{HOST}:cutover:import")
+    db["state"] = reg.QUARANTINED
+    columns = ", ".join(db)
+    if fleet.backend == "sqlite":
+        connection = sqlite3.connect(fleet.registry.path, isolation_level=None)
+        connection.execute(f"insert into holds ({columns}) values ({', '.join('?' for _ in db)})", tuple(db.values()))
+        connection.close()
+        return
+    writer = fleet.other_machine("cutover")
+    writer.snapshot()
+    values = ", ".join(name_dolt.literal(value) for value in db.values())
+    writer.dolt("sql", "-q", f"insert into holds ({columns}) values ({values}); call dolt_commit('-Am', 'quarantine')")
+    writer.dolt("push", "origin", "main")
+
+
+def test_given_a_quarantined_spare_over_the_limits_when_reconciled_then_it_stays_held(fleet):
+    _quarantine(fleet, "lola")
+    policy = json.loads(json.dumps(fleet.registry.snapshot().policy))
+    policy["limits"]["max_name_length"] = 3
+    publish_list(fleet.registry, ["ada", "bob", "cyd"], policy, "narrowed")
+
+    report = reg.reconcile(fleet.registry, HOST, projects_root=fleet.projects, adapters={}, host_alias="box")
+
+    assert "lola" not in report.spares_released
+    row = fleet.rows()["lola"]
+    assert row["kind"] == "spare" and row["state"] == reg.QUARANTINED
