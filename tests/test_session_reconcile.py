@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.main import _cli_group
+from ai_cli.session_migrate import MigrationError, _plan_iterm2
 from ai_cli.stale_session_reaper import run_stale_session_reaper
 
 _LOCAL_SESSION_ALIVE = registry._local_session_alive
@@ -119,6 +120,42 @@ def test_given_live_or_unknown_tmux_when_listed_then_running_is_preserved(stale_
     monkeypatch.setattr(registry, "_local_session_alive", lambda _name: alive)
     before = registry.registry_path().read_bytes()
     assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("guard", ["tmux", "unknown_tmux", "agent", "launcher", "safety", "recent", "process_table"])
+def test_given_live_or_unprovable_run_when_migration_preflights_then_running_is_preserved(
+    stale_record, monkeypatch, guard
+):
+    import psutil
+
+    if guard in {"tmux", "unknown_tmux"}:
+        monkeypatch.setattr(registry, "_local_session_alive", lambda _name: True if guard == "tmux" else None)
+    elif guard in {"agent", "launcher"}:
+        process = Mock()
+        process.info = {
+            "pid": -1,
+            "username": psutil.Process().username(),
+            "status": "running",
+        }
+        process.create_time.return_value = 0
+        process.cmdline.return_value = ["claude", "--name", "session-1"]
+        process.environ.return_value = {}
+        monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+        if guard == "launcher":
+            registry._mutate(lambda doc: doc["sessions"][0].update(launcher_pid=-1) or True)
+            process.cmdline.return_value = ["bash"]
+    elif guard == "safety":
+        path = state.tombstone_path("c-session-1", "host-a")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    elif guard == "recent":
+        assert state.mark_running("c-session-1")
+    else:
+        monkeypatch.setattr(psutil, "process_iter", Mock(side_effect=psutil.AccessDenied(42)))
+    before = registry.registry_path().read_bytes()
+    with pytest.raises(MigrationError, match="run state is still running"):
+        _plan_iterm2("session-1")
     assert registry.registry_path().read_bytes() == before
 
 
