@@ -100,9 +100,12 @@ def test_reused_identity_when_exiting_then_replacement_survives(running, child):
 def test_stopped_target_when_exiting_then_cont_precedes_term(running, child, monkeypatch):
     proc = psutil.Process(child.pid)
     proc.suspend()
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 15
     while proc.status() != psutil.STATUS_STOPPED and time.monotonic() < deadline:
         time.sleep(0.01)
+    # Fail here, not later: a loaded runner can be slow to report the stop, and a target that
+    # never looked stopped would (correctly) get no SIGCONT, which reads as a code failure.
+    assert proc.status() == psutil.STATUS_STOPPED
     original = psutil.Process.send_signal
     seen = []
 
