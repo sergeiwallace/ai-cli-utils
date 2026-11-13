@@ -32,7 +32,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
 | [`ai g`](#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
 | [`ai iterm2 sessions`](#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
@@ -40,6 +42,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout list`](#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
@@ -75,6 +78,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai release-name`](#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](#ai-remove-name) | Session names: remove a name that was added by hand |
 | [`ai retire-session`](#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](#ai-session-reaper-status) | Show stale-session reaper status |
@@ -561,6 +565,25 @@ Arguments:
 | `-d` | `--dry-run` |  | Show the verified exit without writing or signalling |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai find-names
+
+```text
+ai find-names [OPTIONS]
+```
+
+Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-s` | `--status` | `[unreviewed\|rejected\|approved]` | General status |
+| `-k` | `--scope` | `[repo\|host\|session]` | Verdict scope kind |
+| `-v` | `--value` | `TEXT` | Verdict scope value |
+| `-m` | `--machine` | `TEXT` | The host holding the name |
+| `-t` | `--state` | `[reserved\|active\|migration-incomplete\|cutover-quarantined]` | Hold state |
+| `-H` | `--history` | `NAME` | Every past value of NAME (Dolt only) |
+| `-j` | `--json` |  | Print JSON |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai g
 
 ```text
@@ -598,6 +621,20 @@ Arguments:
 | `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai import-names
+
+```text
+ai import-names [OPTIONS]
+```
+
+Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-f` | `--from-ref` | `TEXT` | The old registry ref (default: registry_ref) |
+| `-d` | `--dry-run` |  | Count what would be imported and write nothing |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai iterm2
@@ -703,6 +740,19 @@ Arguments:
 
 | Short | Long | Value | Description |
 |---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai list-migrations
+
+```text
+ai list-migrations [OPTIONS]
+```
+
+Session names: list every recorded rename with its state
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-j` | `--json` |  | Print the rows as JSON |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai list-name-candidates
@@ -1259,6 +1309,19 @@ Arguments:
 | `-r` | `--repo` | `DIRECTORY` | Repo root that owns .worktrees/ (default: detected from the current directory) |
 | `-n` | `--dry-run` |  | Print what would be removed and preserved without writing |
 | `-y` | `--yes` |  | Skip the confirmation prompt |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai seed-name-verdicts
+
+```text
+ai seed-name-verdicts [OPTIONS]
+```
+
+Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-f` | `--file` | `FILE` | The seed file (TOML)  [required] |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai session-reaper

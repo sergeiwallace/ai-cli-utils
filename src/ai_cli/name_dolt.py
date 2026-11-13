@@ -351,6 +351,23 @@ class DoltRegistry(reg.FleetRegistry):
             f"the registry write lost the race to other writers {self.attempts} times in a row; nothing was written"
         )
 
+    def _query(self, statement: schema.Statement) -> list[dict]:
+        """``statement``'s rows at the freshly fetched remote tip."""
+        with self.locked():
+            self._ensure_clone()
+            self._fetch()
+            self._reset()
+            try:
+                return self.sql_rows(f"{render(statement)};\n")[0]
+            except reg.WriteRefusedError as exc:
+                raise reg.RegistryError(f"cannot query the registry database: {exc}") from exc
+
+    def find_names(self, filters: dict[str, str | None]) -> list[dict]:
+        return schema.found_names(self._query(schema.find_query(filters)))
+
+    def history(self, name: str) -> list[dict]:
+        return schema.changes_only(self._query(schema.history_query(name)))
+
 
 def literal(value: object) -> str:
     """``value`` as a Dolt SQL literal; the CLI binds no parameters."""

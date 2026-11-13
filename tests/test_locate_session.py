@@ -37,6 +37,10 @@ ADDED = [
     "probe-transcripts",
     "set-name-status",
     "set-name-verdict",
+    "import-names",
+    "seed-name-verdicts",
+    "list-migrations",
+    "find-names",
 ]
 VERBS = {
     "list",
@@ -51,6 +55,9 @@ VERBS = {
     "reassign",
     "probe",
     "set",
+    "import",
+    "seed",
+    "find",
 }
 
 

@@ -149,3 +149,10 @@ class SqliteRegistry(reg.Registry):
             if problems:
                 raise reg.RegistryError(f"the write committed but reads back differently: {'; '.join(problems)}")
             return change
+
+    def find_names(self, filters: dict[str, str | None]) -> list[dict]:
+        statement = schema.find_query(filters)
+        with self._locked(), contextlib.closing(self.connect()) as connection:
+            self._create(connection)
+            rows = [dict(row) for row in connection.execute(statement.sql, statement.params)]
+        return schema.found_names(rows)

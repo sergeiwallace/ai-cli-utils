@@ -538,6 +538,14 @@ class Registry:
         """
         raise NotImplementedError
 
+    def find_names(self, filters: dict[str, str | None]) -> list[dict]:
+        """The pool names matching every filter, from one query; only a database registry has one."""
+        raise WriteRefusedError("searching names needs the database registry; this one is a git tree")
+
+    def history(self, name: str) -> list[dict]:
+        """Every past value of ``name``'s status, verdicts and hold; only the fleet's Dolt registry keeps it."""
+        raise WriteRefusedError("name history needs the fleet registry on Dolt; this registry keeps no history")
+
 
 class FleetRegistry(Registry):
     """A registry shared through a sibling repository that ships ``config/session-names.toml``."""

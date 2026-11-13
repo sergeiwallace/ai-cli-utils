@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai import-names` copies the git-tree registry (pool, manual names, held rows, renames and policy
+  snapshot) into the fleet's Dolt database in one commit and prints its counts; a second run finds
+  nothing to import. `ai seed-name-verdicts -f FILE` applies the owner's approvals at the scope each
+  was given, after checking every part of the seed file against an owner-approved oracle pinned at
+  a fleet-repository commit by a separate cutover record. `ai list-migrations` lists every rename,
+  and `ai find-names` searches names by status, verdict scope, holder and hold state in one query,
+  or with `-H/--history NAME` shows every past value (Dolt only).
 - On the database registries every session name has a general status (`unreviewed`, `rejected` or
   `approved`), and names can be approved or rejected for one repository, host or session only.
   The picker, spare top-up and offline spares use only approved names that no verdict rejects

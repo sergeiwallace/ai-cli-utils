@@ -746,3 +746,80 @@ def postcondition_problems(compiled: Compiled, after: reg.Snapshot) -> list[str]
             if (after.meta or {}).get(path[len(META_DIR) + 1 :]) != wanted:
                 problems.append(f"the setting {path} differs from what was written")
     return problems
+
+
+# --- queries -----------------------------------------------------------------------------
+
+FIND_FILTERS = ("status", "scope_kind", "scope_value", "machine", "state")
+_FIND_COLUMNS = {
+    "status": "n.status",
+    "scope_kind": "v.scope_kind",
+    "scope_value": "v.scope_value",
+    "machine": "h.machine",
+    "state": "h.state",
+}
+
+
+def find_query(filters: dict[str, str | None]) -> Statement:
+    """One query for the pool names matching every given filter, with their verdicts and hold."""
+    where, params = [], []
+    for key in FIND_FILTERS:
+        value = filters.get(key)
+        if value is not None:
+            where.append(f"{_FIND_COLUMNS[key]} = ?")
+            params.append(value)
+    sql = (
+        "select n.name, n.status, v.scope_kind, v.scope_value, v.verdict, "
+        "h.kind as hold_kind, h.machine, h.state, h.title "
+        "from names n left join verdicts v on v.name = n.name left join holds h on h.token = n.name"
+        + (f" where {' and '.join(where)}" if where else "")
+        + " order by n.name, v.scope_kind, v.scope_value"
+    )
+    return Statement(sql, tuple(params), "find")
+
+
+def found_names(rows: list[dict]) -> list[dict]:
+    """The query's joined rows folded into one entry per name."""
+    entries: dict[str, dict] = {}
+    for row in rows:
+        entry = entries.setdefault(
+            row["name"], {"name": row["name"], "status": row["status"], "verdicts": [], "hold": None}
+        )
+        if row.get("scope_kind"):
+            verdict = {"scope_kind": row["scope_kind"], "scope_value": row["scope_value"], "verdict": row["verdict"]}
+            if verdict not in entry["verdicts"]:
+                entry["verdicts"].append(verdict)
+        if row.get("hold_kind"):
+            entry["hold"] = {
+                "kind": row["hold_kind"],
+                "machine": row["machine"],
+                "state": row["state"],
+                "title": row.get("title"),
+            }
+    return list(entries.values())
+
+
+def history_query(name: str) -> Statement:
+    """Every recorded value of ``name``'s status, verdicts and hold, with its commit, committer and time."""
+    sql = (
+        "select 'status' as what, '' as scope, status as value, commit_hash, committer, commit_date "
+        "from dolt_history_names where name = ? "
+        "union all select 'verdict', concat(scope_kind, ' ', scope_value), verdict, commit_hash, committer, commit_date "
+        "from dolt_history_verdicts where name = ? "
+        "union all select 'hold', '', concat(kind, ' ', state, ' ', machine), commit_hash, committer, commit_date "
+        "from dolt_history_holds where token = ? "
+        "order by commit_date, what, scope"
+    )
+    return Statement(sql, (name, name, name), "history")
+
+
+def changes_only(rows: list[dict]) -> list[dict]:
+    """``rows`` without the entries that repeat the previous value of the same series."""
+    last: dict[tuple[str, str], str] = {}
+    kept = []
+    for row in rows:
+        series = (row["what"], row["scope"])
+        if last.get(series) != row["value"]:
+            kept.append(row)
+            last[series] = row["value"]
+    return kept

@@ -206,7 +206,9 @@ after changing a command's help, never edit it by hand.
 | [`ai deploy`](docs/reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](docs/reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
 | [`ai g`](docs/reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](docs/reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](docs/reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](docs/reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
 | [`ai iterm2 sessions`](docs/reference/cli.md#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
@@ -214,6 +216,7 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](docs/reference/cli.md#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
@@ -249,6 +252,7 @@ after changing a command's help, never edit it by hand.
 | [`ai release-name`](docs/reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](docs/reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
 | [`ai retire-session`](docs/reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](docs/reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](docs/reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](docs/reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](docs/reference/cli.md#ai-session-reaper-status) | Show stale-session reaper status |

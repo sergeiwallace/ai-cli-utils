@@ -470,6 +470,205 @@ def set_name_verdict_command(
         _out.emit(Tag.NAMES, "set", f"nothing to change for {scope_kind} {scope_value}")
 
 
+def _fleet_database(registry: reg.Registry, *, create: bool = True) -> reg.Registry | None:
+    """The fleet's Dolt database, before or after the policy switches to it; refuses with no fleet.
+
+    A database the remote does not hold yet is created with writes off, or, without
+    ``create``, None is returned.
+    """
+    from .name_dolt import DEFAULT_DOLT_REF, DoltRegistry
+
+    if isinstance(registry, DoltRegistry):
+        return registry
+    if not isinstance(registry, reg.FleetRegistry):
+        raise reg.WriteRefusedError("this needs the fleet registry; an install with no fleet keeps a local one")
+    policy = reg.read_policy_file(registry.policy_file)
+    database = DoltRegistry(
+        registry.repo,
+        dolt_ref=str(policy.get("registry_dolt_ref", DEFAULT_DOLT_REF)),
+        remote=registry.remote,
+        policy_file=registry.policy_file,
+        timeout_s=registry.timeout_s,
+        attempts=registry.attempts,
+    )
+    exists = database._git("ls-remote", registry.remote, database.dolt_ref, check=False)
+    if exists.returncode == 0 and not exists.stdout.strip() and not database.has_clone():
+        if not create:
+            return None
+        database.initialize(writes_enabled=False)
+    return database
+
+
+@click.command(
+    "import-names",
+    help=(
+        "Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's "
+        "Dolt database in one commit; a second run finds nothing to import"
+    ),
+)
+@click.option("-f", "--from-ref", "from_ref", default=None, help="The old registry ref (default: registry_ref)")
+@click.option("-d", "--dry-run", is_flag=True, help="Count what would be imported and write nothing")
+def import_names_command(from_ref: str | None, dry_run: bool) -> None:
+    from . import name_import
+
+    registry = open_registry(read_only=True)
+    try:
+        if not isinstance(registry, reg.FleetRegistry):
+            raise reg.WriteRefusedError("import-names needs the fleet registry; an install with no fleet has none")
+        policy = reg.read_policy_file(registry.policy_file)
+        ref = from_ref or policy.get("registry_ref")
+        if not isinstance(ref, str) or not ref:
+            raise reg.WriteRefusedError("the policy names no registry_ref; pass the old ref with -f/--from-ref")
+        source = reg.GitRegistry(
+            registry.repo,
+            ref=ref,
+            remote=registry.remote,
+            policy_file=registry.policy_file,
+            timeout_s=registry.timeout_s,
+            attempts=registry.attempts,
+        )
+        tree = source.snapshot()
+        target = _fleet_database(registry, create=not dry_run)
+        if target is None:
+            report = name_import.tree_counts(tree)
+            report.written = True
+        else:
+            report = name_import.import_tree(target, tree, dry_run=dry_run)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    if dry_run:
+        lines = ["dry run: would import" if report.written else "dry run: nothing to import", *report.lines()]
+    else:
+        lines = ["imported" if report.written else "nothing to import", *report.lines()]
+    _out.emit(Tag.NAMES, "import", "\n".join(lines))
+
+
+@click.command(
+    "seed-name-verdicts",
+    help=(
+        "Session names: apply the owner's approvals from a seed file, after checking it part by part against "
+        "the owner-approved oracle the cutover record pins"
+    ),
+)
+@click.option(
+    "-f", "--file", "path", required=True, type=click.Path(dir_okay=False, path_type=Path), help="The seed file (TOML)"
+)
+def seed_name_verdicts_command(path: Path) -> None:
+    from . import name_import
+
+    registry = open_registry(read_only=True)
+    try:
+        if not isinstance(registry, reg.FleetRegistry):
+            raise reg.WriteRefusedError("seeding needs the fleet registry; an install with no fleet has none")
+        manifest = path.read_text(encoding="utf-8")
+        oracle = name_import.load_oracle(registry.repo)
+        denylist = frozenset(str(name) for name in reg.read_policy_file(registry.policy_file).get("denylist", []))
+        database = _fleet_database(registry)
+        assert database is not None
+        report = name_import.seed_verdicts(
+            database, manifest, oracle=oracle, denylist=denylist, recorded_by=_added_by()
+        )
+    except OSError as exc:
+        _fail(reg.WriteRefusedError(f"cannot read {path}: {exc}"))
+        return
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    head = "seeded" if report.written else "this seed revision was already applied; nothing was written"
+    _out.emit(Tag.NAMES, "seed", "\n".join([head, *name_import.describe(report)]))
+
+
+@click.command("list-migrations", help="Session names: list every recorded rename with its state")
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
+def list_migrations_command(as_json: bool) -> None:
+    registry = open_registry(read_only=True)
+    try:
+        snapshot = registry.snapshot()
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    records = [snapshot.migrations[title] for title in sorted(snapshot.migrations)]
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(records, sort_keys=True))
+        return
+    if not records:
+        _out.emit(Tag.NAMES, "list", "no renames are recorded")
+        return
+    lines = [
+        f"{record['old_title']!s:<32} {record['new_title']!s:<32} {record['status']!s:<9} {record['machine']}"
+        for record in records
+    ]
+    _out.emit(Tag.NAMES, "list", "\n".join(lines))
+
+
+@click.command(
+    "find-names",
+    help="Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history",
+)
+@click.option("-s", "--status", type=click.Choice(reg.NAME_STATUSES), default=None, help="General status")
+@click.option(
+    "-k", "--scope", "scope_kind", type=click.Choice(reg.SCOPE_KINDS), default=None, help="Verdict scope kind"
+)
+@click.option("-v", "--value", "scope_value", default=None, help="Verdict scope value")
+@click.option("-m", "--machine", default=None, help="The host holding the name")
+@click.option(
+    "-t",
+    "--state",
+    type=click.Choice(("reserved", "active", "migration-incomplete", "cutover-quarantined")),
+    default=None,
+    help="Hold state",
+)
+@click.option(
+    "-H", "--history", "history_of", default=None, metavar="NAME", help="Every past value of NAME (Dolt only)"
+)
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
+def find_names_command(
+    status: str | None,
+    scope_kind: str | None,
+    scope_value: str | None,
+    machine: str | None,
+    state: str | None,
+    history_of: str | None,
+    as_json: bool,
+) -> None:
+    registry = open_registry(read_only=True)
+    try:
+        if history_of:
+            rows = registry.history(history_of.lower())
+            if as_json:
+                _out.raw(Untagged.JSON, json.dumps(rows, sort_keys=True, default=str))
+                return
+            lines = [
+                f"{row['commit_date']!s:<24} {row['committer']!s:<20} {row['what']:<8} {row['scope'] or '-'!s:<28} "
+                f"{row['value']}"
+                for row in rows
+            ]
+            _out.emit(Tag.NAMES, "list", "\n".join(lines) or f"no history for {history_of}")
+            return
+        filters = {
+            "status": status,
+            "scope_kind": scope_kind,
+            "scope_value": scope_value,
+            "machine": machine,
+            "state": state,
+        }
+        found = registry.find_names(filters)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(found, sort_keys=True))
+        return
+    lines = []
+    for entry in found:
+        verdicts = ", ".join(f"{v['verdict']} for {v['scope_kind']} {v['scope_value']}" for v in entry["verdicts"])
+        hold = entry["hold"]
+        held = f"{hold['kind']} {hold['state']} on {hold['machine']}" if hold else "free"
+        lines.append(f"{entry['name']:<6} {entry['status']:<11} {held:<36} {verdicts or '-'}")
+    _out.emit(Tag.NAMES, "list", "\n".join(lines) or "no name matches")
+
+
 def _list_pool(snapshot: reg.Snapshot, as_json: bool) -> None:
     """Every name in the database with its general status and holder; exit 3 when status is unusable."""
     try:
@@ -749,6 +948,10 @@ COMMANDS = (
     show_name_config_command,
     set_name_status_command,
     set_name_verdict_command,
+    import_names_command,
+    seed_name_verdicts_command,
+    list_migrations_command,
+    find_names_command,
     reconcile_names_command,
     release_name_command,
     reassign_name_command,
