@@ -614,13 +614,15 @@ def _plan_hooks(
 
 
 def _plan_iterm2(old: str) -> list[PlannedMove]:
+    from .session_reconcile import reconcile
     from .session_run_state import run_state
 
+    names = set(_session_variants(old))
+    reconcile(names=names)
     try:
         doc = _session_registry.load_registry()
     except _session_registry.RegistryError:
         return []
-    names = set(_session_variants(old))
     hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
     if any(run_state(record) == "running" for record in hits):
         raise MigrationError("session run state is still running; run `ai sessions list` to reconcile liveness first")
@@ -2094,7 +2096,7 @@ def _names_old_session(record: object, names: Container[str]) -> bool:
 
 
 def _rename_boot_recipe(recipe: object, renames: dict[str, str], old_wt: Path, new_wt: Path) -> None:
-    """Point a record's boot recipe at the new name and worktree (AI-CLI-uzur).
+    """Point a record's boot recipe at the new name and worktree.
 
     ``ai sessions relaunch`` refuses a recipe whose ``session_name`` differs from its record's
     name, so a recipe left naming the old session made every migrated session unrelaunchable.

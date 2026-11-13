@@ -60,6 +60,14 @@ from an earlier boot, rows with another or no owning host, and remote rows
   kept the old name with no run state, which reads `unknown`. A row launched over
   mosh never records its clean exit either, so only a probe can settle it.
 
+A separate migration preflight defect read `run_state` without reconciling first.
+A same-boot local row with a dead launcher, absent tmux and agent processes, an
+hour-old timestamp, a boot recipe and an already-attempted boot decision therefore
+blocked migration until another reader reconciled it. The boot decision and recipe
+do not veto run-state reconciliation. In the fixture reproducing this shape,
+listing already settles the row; a reported listing refusal is not reproduced.
+Unreadable process evidence remains a deliberate keep rule, not proof of absence.
+
 <!-- /doc:region name="root_cause" -->
 
 ## Scope of Fix
@@ -96,6 +104,12 @@ name the count.
 The rule is documented in `docs/iterm2-persistence.md`, "When a row leaves the
 registry".
 
+Migration preflight now invokes the same reconciliation for the old session's
+engine variants before reading its run state. It preserves unprovable and live
+runs, and does not age out records or change the boot relaunch policy. Dry-run
+migration can persist reconciled liveness, while leaving migration artifacts in
+place.
+
 <!-- /doc:region name="fix" -->
 
 ## Verification
@@ -108,6 +122,17 @@ file, a recent boot, a live launcher, a refused retirement) pass on both, and
 removing the liveness check makes three of them fail. On a copy of the host
 registry above, the fixed `ai sessions list` removed the three rows past the
 retention whose sessions were gone and kept every live row.
+
+The migration preflight regression failed before the change and failed again
+when reconciliation was temporarily removed; listing first passed both times.
+The original parallel run of the requested registry, migration, run-state,
+reconciliation and stale-row tests produced 397 passes and three agent-project
+directory failures. Those same three failures reproduce with the change removed
+under parallel pytest and pass serially: the long temporary paths make their
+fixture slugs exceed the existing 200-character limit. This is separate from
+run-state reconciliation. Repeating the parallel run with
+`--basetemp /private/tmp/session-reconcile-validation-20261112` passes all 400
+tests. Ruff checks and formatting pass.
 
 <!-- /doc:region name="verification" -->
 
@@ -126,5 +151,11 @@ explicit exit path as well as an entry path.
 <!-- doc:region name="fix_log" kind="append_only" -->
 
 - 2026-11-12: age-out in `ai sessions list` and the minute worker; retire drops rows.
+- 2026-11-12: migration preflight reconciles before checking run state. The fixture
+  test `test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled`
+  failed on the unchanged base when migrating directly, while listing first passed.
+  With the fix both paths pass, along with seven live/unprovable preflight guards.
+  Live listing diagnosis remains unverified: the sandbox refuses process-table
+  enumeration. No real registry was read or changed. No process was terminated.
 
 <!-- /doc:region name="fix_log" -->
