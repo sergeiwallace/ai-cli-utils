@@ -1014,8 +1014,10 @@ Every boot policy still leaves manually exited sessions down.
 A plain `/exit` inside a managed session is a restart: its wrapper relaunches the agent.
 Use `ai sessions stop <name>` to end it for good. It writes the wrapper's stop marker for each
 tmux session hosting `<name>` whose wrapper is running, sends SIGTERM to the session's Claude Code
-process (by its recorded pid, and only when the record's start time proves which process holds
-it), then waits up to `-t/--timeout` seconds (default 30) for the wrapper and agent to exit. The
+process and to any Claude Code process running under those wrappers, even one whose record still
+names an older session after a rename (by its recorded pid, and only when the record's start time
+proves which process holds it; one it cannot prove is named as still running, not signalled),
+then waits up to `-t/--timeout` seconds (default 30) for the wrapper and agent to exit. The
 wrapper records the exit as `manual_exit`, so boot relaunch leaves it down. It reports what it
 stopped and exits 1, naming what still runs, if the slot is not empty by then; a name with nothing
 running is reported and exits 0. `ai migrate-session` names this command when it refuses a live

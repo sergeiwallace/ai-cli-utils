@@ -87,3 +87,53 @@ def test_given_a_name_that_is_not_a_session_name_when_stopped_then_it_is_refused
     assert code == 1
     assert "invalid session name" in err
     assert not (tmp_path / "state").exists()
+
+
+def _record_another_session(root, agent, supervisor, **fields):
+    """Rewrite the agent's Claude Code record as a rename leaves it: still naming the old session."""
+    record = root / "home" / ".claude" / "sessions" / f"{agent['pid']}.json"
+    _wait_for(record.exists, supervisor)
+    data = json.loads(record.read_text(encoding="utf-8"))
+    data.update(name="myproject-box-old", **fields)
+    record.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["current"], indirect=True)
+def test_given_a_slot_agent_whose_record_names_another_session_when_stopped_then_it_gets_term_and_is_not_relaunched(
+    supervisor_fixture,
+):
+    root, _script, supervisor = supervisor_fixture
+    _list_slot_while_supervisor_runs(root / "bin" / "tmux")
+    agent = _wait_for(lambda: _launches(root), supervisor)[0]
+    _record_another_session(root, agent, supervisor)
+    started = time.monotonic()
+    _wait_for(lambda: time.monotonic() - started >= 4, supervisor)
+
+    code, out, err = run_cli(["ai", "sessions", "stop", NAME, "-t", "60"])
+
+    assert code == 0, out + err
+    assert f"sent SIGTERM to Claude Code pid {agent['pid']}" in out and "stopped" in out
+    assert supervisor.wait(timeout=30) == 0
+    assert probe_for().has_ended(agent["pid"])
+    assert len(_launches(root)) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("supervisor_fixture", ["current"], indirect=True)
+def test_given_a_slot_agent_whose_record_cannot_prove_its_pid_when_stopped_then_it_is_named_and_not_signalled(
+    supervisor_fixture,
+):
+    root, _script, supervisor = supervisor_fixture
+    _list_slot_while_supervisor_runs(root / "bin" / "tmux")
+    agent = _wait_for(lambda: _launches(root), supervisor)[0]
+    _record_another_session(root, agent, supervisor, procStart="0")
+
+    code, out, err = run_cli(["ai", "sessions", "stop", NAME, "-t", "1"])
+
+    assert code == 1
+    assert "sent SIGTERM" not in out
+    assert f"Claude Code pid {agent['pid']} (its record cannot prove the pid; not signalled)" in err
+    assert not probe_for().has_ended(agent["pid"])
