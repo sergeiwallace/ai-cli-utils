@@ -1,4 +1,4 @@
-"""``ai -h`` and every group's help list each command's complete description."""
+"""``ai -h`` lists the whole command tree; every group's own help lists each command's complete description."""
 
 import os
 import re
@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 from conftest import run_cli
 
-from ai_cli.cli_help import HelpGroup, command_description, command_summary
+from ai_cli.cli_help import GUIDE_PATH, START_RESUME_ATTACH, HelpGroup, command_description, command_summary
 from ai_cli.main import _cli_group
 
 
@@ -48,8 +48,22 @@ def _ctx(command):
     return click.Context(command, info_name=command.name, help_option_names=["-h", "--help"])
 
 
+def tree_paths(help_text):
+    """The command paths the root help's command tree lists, rebuilt from each name's indentation."""
+    section = _commands_section(help_text).split("\n\n", 1)[0]
+    stack, paths = [], []
+    for line in section.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > 12 or not line.strip():
+            continue
+        depth = (indent - 2) // 2
+        stack[depth:] = [line.split()[0]]
+        paths.append(" ".join(stack))
+    return paths
+
+
 @pytest.mark.parametrize(
-    ("path", "group"), _groups(), ids=lambda value: " ".join(value) if isinstance(value, list) else ""
+    ("path", "group"), _groups()[1:], ids=lambda value: " ".join(value) if isinstance(value, list) else ""
 )
 def test_given_a_group_when_its_help_is_rendered_at_width_80_then_every_subcommand_description_is_printed_whole(
     path, group
@@ -68,12 +82,36 @@ def test_given_a_group_when_its_help_is_rendered_at_width_80_then_every_subcomma
     assert truncated == []
 
 
-def test_given_the_root_help_when_rendered_then_a_multi_paragraph_description_keeps_every_paragraph():
-    command = _cli_group.commands["adopt-session"]
-    description = command_description(command, _ctx(command))
+def test_given_the_root_help_when_rendered_then_every_command_and_subcommand_is_listed_with_its_summary():
+    output = _help([])
+    expected = [" ".join(path) for path, _ in _walk(_cli_group, [])]
+    tree = _commands_section(output)
+    listed = _flatten(tree)
+    unsummarised = [
+        " ".join(path) for path, command in _walk(_cli_group, []) if _flatten(command_summary(command)) not in listed
+    ]
 
-    assert len(description.split("\n\n")) > 1
-    assert _flatten(description) in _flatten(_commands_section(_help([])))
+    assert tree_paths(output) == expected
+    assert "sessions list" in expected and "sessions publish-timer install" in expected
+    assert unsummarised == []
+    assert [line for line in tree.splitlines() if line.rstrip().endswith("...")] == []
+
+
+def test_given_the_root_help_when_rendered_then_it_shows_how_to_start_resume_and_attach_before_the_options():
+    output = _help([])
+    section = output.split("Start, resume, attach:\n", 1)[1].split("\nOptions:\n", 1)[0]
+
+    assert [_flatten(text) in _flatten(section) for _, text in START_RESUME_ATTACH] == [True] * len(START_RESUME_ATTACH)
+    assert [command in section for command, _ in START_RESUME_ATTACH] == [True] * len(START_RESUME_ATTACH)
+    assert "ai c NAME -r" in section and "ai cos -r" in section
+    assert "`ai attach` is not needed" in _flatten(section)
+
+
+def test_given_the_root_help_when_rendered_then_its_last_line_is_the_cli_guide_url():
+    last = _help([]).rstrip("\n").splitlines()[-1]
+
+    assert last.startswith("Full CLI guide: https://github.com/")
+    assert last.endswith(f"/blob/main/{GUIDE_PATH}")
 
 
 def test_given_a_command_with_short_help_when_summarised_then_the_summary_is_short_help_but_the_list_prints_the_description():

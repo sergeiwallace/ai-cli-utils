@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
+  `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
+  session. Rows are grouped by host, this host first, with running sessions at the top of each
+  group. `-g/--group-by` and `-s/--sort-by` choose other groupings and orders, and the defaults
+  come from a new `[sessions_list]` table in `config.toml`, read on every call
+  (`docs/reference/sessions-list-defaults.toml`). `-j/--json` output is unchanged.
+- Bare `ai sessions` now runs `ai sessions list`. Only running sessions are listed unless
+  `-a/--all` is given. `-S/--scope pair` (the default) adds the paired host's sessions and
+  `-S/--scope fleet` adds every host's, both read from the snapshots `ai sessions publish` pushes.
+- `ai -h` lists every command and subcommand with a one-line use, shows how to start, resume and
+  attach to a session (`ai attach` is not needed for a session `ai` started), and ends with the
+  URL of the CLI guide. The README and the CLI guide carry the same command index and
+  start/resume/attach rows, generated from the same source.
+
 ### Fixed
 
 - `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
