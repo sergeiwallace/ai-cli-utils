@@ -233,9 +233,14 @@ class TestProjectHelpers:
         fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "myproject"\ntask_prefix = "mp"\n')
         legacy = tmp_path / "legacy.toml"
         legacy.write_text('[[projects]]\nname = "other-project"\ntask_prefix = "MP"\n')
+        # Both projects are checked out here, so the clash is a real one for this host.
+        projects_dir = tmp_path / "projects"
+        for name in ("myproject", "other-project"):
+            (projects_dir / name).mkdir(parents=True)
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=legacy),
             patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
+            patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
         ):
             with pytest.raises(ValueError, match=r"myproject.*other-project|other-project.*myproject") as error:
                 get_project_aliases()
