@@ -13,14 +13,17 @@ submodule's ``core.worktree`` at its new location. A locked worktree is never mo
 
 A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` names
 the old directory, so anything reading source through a code object finds nothing.
-:func:`purge_moved_bytecode` removes those caches after every successful move.
+:func:`purge_moved_bytecode` removes those caches after every successful move. A checkout
+moved before that can be cleaned by hand: ``python -m ai_cli.worktree_move <checkout>...``.
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .git_repair import _git_env
@@ -133,3 +136,34 @@ def move_worktree(repo: Path, source: Path, dest: Path) -> tuple[bool, str]:
         return False, f"moved {old} to {new} and repaired it, but a submodule was not repointed: {'; '.join(errors)}"
     purge_moved_bytecode(new)
     return True, ""
+
+
+def _refusal(path: Path) -> str | None:
+    if not path.is_dir():
+        return f"{path} is not an existing directory"
+    top = _git(path, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != path.resolve():
+        return f"{path} is not the top of a git checkout"
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m ai_cli.worktree_move",
+        description="Remove the stale __pycache__ bytecode a worktree move carried into each checkout.",
+    )
+    parser.add_argument("checkouts", nargs="+", type=Path, metavar="checkout")
+    args = parser.parse_args(argv)
+    refusals = [why for why in map(_refusal, args.checkouts) if why]
+    if refusals:
+        for why in refusals:
+            print(f"refused: {why}; nothing was purged", file=sys.stderr)
+        return 2
+    for checkout in args.checkouts:
+        purge_moved_bytecode(checkout.resolve())
+        print(f"purged stale bytecode caches in {checkout.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
