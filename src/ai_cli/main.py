@@ -2233,6 +2233,12 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
+        try:
+            if project:
+                _config.validate_remote_project(project, project_prefix)
+        except _config.ProjectPrefixError as exc:
+            _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+            sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
@@ -4435,7 +4441,11 @@ def _do_session_launch(
         # -p names the repo the session runs in, so its .envrc decides, not the cwd's.
         _direnv_root = Path.cwd()
         if project and not remote:
-            _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project, project))
+            try:
+                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+            except _config.ProjectPrefixError as exc:
+                reporter.error("request", str(exc))
+                sys.exit(1)
             if _named_dir.is_dir():
                 _direnv_root = _named_dir
         _direnv_result = _direnv_setup.ensure_direnv(_direnv_root, config, auto_install=not dry_run)
@@ -4484,9 +4494,9 @@ def _do_session_launch(
         if "/" in project or "\\" in project:
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        _lp_aliases = _config.get_project_aliases()
-        _lp_name = _lp_aliases.get(project, project)
         try:
+            _lp_aliases = _config.get_project_aliases()
+            _lp_name = _lp_aliases.get(project.lower(), project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -4508,6 +4518,12 @@ def _do_session_launch(
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
+    if is_remote and project:
+        try:
+            _config.validate_remote_project(project, project_prefix)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
@@ -4741,12 +4757,16 @@ def _do_session_launch(
         port = str(remote_cfg.get("port", 22))
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
-        aliases = _config.get_project_aliases()
+        try:
+            aliases = _config.get_project_aliases()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project, raw_project)
+        remote_project = aliases.get(raw_project.lower(), raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
