@@ -1,11 +1,16 @@
 """Loose agent prompts migrate without overwriting another session's files."""
 
+import sys
+
 import pytest
 import test_session_migrate
 from conftest import snapshot_tree
 from test_session_migrate import NEW, OLD, _finish, _git, _migrate
 
 slot = test_session_migrate.slot
+
+# A symlink needs a privilege Windows runners lack; probe before any fixture is built.
+needs_symlinks = pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege Windows runners lack")
 
 
 @pytest.fixture
@@ -62,14 +67,11 @@ def test_given_a_name_clash_when_migrated_and_retried_then_both_files_survive_an
     assert (target / "preserved.txt").read_bytes() == b"new prompt\n"
 
 
-@pytest.mark.parametrize("kind", ["symlink", "worktree", "open-file"])
+@pytest.mark.parametrize("kind", [pytest.param("symlink", marks=needs_symlinks), "worktree", "open-file"])
 def test_given_unsafe_container_content_when_migrated_then_prompts_stay(slot, prompts, kind):
     source, target = prompts
     if kind == "symlink":
-        try:
-            (source / "link").symlink_to(source / "prompt.txt")
-        except OSError:
-            pytest.skip("symlinks unavailable")
+        (source / "link").symlink_to(source / "prompt.txt")
     elif kind == "worktree":
         _git("worktree", "add", "-q", str(source / "foreign"), "-b", "wt/session-1/task", cwd=slot["repo"])
         _git("worktree", "lock", str(source / "foreign"), cwd=slot["repo"])
@@ -84,7 +86,10 @@ def test_given_unsafe_container_content_when_migrated_then_prompts_stay(slot, pr
     assert f"agent container: {source} (kept:" in out
 
 
-@pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
+@pytest.mark.parametrize(
+    "kind",
+    ["file", pytest.param("symlink", marks=needs_symlinks), pytest.param("dangling-symlink", marks=needs_symlinks)],
+)
 def test_given_an_occupied_destination_when_previewed_and_migrated_then_no_content_is_overwritten(slot, prompts, kind):
     source, target = prompts
     occupied = target if kind == "file" else target / "prompt.txt"
@@ -95,10 +100,7 @@ def test_given_an_occupied_destination_when_previewed_and_migrated_then_no_conte
         referent = target / "other.txt"
         if kind == "symlink":
             referent.write_text("keep target\n")
-        try:
-            occupied.symlink_to(referent)
-        except OSError:
-            pytest.skip("symlinks unavailable")
+        occupied.symlink_to(referent)
     before = snapshot_tree(source), snapshot_tree(target)
     for flags in [("-n",), ("-y",)]:
         code, out, err = _migrate(slot["repo"], *flags)
