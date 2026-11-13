@@ -868,6 +868,64 @@ def _archive_entries(
     return moves, archived
 
 
+def _move_container_files(container: Path, new: str, dry_run: bool, moving: Container[Path]) -> list[PlannedMove]:
+    """Carry loose regular files only, refusing occupied names and detectable open files."""
+    import psutil
+
+    # The existing agent cleanup removes empty directories and worktrees in ``moving``
+    # before a writing sweep; the preview must inspect the same remaining entries.
+    files = [
+        child
+        for child in sorted(container.iterdir())
+        if child not in moving and (child.is_symlink() or not child.is_dir() or _holds_a_file(child, moving))
+    ]
+    if (
+        container.is_symlink()
+        or (container / ".git").exists()
+        or not files
+        or any(child.is_symlink() or not child.is_file() for child in files)
+    ):
+        return []
+
+    # Best effort: some platforms or process permissions do not expose open descriptors.
+    def is_open(process: psutil.Process) -> bool:
+        try:
+            return any(Path(item.path) in files for item in process.open_files())
+        except (psutil.Error, OSError):
+            return False
+
+    if is_open(psutil.Process()):
+        return []
+    with contextlib.suppress(psutil.Error, OSError):
+        if any(is_open(process) for process in psutil.process_iter()):
+            return []
+    target = container.with_name(f"{new}-agents")
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        return [
+            PlannedMove("agent container file", str(child), str(target / child.name), "conflict") for child in files
+        ]
+    moves: list[PlannedMove] = []
+    for child in files:
+        dest = target / child.name
+        action = "conflict" if os.path.lexists(dest) else "move"
+        if action == "move" and not dry_run:
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                # Link then unlink gives a same-filesystem move that cannot overwrite a
+                # destination created after the preview, unlike rename on POSIX.
+                os.link(child, dest, follow_symlinks=False)
+                if child.is_file() and not child.is_symlink() and child.samefile(dest):
+                    child.unlink()
+                else:
+                    action = "kept: source changed"
+            except FileExistsError:
+                action = "conflict"
+            except OSError as exc:
+                action = f"kept: move failed: {_one_line(str(exc))}"
+        moves.append(PlannedMove("agent container file", str(child), str(dest), action))
+    return moves
+
+
 def _sweep_containers(
     containers: list[Path],
     live_cwds: list[tuple[int, Path]],
@@ -890,6 +948,8 @@ def _sweep_containers(
     archived: list[dict] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
+        file_moves = [] if holder is not None else _move_container_files(container, new, dry_run, moving)
+        moves += file_moves
         entries = [] if holder is not None else _unregistered_entries(container, moving)
         cwds = _process_cwds() if entries else []
         busy = [(pid, entry.name) for entry in entries if (pid := _agents._holder(entry, cwds)) is not None]
@@ -901,6 +961,7 @@ def _sweep_containers(
         moves += entry_moves
         archived += done
         gone = {Path(move.source) for move in entry_moves if move.action in ("archive", "archived")}
+        gone.update(Path(move.source) for move in file_moves if move.action == "move")
         held = sorted(child.name for child in container.iterdir() if child not in gone and _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
