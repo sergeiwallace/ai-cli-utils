@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
+  bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
+  its code objects, so tools reading source through them found nothing until the caches were
+  rebuilt. Caches inside a virtual environment or a nested checkout, files git tracks and
+  anything behind a symlink are left alone; Python rebuilds the rest on the next import.
+  A checkout moved before this fix can be cleaned by hand with
+  `python -m ai_cli.worktree_move <checkout>...`.
 - `ai c NEW` no longer re-plans a migration whose ledger row is a verified `finished`. That
   re-plan read every Beads store, hook and repo on the host, so an unrelated failure there
   refused the launch of a migration already proved finished, after minutes with no output.

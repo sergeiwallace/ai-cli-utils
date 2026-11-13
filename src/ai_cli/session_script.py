@@ -1093,6 +1093,12 @@ def get_engine_script(
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
       fi
     # END PINNED RESTART
+    # BEGIN RUN STATE agent-start-clock
+      # The quick-exit and healthy-run checks measure the agent's own run time. The setup
+      # above (direnv, plugin refresh) can take seconds on a loaded host, so start the
+      # clock here rather than where the loop began.
+      start_ts=$(date +%s)
+    # END RUN STATE
       # Non-interactive shells redirect a background job's stdin from /dev/null.
       # Bash honors <&0, but zsh performs that redirect after the fd duplication;
       # reopening the controlling terminal works for both while preserving the

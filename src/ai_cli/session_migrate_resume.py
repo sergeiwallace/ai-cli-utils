@@ -45,6 +45,7 @@ PARTS = (
     "slot lock",
     "leftover slot",
     "agent container entry",
+    "agent container file",
     "agent container",
     "beads issue",
     "beads store",

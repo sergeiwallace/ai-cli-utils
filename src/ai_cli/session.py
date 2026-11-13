@@ -31,6 +31,7 @@ from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypas
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 from .process_probe import ProcessProbe, ProcfsProbe, normalize_proc_start, probe_for
 from .session_naming import compose_session_name
+from .worktree_move import purge_moved_bytecode
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -1187,6 +1188,7 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
             f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
             f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
         )
+    purge_moved_bytecode(wt_dir)
     launch_reporter.active().phase("worktree").outcome(
         f"relocated session worktree: moved {holder} -> {wt_dir} "
         "(checkout, uncommitted changes and unpushed commits preserved)"

@@ -28,9 +28,12 @@ from ai_cli.config import (
     ProjectPrefixError,
     _append_projects_entry,
     get_fleet_registry_path,
+    get_project_aliases,
     register_project,
+    registered_project_names,
     resolve_project_prefix,
     resolve_project_prefix_by_name,
+    validate_remote_project,
 )
 
 _PROJECTS = ("myproject", "myapp", "mytool", "myservice", "mylib", "myworkspace", "mygraph")
@@ -85,6 +88,82 @@ def _write_projects_registry(path: Path, entries: dict[str, str]) -> None:
         ),
         encoding="utf-8",
     )
+
+
+@pytest.fixture
+def alias_registries(fleet, monkeypatch):
+    projects_dir, registry = fleet
+    monkeypatch.setattr("ai_cli.config._warned_stale_project_aliases", set(), raising=False)
+    _write_projects_registry(registry, {"myworkspace": "ws", "myapp": "ap"})
+    local = projects_dir / "myconfig" / "local.toml"
+    monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: local)
+    return registry, local
+
+
+@pytest.mark.parametrize("local_name", ["myworkspace", "MYWORKSPACE"])
+@pytest.mark.parametrize("include_owner", [False, True])
+def test_given_stale_local_alias_when_selecting_projects_then_fleet_wins_and_warns_once(
+    alias_registries, capsys, local_name, include_owner
+):
+    registry, local = alias_registries
+    entries = {local_name: "AP"}
+    if include_owner:
+        entries["myapp"] = "ap"
+    _write_projects_registry(local, entries)
+    before = local.read_text(encoding="utf-8")
+
+    assert registered_project_names() == {"ws": "myworkspace", "ap": "myapp"}
+    aliases = get_project_aliases()
+    for alias, name in (("ap", "myapp"), ("ws", "myworkspace")):
+        assert aliases[alias] == name
+        assert resolve_project_prefix_by_name(aliases[alias]) == alias
+
+    warning = capsys.readouterr().err
+    assert warning.count("Warning:") == 1
+    assert local_name in warning and "AP" in warning and "ws" in warning
+    assert str(local) in warning and "task_prefix" in warning
+    assert local.read_text(encoding="utf-8") == before
+    assert 'task_prefix = "ws"' in registry.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("entries", [{}, {"myworkspace": "WS"}])
+def test_given_no_stale_local_alias_when_selecting_projects_then_no_warning_is_emitted(
+    alias_registries, capsys, entries
+):
+    _, local = alias_registries
+    _write_projects_registry(local, entries)
+
+    assert registered_project_names() == {"ws": "myworkspace", "ap": "myapp"}
+    assert capsys.readouterr().err == ""
+
+
+def test_given_unowned_local_projects_sharing_an_alias_when_selecting_then_conflict_is_reported(
+    alias_registries, monkeypatch
+):
+    _, local = alias_registries
+    _write_projects_registry(local, {"mytool": "other"})
+    monkeypatch.setattr("ai_cli.config._registry_entries", lambda: {str(local.parent / "mylib"): {"prefix": "OTHER"}})
+
+    with pytest.raises(ProjectPrefixError, match=r"mytool.*mylib"):
+        registered_project_names()
+
+
+@pytest.mark.parametrize(("project", "prefix"), [("myapp", "ap"), ("ap", "ap"), ("myworkspace", "ws"), ("ws", "ws")])
+def test_given_stale_local_alias_when_validating_remote_project_then_fleet_pair_is_accepted(
+    alias_registries, project, prefix
+):
+    _, local = alias_registries
+    _write_projects_registry(local, {"myworkspace": "ap"})
+
+    validate_remote_project(project, prefix)
+
+
+def test_given_stale_local_alias_when_remote_project_uses_old_prefix_then_mismatch_is_reported(alias_registries):
+    _, local = alias_registries
+    _write_projects_registry(local, {"myworkspace": "ap"})
+
+    with pytest.raises(ProjectPrefixError, match=r"launcher selected.*myworkspace.*this host registers.*myapp"):
+        validate_remote_project("myworkspace", "ap")
 
 
 # --- AC-1 / AC-2: the persistent registry resolves, and wins ---

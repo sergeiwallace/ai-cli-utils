@@ -1796,7 +1796,10 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
     projects = data.get("projects", [])
 
-    # Schema validation: name and task_prefix required, both unique
+    fleet_path = get_fleet_registry_path()
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+
+    # Names are unique; only aliases not superseded by the fleet must be unique.
     names_seen: set[str] = set()
     prefixes_seen: dict[str, str] = {}
     for p in projects:
@@ -1810,6 +1813,10 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         if name_lower in names_seen:
             _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
+        names_seen.add(name_lower)
+        fleet_entry = fleet_entries.get(name_lower)
+        if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix_lower:
+            continue
         if prefix_lower in prefixes_seen:
             _out.error(
                 Tag.CONFIG,
@@ -1818,7 +1825,6 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
                 "Fix: assign unique task prefixes to these projects.",
             )
             sys.exit(1)
-        names_seen.add(name_lower)
         prefixes_seen[prefix_lower] = name
 
     _registry_cache = projects
@@ -1978,13 +1984,17 @@ def get_project_aliases() -> dict:
     return {prefix: name for prefix, name in registered_project_names().items() if prefix != name.lower()}
 
 
+_warned_stale_project_aliases: set[tuple[str, str, str, str]] = set()
+
+
 def registered_project_names() -> dict[str, str]:
     """Map every registered task prefix (lowercased) to the project name ``-p`` accepts for it.
 
     Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
     and includes the root-keyed ``[project_registry]`` table (keyed by the root's
     directory name, which is what ``resolve_project_prefix_by_name`` matches there).
-    Tier order matches that resolver; conflicting project names are refused. Raises
+    Fleet entries supersede stale per-machine aliases for the same project, with
+    a warning once per process. Other conflicting project names are refused. Raises
     :class:`ProjectPrefixError` when a registry cannot be read.
     """
     names: dict[str, str] = {}
@@ -2000,12 +2010,27 @@ def registered_project_names() -> dict[str, str]:
         names.setdefault(key, name)
 
     fleet_path = get_fleet_registry_path()
-    if fleet_path is not None and fleet_path.is_file():
-        for entry in _projects_table_entries(fleet_path).values():
-            add(entry["prefix"], entry["name"])
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+    for entry in fleet_entries.values():
+        add(entry["prefix"], entry["name"])
     for p in load_project_registry():
         if p.get("task_prefix") and p.get("name"):
-            add(str(p["task_prefix"]), str(p["name"]))
+            prefix, name = str(p["task_prefix"]), str(p["name"])
+            fleet_entry = fleet_entries.get(name.lower())
+            if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix.lower():
+                source = str(_get_project_registry_path())
+                warning_key = (source, name.lower(), prefix.lower(), fleet_entry["prefix"])
+                if warning_key not in _warned_stale_project_aliases:
+                    _out.warning(
+                        Tag.CONFIG,
+                        "load",
+                        f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
+                        f"the fleet registry declares {fleet_entry['prefix']!r}. "
+                        f"Edit the project's task_prefix in {source} to match the fleet registry.",
+                    )
+                    _warned_stale_project_aliases.add(warning_key)
+                continue
+            add(prefix, name)
     for root, entry in _registry_entries().items():
         add(entry["prefix"], Path(root).name)
     return names
