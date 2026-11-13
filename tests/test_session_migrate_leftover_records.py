@@ -1,10 +1,16 @@
 """``ai migrate-session`` leaves nothing pointing at the old session's moved worktrees.
 
-A re-plan of the pair must find none of these left once a ``--finish`` has run:
+Three stores keep a path a migration moves, and a re-plan of the pair must find none of them
+left once a ``--finish`` has run:
 
 * an entry of the old ``<old>-agents`` container that no ``git worktree list`` names (its
   registration pruned, or never made) is archived into the session-migration archive, so the
-  emptied container is removed and the finish converges.
+  emptied container is removed and the finish converges;
+* each Agent-tool sub-agent record under the session's transcript, ``<session id>/subagents/
+  agent-<id>.meta.json`` (``worktreePath``, ``inheritedWorktreePath``) and its transcript
+  ``agent-<id>.jsonl`` (``cwd``), is repointed at the moved worktree;
+* each Claude Code background-job record, ``jobs/<short id>/state.json``, of the session's
+  transcripts or with its cwd in a moved worktree has ``cwd`` and ``linkScanPath`` repointed.
 
 Every test drives the real command on the shared fixture slot.
 """
@@ -19,10 +25,12 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import test_session_migrate
-from test_session_migrate import NEW, OLD, _finish, _git, _migrate, run_cli
+from test_session_migrate import NEW, OLD, UUID, _finish, _git, _jsonl, _migrate, run_cli
 
 from ai_cli import session_migrate as m
+from ai_cli.cc_migrate import cc_project_dir
 
 slot = test_session_migrate.slot
 
@@ -156,3 +164,180 @@ def test_given_the_archive_on_another_filesystem_when_finished_then_entries_go_t
     )
     assert (archived / "work.txt").read_text() == "unlanded work\n"
     assert not container.exists()
+
+
+# --- AI-CLI-ofp7.12: Agent-tool sub-agent records ------------------------------------------
+
+
+def _subagents(slot) -> Path:
+    return slot["project"] / UUID / "subagents"
+
+
+def _plant_subagents(slot) -> dict[str, Path]:
+    """A sub-agent in a moving agent worktree, one in the slot itself, and one whose worktree was reaped."""
+    repo, wt = slot["repo"], slot["wt"]
+    container = repo / ".worktrees" / f"{OLD}-agents"
+    leaf = container / "leaf"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf", cwd=repo)
+    reaped = container / "reaped"
+    subagents = _subagents(slot)
+    subagents.mkdir(parents=True, exist_ok=True)
+    meta = {"agentType": "engineer", "spawnedWithWorktree": True, "description": "leaf"}
+    (subagents / "agent-amoved.meta.json").write_text(json.dumps({**meta, "worktreePath": str(leaf)}))
+    _jsonl(
+        subagents / "agent-amoved.jsonl", [{"type": "user", "cwd": str(leaf)}, {"type": "x", "cwd": str(leaf / "src")}]
+    )
+    (subagents / "agent-ainherit.meta.json").write_text(json.dumps({**meta, "inheritedWorktreePath": str(leaf)}))
+    _jsonl(subagents / "agent-ahome.jsonl", [{"type": "user", "cwd": str(wt)}])
+    (subagents / "agent-areaped.meta.json").write_text(json.dumps({**meta, "worktreePath": str(reaped)}))
+    _jsonl(subagents / "agent-areaped.jsonl", [{"type": "user", "cwd": str(reaped)}])
+    return {"leaf": leaf, "reaped": reaped}
+
+
+def _new_subagents(slot) -> Path:
+    return cc_project_dir(_new_wt(slot), slot["claude"]) / UUID / "subagents"
+
+
+def _cwds(path: Path) -> list[str]:
+    return [json.loads(line)["cwd"] for line in path.read_text().splitlines()]
+
+
+def test_given_sub_agent_records_of_moved_worktrees_when_migrated_then_each_names_the_moved_path(slot):
+    planted = _plant_subagents(slot)
+    reaped_meta = (_subagents(slot) / "agent-areaped.meta.json").read_bytes()
+    reaped_log = (_subagents(slot) / "agent-areaped.jsonl").read_bytes()
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    moved = slot["repo"] / ".worktrees" / f"{NEW}-agents" / "leaf"
+    records = _new_subagents(slot)
+    assert json.loads((records / "agent-amoved.meta.json").read_text())["worktreePath"] == str(moved)
+    assert json.loads((records / "agent-ainherit.meta.json").read_text())["inheritedWorktreePath"] == str(moved)
+    assert _cwds(records / "agent-amoved.jsonl") == [str(moved), str(moved / "src")]
+    assert _cwds(records / "agent-ahome.jsonl") == [str(_new_wt(slot))]
+    assert (records / "agent-areaped.meta.json").read_bytes() == reaped_meta
+    assert (records / "agent-areaped.jsonl").read_bytes() == reaped_log
+    assert not planted["leaf"].exists()
+    assert "sub-agent record:" in out
+
+
+def test_given_sub_agent_records_left_by_an_earlier_migration_when_finished_then_they_are_repointed(slot):
+    _plant_subagents(slot)
+    with patch("ai_cli.session_migrate._plan_subagent_records", return_value=[]):
+        code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    records = _new_subagents(slot)
+    assert json.loads((records / "agent-amoved.meta.json").read_text())["worktreePath"].endswith(f"{OLD}-agents/leaf")
+
+    code, out, err = _status(slot)
+    assert code == 1, out + err
+    assert "sub-agent record (would do)" in out
+
+    code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    moved = slot["repo"] / ".worktrees" / f"{NEW}-agents" / "leaf"
+    assert json.loads((records / "agent-amoved.meta.json").read_text())["worktreePath"] == str(moved)
+    assert _cwds(records / "agent-ahome.jsonl") == [str(_new_wt(slot))]
+    code, out, err = _finish(slot["repo"], "-n")
+    assert code == 0, out + err
+    assert _parts(out)["sub-agent record"] == "done earlier"
+
+
+# --- AI-CLI-gqpm: Claude Code background-job records ---------------------------------------
+
+
+def _job(slot, short: str, **fields: object) -> Path:
+    record = slot["claude"] / "jobs" / short / "state.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"state": "done", "name": "job", "nameSource": "user", **fields}, indent=2))
+    return record
+
+
+def _plant_jobs(slot) -> dict[str, Path]:
+    wt, project = slot["wt"], slot["project"]
+    other = "4b4b4b4b-0000-4000-8000-000000000004"
+    return {
+        "own": _job(
+            slot,
+            UUID[:8],
+            sessionId=UUID,
+            resumeSessionId=UUID,
+            cwd=str(wt),
+            linkScanPath=str(project / f"{UUID}.jsonl"),
+            respawnFlags=["--model", "opus"],
+        ),
+        "by_cwd": _job(
+            slot,
+            "5c5c5c5c",
+            state="running",
+            sessionId="5c5c5c5c-0000-4000-8000-000000000005",
+            cwd=str(wt / "src"),
+            linkScanPath=str(slot["repo"] / "elsewhere.jsonl"),
+        ),
+        "foreign": _job(
+            slot, other[:8], sessionId=other, cwd=str(slot["repo"]), linkScanPath=str(slot["repo"] / "x.jsonl")
+        ),
+    }
+
+
+def _fields(record: Path) -> dict:
+    return json.loads(record.read_text())
+
+
+def test_given_job_records_of_the_session_when_migrated_then_cwd_and_link_scan_path_name_the_moved_paths(slot):
+    jobs = _plant_jobs(slot)
+    foreign = jobs["foreign"].read_bytes()
+
+    code, out, err = _migrate(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    new_wt = _new_wt(slot)
+    own = _fields(jobs["own"])
+    assert own["cwd"] == str(new_wt)
+    assert own["linkScanPath"] == str(cc_project_dir(new_wt, slot["claude"]) / f"{UUID}.jsonl")
+    assert own["respawnFlags"] == ["--model", "opus"]
+    by_cwd = _fields(jobs["by_cwd"])
+    assert (by_cwd["cwd"], by_cwd["linkScanPath"]) == (str(new_wt / "src"), str(slot["repo"] / "elsewhere.jsonl"))
+    assert jobs["foreign"].read_bytes() == foreign
+    assert f"job record: {jobs['own']}" in out
+
+
+def test_given_job_records_left_by_an_earlier_migration_when_finished_then_they_are_repointed_and_replan_is_empty(
+    slot,
+):
+    jobs = _plant_jobs(slot)
+    with patch("ai_cli.session_migrate._plan_job_records", return_value=[]):
+        code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert _fields(jobs["own"])["cwd"] == str(slot["wt"])
+
+    code, out, err = _status(slot)
+    assert code == 1, out + err
+    assert "job record (would do)" in out
+
+    code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 0, out + err
+    new_wt = _new_wt(slot)
+    assert _fields(jobs["own"])["cwd"] == str(new_wt)
+    assert _fields(jobs["own"])["linkScanPath"] == str(cc_project_dir(new_wt, slot["claude"]) / f"{UUID}.jsonl")
+    assert _fields(jobs["by_cwd"])["cwd"] == str(new_wt / "src")
+    code, out, err = _finish(slot["repo"], "-n")
+    assert code == 0, out + err
+    assert _parts(out)["job record"] == "done earlier"
+
+
+@pytest.mark.parametrize("flags", [("-n",), ("--dry-run",)])
+def test_given_job_and_sub_agent_records_when_dry_run_then_each_rewrite_is_planned_and_nothing_changes(slot, flags):
+    jobs = _plant_jobs(slot)
+    _plant_subagents(slot)
+    before = test_session_migrate._everything(slot)
+
+    code, out, err = _migrate(slot["repo"], *flags)
+
+    assert code == 0, out + err
+    assert test_session_migrate._everything(slot) == before
+    assert f"job record: {jobs['own']} (rewrite: " in out
+    assert f"sub-agent record: {_subagents(slot) / 'agent-amoved.meta.json'} (rewrite: " in out
