@@ -56,7 +56,11 @@ def _process(target: ProcessIdentity) -> psutil.Process | None:
 
 
 def _tmux(args: list[str]) -> str | None:
-    result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=2, check=False)
+    try:
+        result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=2, check=False)
+    except subprocess.TimeoutExpired as exc:
+        # A loaded host can answer slowly; report it as an ordinary failure to establish ownership.
+        raise ValueError("tmux did not answer in time") from exc
     if result.returncode:
         # An already removed session/server is successful idempotent cleanup.
         if any(message in result.stderr for message in ("can't find session:", "no server running on")) or (

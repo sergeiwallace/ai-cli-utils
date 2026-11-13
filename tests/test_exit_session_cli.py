@@ -226,6 +226,52 @@ def test_fenced_tmux_when_supervisor_binds_then_command_removes_exact_session(ex
     proc.wait(timeout=3)
 
 
+def test_slow_tmux_when_supervisor_binds_then_the_bind_retries_instead_of_failing_the_launch(exit_target, monkeypatch):
+    import subprocess
+
+    from ai_cli import session_exit
+
+    proc, name = exit_target
+    row = registry.load_registry()["sessions"][0]
+    calls = []
+    real_run = subprocess.run
+
+    def slow_once(command, *args, **kwargs):
+        if command[:1] == ["tmux"]:
+            calls.append(command)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 2))
+            return subprocess.CompletedProcess(command, 0, stdout="$42|token-1|999999\n", stderr="")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(session_exit.subprocess, "run", slow_once)
+    monkeypatch.setattr("ai_cli.session_commands.time.sleep", lambda _seconds: None)
+    binding = CliRunner().invoke(cli, ["sessions", "_bind-exit-tmux", name, row["generation"], "$42", "token-1"])
+    assert binding.exit_code == 0, binding.output
+    assert len(calls) == 2
+
+
+def test_unresponsive_tmux_when_supervisor_binds_then_the_bind_fails_with_a_message_not_a_traceback(
+    exit_target, monkeypatch
+):
+    import subprocess
+
+    from ai_cli import session_exit
+
+    proc, name = exit_target
+    row = registry.load_registry()["sessions"][0]
+
+    def never_answers(command, *args, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 2))
+
+    monkeypatch.setattr(session_exit.subprocess, "run", never_answers)
+    monkeypatch.setattr("ai_cli.session_commands.time.sleep", lambda _seconds: None)
+    binding = CliRunner().invoke(cli, ["sessions", "_bind-exit-tmux", name, row["generation"], "$42", "token-1"])
+    assert binding.exit_code == 1
+    assert not isinstance(binding.exception, subprocess.TimeoutExpired)
+    assert "tmux" in binding.output
+
+
 def test_supervisor_identity_when_generation_begins_then_birth_is_fenced_and_reattach_preserves_it(exit_target):
     from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
 
