@@ -123,9 +123,8 @@ def test_given_a_process_working_in_a_pruned_entry_when_finished_then_the_contai
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     container = _pruned_entries(slot)
-    # The worker reports its own pid: on Windows a venv's python.exe is a launcher that
-    # starts the real interpreter as a child, so Popen's pid is not the process whose
-    # working directory is the entry.
+    # On Windows a venv's python.exe launcher and its interpreter child share the cwd.
+    # The scan can report either; on POSIX both pids identify the same process.
     pid_file = slot["state"] / "worker.pid"
     script = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(120)"
     worker = subprocess.Popen([sys.executable, "-c", script], cwd=container / "pruned-leaf")
@@ -146,9 +145,30 @@ def test_given_a_process_working_in_a_pruned_entry_when_finished_then_the_contai
         worker.wait()
 
     assert code == 1, out + err
-    assert f"pid {worker_pid} works in pruned-leaf" in out
+    assert any(f"pid {pid} works in pruned-leaf" in out for pid in {worker.pid, worker_pid}), out
     assert (container / "pruned-leaf" / "work.txt").is_file()
     assert (container / "bare-leaf" / "sub" / "notes.md").is_file()
+    assert not (slot["state"] / m.MIGRATION_ARCHIVE).exists()
+
+
+@pytest.mark.parametrize("pids", [(101, 102), (102, 101)], ids=["launcher-first", "interpreter-first"])
+def test_given_a_launcher_and_interpreter_in_a_pruned_entry_when_finished_then_the_first_holder_is_named_and_nothing_archived(
+    slot,
+    pids,
+):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    container = _pruned_entries(slot)
+    # Model a Windows venv's two processes without requiring a Windows host.
+    with patch("ai_cli.session_migrate._process_cwds", return_value=[(pid, container / "pruned-leaf") for pid in pids]):
+        code, out, err = _finish(slot["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"pid {pids[0]} works in pruned-leaf" in out
+    assert f"pid {pids[1]} works in pruned-leaf" not in out
+    assert (container / "pruned-leaf" / "work.txt").read_text() == "unlanded work\n"
+    assert (container / "bare-leaf" / "sub" / "notes.md").read_text() == "notes\n"
+    assert not (slot["state"] / m.MIGRATION_ARCHIVE).exists()
 
 
 def test_given_a_registered_agent_worktree_beside_a_pruned_entry_when_migrated_then_only_the_pruned_one_is_archived(
