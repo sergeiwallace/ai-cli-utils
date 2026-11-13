@@ -941,7 +941,7 @@ def _compatible(source: str, expected: str) -> bool:
             body = re.sub(r"(?m)^  ", "", cleanup[1])
             ending = "      done\n      exit 0\n    fi\n"
             if ending not in text:
-                ending = "      done\n    # BEGIN SHELL HANDOFF interactive\n"
+                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
             text = text.replace(
                 ending,
                 "      done\n" + body + ending.removeprefix("      done\n"),
@@ -969,11 +969,11 @@ def _compatible(source: str, expected: str) -> bool:
     # expected template: ignoring these regions in a running source would let
     # arbitrary edits to its shell handoff or signal handling pass inspection.
     earlier = re.sub(
-        r"(?ms)^    # BEGIN SHELL HANDOFF agent-wait\n.*?^    # END SHELL HANDOFF\n",
+        r"(?ms)^    # BEGIN SHELL RETURN agent-wait\n.*?^    # END SHELL RETURN\n",
         '      wait "$active_agent_pid"\n      agent_exit_code=$?\n',
         expected,
     )
-    earlier = re.sub(r"(?ms)^    # BEGIN SHELL HANDOFF[^\n]*\n.*?^    # END SHELL HANDOFF\n", "", earlier)
+    earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
     earlier = earlier.replace(
         "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
         "if $_supervisor_tmux_ownership_established; then",

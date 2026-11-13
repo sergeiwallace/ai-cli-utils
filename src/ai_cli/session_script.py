@@ -519,9 +519,9 @@ def get_engine_script(
         fi
       fi
       _heartbeat_pid=""
-    # BEGIN SHELL HANDOFF state
+    # BEGIN SHELL RETURN state
       _supervisor_return_to_shell=false
-    # END SHELL HANDOFF
+    # END SHELL RETURN
       _supervisor_cleanup() {{
     # BEGIN RUN STATE cleanup-exit
         # EXIT also runs after terminal loss or an unexpectedly killed child.
@@ -647,7 +647,7 @@ def get_engine_script(
         trap '' TTOU
         python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
-    # BEGIN SHELL HANDOFF terminal
+    # BEGIN SHELL RETURN terminal
       _supervisor_preserve_pane() {{
         # A script launched as tmux's pane command has no interactive shell
         # parent to return to. Keep that pane and replace its supervisor below.
@@ -655,7 +655,7 @@ def get_engine_script(
           _supervisor_return_to_shell=true
         fi
       }}
-    # END SHELL HANDOFF
+    # END SHELL RETURN
       # Consecutive reloads share one in-place row (AI-CLI-zss5): the reason, the attempt
       # and the time since the first, rendered by `ai internal progress`, which escalates
       # past the configured thresholds so a reload loop gets louder rather than looking
@@ -825,7 +825,7 @@ def get_engine_script(
           break
         fi
     # END RUN STATE
-    # BEGIN SHELL HANDOFF policy
+    # BEGIN SHELL RETURN policy
         # Template refreshes replace the body without starting another agent.
         # All other replacements obey the current session policy.
         if (( _child_status != 78 )) && [[ $({_relaunch_policy_command} 2>/dev/null) == never ]]; then
@@ -833,7 +833,7 @@ def get_engine_script(
           _supervisor_preserve_pane
           break
         fi
-    # END SHELL HANDOFF
+    # END SHELL RETURN
         # A reload names its reason in the state file, and the file, not the exit
         # status, is the signal: a child that exits at once can still lose its status
         # to the stop its promotion left pending. An exit without a reason (the remote
@@ -856,12 +856,12 @@ def get_engine_script(
           _reload_count=0
         fi
       done
-    # BEGIN SHELL HANDOFF interactive
+    # BEGIN SHELL RETURN interactive
       if $_supervisor_return_to_shell; then
         # Release supervisor resources before exec: an exec does not run EXIT.
         # The shell must inherit neither the lease nor the supervisor's traps.
         _supervisor_cleanup
-        # Keep INT caught through the handoff; exec resets caught dispositions.
+        # Keep INT caught through the shell return; exec resets caught dispositions.
         trap - EXIT TERM WINCH TTOU
         if [[ -n "$_ai_emit_terminal_fd" ]]; then exec 2>&3; fi
         exec 3>&- 8>&- 9<&-
@@ -874,7 +874,7 @@ def get_engine_script(
         if [[ -n "${{SHELL:-}}" && -x "$SHELL" ]]; then exec "$SHELL" -i; fi
         exec {shlex.quote(_session_shell)} -i
       fi
-    # END SHELL HANDOFF
+    # END SHELL RETURN
       exit 0
     fi
     # BEGIN RUN STATE child-stderr-restore
@@ -1093,7 +1093,7 @@ def get_engine_script(
         "$@" <&0 &
       fi
       active_agent_pid=$!
-    # BEGIN SHELL HANDOFF agent-wait
+    # BEGIN SHELL RETURN agent-wait
       # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
       # its actual exit before resetting the terminal or replacing the body.
       while true; do
@@ -1101,7 +1101,7 @@ def get_engine_script(
         agent_exit_code=$?
         kill -0 "$active_agent_pid" 2>/dev/null || break
       done
-    # END SHELL HANDOFF
+    # END SHELL RETURN
       active_agent_pid=""
       _reset_agent_terminal
       if [[ -f "$_child_int_exit_file" ]]; then
@@ -1647,7 +1647,7 @@ with open(path, 'w') as f:
       fi
     # END BACKGROUND ATTACH
 
-    # BEGIN SHELL HANDOFF interrupt-exit
+    # BEGIN SHELL RETURN interrupt-exit
       # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
       # neither that clean exit nor status 130 is a crash to auto-restart.
       if {{ $agent_attempted && (( agent_exit_code == 0 || agent_exit_code == 130 )); }} || \\
@@ -1655,7 +1655,7 @@ with open(path, 'w') as f:
         _ai_final_manual_exit
         exit 77
       fi
-    # END SHELL HANDOFF
+    # END SHELL RETURN
 
     # BEGIN PINNED RESTART no-fallback
       if $_restart_requested; then
