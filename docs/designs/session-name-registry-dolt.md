@@ -23,13 +23,13 @@ described in T-3.2 and T-4.2. This index is non-authoritative; the raw request g
 | General approval, separate session approval, and reserved, migrated and in-use tracking | [Data Model](#data-model): `names.status`, session-scoped `verdicts`, `holds` and `migrations`; [D-3](#d-3) |
 | Never reviewed, generally rejected, generally approved but not approved for a session, and approvals or rejections per repository, host or session | The four states are derived in [Status model](#status-model). Scoped decisions are normalized `verdicts` rows, as resolved in [D-3](#d-3) |
 | The database must be git tracked | The canonical Dolt database and its row history live on a git remote ref ([D-2](#d-2)); this is a requirement, not an open question |
-| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 applies the substitution inside the 20-entry pre-approved list (the replacement in, the superseded entry out, still 20) and approves every entry for picking and migration; a separately pinned, owner-approved private oracle fixes the exact membership, and T-4.2 checks the candidate seed against it before the flip |
+| Replace one previously proposed name, and approve the complete corrected seed for migration | T-3.2 applies the substitution to the migration conversion table the owner was shown (the replacement in, the superseded entry out with no approval) and approves every name in the corrected table, together with every other owner approval, for picking and migration ([D-10](#d-10)); a separately pinned, owner-approved private oracle fixes the exact membership, and T-4.2 checks the candidate seed against it before the flip |
 | Use the best git-tracked database, with Dolt selected after research | Answered by the research recommendation; this design builds on Dolt |
 | Replace the JSON-ref system with a robust schema and searchable data | The old store is retired in [Phase 4](#phase-4-fleet-cutover), constraints are in [Data Model](#data-model), and T-3.4 supplies SQL-backed search |
 | A package dependency is acceptable; compare SQLite and other candidates | The research compared the candidates. Dolt is the fleet dependency ([D-6](#d-6)); SQLite is the no-fleet fallback with the same logical schema ([D-5](#d-5)) |
-| Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 recovers the earlier feedback into a separately pinned private oracle and requires the candidate seed to match it exactly |
+| Notify affected sessions and incorporate prior status feedback | T-4.3 requires notices before and after cutover. T-3.2 has the run's oracle-recovery task, owned by the run's orchestrating session, recover the earlier feedback into a separately pinned private oracle, owner-approved before the Phase 4 seed write, and requires the candidate seed to match it exactly ([D-10](#d-10)) |
 | Authoring and routing constraints | Handled by the orchestration outside this public product design; they do not change runtime behaviour |
-| Provide approved and needs-review statuses and seed the 20 pre-approved names plus one more name | `unreviewed` is needs-review, `approved` is approved. T-3.2 binds the one additional name as a separate part of the private oracle, beyond the corrected 20-entry list, for exactly 21 approvals; T-4.2 checks both parts and their exact membership |
+| Provide approved and needs-review statuses and seed the owner's pre-approved names plus one more name | `unreviewed` is needs-review, `approved` is approved. T-3.2 binds the pre-approved list and the one additional name as separate parts of the private oracle, alongside the corrected conversion table; the approved set is their union, with no fixed count in this design, and T-4.2 checks every part and its exact membership ([D-10](#d-10)) |
 | Research candidates beyond the initially suggested stores | Satisfied by the converged research document |
 
 **Status:** DRAFT
@@ -86,6 +86,7 @@ described in T-3.2 and T-4.2. This index is non-authoritative; the raw request g
   - [D-7: Cutover shape](#d-7)
   - [D-8: How other tools read the registry](#d-8)
   - [D-9: Who is recorded as the actor](#d-9)
+  - [D-10: Which names the seed approves, and when the oracle is recovered](#d-10)
 - [Open Questions](#open-questions)
 - [Feedback Rounds](#feedback-rounds)
 - [Approval Log](#approval-log)
@@ -687,20 +688,22 @@ asserting both the pick result and the hand-choice result.
     - [ ] When run against a registry tree, the system shall write one Dolt commit holding every pool name, manual name, held row and migration record from that tree, and a second run shall report nothing to import.
     - [ ] When the import completes, the system shall print counts that match the tree: names, manual names, held rows by kind, migrations by state.
     - [ ] If the tree has a row that fails today's validator, then the system shall refuse the whole import and name the row.
-  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. Before Phase 3 begins, the prior approval feedback shall be recovered into a separate private oracle at `config/session-name-approvals.oracle.toml`. The owner shall approve that oracle's exact normalized rows at a pinned fleet-repository commit, and a separate authoritative cutover metadata record shall store that commit and the oracle's canonical SHA-256. The candidate seed file is not the oracle, and neither its own digest nor an expected digest stored inside it can establish the approved membership. The founding ask states two separate approval facts, and the oracle's approved set is built from both, in this order:
-    1. the owner's pre-approved list of 20 entries, with the one substitution the owner named applied inside it: the superseded entry is removed and its named replacement takes its place, so the corrected list still has exactly 20 entries;
-    2. the one entry the owner approved separately, in addition to that list, which is neither the superseded entry nor a member of the corrected list.
+  - **T-3.2 Seed** — `ai seed-name-verdicts -f/--file PATH`, reading a TOML file kept in the fleet repository, never in this package. The seed is checked against a separate private oracle at `config/session-name-approvals.oracle.toml` in the fleet repository, which holds the owner's earlier approval feedback recovered from the sessions it was given to. The owner shall approve that oracle's exact normalized rows at a pinned fleet-repository commit, and a separate authoritative cutover metadata record shall store that commit and the oracle's canonical SHA-256. The candidate seed file is not the oracle, and neither its own digest nor an expected digest stored inside it can establish the approved membership. Recovering the oracle is the run's oracle-recovery task: the run's orchestrating session owns it, tracks it as a child issue of the run's issue, and finishes it, with the owner's approval recorded, before the T-4.2 seed write in Phase 4 ([D-10](#d-10)). Phase 3 builds and tests the seed command and its oracle validation against generic test fixtures and does not need the real oracle.
 
-    The approved set is the corrected 20-entry list plus the separate addition: exactly 21 entries. The oracle records the original and corrected 20-entry lists, the replacement and superseded entries, the separate addition, and every recovered scoped verdict and rejection. The candidate manifest records the same parts and carries its actor and reasons. Canonical SHA-256 values are computed over sorted normalized rows. Every approved entry is approved for migration as well as for picking, because general approval is what both the picker and `migrate-session` read.
-    - [ ] When seeded, the system shall load the oracle from the separately pinned commit, verify that its recomputed canonical digest equals the digest in the authoritative cutover metadata record, and require the candidate manifest's normalized rows to equal the oracle's normalized rows exactly. It shall then apply, with the file's actor, exactly 21 general approvals: the 20 entries of the corrected list, the replacement among them, and the separate addition. It shall leave the superseded entry without an approval, apply every oracle-scoped verdict, and convert every oracle-denylisted name to `rejected`, all in one commit.
+    The approved set is the union of every approval the owner gave, each kept as its own part of the oracle:
+    1. the owner's pre-approved list;
+    2. the entry the owner approved separately, in addition to that list;
+    3. every name the owner approved in the migration conversion table the owner was shown, with the owner's named substitution applied to that table: the superseded entry is removed and gets no approval, and its replacement is approved.
+
+    The oracle also records the original conversion table, the superseded entry and the replacement, every name the owner excluded, every recovered scoped verdict, and the owner's explicit answer for any approved name that the exclusions or the fleet denylist also list. This design fixes no count of approved names: the pinned oracle and its separately stored digest fix the exact membership and counts. The candidate manifest records the same parts and carries its actor and reasons. Canonical SHA-256 values are computed over sorted normalized rows. Every approved entry is approved for migration as well as for picking, because general approval is what both the picker and `migrate-session` read.
+    - [ ] When seeded, the system shall load the oracle from the separately pinned commit, verify that its recomputed canonical digest equals the digest in the authoritative cutover metadata record, and require each part of the candidate manifest to equal the oracle's part exactly. It shall then, with the file's actor and in one commit, apply one general approval for every name in the union of the pre-approved list, the separate addition and the corrected conversion table; leave the superseded entry without an approval; set every excluded name and every denylisted name to `rejected`, except a name whose recorded owner answer approves it; and apply every oracle-scoped verdict.
     - [ ] When an approved entry is not yet in the pool, the seed shall add it as a `manual` name, with the file's actor and reason, in the same commit as its approval, so no owner approval is dropped.
     - [ ] When a denylisted name is held, the system shall keep the hold and add a session-scoped `approved` verdict for its holder.
     - [ ] If a scoped verdict or a rejection in the seed file names a name outside the pool, then the system shall refuse the whole seed.
-    - [ ] If the corrected list does not have exactly 20 entries, omits the replacement, still contains the superseded entry, or has a duplicate, then the cutover validation shall fail before any seed row is written.
-    - [ ] If the separate addition is missing, is a member of the corrected list, equals the superseded entry, or more than one addition is listed, then the cutover validation shall fail before any seed row is written.
-    - [ ] If the superseded entry is not a member of the owner's original 20-entry list, then the cutover validation shall fail before any seed row is written and report that the substitution cannot be applied as recorded.
-    - [ ] If the oracle, its pinned commit or its separately stored expected digest is missing or inaccessible, if the oracle's recomputed digest differs from that expected digest, or if any normalized candidate row differs from the oracle, then validation shall fail before any seed row is written.
-    - [ ] Given a candidate with exactly 20 structurally valid corrected-list entries, one structurally valid separate addition and a self-consistent digest, if any entry differs from the pinned oracle, then a regression test shall prove that validation rejects it without writing a row; a companion test shall prove that the exact oracle-derived candidate is accepted.
+    - [ ] If the superseded entry is not a member of the original conversion table, is still a member of the corrected table, or is a member of the pre-approved list or the separate addition, or if the replacement is absent from the corrected table, then the cutover validation shall fail before any seed row is written and report that the substitution cannot be applied as recorded.
+    - [ ] If a name in an approved part is also an excluded name or listed by the fleet denylist, and the oracle records no explicit owner answer for it, then the cutover validation shall fail before any seed row is written and name that conflict; it shall neither approve nor reject the name.
+    - [ ] If the oracle, its pinned commit or its separately stored expected digest is missing or inaccessible, if the oracle's recomputed digest differs from that expected digest, or if any part of the candidate (the pre-approved list, the separate addition, the original or corrected conversion table, the exclusions, the owner answers or the scoped verdicts) differs from the oracle's part, then validation shall fail before any seed row is written.
+    - [ ] Given a structurally valid candidate with a self-consistent digest, if any entry of any part differs from the pinned fixture oracle, then a regression test shall prove that validation rejects it without writing a row; a companion test shall prove that the exact oracle-derived candidate is accepted.
   - **T-3.3 `list-migrations`** — `ai list-migrations -j/--json`.
     - [ ] When run, the system shall list every migration row with its state, as JSON with `--json`.
   - **T-3.4 `find-names`** — `ai find-names -s/--status S -k/--scope KIND -v/--value VALUE -m/--machine M -t/--state STATE -j/--json`.
@@ -713,8 +716,9 @@ asserting both the pick result and the hand-choice result.
 
 - **Scope:** the switch on every fleet host, the fleet repository's readers, and rollback.
 - **Deliverables:**
-  - Fleet repository (private): `config/session-names.toml` at schema 2, the seed file, the readers
-    changed per [Integration](#integration), and the cutover runbook.
+  - Fleet repository (private): `config/session-names.toml` at schema 2, the seed file, the
+    owner-approved oracle and its cutover metadata record (from the run's oracle-recovery task,
+    T-3.2), the readers changed per [Integration](#integration), and the cutover runbook.
   - This repository: a release carrying Phases 1 to 3.
 - **Tasks + acceptance criteria:**
   - **T-4.1 Drain and freeze** — announce the freeze, quiesce allocation processes and hold both registry and spool locks on every registered host, drain the old spools, then publish a policy snapshot with `schema = 2` to the old registry branch. Keep the Dolt `meta.writes_enabled` gate at `0` throughout.
@@ -725,7 +729,8 @@ asserting both the pick result and the hand-choice result.
     - [ ] When import completes, every old session and label hold shall exist unchanged, every cache-only token an old offline client could activate shall be occupied by a quarantined Dolt hold, every cached token already present at the frozen tip shall remain occupied by that authoritative frozen row, and no ordinary Dolt allocation shall yet be accepted.
     - [ ] Given a stale host cache that calls a token an unactivated spare while the frozen tip holds that token as an active session, an integration test shall prove that import keeps the active row byte-for-byte, inserts no duplicate or quarantine row for the token, and continues to report the token as occupied.
     - [ ] Given a frozen reserved spare and a different cache-only spare, an integration test shall prove that import keeps the frozen spare row byte-for-byte unchanged while inserting the cache-only token as `cutover-quarantined`.
-    - [ ] Before seed writes, the runbook shall load the owner-approved oracle from its pinned commit, verify its canonical digest against the independently stored expected digest, and compare every normalized candidate row with the oracle. A mismatch in the original or corrected list's count or membership, the replacement, the superseded entry, the separate addition, any scoped verdict or rejection, or the digest shall block the flip.
+    - [ ] If the run's oracle-recovery task is not finished with the owner's approval of the oracle recorded, then the cutover shall stop before any seed write with Dolt writes disabled.
+    - [ ] Before seed writes, the runbook shall load the owner-approved oracle from its pinned commit, verify its canonical digest against the independently stored expected digest, and compare every part of the candidate with the oracle's part. A mismatch in the pre-approved list, the separate addition, the original or corrected conversion table, the superseded entry or the replacement, the exclusions, the owner answers, any scoped verdict, or the digest, or an approved name that the exclusions or the fleet denylist also list with no recorded owner answer, shall block the flip.
     - [ ] When validation succeeds, `check-names` in cutover mode shall exit 0 and `list-names` shall show counts equal to the frozen tree plus the attested seed and cache-only quarantines.
   - **T-4.3 Enable and roll out** — after every registered host is upgraded, reconcile each quarantine from its captured cache/spool evidence, verify no old registry process is running, switch policy to the Dolt backend, and set `meta.writes_enabled = 1` in the enabling Dolt commit. Sessions are told before the freeze and after the last host.
     - [ ] At every cutover checkpoint, an integration test shall attempt an old online write, an old cached offline-spare activation and a new Dolt write; zero stores shall accept ordinary allocation before the enabling commit, and only Dolt shall accept it afterward.
@@ -749,7 +754,7 @@ asserting both the pick result and the hand-choice result.
 | 3 | Phase 1 | Access path, D-1, D-6 | - [ ] | |
 | 4 | Phase 1 | Public installs, D-5 | - [ ] | |
 | 5 | Phase 2 | Status model, D-3, D-9 | - [ ] | |
-| 6 | Phase 3 | Import, seed and queries | - [ ] | |
+| 6 | Phase 3 | Import, seed and queries, D-10 | - [ ] | |
 | 7 | Phase 4 | Cutover, D-2, D-7, D-8 | - [ ] | |
 
 **Audit completed:**
@@ -766,6 +771,7 @@ asserting both the pick result and the hand-choice result.
 | 6 | The registry and the issue tracker interfere in one repository | One overwrites the other's info branch or ref | Separate ref; info branch off; separate clone; no shared server (D-2) |
 | 7 | The cutover window stalls launches | Sessions cannot get new names | Both stores reject ordinary writes until every host is upgraded; old cached spares are quarantined; the window is announced and rollback is rehearsed |
 | 8 | A hand edit in SQL bypasses the client | A case twin or invalid row | Constraints in the table itself, not only in the client |
+| 9 | The seed approves a different set from the one the owner approved, or the oracle is not ready when Phase 4 starts | Owner-approved names left unapproved, or a name approved without the owner's word | The approved set is the union of every owner approval, each part checked against the pinned, owner-approved oracle; conflicts with exclusions or the denylist block until the owner answers; the run's oracle-recovery task has a named owner and T-4.2 stops the cutover until it is done (D-10) |
 
 <!-- /doc:region name="overview" -->
 
@@ -786,6 +792,7 @@ asserting both the pick result and the hand-choice result.
 | D-7 | Cutover shape | (a) one frozen window, (b) dual-write period, (c) per-host gradual | (a) | (a) | No | One store at a time; old clients fail closed by policy schema | ✅ Resolved |
 | D-8 | How other tools read the registry | (a) through the `ai` CLI's JSON, (b) direct Dolt reads | (a) | (a) | No | One access path, one schema owner | ✅ Resolved |
 | D-9 | Who is recorded as the actor | (a) separate `actor` and `recorded_by`, (b) the agent session only | (a) | (a) | No | The owner's verdicts are relayed by agents; both facts matter | ✅ Resolved |
+| D-10 | Which names the seed approves, and when the oracle is recovered | (a) the pre-approved list with the substitution inside it plus one addition, (b) the union of every owner approval, pinned by the oracle, (c) approve the whole pool | (b) | (b) | No | (a) contradicts the record and narrows an explicit requirement; (c) broadens it | ✅ Resolved |
 
 ### Decision Details
 
@@ -1183,6 +1190,69 @@ the session automatically.
 
 ---
 
+<a id="d-10"></a>
+
+#### D-10: Which names the seed approves, and when the oracle is recovered — ✅ Approved: (b) the union of every owner approval, pinned by the oracle
+
+**Context.** The owner gave approvals in more than one place: a pre-approved list, one name approved
+separately in addition to it, and a migration conversion table the owner was shown, with one name in
+that table replaced and every name in it approved to migrate. An earlier revision of this design
+applied the substitution inside the pre-approved list and capped the seed at that list plus the one
+addition. The record does not support that reading: the superseded entry is not in the pre-approved
+list, the substitution was stated for the table, and the earlier seed plan approved many more names,
+excluded a name, and found an owner-approved name on the fleet denylist. The same revision required
+the earlier feedback to be recovered "before Phase 3 begins" and named no one to do it.
+
+##### (a) The pre-approved list with the substitution inside it, plus one addition
+
+**Pros:**
+- A small, fixed approved set that is easy to state.
+
+**Cons:**
+- Contradicts the record: validation would refuse the real seed, because the superseded entry is not
+  in the pre-approved list.
+- Leaves names the owner approved in the conversion table, some already held by migrated sessions,
+  without general approval; that narrows an explicit requirement.
+
+##### (b) The union of every owner approval, each part pinned by the oracle
+
+**Pros:**
+- Every name the owner approved, in any of the three places, is approved for picking and migration.
+- Each part is checked on its own against the owner-approved oracle, so a wrong or missing name in
+  any part blocks the seed.
+- An approved name that the exclusions or the fleet denylist also list waits for the owner's answer,
+  so no conflict is settled silently.
+
+**Cons:**
+- The public design cannot state the size of the approved set; the private oracle and its digest
+  carry it.
+- Phase 4 depends on the oracle-recovery task finishing; mitigated by naming its owner, tracking it
+  as a child issue of the run, and having T-4.2 stop the cutover until it is done.
+
+##### (c) Approve the whole pool
+
+**Pros:**
+- No oracle to recover.
+
+**Cons:**
+- Approves names the owner never reviewed, which broadens the owner's approvals and makes the
+  `unreviewed` status meaningless at the start.
+
+##### Recommendation
+
+> **Decision:** ✅ Resolved — (b) the union of every owner approval, pinned by the oracle
+<!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=session-name-registry-dolt/D-10; decision-topic=registry-seed-approved-set; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=seed-approves-union-of-owner-approvals-pinned-by-oracle; applicability=scope:fleet-registry; outcome-id=union-oracle; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+Option (a) contradicts the record and narrows an explicit requirement; option (c) broadens it.
+Option (b) approves exactly what the owner approved, with the owner's substitution applied where the
+owner stated it, and leaves the exact membership to the pinned oracle and its separately stored
+digest. The oracle's recovery is the run's oracle-recovery task, owned by the run's orchestrating
+session and finished with the owner's approval before the T-4.2 seed write in Phase 4. Phase 3 needs
+only generic fixtures, so the earlier "before Phase 3 begins" precondition moves to T-4.2.
+
+---
+
 > **Feedback Round 1:** Your approval/feedback on each decision:
 > 1. D-1: <approval or feedback>
 > 2. D-2: <approval or feedback>
@@ -1193,9 +1263,10 @@ the session automatically.
 None. "Git tracked" is satisfied by the canonical Dolt database and row history stored on a git
 remote ref. The exact private seed is not discretionary: T-3.2 requires the recovered approval
 feedback to be fixed in an owner-approved oracle at a pinned commit with its digest stored in a
-separate authoritative cutover record. The candidate's 21 approved entries must equal that oracle's
-corrected 20-entry list (one named substitution inside the original 20) plus its separately approved
-addition, and T-4.2 blocks cutover on any row or digest mismatch.
+separate authoritative cutover record. The candidate's approved set must equal the union of that
+oracle's approved parts (the pre-approved list, the separately approved addition and the conversion
+table with the owner's substitution applied to it), and T-4.2 blocks cutover on any part or digest
+mismatch ([D-10](#d-10)).
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
@@ -1219,5 +1290,6 @@ addition, and T-4.2 blocks cutover on any row or digest mismatch.
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-11-11 | D-1 to D-9 | Resolved during automated design review; none required owner input |
+| 2026-11-12 | D-10 | Resolved during automated design review after a scope-alignment review found the seed narrowed the owner's approvals |
 
 <!-- /doc:region name="approval_log" -->
