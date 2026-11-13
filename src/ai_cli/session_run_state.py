@@ -292,6 +292,9 @@ def mark(
         record = _find(doc, name)
         if generation is not None and generation != record.get("generation"):
             raise ValueError("stale supervisor generation")
+        teardown = exit_teardown(record)
+        if teardown and teardown.get("generation") == record.get("generation"):
+            raise ValueError("manual exit fenced this supervisor generation")
         seq = sequence if sequence is not None else time.monotonic_ns()
         if seq <= record.get("transition_seq", 0):
             raise ValueError("stale supervisor transition sequence")
@@ -387,3 +390,55 @@ def reconcile_safety() -> None:
         return changed
 
     registry._mutate(recover, timeout=2)
+
+
+def exit_teardown(record: dict) -> dict:
+    """Read cleanup evidence from lifecycle fields preserved across reattachment."""
+    return ((record.get("supervisor_exit") or {}).get("evidence") or {}).get("teardown") or {}
+
+
+def request_manual_exit(name: str, *, host: str, generation: str, targets: dict) -> dict:
+    """Commit a manual exit and its cleanup identities, or raise without authorizing signals.
+
+    Unlike ``mark_exited``, a safety-only fallback is a failure for this operation.
+    Repeating the request retains the original transition and resumes its cleanup.
+    """
+    accepted = {}
+
+    def change(doc):
+        record = _find(doc, name)
+        if not generation or record.get("generation") != generation or record.get("owning_host") != host:
+            raise ValueError("session host or generation mismatch")
+        previous = exit_teardown(record)
+        if previous.get("generation") == generation:
+            if any(targets.values()) and previous["targets"] != targets:
+                raise ValueError("cleanup identities differ from the committed exit")
+            accepted.update(record)
+            return False
+        now = registry._now()
+        record.update(
+            run_state="exited",
+            changed_at=now,
+            ended_at=now,
+            transition_seq=record.get("transition_seq", 0) + 1,
+        )
+        record.pop("wind_down", None)
+        registry.record_exit(
+            record["id"],
+            cause="manual_exit",
+            evidence={"teardown": {"generation": generation, "targets": targets, "errors": []}},
+            at=now,
+            _document=doc,
+        )
+        record["supervisor_exit"] = dict(record["exit"])
+        accepted.update(record)
+        return True
+
+    def fallback(_doc):
+        path = tombstone_path(name, host)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        registry._write(path, {"name": name, "generation": generation, "deny_boot": True, "record": accepted})
+        raise OSError("registry exit commit failed; recovery evidence retained")
+
+    registry._mutate(change, write_failure=fallback, timeout=2)
+    return accepted
