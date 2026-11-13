@@ -747,9 +747,11 @@ def test_given_a_dead_and_a_detached_local_session_when_pruned_then_only_the_dea
     assert [r["name"] for r in _sessions(state_home)] == ["c-myproject-2"]
 
 
-def test_given_tmux_cannot_be_run_when_pruned_then_no_local_record_is_removed(state_home):
+def test_given_tmux_cannot_be_run_when_pruned_then_no_local_record_is_removed(state_home, monkeypatch):
     """An unanswered question is not proof of death."""
     _seed("c-myproject-1")
+    # Even a complete absence proof cannot replace prune's required tmux reply.
+    monkeypatch.setattr("psutil.process_iter", lambda *args, **kwargs: iter(()))
 
     with patch("ai_cli.session_registry.subprocess.run", side_effect=FileNotFoundError("tmux")):
         code, out, _ = run_cli(["ai", "iterm2", "sessions", "-p"])
