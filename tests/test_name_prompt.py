@@ -310,8 +310,9 @@ def test_t21_given_the_picked_name_taken_before_the_push_when_written_then_it_pi
     taken: list[str] = []
 
     def take_the_pick():
-        snapshot = fleet.registry.snapshot()
-        request, _ = reg.pick_request(fleet.registry, snapshot, SLOT)
+        # Another machine's read: this machine's registry is mid-push and holds its own host lock.
+        observer = fleet.other_machine("picker")
+        request, _ = reg.pick_request(observer, observer.snapshot(), SLOT)
         from ai_cli import session_naming
 
         name = session_naming.pick_name(request, random.Random(0)).name

@@ -1866,7 +1866,11 @@ def dry_run_snapshot(registry: Registry, snapshot: Snapshot) -> tuple[Snapshot, 
             "`ai sync-names` publishes may differ from this plan's"
         )
     names = name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
-    return replace(snapshot, names=names, generation={"policy": policy}), notes
+    statuses = snapshot.statuses
+    if statuses is not None:
+        # The plan treats the shipped names as a local install does: approved.
+        statuses = {**{name: {"status": "approved"} for name in names}, **statuses}
+    return replace(snapshot, names=names, generation={"policy": policy}, statuses=statuses), notes
 
 
 # --- release ---------------------------------------------------------------------------------

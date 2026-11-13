@@ -277,7 +277,10 @@ class DoltRegistry(reg.FleetRegistry):
             self._ensure_clone()
             if fetch:
                 self._fetch()
-            tables, tip = self._read("origin/main")
+                self._reset()
+            # The local branch is the last fetched tip: every fetch is followed by a reset to it,
+            # and it survives a remote re-added for a new URL, which drops the tracking ref.
+            tables, tip = self._read("main")
             return tables.snapshot(tip, fetched=fetch, policy_schemas=self.policy_schemas)
 
     # -- writing

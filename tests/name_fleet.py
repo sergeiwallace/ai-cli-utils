@@ -304,8 +304,11 @@ class Fleet:
         if commit is None:
             # A write from another process never reaches the spy: compare the store itself.
             replayed: dict[str, str] = {}
+            tree_paths = (f"{reg.NAMES_DIR}/", "available/", f"{reg.MIGRATIONS_DIR}/")
             for item in self.commits:
                 for path, data in item.writes.items():
+                    if not path.startswith(tree_paths):
+                        continue
                     if data is None:
                         replayed.pop(path, None)
                     else:

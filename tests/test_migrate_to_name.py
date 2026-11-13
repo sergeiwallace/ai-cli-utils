@@ -93,7 +93,7 @@ def test_given_a_max_length_inside_the_limits_when_migrated_then_the_name_is_no_
     code, out, err = migrate(fleet, OLD, "--to-name", "--max-length", "3")
 
     assert code != 0
-    assert "no free session name" in out + err
+    assert "no free session name" in out + err or "no approved session name is free" in out + err
 
 
 def test_given_the_rename_failing_with_nothing_left_when_migrated_then_the_row_and_intent_are_released(
