@@ -18,6 +18,29 @@ from . import session_run_state as state
 START_GRACE_SECONDS = 60
 
 
+def _could_run_session(executable: str | None) -> bool:
+    if not executable:
+        return True
+    executable = executable.lower().removesuffix(".exe")
+    return executable.startswith("python") or executable in {
+        "claude",
+        "codex",
+        "gemini",
+        "pi",
+        "node",
+        "nodejs",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "dash",
+        "ksh",
+        "pwsh",
+        "powershell",
+        "cmd",
+    }
+
+
 def _process_alive(record: dict) -> bool | None:
     """Check agents, exact generated wrappers, and the recorded launcher; fail closed.
 
@@ -45,31 +68,12 @@ def _process_alive(record: dict) -> bool | None:
                 try:
                     argv = process.cmdline()
                 except psutil.AccessDenied:
-                    executable = (info.get("name") or "").lower().removesuffix(".exe")
-                    if (
-                        not executable
-                        or executable
-                        in {
-                            "claude",
-                            "codex",
-                            "gemini",
-                            "pi",
-                            "node",
-                            "nodejs",
-                            "sh",
-                            "bash",
-                            "zsh",
-                            "fish",
-                            "dash",
-                            "ksh",
-                        }
-                        or executable.startswith("python")
-                    ):
-                        return None
-                    continue
+                    argv = None
                 if not argv:
-                    # Empty argv is normal for kernel tasks. An identified launcher
-                    # was checked above; no empty argv can identify an agent/wrapper.
+                    # Missing arguments on a possible agent or wrapper are unknown;
+                    # unrelated processes cannot block this session's absence proof.
+                    if _could_run_session(info.get("name")):
+                        return None
                     continue
                 if "--ai-cli-heartbeat-ticker" in argv:
                     continue
@@ -93,7 +97,7 @@ def _process_alive(record: dict) -> bool | None:
                         "/@anthropic-ai/claude-code/",
                         "/@openai/codex/",
                         "/@google/gemini-cli/",
-                        "/@mariozechner/pi-coding-agent/",
+                        "/pi-coding-agent/",
                     )
                 )
                 if executable not in agents and not (
@@ -119,8 +123,8 @@ def _process_alive(record: dict) -> bool | None:
 
 def liveness_blocker(record: dict) -> str:
     """Explain a migration refusal using current owning-host liveness evidence."""
-    if record.get("kind") != "local":
-        return "liveness is unprovable on this host"
+    if record.get("kind") != "local" or not record.get("boot_id"):
+        return "liveness is unprovable on this host: owning-boot evidence is unavailable"
     if registry._local_session_alive(record["name"]) is True:
         return f"live tmux session {record['name']}"
     try:

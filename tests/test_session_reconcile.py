@@ -420,3 +420,18 @@ def test_same_boot_veto_when_run_is_provably_dead_then_record_reconciles_to_exit
     assert settled["run_state"] == "exited"
     assert settled["relaunched_boot_id"] == boot
     assert settled["generation"] == stale_record["generation"]
+
+
+@pytest.mark.parametrize("executable", ["claude", "node", "bash"])
+def test_possible_session_process_when_arguments_are_empty_then_liveness_remains_unknown(
+    stale_record, monkeypatch, executable
+):
+    import psutil
+
+    process = Mock()
+    process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": executable}
+    process.cmdline.return_value = []
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
+    before = registry.registry_path().read_bytes()
+    assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
+    assert registry.registry_path().read_bytes() == before
