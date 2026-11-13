@@ -665,13 +665,15 @@ def get_engine_script(
           return
         fi
         _supervisor_terminating=true
-    # BEGIN RUN STATE supervisor-term
-        _ai_final_manual_exit
-    # END RUN STATE
         if [[ -n "${{_child_pid:-}}" ]] && kill -0 "$_child_pid" 2>/dev/null; then
           kill -TERM "$_child_pid" 2>/dev/null || true
           _supervisor_wait_for_child || true
         fi
+    # BEGIN RUN STATE supervisor-term
+        # Persistence failure exits this shell, so first stop the child that
+        # holds the pane and inherited output pipes.
+        _ai_final_manual_exit
+    # END RUN STATE
         exit 0
       }}
       _supervisor_terminating=false

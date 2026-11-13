@@ -200,6 +200,51 @@ def test_running_supervisor_when_teardown_runs_then_exit_is_persisted(shell_envi
             reap(process)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor signals and process groups")
+def test_given_exit_persistence_failure_when_supervisor_terminates_then_child_stops_and_pipes_close(
+    shell_environment, monkeypatch
+):
+    from process_ownership import reap, spawn_owned, spawn_owned_python
+
+    shell, env, name, tmp_path = shell_environment
+    monkeypatch.setattr(
+        "ai_cli.session_lifecycle_script.lifecycle_command",
+        lambda _path: [sys.executable, "-c", "raise SystemExit(1)"],
+    )
+    monkeypatch.setattr(
+        "ai_cli.session_lifecycle_script.persistence_settings",
+        lambda _cfg: {
+            "deadline_seconds": 0.3,
+            "command_timeout_seconds": 0.1,
+            "backoff_seconds": 0.05,
+            "max_backoff_seconds": 0.05,
+        },
+    )
+    script = get_engine_script("c", "session-1", name, "c-session-", "myproject")
+    term = script.split("      _supervisor_term() {", 1)[1].split("      _supervisor_terminating=false", 1)[0]
+    body = session_state_functions(name) + (
+        f"\ntmux_session={name}\n_ai_state_dir={shlex.quote(str(registry.registry_path().parent))}\n"
+        f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)' &\n"
+        "_child_pid=$!\n_supervisor_terminating=false\n"
+        '_supervisor_wait_for_child() { wait "$_child_pid"; }\n'
+        "_supervisor_term() {" + term + "\n_supervisor_term\n"
+    )
+    # The child inherits the shell's pipes and process group, as in a real pane.
+    # A sibling in another group must survive the supervisor's termination.
+    sibling = spawn_owned_python("import time; time.sleep(30)")
+    process = spawn_owned([shell, "-c", body], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = process.communicate(timeout=scaled(5))
+        assert process.returncode == 77, stderr.decode()
+        assert b"exit persistence failed" in stderr
+        assert stdout == b""
+        assert sibling.poll() is None
+        assert state.tombstone_path(name, "host-a").exists()
+    finally:
+        reap(process)
+        reap(sibling)
+
+
 def test_committed_manual_exit_when_supervisor_acknowledges_then_teardown_evidence_survives(shell_environment):
     shell, env, name, tmp_path = shell_environment
     generation = env["AI_CLI_RUN_GENERATION"]
