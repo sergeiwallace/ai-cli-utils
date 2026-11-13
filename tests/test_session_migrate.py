@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -246,6 +247,48 @@ def test_given_running_restore_record_when_migrated_then_refused_before_any_arti
     assert code != 0
     assert "run state is still running" in out + err
     assert _everything(slot) == before
+
+
+@pytest.fixture
+def vanished_run(slot, monkeypatch):
+    stamp = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    path = slot["state"] / "iterm2-sessions.json"
+    document = json.loads(path.read_text())
+    boot = session_registry.current_boot_id()
+    document["sessions"][0].update(
+        run_state="running",
+        launcher_pid=_dead_pid(),
+        launched_at=stamp,
+        changed_at=stamp,
+        refreshed_at=stamp,
+        ended_at=None,
+        relaunch="auto",
+        boot_id=boot,
+        relaunched_boot_id=boot,
+        boot_decision={"cause": "terminal_quit_or_crash", "reason": "already attempted in this boot"},
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(session_registry, "_local_session_alive", lambda _name: False)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **kw: iter(()))
+    return path
+
+
+@pytest.mark.parametrize("list_first", [False, True])
+def test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled(slot, vanished_run, list_first):
+    config = {"machine": {"host_id": "m"}}
+    if list_first:
+        code, out, err = run_cli(["ai", "sessions", "list", "-j"], config=config)
+        assert code == 0, out + err
+        assert json.loads(vanished_run.read_text())["sessions"][0]["run_state"] == "exited"
+    with patch("ai_cli.config.load_config", return_value=with_environment_config(config)):
+        code, out, err = _migrate(slot["repo"], "-n")
+    assert code == 0, out + err
+    record = json.loads(vanished_run.read_text())["sessions"][0]
+    assert record["run_state"] == "exited"
+    assert record["ended_at"]
+    assert record["boot_recipe"]["session_name"] == f"c-{OLD}"
+    assert slot["wt"].exists()
+    assert not (slot["repo"] / ".worktrees" / NEW).exists()
 
 
 def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_new_name(slot):
