@@ -515,18 +515,21 @@ def get_engine_script(
         fi
     # END RUN STATE
         _ai_close_progress
+        [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
+    # BEGIN RUN STATE heartbeat-drain
         if [[ -n "$_heartbeat_pid" ]]; then
           # The ticker leads its own session, so its pid is its process group id.
           # Stop the whole group, in-flight heartbeat write included, and wait for it
           # to be gone: a write that lands after the revoke below would recreate the
           # record and keep the session looking supervised.
-          kill -TERM -- "-$_heartbeat_pid" 2>/dev/null || kill "$_heartbeat_pid" 2>/dev/null || true
+          kill -TERM -- "-$_heartbeat_pid" 2>/dev/null || true
           _heartbeat_wait=0
           while kill -0 -- "-$_heartbeat_pid" 2>/dev/null && (( _heartbeat_wait < 100 )); do
             sleep 0.05
             _heartbeat_wait=$((_heartbeat_wait + 1))
           done
         fi
+    # END RUN STATE
         [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
         rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
