@@ -491,7 +491,9 @@ def _fleet_database(registry: reg.Registry, *, create: bool = True) -> reg.Regis
         timeout_s=registry.timeout_s,
         attempts=registry.attempts,
     )
-    exists = database._git("ls-remote", registry.remote, database.dolt_ref, check=False)
+    exists = database._git(
+        "ls-remote", registry.remote, database.dolt_ref, timeout=database.fetch_timeout_s(), check=False
+    )
     if exists.returncode == 0 and not exists.stdout.strip() and not database.has_clone():
         if not create:
             return None

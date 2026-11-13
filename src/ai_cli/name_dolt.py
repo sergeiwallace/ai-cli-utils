@@ -78,6 +78,7 @@ class DoltRegistry(reg.FleetRegistry):
         self.location = f"{remote} {dolt_ref} ({self.path})"
         self.last_claimants: dict[str, str] = {}
         self._version_checked = False
+        self._root_ready = False
 
     # -- processes
     def dolt_env(self) -> dict[str, str]:
@@ -87,16 +88,18 @@ class DoltRegistry(reg.FleetRegistry):
 
     def _ensure_root(self) -> None:
         """Write the global config before any ``dolt`` process can run without it."""
+        if self._root_ready:
+            return
         config_file = self.root / ".dolt" / "config_global.json"
         try:
             current = json.loads(config_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             current = {}
         wanted = {**ROOT_CONFIG, **self._identity_config()}
-        if all(current.get(key) == value for key, value in wanted.items()):
-            return
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(json.dumps({**current, **wanted}, sort_keys=True), encoding="utf-8")
+        if any(current.get(key) != value for key, value in wanted.items()):
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text(json.dumps({**current, **wanted}, sort_keys=True), encoding="utf-8")
+        self._root_ready = True
 
     def _identity_config(self) -> dict[str, str]:
         name = self._git("config", "--get", "user.name", check=False).stdout.decode().strip()

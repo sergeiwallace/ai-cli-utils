@@ -545,12 +545,8 @@ def _name_db(name: str, origin: str, **fields: object) -> dict:
 _ORDER = ("meta", "policy", "names", "manual", "status", "verdicts", "holds", "migrations")
 
 
-def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped: bool = False) -> Compiled:
-    """The guarded statements that apply ``change`` to ``tables``, the state it was built on.
-
-    ``shipped`` marks names written through ``available/names.txt`` as ``shipped``
-    rather than ``generated``: the local registry's seed is the list this package ships.
-    """
+def compile_change(tables: Tables, change: reg.Change, dialect: str) -> Compiled:
+    """The guarded statements that apply ``change`` to ``tables``, the state it was built on."""
     staged: dict[str, list[Statement]] = {group: [] for group in _ORDER}
     claimants: dict[str, str] = {}
     intended: dict[str, object] = {}
@@ -619,10 +615,9 @@ def compile_change(tables: Tables, change: reg.Change, dialect: str, *, shipped:
             intended[path] = manual_from_db(db)
         elif path == reg.NAMES_TXT:
             listed = [line.strip() for line in (data or b"").decode("utf-8").splitlines() if line.strip()]
-            origin = "shipped" if shipped else "generated"
             for name in sorted(set(listed)):
                 if name not in tables.names:
-                    db = _name_db(name, origin)
+                    db = _name_db(name, "generated")
                     staged["names"].append(_insert("names", db, dialect, path))
                     names_after[name] = db
             ruled = {name for name, _kind, _value in tables.verdicts}
