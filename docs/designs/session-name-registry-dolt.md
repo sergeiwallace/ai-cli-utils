@@ -760,6 +760,32 @@ asserting both the pick result and the hand-choice result.
 
 **Audit completed:**
 
+### Decisions taken during implementation
+
+The build of Phases 1 to 3 (2026-11-13) settled these points the design left open. Each was
+decided by Claude under the decision framework; none narrows a founding-ask requirement, and the
+two that come closest (I-4 and I-12) say why.
+
+| # | Point | Decision | Why |
+|---|---|---|---|
+| I-1 | How the backends receive a write | `Registry.transact` keeps taking a change keyed by logical record paths (`names/<token>.json`, `migrations/<old-title>.json`, `status/<name>.json`, `verdicts/<name>/<kind>/<value>.json`, `meta/<key>`). `name_schema.compile_change` turns each path into one guarded statement against the state the change was built on: an insert where no row has the key, an update or delete only where every column still equals the value read. | Every allocation, release and migration operation stays one function for all three stores, and the claim protocol's step 3 holds for every write, not only claims. |
+| I-2 | Columns beyond the Data Model | `names.added_via`, and `migrations.new_title`, `client` and `writer`. | A manual record and a rename record round-trip without loss, which the ported migration tests compare byte for byte. `migrations.new_name` is still written, as the last token of `new_title`. |
+| I-3 | A spare's state | A spare is `state = 'reserved'` in the database and `active` in the row the package handles, mapped at the database boundary. | The row format the git-tree store and older clients read is unchanged until the cutover. |
+| I-4 | Status on the git-tree store | The git-tree store has no status model: its snapshot carries no statuses, and the picker there allocates as it did before. Status, verdicts and fail-closed picks apply on Dolt and SQLite. | The fleet allocates from the git-tree store until Phase 4. Failing closed there would stop every fleet launch as soon as this release is installed, before any status exists. The founding ask's statuses live on the store it names, Dolt, from the cutover on, so this is not a narrowing. |
+| I-5 | Which policy schemas each store applies | The git-tree store applies schema 1 only, Dolt schema 2 only, SQLite schema 1. | The frozen schema-2 snapshot T-4.1 publishes to the old branch then refuses new clients as well as old ones, so no store accepts ordinary allocation during the window. |
+| I-6 | An update that changes nothing | It is not issued; the read-back still checks the value. | Under MySQL semantics `ROW_COUNT()` after an `UPDATE` counts changed rows, so an identical rewrite reports zero and would be refused as a lost guard. |
+| I-7 | A generated name that a new list drops | It is deleted only while its status is `unreviewed` and it has no verdict; a name the owner ruled on stays in the pool. | No owner verdict is lost to a policy change. |
+| I-8 | The session a verdict scope names | A session is its title. For a migration it is the old title, the session being renamed, which is how D-10 keys the conversion-table approvals; for a new launch it is the title the new session would get. | One value both the seed and `migrate-session` can name before the rename. |
+| I-9 | Seed, oracle and cutover record formats | TOML with the nine parts kept apart (`preapproved`, `addition`, `original_table`, `corrected_table`, `superseded`, `replacement`, `exclusions`, `answers`, `verdicts`); the manifest adds `revision`, `actor` and `reason`. The cutover record is `config/session-name-cutover.toml` in the fleet repository, with `oracle_commit` and `oracle_sha256`. The digest is SHA-256 over the canonical JSON of the sorted, normalized parts. The fleet denylist is read from the policy file at seed time. An owner answer is `{name, verdict, scope_kind, scope_value}`, where `scope_kind` is `general`, `repo`, `host` or `session`: an approving answer exempts the name from rejection and approves it at that scope. | T-3.2 fixes the parts and the checks but not a file format; these keep each part comparable on its own, and nothing in the manifest can vouch for itself. |
+| I-10 | Where `import-names` writes before the policy flips | To the Dolt database on `registry_dolt_ref` (default `refs/dolt/session-names`) of the same remote, creating it with `writes_enabled = 0` when the remote does not hold it. | T-4.2 imports while the policy still names the git-tree store. |
+| I-11 | The writes gate | An ordinary Dolt write refuses while `meta.writes_enabled` is not `1`; import and seed pass `exempt`. | This is the client half of T-4.1, which has to ship in the release before the cutover. Turning the gate on and off stays with the Phase 4 runbook. |
+| I-12 | A public install's earlier local registry | The SQLite registry starts fresh from the shipped list; the earlier local file tree is not imported. | The project's pre-1.0 rule forbids migration shims. Names held only on that machine are not carried over; that is a local index, not a founding-ask requirement. |
+| I-13 | Suites that drive one store's internals | A test marked `registry_backends(...)` is collected only for the stores it names. Examples: a patched git push, a row the database's own checks make impossible, a publish race on SQLite, which has no publish step. | A test that cannot apply is left out by name, not reported as skipped. |
+
+AC-SM-HOLD T33 to T36 (quarantining cache-only spares during the cutover import, and refusing
+lifecycle commands on a quarantined row) are not built in Phases 1 to 3: they belong to the
+T-4.2 import and are carried with Phase 4.
+
 ## Risks and Mitigations
 
 | # | Risk | Impact | Mitigation |
