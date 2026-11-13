@@ -784,22 +784,22 @@ asserting both the pick result and the hand-choice result.
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
-| D-1 | Access path from the package to Dolt | (a) `dolt` CLI subprocess, (b) per-host `dolt sql-server` with PyMySQL, (c) the issue tracker's shared server | (a) | (a) | No | No server on the launch path, no new Python dependency, no coupling to the tracker | ✅ Resolved |
-| D-2 | Where the registry database lives | (a) own ref in the fleet repository, (b) a dedicated private repository, (c) a table in the tracker's database | (a) | (a) | No | Same access and transport as today, isolated by ref | ✅ Resolved |
-| D-3 | How status and verdicts are stored | (a) normalized `names` plus `verdicts`, (b) a JSON column per name, (c) status only, verdicts later | (a) | (a) | No | Per-verdict actor, time, history and plain SQL search | ✅ Resolved |
-| D-4 | How a claim gets one winner | (a) Dolt alone under the claim protocol, (b) a claim ref per name plus Dolt (hybrid H1) | (a) | (a) | No | One store; the protocol is today's loop; measured 20 of 20 | ✅ Resolved |
-| D-5 | Public installs with no fleet | (a) local SQLite with the same schema, (b) local Dolt, (c) keep the JSON file tree | (a) | (a) | No | Works with no extra install on every platform | ✅ Resolved |
-| D-6 | Dolt version floor | (a) 2.3.4, the fleet's version, (b) 2.4.1, (c) latest 2.7.x | (a) | (a) | No | No forced upgrade of the tracker's binary; nothing needed is newer | ✅ Resolved |
-| D-7 | Cutover shape | (a) one frozen window, (b) dual-write period, (c) per-host gradual | (a) | (a) | No | One store at a time; old clients fail closed by policy schema | ✅ Resolved |
-| D-8 | How other tools read the registry | (a) through the `ai` CLI's JSON, (b) direct Dolt reads | (a) | (a) | No | One access path, one schema owner | ✅ Resolved |
-| D-9 | Who is recorded as the actor | (a) separate `actor` and `recorded_by`, (b) the agent session only | (a) | (a) | No | The owner's verdicts are relayed by agents; both facts matter | ✅ Resolved |
+| D-1 | Access path from the package to Dolt | (a) `dolt` CLI subprocess, (b) per-host `dolt sql-server` with PyMySQL, (c) the issue tracker's shared server | (a) | (a) | No | No server on the launch path, no new Python dependency, no coupling to the tracker | ✅ Resolved by Claude |
+| D-2 | Where the registry database lives | (a) own ref in the fleet repository, (b) a dedicated private repository, (c) a table in the tracker's database | (a) | (a) | No | Same access and transport as today, isolated by ref | ✅ Resolved by Claude |
+| D-3 | How status and verdicts are stored | (a) normalized `names` plus `verdicts`, (b) a JSON column per name, (c) status only, verdicts later | (a) | (a) | No | Per-verdict actor, time, history and plain SQL search | ✅ Resolved by Claude |
+| D-4 | How a claim gets one winner | (a) Dolt alone under the claim protocol, (b) a claim ref per name plus Dolt (hybrid H1) | (a) | (a) | No | One store; the protocol is today's loop; measured 20 of 20 | ✅ Resolved by Claude |
+| D-5 | Public installs with no fleet | (a) local SQLite with the same schema, (b) local Dolt, (c) keep the JSON file tree | (a) | (a) | No | Works with no extra install on every platform | ✅ Resolved by Claude |
+| D-6 | Dolt version floor | (a) 2.3.4, the fleet's version, (b) 2.4.1, (c) latest 2.7.x | (a) | (a) | No | No forced upgrade of the tracker's binary; nothing needed is newer | ✅ Resolved by Claude |
+| D-7 | Cutover shape | (a) one frozen window, (b) dual-write period, (c) per-host gradual | (a) | (a) | No | One store at a time; old clients fail closed by policy schema | ✅ Resolved by Claude |
+| D-8 | How other tools read the registry | (a) through the `ai` CLI's JSON, (b) direct Dolt reads | (a) | (a) | No | One access path, one schema owner | ✅ Resolved by Claude |
+| D-9 | Who is recorded as the actor | (a) separate `actor` and `recorded_by`, (b) the agent session only | (a) | (a) | No | The owner's verdicts are relayed by agents; both facts matter | ✅ Resolved by Claude |
 | D-10 | Which names the seed approves, at what scope, and when the oracle is recovered | (a) the pre-approved list with the substitution inside it plus one addition, (b) every owner approval at the scope the owner gave it, pinned by the oracle, (c) approve the whole pool, (d) every owner approval as a general approval | (b) | (b) | No | (a) contradicts the record and narrows an explicit requirement; (c) and (d) broaden it | ✅ Resolved by Claude |
 
 ### Decision Details
 
 <a id="d-1"></a>
 
-#### D-1: Access path from the package to Dolt — ✅ Approved: (a) `dolt` CLI subprocess
+#### D-1: Access path from the package to Dolt — ✅ Resolved by Claude: (a) `dolt` CLI subprocess
 
 **Context.** The package is a short-lived CLI run at every session launch on several hosts. Dolt
 offers a CLI and a MySQL-protocol server; the fleet's issue tracker already runs one shared server
@@ -842,8 +842,8 @@ launch path of every host".
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) `dolt` CLI subprocess per call
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) `dolt` CLI subprocess per call
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-1; decision-topic=registry-dolt-access-path; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=the-package-reaches-dolt-through-the-cli-only; applicability=scope:fleet-registry; outcome-id=cli-subprocess; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The CLI keeps the launch path free of a server, which answers the earlier design's main objection,
@@ -854,7 +854,7 @@ check in the claim protocol.
 
 <a id="d-2"></a>
 
-#### D-2: Where the registry database lives — ✅ Approved: (a) own ref in the fleet repository
+#### D-2: Where the registry database lives — ✅ Resolved by Claude: (a) own ref in the fleet repository
 
 **Context.** The registry's rows carry host names, repositories and session ids, so it must stay in
 a private repository. The fleet repository already holds the registry branch and the issue
@@ -890,8 +890,8 @@ tracker's Dolt database on `refs/dolt/data` with its info branch.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) its own ref in the fleet repository
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) its own ref in the fleet repository
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-2; decision-topic=registry-dolt-placement; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=registry-on-own-dolt-ref-of-fleet-repository; applicability=scope:fleet-registry; outcome-id=own-ref; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The registry keeps the access it has today and is isolated by ref, clone and the info-branch
@@ -901,7 +901,7 @@ setting. The cost is knowing which of two Dolt refs is which, which the policy f
 
 <a id="d-3"></a>
 
-#### D-3: How general status and scoped verdicts are stored — ✅ Approved: (a) normalized tables
+#### D-3: How general status and scoped verdicts are stored — ✅ Resolved by Claude: (a) normalized tables
 
 **Context.** The owner asked for a general status, scoped rejections by repository, host or
 session, and suggested "maybe can store a json which can track white list / black list etc.
@@ -939,8 +939,8 @@ cell cleanly.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) a `status` column on `names` plus a `verdicts` table
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) a `status` column on `names` plus a `verdicts` table
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-3; decision-topic=registry-status-storage; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=status-column-plus-normalized-verdicts-table; applicability=scope:fleet-registry; outcome-id=normalized; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The owner asked for "whatever is robust", and offered JSON as one possibility. A normalized table
@@ -951,7 +951,7 @@ join is one indexed lookup per pick.
 
 <a id="d-4"></a>
 
-#### D-4: How a claim gets exactly one winner — ✅ Approved: (a) Dolt alone under the claim protocol
+#### D-4: How a claim gets exactly one winner — ✅ Resolved by Claude: (a) Dolt alone under the claim protocol
 
 **Context.** Every git-backed option gets uniqueness from the push compare-and-swap. Dolt merges
 identical-value claims cleanly, so a client that merges a lost push can believe it won. A claim
@@ -979,8 +979,8 @@ ref per name would give one winner by construction.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) Dolt alone, under the claim protocol
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) Dolt alone, under the claim protocol
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-4; decision-topic=registry-claim-uniqueness; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-claim-protocol; applicability=scope:fleet-registry; outcome-id=protocol; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The protocol is cheaper than a second store at a few claims a day, and the spare path takes most
@@ -990,7 +990,7 @@ launches off the network. T-1.2 pins the identical-value case so a regression fa
 
 <a id="d-5"></a>
 
-#### D-5: Public installs with no fleet repository — ✅ Approved: (a) local SQLite with the same schema
+#### D-5: Public installs with no fleet repository — ✅ Resolved by Claude: (a) local SQLite with the same schema
 
 **Context.** The package is public and cross-platform; a public user has no fleet repository and
 may not have `dolt`. Today such installs keep the JSON tree in a local directory.
@@ -1025,8 +1025,8 @@ may not have `dolt`. Today such installs keep the JSON tree in a local directory
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) a local SQLite database with the same schema
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) a local SQLite database with the same schema
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-5; decision-topic=registry-public-fallback; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=public-installs-use-sqlite-with-shared-schema; applicability=scope:public-install; outcome-id=sqlite; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 SQLite gives public users the same model with nothing to install. The second dialect is held in
@@ -1036,7 +1036,7 @@ step by generating both from one module and running every registry test on both 
 
 <a id="d-6"></a>
 
-#### D-6: Dolt version floor — ✅ Approved: (a) 2.3.4
+#### D-6: Dolt version floor — ✅ Resolved by Claude: (a) 2.3.4
 
 **Context.** Once a newer Dolt feature version writes a database, older clients cannot read it, so
 every fleet host must run a compatible binary. The fleet runs 2.3.4 today for the issue tracker.
@@ -1071,8 +1071,8 @@ Release 2.4.1 made the git-remote history cap a setting; 2.7.0 changed merge sto
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) 2.3.4
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) 2.3.4
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-6; decision-topic=registry-dolt-version-floor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=dolt-floor-equals-fleet-version; applicability=scope:fleet-registry; outcome-id=2.3.4; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The floor matches what every fleet host already runs, so the cutover needs no binary upgrade. The
@@ -1082,7 +1082,7 @@ floor is a value in `meta`, so raising it later is one migration.
 
 <a id="d-7"></a>
 
-#### D-7: Cutover shape — ✅ Approved: (a) one frozen window
+#### D-7: Cutover shape — ✅ Resolved by Claude: (a) one frozen window
 
 **Context.** Several hosts allocate names. Two stores accepting writes at once would let one name
 be held in each. Old clients already refuse a policy snapshot with an unknown schema.
@@ -1117,8 +1117,8 @@ be held in each. Old clients already refuse a policy snapshot with an unknown sc
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) one frozen window
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) one frozen window
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-7; decision-topic=registry-cutover-shape; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=single-dolt-store-with-gated-frozen-window; applicability=scope:fleet-registry; outcome-id=frozen-window; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 A short pause is the price of never having two stores accept writes. The policy freeze stops
@@ -1130,7 +1130,7 @@ new client. The rollback is rehearsed before the real window.
 
 <a id="d-8"></a>
 
-#### D-8: How other tools read the registry — ✅ Approved: (a) through the `ai` CLI's JSON
+#### D-8: How other tools read the registry — ✅ Resolved by Claude: (a) through the `ai` CLI's JSON
 
 **Context.** Four tools in the fleet repository read the old tree's files directly. After the
 cutover those files stop changing.
@@ -1154,8 +1154,8 @@ cutover those files stop changing.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) through the `ai` CLI's JSON output
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) through the `ai` CLI's JSON output
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-8; decision-topic=registry-external-readers; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=external-readers-use-cli-json; applicability=scope:fleet-registry; outcome-id=cli-json; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 Keeping one access path means the Dolt-specific settings live in one place.
@@ -1164,7 +1164,7 @@ Keeping one access path means the Dolt-specific settings live in one place.
 
 <a id="d-9"></a>
 
-#### D-9: Who is recorded as the actor — ✅ Approved: (a) separate `actor` and `recorded_by`
+#### D-9: Who is recorded as the actor — ✅ Resolved by Claude: (a) separate `actor` and `recorded_by`
 
 **Context.** Approvals today record only the agent session that ran the command. The owner's
 verdicts usually arrive through an agent session relaying them.
@@ -1187,8 +1187,8 @@ verdicts usually arrive through an agent session relaying them.
 
 ##### Recommendation
 
-> **Decision:** ✅ Resolved — (a) separate `actor` and `recorded_by`
-<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Resolved by Claude — (a) separate `actor` and `recorded_by`
+<!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-opus-5-5; ai-effort=high; ai-profile=interactive -->
 <!-- decision-lineage: decision-id=session-name-registry-dolt/D-9; decision-topic=registry-verdict-actor; governs=artifact:docs/designs/session-name-registry-dolt.md; normalized-proposition=actor-and-recorder-stored-separately; applicability=scope:fleet-registry; outcome-id=two-fields; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 `--actor` is required for `set-name-status` and `set-name-verdict`; `recorded_by` is filled from
@@ -1324,5 +1324,6 @@ mismatch ([D-10](#d-10)).
 | 2026-11-11 | D-1 to D-9 | Resolved during automated design review; none required owner input |
 | 2026-11-12 | D-10 | Resolved during automated design review after a scope-alignment review found the seed narrowed the owner's approvals |
 | 2026-11-13 | D-10 | Revised during automated design review after an audit found the conversion-table names promoted to general approval: each is now a session-scoped approval for its own session's migration, option (d) records the rejected reading, and the label reads Resolved by Claude, since no human approved it |
+| 2026-11-13 | D-1 to D-9 | Relabelled as AI-resolved: the orchestrating session resolved them in automated mode during the doc stage on 2026-11-11, and no human approved them |
 
 <!-- /doc:region name="approval_log" -->
