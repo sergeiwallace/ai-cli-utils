@@ -55,7 +55,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
-from .cli_help import HelpGroup
+from .cli_help import HelpGroup, RootHelpGroup
 from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -2233,6 +2233,12 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
+        try:
+            if project:
+                _config.validate_remote_project(project, project_prefix)
+        except _config.ProjectPrefixError as exc:
+            _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+            sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
@@ -3501,11 +3507,12 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
         reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
-def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
+def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote: bool = False) -> str:
     """Name the machine this launcher runs on and the one the session will run on (AI-CLI-x5vn)."""
     local = _config.detect_machine_profile()["host_id"]
     if remote_cfg is None:
-        return f"launcher on {local}; session on {local} (local)"
+        origin = "remote origin" if is_remote else "local"
+        return f"launcher on {local}; session on {local} ({origin})"
     host = str(remote_cfg.get("host") or "")
     if remote_alias and host and remote_alias != host:
         return f"launcher on {local}; session on {remote_alias} ({host}, remote)"
@@ -4200,7 +4207,7 @@ def _reattach_title(
     existing = (
         _session._resolve_explicit_tmux_slot(engine, naming_prefix, positional.value)
         if use_tmux
-        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value)
+        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value, is_remote=is_remote)
     )
     if existing:
         return existing
@@ -4242,7 +4249,7 @@ def _reserve_label_title(
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
-                else _session._resolve_explicit_bare_slot(engine, slot.stem, label)
+                else _session._resolve_explicit_bare_slot(engine, slot.stem, label, is_remote=is_remote)
             )
             return existing or (_session_id(engine, title, is_remote), title)
         _naming_exit(reporter, f"the label's last token {token} is held by {snapshot.holder(token)}", 2)
@@ -4435,7 +4442,11 @@ def _do_session_launch(
         # -p names the repo the session runs in, so its .envrc decides, not the cwd's.
         _direnv_root = Path.cwd()
         if project and not remote:
-            _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project, project))
+            try:
+                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+            except _config.ProjectPrefixError as exc:
+                reporter.error("request", str(exc))
+                sys.exit(1)
             if _named_dir.is_dir():
                 _direnv_root = _named_dir
         _direnv_result = _direnv_setup.ensure_direnv(_direnv_root, config, auto_install=not dry_run)
@@ -4445,8 +4456,7 @@ def _do_session_launch(
         if _direnv_result.installed:
             reporter.detail("direnv", _direnv_result.detail or "ready")
 
-    # Auto-promote to remote mode when running directly on a non-Mac host so
-    # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
+    # Only the explicit remote-origin flag marks a session launched by another host.
     if replay_recipe is None:
         is_remote = _session._resolve_is_remote(is_remote)
 
@@ -4459,7 +4469,7 @@ def _do_session_launch(
         except _config.RemoteMachineError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
-    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias))
+    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias, is_remote=is_remote))
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
@@ -4484,9 +4494,9 @@ def _do_session_launch(
         if "/" in project or "\\" in project:
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        _lp_aliases = _config.get_project_aliases()
-        _lp_name = _lp_aliases.get(project, project)
         try:
+            _lp_aliases = _config.get_project_aliases()
+            _lp_name = _lp_aliases.get(project.lower(), project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -4508,6 +4518,12 @@ def _do_session_launch(
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
+    if is_remote and project:
+        try:
+            _config.validate_remote_project(project, project_prefix)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
@@ -4741,12 +4757,16 @@ def _do_session_launch(
         port = str(remote_cfg.get("port", 22))
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
-        aliases = _config.get_project_aliases()
+        try:
+            aliases = _config.get_project_aliases()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project, raw_project)
+        remote_project = aliases.get(raw_project.lower(), raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
@@ -4960,7 +4980,9 @@ def _do_session_launch(
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
-            _track_launch(reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote)
+            _record_id = _track_launch(
+                reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
+            )
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
@@ -4973,6 +4995,7 @@ def _do_session_launch(
                         tailscale_host=host,
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
+                        on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     )
                 )
             finally:
@@ -5008,6 +5031,7 @@ def _do_session_launch(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
 
@@ -6010,7 +6034,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = f"{'remote' if remote or is_remote else 'local'}, {'bare' if bare else 'tmux'}"
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,
@@ -6247,7 +6271,7 @@ class _ChiefFlagCommand(click.Command):
         return parser
 
 
-class _ChiefAliasGroup(HelpGroup):
+class _ChiefAliasGroup(RootHelpGroup):
     """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
@@ -6268,7 +6292,10 @@ class _ChiefAliasGroup(HelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
+    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+    Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
+    prints a command's full help."""
     _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
@@ -6278,6 +6305,89 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json, event
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
+
+
+def _receive_remote_exit(record_id):
+    from .session_exit import receive_remote_exit
+
+    return receive_remote_exit(record_id)
+
+
+@_cli_group.command(
+    "exit-session",
+    help="Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified "
+    "ancestor session record. Older supervisors without recorded process identities must first be relaunched. "
+    "Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. "
+    "Remote mirrors use an acknowledged owning-host generation receipt.",
+)
+@click.argument("name", required=False)
+@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit through the recorded remote mirror")
+@click.option(
+    "-t", "--timeout", default=5.0, type=click.FloatRange(min=0), show_default=True, help="Seconds per teardown wait"
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Show the verified exit without writing or signalling")
+def cmd_exit_session(name, remote, timeout, dry_run):
+    import math
+
+    from . import session_exit
+    from . import session_run_state as state
+
+    if not math.isfinite(timeout):
+        raise click.BadParameter("must be finite", param_hint="--timeout")
+    try:
+        mirror = session_exit.remote_mirror(name)
+        if mirror:
+            session_exit.request_remote_exit(mirror, timeout=timeout, dry_run=dry_run)
+            _out.emit(
+                Tag.SESSION,
+                "exit",
+                f"{name}: "
+                + ("Would exit on owning host" if dry_run else "exited; owning-host generation acknowledged"),
+            )
+            return
+        if remote:
+            raise ValueError("remote receipts require a named remote mirror; remote exit unresolved")
+        row, targets, self_exit = session_exit.resolve_exit(name)
+        name = row["name"]
+        if dry_run:
+            _out.emit(Tag.SESSION, "exit", f"Would exit {name}; verified targets: {targets}")
+            return
+        agent = session_exit.ProcessIdentity(**targets["agent"]) if targets.get("agent") else None
+        supervisor = session_exit.ProcessIdentity(**targets["supervisor"]) if targets.get("supervisor") else None
+        tmux = session_exit.TmuxIdentity(**targets["tmux"]) if targets.get("tmux") else None
+        if self_exit:
+            state.request_manual_exit(name, host=row["owning_host"], generation=row["generation"], targets=targets)
+            _out.emit(Tag.SESSION, "exit", f"{name}: exited in registry; handing teardown to an independent worker")
+            session_exit.detach_cleanup(name, host=row["owning_host"], generation=row["generation"], timeout=timeout)
+            return
+        result = session_exit.exit_session(
+            name,
+            host=row["owning_host"],
+            generation=row["generation"],
+            timeout=timeout,
+            agent=agent,
+            supervisor=supervisor,
+            tmux=tmux,
+        )
+        if not result.complete:
+            detail = (
+                "registry committed; cleanup incomplete"
+                if result.registry_committed
+                else "exit not committed; nothing signalled"
+            )
+            raise click.ClickException(f"{name}: {detail}: {'; '.join(result.errors)}")
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        session_exit.psutil.Error,
+        _session_registry.RegistryError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        prefix = "cannot verify current session: " if name is None else ""
+        raise click.ClickException(prefix + str(exc)) from exc
+    _out.emit(Tag.SESSION, "exit", f"{name}: exited; verified process cleanup complete")
 
 
 @_cli_group.command("clear-restart-request", help="Clear a fenced restart request after its recorded target has exited")
@@ -7610,7 +7720,7 @@ def cmd_color(color_arg):
 
 @_cli_group.command(
     "migrate-transcript",
-    help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
+    help="Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree",
 )
 @click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("-t", "--title", default="", help="Select the source session by its customTitle (session name)")
@@ -8091,7 +8201,9 @@ def _migrate_one_to_name(
             machine=host,
             client="claude-code",
         )
-        snapshot = registry.snapshot(fetch=not dry_run)
+        # Preview the current holds too: a cached list can omit a confusable name
+        # that the writing run would fetch and refuse before reserving anything.
+        snapshot = registry.snapshot()
         notes: list[str] = []
         if dry_run:
             snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
@@ -8839,6 +8951,8 @@ def _print_retirement(result) -> None:
             "retire",
             f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}",
         )
+    if result.session_rows:
+        _out.emit(Tag.RETIRE, "retire", f"  session registry: drop {result.session_rows} row(s) for {result.name}")
     _out.emit(Tag.RETIRE, "retire", f"  ledger: append to {result.ledger}")
     if result.project_dir is not None:
         _out.emit(Tag.RETIRE, "retire", f"  Claude Code project dir left in place: {result.project_dir}")

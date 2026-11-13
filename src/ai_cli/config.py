@@ -840,6 +840,30 @@ ref_prefix = "refs/heads/fleet-sessions/"
 debounce_seconds = 60
 host = ""
 
+[session_registry]
+## Hours a session row stays in `ai sessions list` once its session is proved gone
+## (no tmux session and no agent process; for a remote row, the host's tmux has no
+## such session). A row from an earlier boot counts from this boot's start. Read on
+## every call; 0 keeps every row.
+# stale_row_retention_hours = 72
+
+[sessions_list]
+## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on
+## every call; a flag on the command overrides each one. Reference:
+## docs/reference/sessions-list-defaults.toml.
+## Column the table groups rows by: "host", "status", "relaunch" or "none".
+group_by = "host"
+## Sort keys, first key first: "status" (running, relaunched, unknown, exited), "name",
+## "changed" (newest first), "host" (this host first) and "relaunch".
+sort_by = ["status", "name"]
+## false lists running sessions only; true adds exited and unknown ones (-a/--all).
+show_all = false
+## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
+## host that publishes its sessions to [session_relaunch.publish] repo).
+scope = "pair"
+## The paired host's id; empty means the default [remote.machines] alias.
+pair_host = ""
+
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
 ## default. `ai c` starts its Circus watcher when needed. On native Windows,
@@ -1407,7 +1431,8 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
         if prefix.lower() in prefixes_seen:
             raise ProjectPrefixError(
                 f"Duplicate task_prefix {prefix!r} in the project registry {path}: already used by "
-                f"{prefixes_seen[prefix.lower()]!r}."
+                f"{prefixes_seen[prefix.lower()]!r}, also registered by {name.strip()!r}. "
+                "Fix: assign unique task prefixes to these projects."
             )
         prefixes_seen[prefix.lower()] = name.strip()
         # ``name`` keeps the directory's own casing, which ``key`` has lowercased for
@@ -1773,7 +1798,7 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
     # Schema validation: name and task_prefix required, both unique
     names_seen: set[str] = set()
-    prefixes_seen: set[str] = set()
+    prefixes_seen: dict[str, str] = {}
     for p in projects:
         name = p.get("name", "")
         prefix = p.get("task_prefix", "")
@@ -1786,10 +1811,15 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
             _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
         if prefix_lower in prefixes_seen:
-            _out.error(Tag.CONFIG, "load", f"duplicate task_prefix in registry: {prefix}")
+            _out.error(
+                Tag.CONFIG,
+                "load",
+                f"duplicate task_prefix {prefix!r} in registry: {prefixes_seen[prefix_lower]!r} and {name!r}. "
+                "Fix: assign unique task prefixes to these projects.",
+            )
             sys.exit(1)
         names_seen.add(name_lower)
-        prefixes_seen.add(prefix_lower)
+        prefixes_seen[prefix_lower] = name
 
     _registry_cache = projects
     return projects
@@ -1944,44 +1974,8 @@ def _get_project_prefix_by_name(project_name: str) -> str:
 
 
 def get_project_aliases() -> dict:
-    """Build project alias map: ``task_prefix.lower()`` -> project name.
-
-    Both registries contribute and the fleet registry wins. It is tier 1 of
-    ``resolve_project_prefix_by_name``, so an alias that disagreed with it would resolve a
-    prefix to one repository while the prefix resolver named another — that mints a session
-    against the wrong project rather than failing.
-
-    This used to read only the legacy ``<main_project>/<main_project>.toml``, which
-    ``_get_project_registry_path`` returns as None unless ``[project] main_project`` is
-    configured *and* that file exists. That is not the normal state, so the map was usually
-    empty and every ``-p <prefix>`` call site degraded to ``aliases.get(raw, raw)`` — the
-    prefix passed through as if it were a directory name, failing with an error that named a
-    nonexistent local path (AI-CLI-dosx).
-    """
-    aliases: dict[str, str] = {}
-
-    def add(prefix: str, name: str) -> None:
-        # setdefault, not assignment: first writer wins, which is what makes fleet beat legacy.
-        # A project whose prefix equals its own name contributes no alias — there is nothing to
-        # translate, and storing it would shadow a real alias on a later source.
-        if prefix and name and prefix != name:
-            aliases.setdefault(prefix, name)
-
-    fleet_path = get_fleet_registry_path()
-    if fleet_path is not None and fleet_path.is_file():
-        try:
-            for entry in _projects_table_entries(fleet_path).values():
-                add(entry["prefix"].lower(), entry["name"])
-        except ProjectPrefixError:
-            # A malformed fleet registry must not make every launch unusable. The prefix
-            # resolvers read the same file and raise there, on the path that needs it, so the
-            # operator still gets the parse error rather than a silently wrong project.
-            pass
-
-    for p in load_project_registry():
-        add(p.get("task_prefix", "").lower(), p.get("name", ""))
-
-    return aliases
+    """Build the prefix-to-project map, refusing conflicting registrations."""
+    return {prefix: name for prefix, name in registered_project_names().items() if prefix != name.lower()}
 
 
 def registered_project_names() -> dict[str, str]:
@@ -1990,17 +1984,41 @@ def registered_project_names() -> dict[str, str]:
     Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
     and includes the root-keyed ``[project_registry]`` table (keyed by the root's
     directory name, which is what ``resolve_project_prefix_by_name`` matches there).
-    Tier order matches that resolver: the first registry naming a prefix wins. Raises
+    Tier order matches that resolver; conflicting project names are refused. Raises
     :class:`ProjectPrefixError` when a registry cannot be read.
     """
     names: dict[str, str] = {}
+
+    def add(prefix: str, name: str) -> None:
+        key = prefix.lower()
+        previous = names.get(key)
+        if previous is not None and previous.casefold() != name.casefold():
+            raise ProjectPrefixError(
+                f"Conflicting project aliases for prefix {prefix!r}: {previous!r} and {name!r}. "
+                "Fix: assign unique task prefixes in the project registries on both machines."
+            )
+        names.setdefault(key, name)
+
     fleet_path = get_fleet_registry_path()
     if fleet_path is not None and fleet_path.is_file():
         for entry in _projects_table_entries(fleet_path).values():
-            names.setdefault(entry["prefix"].lower(), entry["name"])
+            add(entry["prefix"], entry["name"])
     for p in load_project_registry():
         if p.get("task_prefix") and p.get("name"):
-            names.setdefault(str(p["task_prefix"]).lower(), str(p["name"]))
+            add(str(p["task_prefix"]), str(p["name"]))
     for root, entry in _registry_entries().items():
-        names.setdefault(entry["prefix"].lower(), Path(root).name)
+        add(entry["prefix"], Path(root).name)
     return names
+
+
+def validate_remote_project(project: str, prefix: str) -> None:
+    """Refuse a launcher's project/prefix pair that disagrees with this host's registry."""
+    names = registered_project_names()
+    expected = names.get(prefix.lower())
+    selected = names.get(project.lower(), project)
+    if expected is not None and expected.casefold() != selected.casefold():
+        raise ProjectPrefixError(
+            f"Conflicting project aliases for prefix {prefix!r}: launcher selected {project!r}, "
+            f"this host registers {expected!r}. Fix: assign unique task prefixes in the project "
+            "registries on both machines, then retry with the intended project's prefix."
+        )

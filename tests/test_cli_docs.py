@@ -191,9 +191,15 @@ def test_given_missing_or_repeated_markers_when_generating_then_it_exits_non_zer
 # --- T-2.3 generator and check mode ----------------------------------------------------
 
 
+def _regions():
+    return f"{gen.START_BEGIN}\n{gen.START_END}\n\n{gen.BEGIN}\n{gen.END}\n"
+
+
 @pytest.fixture
 def generated_repo(tmp_path, monkeypatch):
-    (tmp_path / "README.md").write_text(f"# Project\n\n{gen.BEGIN}\n{gen.END}\n\nMore.\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text(f"# Project\n\n{_regions()}\nMore.\n", encoding="utf-8")
+    (tmp_path / gen.GUIDE).parent.mkdir(parents=True)
+    (tmp_path / gen.GUIDE).write_text(f"# Guide\n\n{_regions()}", encoding="utf-8")
     monkeypatch.setattr(gen, "REPO", tmp_path)
     assert gen.main([]) == 0
     return tmp_path
@@ -222,6 +228,7 @@ def test_given_changed_help_and_no_regeneration_when_checked_then_it_exits_1_wit
     assert "--- a/docs/reference/cli.md" in out
     assert "+Attach to a session, changed wording" in out
     assert "--- a/README.md" in out
+    assert f"--- a/{gen.GUIDE}" in out
     assert gen.REGENERATE in err
 
 
@@ -229,6 +236,26 @@ def test_given_the_committed_reference_and_readme_when_compared_with_the_tree_th
     diff = gen.stale(REPO, _cli_group)
 
     assert diff == "", f"Generated docs are stale. Run: {gen.REGENERATE}\n{diff}"
+
+
+def _region(text, begin, end):
+    return text.split(begin, 1)[1].split(end, 1)[0]
+
+
+@pytest.mark.parametrize("rel", [gen.README, gen.GUIDE])
+def test_given_the_readme_and_the_guide_when_compared_with_ai_h_then_they_list_the_same_commands_and_start_rows(rel):
+    from test_cli_help import tree_paths
+
+    from ai_cli.cli_help import START_RESUME_ATTACH
+
+    text = (REPO / rel).read_text(encoding="utf-8")
+    help_text = CliRunner().invoke(_cli_group, ["-h"], terminal_width=80).output
+    index = re.findall(r"^\| \[`ai ([^`]+)`\]", _region(text, gen.BEGIN, gen.END), flags=re.MULTILINE)
+    start = re.findall(r"^\| `([^`]+)` \|", _region(text, gen.START_BEGIN, gen.START_END), flags=re.MULTILINE)
+
+    assert index == tree_paths(help_text)
+    assert start == [command for command, _ in START_RESUME_ATTACH]
+    assert all(command in help_text for command in start)
 
 
 def test_given_the_generator_when_h_is_passed_then_every_option_shows_both_forms(capsys):

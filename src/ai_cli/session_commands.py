@@ -15,8 +15,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import click
+import psutil
 
-from . import output, session_boot_unit, session_publish_timer, session_reconcile, session_state_publish
+from . import (
+    output,
+    session_boot_unit,
+    session_list_view,
+    session_publish_timer,
+    session_reconcile,
+    session_state_publish,
+)
 from . import session_registry as registry
 from . import session_run_state as state
 from .cli_help import HelpGroup
@@ -26,9 +34,18 @@ from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_enrol import enrol, heal_live_sessions
 
 
-@click.group("sessions", cls=HelpGroup, help="Session run state and publication")
-def sessions():
-    pass
+@click.group(
+    "sessions",
+    cls=HelpGroup,
+    invoke_without_command=True,
+    help="List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs "
+    "`ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, "
+    "grouped by host, active first",
+)
+@click.pass_context
+def sessions(ctx):
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(list_sessions)
 
 
 sessions.add_command(enrol)
@@ -56,16 +73,40 @@ def mark(name, status, cause, evidence, generation, sequence):
         raise click.UsageError("-e/--evidence must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise click.UsageError("-e/--evidence must be a JSON object")
+    if status == "exited" and generation:
+        row = state._find(registry.load_registry(), name)
+        if (
+            row.get("generation") == generation
+            and state.run_state(row) == "exited"
+            and state.exit_teardown(row).get("generation") == generation
+        ):
+            # The exit worker already committed the final state. Preserve its
+            # cleanup targets and errors while the supervisor acknowledges it.
+            return
     if not state.mark(
         name, status, cause=cause or "unknown", evidence=parsed, generation=generation, sequence=sequence
     ):
         raise click.ClickException("session state persistence refused; retry before returning to the shell")
 
 
+@sessions.command("_exit-receipt", hidden=True)
+@click.argument("name")
+@click.argument("generation", required=False)
+@click.argument("timeout", type=click.FloatRange(min=0), default=5.0)
+def exit_receipt(name, generation, timeout):
+    from .session_exit import owning_receipt
+
+    try:
+        output.raw(Untagged.JSON, json.dumps(owning_receipt(name, generation, timeout)))
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
 @click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
-def begin(name, launch_metadata):
+@click.option("--supervisor-pid", type=int, hidden=True)
+def begin(name, launch_metadata, supervisor_pid):
     # Acquisition precedes the generated shell's terminal reset. A previous
     # agent may have left extended keys enabled, encoding Ctrl+C as text. Use
     # the controlling terminal: stdout is a captured generation-token reply.
@@ -132,12 +173,48 @@ def begin(name, launch_metadata):
             if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
                 raise ValueError("invalid launch recovery recipe")
         heal_live_sessions()
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
+        import psutil
+
+        supervisor = None
+        if supervisor_pid is not None:
+            parent = psutil.Process(supervisor_pid)
+            supervisor = {"pid": parent.pid, "started_at": parent.create_time()}
+        output.raw(
+            Untagged.INTERNAL_REPLY,
+            state.begin(name, recovery_recipe=recipe, supervisor=supervisor),
+        )
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
     finally:
         if previous_int is not None:
             signal.signal(signal.SIGINT, previous_int)
+
+
+@sessions.command("_bind-exit-tmux", hidden=True)
+@click.argument("name")
+@click.argument("generation")
+@click.argument("session_id")
+@click.argument("token")
+def bind_exit_tmux(name, generation, session_id, token):
+    from .session_exit import TmuxIdentity, _tmux_server
+
+    if not re.fullmatch(r"\$[0-9]+", session_id) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise click.ClickException("invalid tmux identity")
+    if _tmux_server(TmuxIdentity(session_id, token)) is None:
+        raise click.ClickException("tmux ownership is absent")
+
+    def bind(doc):
+        row = state._find(doc, name)
+        supervisor = row.get("supervisor_identity") or {}
+        if row.get("generation") != generation or supervisor.get("generation") != generation:
+            raise ValueError("stale supervisor generation")
+        supervisor["tmux"] = {"session_id": session_id, "generation": token}
+        return True
+
+    try:
+        registry._mutate(bind, timeout=2)
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @sessions.command("_sequence", hidden=True)
@@ -157,13 +234,75 @@ def publish(now, tick):
     output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
+def _local_host(doc: dict) -> str:
+    return state.config.load_config(read_only=True).get("machine", {}).get("host_id") or doc["machine"]
+
+
+def _pair_host(view: dict) -> tuple[str, str]:
+    """The paired host id and, when there is none, why."""
+    if view["pair_host"]:
+        return view["pair_host"], ""
+    try:
+        alias = state.config.resolve_remote_machine_alias(state.config.load_config(read_only=True))
+    except state.config.RemoteMachineError as exc:
+        return "", f"no pair host: {exc}"
+    if not alias:
+        return "", "no pair host: set [sessions_list] pair_host or a [remote.machines] default"
+    return alias, ""
+
+
+def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
+    rows = []
+    for name, fields in doc["sessions"].items():
+        if not isinstance(fields, dict):
+            continue
+        rows.append(
+            session_list_view.Row(
+                host=host,
+                name=str(name),
+                status=str(fields.get("run_state") or "unknown"),
+                cause=str(fields.get("cause") or ""),
+                changed=str(fields.get("changed_at") or ""),
+                relaunch=str(fields.get("relaunch") or "auto"),
+            )
+        )
+    return rows
+
+
 @sessions.command(
     "list",
-    help="List the sessions in the registry with their run state, exit cause, last change and relaunch policy",
+    help="List sessions as a table grouped by host, active sessions first: this host's running sessions and, "
+    "with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; "
+    "-S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] "
+    "defaults in config.toml. -j/--json prints this host's registry records unchanged",
 )
-@click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
-def list_sessions(as_json):
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print this host's registry records as JSON")
+@click.option("-a", "--all", "show_all", is_flag=True, default=None, help="Include exited and unknown sessions")
+@click.option(
+    "-S",
+    "--scope",
+    type=click.Choice(session_list_view.SCOPES),
+    help="Hosts to list: this host, this host and its pair, or every host that publishes its sessions",
+)
+@click.option("-g", "--group-by", type=click.Choice(session_list_view.GROUP_KEYS), help="Column to group rows by")
+@click.option(
+    "-s",
+    "--sort-by",
+    metavar="KEYS",
+    help=f"Comma-separated sort keys, first key first: {', '.join(session_list_view.SORT_KEYS)}",
+)
+def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_by=None):
+    if as_json and scope in ("pair", "fleet"):
+        raise click.UsageError("-j/--json prints this host's registry only; drop -S/--scope or -j")
+    try:
+        view = session_list_view.settings()
+        if sort_by is not None:
+            view["sort_by"] = session_list_view.parse_sort(sort_by, "-s/--sort-by")
+    except session_list_view.ViewError as exc:
+        raise click.UsageError(str(exc)) from exc
     session_reconcile.reconcile()
+    session_reconcile.age_out()
+    doc = registry.load_registry()
     records = [
         {
             "name": r["name"],
@@ -172,13 +311,54 @@ def list_sessions(as_json):
             "changed_at": r.get("changed_at", ""),
             "relaunch": r.get("relaunch", "auto"),
         }
-        for r in registry.load_registry()["sessions"]
+        for r in doc["sessions"]
     ]
     if as_json:
         output.raw(Untagged.JSON, json.dumps(records))
+        return
+    local = _local_host(doc)
+    rows = [
+        session_list_view.Row(
+            host=local,
+            name=r["name"],
+            status=r["run_state"],
+            cause=r["cause"],
+            changed=r["changed_at"],
+            relaunch=r["relaunch"],
+        )
+        for r in records
+    ]
+    notes = []
+    scope = scope or view["scope"]
+    if scope != "host":
+        wanted, why = _pair_host(view) if scope == "pair" else (None, "")
+        if why:
+            notes.append(why)
+        if wanted != "":
+            snapshots = session_state_publish.read_snapshots()
+            if snapshots.problem:
+                notes.append(snapshots.problem)
+            hosts = sorted(h for h in snapshots.hosts if h != local and (wanted is None or h == wanted))
+            if wanted is not None and wanted != local and wanted not in snapshots.hosts and not snapshots.problem:
+                notes.append(f"{wanted}: no published snapshot")
+            for host in hosts:
+                published = snapshots.hosts[host]
+                rows += _snapshot_rows(host, published)
+                notes.append(f"{host}: published snapshot from {published.get('published_at') or 'an unknown time'}")
+    group = group_by or view["group_by"]
+    everything = view["show_all"] if show_all is None else show_all
+    groups = session_list_view.arrange(
+        rows, local_host=local, group_by=group, sort_by=view["sort_by"], show_all=everything
+    )
+    if groups:
+        headers, cells = session_list_view.table(groups, group)
+        output.table(headers, cells)
     else:
-        for record in records:
-            output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
+        shown = "sessions" if everything else "running sessions"
+        hint = "" if everything else "; -a/--all shows every row"
+        output.emit(output.Tag.SESSIONS, "list", f"no {shown} recorded{hint}")
+    for note in notes:
+        output.emit(output.Tag.SESSIONS, "list", note)
 
 
 _SESSION_SLUG = r"[A-Za-z0-9_-]+"
@@ -235,6 +415,17 @@ def _pane_pids(tmux_session: str) -> list[int]:
     return [int(token) for token in (listed.stdout or "").split() if token.isdigit()]
 
 
+def _slot_processes(probe, supervisors: dict[int, object]) -> set[int]:
+    """The pids running under ``supervisors``, read only while each supervisor is still the captured process."""
+    found: set[int] = set()
+    for pid, identity in supervisors.items():
+        with contextlib.suppress(psutil.Error):
+            children = {child.pid for child in psutil.Process(pid).children(recursive=True)}
+            if probe.capture_identity(pid) == identity:
+                found |= children
+    return found
+
+
 def _agent_identity(probe, session) -> object | None:
     """The process identity of a live Claude Code record, or None when the record cannot prove it."""
     try:
@@ -260,9 +451,10 @@ def stop_session(
     A supervisor generated by ``session_script.py`` treats an agent exit as a restart
     unless its stop marker exists, and deletes that marker when it starts, so the
     marker is written only for a tmux session whose supervisor is running now. Then
-    each Claude Code process recorded under ``name`` is sent SIGTERM, by its pid and
-    only when its record's ``procStart`` proves which process holds that pid. The
-    call returns once nothing is left in the slot or ``timeout`` elapses.
+    each Claude Code process recorded under ``name``, or running under one of those
+    supervisors whatever name its record carries (as after a rename), is sent SIGTERM,
+    by its pid and only when its record's ``procStart`` proves which process holds
+    that pid. The call returns once nothing is left in the slot or ``timeout`` elapses.
     """
     from .session_adopt import live_sessions
     from .session_migrate import _session_variants, _tmux_names
@@ -287,8 +479,13 @@ def stop_session(
         report.marked.append(tmux_session)
         report.supervisors.extend(live)
         tracked.update(live)
+    slot = _slot_processes(probe, tracked)
+
+    def in_slot(session) -> bool:
+        return session.name == name or session.pid in slot
+
     for session in live_sessions(claude_home):
-        if session.name != name:
+        if not in_slot(session):
             continue
         identity = _agent_identity(probe, session)
         if identity is None:
@@ -306,7 +503,7 @@ def stop_session(
             if not probe.has_ended(pid) and probe.capture_identity(pid) == tracked[pid]
         ]
         for session in live_sessions(claude_home):
-            if session.name != name:
+            if not in_slot(session):
                 continue
             if session.pid in report.signalled or _agent_identity(probe, session) is not None:
                 found.append(f"Claude Code pid {session.pid}")

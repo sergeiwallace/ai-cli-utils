@@ -15,7 +15,11 @@ tasks, memory and resume hand-off:
   memory), with each transcript's recorded cwd repointed, its ``customTitle`` and
   ``agentName`` renamed and its stale worktree binding cleared;
 * each moved transcript's Claude Code job record (``jobs/<short id>/state.json``),
-  whose ``name`` Claude Code restores on resume, renamed;
+  whose ``name`` Claude Code restores on resume, renamed; and every job record of the
+  session, or with its cwd in a moved worktree, with ``cwd`` and ``linkScanPath`` repointed;
+* each Agent-tool sub-agent record under the session's transcripts
+  (``<session id>/subagents/agent-<id>.meta.json`` and ``.jsonl``) naming a moved worktree,
+  repointed at it, so a sub-agent launched before the migration resumes from the new name;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
   and the slot's project directories (filename prefix only), and the memory files
   named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
@@ -37,7 +41,9 @@ tasks, memory and resume hand-off:
 * the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` or
   ``<host>--<old>-agents/``, their Claude Code project directories (a reaped worktree's
   included) and its ``wt/<old>/*`` branches in every repo under ``projects_dir``
-  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
+  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in; an
+  entry of an ``<old>-agents`` container no registered worktree accounts for is archived
+  by rename into :data:`MIGRATION_ARCHIVE`, unless some process works in it;
 * every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
   that proves it clean and landed, and kept and named, failing the run, otherwise; and
@@ -84,6 +90,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import mmap
 import os
 import re
 import shutil
@@ -613,17 +620,22 @@ def _plan_hooks(
     return hooks
 
 
-def _plan_iterm2(old: str) -> list[PlannedMove]:
+def _plan_iterm2(old: str, new: str, old_wt: Path) -> list[PlannedMove]:
+    from .session_reconcile import reconcile
     from .session_run_state import run_state
 
+    names = set(_session_variants(old))
+    reconcile(names=names)
     try:
         doc = _session_registry.load_registry()
     except _session_registry.RegistryError:
         return []
-    names = set(_session_variants(old))
-    hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
-    if any(run_state(record) == "running" for record in hits):
-        raise MigrationError("session run state is still running; run `ai sessions list` to reconcile liveness first")
+    hits = [r for r in doc["sessions"] if _restore_record_needs_rename(r, old, new, old_wt)]
+    for record in hits:
+        if run_state(record) == "running":
+            from .session_reconcile import liveness_blocker
+
+            raise MigrationError(f"session run state is still running: {liveness_blocker(record)}")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
@@ -769,18 +781,127 @@ def _holds_a_file(path: Path, moving: Container[Path] = ()) -> bool:
     return any(_holds_a_file(child, moving) for child in path.iterdir())
 
 
+#: The part an entry of an old agent container that no registered worktree accounts for is archived under.
+CONTAINER_ENTRY = "agent container entry"
+
+
+def _unregistered_entries(container: Path, moving: Container[Path]) -> list[Path]:
+    """Each directory in ``container`` holding a file that is not, and holds no, registered worktree.
+
+    Its registration was pruned (a ``.git`` file naming a ``.git/worktrees/<name>`` that is gone)
+    or never made. Empty when the repo's ``git worktree list`` cannot be read, so a listing failure
+    never makes a live worktree look unregistered.
+    """
+    listed = _git(container.parent.parent, "worktree", "list", "--porcelain")
+    if listed.returncode != 0:
+        return []
+    registered = [
+        Path(line[len("worktree ") :]).resolve() for line in listed.stdout.splitlines() if line.startswith("worktree ")
+    ]
+    return [
+        child
+        for child in sorted(container.iterdir())
+        if child.is_dir()
+        and not child.is_symlink()
+        and child not in moving
+        and not any(path == child or child in path.parents for path in registered)
+        and _holds_a_file(child, moving)
+    ]
+
+
+def _process_cwds() -> list[tuple[int, Path]]:
+    """``(pid, cwd)`` of every process whose cwd this user may read, whatever program it runs."""
+    import psutil
+
+    found: list[tuple[int, Path]] = []
+    for process in psutil.process_iter(["pid", "cwd"]):
+        cwd = process.info.get("cwd")
+        if cwd:
+            found.append((process.info["pid"], Path(cwd)))
+    return found
+
+
+def _same_filesystem(path: Path, target: Path) -> bool:
+    """Whether ``target``, or its nearest existing ancestor, is on ``path``'s filesystem."""
+    probe = target
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return path.stat().st_dev == probe.stat().st_dev
+    except OSError:
+        return False
+
+
+def _entry_archive(container: Path, state: Path, old: str, new: str) -> Path:
+    """Where an unregistered entry of ``container`` is archived, always by a rename on its own filesystem.
+
+    The session-migration archive (:func:`archive_dir`) when it shares the container's
+    filesystem; otherwise the same layout under ``<repo>/.worktrees/<archive>``, since a move
+    across filesystems would copy the entry and delete the original.
+    """
+    archive = archive_dir(state, old, new) / "agent-container"
+    if _same_filesystem(container, archive):
+        return archive
+    return container.parent / MIGRATION_ARCHIVE / archive.relative_to(state / MIGRATION_ARCHIVE)
+
+
+def _archive_entries(
+    container: Path, entries: list[Path], *, dry_run: bool, state: Path, old: str, new: str
+) -> tuple[list[PlannedMove], list[dict]]:
+    """Archive each unregistered ``entries`` of ``container`` by rename; a failed rename keeps it, named."""
+    directory = _entry_archive(container, state, old, new)
+    moves: list[PlannedMove] = []
+    archived: list[dict] = []
+    for entry in entries:
+        target = _archive_target(directory, entry.name)
+        if dry_run:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archive"))
+            continue
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            entry.rename(target)
+        except OSError as exc:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), f"archive failed: {_one_line(str(exc))}", "kept"))
+            continue
+        moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archived"))
+        archived.append({"part": CONTAINER_ENTRY, "source": str(entry), "archive": str(target)})
+    return moves, archived
+
+
 def _sweep_containers(
-    containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool, moving: Container[Path] = ()
+    containers: list[Path],
+    live_cwds: list[tuple[int, Path]],
+    *,
+    dry_run: bool,
+    state: Path,
+    old: str,
+    new: str,
+    repo_root: Path,
+    moving: Container[Path] = (),
 ) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
-    A container already gone is not listed: the agent plan's own line covers it. A preview
-    passes the agent worktrees the run ``moving`` out, so it names the fate the run reaches.
+    Each entry no registered worktree accounts for is archived first (:func:`_archive_entries`),
+    unless some process works in one: then the container is kept, naming it. A container
+    already gone is not listed: the agent plan's own line covers it. A preview passes the agent
+    worktrees the run ``moving`` out, so it names the fate the run reaches.
     """
     moves: list[PlannedMove] = []
+    archived: list[dict] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
-        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child, moving))
+        entries = [] if holder is not None else _unregistered_entries(container, moving)
+        cwds = _process_cwds() if entries else []
+        busy = [(pid, entry.name) for entry in entries if (pid := _agents._holder(entry, cwds)) is not None]
+        if busy:
+            works = "; ".join(f"pid {pid} works in {name}" for pid, name in busy)
+            moves.append(PlannedMove("agent container", str(container), works, "kept"))
+            continue
+        entry_moves, done = _archive_entries(container, entries, dry_run=dry_run, state=state, old=old, new=new)
+        moves += entry_moves
+        archived += done
+        gone = {Path(move.source) for move in entry_moves if move.action in ("archive", "archived")}
+        held = sorted(child.name for child in container.iterdir() if child not in gone and _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
         elif held:
@@ -790,6 +911,7 @@ def _sweep_containers(
         else:
             _agents._remove_if_empty(container)
             moves.append(PlannedMove("agent container", str(container), "empty", "removed"))
+    _record_archived(state, old, new, repo_root, archived)
     return moves
 
 
@@ -833,7 +955,9 @@ def clean_leftovers(
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, dry_run)
-    result.moves += _sweep_containers(_containers(old, repos), live_cwds, dry_run=dry_run)
+    result.moves += _sweep_containers(
+        _containers(old, repos), live_cwds, dry_run=dry_run, state=state, old=old, new=new, repo_root=repo_root
+    )
     _record_kept(leftovers, result)
     if not dry_run:
         _apply_beads(old, new, beads, result)
@@ -850,13 +974,23 @@ def _clean_other_repos(
     state: Path,
     proc_dir: Path | None,
     tmux: list[str],
+    repo_root: Path,
 ) -> None:
     """After a home migration: retire the other repos' old-name slots and report every container's fate."""
     if not result.dry_run:
         result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, result.dry_run)
     moving = {e.worktree for e in agent_plan.entries if e.worktree and e.moves} if result.dry_run else set()
-    result.moves += _sweep_containers(agent_plan.containers, live_cwds, dry_run=result.dry_run, moving=moving)
+    result.moves += _sweep_containers(
+        agent_plan.containers,
+        live_cwds,
+        dry_run=result.dry_run,
+        state=state,
+        old=result.old,
+        new=result.new,
+        repo_root=repo_root,
+        moving=moving,
+    )
     _record_kept(leftovers, result)
 
 
@@ -1458,6 +1592,187 @@ def apply_job_name(record: Path, old: str, new: str) -> str | None:
     return None
 
 
+#: The part each Agent-tool sub-agent record repointed at a moved worktree is reported under.
+SUBAGENT_RECORD = "sub-agent record"
+#: The part each Claude Code background-job record repointed at a moved worktree is reported under.
+JOB_RECORD = "job record"
+#: The fields of ``<session id>/subagents/agent-<id>.meta.json`` naming the sub-agent's worktree.
+_SUBAGENT_PATH_KEYS = ("worktreePath", "inheritedWorktreePath")
+
+
+def _under(value: str, root: str) -> bool:
+    return value == root or (value.startswith(root) and value[len(root)] in ("/", "\\"))
+
+
+@dataclass
+class _MovedPaths:
+    """Where each path this migration moves, or an earlier one moved, now lives.
+
+    ``pairs`` are exact moves: the slot and each agent worktree this run moves. ``containers``
+    pair each repo's ``<old>-agents`` with ``<new>-agents``: a path under a leaf the first no
+    longer holds and the second does was moved by an earlier run. Anything else did not move.
+    """
+
+    pairs: list[tuple[str, str]]
+    containers: list[tuple[Path, Path]]
+
+    def root(self, value: object) -> tuple[str, str] | None:
+        """``(old root, new root)`` of the move ``value`` lies under, or None when it did not move."""
+        if not isinstance(value, str):
+            return None
+        for source, dest in self.pairs:
+            if _under(value, source):
+                return source, dest
+        path = Path(value)
+        for source, dest in self.containers:
+            if source in path.parents:
+                leaf = path.relative_to(source).parts[0]
+                if (dest / leaf).is_dir() and not os.path.lexists(source / leaf):
+                    return str(source / leaf), str(dest / leaf)
+        return None
+
+    def needles(self) -> list[bytes]:
+        """Every moved root as a JSON file spells it, raw and escaped, for a byte search before any parse."""
+        roots = [source for source, _dest in self.pairs] + [str(source) for source, _dest in self.containers]
+        return list(dict.fromkeys(form.encode() for root in roots for form in (root, json.dumps(root)[1:-1])))
+
+    def __call__(self, value: object) -> str | None:
+        found = self.root(value)
+        return found[1] + value[len(found[0]) :] if found and isinstance(value, str) else None
+
+
+def _moved_paths(
+    old: str, new: str, old_wt: Path, new_wt: Path, agent_plan: _agents.AgentPlan, repos: list[Path]
+) -> _MovedPaths:
+    pairs = [(str(e.worktree), str(e.dest)) for e in agent_plan.entries if e.worktree and e.dest and e.moves]
+    containers = [(repo / ".worktrees" / f"{old}-agents", repo / ".worktrees" / f"{new}-agents") for repo in repos]
+    return _MovedPaths([*pairs, (str(old_wt), str(new_wt))], containers)
+
+
+@dataclass
+class _RecordRewrite:
+    """One Claude Code record still naming a moved path, and what it is rewritten to."""
+
+    kind: str
+    path: Path
+    #: JSON fields set on a record file, ``{field: new value}``.
+    fields: dict[str, str] = field(default_factory=dict)
+    #: ``(old root, new root)`` of each cwd a transcript's lines record.
+    roots: list[tuple[str, str]] = field(default_factory=list)
+    indent: int | None = None
+
+    def planned(self) -> PlannedMove:
+        changes = [f"{key} = {value}" for key, value in self.fields.items()]
+        changes += [f"cwd {source} -> {dest}" for source, dest in self.roots]
+        return PlannedMove(self.kind, str(self.path), "; ".join(changes), "rewrite")
+
+
+def _names_any(path: Path, needles: list[bytes]) -> bool:
+    """Whether ``path``'s bytes hold any of ``needles``; a sub-agent transcript can run to hundreds of MB."""
+    try:
+        with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return any(data.find(needle) != -1 for needle in needles)
+    except (OSError, ValueError):  # ValueError: an empty file cannot be mapped
+        return False
+
+
+def _transcript_roots(path: Path, moved: _MovedPaths) -> list[tuple[str, str]]:
+    """The moves of every cwd ``path``'s lines record, in first-seen order."""
+    needles = moved.needles()
+    if not _names_any(path, needles):
+        return []
+    texts = [needle.decode() for needle in needles]
+    found: dict[tuple[str, str], None] = {}
+    with contextlib.suppress(OSError, UnicodeDecodeError), path.open(encoding="utf-8") as stream:
+        for raw in stream:
+            if not any(text in raw for text in texts):
+                continue
+            with contextlib.suppress(ValueError):
+                record = json.loads(raw)
+                if isinstance(record, dict):
+                    for key in ("cwd", "originalCwd"):
+                        root = moved.root(record.get(key))
+                        if root:
+                            found[root] = None
+    return list(found)
+
+
+def _plan_subagent_records(project: Path, moved: _MovedPaths) -> list[_RecordRewrite]:
+    """Each Agent-tool sub-agent record under ``project``'s transcripts that names a moved path.
+
+    Claude Code keeps ``<session id>/subagents/agent-<id>.meta.json``, whose ``worktreePath``
+    or ``inheritedWorktreePath`` is the worktree a resume starts the sub-agent in, beside the
+    sub-agent's transcript ``agent-<id>.jsonl``, whose lines record its cwd. A record naming a
+    worktree that did not move is left alone.
+    """
+    if not project.is_dir():
+        return []
+    found: list[_RecordRewrite] = []
+    for record in sorted(project.glob("*/subagents/agent-*.meta.json")):
+        meta = _job_record(record)
+        if meta is None:
+            continue
+        fields = {key: dest for key in _SUBAGENT_PATH_KEYS if (dest := moved(meta.get(key)))}
+        if fields:
+            found.append(_RecordRewrite(SUBAGENT_RECORD, record, fields=fields))
+    for transcript in sorted(project.glob("*/subagents/agent-*.jsonl")):
+        roots = _transcript_roots(transcript, moved)
+        if roots:
+            found.append(_RecordRewrite(SUBAGENT_RECORD, transcript, roots=roots))
+    return found
+
+
+def _plan_job_records(
+    project: Path, old_pd: Path, new_pd: Path, moved: _MovedPaths, home: Path
+) -> list[_RecordRewrite]:
+    """Each Claude Code background-job record of the session still naming a moved path.
+
+    A record ``jobs/<short id>/state.json`` is the session's when its ``sessionId`` or
+    ``resumeSessionId`` is a transcript in ``project`` or its ``cwd`` lies in a moved worktree.
+    Its ``cwd`` follows the move, and its ``linkScanPath``, the transcript Claude Code scans,
+    follows the project directory the move renamed: OLD's own, or the one of the job's cwd.
+    """
+    sessions = {path.stem for path in project.glob("*.jsonl")} if project.is_dir() else set()
+    found: list[_RecordRewrite] = []
+    for record in sorted((home / "jobs").glob("*/state.json")):
+        job = _job_record(record)
+        if job is None:
+            continue
+        cwd = moved(job.get("cwd"))
+        if cwd is None and not sessions & {job.get("sessionId"), job.get("resumeSessionId")}:
+            continue
+        fields = {"cwd": cwd} if cwd else {}
+        link = job.get("linkScanPath")
+        if isinstance(link, str):
+            if _under(link, str(old_pd)):
+                fields["linkScanPath"] = str(new_pd) + link[len(str(old_pd)) :]
+            elif cwd and Path(link).parent == cc_project_dir(Path(job["cwd"]), home):
+                fields["linkScanPath"] = str(cc_project_dir(Path(cwd), home) / Path(link).name)
+        if fields:
+            found.append(_RecordRewrite(JOB_RECORD, record, fields=fields, indent=2))
+    return found
+
+
+def _apply_record_rewrites(rewrites: list[_RecordRewrite], old_pd: Path, new_pd: Path, result: MigrationResult) -> None:
+    """Rewrite each planned record, found under ``new_pd`` once OLD's project directory moved there."""
+    for item in rewrites:
+        path = item.path
+        if not path.exists() and old_pd in path.parents:
+            path = new_pd / path.relative_to(old_pd)
+        try:
+            for source, dest in item.roots:
+                _rewrite_transcript_cwd(path, source, dest)
+            if item.fields:
+                before = path.read_bytes()
+                record = json.loads(before)
+                record.update(item.fields)
+                separators = (",", ":") if item.indent is None else None
+                data = json.dumps(record, indent=item.indent, ensure_ascii=False, separators=separators)
+                _write_migration_file(path, data.encode(), expected=before)
+        except (OSError, ValueError, AttributeError, MigrationError) as exc:
+            result.warnings.append(f"{item.kind} {path} was NOT rewritten: {_one_line(str(exc))}")
+
+
 def _start_session(
     repo_root: Path,
     old: str,
@@ -1607,12 +1922,15 @@ def _start_session(
         result.warnings.append(f"no Claude Code project directory at {old_pd}; there is no transcript to carry")
     job_moves = plan_job_names(old_pd, old, new, home)
     moves += job_moves
+    moved = _moved_paths(old, new, old_wt, new_wt, agent_plan, _agents._repos(projects, repo_root))
+    records = _plan_subagent_records(old_pd, moved) + _plan_job_records(old_pd, old_pd, new_pd, moved, home)
+    moves += [record.planned() for record in records]
 
     state_moves = _plan_state(old, new, state)
     moves += state_moves
     map_moves = _plan_session_maps(old, new, home, state)
     moves += map_moves
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     moves += iterm2_moves
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += launcher_moves
@@ -1629,7 +1947,7 @@ def _start_session(
     hooks = _plan_hooks(old, new, repo_root, moves)
     beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     _describe_beads(old, new, beads, result)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
@@ -1690,6 +2008,7 @@ def _start_session(
         warning = apply_job_name(Path(item.source), old, new)
         if warning:
             result.warnings.append(warning)
+    _apply_record_rewrites(records, old_pd, new_pd, result)
 
     _apply_task_rekey(old, new, home, result, state, repo_root)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
@@ -1909,6 +2228,13 @@ def finish_session(
     state_moves = _plan_state(old, new, state)
     map_moves = _plan_session_maps(old, new, home, state)
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
+    moved = _moved_paths(
+        old, new, old_wt.resolve(strict=False), new_wt, agent_plan, _agents._repos(projects, repo_root)
+    )
+    record_project = old_pd if old_pd.is_dir() else new_pd
+    records = _plan_subagent_records(record_project, moved)
+    records += _plan_job_records(record_project, old_pd, new_pd, moved, home)
+    moves += [record.planned() for record in records]
     project_dirs: list[tuple[Path, Path | None]] = [
         (cc_project_dir(repo_root, home), None),
         (old_pd, new_pd) if old_pd.is_dir() else (new_pd, None),
@@ -1916,7 +2242,7 @@ def finish_session(
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
     lock_moves = _plan_slot_lock(repo_root, old)
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
@@ -1928,7 +2254,7 @@ def finish_session(
     beads = _plan_beads(old, new, _stores(projects, repo_root), state)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
         _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
@@ -1940,6 +2266,7 @@ def finish_session(
         source.rename(source.with_name(Path(item.dest).name))
     _apply_memory(memory_moves, index_moves, result)
     apply_home(home_plan, result)
+    _apply_record_rewrites(records, old_pd, new_pd, result)
     for key, _value in markers:
         _git(
             repo_root,
@@ -2067,21 +2394,61 @@ def _apply_iterm2(old: str, new: str, old_wt: Path, new_wt: Path) -> None:
     def change(doc: dict) -> bool:
         changed = False
         for record in doc["sessions"]:
-            if not _names_old_session(record, renames):
+            if not _restore_record_needs_rename(record, old, new, old_wt):
                 continue
             if record.get("name") in renames:
                 record["name"] = renames[record["name"]]
-                argv = record.get("relaunch_argv")
-                if isinstance(argv, list) and argv:
-                    # The relaunch line ends with the session's slot or full name, and a full
-                    # name maps back to its own slot, so naming the new session is exact.
-                    argv[-1] = new
+            argv = record.get("relaunch_argv")
+            if isinstance(argv, list) and argv:
+                record["relaunch_argv"] = _rename_relaunch_argv(argv, new, renames)
+            if record.get("cwd") == str(old_wt):
+                record["cwd"] = str(new_wt)
             # A record renamed before AI-CLI-uzur still carries the old recipe; --finish repairs it.
             _rename_boot_recipe(record.get("boot_recipe"), renames, old_wt, new_wt)
             changed = True
         return changed
 
     _session_registry._mutate(change)
+
+
+def _rename_relaunch_argv(argv: list[str], new: str, renames: dict[str, str]) -> list[str]:
+    """Replace the declared session argument, preserving options on either side of it."""
+    from .main import _cli_group
+
+    command = _cli_group.commands.get(argv[1]) if len(argv) >= 2 else None
+    if command is None:
+        return argv
+    with command.make_context(argv[1], argv[2:], resilient_parsing=True) as context:
+        name = context.params.get("name")
+    if not name or name == new or name in renames.values():
+        return argv
+    for index in range(2, len(argv)):
+        if argv[index] != name:
+            continue
+        probe = [*argv]
+        probe[index] = "migration-session-argument"
+        with command.make_context(argv[1], probe[2:], resilient_parsing=True) as context:
+            if context.params.get("name") == probe[index]:
+                probe[index] = renames.get(name, new)
+                return probe
+    return argv
+
+
+def _restore_record_needs_rename(record: dict, old: str, new: str, old_wt: Path) -> bool:
+    """Include partially repaired records whose name moved but whose launch fields did not."""
+    old_names = set(_session_variants(old))
+    if _names_old_session(record, old_names):
+        return True
+    if not _names_old_session(record, set(_session_variants(new))):
+        return False
+    argv = record.get("relaunch_argv") or []
+    recipe = record.get("boot_recipe") or {}
+    renames = dict(zip(_session_variants(old), _session_variants(new), strict=True))
+    return (
+        record.get("cwd") == str(old_wt)
+        or recipe.get("cwd") == str(old_wt)
+        or _rename_relaunch_argv(argv, new, renames) != argv
+    )
 
 
 def _names_old_session(record: object, names: Container[str]) -> bool:
@@ -2094,7 +2461,7 @@ def _names_old_session(record: object, names: Container[str]) -> bool:
 
 
 def _rename_boot_recipe(recipe: object, renames: dict[str, str], old_wt: Path, new_wt: Path) -> None:
-    """Point a record's boot recipe at the new name and worktree (AI-CLI-uzur).
+    """Point a record's boot recipe at the new name and worktree.
 
     ``ai sessions relaunch`` refuses a recipe whose ``session_name`` differs from its record's
     name, so a recipe left naming the old session made every migrated session unrelaunchable.

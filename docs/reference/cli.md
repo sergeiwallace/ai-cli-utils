@@ -31,6 +31,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai cx`](#ai-cx) | Launch a Codex session |
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
+| [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai g`](#ai-g) | Launch a Gemini CLI session |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -46,7 +47,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai memory`](#ai-memory) | Memory-file watchers and helpers |
 | [`ai memory watch`](#ai-memory-watch) | Run the memory-file watcher daemon |
 | [`ai migrate-session`](#ai-migrate-session) | Rename a session already registered in an `ai` slot. |
-| [`ai migrate-transcript`](#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another (e.g. |
+| [`ai migrate-transcript`](#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree |
 | [`ai notifications`](#ai-notifications) | Notification delivery and history |
 | [`ai notifications list`](#ai-notifications-list) | List configured notification channels |
 | [`ai notifications log`](#ai-notifications-log) | Show notification history |
@@ -78,13 +79,13 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](#ai-session-reaper-status) | Show stale-session reaper status |
 | [`ai session-reaper stop`](#ai-session-reaper-stop) | Stop the stale-session reaper |
-| [`ai sessions`](#ai-sessions) | Session run state and publication |
+| [`ai sessions`](#ai-sessions) | List sessions and manage their run state, relaunch and publication. |
 | [`ai sessions boot-unit`](#ai-sessions-boot-unit) | Manage the one-shot boot relaunch service (macOS and Linux) |
 | [`ai sessions boot-unit install`](#ai-sessions-boot-unit-install) | Write the boot relaunch service and enable it, or disable and remove it, as session_relaunch.on_boot (or -b/--on-boot) asks |
 | [`ai sessions boot-unit status`](#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](#ai-sessions-list) | List the sessions in the registry with their run state, exit cause, last change and relaunch policy |
+| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -128,6 +129,8 @@ ai [OPTIONS] [COMMAND] [ARGS]...
 ```
 
 Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+Every command and subcommand is listed below with its one-line use; `ai COMMAND -h` prints a command's full help.
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -537,6 +540,25 @@ Check the native binaries ai-cli-utils needs, installing what it can
 | `-n` | `--dry-run` |  | Report status only; install nothing |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai exit-session
+
+```text
+ai exit-session [OPTIONS] [NAME]
+```
+
+Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified ancestor session record. Older supervisors without recorded process identities must first be relaunched. Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. Remote mirrors use an acknowledged owning-host generation receipt.
+
+Arguments:
+
+- `[NAME]`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-r` | `--remote` |  | Request an owning-host exit through the recorded remote mirror |
+| `-t` | `--timeout` | `FLOAT RANGE` | Seconds per teardown wait  [default: 5.0; x>=0] |
+| `-d` | `--dry-run` |  | Show the verified exit without writing or signalling |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai g
 
 ```text
@@ -813,7 +835,7 @@ Arguments:
 ai migrate-transcript [OPTIONS] DEST
 ```
 
-Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)
+Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree
 
 Arguments:
 
@@ -1287,10 +1309,10 @@ Stop the stale-session reaper
 ## ai sessions
 
 ```text
-ai sessions [OPTIONS] COMMAND [ARGS]...
+ai sessions [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-Session run state and publication
+List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, grouped by host, active first
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1373,11 +1395,15 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List the sessions in the registry with their run state, exit cause, last change and relaunch policy
+List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. -j/--json prints this host's registry records unchanged
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-j` | `--json` |  | Print JSON |
+| `-j` | `--json` |  | Print this host's registry records as JSON |
+| `-a` | `--all` |  | Include exited and unknown sessions |
+| `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
+| `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
+| `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai sessions mark

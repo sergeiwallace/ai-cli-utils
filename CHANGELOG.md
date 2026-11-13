@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
+  `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
+  session. Rows are grouped by host, this host first, with running sessions at the top of each
+  group. `-g/--group-by` and `-s/--sort-by` choose other groupings and orders, and the defaults
+  come from a new `[sessions_list]` table in `config.toml`, read on every call
+  (`docs/reference/sessions-list-defaults.toml`). `-j/--json` output is unchanged.
+- Bare `ai sessions` now runs `ai sessions list`. Only running sessions are listed unless
+  `-a/--all` is given. `-S/--scope pair` (the default) adds the paired host's sessions and
+  `-S/--scope fleet` adds every host's, both read from the snapshots `ai sessions publish` pushes.
+- `ai -h` lists every command and subcommand with a one-line use, shows how to start, resume and
+  attach to a session (`ai attach` is not needed for a session `ai` started), and ends with the
+  URL of the CLI guide. The README and the CLI guide carry the same command index and
+  start/resume/attach rows, generated from the same source.
+
 ### Fixed
 
+- `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
+  remove a local row once tmux and the process table prove its session gone and it has not
+  changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier
+  boot counts from this boot's start). The minute worker, never the list, also removes a
+  client-side remote row past the retention whose launcher is gone when the remote host
+  reports no such tmux session, which clears rows for sessions renamed or retired on their own
+  host. `ai retire-session` drops the retired session's rows.
+- `ai sessions stop NAME` now also sends SIGTERM to a Claude Code process running under a wrapper
+  it marked when that process's record names another session, as it does after a rename. Before,
+  it signalled only records named NAME, so it waited out its timeout naming only the wrapper, and
+  the agent had to exit by itself. Such a process is still signalled only when its record's start
+  time proves its pid; one that cannot be proved is named as still running and is not signalled.
 - `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
   environment looking for files that name the old path. It now reads only the records at the top
   of each site-packages directory (`.pth` files, legacy `.egg-link` files and the

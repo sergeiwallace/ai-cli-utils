@@ -94,9 +94,11 @@ marker was `ai sessions _begin`'s own SIGINT handler, for its own session
 1. For each tmux session hosting `<name>` (`c-<name>`, `c-r-<name>` and the other
    engines, the same list `_refuse_live` checks) whose pane process is running, it
    writes the stop marker.
-2. It sends SIGTERM to each Claude Code process recorded under `<name>`, by its pid,
-   and only when the record's `procStart` matches the process holding that pid. A
-   record that cannot prove its pid is left unsignalled and reported.
+2. It sends SIGTERM to each Claude Code process recorded under `<name>`, and to each
+   Claude Code process running under a wrapper it marked whatever name its record
+   carries, by its pid, and only when the record's `procStart` matches the process
+   holding that pid. A record that cannot prove its pid is left unsignalled and
+   reported.
 3. It waits up to `-t/--timeout` seconds (default 30) until no wrapper, agent or tmux
    session is left in the slot. It reports what it stopped, and exits 1 naming
    whatever still runs.
@@ -114,6 +116,38 @@ refusals in `_refuse_live` now name `ai sessions stop <name>`.
   the tmux session.
 - [x] A name with nothing running reports that and exits 0.
 - [x] `tests/test_session_migrate.py::test_given_a_running_session_when_migrating_then_the_refusal_names_the_stop_verb`.
+
+## Follow-up: a slot agent whose record names another session (2026-11-12)
+
+**Symptom.** Measured on 2026-11-11 after `ai migrate-session` renamed a session: the
+Claude Code process in that slot's tmux pane still had a record naming the old
+session. `ai sessions stop NEW` printed `stop marker written for its supervisor`,
+then `still running after 30s: supervisor pid <pid>`, and exited 1. It printed no
+`sent SIGTERM` line and did not name the agent. The agent had to exit by itself;
+the marker did stop the wrapper relaunching it.
+
+**Cause.** `stop_session` chose which Claude Code processes to signal, and which to
+report as still running, only by `record.name == NAME`. A record written before the
+rename carried the old name, so the agent was neither signalled nor reported.
+
+**Rejected hypothesis.** The marker write failing: it was written, and the wrapper
+did not relaunch.
+
+**Fix.** After marking, `stop_session` reads the descendants of each marked
+supervisor (`_slot_processes`, kept only while the supervisor is still the process
+whose identity it captured). A live Claude Code record whose pid is one of them is
+treated like a record named NAME: signalled only when its `procStart` proves the
+pid, otherwise reported as `its record cannot prove the pid; not signalled`.
+
+**Tests.** In `tests/test_sessions_stop.py`, both RED at the unfixed code with the
+live failure's exact output, GREEN after:
+
+- `test_given_a_slot_agent_whose_record_names_another_session_when_stopped_then_it_gets_term_and_is_not_relaunched`
+- `test_given_a_slot_agent_whose_record_cannot_prove_its_pid_when_stopped_then_it_is_named_and_not_signalled`
+
+**Lesson.** A process found by a name it records is found only while that name is
+current. When the verb already holds the slot's supervisor, the process tree is the
+identity that survives a rename.
 
 ## Lessons Learned
 

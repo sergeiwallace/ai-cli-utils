@@ -141,6 +141,18 @@ running restore records and directs the user to `ai sessions list` to reconcile
 them first. See the [root-cause report](bugs/stale-running-records.md) for boundaries,
 scheduler evidence and regression coverage.
 
+### When a row leaves the registry
+
+`ai sessions list` and the minute worker remove a local row when all of these hold:
+
+- `tmux has-session` and the process table both prove the session gone. A live, detached or unprovable session keeps its row.
+- No deny-boot safety file exists for it.
+- It has not changed for `[session_registry] stale_row_retention_hours` (default 72, read on every call; 0 keeps every row). The age runs from the latest of `changed_at`, `ended_at`, `refreshed_at` and `launched_at`. A row from an earlier boot counts from this boot's start instead, so `ai sessions relaunch --boot` always has the retention to replay it.
+
+The minute worker also checks a remote row once it is older than the retention and the process that held its connection is gone. A recorded clean exit removes it. Otherwise it dials the host (`tmux has-session` over ssh) and removes the row only when the host has no such session. That covers a session renamed or retired on its own host, whose old name the client's row still carries. A host that cannot be asked keeps the row and stamps `probed_at`, so the next dial waits another retention, and one unreachable host costs one dial per pass. `ai sessions list` never dials a host, so it never waits on ssh; it shows remote rows as the worker last left them.
+
+`ai retire-session NAME` drops this machine's rows for NAME (every engine and `-r` variant) when it removes the slot. A refused retirement leaves them. See the [root-cause report](bugs/stale-session-rows.md).
+
 An exit is recorded four ways:
 
 - A clean remote exit (ssh exit status 0) records `manual_exit`.

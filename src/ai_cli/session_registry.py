@@ -267,6 +267,7 @@ DURABLE_FIELDS = (
     "transition_seq",
     "boot_recipe",
     "supervisor_exit",
+    "supervisor_identity",
     "owning_host",
     "ended_at",
     "exit",
@@ -431,12 +432,38 @@ def _defer_refresh(skip_id: str) -> str | None:
     return None
 
 
-def _local_session_alive(name: str) -> bool | None:
-    """True/False from ``tmux has-session`` (exact match), None when tmux could not be asked."""
+def _tmux_absent_without_binary() -> bool | None:
+    """Prove no user tmux server survived removal of its executable, or stay unknown."""
+    import psutil
+
+    try:
+        user = psutil.Process().username()
+        for process in psutil.process_iter(["name", "username", "status"]):
+            info = process.info
+            if info.get("status") in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                continue
+            if info.get("username") not in {user, None}:
+                continue
+            if not info.get("name") or not info.get("username"):
+                return None
+            if info["name"].split(":", 1)[0].removesuffix(".exe") == "tmux":
+                return None
+    except (psutil.Error, OSError):
+        return None
+    return False
+
+
+def _local_session_alive(name: str, *, missing_binary_is_absent: bool = True) -> bool | None:
+    """Probe exact tmux liveness, optionally proving absence after executable removal.
+
+    Prune requires a tmux reply and disables the process-table fallback.
+    """
     try:
         result = subprocess.run(
             ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False, timeout=PROBE_TIMEOUT_SECONDS
         )
+    except FileNotFoundError:
+        return _tmux_absent_without_binary() if missing_binary_is_absent else None
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode == 0:
@@ -486,7 +513,7 @@ def _remote_session_alive(record: dict, config: dict) -> bool | None:
 
 def _death_reason(record: dict, probe_remote: bool, remote_config: dict) -> str | None:
     if record.get("kind") == "local":
-        alive = _local_session_alive(str(record.get("name", "")))
+        alive = _local_session_alive(str(record.get("name", "")), missing_binary_is_absent=False)
         return "tmux session no longer exists" if alive is False else None
     if record.get("ended_at"):
         return "remote session exited cleanly"

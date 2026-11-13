@@ -932,6 +932,21 @@ def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
     def normalize(text: str) -> str:
+        # Teardown moved into EXIT cleanup so abnormal returns fence tmux too.
+        # Compare its body at the original location, rather than ignoring it:
+        # changing the ownership fence must still make a program uncertifiable.
+        cleanup = re.search(r"(?ms)^    # BEGIN TMUX CLEANUP\n(.*?)^    # END TMUX CLEANUP\n", text)
+        if cleanup:
+            text = text[: cleanup.start()] + text[cleanup.end() :]
+            body = re.sub(r"(?m)^  ", "", cleanup[1])
+            ending = "      done\n      exit 0\n    fi\n"
+            if ending not in text:
+                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
+            text = text.replace(
+                ending,
+                "      done\n" + body + ending.removeprefix("      done\n"),
+                1,
+            )
         text = re.sub(
             r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH)[^\n]*\n.*?^    # END \1\n",
             "",
@@ -947,7 +962,27 @@ def _compatible(source: str, expected: str) -> bool:
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
-    return normalize(source) == normalize(expected)
+    normalized_source = normalize(source)
+    if normalized_source == normalize(expected):
+        return True
+    # Also recognize the exact earlier wrapper. Transform only our trusted
+    # expected template: ignoring these regions in a running source would let
+    # arbitrary edits to its shell handoff or signal handling pass inspection.
+    earlier = re.sub(
+        r"(?ms)^    # BEGIN SHELL RETURN agent-wait\n.*?^    # END SHELL RETURN\n",
+        '      wait "$active_agent_pid"\n      agent_exit_code=$?\n',
+        expected,
+    )
+    earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
+    earlier = earlier.replace(
+        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
+        "if $_supervisor_tmux_ownership_established; then",
+    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
+    earlier = earlier.replace(
+        "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
+        "if (( _child_status == 77 || _child_status == 79 )); then",
+    )
+    return normalized_source == normalize(earlier)
 
 
 def _tmux_pane_environment(session: str) -> dict[str, str]:

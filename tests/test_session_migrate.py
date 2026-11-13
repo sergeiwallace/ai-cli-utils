@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -168,6 +169,74 @@ def _everything(slot) -> dict:
     return trees
 
 
+@pytest.mark.parametrize("finish", [False, True])
+@pytest.mark.parametrize("argument", [f"c-{OLD}", "3"])
+def test_given_saved_launch_directory_when_migrated_then_restore_uses_the_new_worktree(slot, finish, argument):
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    record = doc["sessions"][0]
+    record["cwd"] = str(slot["wt"])
+    record["relaunch_argv"] = ["ai", "c", argument, "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    if finish:
+        doc = json.loads(path.read_text())
+        doc["sessions"][0]["cwd"] = str(slot["wt"])
+        path.write_text(json.dumps(doc))
+        code, out, err = _migrate(slot["repo"], "--finish", "-y")
+        assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    assert record["cwd"] == record["boot_recipe"]["cwd"] == str(new_wt)
+    assert record["relaunch_argv"] == [
+        "ai",
+        "c",
+        f"c-{NEW}" if argument.startswith("c-") else NEW,
+        "-p",
+        "myrepo",
+        "-D",
+    ]
+    assert _git("branch", "--show-current", cwd=new_wt).strip() == f"wt-{NEW}"
+    assert (slot["claude"] / "tasks" / NEW).is_dir()
+
+
+def test_given_remote_origin_slot_when_migrated_then_boot_and_wrapper_keep_remote_names(slot):
+    meta_path = slot["state"] / f"session-meta-c-{OLD}.json"
+    meta = json.loads(meta_path.read_text())
+    meta.update(session=f"c-r-{OLD}", is_remote=True, prefix="c-r-myrepo-")
+    remote_meta = slot["state"] / f"session-meta-c-r-{OLD}.json"
+    meta_path.rename(remote_meta)
+    remote_meta.write_text(json.dumps(meta))
+    registry_path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(registry_path.read_text())
+    record = doc["sessions"][0]
+    record["name"] = record["boot_recipe"]["session_name"] = f"c-r-{OLD}"
+    record["boot_recipe"]["options"]["is_remote"] = True
+    record["boot_recipe"]["argv"][2] = f"c-r-{OLD}"
+    record["boot_recipe"]["argv"].append("--is-remote")
+    registry_path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    meta = json.loads((slot["state"] / f"session-meta-c-r-{NEW}.json").read_text())
+    record = json.loads(registry_path.read_text())["sessions"][0]
+    assert meta["session"] == record["name"] == record["boot_recipe"]["session_name"] == f"c-r-{NEW}"
+    assert meta["is_remote"] is record["boot_recipe"]["options"]["is_remote"] is True
+
+
+def test_given_renamed_record_with_stale_numeric_resume_when_finished_then_launch_argument_is_repaired(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    doc["sessions"][0]["relaunch_argv"] = ["ai", "c", "3", "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "--finish", "-y")
+    assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    assert record["relaunch_argv"] == ["ai", "c", NEW, "-p", "myrepo", "-D"]
+
+
 def test_given_running_restore_record_when_migrated_then_refused_before_any_artifact_moves(slot):
     path = slot["state"] / "iterm2-sessions.json"
     document = json.loads(path.read_text())
@@ -178,6 +247,48 @@ def test_given_running_restore_record_when_migrated_then_refused_before_any_arti
     assert code != 0
     assert "run state is still running" in out + err
     assert _everything(slot) == before
+
+
+@pytest.fixture
+def vanished_run(slot, monkeypatch):
+    stamp = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    path = slot["state"] / "iterm2-sessions.json"
+    document = json.loads(path.read_text())
+    boot = session_registry.current_boot_id()
+    document["sessions"][0].update(
+        run_state="running",
+        launcher_pid=_dead_pid(),
+        launched_at=stamp,
+        changed_at=stamp,
+        refreshed_at=stamp,
+        ended_at=None,
+        relaunch="auto",
+        boot_id=boot,
+        relaunched_boot_id=boot,
+        boot_decision={"cause": "terminal_quit_or_crash", "reason": "already attempted in this boot"},
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(session_registry, "_local_session_alive", lambda _name: False)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **kw: iter(()))
+    return path
+
+
+@pytest.mark.parametrize("list_first", [False, True])
+def test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled(slot, vanished_run, list_first):
+    config = {"machine": {"host_id": "m"}}
+    if list_first:
+        code, out, err = run_cli(["ai", "sessions", "list", "-j"], config=config)
+        assert code == 0, out + err
+        assert json.loads(vanished_run.read_text())["sessions"][0]["run_state"] == "exited"
+    with patch("ai_cli.config.load_config", return_value=with_environment_config(config)):
+        code, out, err = _migrate(slot["repo"], "-n")
+    assert code == 0, out + err
+    record = json.loads(vanished_run.read_text())["sessions"][0]
+    assert record["run_state"] == "exited"
+    assert record["ended_at"]
+    assert record["boot_recipe"]["session_name"] == f"c-{OLD}"
+    assert slot["wt"].exists()
+    assert not (slot["repo"] / ".worktrees" / NEW).exists()
 
 
 def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_new_name(slot):
