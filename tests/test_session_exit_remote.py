@@ -207,3 +207,39 @@ def test_remote_shell_without_user_path_when_receipt_requested_then_installed_cl
     monkeypatch.setattr(subprocess, "run", ssh)
     row = registry.load_registry()["sessions"][0]
     assert session_exit._remote_receipt(row) == receipt
+
+
+def test_acknowledged_exit_when_host_becomes_unreachable_then_client_receipt_still_vetoes_reconnect(
+    remote_run, monkeypatch
+):
+    _, _, client, _, _ = remote_run
+    result = CliRunner().invoke(cli, ["exit-session", "c-session-1", "-r", "-t", "0.1"])
+    assert result.exit_code == 0, result.output
+    before = client.read_bytes()
+    monkeypatch.setattr(subprocess, "run", Mock(side_effect=subprocess.TimeoutExpired("ssh", 1)))
+    assert session_exit.receive_remote_exit("mirror") is True
+    assert client.read_bytes() == before
+
+
+def test_prior_client_receipt_when_session_is_reattached_then_new_client_requires_fresh_acknowledgement(
+    remote_run, monkeypatch
+):
+    from ai_cli.iterm2 import _PERSISTENCE_DEFAULTS
+
+    result = CliRunner().invoke(cli, ["exit-session", "c-session-1", "-r", "-t", "0.1"])
+    assert result.exit_code == 0, result.output
+    row = registry.record_launch(
+        kind="remote",
+        name="c-session-1",
+        relaunch_argv=["ai", "c", "1", "-R"],
+        cwd=None,
+        remote={"alias": "server", "session": "c-session-1"},
+        tty="",
+        iterm_session_id=None,
+        launcher_pid=42,
+        config=_PERSISTENCE_DEFAULTS,
+    )
+    assert row["id"] != "mirror"
+    assert "exit_receipt_client_id" not in row
+    monkeypatch.setattr(subprocess, "run", Mock(side_effect=subprocess.TimeoutExpired("ssh", 1)))
+    assert session_exit.receive_remote_exit(row["id"]) is False

@@ -412,6 +412,7 @@ def _accept_receipt(snapshot: dict, receipt: dict) -> bool:
         if row != snapshot:
             raise ValueError("client mirror changed while awaiting receipt")
         row.update(receipt)
+        row["exit_receipt_client_id"] = snapshot["id"]
         return True
 
     registry._mutate(update, timeout=2)
@@ -448,6 +449,16 @@ def receive_remote_exit(record_id: str) -> bool:
     row = next((r for r in registry.load_registry()["sessions"] if r.get("id") == record_id), None)
     if row is None or row.get("kind") != "remote":
         return False
+    teardown = state.exit_teardown(row)
+    if (
+        row.get("exit_receipt_client_id") == record_id
+        and row.get("run_state") == "exited"
+        and teardown.get("generation") == row.get("generation")
+        and teardown.get("complete")
+    ):
+        # A later host outage cannot revoke a receipt already acknowledged for
+        # this client launch. Reattachment creates a new record ID and drops it.
+        return True
     try:
         receipt = _remote_receipt(row)
     except (ValueError, OSError, subprocess.SubprocessError):
