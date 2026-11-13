@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
+import psutil
 import pytest
 import test_session_migrate
 from test_session_migrate import NEW, OLD, UUID, _finish, _git, _jsonl, _migrate, run_cli
@@ -121,15 +123,30 @@ def test_given_a_process_working_in_a_pruned_entry_when_finished_then_the_contai
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     container = _pruned_entries(slot)
-    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], cwd=container / "pruned-leaf")
+    # The worker reports its own pid: on Windows a venv's python.exe is a launcher that
+    # starts the real interpreter as a child, so Popen's pid is not the process whose
+    # working directory is the entry.
+    pid_file = slot["state"] / "worker.pid"
+    script = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(120)"
+    worker = subprocess.Popen([sys.executable, "-c", script], cwd=container / "pruned-leaf")
     try:
+        deadline = time.monotonic() + 30
+        while not (pid_file.is_file() and pid_file.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        worker_pid = int(pid_file.read_text())
         code, out, err = _finish(slot["repo"], "-y")
     finally:
+        try:
+            children = psutil.Process(worker.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            children = []
+        for process in children:
+            process.kill()
         worker.kill()
         worker.wait()
 
     assert code == 1, out + err
-    assert f"pid {worker.pid} works in pruned-leaf" in out
+    assert f"pid {worker_pid} works in pruned-leaf" in out
     assert (container / "pruned-leaf" / "work.txt").is_file()
     assert (container / "bare-leaf" / "sub" / "notes.md").is_file()
 
