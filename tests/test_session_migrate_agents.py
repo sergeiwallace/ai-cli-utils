@@ -543,7 +543,7 @@ def test_given_an_old_slot_holding_unlanded_work_when_migrated_then_it_is_kept_n
     assert ("untracked: wip.txt" if kind == "uncommitted" else "not in") in out + err
 
 
-def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_go_and_full_ones_are_named(leftover):
+def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_go_and_files_are_carried(leftover):
     empty = leftover["home"] / ".worktrees" / f"{OLD}-agents"
     (empty / "nested").mkdir(parents=True)
     full = leftover["second"] / ".worktrees" / f"{OLD}-agents"
@@ -553,11 +553,12 @@ def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_g
 
     code, out, err = _run_in(leftover, leftover["second"], "-y")
 
-    assert code == 1, out + err
+    assert code == 0, out + err
     assert not empty.exists()
     assert f"agent container: {empty} (removed: empty)" in out
-    assert (full / "notes.txt").read_text() == "keep me\n"
-    assert f"agent container: {full} (kept: holds notes.txt)" in out
+    assert not full.exists()
+    assert (full.with_name(f"{NEW}-agents") / "notes.txt").read_text() == "keep me\n"
+    assert f"agent container: {full} (removed: empty)" in out
 
 
 def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_then_it_refuses(leftover):
