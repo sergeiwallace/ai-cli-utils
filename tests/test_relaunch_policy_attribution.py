@@ -159,8 +159,8 @@ def test_given_running_session_when_policy_changes_then_changed_at_is_untouched_
     assert record["changed_at"] == before
     assert record["relaunch_changed_at"] == "2099-01-02T03:04:05Z"
     listed = json.loads(_cli("sessions", "list", "-j").output)[0]
-    assert listed["changed_at"] == listed_before
-    assert (listed["relaunch"], listed["relaunch_set_by"]) == ("never", "owner")
+    assert (listed["changed_at"], listed["relaunch"]) == (listed_before, "never")
+    assert record["relaunch_set_by"] == "owner"
 
 
 # D-4: a one-shot repair promotes unattributed never to a default auto.

@@ -151,14 +151,15 @@ first, so an owner can set any of them back with `ai sessions policy <slug> neve
 - `src/ai_cli/session_enrol.py`: named and bulk enrolment call `default_relaunch`.
 - `src/ai_cli/session_registry.py`: the two new fields are durable across tracking writes.
 - `src/ai_cli/session_commands.py`: `policy` records the owner and its own time;
-  `repair-policy` is new; `list -j` includes `relaunch_set_by`.
+  `repair-policy` is new. `list -j` keeps its pinned shape; the new fields are read from the
+  registry file.
 
 Repair on each host after the fixed package is installed:
 
 ```sh
 ai sessions repair-policy --dry-run
 ai sessions repair-policy
-ai sessions list -a -j
+ai sessions list -a
 ```
 
 Not in this change: pruning the exited rows that renamed sessions leave behind (their exit

@@ -561,10 +561,9 @@ policy (`auto`, `always` or `never`).
   time is printed under the table.
 - `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
   keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
-- `-j/--json` prints this host's registry records, one object per record with `name`,
-  `run_state`, `cause`, `changed_at`, `relaunch` and `relaunch_set_by` (`owner`, `default`, or
-  empty for a record written before the field existed); it ignores the other options and refuses
-  `-S pair` and `-S fleet`.
+- `-j/--json` prints this host's registry records exactly as before; it ignores the other options
+  and refuses `-S pair` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
+  registry file itself ([fields](../iterm2-persistence.md)).
 
 The defaults live in the `[sessions_list]` table of `config.toml`, read on every call, with a flag
 overriding each:

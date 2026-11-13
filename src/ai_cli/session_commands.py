@@ -324,7 +324,6 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
             "cause": state.cause(r) if state.run_state(r) == "exited" else "",
             "changed_at": r.get("changed_at", ""),
             "relaunch": r.get("relaunch", "auto"),
-            "relaunch_set_by": r.get("relaunch_set_by", ""),
         }
         for r in doc["sessions"]
     ]
