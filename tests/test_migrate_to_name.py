@@ -490,3 +490,40 @@ def test_given_a_migration_incomplete_hold_when_a_clean_failure_release_is_asked
     row = fleet.rows()["cleo"]
     assert row["state"] == "migration-incomplete" and row["recovery"] == survivors
     assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"
+
+
+class _Killed(BaseException):
+    """The process dying at a durable boundary: no ``except Exception`` handler sees it."""
+
+
+@pytest.mark.parametrize("boundary", ["intent-committed", "rename-finished"])
+def test_given_a_migration_killed_at_a_durable_boundary_when_run_again_then_it_reaches_the_completed_rows(
+    fleet, monkeypatch, boundary
+):
+    seam = "_migrate_session_for_names" if boundary == "intent-committed" else "_complete_migration_for_names"
+    real = getattr(main, seam)
+    killed: list[str] = []
+
+    def die_once(*args, **kwargs):
+        if not killed and not kwargs.get("dry_run"):
+            killed.append(boundary)
+            raise _Killed
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(main, seam, die_once)
+    with pytest.raises(_Killed):
+        migrate(fleet, OLD, "--to-name", "cleo")
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"
+    assert fleet.rows()["cleo"]["state"] == "active"
+
+    code, out, err = migrate(fleet, OLD, "--to-name", "cleo")
+
+    assert code == 0, out + err
+    assert killed == [boundary]
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "complete"
+    row = fleet.rows()["cleo"]
+    assert row["state"] == "active" and row["recovery"] is None and row["title"] == f"{STEM}-cleo"
+    assert (fleet.slot["repo"] / ".worktrees" / f"{STEM}-cleo").is_dir()
+    tip = fleet.tip()
+    assert migrate(fleet, OLD, "--to-name", "cleo")[0] == 0
+    assert fleet.tip() == tip  # a third identical run changes nothing
