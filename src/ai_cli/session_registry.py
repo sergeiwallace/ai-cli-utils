@@ -267,6 +267,7 @@ DURABLE_FIELDS = (
     "transition_seq",
     "boot_recipe",
     "supervisor_exit",
+    "supervisor_identity",
     "owning_host",
     "ended_at",
     "exit",

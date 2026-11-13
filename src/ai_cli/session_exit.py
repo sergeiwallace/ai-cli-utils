@@ -218,3 +218,99 @@ def exit_session(
         LockException,
     ) as exc:
         return ExitResult(committed, False, (str(exc),))
+
+
+def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
+    """Resolve only recorded process identities; ancestry proves an implicit name.
+
+    Old supervisors without a birth identity must be relaunched before they can
+    use this command. Environment variables and launcher PIDs are not ownership
+    evidence: both can outlive or be inherited by another session.
+    """
+    import json
+
+    from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
+    from .session_adopt import live_sessions
+
+    doc = registry.load_registry()
+    host = state.config.load_config(read_only=True).get("machine", {}).get("host_id") or doc["machine"]
+    ancestors = {p.pid for p in psutil.Process().parents()}
+    sessions = live_sessions()
+    probe = probe_for()
+    verified = []
+    for session in sessions:
+        names = (session.name, f"c-{session.name}", f"c-r-{session.name}")
+        if (name is None and session.pid not in ancestors) or (name is not None and name not in names):
+            continue
+        data = json.loads(session.record.read_text(encoding="utf-8"))
+        before = psutil.Process(session.pid).create_time()
+        if probe.start_time_match(session.pid, normalize_proc_start(data.get("procStart"))) is not StartTimeMatch.MATCH:
+            raise ValueError("cannot verify session record process start time; nothing signalled")
+        target = ProcessIdentity(session.pid, before)
+        _process(target)
+        verified.append((session, target))
+    if name is None:
+        current = [(s, target) for s, target in verified if s.pid in ancestors]
+        if len(current) != 1:
+            raise ValueError(
+                "cannot verify current session: expected one ancestor with a matching session record and process start time"
+            )
+        session, _target = current[0]
+        names = {session.name, f"c-{session.name}", f"c-r-{session.name}"}
+        matches = [
+            r
+            for r in doc["sessions"]
+            if r.get("kind") == "local" and r.get("name") in names and r.get("owning_host") == host
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "cannot verify current session: session record does not identify one owning-host registry row"
+            )
+        name = matches[0]["name"]
+    row = state._find(doc, name)
+    if row.get("owning_host") != host or not row.get("generation"):
+        raise ValueError("session host or generation cannot be verified")
+    saved = state.exit_teardown(row)
+    if saved.get("generation") == row["generation"]:
+        targets = saved["targets"]
+    else:
+        supervisor = row.get("supervisor_identity") or {}
+        if supervisor.get("generation") != row["generation"]:
+            raise ValueError("supervisor identity is missing or stale; relaunch this session before using exit-session")
+        target = ProcessIdentity(supervisor["pid"], supervisor["started_at"])
+        _process(target)
+        agents = [(s, t) for s, t in verified if row["name"] in (s.name, f"c-{s.name}", f"c-r-{s.name}")]
+        if len(agents) > 1:
+            raise ValueError("multiple agent records claim this session; refusing teardown")
+        agent = agents[0][1] if agents else None
+        if agent and target.pid not in {p.pid for p in psutil.Process(agent.pid).parents()} | {agent.pid}:
+            raise ValueError("agent record is not descended from the recorded supervisor")
+        targets = {
+            "agent": asdict(agent) if agent else None,
+            "supervisor": asdict(target),
+            "tmux": supervisor.get("tmux"),
+        }
+    self_exit = any(t and t.get("pid") in ancestors for k, t in targets.items() if k != "tmux")
+    return row, targets, self_exit
+
+
+def detach_cleanup(name: str, *, host: str, generation: str, timeout: float) -> subprocess.Popen:
+    """Continue a committed self-exit outside the agent's terminal/process group."""
+    from .session_lifecycle import pinned_python
+
+    path = registry.registry_path().as_posix()
+    code = (
+        "from pathlib import Path; from ai_cli import session_registry as registry; "
+        f"registry.registry_path = lambda: Path({path!r}); "
+        "from ai_cli.session_exit import exit_session; "
+        f"result = exit_session({name!r}, host={host!r}, generation={generation!r}, timeout={timeout!r}); "
+        "sys.exit(0 if result.complete else 1)"
+    )
+    kwargs = (
+        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if sys.platform == "win32"
+        else {"start_new_session": True}
+    )
+    return subprocess.Popen(
+        pinned_python(code), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
+    )

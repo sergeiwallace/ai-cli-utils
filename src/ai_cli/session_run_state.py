@@ -228,7 +228,13 @@ def can_begin(name: str) -> None:
             raise ValueError("session has an invalid boot recipe; refusing an untracked start")
 
 
-def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict | None = None) -> str:
+def begin(
+    name: str,
+    *,
+    command: list[str] | None = None,
+    recovery_recipe: dict | None = None,
+    supervisor: dict | None = None,
+) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
 
@@ -267,6 +273,9 @@ def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict 
         if command is not None:
             record["boot_recipe"]["command"] = command
         record.update(generation=generation, transition_seq=0)
+        record.pop("supervisor_identity", None)
+        if supervisor is not None:
+            record["supervisor_identity"] = dict(supervisor, generation=generation)
         return True
 
     registry._mutate(change, timeout=2)

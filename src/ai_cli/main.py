@@ -6283,6 +6283,72 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json, event
         ctx.exit(0)
 
 
+@_cli_group.command(
+    "exit-session",
+    help="Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified "
+    "ancestor session record. Older supervisors without recorded process identities must first be relaunched. "
+    "Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. "
+    "Remote receipts are not yet supported.",
+)
+@click.argument("name", required=False)
+@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit (not yet available)")
+@click.option(
+    "-t", "--timeout", default=5.0, type=click.FloatRange(min=0), show_default=True, help="Seconds per teardown wait"
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Show the verified exit without writing or signalling")
+def cmd_exit_session(name, remote, timeout, dry_run):
+    import math
+
+    from . import session_exit
+    from . import session_run_state as state
+
+    if remote:
+        raise click.ClickException("Remote receipts arrive in a later implementation; remote exit is not yet available")
+    if not math.isfinite(timeout):
+        raise click.BadParameter("must be finite", param_hint="--timeout")
+    try:
+        row, targets, self_exit = session_exit.resolve_exit(name)
+        name = row["name"]
+        if dry_run:
+            _out.emit(Tag.SESSION, "exit", f"Would exit {name}; verified targets: {targets}")
+            return
+        kwargs = {
+            key: cls(**targets[key]) if targets.get(key) else None
+            for key, cls in (
+                ("agent", session_exit.ProcessIdentity),
+                ("supervisor", session_exit.ProcessIdentity),
+                ("tmux", session_exit.TmuxIdentity),
+            )
+        }
+        if self_exit:
+            state.request_manual_exit(name, host=row["owning_host"], generation=row["generation"], targets=targets)
+            _out.emit(Tag.SESSION, "exit", f"{name}: exited in registry; handing teardown to an independent worker")
+            session_exit.detach_cleanup(name, host=row["owning_host"], generation=row["generation"], timeout=timeout)
+            return
+        result = session_exit.exit_session(
+            name, host=row["owning_host"], generation=row["generation"], timeout=timeout, **kwargs
+        )
+        if not result.complete:
+            detail = (
+                "registry committed; cleanup incomplete"
+                if result.registry_committed
+                else "exit not committed; nothing signalled"
+            )
+            raise click.ClickException(f"{name}: {detail}: {'; '.join(result.errors)}")
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        session_exit.psutil.Error,
+        _session_registry.RegistryError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        prefix = "cannot verify current session: " if name is None else ""
+        raise click.ClickException(prefix + str(exc)) from exc
+    _out.emit(Tag.SESSION, "exit", f"{name}: exited; verified process cleanup complete")
+
+
 @_cli_group.command("clear-restart-request", help="Clear a fenced restart request after its recorded target has exited")
 @click.argument("request_id")
 @click.option("-r", "--reason", required=True, help="Record why this request is being cleared")
