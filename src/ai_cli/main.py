@@ -3507,11 +3507,12 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
         reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
-def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
+def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote: bool = False) -> str:
     """Name the machine this launcher runs on and the one the session will run on (AI-CLI-x5vn)."""
     local = _config.detect_machine_profile()["host_id"]
     if remote_cfg is None:
-        return f"launcher on {local}; session on {local} (local)"
+        origin = "remote origin" if is_remote else "local"
+        return f"launcher on {local}; session on {local} ({origin})"
     host = str(remote_cfg.get("host") or "")
     if remote_alias and host and remote_alias != host:
         return f"launcher on {local}; session on {remote_alias} ({host}, remote)"
@@ -4206,7 +4207,7 @@ def _reattach_title(
     existing = (
         _session._resolve_explicit_tmux_slot(engine, naming_prefix, positional.value)
         if use_tmux
-        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value)
+        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value, is_remote=is_remote)
     )
     if existing:
         return existing
@@ -4248,7 +4249,7 @@ def _reserve_label_title(
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
-                else _session._resolve_explicit_bare_slot(engine, slot.stem, label)
+                else _session._resolve_explicit_bare_slot(engine, slot.stem, label, is_remote=is_remote)
             )
             return existing or (_session_id(engine, title, is_remote), title)
         _naming_exit(reporter, f"the label's last token {token} is held by {snapshot.holder(token)}", 2)
@@ -4455,8 +4456,7 @@ def _do_session_launch(
         if _direnv_result.installed:
             reporter.detail("direnv", _direnv_result.detail or "ready")
 
-    # Auto-promote to remote mode when running directly on a non-Mac host so
-    # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
+    # Only the explicit remote-origin flag marks a session launched by another host.
     if replay_recipe is None:
         is_remote = _session._resolve_is_remote(is_remote)
 
@@ -4469,7 +4469,7 @@ def _do_session_launch(
         except _config.RemoteMachineError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
-    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias))
+    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias, is_remote=is_remote))
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
@@ -6030,7 +6030,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = f"{'remote' if remote or is_remote else 'local'}, {'bare' if bare else 'tmux'}"
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,
