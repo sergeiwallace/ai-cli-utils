@@ -13,6 +13,7 @@ import json
 import os
 import py_compile
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -781,7 +782,10 @@ def _caches(root: Path) -> list[str]:
 
 
 @pytest.fixture
-def compiled_fleet(fleet, tmp_path):
+def compiled_fleet(fleet, tmp_path, monkeypatch):
+    # With a cache prefix set, bytecode is written elsewhere and no __pycache__ exists to check.
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
     slot, leaf_c = fleet["slot"], fleet["leaf_c"]
     _compiled(slot / "pkg")
     _compiled(slot / "pkg" / "sub")
@@ -823,7 +827,11 @@ def test_given_moved_checkouts_with_compiled_modules_when_migrated_then_no_cache
     assert _git("status", "--porcelain", "--untracked-files=all", cwd=new_c) == "?? src/mod.py\n"
 
 
-def test_given_a_symlink_to_an_outside_cache_when_migrated_then_the_outside_cache_survives(fleet, tmp_path):
+def test_given_a_symlink_to_an_outside_cache_when_migrated_then_the_outside_cache_survives(
+    fleet, tmp_path, monkeypatch
+):
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
     if not _symlinks_available(tmp_path):
         pytest.skip("this platform does not let the test create a directory symlink")
     outside = tmp_path / "shared"

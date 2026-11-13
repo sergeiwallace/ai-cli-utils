@@ -219,7 +219,10 @@ def test_given_the_misplaced_checkout_holds_compiled_modules_when_relocated_then
     """Each ``.pyc`` names the old directory in ``co_filename``, so a relocation drops the caches."""
     import importlib.util
     import py_compile
+    import sys
 
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
     monkeypatch.chdir(repo)
     wrong = _misplaced_session_worktree(repo, "session-5", "session-5r")
     for package in (wrong / "pkg", wrong / ".venv" / "lib" / "dep"):

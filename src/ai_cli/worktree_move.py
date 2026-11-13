@@ -26,7 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import output as _out
 from .git_repair import _git_env
+from .output import Level, Tag
 
 _SUBMODULE_REFUSAL = "containing submodules"
 _BYTECODE_SUFFIXES = (".pyc", ".pyo")
@@ -157,11 +159,11 @@ def main(argv: list[str] | None = None) -> int:
     refusals = [why for why in map(_refusal, args.checkouts) if why]
     if refusals:
         for why in refusals:
-            print(f"refused: {why}; nothing was purged", file=sys.stderr)
+            _out.emit(Tag.MIGRATE, "cleanup", f"refused: {why}; nothing was purged", err=True, level=Level.ERROR)
         return 2
     for checkout in args.checkouts:
         purge_moved_bytecode(checkout.resolve())
-        print(f"purged stale bytecode caches in {checkout.resolve()}")
+        _out.emit(Tag.MIGRATE, "cleanup", f"purged stale bytecode caches in {checkout.resolve()}")
     return 0
 
 
