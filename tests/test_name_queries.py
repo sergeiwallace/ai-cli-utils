@@ -108,12 +108,12 @@ def test_given_filters_when_names_are_found_then_only_names_matching_all_of_them
 def test_given_a_name_changed_over_time_when_its_history_is_asked_for_then_every_past_value_is_listed(fleet):
     reg.set_name_status(fleet.registry, ["milo"], "approved", actor="owner", recorded_by="t")
     reg.set_name_verdict(
-        fleet.registry, ["milo"], "rejected", scope_kind="repo", scope_value=REPO, actor="owner", recorded_by="t"
+        fleet.registry, ["milo"], "rejected", scope_kind="repo", scope_value="otherrepo", actor="owner", recorded_by="t"
     )
-    reg.set_name_status(fleet.registry, ["milo"], "rejected", actor="owner", recorded_by="t")
     reg.reserve_hand_chosen(
         fleet.registry, "milo", _slot(OTHER_HOST), add=False, via="x", added_by="t", words=frozenset()
     )
+    reg.set_name_status(fleet.registry, ["milo"], "rejected", actor="owner", recorded_by="t")
 
     rows = _last_json(cli("find-names", "-H", "milo", "-j"))
 

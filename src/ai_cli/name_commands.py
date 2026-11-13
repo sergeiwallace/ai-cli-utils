@@ -543,7 +543,7 @@ def import_names_command(from_ref: str | None, dry_run: bool) -> None:
         lines = ["dry run: would import" if report.written else "dry run: nothing to import", *report.lines()]
     else:
         lines = ["imported" if report.written else "nothing to import", *report.lines()]
-    _out.emit(Tag.NAMES, "import", "\n".join(lines))
+    _out.emit(Tag.NAMES, "load", "\n".join(lines))
 
 
 @click.command(
@@ -578,7 +578,7 @@ def seed_name_verdicts_command(path: Path) -> None:
         _fail(exc)
         return
     head = "seeded" if report.written else "this seed revision was already applied; nothing was written"
-    _out.emit(Tag.NAMES, "seed", "\n".join([head, *name_import.describe(report)]))
+    _out.emit(Tag.NAMES, "apply", "\n".join([head, *name_import.describe(report)]))
 
 
 @click.command("list-migrations", help="Session names: list every recorded rename with its state")

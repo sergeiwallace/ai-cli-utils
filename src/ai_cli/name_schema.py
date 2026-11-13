@@ -795,17 +795,23 @@ def found_names(rows: list[dict]) -> list[dict]:
 
 
 def history_query(name: str) -> Statement:
-    """Every recorded value of ``name``'s status, verdicts and hold, with its commit, committer and time."""
+    """Every recorded value of ``name``'s status, verdicts and hold, with its commit, committer and time.
+
+    Each column is cast, because a union takes its column types from the first select.
+    """
     sql = (
-        "select 'status' as what, '' as scope, status as value, commit_hash, committer, commit_date "
+        "select cast(? as char(16)) as what, cast('' as char(200)) as scope, "
+        "cast(status as char(200)) as value, commit_hash, committer, commit_date "
         "from dolt_history_names where name = ? "
-        "union all select 'verdict', concat(scope_kind, ' ', scope_value), verdict, commit_hash, committer, commit_date "
+        "union all select cast(? as char(16)), cast(concat(scope_kind, ' ', scope_value) as char(200)), "
+        "cast(verdict as char(200)), commit_hash, committer, commit_date "
         "from dolt_history_verdicts where name = ? "
-        "union all select 'hold', '', concat(kind, ' ', state, ' ', machine), commit_hash, committer, commit_date "
+        "union all select cast(? as char(16)), cast('' as char(200)), "
+        "cast(concat(kind, ' ', state, ' ', machine) as char(200)), commit_hash, committer, commit_date "
         "from dolt_history_holds where token = ? "
         "order by commit_date, what, scope"
     )
-    return Statement(sql, (name, name, name), "history")
+    return Statement(sql, ("status", name, "verdict", name, "hold", name), "history")
 
 
 def changes_only(rows: list[dict]) -> list[dict]:
