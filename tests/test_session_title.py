@@ -320,16 +320,16 @@ def test_given_a_free_positional_name_when_launched_then_it_exits_two_printing_t
 def test_given_a_free_positional_name_close_to_an_infix_title_when_launched_then_the_refusal_names_the_reattach_command_first(
     fleet,
 ):
-    LIVE_TMUX.extend([f"c-{STEM}-firstmate-nora", f"c-{STEM}-hugo"])
+    LIVE_TMUX.extend([f"c-{STEM}-lead-nora", f"c-{STEM}-hugo"])
     before = fleet.tip()
 
     code, output = refused("dora")
 
     assert code == 2
-    assert f"{STEM}-firstmate-nora" in output
+    assert f"{STEM}-lead-nora" in output
     assert f"{STEM}-hugo" not in output
-    assert "`ai c firstmate-nora`" in output
-    assert output.index("`ai c firstmate-nora`") < output.index("--name dora")
+    assert "`ai c lead-nora`" in output
+    assert output.index("`ai c lead-nora`") < output.index("--name dora")
     assert fleet.tip() == before
 
 
