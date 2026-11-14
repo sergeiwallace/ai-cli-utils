@@ -5254,9 +5254,7 @@ def _do_session_launch(
         launch_naming = (
             _session_naming.LaunchNaming(project_prefix, project_prefix, project_prefix.rsplit("-", 1)[-1], False)
             if replay_recipe is not None
-            else _session_naming.resolve_launch_naming(
-                project_prefix, config, prompt=True, dry_run=dry_run, progress=reporter
-            )
+            else _session_naming.resolve_launch_naming(project_prefix, config, prompt=True, dry_run=dry_run)
         )
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))

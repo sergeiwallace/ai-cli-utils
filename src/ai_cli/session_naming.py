@@ -48,15 +48,11 @@ import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from . import config as _config
 from . import output as _out
 from .name_list import one_edit_apart
 from .output import Tag
-
-if TYPE_CHECKING:
-    from .launch_reporter import LaunchReporter
 
 ALIAS_FILENAME = "machine-host-aliases.toml"
 ALIAS_REGISTRY_MARKER = Path("config") / ALIAS_FILENAME
@@ -239,24 +235,35 @@ def _resolve_from(host: str, sources: list[Path]) -> str:
     raise _not_configured(host, sources)
 
 
-def resolve_host_alias(*, progress: LaunchReporter | None = None) -> str:
+def _host_refresh_phase():
+    """A timed ``session`` phase for the host id refresh, during a launch only.
+
+    The refresh is a login-shell probe that takes seconds on a loaded host. A launch
+    prints it as a phase through the reporter it installed; any other command that
+    resolves the alias installed none, so it gets a null context and prints nothing.
+    """
+    from . import launch_reporter
+
+    reporter = launch_reporter.installed()
+    if reporter is None:
+        return contextlib.nullcontext()
+    return reporter.phase("session", "refreshing this host's id")
+
+
+def resolve_host_alias() -> str:
     """Return this machine's host alias from the first source that names it.
 
     Raises :class:`HostAliasNotConfiguredError` naming every file checked, in order,
     when none does, and :class:`HostAliasError` for an invalid entry or a conflict.
-    With ``progress`` the host id refresh, a login-shell probe that takes seconds on a
-    loaded host, prints as a timed ``session`` phase.
+    During a launch the host id refresh prints as a timed ``session`` phase.
     """
     from .host_env import refresh_host_env
 
     inherited = os.environ.get("AI_HOST", "")
-    if progress is None:
+    with _host_refresh_phase() as phase:
         refresh_host_env(_config.load_config())
         host = host_id()
-    else:
-        with progress.phase("session", "refreshing this host's id") as phase:
-            refresh_host_env(_config.load_config())
-            host = host_id()
+        if phase is not None:
             phase.outcome(f"host id {host}")
     try:
         return _resolve_from(host, alias_sources())
@@ -388,7 +395,7 @@ def prompt_for_host_alias(*, dry_run: bool = False) -> str:
     return answer
 
 
-def resolve_or_prompt_host_alias(*, dry_run: bool = False, progress: LaunchReporter | None = None) -> str:
+def resolve_or_prompt_host_alias(*, dry_run: bool = False) -> str:
     """:func:`resolve_host_alias`, asking for the alias when a terminal can answer.
 
     Only the not-configured case prompts; an invalid entry or a registry conflict is
@@ -396,7 +403,7 @@ def resolve_or_prompt_host_alias(*, dry_run: bool = False, progress: LaunchRepor
     refusal is the same one :func:`resolve_host_alias` raises.
     """
     try:
-        return resolve_host_alias(progress=progress)
+        return resolve_host_alias()
     except HostAliasNotConfiguredError:
         if not _config._can_prompt():
             raise
@@ -438,7 +445,6 @@ def resolve_launch_naming(
     *,
     prompt: bool = False,
     dry_run: bool = False,
-    progress: LaunchReporter | None = None,
 ) -> LaunchNaming:
     """Choose the naming convention for one launch from the ``[naming]`` section.
 
@@ -455,11 +461,7 @@ def resolve_launch_naming(
     legacy_reach = repo_alias if legacy in ("reach", "full") else None
     if alias_on:
         try:
-            host = (
-                resolve_or_prompt_host_alias(dry_run=dry_run, progress=progress)
-                if prompt
-                else resolve_host_alias(progress=progress)
-            )
+            host = resolve_or_prompt_host_alias(dry_run=dry_run) if prompt else resolve_host_alias()
         except HostAliasNotConfiguredError as exc:
             if legacy != "full":
                 raise NamingConventionError(
@@ -477,11 +479,9 @@ def resolve_launch_naming(
     if not alias_on:
         from .host_env import refresh_host_env
 
-        if progress is None:
+        with _host_refresh_phase() as phase:
             refresh_host_env(config)
-        else:
-            with progress.phase("session", "refreshing this host's id") as phase:
-                refresh_host_env(config)
+            if phase is not None:
                 phase.outcome(f"host id {os.environ.get('AI_HOST') or 'unset'}")
     return LaunchNaming(repo_alias, None, "", True)
 
