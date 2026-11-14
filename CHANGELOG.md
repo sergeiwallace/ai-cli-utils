@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
+  the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
+  worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
+  time. On a loaded host that gap measured 19 to 67 seconds with nothing printed.
 - After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
   `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
   still says `running` from an earlier boot. When tmux and the process table on its owning host

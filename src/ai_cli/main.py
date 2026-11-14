@@ -14,7 +14,7 @@ import uuid as uuid_module
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import IO, Any, NoReturn, cast
+from typing import IO, Any, NoReturn, TypeVar, cast
 
 import click
 import portalocker
@@ -3310,17 +3310,21 @@ def _print_launch_plan(
     worktree path. Those are the answers a dry run is asked for, and none of them
     is visible from the command line alone.
     """
-    repo_root = _session.detect_repo_root()
-    worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
-    branch = f"wt-{ai_name}" if worktree else "n/a"
-    if worktree and repo_root:
-        # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
-        try:
-            reused = _session._registered_worktree_at(Path(worktree), _session.registered_worktrees(Path(repo_root)))
-        except (OSError, RuntimeError):
-            reused = None
-        if reused is not None:
-            branch = f"{_session._current_branch(reused) or 'detached HEAD'}   (reused worktree keeps its branch)"
+    # Each of these is a git call, seconds apiece on a loaded host, so the lookup is a timed phase.
+    with _launch_reporter.active().phase("worktree", "looking up the session worktree") as lookup:
+        repo_root = _session.detect_repo_root()
+        worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
+        branch = f"wt-{ai_name}" if worktree else "n/a"
+        reused = None
+        if worktree and repo_root:
+            # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
+            with contextlib.suppress(OSError, RuntimeError):
+                reused = _session._registered_worktree_at(
+                    Path(worktree), _session.registered_worktrees(Path(repo_root))
+                )
+            if reused is not None:
+                branch = f"{_session._current_branch(reused) or 'detached HEAD'}   (reused worktree keeps its branch)"
+        lookup.outcome("registered worktree found" if reused is not None else "no registered worktree")
     lines = [
         "dry run -- nothing was created, started, or reaped.",
         f"  engine     {_engine_display_name(engine)}",
@@ -3997,7 +4001,9 @@ def _resolve_session_identity(
         name_commands.publish_pending(registry)
 
     clean = _session._slot_name(name, naming_prefix)
-    name_set = _names.known_names(registry)
+    with reporter.phase("session", "reading the name registry") as read_phase:
+        name_set = _names.known_names(registry)
+        read_phase.outcome(f"name registry read, {len(name_set)} names")
     positional = session_title.classify_positional(clean, name_set)
     if positional.kind == "slot" and not naming.custom:
         return index_names()
@@ -4233,6 +4239,36 @@ def _new_session_note(engine: str, name: str, naming_prefix: str, title: str) ->
     )
 
 
+_T = TypeVar("_T")
+
+
+def _registry_step(reporter: LaunchReporter, start: str, done: str, call: Callable[[], _T]) -> _T:
+    """``call()``, a name-registry fetch or push, as a timed ``session`` phase.
+
+    On a loaded host a registry fetch has been measured at 16 to 27 s and a push at 30 s,
+    so each prints a start line, a heartbeat and a timed end line. A registry error ends
+    the phase with that outcome and is re-raised for the caller, whose fallback or
+    refusal decides what the launch does next.
+    """
+    from . import name_registry as _names
+
+    with reporter.phase("session", start) as phase:
+        try:
+            result = call()
+        except _names.RegistryError as exc:
+            phase.outcome(f"did not complete: {exc}")
+            failure = exc
+        else:
+            phase.outcome(done)
+            return result
+    raise failure
+
+
+def _fetch_name_registry(registry, reporter: LaunchReporter):
+    """``registry.snapshot()`` as a timed phase."""
+    return _registry_step(reporter, "fetching the name registry", "name registry fetched", registry.snapshot)
+
+
 def _reattach_title(
     engine: str,
     naming_prefix: str,
@@ -4261,7 +4297,7 @@ def _reattach_title(
     if existing:
         return existing
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(positional.name)
@@ -4289,7 +4325,7 @@ def _reserve_label_title(
     title = f"{slot.stem}-{label}"
     token = label.rsplit("-", 1)[-1]
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(token)
@@ -4305,7 +4341,12 @@ def _reserve_label_title(
     if dry_run:
         reporter.phase("session").outcome(f"planned {title} (label token {token}; reserves nothing)")
         return _session_id(engine, title, is_remote), title
-    reservation = _names.reserve_label(registry, slot, label)
+    reservation = _registry_step(
+        reporter,
+        "reserving the label in the name registry",
+        "label reserved",
+        lambda: _names.reserve_label(registry, slot, label),
+    )
     reporter.detail("session", f"reserved the label token {token} for {reservation.title}")
     return _session_id(engine, reservation.title, is_remote), reservation.title
 
@@ -4322,7 +4363,7 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
     from . import name_registry as _names
 
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError as exc:
         raise name_prompt.PromptExit(
             name_prompt.EXIT_UNREACHABLE,
@@ -4365,7 +4406,7 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
     spool = _names.read_spool()
     fetch_failure: Exception | None = None
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError as exc:
         snapshot = None
         fetch_failure = exc
@@ -4388,7 +4429,12 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
     try:
         if snapshot is None:
             raise fetch_failure or _names.RegistryUnreachableError("the registry fetch did not complete")
-        reservation = _names.reserve_picked(registry, slot, spool=spool, words=words)
+        reservation = _registry_step(
+            reporter,
+            "reserving a name in the name registry",
+            "name reserved",
+            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words),
+        )
     except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
         reservation = _names.take_spare(registry, slot, cause=str(failure))
         reporter.warning("session", f"offline: using reserved spare {reservation.name} ({failure})")
@@ -5208,7 +5254,9 @@ def _do_session_launch(
         launch_naming = (
             _session_naming.LaunchNaming(project_prefix, project_prefix, project_prefix.rsplit("-", 1)[-1], False)
             if replay_recipe is not None
-            else _session_naming.resolve_launch_naming(project_prefix, config, prompt=True, dry_run=dry_run)
+            else _session_naming.resolve_launch_naming(
+                project_prefix, config, prompt=True, dry_run=dry_run, progress=reporter
+            )
         )
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))
