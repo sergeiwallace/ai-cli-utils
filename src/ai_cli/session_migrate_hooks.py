@@ -113,9 +113,9 @@ def load_hooks(directory: Path | None = None) -> list[Hook]:
 
 
 def _program(argv: tuple[str, ...]) -> list[str]:
-    program, *args = argv
-    if program.startswith("~"):
-        program = str(Path(program).expanduser())
+    # A leading ~ in any word is the user's home, as a shell would read it, so an interpreter's
+    # script path (`["python3", "~/bin/rekey.py"]`) resolves as well as the program does.
+    program, *args = (str(Path(word).expanduser()) if word.startswith("~") else word for word in argv)
     # Windows cannot execute a .py file directly, so a Python program runs under the
     # interpreter running `ai`, on every OS alike.
     prefix = [sys.executable] if program.lower().endswith(".py") else []

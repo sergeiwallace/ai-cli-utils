@@ -63,7 +63,10 @@ tasks, memory and resume hand-off:
   under ``<new>``;
 * whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
-  the first write and run after the core moves.
+  the first write and run after the core moves;
+* once a writing run's re-plan finds nothing left, the references step
+  (:mod:`ai_cli.session_migrate_references`): the configured references command, then a scan of
+  the repository's tracked files that names every reference to the old name still there.
 
 Every refusal is checked before the first write, in ``--dry-run`` too: the slot
 must be a registered worktree, nothing may already exist at the new slot or its
@@ -193,6 +196,12 @@ class MigrationResult:
     task_intent: dict = field(default_factory=dict, repr=False)
     #: Under ``dry_run``, the refusal a writing run would raise because a session is live, else empty.
     live: str = ""
+    #: Whether the references step ran (:mod:`ai_cli.session_migrate_references`), after a completed run.
+    references_checked: bool = False
+    #: What the references step did, one line each.
+    reference_notes: list[str] = field(default_factory=list)
+    #: Each reference to the old name that step left; any makes the run "finished with leftovers".
+    references_left: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:

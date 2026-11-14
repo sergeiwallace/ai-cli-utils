@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai migrate-session` no longer finishes silently with the old name still written in code or
+  config. Once a migration finishes, it runs the `[migrate_session] references_command` from
+  `config.toml`, if one is set, as `<argv> --old OLD --new NEW`, then scans the repo's tracked
+  files for OLD and its tmux session names as whole words. Each reference left is listed as
+  `file:line` and the run reports `finished with leftovers` and exits 1. A path matching a
+  `references_allow` glob is not counted (default `.beads/**`), and the scan never rewrites a
+  file. `--finish` re-checks once the references are fixed
+  (`docs/reference/migrate-session-hooks.md`).
 - `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
   `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
   session. Rows are grouped by host, this host first, with running sessions at the top of each
@@ -29,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
   was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
   stayed stopped. SIGCONT to a running process does nothing.
+- A migrate-session hook, Beads publish or references command written as an interpreter and
+  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
+  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
+  in any argument is now expanded to the home directory.
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
 - After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
   `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
   still says `running` from an earlier boot. When tmux and the process table on its owning host
