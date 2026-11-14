@@ -90,6 +90,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
   refuses contradictory running records before moving files. Detached replay and all local engines
   also schedule the existing worker.
+- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
+  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
+  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
+  failed with "No task prefix is registered", and from inside a repository it planned a new session
+  named after the whole string in the wrong repository.
 
 ### Added
 
