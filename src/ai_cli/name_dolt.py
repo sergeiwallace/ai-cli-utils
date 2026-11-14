@@ -37,6 +37,11 @@ ROOT_CONFIG = {
     "metrics.disabled": "true",
     "versioncheck.disabled": "true",
 }
+# Dolt reads a git remote through a bare git cache inside the clone. After each fetch git
+# starts `git maintenance run --auto --detach`, whose repack deletes packs from that cache
+# while Dolt's next `git cat-file` is still reading them ("packfile ... index unavailable").
+# The host lock cannot cover a detached process, so the git that Dolt runs does no housekeeping.
+GIT_HOUSEKEEPING_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
 
 
 def dolt_remote_url(url: str) -> str:
@@ -84,6 +89,15 @@ class DoltRegistry(reg.FleetRegistry):
     def dolt_env(self) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items() if key not in _GIT_TARGETING_VARS}
         env.update({"DOLT_REMOTE_INFO_BRANCH": "", "DOLT_ROOT_PATH": str(self.root), "GIT_TERMINAL_PROMPT": "0"})
+        try:
+            count = max(0, int(env.get("GIT_CONFIG_COUNT") or 0))
+        except ValueError:
+            count = 0
+        for key, value in GIT_HOUSEKEEPING_OFF:
+            env[f"GIT_CONFIG_KEY_{count}"] = key
+            env[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        env["GIT_CONFIG_COUNT"] = str(count)
         return env
 
     def _ensure_root(self) -> None:

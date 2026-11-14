@@ -624,6 +624,34 @@ def test_given_any_registry_operation_when_dolt_runs_then_every_process_has_no_i
     assert DOLT_REF in refs
 
 
+def test_given_git_set_to_repack_after_every_fetch_when_the_registry_fetches_then_no_housekeeping_runs_behind_dolt(
+    fleet, monkeypatch, tmp_path
+):
+    # A detached repack started by a fetch deletes packs from Dolt's git cache while Dolt still reads them.
+    traces = tmp_path / "git-trace"
+    traces.mkdir()
+    monkeypatch.setenv("GIT_TRACE2", str(traces))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "gc.autoPackLimit")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "1")
+    observer = fleet.other_machine("watcher")
+
+    reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
+    for _ in range(3):
+        observer.snapshot()
+
+    commands = [
+        line.split("cmd_name ", 1)[1]
+        for trace in traces.iterdir()
+        for line in trace.read_text(errors="replace").splitlines()
+        if "cmd_name " in line
+    ]
+    assert any(command.startswith("fetch ") for command in commands), "no git fetch was traced"
+    # A push's receive-pack runs in the remote repository, whose housekeeping is the remote's own.
+    housekeeping = [command for command in commands if "maintenance" in command and "receive-pack" not in command]
+    assert housekeeping == []
+
+
 def test_given_a_reservation_with_a_spare_top_up_when_published_then_both_rows_are_one_dolt_commit(fleet):
     commits_before = len(_remote_sql(fleet, "select commit_hash from dolt_log"))
 
