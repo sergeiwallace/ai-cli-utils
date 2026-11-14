@@ -160,3 +160,13 @@ def test_given_leftovers_fixed_when_finished_again_then_it_finishes_and_exits_0(
     assert code == 0, out + err
     assert f"{OLD} -> {NEW}: finished" in out + err
     assert "finished with leftovers" not in out + err
+
+
+def test_given_a_references_command_that_is_not_a_list_when_migrated_then_it_is_named_and_exits_1(slot):
+    config = {"migrate_session": {"references_command": "python3 sweep.py"}}
+
+    code, out, err = _migrate(slot["repo"], "-y", config=config)
+
+    assert code == 1, out + err
+    assert "migrate_session.references_command must be a non-empty list of strings" in out + err
+    assert f"{OLD} -> {NEW}: finished with leftovers" in out + err
