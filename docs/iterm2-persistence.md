@@ -126,6 +126,9 @@ A registry written as schema 1 (before `exit` and `boot_id` existed) is still re
 | `ended_at` | Set when the remote ssh connection ended with exit status 0, which means the remote session was exited on purpose, and whenever an exit is recorded. |
 | `exit` | `null` while the session is live. Otherwise why it ended: `cause` (one of `manual_exit`, `terminal_quit_or_crash`, `host_reboot`, `maintenance_wind_down`, `unknown`), `at` (UTC) and a small `evidence` object. See [Exit causes](#exit-causes). |
 | `boot_id` | The machine's boot identity at launch: `/proc/sys/kernel/random/boot_id` on Linux, `kern.bootsessionuuid` on macOS (one read-only `sysctl` call), `null` elsewhere or when it cannot be read. |
+| `relaunch` | The boot relaunch policy, `auto`, `always` or `never` ([Session boot relaunch](../README.md#session-boot-relaunch)). An exit never changes it; why the session ended is in `exit` and the run state. |
+| `relaunch_set_by` | Who wrote `relaunch`: `owner` (`ai sessions policy`) or `default` (a launch, enrolment, recovery or `ai sessions repair-policy`). Absent on a record written before the field existed. No automatic write replaces an `owner` value. |
+| `relaunch_changed_at` | UTC time of the last `ai sessions policy` change. `changed_at` stays the time of the last run-state change. |
 
 ### Exit causes
 

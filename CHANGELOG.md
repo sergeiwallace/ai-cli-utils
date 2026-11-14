@@ -25,6 +25,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
+  `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
+  still says `running` from an earlier boot. When tmux and the process table on its owning host
+  both show nothing, such a record is proved gone (no process survives a reboot), so the
+  migration proceeds. The record is not rewritten, so the boot relaunch keeps its evidence.
+  A refusal now names the reason: a live tmux session or process, a probe that could not answer,
+  or a record owned by another host
+  ([docs/bugs/earlier-boot-run-blocks-migration.md](docs/bugs/earlier-boot-run-blocks-migration.md)).
+- Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
+  `never`, so boot replay brings them back like any other session. Probes still default to
+  `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
+  (`ai sessions policy`) or a default, and no automatic write replaces an owner's policy.
+  `ai sessions policy` records `relaunch_changed_at` and no longer moves `changed_at`, the
+  run-state time `ai sessions list` shows. The new `ai sessions repair-policy [-d]` turns the
+  `never` older releases wrote into `auto` once; see the README's boot relaunch section.
+
+- `ai c NEW` no longer re-plans a migration whose ledger row is a verified `finished`. That
+  re-plan read every Beads store, hook and repo on the host, so an unrelated failure there
+  refused the launch of a migration already proved finished, after minutes with no output.
+  `ai migrate-session -s -a` and `--finish` still re-check a verified pair. A launch that
+  attaches to an already running NEW now warns with the parts left and the `--finish` command
+  instead of refusing, since a finish cannot run against a live session.
+- The launch guard and `ai migrate-session` print a line as each slow migration step starts and
+  ends with its elapsed time: each hook's dry run and live run, each Beads store's read, re-key
+  and publish, the scan of other repos and the verifying re-plan.
+- `could not list registered git worktrees` names git's exit status, or the signal that ended
+  it, when git printed nothing on stderr.
+- `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
+  bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
+  its code objects, so tools reading source through them found nothing until the caches were
+  rebuilt. Caches inside a virtual environment or a nested checkout, files git tracks and
+  anything behind a symlink are left alone; Python rebuilds the rest on the next import.
+  A checkout moved before this fix can be cleaned by hand with
+  `python -m ai_cli.worktree_move <checkout>...`.
 - `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
   remove a local row once tmux and the process table prove its session gone and it has not
   changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier

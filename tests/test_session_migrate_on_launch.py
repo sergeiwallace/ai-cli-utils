@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -31,6 +32,7 @@ from test_session_migrate import (
 
 slot = test_session_migrate.slot
 hooks = test_session_migrate_hooks.hooks
+stores = test_session_migrate.stores
 
 FINISH = f"ai migrate-session {OLD} {NEW} --finish -r"
 
@@ -44,8 +46,14 @@ def _ledger(slot) -> list[dict]:
     ]
 
 
-def _launch(slot, tmux: list[str] | None = None, *flags: str) -> tuple[int, str, str, list[dict]]:
-    """``ai c 3 [flags]`` resolving to NEW; returns the exit code, output and what each launch saw."""
+def _launch(
+    slot, tmux: list[str] | None = None, *flags: str, live: bool | None = None
+) -> tuple[int, str, str, list[dict]]:
+    """``ai c 3 [flags]`` resolving to NEW; returns the exit code, output and what each launch saw.
+
+    A bare launch, unless ``live`` is given: then a tmux launch whose tmux reports NEW's
+    session with a live pane (``True``) or none (``False``).
+    """
     launched: list[dict] = []
     logs = slot["state"] / "launch-logs"
 
@@ -72,10 +80,21 @@ def _launch(slot, tmux: list[str] | None = None, *flags: str) -> tuple[int, str,
             ("ai_cli.main._ensure_dolt_server", {}),
             ("ai_cli.tunnel._ensure_nats_tunnel", {}),
         )
+        if live is not None:
+            patches += (
+                ("ai_cli.tmux_setup.tmux_runs", {"return_value": True}),
+                ("ai_cli.tmux_setup.formats_expand", {"return_value": True}),
+                ("ai_cli.tmux_setup.probe", {"return_value": SimpleNamespace(versions_disagree=False)}),
+                ("ai_cli.tmux_setup.report_lines", {"return_value": []}),
+                ("ai_cli.main._tmux_session_has_live_pane", {"side_effect": lambda name: live and name == f"c-{NEW}"}),
+            )
         for target, kwargs in patches:
             stack.enter_context(patch(target, **kwargs))
+        stack.enter_context(patch.dict(os.environ))
+        os.environ.pop("TMUX", None)
+        mode = ["-b"] if live is None else []
         code, out, err = test_session_migrate.run_cli(
-            ["ai", "c", "3", "-b", "-D", "--project-prefix", "myrepo", *flags]
+            ["ai", "c", "3", *mode, "-D", "--project-prefix", "myrepo", *flags]
         )
     return code, out, err, launched
 
@@ -165,7 +184,7 @@ def test_given_a_recorded_unfinished_migration_when_new_is_launched_then_it_is_f
     assert f"finished the migration {OLD} -> {NEW}" in err
 
 
-def test_given_the_finish_is_recorded_when_new_is_launched_again_then_it_is_re_planned_read_only_and_launches(
+def test_given_the_finish_is_verified_when_new_is_launched_again_then_it_is_trusted_unplanned_and_launches(
     migrated, hooks
 ):
     hooks("10-notes", "notes")
@@ -173,18 +192,21 @@ def test_given_the_finish_is_recorded_when_new_is_launched_again_then_it_is_re_p
     assert code == 0, out + err
     runs = len(hooks.calls())
     rows = _ledger(migrated)
+    assert rows[-1].get("verified") is True
 
     code, out, err, launched = _launch(migrated)
 
     assert code == 0, out + err
     assert len(launched) == 1
-    again = hooks.calls()[runs:]
-    assert [c["args"][-1] for c in again] == ["--dry-run"], "one read-only re-plan, no live hook run"
+    assert hooks.calls()[runs:] == [], "a verified pair is neither re-planned nor finished at launch"
     assert _ledger(migrated) == rows
     assert "refusing" not in err
+    assert f"migration {OLD} -> {NEW}: verified finished earlier, not re-planned" in err
 
 
-def test_given_a_recorded_finish_dirtied_later_when_new_is_launched_then_nothing_starts(migrated):
+def test_given_a_verified_finish_dirtied_later_when_new_is_launched_then_it_starts_and_status_all_still_finds_it(
+    migrated,
+):
     code, out, err, _launched = _launch(migrated)
     assert code == 0, out + err
     rows = _ledger(migrated)
@@ -193,11 +215,14 @@ def test_given_a_recorded_finish_dirtied_later_when_new_is_launched_then_nothing
 
     code, out, err, launched = _launch(migrated)
 
-    assert code == 1, out + err
-    assert launched == [], "a verified pair that re-plans partial still refuses the launch"
-    assert leftover.is_file(), "the re-plan writes nothing"
+    assert code == 0, out + err
+    assert len(launched) == 1, "the verified row is the proof of record at launch"
+    assert leftover.is_file(), "the launch neither re-plans nor finishes a verified pair"
     assert _ledger(migrated) == rows
-    assert f"ai migrate-session {OLD} {NEW} --finish -r {migrated['repo']}" in err
+    with patch("ai_cli.config._get_projects_dir", return_value=migrated["repo"].parent):
+        code, out, err = test_session_migrate.run_cli(["ai", "migrate-session", "-s", "-a"])
+    assert code == 1, out + err
+    assert f"{OLD} | {NEW} | {migrated['repo']} | partial" in out
 
 
 def test_given_no_ledger_row_names_new_when_launched_then_nothing_is_finished_or_printed(migrated):
@@ -353,17 +378,116 @@ def test_given_a_manual_finish_succeeds_when_new_is_launched_then_it_is_not_run_
     assert "finished the migration" not in err
 
 
-def test_given_a_verified_finish_and_a_hook_added_later_when_new_is_launched_then_it_is_refused_unrun(migrated, hooks):
+def _bd_calls(stores) -> list[list[str]]:
+    log = stores["log"]
+    return [json.loads(line)["argv"] for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+
+def _store_unreadable(stores, _hooks) -> None:
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    data["fail"][str(stores["workspace"])] = "error"
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+
+
+def _hook_added_later(_stores, hooks) -> None:
+    hooks("10-notes", "notes")
+
+
+def _hook_refusing_added_later(_stores, hooks) -> None:
+    hooks("10-notes", "notes", fail="plan")
+
+
+@pytest.mark.parametrize("failure", [_store_unreadable, _hook_added_later, _hook_refusing_added_later])
+def test_given_a_verified_finish_and_a_host_a_re_plan_would_call_partial_when_new_is_launched_then_it_launches_unplanned(
+    stores, migrated, hooks, failure
+):
     code, out, err = _finish(migrated["repo"], "-y")
     assert code == 0, out + err
-    hooks("10-notes", "notes")
+    rows = _ledger(migrated)
+    assert rows[-1].get("verified") is True
+    bd_before, hooks_before = len(_bd_calls(stores)), len(hooks.calls())
+    failure(stores, hooks)
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 0, out + err
+    assert len(launched) == 1 and launched[0]["ai_name"] == NEW
+    assert _bd_calls(stores)[bd_before:] == [], "no Beads store is read for a verified pair"
+    assert hooks.calls()[hooks_before:] == [], "no hook is planned or run for a verified pair"
+    assert _ledger(migrated) == rows
+    assert "refusing" not in err
+
+
+def test_given_an_unverified_finished_row_and_a_part_left_when_new_is_launched_then_it_is_re_planned_and_refused(
+    migrated,
+):
+    ledger = migrated["state"] / "session-migrations.jsonl"
+    legacy = {"old": OLD, "new": NEW, "repo": str(migrated["repo"]), "finished": True}
+    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+    rows = _ledger(migrated)
 
     code, out, err, launched = _launch(migrated)
 
     assert code == 1, out + err
-    assert launched == []
-    assert all("--dry-run" in c["args"] for c in hooks.calls()), "the re-plan never runs the hook live"
-    assert "parts left: hook notes (would do)" in _refusal(err)
+    assert launched == [], "a finished row without verified: true is re-planned, and a part left refuses"
+    assert migrated["seeded"]["bare"].is_file(), "the re-plan writes nothing"
+    assert _ledger(migrated) == rows
+    assert f"`{FINISH} {migrated['repo']}`" in _refusal(err)
+    assert f"migration {OLD} -> {NEW}: re-planning" in err
+
+
+_TIMED = re.compile(r"\(\d+\.\ds\)$")
+
+
+def _timed(err: str, what: str, outcome: str) -> list[str]:
+    """The progress lines ending ``<what>: <outcome>... (<elapsed>s)``."""
+    return [line for line in err.splitlines() if f"{what}: {outcome}" in line and _TIMED.search(line.rstrip())]
+
+
+def _pending_work(stores, hooks) -> str:
+    """A hook and one more issue on OLD for the launch-time finish to carry; returns the issue's store."""
+    hooks("10-notes", "notes")
+    data = json.loads(stores["db"].read_text(encoding="utf-8"))
+    data["stores"][str(stores["repo"])].append({"id": "TST-9", "status": "open", "assignee": OLD})
+    stores["db"].write_text(json.dumps(data), encoding="utf-8")
+    return str(stores["repo"])
+
+
+def test_given_a_pending_pair_when_new_is_launched_then_each_slow_step_prints_as_it_starts_and_ends_timed(
+    stores, migrated, hooks
+):
+    rekeyed = _pending_work(stores, hooks)
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 0, out + err
+    assert len(launched) == 1
+    assert f"migration {OLD} -> {NEW}: finishing" in err
+    assert "hook notes: planning (--dry-run)" in err
+    assert len(_timed(err, "hook notes", "planned")) == 2, "the finish's plan and its verify re-plan"
+    assert "hook notes: running" in err
+    assert len(_timed(err, "hook notes", "ran (exit 0)")) == 1
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store {store}: reading issues on {OLD}" in err
+        assert len(_timed(err, f"beads store {store}", "read")) == 2, err
+    assert f"beads store {rekeyed}: re-keying 1 issue(s) to {NEW}" in err
+    assert len(_timed(err, f"beads store {rekeyed}", "re-keyed 1")) == 1
+    assert f"re-plan {OLD} -> {NEW}: checking nothing is left" in err
+    assert len(_timed(err, f"re-plan {OLD} -> {NEW}", "nothing left")) == 1
+
+
+def test_given_a_pending_pair_when_migrate_session_finishes_it_then_each_slow_step_prints_timed(
+    stores, migrated, hooks
+):
+    _pending_work(stores, hooks)
+
+    code, out, err = _finish(migrated["repo"], "-y")
+
+    assert code == 0, out + err
+    assert _timed(err, "hook notes", "planned")
+    assert len(_timed(err, "hook notes", "ran (exit 0)")) == 1
+    assert _timed(err, f"beads store {stores['workspace']}", "read")
+    assert len(_timed(err, f"re-plan {OLD} -> {NEW}", "nothing left")) == 1
 
 
 def test_given_a_recorded_unfinished_migration_when_new_is_relaunched_from_its_recipe_then_it_is_finished_first(
@@ -402,3 +526,45 @@ def test_given_the_launch_help_when_printed_then_it_names_the_finish_the_refusal
     assert "migrate-session OLD NEW --finish -y" in text
     assert "the launch is refused" in text
     assert "-P, --allow-partial-migration" in text
+    assert "one recorded verified finished is trusted" in text
+    assert "attaching to it warns" in text
+
+
+def _legacy_finished_row(slot) -> None:
+    ledger = slot["state"] / "session-migrations.jsonl"
+    legacy = {"old": OLD, "new": NEW, "repo": str(slot["repo"]), "finished": True}
+    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("row", ["pending", "unverified"])
+def test_given_new_running_and_a_part_left_when_new_is_launched_then_it_attaches_with_one_warning(migrated, row):
+    if row == "unverified":
+        _legacy_finished_row(migrated)
+    rows = _ledger(migrated)
+
+    code, out, err, launched = _launch(migrated, [f"c-{NEW}"], live=True)
+
+    assert code == 0, out + err
+    assert len(launched) == 1 and launched[0]["ai_name"] == NEW, "the launch goes on to the running session"
+    assert migrated["seeded"]["bare"].is_file(), "nothing is finished under a live session"
+    assert _ledger(migrated) == rows
+    assert "refusing" not in err
+    warnings = [line for line in err.splitlines() if f"attaching to the running {NEW}" in line]
+    assert len(warnings) == 1, err
+    assert f"the migration {OLD} -> {NEW} partial; parts left: " in warnings[0]
+    assert f"once {NEW} exits, finish it with `{FINISH} {migrated['repo']}`" in warnings[0]
+
+
+@pytest.mark.parametrize("row", ["pending", "unverified"])
+def test_given_new_stopped_and_a_part_left_when_a_tmux_launch_starts_it_then_it_is_refused(migrated, hooks, row):
+    hooks("10-notes", "notes", fail="plan")
+    if row == "unverified":
+        _legacy_finished_row(migrated)
+    rows = _ledger(migrated)
+
+    code, out, err, launched = _launch(migrated, None, live=False)
+
+    assert code == 1, out + err
+    assert launched == []
+    assert _ledger(migrated) == rows
+    assert f"`{FINISH} {migrated['repo']}`" in _refusal(err)

@@ -257,6 +257,8 @@ def _new_record(
 
 DURABLE_FIELDS = (
     "relaunch",
+    "relaunch_set_by",
+    "relaunch_changed_at",
     "probe",
     "relaunched_boot_id",
     "boot_decision",

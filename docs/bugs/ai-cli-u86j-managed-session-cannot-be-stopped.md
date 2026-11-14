@@ -158,3 +158,58 @@ should name a command that removes the reason for the refusal.
 A regression test for the restart path must let the stub agent run for more than
 3 seconds. An agent that exits sooner ends the session on its own ("exited too
 quickly"), and the test then passes without the stop marker.
+
+## Follow-up: stop leaves an interactive tmux shell (2026-11-13)
+
+On revision `18f06d3b`, a command stop terminated the agent but returned the pane
+to an interactive shell. Migration preflight consequently still refused the
+tmux session. Reproduced with real tmux 3.7c on macOS, using both bash and zsh
+wrappers in local and remote modes. The existing stop tests used pipes, so they
+could not enter the supervisor's terminal-only shell handoff.
+
+The stop verb and Ctrl+C shared an exit marker. Both persisted `manual_exit`,
+and the supervisor preserved every deliberate exit's terminal. The marker was
+successfully written and the agent was signalled; failure to signal the agent
+was therefore excluded. Command stops now write `stop` into that same marker,
+and the supervisor bypasses shell handoff for that value. Existing generation
+fencing performs tmux teardown. Ctrl+C and policy-driven shell returns retain
+their behavior. A new supervisor still clears the marker before starting.
+
+The frozen regression
+`test_given_running_tmux_session_when_command_stops_then_pane_closes_and_migration_preflight_passes`
+failed before the patch with `stop left occupants: ['supervisor pid ...',
+'tmux session c-session-1']`. It checks agent signalling, no relaunch, removal of
+the pane, and the real migration preflight afterwards. Migration code needs no
+change when stop removes the tmux session.
+
+Related regression
+`test_given_tmux_pane_when_named_session_relaunches_then_new_session_is_detached`
+runs the relaunch command inside a real tmux pane. Before the patch it exited 1
+with `this terminal is already inside a tmux session`. Detached replay retained
+the default `attach=True`, so the early nesting guard rejected it before reaching
+the detached creation path. That guard now applies only to launches that are
+not detached. The test checks successful detached creation and preservation of
+the caller's pane.
+
+This is a contained, reversible change within session lifecycle handling:
+no new dependency, shared abstraction, public API migration or repository
+boundary. Implementation role: implement; the narrow fix preserves existing
+terminal-interrupt and recovery-shell contracts. No broader redesign is needed.
+
+Verification: the five new real-tmux cases passed. The focused lifecycle gate
+(`test_session_interrupt_shell.py`, `test_session_detached_exit.py`,
+`test_sessions_stop.py`, `test_session_boot_relaunch.py`,
+`test_session_recovery_shell.py`, and `test_session_migrate.py`) passed all 247
+tests. `uv run ruff check .`, formatting checks, CLI documentation regeneration
+and bug-document validation passed. Existing generated supervisors need refreshing
+to receive the new shell-handoff rule.
+
+The first full run finished with 7,381 passed, 23 skipped and two timing failures:
+the stale-reaper fixture did not start its first child within its observation
+window, and the new stop test exhausted a fixed ten-second teardown wait. Both
+passed immediately in isolation. The stop fixture now uses the existing
+load-scaled wait helper. With the supervisor guard removed, that revised test
+still failed with the same live supervisor/tmux occupants; restoring the guard
+passed all five new cases again. The full gate was rerun with the supported
+`AI_CLI_TEST_PROCESS_WAIT_SECONDS=120` observation setting.
+That full run passed: 7,383 passed, 23 skipped (nine deprecation warnings).

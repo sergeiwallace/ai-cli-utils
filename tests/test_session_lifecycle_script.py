@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -260,3 +261,62 @@ def test_committed_manual_exit_when_supervisor_acknowledges_then_teardown_eviden
     assert result.returncode == 0
     assert registry.registry_path().read_bytes() == before
     assert not state.tombstone_path(name, "host-a").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_given_a_heartbeat_write_in_flight_when_cleanup_runs_then_it_is_stopped_before_the_revoke(shell_environment):
+    from process_ownership import reap, spawn_owned
+
+    shell, env, name, tmp_path = shell_environment
+    script = get_engine_script("c", "session-1", name, "c-session-", "myproject")
+    cleanup = script.split("      _supervisor_cleanup() {", 1)[1].split("      _supervisor_wait_for_child()", 1)[0]
+    late = tmp_path / "late-write"
+    revoked = tmp_path / "revoked"
+    ticker_pid = tmp_path / "ticker.pid"
+    # spawn_owned makes the ticker lead its own process group, as the real one's session does; its child stands for a heartbeat
+    # write that is still running when the supervisor starts to clean up.
+    ticker_code = (
+        "import os, subprocess, sys\n"
+        "assert os.getpgrp() == os.getpid()\n"
+        f"open({str(ticker_pid)!r}, 'w').write(str(os.getpid()))\n"
+        f"subprocess.run(['sh', '-c', 'sleep 1.5; touch {late}'])\n"
+    )
+    ticker = spawn_owned([sys.executable, "-c", ticker_code], env=env)
+    process = None
+    try:
+        deadline = time.monotonic() + scaled(10)
+        while not (ticker_pid.exists() and ticker_pid.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        pid = ticker_pid.read_text()
+        state_dir = registry.registry_path().parent
+        body = (
+            f"tmux_session={name}\nai_name=session-1\n_ai_state_dir={shlex.quote(str(state_dir))}\n"
+            f': > "$_ai_state_dir/session-final-exit-{name}"\n'
+            '_ai_reload_reason_file="$_ai_state_dir/reload"\n_supervisor_tmux_ownership_established=false\n'
+            f"_heartbeat_pid={pid}\ngeneration_token=token\n"
+            "_ai_close_progress() { :; }\n_ai_emit() { :; }\n"
+            f'ai() {{ [[ "$2" == revoke-heartbeat ]] && touch {shlex.quote(str(revoked))}; return 0; }}\n'
+            "_supervisor_cleanup() {" + cleanup + "\n_supervisor_cleanup\n"
+        )
+        probe = tmp_path / "cleanup.sh"
+        probe.write_text(body)
+        process = spawn_owned([shell, str(probe)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(timeout=scaled(20))
+        assert process.returncode == 0, stderr.decode()
+        assert revoked.exists()
+        time.sleep(2)
+        assert not late.exists(), "a heartbeat write outlived the cleanup and could recreate the revoked record"
+    finally:
+        reap(ticker)
+        if process is not None:
+            reap(process)
+
+
+def test_given_agent_setup_before_launch_when_script_generated_then_run_time_clock_starts_at_launch():
+    script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
+    run_agent = script.split("    run_agent() {", 1)[1].split("    # BEGIN SHELL RETURN agent-wait", 1)[0]
+    clock = run_agent.index("start_ts=$(date +%s)")
+    # Setup that can take seconds on a loaded host must come before the clock starts.
+    assert run_agent.index("direnv export bash") < clock
+    assert run_agent.index("refresh_plugins()") < clock
+    assert clock < run_agent.index('"$@" <&0 &')

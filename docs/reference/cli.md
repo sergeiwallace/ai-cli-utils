@@ -87,13 +87,14 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
 | [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
-| [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
+| [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
 | [`ai sessions publish-timer`](#ai-sessions-publish-timer) | Manage the background publication timer |
 | [`ai sessions publish-timer install`](#ai-sessions-publish-timer-install) | Install and enable the background timer that publishes session state; removes it instead when no publication repo is configured |
 | [`ai sessions publish-timer status`](#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions repair-policy`](#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
@@ -239,7 +240,7 @@ Register Claude Code workspace trust for every repo under a root (fixes 'workspa
 ai c [OPTIONS] [NAME]
 ```
 
-Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, and one recorded finished is re-planned. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway.
+Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is re-planned. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
@@ -1431,7 +1432,9 @@ Arguments:
 ai sessions policy [OPTIONS] SLUG {auto|never|always}
 ```
 
-Set a local session's boot relaunch policy and queue publication.
+Set a local session's boot relaunch policy as its owner's choice and queue publication.
+
+No automatic write replaces it afterwards. It records relaunch_changed_at and leaves changed_at, the run-state time the list shows, unchanged.
 
 Arguments:
 
@@ -1525,6 +1528,21 @@ Arguments:
 | `-b` | `--boot` |  | Replay eligible owning-host sessions after boot |
 | `-d` | `--dry-run` |  | Print decisions without writing or launching |
 | `-P` | `--allow-partial-migration` |  | Relaunch a session even though a recorded migration to its name is partial; the parts left are written into its launch log |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai sessions repair-policy
+
+```text
+ai sessions repair-policy [OPTIONS]
+```
+
+Give this host's sessions left at an unattributed never the default boot policy auto.
+
+Enrolment and recovery once wrote never for every session they registered, without recording who chose it. Each local record of this host that is not a probe, has policy never and has no relaunch_set_by becomes auto with relaunch_set_by default. A policy set with `ai sessions policy` records its owner and is left alone. A never set by hand before relaunch_set_by existed cannot be told apart and is repaired too, so set it again. Running it twice changes nothing the second time.
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-d` | `--dry-run` |  | Print what would change without writing |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai sessions stop

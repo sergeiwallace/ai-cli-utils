@@ -21,6 +21,39 @@ measurements.
 
 So: exiting is two steps, not one. Exit, then **verify the process is gone**.
 
+## The golden path: `ai exit-session`
+
+To end a session completely and return to the shell it was started from, run this inside it (or
+name the session from another terminal):
+
+```bash
+ai exit-session            # the session you are in
+ai exit-session myproject-box-1
+ai exit-session -r myproject-box-1   # a session owned by the default remote host
+ai exit-session -d myproject-box-1   # show the verified exit; write and signal nothing
+```
+
+It does what the manual steps below do, in the order that keeps the record true:
+
+1. It persists the final exit first: the run record moves from `running` to `exited` with the
+   cause `manual_exit`, fenced by the supervisor's generation. If that write fails, nothing is
+   signalled, so a session is never killed while its record still says it is running.
+2. It signals only the exact processes the registry recorded for the session (the agent and its
+   supervisor), after checking each pid's start time against the recorded identity, so a reused pid
+   is never touched. A stopped process is continued before it is terminated, then escalated after
+   the `-t/--timeout` wait.
+3. It removes the session's tmux session by its own session id and generation token, never by
+   killing the tmux server.
+4. Run from inside the session, it hands the teardown to a detached worker and returns, so the
+   shell you came from is not left holding a half-finished exit. Cleanup that cannot finish stays
+   recorded in the registry and the next run retries it.
+5. For a remote session (`-r/--remote`) the owning host acknowledges the exit with a receipt for
+   the exact generation; the local mirror is updated from that receipt and will not reconnect it.
+
+A session started before this command existed has no recorded process identities, so
+`ai exit-session` refuses it and says so: relaunch it once, then exit it the same way. The manual
+steps below stay as the fallback for that case and for a process the registry never knew about.
+
 ## Procedure
 
 ### 1. Exit from inside the session

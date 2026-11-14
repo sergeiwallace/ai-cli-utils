@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -30,6 +31,7 @@ from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypas
 from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 from .process_probe import ProcessProbe, ProcfsProbe, normalize_proc_start, probe_for
 from .session_naming import compose_session_name
+from .worktree_move import purge_moved_bytecode
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -977,7 +979,8 @@ def registered_worktrees(repo_root: Path) -> list[Path]:
             # still gets a chance to run rather than the caller erroring out
             # before it can check whether there's real content to protect.
             return []
-        raise RuntimeError(f"could not list registered git worktrees for {repo_root}: {stderr}")
+        detail = f"{_exit_status(res.returncode)} {stderr}" if stderr == _NO_STDERR else stderr
+        raise RuntimeError(f"could not list registered git worktrees for {repo_root}: {detail}")
     return [
         Path(line[len("worktree ") :].strip()).resolve()
         for line in (res.stdout or "").splitlines()
@@ -985,12 +988,26 @@ def registered_worktrees(repo_root: Path) -> list[Path]:
     ]
 
 
+_NO_STDERR = "(no stderr output)"
+
+
 def _git_stderr(res: subprocess.CompletedProcess) -> str:
     """Return command stderr as safe, single-line diagnostic text."""
     stderr = res.stderr or ""
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")
-    return " ".join(stderr.split()) or "(no stderr output)"
+    return " ".join(stderr.split()) or _NO_STDERR
+
+
+def _exit_status(returncode: int) -> str:
+    """``exit N``, or ``killed by signal N (NAME)`` for the negative code of a signalled process."""
+    if returncode >= 0:
+        return f"exit {returncode}"
+    try:
+        name = f" ({signal.Signals(-returncode).name})"
+    except ValueError:
+        name = ""
+    return f"killed by signal {-returncode}{name}"
 
 
 def _contains_git_checkout(directory: Path) -> Path | None:
@@ -1171,6 +1188,7 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
             f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
             f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
         )
+    purge_moved_bytecode(wt_dir)
     launch_reporter.active().phase("worktree").outcome(
         f"relocated session worktree: moved {holder} -> {wt_dir} "
         "(checkout, uncommitted changes and unpushed commits preserved)"

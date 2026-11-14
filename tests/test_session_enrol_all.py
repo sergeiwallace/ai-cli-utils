@@ -167,7 +167,7 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     record = registry.load_registry()["sessions"][0]
     assert state.valid_boot_recipe(record)
     assert record["kind"] == "local" and record["owning_host"] == "host-a"
-    assert record["relaunch"] == "never" and "generation" not in record
+    assert (record["relaunch"], record["relaunch_set_by"]) == ("auto", "default") and "generation" not in record
     assert record["boot_recipe"]["options"]["is_remote"] is remote
     assert script.read_bytes() != source
     assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
@@ -354,7 +354,7 @@ def test_given_upgrade_entry_when_invoked_then_other_live_session_is_enrolled_wi
     assert result.exit_code == 0, result.output
     record = next(r for r in registry.load_registry()["sessions"] if r["name"] == "c-session-1")
     assert state.valid_boot_recipe(record) and "generation" not in record
-    assert record["relaunch"] == "never"
+    assert record["relaunch"] == "auto"
     script = w.root / "sessions/c-session-1.sh"
     assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta["c-session-1"])
     assert all(cmd[1] in ("list-sessions", "list-panes") for cmd in w.commands)

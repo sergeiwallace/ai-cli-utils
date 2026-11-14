@@ -82,7 +82,10 @@ the other's checkout. The worktree's `.envrc` is approved the same way as a
 `.worktrees/` slot's.
 
 The run record keeps its boot recipe because the session supervisor refuses to start an
-engine without one. `relaunch: never` makes `boot_veto` refuse it. `iterm2_restore`
+engine without one. `relaunch: never` makes `boot_veto` refuse it. Both columns' policies are
+written with `relaunch_set_by: default`; a policy set with `ai sessions policy` is recorded as
+`owner` and later launches keep it
+([enrolled-sessions-default-to-relaunch-never.md](../bugs/enrolled-sessions-default-to-relaunch-never.md)). `iterm2_restore`
 skips every record marked `probe`. `session_registry.prune` (run by
 `ai iterm2 sessions -p/--prune`) drops a probe record once tmux has no session for it. It keeps a bare probe (which has no tmux session) while the
 record's process still runs in the current boot.
