@@ -801,6 +801,8 @@ Every Beads issue assigned to exactly OLD and not closed, in each store under th
 
 Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds nothing left records the migration finished (verified); otherwise the run names each part left as NOT finished and exits 1. A hook is done only when its --dry-run prints `migrate-status: done`.
 
+A run that finishes then looks for references to OLD left behind. It runs the `[migrate_session] references_command` from config.toml, if one is set, with `--old OLD --new NEW`, and scans the repo's tracked files for OLD and its tmux session names as whole words. Each reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.
+
 -s/--status [NAME] lists, read-only, each migration this host records that is not verified finished (-a/--all: every one), re-planned as complete or partial with the parts left and the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default remote machine.
 
 -f/--finish -a/--all re-plans every recorded migration on this host, verified or not, and finishes each partial one whose sessions are stopped, so a migration recorded before a fix (or stuck on a refusal since fixed) needs no hand run. A live pair, or one it cannot plan, is skipped and named. It checks the installed `ai` once, lists what it would finish and asks unless -y is given, and with -n/--dry-run writes nothing. It prints one row per pair and exits 1 if any pair is left partial or skipped.

@@ -175,7 +175,9 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
     Nothing left and a ledger row naming the pair: append ``finished`` with ``verified: true``,
     unless the latest row already says so. Anything left: mark each such part failed and add a
     ``NOT finished`` warning naming them, so ``result.failed`` holds and nothing is recorded. A
-    leftover cleanup in another repo is not judged here.
+    leftover cleanup in another repo is not judged here. A run with nothing left then runs the
+    references step (:func:`ai_cli.session_migrate_references.sweep`), whose leftovers are
+    reported beside the finished pair rather than holding its ``finished`` row back.
     """
     if any(move.kind == m.ALREADY_MIGRATED for move in result.moves):
         return  # a leftover cleanup: the pair's home is in another repo, and its own finish judges it
@@ -203,3 +205,7 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
         "verified"
     ):
         m._append_ledger(state, result.old, result.new, repo_root, finished=True, verified=True)
+    if not result.failed:
+        from .session_migrate_references import sweep
+
+        sweep(result, repo_root)

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai migrate-session` no longer finishes silently with the old name still written in code or
+  config. Once a migration finishes, it runs the `[migrate_session] references_command` from
+  `config.toml`, if one is set, as `<argv> --old OLD --new NEW`, then scans the repo's tracked
+  files for OLD and its tmux session names as whole words. Each reference left is listed as
+  `file:line` and the run reports `finished with leftovers` and exits 1. A path matching a
+  `references_allow` glob is not counted (default `.beads/**`), and the scan never rewrites a
+  file. `--finish` re-checks once the references are fixed
+  (`docs/reference/migrate-session-hooks.md`).
 - `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
   `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
   session. Rows are grouped by host, this host first, with running sessions at the top of each
