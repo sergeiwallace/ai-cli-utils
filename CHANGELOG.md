@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
 - After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
   `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
   still says `running` from an earlier boot. When tmux and the process table on its owning host
