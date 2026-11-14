@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
+  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
+  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
+  stayed stopped. SIGCONT to a running process does nothing.
 - A migrate-session hook, Beads publish or references command written as an interpreter and
   a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
   `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
