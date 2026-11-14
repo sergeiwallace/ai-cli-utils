@@ -289,11 +289,42 @@ match the pin, so this can't drift silently again.
 ## Pull Request Process
 
 1. Fork the repo and create a branch from `main` (`feature/short-description` or `fix/short-description`)
-2. Make your changes. A `feat:` or `feat(scope):` commit must stage a `CHANGELOG.md` entry under
-   `[Unreleased]`; the commit-msg hook refuses it otherwise
+2. Make your changes. A `feat:` or `feat(scope):` commit must stage a changelog fragment (see
+   [Changelog Fragments](#changelog-fragments)); the commit-msg hook refuses it otherwise
 3. Ensure the hard gate passes
 4. Open a PR against `main`
 5. Describe what changed and why in the PR description
+
+## Changelog Fragments
+
+A change's changelog entry goes in its own new file, not in `CHANGELOG.md`. Every pull request
+used to add its entry at the top of the same `CHANGELOG.md` section, so any two open pull requests
+conflicted there, and each merge sent the others back for a merge of `main` and a full CI rerun.
+New files never conflict.
+
+Name the file `changelog.d/<name>.<type>.md`, where `<name>` is anything unique (the branch name
+works) and `<type>` is the Keep a Changelog section it belongs to: `added`, `changed`,
+`deprecated`, `removed`, `fixed` or `security`. Write the entry exactly as it should read in
+`CHANGELOG.md`, as one or more Markdown list items:
+
+```markdown
+- `ai sessions list` takes `-a/--all` to list stopped sessions too.
+```
+
+The commit-msg hook accepts a `feat:` commit that stages such a file (a staged `CHANGELOG.md`
+change still counts too). A file with any other name does not count.
+
+At release time, fold the fragments into `CHANGELOG.md` and commit the result:
+
+```bash
+uv run python scripts/fold_changelog.py -n   # print the folded CHANGELOG.md, change nothing
+uv run python scripts/fold_changelog.py      # fold, then delete the fragments
+```
+
+Each entry goes at the top of its `### <Type>` section under `## [Unreleased]`, newest first by
+the commit that added it, which is where an entry written by hand goes; a missing section is
+created in Keep a Changelog order. Then rename `[Unreleased]` to the release as before. Nothing is
+written when a fragment is malformed or the changelog has no `## [Unreleased]` heading.
 
 ## Test Conventions
 

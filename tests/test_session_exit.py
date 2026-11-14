@@ -119,6 +119,38 @@ def test_stopped_target_when_exiting_then_cont_precedes_term(running, child, mon
     child.wait(timeout=2)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX stop and continue signals")
+def test_stopped_target_whose_status_reads_running_when_exiting_then_it_is_continued_and_ends(
+    running, child, monkeypatch
+):
+    # macOS CI once read a stopped target's status as not stopped inside the exit, so the
+    # target got SIGTERM alone and stayed stopped. The exit must not depend on that read.
+    proc = psutil.Process(child.pid)
+    proc.suspend()
+    deadline = time.monotonic() + 15
+    while proc.status() != psutil.STATUS_STOPPED and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert proc.status() == psutil.STATUS_STOPPED
+    original = psutil.Process.send_signal
+    seen = []
+
+    def observe(proc, sig):
+        seen.append(sig)
+        return original(proc, sig)
+
+    real_status = psutil.Process.status
+
+    def misread(proc):
+        status = real_status(proc)
+        return psutil.STATUS_SLEEPING if status == psutil.STATUS_STOPPED else status
+
+    monkeypatch.setattr(psutil.Process, "send_signal", observe)
+    monkeypatch.setattr(psutil.Process, "status", misread)
+    assert finish(running, agent=identity(child)).complete
+    assert seen[:2] == [signal.SIGCONT, signal.SIGTERM]
+    assert child.wait(timeout=5) == -signal.SIGTERM
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX TERM resistance")
 def test_survivor_when_exiting_then_identity_verified_before_kill(running):
     proc = spawn_owned_python(
