@@ -125,8 +125,9 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
-      # Every feat: / feat(scope): commit must stage a CHANGELOG.md change
-      # (AI-CLI-mgzo). The commit-msg stage hands the hook the message file.
+      # Every feat: / feat(scope): commit must stage a changelog fragment,
+      # changelog.d/<name>.<type>.md, or a CHANGELOG.md change (CONTRIBUTING.md,
+      # Changelog Fragments). The commit-msg stage hands the hook the message file.
       # Bypass: SKIP_CHANGELOG=1 git commit
       - id: changelog-for-feat
         name: changelog entry required for feat commits

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# commit-msg hook: require CHANGELOG.md [Unreleased] entry for feat: commits.
+# commit-msg hook: require a changelog entry for feat: commits.
 #
 # Enforces the versioning convention: every user-facing feature commit must
-# include a CHANGELOG.md update in the same staged changeset.
+# stage either a changelog fragment, changelog.d/<name>.<type>.md (folded into
+# CHANGELOG.md at release by scripts/fold_changelog.py), or a CHANGELOG.md change.
 #
 # Bypass (use sparingly):
 #   SKIP_CHANGELOG=1 git commit -m "feat: ..."
@@ -18,9 +19,13 @@ FIRST_LINE=$(head -1 "$1")
 # `git commit --amend -m ...` from a new commit (prepare-commit-msg reports both as
 # "message", and the author date can match HEAD's on a new commit made in the same
 # second), and guessing would let a new commit through on HEAD's entry.
+FRAGMENT_RE='^changelog\.d/[^/]+\.(added|changed|deprecated|removed|fixed|security)\.md$'
+
 changelog_staged() {
     # A here-string, not a pipe: under pipefail an early `grep -q` exit can SIGPIPE git.
-    grep -qx "CHANGELOG.md" <<<"$(git diff --cached --name-only)"
+    local staged
+    staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+    grep -qx "CHANGELOG.md" <<<"$staged" || grep -qE "$FRAGMENT_RE" <<<"$staged"
 }
 
 # Match feat: or feat(scope): on the first line only (conventional commit prefix)
@@ -28,7 +33,9 @@ if echo "$FIRST_LINE" | grep -qE "^feat(\([^)]+\))?:"; then
     if ! changelog_staged; then
         echo ""
         echo "[commit-msg] ERROR: feat: commits require a CHANGELOG.md [Unreleased] entry."
-        echo "[commit-msg] Add the entry, stage CHANGELOG.md, then retry."
+        echo "[commit-msg] Add a fragment, changelog.d/<name>.<type>.md, where <type> is one of"
+        echo "[commit-msg] added, changed, deprecated, removed, fixed or security (see CONTRIBUTING.md),"
+        echo "[commit-msg] stage it, then retry. A staged CHANGELOG.md change is also accepted."
         echo "[commit-msg] To bypass: SKIP_CHANGELOG=1 git commit ..."
         echo "[commit-msg] Rewording a feat: commit that already has its entry is an amend"
         echo "[commit-msg] with no CHANGELOG.md change; use SKIP_CHANGELOG=1 git commit --amend ..."
