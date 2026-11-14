@@ -41,8 +41,9 @@ argv = ["python3", "~/bin/notes_rekey.py", "--store", "~/notes"]
 | `name` | non-empty string | label used in every output line and error |
 | `argv` | non-empty list of strings | the program and its leading arguments, never a shell string |
 
-A leading `~` in the program (the first element) is expanded to the home
-directory; later arguments are passed as written. A program whose name ends in
+A leading `~` in any element is expanded to the home directory, as a shell
+would, so `["python3", "~/bin/notes_rekey.py"]` finds its script; nothing
+else in an argument is expanded. A program whose name ends in
 `.py` is run with the Python interpreter that runs `ai`, so the same file works
 on Windows, where a `.py` file cannot be executed directly.
 
@@ -186,7 +187,7 @@ timeout_s = 600
 
 `argv` is the program and its arguments, never a shell string. Every `{store}` is
 replaced by the store's directory (the directory holding `.beads/`), and the
-argv must name it at least once. A leading `~` in the program is expanded, and a
+argv must name it at least once. A leading `~` in any element is expanded, and a
 `.py` program runs under the interpreter that runs `ai`, as for hooks.
 `timeout_s` is optional: the seconds one publish may run, a positive number, 600
 when it is absent. A large store pushed from a loaded host can need longer. The
@@ -210,3 +211,46 @@ that succeeded in `session-migration-issues.jsonl`, so repeating the same
 `ai migrate-session` or `--finish` command publishes again every store an earlier
 run re-keyed and no publish has confirmed since, even when no issue is left to
 re-key. The command must therefore be safe to repeat.
+
+## References left after a migration
+
+A hook re-keys state a tool keeps by session name. Code and config that spell the
+old name out are a different kind of leftover, and a migration looks for them once
+it finishes: after a writing run whose re-plan finds nothing left, `ai
+migrate-session` (and `--finish`, and the finish `ai c NEW` runs) takes two steps.
+
+Both are set in the `[migrate_session]` table of `config.toml`, read when the step
+runs:
+
+```toml
+[migrate_session]
+references_command = ["python3", "~/bin/sweep_references.py"]
+references_allow = [".beads/**", "docs/renames.md"]
+```
+
+1. `references_command` runs once, as `argv + ["--old", OLD, "--new", NEW]`, with
+   the migrated repository as its working directory, stdin closed, for at most 600
+   seconds. `argv` follows the hook rules: a program and its arguments, `~`
+   expanded, a `.py` program run under the interpreter that runs `ai`. It may
+   rewrite references wherever it knows to. For each one it could not rewrite it
+   prints `migrate-reference-left: <where>` on stdout. Unset, the step is skipped
+   with one line saying so.
+2. A scan of the repository's tracked files (`git grep -w`) for OLD and each tmux
+   session name `ai` gives it (`c-OLD`, `c-r-OLD`, ...), as whole words, so
+   `myproject-session-1` does not match `myproject-session-10`. Each hit is a
+   leftover, printed as `file:line: text`, unless its path matches a
+   `references_allow` glob. The default list is `[".beads/**"]`, where the
+   migration's own re-key comments name the old session; setting the key replaces
+   the default. The scan never rewrites a file.
+
+| Outcome | Last line | Exit |
+|---|---|---|
+| No command or a clean exit, and no hit | `OLD -> NEW: finished` | unchanged |
+| A `migrate-reference-left:` line, a non-zero exit, a timeout or a program that cannot start | `OLD -> NEW: finished with leftovers (<n> left)` with each one listed | 1 |
+| A hit the allowlist does not cover | the same, with each `file:line` listed | 1 |
+| A malformed `[migrate_session]` value, or a scan git cannot run | the same, naming the problem | 1 |
+
+The migration itself is still recorded finished: leftovers are references for
+someone to rewrite, not migration state, so `ai c NEW` launches and lists them as
+warnings. Once they are rewritten, `ai migrate-session OLD NEW --finish -r REPO`
+runs both steps again and exits 0.

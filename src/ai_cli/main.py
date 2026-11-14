@@ -3633,6 +3633,8 @@ def _finish_recorded_migrations(
                 left = left_after(result)
                 if not left:
                     reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+                for straggler in result.references_left:
+                    reporter.warning("migrate", f"migration {old} -> {ai_name}: reference left: {straggler}")
         if left:
             partial.append((old, repo, left))
     for old, repo, left in partial:
@@ -8231,6 +8233,31 @@ def _print_migration(result) -> None:
         _out.emit(Tag.MIGRATE, "migrate", "part | status")
         for part, status in result.parts.items():
             _out.emit(Tag.MIGRATE, "migrate", f"{part} | {status}")
+    _print_references(result)
+
+
+def _print_references(result) -> None:
+    """The references step of a completed migration, then whether it finished clean or with leftovers."""
+    if not result.references_checked:
+        return
+    from .session_migrate_status import finish_command
+
+    for note in result.reference_notes:
+        _out.emit(Tag.MIGRATE, "migrate", f"  {note}")
+    for left in result.references_left:
+        _out.emit(Tag.MIGRATE, "migrate", f"  reference left: {left}", err=True)
+    pair = f"{result.old} -> {result.new}"
+    if not result.references_left:
+        _out.emit(Tag.MIGRATE, "migrate", f"{pair}: finished")
+        return
+    repo = result.new_worktree.parent.parent
+    _out.emit(
+        Tag.MIGRATE,
+        "migrate",
+        f"{pair}: finished with leftovers ({len(result.references_left)} left); rewrite each, then re-check "
+        f"with `{finish_command(result.old, result.new, repo)}`",
+        err=True,
+    )
 
 
 def _print_migration_refusal(reason: str, *, partial: bool = False) -> None:
@@ -8357,7 +8384,7 @@ def _migrate_one_to_name(
                 "done earlier" if pending.get("status") == "complete" else "would do" if dry_run else "done now"
             )
             _print_migration(result)
-            return 0
+            return 1 if result.references_left else 0
         words = _names.common_words(snapshot.policy) if name else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
@@ -8411,7 +8438,7 @@ def _migrate_one_to_name(
         )
         _print_migration(done.result)
     _out.emit(Tag.MIGRATE, "migrate", f"migrated {old} to {done.new}")
-    return 1 if done.result is not None and done.result.failed else 0
+    return 1 if done.result is not None and (done.result.failed or done.result.references_left) else 0
 
 
 def _migrate_all_to_names(
@@ -8515,7 +8542,7 @@ def _migrate_all_to_names(
             continue
         if done.result is not None:
             _print_migration(done.result)
-            if done.result.failed:
+            if done.result.failed or done.result.references_left:
                 refused += 1
         _out.emit(Tag.MIGRATE, "migrate", f"migrated {entry.title} to {done.new}")
     return 1 if refused else 0
@@ -8804,7 +8831,8 @@ def _finish_all_recorded(*, dry_run: bool, yes: bool) -> int:
             continue
         _print_migration(result)
         left, _live, _planned = _replan_recorded(old, new, repo)
-        rows[(old, new, repo)] = ("partial" if left else "complete", left)
+        state = "partial" if left else "finished with leftovers" if result.references_left else "complete"
+        rows[(old, new, repo)] = (state, left)
     return _summary()
 
 
@@ -8866,6 +8894,11 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
         "nothing left records the migration finished (verified); otherwise the run names each part "
         "left as NOT finished and exits 1. A hook is done only when its --dry-run prints "
         "`migrate-status: done`.\n\n"
+        "A run that finishes then looks for references to OLD left behind. It runs the "
+        "`[migrate_session] references_command` from config.toml, if one is set, with `--old OLD --new NEW`, "
+        "and scans the repo's tracked files for OLD and its tmux session names as whole words. Each "
+        "reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; "
+        "a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.\n\n"
         "-s/--status [NAME] lists, read-only, each migration this host records that is not verified "
         "finished (-a/--all: every one), re-planned as complete or partial with the parts left and "
         "the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, "
@@ -9038,7 +9071,7 @@ def cmd_migrate_session(
         sys.exit(2)
 
     _print_migration(result)
-    sys.exit(1 if result.failed else 0)
+    sys.exit(1 if result.failed or result.references_left else 0)
 
 
 def _print_retirement(result) -> None:

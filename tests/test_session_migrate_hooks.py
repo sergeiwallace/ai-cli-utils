@@ -8,6 +8,7 @@ migration may touch, prints one line per artifact, and fails on request.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,15 @@ def test_given_an_empty_hooks_dir_when_migrated_then_no_hook_line_appears(slot, 
 def test_given_a_hook_program_under_home_when_migrating_then_the_tilde_is_expanded(slot, hooks):
     script = hooks("10-notes", "notes", program_dir=Path.home())
     (hooks.directory / "10-notes.toml").write_text(f'name = "notes"\nargv = ["~/{script.name}"]\n', encoding="utf-8")
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert f"hook notes: would move notes/{OLD}" in out
+
+
+def test_given_an_interpreter_hook_whose_script_is_under_home_when_migrating_then_the_tilde_is_expanded(slot, hooks):
+    script = hooks("10-notes", "notes", program_dir=Path.home())
+    argv = json.dumps([sys.executable, f"~/{script.name}"])
+    (hooks.directory / "10-notes.toml").write_text(f'name = "notes"\nargv = {argv}\n', encoding="utf-8")
     code, out, err = _migrate(slot["repo"], "--dry-run")
     assert code == 0, out + err
     assert f"hook notes: would move notes/{OLD}" in out
