@@ -102,8 +102,12 @@ def _cleanup(targets: dict, timeout: float) -> list[str]:
         if force:
             proc.kill()  # psutil rechecks identity and uses the native Windows API.
         else:
-            # Native Windows has no POSIX stop/continue signals.
-            if sys.platform != "win32" and proc.status() == psutil.STATUS_STOPPED:
+            # Native Windows has no POSIX stop/continue signals. Elsewhere every target is
+            # continued first, as process_probe's escalation does: a stopped target acts on
+            # SIGTERM only once continued, and one status read cannot be trusted to say it is
+            # stopped (macOS CI once read a stopped target as not stopped). SIGCONT to a
+            # running process does nothing.
+            if sys.platform != "win32":
                 proc.send_signal(signal.SIGCONT)
                 proc = _process(target)
                 if proc is None:

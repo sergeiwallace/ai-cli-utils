@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
+  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
+  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
+  stayed stopped. SIGCONT to a running process does nothing.
 - After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
   `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
   still says `running` from an earlier boot. When tmux and the process table on its owning host
