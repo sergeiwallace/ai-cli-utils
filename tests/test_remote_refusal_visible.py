@@ -16,6 +16,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +31,13 @@ from test_session_migrate_on_launch import (  # noqa: F401 - fixture
 
 from ai_cli import transport
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="the wrapper runs under a POSIX shell")
+#: The mosh wrapper is POSIX shell code that only ever runs on the remote host; these tests run it
+#: under a local shell. A Windows runner has none: its `bash` is the WSL launcher, which fails
+#: without an installed distribution, so `shutil.which("bash")` alone does not tell.
+posix_shell = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the remote mosh wrapper under a local POSIX shell; on Windows `bash` is the WSL launcher",
+)
 
 DIAGNOSTIC = ".local/state/ai-cli-utils/transport-errors/refused.stderr"
 REFUSAL = (
@@ -80,6 +87,7 @@ def _remote_loop(tmp_path, remote_cmd: str, *, seconds: float) -> int | None:
     return asyncio.run(run())
 
 
+@posix_shell
 def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_then_it_prints_and_returns_its_status(
     tmp_path, capsys
 ):
@@ -95,6 +103,7 @@ def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_th
     assert not (tmp_path / "home" / DIAGNOSTIC).exists(), "the read removes the remote record"
 
 
+@posix_shell
 def test_given_a_remote_session_that_ends_cleanly_over_mosh_when_it_ends_then_nothing_is_printed_and_it_returns_0(
     tmp_path, capsys
 ):
@@ -106,6 +115,7 @@ def test_given_a_remote_session_that_ends_cleanly_over_mosh_when_it_ends_then_no
     assert not (tmp_path / "home" / DIAGNOSTIC).exists()
 
 
+@posix_shell
 def test_given_the_mosh_wrapper_when_the_remote_command_writes_progress_then_stderr_stays_on_the_terminal(tmp_path):
     """The remote side's progress lines must reach the screen while it works, not a file."""
     from ai_cli.main import _mosh_remote_command
