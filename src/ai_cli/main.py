@@ -6943,11 +6943,19 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"-p/--project got {project!r}, which starts with '-'; no project alias does. "
             f"Did you mean `-p {project.lstrip('-')}`?"
         )
+    name = str(options.get("name") or "")
+    if any(char.isspace() for char in name):
+        # A shell that does not split a variable on spaces (zsh, unquoted) passes
+        # `session-1 -p myproject` as ONE argument: the launch never sees -p, derives the
+        # project from the cwd, and names a new session after the whole string.
+        raise click.UsageError(
+            f"NAME {name!r} contains whitespace, and no session name does. If it holds options, "
+            f"pass each as its own argument: `ai {engine} {' '.join(name.split())}`"
+        )
     chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
     naming = _NamingRequest.from_options(options)
-    name = str(options.get("name") or "")
     chief_name = _chief_of_staff.setting("session_name").casefold()
     if chief_name and name.casefold() == chief_name and ctx.args and ctx.args[0].isdigit():
         # `ai c chief 1` is `ai c chief-1`: the number is the chief's index, not an
