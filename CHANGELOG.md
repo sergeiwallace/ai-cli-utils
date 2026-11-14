@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
 - Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
   `never`, so boot replay brings them back like any other session. Probes still default to
   `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
