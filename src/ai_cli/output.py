@@ -532,8 +532,30 @@ def _shown_op(record: Record, settings: OutputSettings) -> str | None:
     return record.op if record.op is not None else (operation.default if operation.required else None)
 
 
+#: The host this process's records come from when another machine shows them, "" when local.
+_origin = ""
+
+
+def set_origin(host: str) -> str:
+    """Mark every record this process renders as coming from ``host``; give back the previous value.
+
+    The remote side of ``ai c -R`` runs its own launcher, and its lines reach the launching
+    machine's terminal beside the local launcher's, header for header. ``[remote <host>]`` before
+    the tag tells the two apart. An empty ``host`` turns the mark off.
+    """
+    global _origin
+    with _lock:
+        previous, _origin = _origin, host
+    return previous
+
+
 def _elements(record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
-    return [part for name in settings.order for part in _element(name, record, settings)]
+    parts: list[tuple[str, str]] = []
+    for name in settings.order:
+        if name == "tag" and _origin:
+            parts.append((f"[remote {_origin}]", settings.elements.tag.style))
+        parts += _element(name, record, settings)
+    return parts
 
 
 def _settings() -> OutputSettings:

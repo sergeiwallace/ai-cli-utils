@@ -28,6 +28,11 @@ _LOG_DIRECTORY = "launch-logs"
 # The generated session script passes its launch's log path to `ai internal emit` and
 # `ai internal progress` in this variable, so their warnings and errors are stored there.
 LAUNCH_LOG_ENV = "AI_CLI_LAUNCH_LOG"
+#: Set by the mosh wrapper of ``ai c -R``: a file on this host that receives a copy of this
+#: launch's log lines, so the launching machine can read why a refused launch failed after mosh
+#: has cleared the screen. Read once and removed from the environment, so nothing the launch
+#: starts (tmux, the session script) inherits it.
+REMOTE_DIAGNOSTIC_ENV = "AI_CLI_REMOTE_DIAGNOSTIC_FILE"
 _MAX_LOGS_PER_SESSION = 20
 
 # Breaks a launch-log path tie when the clock cannot. See create_launch_log.
@@ -98,13 +103,31 @@ class LaunchLog:
     stderr: TextIO = field(init=False)
     _file: TextIO | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _mirror: TextIO | None = field(default=None, repr=False)
+    #: The :data:`REMOTE_DIAGNOSTIC_ENV` file this log copies its lines into, or "".
+    mirror_path: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
         self.stderr = _LoggingStderr(sys.stderr, self)
+        mirror = os.environ.pop(REMOTE_DIAGNOSTIC_ENV, "")
+        self.mirror_path = mirror
+        if mirror:
+            with contextlib.suppress(OSError):
+                Path(mirror).parent.mkdir(parents=True, exist_ok=True)
+                # Held open for the launch's life and closed by close(), like the log itself.
+                self._mirror = Path(mirror).open("a", encoding="utf-8")  # noqa: SIM115
 
     def write_line(self, line: str) -> None:
         """Append one line; a log that stops accepting writes is closed and the line dropped."""
         with self._lock:
+            if self._mirror is not None:
+                try:
+                    self._mirror.write(f"{line}\n")
+                    self._mirror.flush()
+                except (OSError, ValueError):
+                    with contextlib.suppress(OSError, ValueError):
+                        self._mirror.close()
+                    self._mirror = None
             if self._file is None:
                 return
             try:
@@ -121,6 +144,10 @@ class LaunchLog:
 
     def close(self) -> None:
         with self._lock:
+            if self._mirror is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    self._mirror.close()
+                self._mirror = None
             if self._file is not None:
                 with contextlib.suppress(OSError, ValueError):
                     self._file.close()
