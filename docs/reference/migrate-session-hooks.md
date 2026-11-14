@@ -41,8 +41,9 @@ argv = ["python3", "~/bin/notes_rekey.py", "--store", "~/notes"]
 | `name` | non-empty string | label used in every output line and error |
 | `argv` | non-empty list of strings | the program and its leading arguments, never a shell string |
 
-A leading `~` in the program (the first element) is expanded to the home
-directory; later arguments are passed as written. A program whose name ends in
+A leading `~` in any element is expanded to the home directory, as a shell
+would, so `["python3", "~/bin/notes_rekey.py"]` finds its script; nothing
+else in an argument is expanded. A program whose name ends in
 `.py` is run with the Python interpreter that runs `ai`, so the same file works
 on Windows, where a `.py` file cannot be executed directly.
 
@@ -186,7 +187,7 @@ timeout_s = 600
 
 `argv` is the program and its arguments, never a shell string. Every `{store}` is
 replaced by the store's directory (the directory holding `.beads/`), and the
-argv must name it at least once. A leading `~` in the program is expanded, and a
+argv must name it at least once. A leading `~` in any element is expanded, and a
 `.py` program runs under the interpreter that runs `ai`, as for hooks.
 `timeout_s` is optional: the seconds one publish may run, a positive number, 600
 when it is absent. A large store pushed from a loaded host can need longer. The

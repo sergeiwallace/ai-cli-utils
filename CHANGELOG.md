@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A migrate-session hook, Beads publish or references command written as an interpreter and
+  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
+  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
+  in any argument is now expanded to the home directory.
 - Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
   `never`, so boot replay brings them back like any other session. Probes still default to
   `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
