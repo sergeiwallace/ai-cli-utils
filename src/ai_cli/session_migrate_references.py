@@ -32,7 +32,7 @@ SECTION = "migrate_session"
 COMMAND_KEY = "references_command"
 ALLOW_KEY = "references_allow"
 #: Paths whose hits are records of the migration itself, not stale references.
-DEFAULT_ALLOW = (".beads/**",)
+DEFAULT_ALLOW: tuple[str, ...] = (".beads/**",)
 #: The stdout prefix a references command uses to name a reference it could not rewrite.
 LEFT_PREFIX = "migrate-reference-left:"
 #: Seconds the references command may run.
@@ -48,16 +48,18 @@ def _settings() -> tuple[list[str] | None, list[str], list[str]]:
     if not isinstance(section, dict):
         return None, list(DEFAULT_ALLOW), [f"[{SECTION}] must be a table"]
     problems: list[str] = []
-    argv = section.get(COMMAND_KEY)
-    if argv is not None and (
-        not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv)
-    ):
+    raw_argv = section.get(COMMAND_KEY)
+    argv: list[str] | None = None
+    if isinstance(raw_argv, list) and raw_argv and all(isinstance(arg, str) and arg for arg in raw_argv):
+        argv = [str(arg) for arg in raw_argv]
+    elif raw_argv is not None:
         problems.append(f"{SECTION}.{COMMAND_KEY} must be a non-empty list of strings")
-        argv = None
-    allow = section.get(ALLOW_KEY, list(DEFAULT_ALLOW))
-    if not isinstance(allow, list) or not all(isinstance(glob, str) for glob in allow):
+    raw_allow = section.get(ALLOW_KEY, DEFAULT_ALLOW)
+    allow: list[str] = list(DEFAULT_ALLOW)
+    if isinstance(raw_allow, list | tuple) and all(isinstance(glob, str) for glob in raw_allow):
+        allow = [str(glob) for glob in raw_allow]
+    else:
         problems.append(f"{SECTION}.{ALLOW_KEY} must be a list of path globs")
-        allow = list(DEFAULT_ALLOW)
     return argv, allow, problems
 
 
