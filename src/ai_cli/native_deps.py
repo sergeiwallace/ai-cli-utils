@@ -98,6 +98,33 @@ def can_prompt_for_root() -> bool:
         return False
 
 
+def passwordless_sudo(timeout: int = 10) -> tuple[bool, str]:
+    """Whether ``sudo -n`` runs a command here with no password, and why not when it cannot.
+
+    Never prompts and never raises: ``-n`` makes sudo fail rather than ask, and stdin is
+    closed. Windows has no sudo, so it is never tried there, and neither is a PATH without it.
+    """
+    if sys.platform == "win32":
+        return False, "there is no sudo on Windows"
+    if shutil.which("sudo") is None:
+        return False, "sudo is not on PATH"
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"sudo -n could not run ({type(exc).__name__})"
+    if proc.returncode == 0:
+        return True, ""
+    said = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return False, said[-1] if said else f"sudo -n exited {proc.returncode}"
+
+
 def _authenticate_root(timeout: int = 120) -> bool:
     """Refresh sudo's credential cache with the prompt VISIBLE. Never raises.
 
@@ -213,6 +240,10 @@ def attempt_installs(
     the installer wrote its directory to the registry, not to this already
     running process, so without it a perfectly good install looks like a failure.
 
+    A system package manager that needs root is first run through passwordless
+    ``sudo -n`` wherever that works (:func:`passwordless_sudo`), on every call site,
+    since it cannot prompt; when it does not work, why is printed to stderr.
+
     ``allow_root`` opts *this call* into escalating a system package manager
     through ``sudo``, prompting for a password. It defaults to False and must stay
     that way for anything on the launch path: a prompt nobody is watching blocks
@@ -227,27 +258,42 @@ def attempt_installs(
     skipped: list[str] = []
     attempted: list[str] = []
     authenticated = False
+    sudo: tuple[bool, str] | None = None
     for probe, argv in candidates:
         if shutil.which(probe) is None:
             continue
         if needs_root(argv):
-            if not allow_root:
+            # Passwordless sudo first, on every call site: it cannot prompt, so it is safe on
+            # the launch path. Why it is unavailable goes to stderr, which the launch log mirrors.
+            if sudo is None:
+                sudo = passwordless_sudo()
+                if not sudo[0]:
+                    _out.emit(
+                        Tag.DOCTOR,
+                        "install",
+                        f"{probe} needs root; passwordless sudo is not available ({sudo[1]})",
+                        err=True,
+                    )
+            if sudo[0]:
+                argv = ["sudo", "-n", *argv]
+            elif not allow_root:
                 skipped.append(f"{probe} (needs root; re-run `ai doctor` in a terminal, or install manually)")
                 continue
-            if not can_prompt_for_root():
+            elif not can_prompt_for_root():
                 skipped.append(f"{probe} (needs root and there is no terminal to ask on)")
                 continue
-            if not authenticated:
-                # Show the exact command before asking for a password. Nobody
-                # should be typing one for an action they have not seen.
-                _out.emit(Tag.DOCTOR, "install", f"about to run: sudo {' '.join(argv)}", err=True)
-                authenticated = _authenticate_root()
-            if not authenticated:
-                skipped.append(f"{probe} (root authentication declined or failed)")
-                continue
-            # -n so this cannot re-prompt under capture_output; the credential was
-            # just cached by the visible `sudo -v` above.
-            argv = ["sudo", "-n", *argv]
+            else:
+                if not authenticated:
+                    # Show the exact command before asking for a password. Nobody
+                    # should be typing one for an action they have not seen.
+                    _out.emit(Tag.DOCTOR, "install", f"about to run: sudo {' '.join(argv)}", err=True)
+                    authenticated = _authenticate_root()
+                if not authenticated:
+                    skipped.append(f"{probe} (root authentication declined or failed)")
+                    continue
+                # -n so this cannot re-prompt under capture_output; the credential was
+                # just cached by the visible `sudo -v` above.
+                argv = ["sudo", "-n", *argv]
         attempted.append(probe)
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)

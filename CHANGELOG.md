@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- When direnv is not usable, `ai c` prints its full remediation block (install commands, shell
+  hooks and bypasses) only the first time on a host. Later launches print one line saying
+  direnv is not installed and `.envrc` is not loaded, and pointing at `ai doctor` for the fix.
+  `ai doctor` always prints the full block. The record lives in the state directory and is
+  cleared once direnv is usable again, so a later breakage shows the block once more.
+- The automatic install of a native tool (direnv, tmux, zsh) now tries passwordless `sudo -n`
+  before reporting that a system package manager needs root. It never prompts for a password,
+  and it is skipped on Windows and when `sudo` is not on PATH. When passwordless sudo is not
+  available, a line on stderr, which the launch log records, says why.
 - `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
   with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
   was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and

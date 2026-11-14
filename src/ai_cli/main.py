@@ -7226,7 +7226,7 @@ def cmd_doctor(dry_run):
         return
 
     envrc = _direnv_setup.find_envrc(root)
-    result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run)
+    result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run, full=True)
     if result.installed:
         _out.emit(Tag.DOCTOR, "check", f"  OK    direnv    {result.detail or result.tool or 'usable'}")
         return
