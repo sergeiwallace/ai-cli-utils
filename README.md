@@ -847,6 +847,14 @@ State owned by other tools joins the same run through a hook file in
 it is skipped and reported as pending instead), and runs after the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
 `ai adopt-session` that retitles the session runs the same hooks the same way.
 
+A migration that finishes then looks for references to the old name left in code and
+config. The `[migrate_session] references_command` in `config.toml`, if set, runs once
+with `--old OLD --new NEW` and may rewrite them. Then a scan of the repo's tracked files
+lists every remaining reference to OLD, or to one of its tmux session names, as
+`file:line`. Any reference left makes the run report `finished with leftovers` and exit 1;
+the scan never rewrites anything, and a path matching `references_allow` (a rename map,
+a naming example) is not counted ([contract](docs/reference/migrate-session-hooks.md#references-left-after-a-migration)).
+
 `ai c NEW` never starts a session whose recorded migration is partial. Before the
 worktree or the session exists, it finishes any migration to NEW this host recorded
 unfinished and re-plans the ones recorded finished. If a part is still left, it starts
