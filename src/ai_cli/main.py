@@ -4272,12 +4272,45 @@ def _reattach_title(
         return _session_id(engine, held_title, is_remote), held_title
     holder = snapshot.holder(positional.name)
     held = f"{positional.name} is held by {holder}" if holder else f"no session on {host} is named {title}"
-    _naming_exit(
-        reporter,
-        f"{held}. A first name is chosen with --name, never positionally: to launch a new session under it, "
-        f"run with `--name {positional.name}`.",
-        2,
+    held_here = [
+        str(row.get("title") or "")
+        for row in snapshot.rows.values()
+        if row.get("machine") == host and str(row.get("title") or "").startswith(f"{naming_prefix}-")
+    ]
+    pool = sorted(set(_resumable_titles(engine, (naming_prefix,), None)) | set(held_here))
+    close = _closest_titles(positional.value, pool, naming_prefix)
+    lines = [f"{held}."]
+    if close:
+        reattach = f"ai {engine} {close[0][len(naming_prefix) + 1 :]}" + (" -R" if is_remote else "")
+        lines.append(f"  closest existing sessions here: {', '.join(close)}")
+        lines.append(f"  to reattach to {close[0]}, run `{reattach}`" + (" with your other flags" if is_remote else ""))
+    lines.append(
+        "  A first name is chosen with --name, never positionally: to launch a NEW session under it, "
+        f"run with `--name {positional.name}`."
     )
+    _naming_exit(reporter, "\n".join(lines), 2)
+
+
+def _closest_titles(word: str, titles: "list[str]", naming_prefix: str, limit: int = 5) -> list[str]:
+    """Titles under ``naming_prefix`` whose slot, or a trailing part of it, is close to ``word``.
+
+    A title can carry a role before its name (``{prefix}-lead-ana``), so a typed ``ana``
+    or a near miss such as ``ena`` is compared with every trailing part of the slot
+    (``lead-ana``, ``ana``), not only with the whole slot.
+    """
+    import difflib
+
+    stem = f"{naming_prefix}-".casefold()
+    wanted = word.casefold()
+    scored = []
+    for title in titles:
+        if not title.casefold().startswith(stem):
+            continue
+        parts = title[len(stem) :].casefold().split("-")
+        score = max(difflib.SequenceMatcher(None, wanted, "-".join(parts[i:])).ratio() for i in range(len(parts)))
+        if score >= 0.6:
+            scored.append((-score, title))
+    return [title for _, title in sorted(scored)[:limit]]
 
 
 def _reserve_label_title(
