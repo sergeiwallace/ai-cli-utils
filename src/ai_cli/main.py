@@ -4244,16 +4244,19 @@ def _new_session_note(engine: str, name: str, naming_prefix: str, title: str) ->
 _T = TypeVar("_T")
 
 
-def _registry_step(reporter: LaunchReporter, start: str, done: str, call: Callable[[], _T]) -> _T:
+def _registry_step(reporter: LaunchReporter | None, start: str, done: str, call: Callable[[], _T]) -> _T:
     """``call()``, a name-registry fetch or push, as a timed ``session`` phase.
 
     On a loaded host a registry fetch has been measured at 16 to 27 s and a push at 30 s,
     so each prints a start line, a heartbeat and a timed end line. A registry error ends
     the phase with that outcome and is re-raised for the caller, whose fallback or
-    refusal decides what the launch does next.
+    refusal decides what the launch does next. A caller with no reporter (``None``)
+    gets the plain call, with nothing printed.
     """
     from . import name_registry as _names
 
+    if reporter is None:
+        return call()
     with reporter.phase("session", start) as phase:
         try:
             result = call()
@@ -4266,7 +4269,7 @@ def _registry_step(reporter: LaunchReporter, start: str, done: str, call: Callab
     raise failure
 
 
-def _fetch_name_registry(registry, reporter: LaunchReporter):
+def _fetch_name_registry(registry, reporter: LaunchReporter | None):
     """``registry.snapshot()`` as a timed phase."""
     return _registry_step(reporter, "fetching the name registry", "name registry fetched", registry.snapshot)
 
