@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ai_cli import direnv_setup
 from ai_cli.launch_reporter import LaunchReporter
 from ai_cli.main import _do_session_launch
 from ai_cli.zsh_setup import InstallResult
@@ -80,7 +81,7 @@ def _calls(host) -> list[str]:
     return host["log"].read_text(encoding="utf-8").splitlines() if host["log"].exists() else []
 
 
-STUBBED = {"sudo", "apt-get", "direnv", "bash", "sh", "true"}
+STUBBED = {"sudo", "apt-get", "brew", "direnv", "bash", "sh", "true"}
 _REAL_RUN = subprocess.run
 
 
@@ -182,9 +183,47 @@ def test_given_direnv_becomes_usable_and_breaks_again_when_launching_then_the_bl
     assert FULL_BLOCK in capsys.readouterr().err
 
 
-def test_given_passwordless_sudo_when_a_launch_auto_installs_direnv_then_it_runs_the_manager_through_sudo_n(
+#: A system package manager that needs root, the same on every host this test runs on.
+ROOT_MANAGER = [("apt-get", ["apt-get", "install", "-y", "direnv"])]
+
+
+@pytest.fixture
+def root_manager_host(host, monkeypatch):
+    """The host with this platform's direnv installers swapped for the Linux root managers.
+
+    The sudo path is about a manager that needs root. On macOS the installer is brew, which
+    never needs root, so without this the launch never reaches sudo there.
+    """
+    monkeypatch.setitem(direnv_setup._INSTALLERS, sys.platform, ROOT_MANAGER)
+    return host
+
+
+BREW = """#!/bin/sh
+echo "brew $*" >> "$STUB_LOG"
+printf '#!/bin/sh\\nexit 0\\n' > "${0%/*}/direnv"
+CHMOD +x "${0%/*}/direnv"
+"""
+
+
+def test_given_the_brew_installer_when_a_launch_auto_installs_direnv_then_it_never_calls_sudo(
     host, tmp_path, monkeypatch, capsys
 ):
+    """macOS installs through brew, which needs no root: no sudo probe and no sudo run."""
+    monkeypatch.setitem(direnv_setup._INSTALLERS, sys.platform, [("brew", ["brew", "install", "direnv"])])
+    _stub(host["bin"], "sudo", SUDO)
+    _stub(host["bin"], "brew", BREW)
+    monkeypatch.setenv("STUB_SUDO_OK", "1")
+
+    _launch(tmp_path)
+
+    assert _calls(host) == ["brew install direnv"]
+    assert "direnv: installed via brew" in capsys.readouterr().err
+
+
+def test_given_passwordless_sudo_when_a_launch_auto_installs_direnv_then_it_runs_the_manager_through_sudo_n(
+    root_manager_host, tmp_path, monkeypatch, capsys
+):
+    host = root_manager_host
     _stub(host["bin"], "sudo", SUDO)
     _stub(host["bin"], "apt-get", APT_GET)
     monkeypatch.setenv("STUB_SUDO_OK", "1")
@@ -203,8 +242,9 @@ def test_given_passwordless_sudo_when_a_launch_auto_installs_direnv_then_it_runs
 
 
 def test_given_sudo_that_needs_a_password_when_a_launch_auto_installs_then_it_never_prompts_and_logs_why(
-    host, tmp_path, capsys
+    root_manager_host, tmp_path, capsys
 ):
+    host = root_manager_host
     _stub(host["bin"], "sudo", SUDO)
     _stub(host["bin"], "apt-get", APT_GET)
 
@@ -216,7 +256,10 @@ def test_given_sudo_that_needs_a_password_when_a_launch_auto_installs_then_it_ne
     assert "apt-get (needs root" in err, err
 
 
-def test_given_no_sudo_on_path_when_a_launch_auto_installs_then_it_says_so_and_runs_nothing(host, tmp_path, capsys):
+def test_given_no_sudo_on_path_when_a_launch_auto_installs_then_it_says_so_and_runs_nothing(
+    root_manager_host, tmp_path, capsys
+):
+    host = root_manager_host
     _stub(host["bin"], "apt-get", APT_GET)
 
     _launch(tmp_path)
