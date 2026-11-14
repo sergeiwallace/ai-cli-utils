@@ -489,7 +489,7 @@ def stop_session(
             continue
         marker = int_exit_marker(tmux_session)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        marker.write_text("stop\n", encoding="utf-8")
         report.marked.append(tmux_session)
         report.supervisors.extend(live)
         tracked.update(live)
@@ -629,15 +629,58 @@ def wind_down(slug, timeout, dry_run):
 @click.argument("slug", callback=_session_slug)
 @click.argument("policy", type=click.Choice(["auto", "never", "always"]))
 def policy(slug, policy):
-    """Set a local session's boot relaunch policy and queue publication."""
+    """Set a local session's boot relaunch policy as its owner's choice and queue publication.
+
+    No automatic write replaces it afterwards. It records relaunch_changed_at and leaves
+    changed_at, the run-state time the list shows, unchanged.
+    """
 
     def change(doc):
         record = _owned_record(doc, slug)
-        record.update(relaunch=policy, changed_at=registry._now())
+        record.update(relaunch=policy, relaunch_set_by="owner", relaunch_changed_at=registry._now())
         return True
 
     registry._mutate(change, timeout=2)
     output.emit(output.Tag.SESSIONS, "session", f"{slug}: relaunch policy {policy}")
+
+
+@sessions.command("repair-policy")
+@click.option("-d", "--dry-run", is_flag=True, help="Print what would change without writing")
+def repair_policy(dry_run):
+    """Give this host's sessions left at an unattributed never the default boot policy auto.
+
+    Enrolment and recovery once wrote never for every session they registered, without
+    recording who chose it. Each local record of this host that is not a probe, has policy
+    never and has no relaunch_set_by becomes auto with relaunch_set_by default. A policy set
+    with `ai sessions policy` records its owner and is left alone. A never set by hand before
+    relaunch_set_by existed cannot be told apart and is repaired too, so set it again.
+    Running it twice changes nothing the second time.
+    """
+    found = []
+
+    def change(doc):
+        host = _local_host(doc)
+        for record in doc["sessions"]:
+            if (
+                record.get("kind") == "local"
+                and record.get("owning_host") == host
+                and not record.get("probe")
+                and record.get("relaunch") == "never"
+                and "relaunch_set_by" not in record
+            ):
+                found.append(record["name"])
+                record.update(relaunch="auto", relaunch_set_by="default")
+        return bool(found) and not dry_run
+
+    if dry_run:
+        change(registry.load_registry())
+    else:
+        registry._mutate(change, timeout=2)
+    verb = "would set" if dry_run else "set"
+    for name in found:
+        output.emit(output.Tag.SESSIONS, "session", f"{name}: relaunch policy never {verb} to auto (default)")
+    if not found:
+        output.emit(output.Tag.SESSIONS, "session", "nothing to repair")
 
 
 def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migration: bool = False) -> None:

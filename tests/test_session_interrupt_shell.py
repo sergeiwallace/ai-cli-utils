@@ -15,7 +15,7 @@ from conftest import TEST_BOOT_ID, tmux_runnable
 from process_ownership import watch_tmux_directory
 from process_wait import scaled
 
-from ai_cli import session_lifecycle_script
+from ai_cli import session, session_commands, session_lifecycle_script, session_migrate
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_script import get_engine_script
@@ -25,6 +25,8 @@ pytestmark = [
     pytest.mark.skipif(os.name != "posix", reason="session wrappers require POSIX terminals"),
     pytest.mark.timeout(120),
 ]
+
+_REAL_TMUX_NAMES = session._tmux_session_names
 
 
 def _wait(predicate):
@@ -78,6 +80,12 @@ def pane_session(request, tmp_path, monkeypatch):
     agent = (
         f"#!{sys.executable}\n"
         "import os, signal, sys, time, tty\nfrom pathlib import Path\n"
+        "import json\nfrom ai_cli.process_probe import probe_for\n"
+        "records = Path.home() / '.claude' / 'sessions'\nrecords.mkdir(parents=True, exist_ok=True)\n"
+        "pid = os.getpid()\n"
+        "(records / f'{pid}.json').write_text(json.dumps({'pid': pid, 'name': 'session-1', "
+        "'sessionId': 'test-session', 'cwd': os.getcwd(), "
+        "'procStart': probe_for().capture_identity(pid).marker}))\n"
         f"action = Path({str(action)!r})\n"
         "mode = os.environ['TEST_AGENT_MODE']\n"
         "signal.signal(signal.SIGINT, lambda *_: sys.exit(130))\n"
@@ -109,7 +117,7 @@ def pane_session(request, tmp_path, monkeypatch):
         return subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False, timeout=10)
 
     class Pane:
-        name = "session-1"
+        name = "c-session-1"
 
         def start(self, *, engine="c", remote=False, mode="signal", policy="auto"):
             state.register(self.name, recipe={"argv": ["ai", engine, "1"], "cwd": str(tmp_path)}, host="host-a")
@@ -175,6 +183,14 @@ def pane_session(request, tmp_path, monkeypatch):
 
         def capture(self):
             return tmux("capture-pane", "-p", "-J", "-S", "-", "-t", self.name).stdout
+
+        def stop(self):
+            monkeypatch.setenv("TMUX", f"{socket},0,0")
+            monkeypatch.setattr(session, "_tmux_session_names", _REAL_TMUX_NAMES)
+            return session_commands.stop_session("session-1", timeout=scaled(30), claude_home=home / ".claude")
+
+        def alive(self):
+            return tmux("has-session", "-t", f"={self.name}").returncode == 0
 
         def interrupt(self):
             assert tmux("send-keys", "-t", self.name, "C-c").returncode == 0
@@ -262,3 +278,25 @@ def test_given_policy_changed_to_never_when_engine_exits_then_same_pane_returns_
     pane_session.exit_agent("1")
     pane_session.assert_shell()
     assert pane_session.count() == 1
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_given_running_tmux_session_when_command_stops_then_pane_closes_and_migration_preflight_passes(
+    pane_session, remote, tmp_path
+):
+    pane_session.start(remote=remote)
+    time.sleep(3.2)
+    report = pane_session.stop()
+    assert report.signalled, "stop did not signal the running agent"
+    assert report.stopped, f"stop left occupants: {report.remaining}"
+    assert not pane_session.alive(), "stop left an interactive shell in tmux"
+    assert pane_session.count() == 1, "stop relaunched the agent"
+    session_migrate._refuse_live(
+        "session-1",
+        "session-2",
+        tmp_path,
+        tmp_path / "new",
+        tmp_path / "home" / ".claude",
+        None,
+        session_migrate._tmux_names(),
+    )

@@ -102,15 +102,19 @@ def spawn_owned_sleeper(seconds: int = OWNED_PROCESS_LIFETIME, *extra_argv: str)
     *extra_argv* lands in the child's ``sys.argv``, for tests that classify a
     process by its command line rather than by what it does.
 
-    Returns only once that command line is readable. On Linux ``Popen`` returns
-    when ``execve`` passes its point of no return, before the kernel has set the
-    new image's argument range, so ``/proc/<pid>/cmdline`` can still read empty.
+    Returns only once the child's command line is the one it was launched with.
+    On Linux ``Popen`` returns when ``execve`` passes its point of no return,
+    before the kernel has set the new image's argument range, so
+    ``/proc/<pid>/cmdline`` can still read empty, or still read the forking
+    parent's command line (under pytest-xdist, the worker's bootstrap), which is
+    not empty and not this child's.
     """
     proc = spawn_owned_python(f"import time; time.sleep({seconds})", *extra_argv)
+    launched = [str(arg) for arg in proc.args][1:]
     deadline = monotonic() + _REAP_TIMEOUT
     while monotonic() < deadline:
         try:
-            if psutil.Process(proc.pid).cmdline():
+            if psutil.Process(proc.pid).cmdline()[1:] == launched:
                 break
         except psutil.Error:
             break

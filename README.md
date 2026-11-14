@@ -265,13 +265,14 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions enrol`](docs/reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
 | [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
 | [`ai sessions mark`](docs/reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
-| [`ai sessions policy`](docs/reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy and queue publication. |
+| [`ai sessions policy`](docs/reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](docs/reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
 | [`ai sessions publish-timer`](docs/reference/cli.md#ai-sessions-publish-timer) | Manage the background publication timer |
 | [`ai sessions publish-timer install`](docs/reference/cli.md#ai-sessions-publish-timer-install) | Install and enable the background timer that publishes session state; removes it instead when no publication repo is configured |
 | [`ai sessions publish-timer status`](docs/reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](docs/reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions repair-policy`](docs/reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
 | [`ai set-name-status`](docs/reference/cli.md#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
@@ -1033,6 +1034,30 @@ that. Use `ai sessions policy <slug> <auto|never|always>`
 to change a local session's boot policy and queue publication through the existing background timer.
 Every boot policy still leaves manually exited sessions down.
 
+A session's policy is `auto` unless someone chose otherwise. With `session_relaunch.on_boot` on,
+`auto` and `always` let boot replay bring the session back after an interrupted run (the two
+behave the same today); `never` keeps it down at boot, and an explicit
+`ai sessions relaunch <slug>` still starts it. The exit cause is kept apart from the policy:
+stopping or exiting a session records why it ended and never changes its policy. Each record's
+`relaunch_set_by` says who wrote the policy. `ai sessions policy` writes `owner` and stamps
+`relaunch_changed_at`; it leaves `changed_at`, the run-state time `ai sessions list` shows as
+`CHANGED`, alone. A launch, enrolment or recovery writes `default` and never replaces an `owner`
+value. Probe sessions default to `never`; every other session defaults to `auto`.
+
+Older releases gave every enrolled or recovered session `never` without recording who chose it.
+After upgrading, preview and then apply the one-time repair on each host:
+
+```sh
+ai sessions repair-policy --dry-run
+ai sessions repair-policy
+```
+
+It changes each local, non-probe record of this host whose policy is `never` and has no
+`relaunch_set_by` to `auto` with `relaunch_set_by = "default"`, and prints one line per record.
+A record whose policy has an owner, a probe, and any other policy are left alone, and a second
+run changes nothing. A `never` set by hand before this release cannot be told apart from the
+old default, so it is repaired too; set it again with `ai sessions policy <slug> never`.
+
 A plain `/exit` inside a managed session is a restart: its wrapper relaunches the agent.
 Use `ai sessions stop <name>` to end it for good. It writes the wrapper's stop marker for each
 tmux session hosting `<name>` whose wrapper is running, sends SIGTERM to the session's Claude Code
@@ -1061,7 +1086,8 @@ down.
 ### Enrol an existing session
 
 Use `ai sessions enrol <name>` to give an existing live tmux session a validated restart
-recipe. It prints the recipe and sets boot relaunch policy to `never`. Preview with
+recipe. It prints the recipe and gives the session the default boot relaunch policy `auto`,
+keeping a policy its owner set. Preview with
 `-d/--dry-run`; an already valid recipe is left unchanged. Enrolment only updates registry
 bookkeeping: it never signals, restarts or types into the session.
 
@@ -1112,12 +1138,12 @@ evidence, renamed tmux sessions, and foreign ownership are skipped without guess
 Discovery failures return a nonzero exit status.
 
 Bulk enrolment preserves existing records, ownership, generations and policy;
-newly recovered sessions default to boot policy `never`. It atomically regenerates
+newly recovered sessions get the default boot policy `auto`. It atomically regenerates
 validated stable scripts, including already registered sessions; running shells
 retain their current program until the next child launch. It never signals,
 restarts or types into a pane. Repeated runs leave current scripts and records
-unchanged. To opt a recovered session into boot replay deliberately, use
-`ai sessions policy c-session-1 auto`; the configured boot and safety gates still apply.
+unchanged. To keep a recovered session out of boot replay, use
+`ai sessions policy c-session-1 never`; the configured boot and safety gates still apply.
 
 Template refresh after an update, supervisor generation acquisition, heartbeats, and
 `ai sessions relaunch --boot` also attempt bulk recovery automatically, reading

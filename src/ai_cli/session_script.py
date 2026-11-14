@@ -663,6 +663,8 @@ def get_engine_script(
       }}
     # BEGIN SHELL RETURN terminal
       _supervisor_preserve_pane() {{
+        # A command stop closes the session; terminal interrupts return a shell.
+        [[ "$(cat "$_ai_state_dir/session-int-exit-$tmux_session" 2>/dev/null)" == stop ]] && return
         # A script launched as tmux's pane command has no interactive shell
         # parent to return to. Keep that pane and replace its supervisor below.
         # Failed-start guards also return 77, but persist an unknown exit cause.

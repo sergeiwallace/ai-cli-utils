@@ -1985,6 +1985,8 @@ def get_project_aliases() -> dict:
 
 
 _warned_stale_project_aliases: set[tuple[str, str, str, str]] = set()
+# Prefix clashes already reported this process, so a launch warns once, not once per lookup.
+_warned_absent_alias_conflicts: set[tuple[str, str, str]] = set()
 
 
 def registered_project_names() -> dict[str, str]:
@@ -1994,20 +1996,42 @@ def registered_project_names() -> dict[str, str]:
     and includes the root-keyed ``[project_registry]`` table (keyed by the root's
     directory name, which is what ``resolve_project_prefix_by_name`` matches there).
     Fleet entries supersede stale per-machine aliases for the same project, with
-    a warning once per process. Other conflicting project names are refused. Raises
+    a warning once per process. Two other projects that share a prefix are refused only
+    when both have a checkout on this host; a registry shared across machines may name a
+    project that is not here, and that clash cannot mislead anything on this machine, so the
+    present project owns the prefix and a warning names the absent one. Raises
     :class:`ProjectPrefixError` when a registry cannot be read.
     """
     names: dict[str, str] = {}
 
+    def present(name: str) -> bool:
+        return _find_project_dir(name).is_dir()
+
     def add(prefix: str, name: str) -> None:
         key = prefix.lower()
         previous = names.get(key)
-        if previous is not None and previous.casefold() != name.casefold():
+        if previous is None:
+            names[key] = name
+            return
+        if previous.casefold() == name.casefold():
+            return
+        if present(previous) and present(name):
             raise ProjectPrefixError(
                 f"Conflicting project aliases for prefix {prefix!r}: {previous!r} and {name!r}. "
                 "Fix: assign unique task prefixes in the project registries on both machines."
             )
-        names.setdefault(key, name)
+        winner, loser = (name, previous) if present(name) and not present(previous) else (previous, name)
+        names[key] = winner
+        warning_key = (key, winner.casefold(), loser.casefold())
+        if warning_key not in _warned_absent_alias_conflicts:
+            _warned_absent_alias_conflicts.add(warning_key)
+            _out.warning(
+                Tag.CONFIG,
+                "load",
+                f"Prefix {prefix!r} is registered for both {previous!r} and {name!r}, and not both are "
+                f"checked out on this host; using {winner!r}. Fix: assign unique task prefixes in the "
+                "shared registry.",
+            )
 
     fleet_path = get_fleet_registry_path()
     fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}

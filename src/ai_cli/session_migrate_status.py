@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import session_migrate as m
+from .session_migrate_progress import timed
 from .session_migrate_resume import summarize
 
 #: Every status a part of a re-plan may read and still count as done: finished earlier, or a
@@ -32,7 +33,9 @@ DONE_STATUSES = frozenset(
 #: The part a re-plan that could not run is reported under.
 UNPLANNED = "migration"
 
-_REPLAN_KWARGS = frozenset({"claude_home", "state_dir", "proc_dir", "tmux_names", "projects_dir", "regenerate_script"})
+_REPLAN_KWARGS = frozenset(
+    {"claude_home", "state_dir", "proc_dir", "tmux_names", "projects_dir", "regenerate_script", "progress"}
+)
 
 
 def parts_left(result: m.MigrationResult) -> dict[str, str]:
@@ -81,17 +84,22 @@ def moved_on(new: str, repo_root: Path, state: Path) -> tuple[str, Path] | None:
 def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str]:
     """:func:`replan`, and the live-session refusal a writing run would raise, or ``""``.
 
-    A pair whose NEW slot :func:`moved_on` has nothing left to plan in that slot.
+    A pair whose NEW slot :func:`moved_on` has nothing left to plan in that slot. A
+    ``progress`` keyword reports the re-plan, and each slow step inside it, as it starts and ends.
     """
     state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
     if moved_on(new, repo_root, state) is not None:
         return {}, ""
     passed = {key: value for key, value in kwargs.items() if key in _REPLAN_KWARGS}
-    try:
-        plan = m.finish_session(repo_root, old, new, dry_run=True, record_finish=False, **passed)
-    except Exception as exc:  # any failure to plan leaves the pair unverified
-        return {UNPLANNED: f"failed: could not re-plan: {m._one_line(str(exc)) or type(exc).__name__}"}, ""
-    return parts_left(plan), plan.live
+    with timed(passed.get("progress"), f"re-plan {old} -> {new}", "checking nothing is left") as step:
+        try:
+            plan = m.finish_session(repo_root, old, new, dry_run=True, record_finish=False, **passed)
+        except Exception as exc:  # any failure to plan leaves the pair unverified
+            step.outcome = "could not re-plan"
+            return {UNPLANNED: f"failed: could not re-plan: {m._one_line(str(exc)) or type(exc).__name__}"}, ""
+        left = parts_left(plan)
+        step.outcome = f"{len(left)} part(s) left" if left else "nothing left"
+    return left, plan.live
 
 
 def _bookkeeping(row: dict) -> bool:
