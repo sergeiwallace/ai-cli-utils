@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
+  `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
+  still says `running` from an earlier boot. When tmux and the process table on its owning host
+  both show nothing, such a record is proved gone (no process survives a reboot), so the
+  migration proceeds. The record is not rewritten, so the boot relaunch keeps its evidence.
+  A refusal now names the reason: a live tmux session or process, a probe that could not answer,
+  or a record owned by another host
+  ([docs/bugs/earlier-boot-run-blocks-migration.md](docs/bugs/earlier-boot-run-blocks-migration.md)).
 - Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
   `never`, so boot replay brings them back like any other session. Probes still default to
   `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's

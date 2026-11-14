@@ -121,23 +121,41 @@ def _process_alive(record: dict) -> bool | None:
     return False
 
 
-def liveness_blocker(record: dict) -> str:
-    """Explain a migration refusal using current owning-host liveness evidence."""
+def liveness_blocker(record: dict) -> str | None:
+    """Why a record that says running may still be live, or None when this host proves it gone.
+
+    A record from an earlier boot of its own host is proved gone once tmux and the process
+    table both show nothing, because no process survives a reboot. Reconcile still leaves
+    such a record unchanged for the boot relaunch to judge; only the caller stops treating
+    it as live.
+    """
     if record.get("kind") != "local" or not record.get("boot_id"):
         return "liveness is unprovable on this host: owning-boot evidence is unavailable"
-    if registry._local_session_alive(record["name"]) is True:
+    tmux = registry._local_session_alive(record["name"])
+    if tmux is True:
         return f"live tmux session {record['name']}"
+    process = None
     try:
-        for process in psutil.process_iter(["pid", "status"]):
-            if process.info["pid"] != record.get("launcher_pid") or process.info["status"] == psutil.STATUS_ZOMBIE:
+        for candidate in psutil.process_iter(["pid", "status"]):
+            if candidate.info["pid"] != record.get("launcher_pid") or candidate.info["status"] == psutil.STATUS_ZOMBIE:
                 continue
             launched = datetime.fromisoformat(record["launched_at"].replace("Z", "+00:00"))
-            if process.create_time() <= launched.timestamp() + 1:
-                return f"live launcher pid {process.info['pid']}"
-        if _process_alive(record) is True:
+            if candidate.create_time() <= launched.timestamp() + 1:
+                return f"live launcher pid {candidate.info['pid']}"
+        process = _process_alive(record)
+        if process is True:
             return "live agent or session wrapper process"
     except (psutil.Error, OSError, ValueError, KeyError):
         pass
+    host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
+    boot = registry.current_boot_id()
+    if record.get("owning_host", host) != host:
+        return f"liveness is unprovable on this host: the session belongs to host {record['owning_host']}"
+    unanswered = [probe for probe, alive in (("tmux", tmux), ("process table", process)) if alive is None]
+    if unanswered:
+        return f"liveness is unprovable: the {' and '.join(unanswered)} probe could not answer"
+    if boot and record["boot_id"] != boot:
+        return None
     return "liveness is unprovable; inspect the launcher, tmux and process evidence"
 
 

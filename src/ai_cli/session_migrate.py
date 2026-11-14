@@ -637,7 +637,8 @@ def _plan_iterm2(old: str, new: str, old_wt: Path) -> list[PlannedMove]:
         if run_state(record) == "running":
             from .session_reconcile import liveness_blocker
 
-            raise MigrationError(f"session run state is still running: {liveness_blocker(record)}")
+            if (blocker := liveness_blocker(record)) is not None:
+                raise MigrationError(f"session run state is still running: {blocker}")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
