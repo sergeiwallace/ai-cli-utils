@@ -197,6 +197,7 @@ def test_given_passwordless_sudo_when_a_launch_auto_installs_direnv_then_it_runs
         "apt-get install -y direnv",
     ]
     err = capsys.readouterr().err
+    assert "installing direnv with: sudo -n apt-get install -y direnv" in err, err
     assert "direnv: installed via apt-get" in err, err
     assert FULL_BLOCK not in err
 

@@ -276,6 +276,8 @@ def attempt_installs(
                     )
             if sudo[0]:
                 argv = ["sudo", "-n", *argv]
+                # A root install is never silent: name the exact command before it runs.
+                _out.emit(Tag.DOCTOR, "install", f"installing {argv[-1]} with: {' '.join(argv)}", err=True)
             elif not allow_root:
                 skipped.append(f"{probe} (needs root; re-run `ai doctor` in a terminal, or install manually)")
                 continue
