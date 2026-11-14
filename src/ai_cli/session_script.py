@@ -260,19 +260,25 @@ def get_engine_script(
     # The agent reset is the transport's restore sequence, rendered for printf, so the
     # two cannot drift apart again (AI-CLI-no36). Imported here: transport imports
     # this module at load time.
+    from .config import config_file_text
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
     from .transport import _TERMINAL_RESTORE
 
     _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
     # Read the current policy from the owning registry, even after project
-    # environment loading changes PATH or XDG_STATE_HOME.
+    # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
+    # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
+    # next exit with no relaunch; a missing, unreadable or malformed file leaves restarts on.
     _relaunch_policy_command = shlex.join(
         pinned_python(
             "import json; from pathlib import Path; "
+            "from ai_cli.config import auto_restart_enabled; "
             f"doc = json.loads(Path({registry_path().as_posix()!r}).read_text()); "
-            f"print(next((r.get('relaunch', 'auto') for r in doc['sessions'] "
-            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), 'auto'))"
+            f"policy = next((r.get('relaunch', 'auto') for r in doc['sessions'] "
+            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), 'auto'); "
+            f"print('auto_restart_off' if policy != 'never' and not auto_restart_enabled({config_file_text()!r}) "
+            "else policy)"
         )
     )
 
@@ -857,10 +863,15 @@ def get_engine_script(
     # BEGIN SHELL RETURN policy
         # Template refreshes replace the body without starting another agent.
         # All other replacements obey the current session policy.
-        if (( _child_status != 78 )) && [[ $({_relaunch_policy_command} 2>/dev/null) == never ]]; then
-          _ai_final_manual_exit
-          _supervisor_preserve_pane
-          break
+        if (( _child_status != 78 )); then
+          _relaunch_policy=$({_relaunch_policy_command} 2>/dev/null)
+          if [[ "$_relaunch_policy" == never || "$_relaunch_policy" == auto_restart_off ]]; then
+            [[ "$_relaunch_policy" == auto_restart_off ]] && \
+              _ai_emit info exit {shlex.quote(f"not restarting: [session] auto_restart = false in {config_file_text()}")}
+            _ai_final_manual_exit
+            _supervisor_preserve_pane
+            break
+          fi
         fi
     # END SHELL RETURN
         # A reload names its reason in the state file, and the file, not the exit
