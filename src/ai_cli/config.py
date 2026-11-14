@@ -670,6 +670,19 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # legacy_convention = "full"
 # auto_migrate = true
 
+[migrate_session]
+## After `ai migrate-session` finishes, it looks for references to the old name left behind.
+## Read on every migration. references_command runs once per finished migration, as
+## `<argv> --old OLD --new NEW` in the migrated repository; it may rewrite references, and
+## prints `migrate-reference-left: <where>` for each it could not. A non-zero exit or any
+## such line makes the run report "finished with leftovers" and exit 1. Unset, the step is
+## skipped. The built-in scan of the repository's tracked files always runs and never
+## rewrites; a hit whose path matches a references_allow glob (a rename map, a naming
+## example) is not a leftover. The default allows .beads/**, where the migration's own
+## re-key comments name the old session.
+# references_command = ["python3", "~/bin/sweep_references.py"]
+# references_allow = [".beads/**", "docs/renames.md"]
+
 [relaunch]
 ## When a Claude Code session exits with "Move to background and exit", the
 ## conversation keeps running as a background session. On relaunch, ai attaches to

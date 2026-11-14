@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai migrate-session` no longer finishes silently with the old name still written in code or
+  config. Once a migration finishes, it runs the `[migrate_session] references_command` from
+  `config.toml`, if one is set, as `<argv> --old OLD --new NEW`, then scans the repo's tracked
+  files for OLD and its tmux session names as whole words. Each reference left is listed as
+  `file:line` and the run reports `finished with leftovers` and exits 1. A path matching a
+  `references_allow` glob is not counted (default `.beads/**`), and the scan never rewrites a
+  file. `--finish` re-checks once the references are fixed
+  (`docs/reference/migrate-session-hooks.md`).
 - `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
   `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
   session. Rows are grouped by host, this host first, with running sessions at the top of each
@@ -25,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
+  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
+  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
+  stayed stopped. SIGCONT to a running process does nothing.
+- A migrate-session hook, Beads publish or references command written as an interpreter and
+  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
+  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
+  in any argument is now expanded to the home directory.
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
 - `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
   the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
   worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
@@ -94,6 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
   refuses contradictory running records before moving files. Detached replay and all local engines
   also schedule the existing worker.
+- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
+  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
+  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
+  failed with "No task prefix is registered", and from inside a repository it planned a new session
+  named after the whole string in the wrong repository.
 
 ### Added
 
