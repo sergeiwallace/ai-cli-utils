@@ -172,6 +172,27 @@ def test_given_fragments_when_folded_then_the_changelog_reads_as_if_each_entry_w
     assert [p.name for p in (repo / "changelog.d").iterdir()] == [".gitkeep"]
 
 
+def test_given_a_crlf_changelog_when_folded_then_it_finds_its_sections_and_keeps_crlf_throughout(
+    repo: Path,
+) -> None:
+    """A Windows checkout holds CHANGELOG.md with \\r\\n endings; the fold must neither miss its headings nor mix endings."""
+    (repo / "CHANGELOG.md").write_bytes(CHANGELOG.replace("\n", "\r\n").encode("utf-8"))
+    (repo / "changelog.d" / "one.fixed.md").write_bytes(b"- A fix, whose text\r\n  wraps.\r\n")
+    (repo / "changelog.d" / "two.changed.md").write_bytes(b"- A renamed option.\r\n")
+
+    done = _fold(repo)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    folded = (repo / "CHANGELOG.md").read_bytes()
+    assert folded == (
+        CHANGELOG.replace("### Fixed\n\n- An existing", "### Fixed\n\n- A fix, whose text\n  wraps.\n- An existing", 1)
+        .replace("### Fixed\n\n- A fix", "### Changed\n\n- A renamed option.\n\n### Fixed\n\n- A fix", 1)
+        .replace("\n", "\r\n")
+        .encode("utf-8")
+    )
+    assert b"\r\r\n" not in folded and folded.count(b"\n") == folded.count(b"\r\n")
+
+
 def test_given_a_dry_run_when_folded_then_it_prints_the_result_and_changes_nothing(repo: Path) -> None:
     _commit(repo, {"changelog.d/one.fixed.md": "- The first fix.\n"}, "fix: one")
 

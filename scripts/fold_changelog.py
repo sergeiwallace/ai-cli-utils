@@ -88,11 +88,22 @@ def fragments(repo: Path, paths: list[Path]) -> list[tuple[str, str]]:
     return [(kind, text) for _when, _name, kind, text in found]
 
 
+def _bare(line: str) -> str:
+    """``line`` without its line ending, whichever one the file uses."""
+    return line.rstrip("\r\n")
+
+
 def fold(changelog: str, entries: list[tuple[str, str]]) -> str:
-    """``changelog`` with each entry at the top of its section under ``## [Unreleased]``."""
+    """``changelog`` with each entry at the top of its section under ``## [Unreleased]``.
+
+    Headings match whatever line ending the file uses, and every inserted line takes the
+    file's own ending (``\r\n`` in a Windows checkout), so the result never mixes them.
+    """
     lines = changelog.splitlines(keepends=True)
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    entries = [(kind, text.replace("\n", newline)) for kind, text in entries]
     try:
-        start = next(i for i, line in enumerate(lines) if line.rstrip("\n") == UNRELEASED)
+        start = next(i for i, line in enumerate(lines) if _bare(line) == UNRELEASED)
     except StopIteration:
         raise FoldError(f"CHANGELOG.md has no '{UNRELEASED}' heading") from None
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
@@ -102,7 +113,7 @@ def fold(changelog: str, entries: list[tuple[str, str]]) -> str:
             continue
         heading = f"### {kind.capitalize()}"
         block = "".join(texts)
-        at = next((i for i in range(start + 1, end) if lines[i].rstrip("\n") == heading), None)
+        at = next((i for i in range(start + 1, end) if _bare(lines[i]) == heading), None)
         if at is not None:
             body = at + 1
             while body < end and not lines[body].strip():
@@ -110,8 +121,8 @@ def fold(changelog: str, entries: list[tuple[str, str]]) -> str:
             lines[body:body] = [block]
         else:
             later = {f"### {k.capitalize()}" for k in TYPES[TYPES.index(kind) + 1 :]}
-            before = next((i for i in range(start + 1, end) if lines[i].rstrip("\n") in later), end)
-            lines[before:before] = [f"{heading}\n\n{block}\n"]
+            before = next((i for i in range(start + 1, end) if _bare(lines[i]) in later), end)
+            lines[before:before] = [f"{heading}{newline}{newline}{block}{newline}"]
         end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
     return "".join(lines)
 
@@ -135,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fold_changelog: {error}", file=sys.stderr)
         return 1
     if args.dry_run:
-        sys.stdout.write(folded)
+        # Bytes, so a text-mode stdout does not turn the file's own \r\n into \r\r\n.
+        sys.stdout.flush()
+        sys.stdout.buffer.write(folded.encode("utf-8"))
+        sys.stdout.buffer.flush()
         return 0
     changelog_path.write_bytes(folded.encode("utf-8"))
     for path in paths:
