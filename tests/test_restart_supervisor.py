@@ -54,6 +54,19 @@ def restart_ipc():
         pytest.skip("sandbox prohibits local sockets required for the exec acknowledgement")
 
 
+def _launch_records(path):
+    """Every complete record the fixture agent appended to ``path``, oldest first.
+
+    The agent opens the file for append before it writes, so a reader can find it
+    existing and empty, or holding a line still being written. Only a line ended by
+    its newline is a whole record.
+    """
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.split("\n")[:-1] if line]
+
+
 def _wait_for(check, process, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -392,9 +405,8 @@ def test_given_failed_request_when_recovered_then_ac_a_3_same_child_resumes(fenc
             },
         )
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    replacement = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     assert (root / "child-launches").read_text(encoding="utf-8") == children
-    replacement = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])
     assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
     assert supervisor.poll() is None
 
@@ -417,7 +429,7 @@ def test_given_dead_fenced_target_when_command_clears_then_remedy_named_and_same
     assert audit["actor"]["pid"] == os.getpid()
     assert audit["proof"]["state"] == "gone"
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    _wait_for(lambda: _launch_records(launches), supervisor)
     assert (root / "child-launches").read_text(encoding="utf-8") == children
     assert supervisor.poll() is None
 
@@ -433,9 +445,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     launches_path = root / "launches"
 
     def launches():
-        if not launches_path.exists():
-            return []
-        return [json.loads(line) for line in launches_path.read_text(encoding="utf-8").splitlines()]
+        return _launch_records(launches_path)
 
     initial = _wait_for(launches, supervisor)[0]
     old_child = initial["ppid"]
@@ -516,10 +526,7 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
 ):
     root, script, supervisor = supervisor_fixture
     launches = root / "launches"
-    initial = _wait_for(
-        lambda: json.loads(launches.read_text(encoding="utf-8").splitlines()[0]) if launches.exists() else None,
-        supervisor,
-    )
+    initial = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     observed = time.monotonic()
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     original_kill = os.kill
