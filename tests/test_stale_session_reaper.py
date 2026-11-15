@@ -1822,7 +1822,7 @@ def _start_generated_supervisor(
     pseudo_terminal: bool = False,
     extra_commands: dict[str, str] | None = None,
     stdin_fd: int | None = None,
-    fast_promotion_retry: bool = False,
+    promotion_budget_seconds: float = 30,
     wait_for_child_ready: bool = True,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
@@ -1914,11 +1914,11 @@ fi
         )
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
-    # Shortened for fast_promotion_retry (docs/bugs/terminal-promotion-failure-hang.md), so a
-    # promotion that can never succeed gives up in a third of production's time, scaled like
-    # the full budget so the child still reports its group first and the failure is the
-    # "could not promote" one the tests assert.
-    script = _with_promotion_budget(script, 10 if fast_promotion_retry else 30)
+    # Production's 30 s, scaled with host load. The promotion-failure tests pass 10 s
+    # (docs/bugs/terminal-promotion-failure-hang.md), so a promotion that can never succeed
+    # gives up sooner, still scaled so the child reports its group first and the failure is
+    # the "could not promote" one they assert.
+    script = _with_promotion_budget(script, promotion_budget_seconds)
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -2134,7 +2134,7 @@ def _run_supervisor_on_a_terminal_owned_elsewhere(
                 tmp_path,
                 shell,
                 stdin_fd=slave_fd,
-                fast_promotion_retry=True,
+                promotion_budget_seconds=10,
                 wait_for_child_ready=False,
                 extra_commands=extra_commands,
             )
@@ -2283,7 +2283,13 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         slave_fd = os.open(slave_name, os.O_RDWR)
         try:
             process, _, _ = _start_generated_supervisor(
-                tmp_path, supported_session_shell, stdin_fd=slave_fd, wait_for_child_ready=False
+                tmp_path,
+                supported_session_shell,
+                stdin_fd=slave_fd,
+                wait_for_child_ready=False,
+                # As long as this test waits for the loop to start, so the press it sends once
+                # the child reports still lands inside the loop on a loaded host.
+                promotion_budget_seconds=DEFAULT_WAIT_SECONDS,
             )
         finally:
             os.close(slave_fd)
@@ -2866,6 +2872,63 @@ def _supervisor_function(script: str, name: str) -> str:
     start = script.index(f"{name}() {{")
     end = script.index("\n      }\n", start) + len("\n      }\n")
     return script[start:end]
+
+
+def test_given_a_ctrl_c_during_the_last_promotion_attempt_when_the_budget_runs_out_then_it_reports_the_interrupt(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A Ctrl+C pressed while the final promotion attempt runs is an interrupt (AI-CLI-a0p4).
+
+    The INT trap only counts the press, and the loop read that count at the top of the next
+    attempt, after its deadline check. A press that landed during the attempt in which the
+    budget ran out was therefore reported as "could not promote", and the supervisor exited
+    1 instead of tearing its session down as a deliberate stop. Seen on a loaded host, where
+    each attempt starts an interpreter and lasts seconds.
+
+    The attempt here sends the press itself and outlasts a 1 s budget, so it lands exactly
+    in that window.
+    """
+    script = get_engine_script("c", "session-1", "test-session", "test-", "myproject")
+    promote = _supervisor_function(script, "_supervisor_promote_child")
+    # The terminal is what the shipped function promotes to; this drives the loop alone.
+    tty_guard = "[[ -t 0 ]] || return 0\n"
+    assert promote.count(tty_guard) == 1 and _PRODUCTION_PROMOTION_BUDGET in promote
+    promote = promote.replace(tty_guard, "", 1).replace(_PRODUCTION_PROMOTION_BUDGET, "_promotion_budget_seconds=1")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(bin_dir / "python3", '#!/bin/sh\nkill -INT "$PPID"\nsleep 2\nexit 1\n')
+    ready = tmp_path / "ready"
+    ready.write_text("12345\n", encoding="utf-8")
+    status = tmp_path / "status"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        f"""trap '_supervisor_int_count=$((_supervisor_int_count + 1))' INT
+_supervisor_int_count=0
+_child_pid=$$
+_supervisor_child_ready_path={shlex.quote(str(ready))}
+{promote}
+_supervisor_promote_child
+printf '%s\\n' "$?" > {shlex.quote(str(status))}
+""",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
+    }
+    subprocess.run(
+        [supported_session_shell, str(harness)],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=_PROCESS_WAIT_SECONDS,
+        check=False,
+    )
+
+    assert status.read_text(encoding="utf-8").strip() == "2", (
+        "a Ctrl+C during the last promotion attempt was reported as a promotion failure"
+    )
 
 
 def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty_then_it_reads_77(
