@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import config as _config
 from . import launch_reporter
 from .native_deps import Candidate, InstallResult, attempt_installs
 
@@ -364,17 +365,36 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
     return "\n".join(lines)
 
 
+#: Marks that this host has already been shown the full remediation block.
+REMEDIATION_SHOWN = "direnv-remediation-shown"
+
+
+def _remediation_marker() -> Path:
+    """Where the "already shown" record lives, resolved at call time."""
+    return _config.get_xdg_state_home() / REMEDIATION_SHOWN
+
+
+def _notice(have_direnv: bool) -> str:
+    cause = "direnv not installed" if not have_direnv else "direnv cannot run (no bash to evaluate .envrc)"
+    return f"{cause}; .envrc not loaded; run `ai doctor` for the fix"
+
+
 def ensure_direnv(
     project_root: Path,
     config: dict | None = None,
     auto_install: bool = True,
+    full: bool = False,
 ) -> InstallResult:
     """Make direnv usable for ``project_root`` if it is wanted and missing.
 
     Returns the attempt's outcome; ``installed=True`` also covers "was already
-    there". Prints the remediation block on any failure but never raises and
-    never exits, so a caller mid-launch degrades instead of dying — the
-    regression this module's whole contract exists to prevent.
+    there". Never raises and never exits, so a caller mid-launch degrades instead
+    of dying — the regression this module's whole contract exists to prevent.
+
+    On failure the full remediation block prints the first time on this host, and
+    always when ``full`` is set (``ai doctor``); later launches print one line that
+    points at ``ai doctor``. Once direnv is usable the record is cleared, so a later
+    breakage shows the block again.
     """
     if is_bypassed(config):
         return InstallResult(True, detail="bypassed")
@@ -384,14 +404,25 @@ def ensure_direnv(
         # Nothing to load: do not install a tool that would have no work to do.
         return InstallResult(True, detail="no .envrc")
 
+    marker = _remediation_marker()
     have_direnv = direnv_available()
     if have_direnv and bash_available():
+        marker.unlink(missing_ok=True)
         return InstallResult(True, tool="already-present")
 
     result = install_direnv() if auto_install and not have_direnv else InstallResult(False, detail="")
     if result.installed and bash_available():
+        marker.unlink(missing_ok=True)
         launch_reporter.active().phase("direnv").outcome(f"installed via {result.tool}")
         return result
 
-    launch_reporter.active().warning("direnv", remediation(envrc, result))
+    if full or not marker.exists():
+        launch_reporter.active().warning("direnv", remediation(envrc, result))
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("shown\n", encoding="utf-8")
+        except OSError:
+            pass  # an unwritable state dir only means the block shows again next time
+    else:
+        launch_reporter.active().warning("direnv", _notice(have_direnv))
     return InstallResult(False, tool=result.tool, detail=result.detail)

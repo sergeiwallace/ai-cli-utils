@@ -320,3 +320,87 @@ def test_given_agent_setup_before_launch_when_script_generated_then_run_time_clo
     assert run_agent.index("direnv export bash") < clock
     assert run_agent.index("refresh_plugins()") < clock
     assert clock < run_agent.index('"$@" <&0 &')
+
+
+def _counting_agent(tmp_path, name, config_file, *, flip_on_run=None):
+    """An agent that logs each run, exits 0 (a normal exit, so a restart), and stops by run 3.
+
+    ``flip_on_run`` writes ``auto_restart = false`` into the live config file during that run,
+    before it exits, as an operator editing the file would.
+    """
+    runs = tmp_path / "agent-runs"
+    flip = (
+        f'[ "$n" = "{flip_on_run}" ] && printf "[session]\\nauto_restart = false\\n" > {shlex.quote(str(config_file))}\n'
+        if flip_on_run
+        else ""
+    )
+    child = registry.registry_path().parent / "sessions" / f"{name}.sh"
+    child.parent.mkdir(parents=True, exist_ok=True)
+    child.write_text(
+        "#!/bin/sh\n"
+        f"echo run >> {shlex.quote(str(runs))}\n"
+        f"n=$(wc -l < {shlex.quote(str(runs))} | tr -d ' ')\n"
+        f"{flip}"
+        '[ "$n" -ge 3 ] && exit 77\n'
+        "exit 0\n"
+    )
+    return runs
+
+
+def _run_supervisor(shell, env, name, tmp_path):
+    script = tmp_path / "supervisor.sh"
+    script.write_text(
+        get_engine_script("c", "session-1", name, "c-session-", "myproject", worktree_dir=str(tmp_path)),
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [shell, str(script)], env=env, capture_output=True, text=True, check=False, timeout=scaled(60)
+    )
+
+
+def _config_file(tmp_path):
+    path = Path(os.environ["XDG_CONFIG_HOME"]) / "ai-cli-utils" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+def test_given_auto_restart_flipped_to_false_during_a_run_when_the_agent_exits_then_the_supervisor_does_not_restart_it(
+    shell_environment,
+):
+    """The key is read from the file at the exit, so an edit applies with no relaunch."""
+    shell, env, name, tmp_path = shell_environment
+    config = _config_file(tmp_path)
+    runs = _counting_agent(tmp_path, name, config, flip_on_run=2)
+
+    completed = _run_supervisor(shell, env, name, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert runs.read_text().count("run") == 2, completed.stderr
+    assert "auto_restart = false" in completed.stderr, completed.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+def test_given_auto_restart_false_when_the_agent_exits_then_the_session_ends_after_one_run(shell_environment):
+    shell, env, name, tmp_path = shell_environment
+    config = _config_file(tmp_path)
+    config.write_text("[session]\nauto_restart = false\n", encoding="utf-8")
+    runs = _counting_agent(tmp_path, name, config)
+
+    completed = _run_supervisor(shell, env, name, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert runs.read_text().count("run") == 1, completed.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor fixture")
+def test_given_no_auto_restart_key_when_the_agent_exits_then_the_supervisor_restarts_it(shell_environment):
+    shell, env, name, tmp_path = shell_environment
+    config = _config_file(tmp_path)
+    config.write_text("[session]\n", encoding="utf-8")
+    runs = _counting_agent(tmp_path, name, config)
+
+    completed = _run_supervisor(shell, env, name, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert runs.read_text().count("run") == 3, completed.stderr
