@@ -769,6 +769,8 @@ notify_on_exit = true
 ## max_age_seconds old and its reset time has not passed.
 # state_file = "~/.claude/state/quota.json"
 # max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
