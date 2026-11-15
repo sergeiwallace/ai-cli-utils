@@ -956,6 +956,7 @@ def relaunch(slug, boot, dry_run, allow_partial_migration):
                     record.update(relaunched_boot_id=boot_id, run_state="relaunched", changed_at=registry._now())
                 elif (
                     gone
+                    and this_boot is not None
                     and reason not in _LIVENESS_VETOES
                     and all(
                         record.get(key) == snapshot.get(key)
