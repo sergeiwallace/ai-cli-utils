@@ -661,6 +661,8 @@ def get_engine_script(
           sleep 0.01
           _promotion_attempt=$((_promotion_attempt + 1))
     # BEGIN RUN STATE promotion-deadline-check
+          # A press counted during the attempt that used up the budget is still a press.
+          (( _supervisor_int_count > _promotion_int_baseline )) && return 2
           (( SECONDS < _promotion_deadline )) || return 1
     # END RUN STATE
         done

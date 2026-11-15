@@ -800,3 +800,148 @@ def test_given_recipe_missing_a_field_when_boot_checked_then_veto_names_it(boot_
     veto = decide(boot_record)
     assert veto.startswith("unsupported or incomplete boot recipe: ")
     assert missing in veto.removeprefix("unsupported or incomplete boot recipe: ")
+
+
+# A reboot is simulated by changing the boot id and the boot time; AI-CLI-facu.
+BOOTED_AT = 1_800_000_000.0
+
+
+@pytest.fixture
+def rebooted(boot_cli, monkeypatch):
+    from ai_cli import session_reconcile
+
+    monkeypatch.setattr(session_reconcile, "boot_time", lambda: BOOTED_AT)
+    monkeypatch.setattr(session_reconcile, "_process_alive", lambda record: False)
+
+    def reboot(boot_id, booted):
+        monkeypatch.setattr(registry, "current_boot_id", lambda: boot_id)
+        monkeypatch.setattr(session_reconcile, "boot_time", lambda: booted)
+
+    boot_cli.reboot = reboot
+    return boot_cli
+
+
+def _row():
+    return registry.load_registry()["sessions"][0]
+
+
+def _update(**fields):
+    registry._mutate(lambda doc: doc["sessions"][0].update(fields) or True)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_running_row_kept_down_by_policy_when_boot_relaunch_runs_then_the_row_is_settled_exited(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(relaunch="never")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    row = _row()
+    assert state.run_state(row) == "exited"
+    assert row["exit"]["cause"] == "host_reboot"
+    assert row["exit"]["evidence"]["source"] == "boot_relaunch"
+    assert row["boot_decision"]["reason"] == "policy never forbids boot relaunch"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_row_kept_down_at_one_boot_when_policy_turns_auto_before_the_next_boot_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(relaunch="never")
+    assert rebooted.invoke().exit_code == 0
+    _update(relaunch="auto", relaunch_set_by="default")
+    rebooted.reboot("next-boot", BOOTED_AT + 86_400)
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_legacy_row_judged_by_an_earlier_boot_and_never_started_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(
+        boot_decision={"boot_id": "middle-boot", "cause": "host_reboot", "reason": "policy never forbids boot relaunch"}
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+    assert _row()["exit"]["cause"] == "unknown"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_crash_exit_recorded_before_this_boot_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(
+        run_state="exited",
+        ended_at="2027-01-14T00:00:00Z",
+        supervisor_exit={"cause": "terminal_quit_or_crash", "at": "2027-01-14T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+
+
+def test_given_crash_exit_recorded_in_this_boot_when_boot_relaunch_runs_then_it_is_relaunched(rebooted):
+    _update(
+        run_state="exited",
+        ended_at="2027-01-16T00:00:00Z",
+        supervisor_exit={"cause": "terminal_quit_or_crash", "at": "2027-01-16T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 1
+
+
+def test_given_wind_down_before_this_boot_when_boot_relaunch_runs_then_it_is_relaunched(rebooted):
+    rebooted.cfg["session_relaunch"]["causes"] = ["host_reboot", "maintenance_wind_down"]
+    _update(
+        run_state="exited",
+        ended_at="2027-01-14T00:00:00Z",
+        supervisor_exit={"cause": "maintenance_wind_down", "at": "2027-01-14T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 1
+
+
+def test_given_reservation_from_an_earlier_boot_that_never_started_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted,
+):
+    _update(run_state="relaunched", relaunched_boot_id="previous-boot")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "never started" in result.output
+    assert state.run_state(_row()) == "exited"
+
+
+def test_given_row_replayed_and_running_in_one_boot_when_the_host_reboots_again_then_it_is_relaunched(rebooted):
+    assert rebooted.invoke().exit_code == 0
+    assert len(rebooted.launches) == 1
+    generation = state.begin("c-myproject-host-1")
+    assert state.mark_running("c-myproject-host-1", generation=generation, sequence=1)
+    rebooted.reboot("next-boot", BOOTED_AT + 86_400)
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 2
+
+
+def test_given_remote_row_on_the_launcher_host_when_boot_relaunch_runs_then_it_is_neither_replayed_nor_settled(
+    rebooted,
+):
+    _update(kind="remote", name="c-r-myproject-1")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "foreign or remote session" in result.output
+    assert _row()["run_state"] == "running"

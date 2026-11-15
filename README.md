@@ -934,10 +934,10 @@ unrelated project-registry discovery prompts.
 
 ```bash
 ai sessions                       # Running sessions of this host and its paired host, as a table
-ai sessions list -a/--all         # Add exited and unknown sessions
+ai sessions list -a/--all         # Add exited, stale and unknown sessions
 ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
 ai sessions list -g/--group-by status -s/--sort-by changed,name
-ai sessions list -j/--json        # This host's registry records, unchanged by the options above
+ai sessions list -j/--json        # This host's records with earlier_boot_gone, unchanged by the options above
 ```
 
 The table groups rows by host (this host first) and puts running sessions at the top of each
@@ -1007,6 +1007,13 @@ Incomplete legacy recipes are refused with a diagnostic. A session finally exite
 shell by hand stays down; `manual_exit` and `unknown` veto every policy, including `always`.
 A session stopped by `ai sessions wind-down` records `maintenance_wind_down` and relaunches
 under policy `auto` or `always`, unless a profile's `causes` list leaves it out.
+Only a session that was running when the host went down is replayed. An exit recorded before
+this boot started (other than a wind-down), a reservation an earlier boot made that never
+started, and a run an earlier boot's relaunch already kept down are refused as
+`... so it was not running when the host went down`. A run from an earlier boot that this pass
+does not replay, once tmux and the process table show it gone, is recorded as exited:
+`host_reboot` when the reboot ended it, `unknown` when it was already down, so a later boot
+never replays it. `ai sessions mark <name> exited -c host_reboot` also settles such a row by hand.
 The command also refuses foreign/remote records, deny-boot safety files, existing tmux sessions,
 disabled causes and policy `never`. Each boot attempt is durably reserved before launch and is
 never repeated in the same boot, even after launch failure. Decisions are logged and stored in
