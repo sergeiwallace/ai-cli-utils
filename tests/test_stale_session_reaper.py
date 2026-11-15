@@ -1820,6 +1820,11 @@ class _OwnedSupervisor:
     terminal calls ``setpgrp()``, ``script`` puts the supervisor in a session of its
     own, and the heartbeat ticker calls ``setsid()``. Once the root has exited, its
     remaining members are reparented to init and only these ids still reach them.
+
+    An id alone is not ownership: once every process in a group has exited, its id is
+    free for an unrelated process to take as its pid. So each member seen is recorded
+    by pid AND create time, and a group or session is killed only while it still holds
+    a live recorded member. One with none left is a reuse, and is left alone.
     """
 
     _NOTE_INTERVAL = 0.5
@@ -1829,6 +1834,9 @@ class _OwnedSupervisor:
         self.started = started
         self.groups = {process.pid}
         self.sessions = {process.pid}
+        self.members: dict[int, float] = {}
+        with contextlib.suppress(psutil.Error):
+            self.members[process.pid] = psutil.Process(process.pid).create_time()
         self._noted_at = 0.0
 
     def note_tree(self, *, throttle: bool = False) -> None:
@@ -1839,22 +1847,29 @@ class _OwnedSupervisor:
             return
         with contextlib.suppress(psutil.Error):
             for member in psutil.Process(self.process.pid).children(recursive=True):
-                with contextlib.suppress(OSError):
-                    self.groups.add(os.getpgid(member.pid))
-                    self.sessions.add(os.getsid(member.pid))
+                with contextlib.suppress(OSError, psutil.Error):
+                    created = member.create_time()
+                    group, session = os.getpgid(member.pid), os.getsid(member.pid)
+                    self.members[member.pid] = created
+                    self.groups.add(group)
+                    self.sessions.add(session)
 
     def _live_groups(self) -> set[int]:
-        """The groups of every live process in a noted group or session, started after the root."""
-        found = set()
+        """The groups of live processes sharing a group or session with a live recorded member."""
+        candidates = []
         for pid in psutil.pids():
             try:
                 group, session = os.getpgid(pid), os.getsid(pid)
-                if (group in self.groups or session in self.sessions) and psutil.Process(
-                    pid
-                ).create_time() >= self.started:
-                    found.add(group)
+                if group not in self.groups and session not in self.sessions:
+                    continue
+                created = psutil.Process(pid).create_time()
             except (OSError, psutil.Error):
                 continue
+            if created >= self.started:
+                candidates.append((group, session, self.members.get(pid) == created))
+        owned_groups = {group for group, _, recorded in candidates if recorded}
+        owned_sessions = {session for _, session, recorded in candidates if recorded}
+        found = {group for group, session, _ in candidates if group in owned_groups or session in owned_sessions}
         return found - {os.getpgrp(), os.getsid(0)}
 
     def reap(self) -> None:
@@ -2528,6 +2543,52 @@ def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_proce
                     survivor = psutil.Process(int(member["pid"]))
                     if abs(survivor.create_time() - member["created"]) < 1:
                         survivor.kill()
+
+
+class _ExitedRoot:
+    pid = 500
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_given_a_recorded_group_id_reused_by_a_stranger_when_teardown_reaps_then_the_stranger_is_not_signalled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Teardown must not kill a group whose id was freed and reused (AI-CLI-72hf).
+
+    Every recorded member of group and session 500 has exited, and a process the
+    supervisor never started now holds that id as its pid, group and session. It
+    started after the supervisor did, so only its identity tells it apart.
+    """
+    stranger = 500
+    world = {stranger: {"group": 500, "session": 500, "created": 20.0}}
+    signalled: list[int] = []
+
+    class _View:
+        def __init__(self, pid: int) -> None:
+            if pid not in world:
+                raise psutil.NoSuchProcess(pid)
+            self.pid = pid
+
+        def create_time(self) -> float:
+            return world[self.pid]["created"]
+
+    monkeypatch.setattr(psutil, "pids", lambda: list(world))
+    monkeypatch.setattr(psutil, "Process", _View)
+    monkeypatch.setattr(os, "getpgid", lambda pid: world[pid]["group"], raising=False)
+    monkeypatch.setattr(os, "getsid", lambda pid: world[pid]["session"] if pid else 1, raising=False)
+    monkeypatch.setattr(os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(os, "killpg", lambda group, sig: signalled.append(group), raising=False)
+
+    owned = _OwnedSupervisor(_ExitedRoot(), started=10.0)  # type: ignore[arg-type]
+    owned.members = {500: 11.0}
+    owned.reap()
+
+    assert signalled == [], f"teardown signalled a group it never owned: {signalled}"
 
 
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(
