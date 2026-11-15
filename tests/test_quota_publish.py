@@ -132,6 +132,7 @@ def test_given_stale_five_hour_window_when_publish_then_sends_seven_day_without_
     [
         "stale",
         "reset_passed",
+        "reset_beyond_window",
         "pct_null",
         "pct_out_of_range",
         "no_observed_at",
@@ -148,6 +149,7 @@ def test_given_no_current_seven_day_reading_when_publish_then_exits_0_and_sends_
     contents = {
         "stale": json.dumps(_state(now, seven_day_age=1801)),
         "reset_passed": json.dumps(_state(now, seven_day_reset=int(now - 60))),
+        "reset_beyond_window": json.dumps(_state(now, seven_day_reset=10**20)),
         "pct_null": json.dumps(_state(now, seven_day_pct=None)),
         "pct_out_of_range": json.dumps(_state(now, seven_day_pct=140.0)),
         "no_observed_at": json.dumps(_state(now, seven_day_updated_at=None)),

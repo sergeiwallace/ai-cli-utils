@@ -1399,7 +1399,8 @@ def _quota_state_settings() -> tuple[Path, float]:
 def _current_window(state: dict, window: str, now: float, max_age: float) -> tuple[float, float] | None:
     """Return ``(pct, reset_epoch)`` for a window whose reading is current, else None.
 
-    Current means a percentage in 0-100, a reset time that has not passed, and an observation
+    Current means a percentage in 0-100, a reset time that has not passed and lies within one
+    window length, and an observation
     (``<window>_updated_at``) no older than ``max_age`` seconds: the rule ``quota-pct`` reports
     as ``<window>_status == "ok"``, applied here to the state file directly.
     """
@@ -1416,7 +1417,10 @@ def _current_window(state: dict, window: str, now: float, max_age: float) -> tup
         observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
-    if reset < now or now - observed > max_age:
+    window_seconds = (
+        CLAUDE_WEEKLY_QUOTA.window_seconds if window == "seven_day" else CLAUDE_FIVE_HOUR_QUOTA.window_seconds
+    )
+    if reset < now or reset - now > window_seconds or now - observed > max_age:
         return None
     return pct, reset
 
