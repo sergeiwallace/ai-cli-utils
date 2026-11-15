@@ -282,11 +282,17 @@ def _start_real_tmux_supervisor(
     child_body: str | None = None,
     agent_body: str | None = None,
     ownership_bootstrap_barrier: tuple[Path, Path] | None = None,
+    extra_bin: dict[str, str] | None = None,
 ) -> tuple[str, Path, Path]:
-    """Run a generated supervisor through real tmux, locks, and heartbeat writes."""
+    """Run a generated supervisor through real tmux, locks, and heartbeat writes.
+
+    ``extra_bin`` maps a program name to the body of an executable put first on the pane's PATH.
+    """
     session_id = "c-r-session-1" if is_remote else "c-session-1"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    for name, body in (extra_bin or {}).items():
+        _write_executable(bin_dir / name, body)
     _write_isolated_tmux_wrapper(bin_dir / "tmux")
     _write_executable(
         bin_dir / "ai",
@@ -450,6 +456,59 @@ fi
 
     assert _tmux_run(real_tmux_socket, "kill-session", "-t", session_id).returncode == 0
     _wait_for_condition("the final heartbeat revocation", lambda: not record.exists())
+
+
+# A random draw whose first byte is 0xF8: its urlsafe base64 starts with "-", one draw in 64.
+_DASH_LEADING_DRAW = """\
+import secrets
+
+secrets.token_bytes = lambda nbytes=None: bytes([0xF8]) + bytes((nbytes or 32) - 1)
+"""
+
+
+@pytest.mark.real_tmux
+def test_given_a_generation_token_draw_that_encodes_with_a_leading_dash_when_the_supervisor_starts_then_its_child_runs(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """The supervisor's random generation token is passed to `ai` as a positional argument.
+
+    A token that began with "-" was read as an option, so the supervisor exited before its child
+    ran, on about one launch in 64.
+    """
+    python3 = shutil.which("python3")
+    if python3 is None:
+        pytest.skip("the supervisor runs python3 from PATH, and none is installed")
+    site = tmp_path / "dash-draw"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text(_DASH_LEADING_DRAW, encoding="utf-8")
+    shim = f'#!/bin/sh\nPYTHONPATH={shlex.quote(str(site))} exec {shlex.quote(python3)} "$@"\n'
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    session_id, state_home, _ = _start_real_tmux_supervisor(
+        real_tmux_socket,
+        tmp_path,
+        real_supervisor_shell,
+        is_remote=False,
+        child_body=child_body,
+        extra_bin={"python3": shim},
+    )
+    _wait_for_condition(
+        "the child, or the supervisor's exit",
+        lambda: (
+            (tmp_path / "child-ready").exists()
+            or _tmux_run(real_tmux_socket, "has-session", "-t", session_id).returncode != 0
+        ),
+    )
+    assert (tmp_path / "child-ready").exists(), "the supervisor exited before its child ran"
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    assert not generation.startswith("-")
+    record = heartbeat_path(state_home, session_id, generation)
+    _wait_for_condition("the first heartbeat record", record.exists)
+    assert _tmux_run(real_tmux_socket, "kill-session", "-t", session_id).returncode == 0
 
 
 @pytest.mark.real_tmux

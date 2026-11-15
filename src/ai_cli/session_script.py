@@ -447,6 +447,16 @@ def get_engine_script(
       export AI_CLI_RUN_GENERATION
     # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
+    # BEGIN RUN STATE generation-token-option
+      # The token is passed to `ai` as a positional argument, and a urlsafe token starts with
+      # "-" one time in 64, which the command reads as an option: the bind before the child
+      # starts then fails and the supervisor exits. A leading letter keeps it an argument.
+      # Bracketed because it runs only at supervisor start: a supervisor already running
+      # without it still certifies for an in-place restart, which replaces only the child.
+      if [[ "$generation_token" == -* ]]; then
+        generation_token="g$generation_token"
+      fi
+    # END RUN STATE
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
       _reaper_evidence_enabled=false

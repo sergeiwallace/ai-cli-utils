@@ -868,6 +868,14 @@ State owned by other tools joins the same run through a hook file in
 it is skipped and reported as pending instead), and runs after the core moves ([hook contract](docs/reference/migrate-session-hooks.md)). An
 `ai adopt-session` that retitles the session runs the same hooks the same way.
 
+A migration that finishes then looks for references to the old name left in code and
+config. The `[migrate_session] references_command` in `config.toml`, if set, runs once
+with `--old OLD --new NEW` and may rewrite them. Then a scan of the repo's tracked files
+lists every remaining reference to OLD, or to one of its tmux session names, as
+`file:line`. Any reference left makes the run report `finished with leftovers` and exit 1;
+the scan never rewrites anything, and a path matching `references_allow` (a rename map,
+a naming example) is not counted ([contract](docs/reference/migrate-session-hooks.md#references-left-after-a-migration)).
+
 `ai c NEW` never starts a session whose recorded migration is partial. Before the
 worktree or the session exists, it finishes any migration to NEW this host recorded
 unfinished and re-plans the ones recorded finished. If a part is still left, it starts
@@ -1020,6 +1028,13 @@ Incomplete legacy recipes are refused with a diagnostic. A session finally exite
 shell by hand stays down; `manual_exit` and `unknown` veto every policy, including `always`.
 A session stopped by `ai sessions wind-down` records `maintenance_wind_down` and relaunches
 under policy `auto` or `always`, unless a profile's `causes` list leaves it out.
+Only a session that was running when the host went down is replayed. An exit recorded before
+this boot started (other than a wind-down), a reservation an earlier boot made that never
+started, and a run an earlier boot's relaunch already kept down are refused as
+`... so it was not running when the host went down`. A run from an earlier boot that this pass
+does not replay, once tmux and the process table show it gone, is recorded as exited:
+`host_reboot` when the reboot ended it, `unknown` when it was already down, so a later boot
+never replays it. `ai sessions mark <name> exited -c host_reboot` also settles such a row by hand.
 The command also refuses foreign/remote records, deny-boot safety files, existing tmux sessions,
 disabled causes and policy `never`. Each boot attempt is durably reserved before launch and is
 never repeated in the same boot, even after launch failure. Decisions are logged and stored in

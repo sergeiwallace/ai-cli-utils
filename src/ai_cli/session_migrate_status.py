@@ -102,6 +102,24 @@ def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dic
     return left, plan.live
 
 
+def judge_pair(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str, bool]:
+    """``(parts left, live refusal or "", whether a plan ran)`` for one recorded pair, read-only.
+
+    The one judgement ``ai migrate-session --status`` and the launch guard of ``ai c NEW`` both
+    use, so they cannot disagree about a pair. A NEW slot that is gone is judged by the ledger: a
+    slot that moved on to a later migration (:func:`moved_on`) leaves nothing to plan here, and one
+    that is simply missing is a part left. Otherwise the pair is re-planned (:func:`replan_live`).
+    """
+    state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
+    slot = repo_root / ".worktrees" / new
+    if not slot.is_dir():
+        if moved_on(new, repo_root, state) is not None:
+            return {}, "", True
+        return {"slot": f"missing: {slot} does not exist"}, "", False
+    left, live = replan_live(repo_root, old, new, **kwargs)
+    return left, live, UNPLANNED not in left
+
+
 def _bookkeeping(row: dict) -> bool:
     """Whether a ledger row only notes a delivered context, recorded transcripts or archived files.
 
@@ -175,7 +193,9 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
     Nothing left and a ledger row naming the pair: append ``finished`` with ``verified: true``,
     unless the latest row already says so. Anything left: mark each such part failed and add a
     ``NOT finished`` warning naming them, so ``result.failed`` holds and nothing is recorded. A
-    leftover cleanup in another repo is not judged here.
+    leftover cleanup in another repo is not judged here. A run with nothing left then runs the
+    references step (:func:`ai_cli.session_migrate_references.sweep`), whose leftovers are
+    reported beside the finished pair rather than holding its ``finished`` row back.
     """
     if any(move.kind == m.ALREADY_MIGRATED for move in result.moves):
         return  # a leftover cleanup: the pair's home is in another repo, and its own finish judges it
@@ -203,3 +223,7 @@ def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: An
         "verified"
     ):
         m._append_ledger(state, result.old, result.new, repo_root, finished=True, verified=True)
+    if not result.failed:
+        from .session_migrate_references import sweep
+
+        sweep(result, repo_root)

@@ -63,7 +63,10 @@ tasks, memory and resume hand-off:
   under ``<new>``;
 * whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
-  the first write and run after the core moves.
+  the first write and run after the core moves;
+* once a writing run's re-plan finds nothing left, the references step
+  (:mod:`ai_cli.session_migrate_references`): the configured references command, then a scan of
+  the repository's tracked files that names every reference to the old name still there.
 
 Every refusal is checked before the first write, in ``--dry-run`` too: the slot
 must be a registered worktree, nothing may already exist at the new slot or its
@@ -126,7 +129,7 @@ from .session_adopt import (
     retitle_transcript,
 )
 from .session_migrate_progress import Progress, timed
-from .venv_relocate import relocate_venv
+from .venv_relocate import relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
@@ -193,6 +196,12 @@ class MigrationResult:
     task_intent: dict = field(default_factory=dict, repr=False)
     #: Under ``dry_run``, the refusal a writing run would raise because a session is live, else empty.
     live: str = ""
+    #: Whether the references step ran (:mod:`ai_cli.session_migrate_references`), after a completed run.
+    references_checked: bool = False
+    #: What the references step did, one line each.
+    reference_notes: list[str] = field(default_factory=list)
+    #: Each reference to the old name that step left; any makes the run "finished with leftovers".
+    references_left: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -637,7 +646,8 @@ def _plan_iterm2(old: str, new: str, old_wt: Path) -> list[PlannedMove]:
         if run_state(record) == "running":
             from .session_reconcile import liveness_blocker
 
-            raise MigrationError(f"session run state is still running: {liveness_blocker(record)}")
+            if (blocker := liveness_blocker(record)) is not None:
+                raise MigrationError(f"session run state is still running: {blocker}")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
@@ -1958,6 +1968,9 @@ def _start_session(
     has_venv = (old_wt / ".venv").is_dir()
     if has_venv:
         moves.append(PlannedMove("virtual environment", str(old_wt / ".venv"), str(new_wt / ".venv"), "rewrite"))
+    slot_record = stale_checkout_record(old_wt / ".venv", old_wt)
+    if slot_record is not None:
+        moves.append(PlannedMove("venv back-pointer", str(slot_record), str(new_wt), "rewrite"))
 
     # The canonical branch is renamed whether the slot has it checked out or parks it
     # while a topic branch is checked out: either way it still names the old session.
@@ -2062,6 +2075,11 @@ def _start_session(
                 f"virtual environment FAILED: {new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
                 f"with `uv sync --reinstall`"
             )
+    if slot_record is not None:
+        try:
+            repoint_checkout_record(slot_record, old_wt, new_wt)
+        except (OSError, UnicodeDecodeError) as exc:
+            result.warnings.append(f"venv back-pointer {slot_record} FAILED to name {new_wt}: {_one_line(str(exc))}")
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:

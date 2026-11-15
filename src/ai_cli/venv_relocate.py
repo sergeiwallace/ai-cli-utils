@@ -16,6 +16,8 @@ import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
+from . import config as _config
+
 _SCRIPT_DIRS = ("bin", "Scripts")
 _NAMED_FILES = ("pyvenv.cfg",)
 # Top-level site-packages records that can hold an absolute path to an installed project: a
@@ -148,3 +150,43 @@ def relocate_venv(venv: Path, old_root: Path, new_root: Path) -> list[Path]:
     spellings = _spellings(old_root, new_root)
     pattern = _pattern(spellings)
     return [path for path in _candidates(venv) if _rewrite(path, pattern, spellings)]
+
+
+def stale_checkout_record(venv: Path, old_root: Path) -> Path | None:
+    """The back-pointer record of ``venv`` when it still names ``old_root``; None otherwise. Read-only.
+
+    A venv kept in a shared store outside its checkout (``.venv`` is a link into the store) carries
+    ``.<prefix>-checkout``, ``<prefix>`` being ``[worktree] marker_prefix``: the absolute path of
+    the checkout that owns it, perhaps with a trailing newline. Unset, there is no record to read.
+    """
+    prefix = _config.get_worktree_marker_prefix()
+    if not prefix or not venv.is_dir():
+        return None
+    record = venv.resolve() / f".{prefix}-checkout"
+    try:
+        named = record.read_bytes().decode("utf-8").rstrip("\r\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return record if named in _forms(old_root) else None
+
+
+def repoint_checkout_record(record: Path, old_root: Path, new_root: Path) -> bool:
+    """Replace ``record``'s path with ``new_root`` atomically, only while it still names ``old_root``."""
+    data = record.read_bytes()
+    text = data.decode("utf-8")
+    named = text.rstrip("\r\n")
+    if named not in _forms(old_root):
+        return False
+    updated = (str(new_root) + text[len(named) :]).encode("utf-8")
+    handle, temp_name = tempfile.mkstemp(dir=record.parent, prefix=f".{record.name}.")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(updated)
+            out.flush()
+            os.fsync(out.fileno())
+        Path(temp_name).chmod(record.stat().st_mode)
+        Path(temp_name).replace(record)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+    return True

@@ -58,7 +58,8 @@ def test_named_session_when_command_exits_then_state_precedes_signal(exit_target
     result = CliRunner().invoke(cli, ["exit-session", name, "-t", "0.1"])
     assert result.exit_code == 0, result.output
     assert "exited" in result.output
-    assert seen == [proc.pid]
+    # Only the session's own process is signalled (SIGCONT, then SIGTERM, on POSIX).
+    assert set(seen) == {proc.pid}
     proc.wait(timeout=3)
 
 

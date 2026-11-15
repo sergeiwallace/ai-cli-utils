@@ -34,6 +34,8 @@ _SCANNED_PATHS = (
     # It is a different guard. Every file here is tracked and published, so a
     # private name in a maintenance script is as public as one in the package.
     "scripts",
+    # Changelog fragments are published as CHANGELOG.md text once folded.
+    "changelog.d",
     "README.md",
     "CONTRIBUTING.md",
     "LICENSE",
@@ -53,6 +55,9 @@ _EXPECTED_TOP_LEVEL_DIRS = frozenset(
         ".github",
         ".vscode",
         "assets",
+        # One changelog fragment per change, folded into CHANGELOG.md at release
+        # (CONTRIBUTING.md, Changelog Fragments).
+        "changelog.d",
         "config",
         "demo",
         "docs",

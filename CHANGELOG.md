@@ -9,26 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai import-names` copies the git-tree registry (pool, manual names, held rows, renames and policy
-  snapshot) into the fleet's Dolt database in one commit and prints its counts; a second run finds
-  nothing to import. `ai seed-name-verdicts -f FILE` applies the owner's approvals at the scope each
-  was given, after checking every part of the seed file against an owner-approved oracle pinned at
-  a fleet-repository commit by a separate cutover record. `ai list-migrations` lists every rename,
-  and `ai find-names` searches names by status, verdict scope, holder and hold state in one query,
-  or with `-H/--history NAME` shows every past value (Dolt only).
-- On the database registries every session name has a general status (`unreviewed`, `rejected` or
-  `approved`), and names can be approved or rejected for one repository, host or session only.
-  The picker, spare top-up and offline spares use only approved names that no verdict rejects
-  for the launch, and refuse when the status data is missing or unreadable. A name chosen by hand
-  needs no approval, but a rejected one needs a session approval. `ai set-name-status` and
-  `ai set-name-verdict` record who decided (`-a/--actor`) apart from the session that wrote it;
-  `ai list-names` shows each name's status and `-p/--pool` lists the whole pool.
-- The session-name registry can live in a Dolt database on its own ref of the fleet repository
-  (`registry_backend = "dolt"` with `schema = 2` in `config/session-names.toml`), reached through
-  the `dolt` program. Every write is guarded in the statement itself, pushed without force and read
-  back from the remote tip before it counts. An install with no fleet repository now keeps its
-  registry in a local SQLite file with the same tables and constraints, seeded with the shipped
-  name list.
+- `ai migrate-session` no longer finishes silently with the old name still written in code or
+  config. Once a migration finishes, it runs the `[migrate_session] references_command` from
+  `config.toml`, if one is set, as `<argv> --old OLD --new NEW`, then scans the repo's tracked
+  files for OLD and its tmux session names as whole words. Each reference left is listed as
+  `file:line` and the run reports `finished with leftovers` and exits 1. A path matching a
+  `references_allow` glob is not counted (default `.beads/**`), and the scan never rewrites a
+  file. `--finish` re-checks once the references are fixed
+  (`docs/reference/migrate-session-hooks.md`).
 - `ai sessions list` prints one aligned table with column headers (`HOST`, `SESSION`, `STATUS`,
   `CAUSE`, `CHANGED`, `RELAUNCH`), rendered by `rich.table`, instead of one tagged log line per
   session. Rows are grouped by host, this host first, with running sessions at the top of each
@@ -45,6 +33,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
+  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
+  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
+  stayed stopped. SIGCONT to a running process does nothing.
+- A migrate-session hook, Beads publish or references command written as an interpreter and
+  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
+  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
+  in any argument is now expanded to the home directory.
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
+- `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
+  the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
+  worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
+  time. On a loaded host that gap measured 19 to 67 seconds with nothing printed.
+- After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
+  `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
+  still says `running` from an earlier boot. When tmux and the process table on its owning host
+  both show nothing, such a record is proved gone (no process survives a reboot), so the
+  migration proceeds. The record is not rewritten, so the boot relaunch keeps its evidence.
+  A refusal now names the reason: a live tmux session or process, a probe that could not answer,
+  or a record owned by another host
+  ([docs/bugs/earlier-boot-run-blocks-migration.md](docs/bugs/earlier-boot-run-blocks-migration.md)).
 - Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
   `never`, so boot replay brings them back like any other session. Probes still default to
   `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
@@ -102,6 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
   refuses contradictory running records before moving files. Detached replay and all local engines
   also schedule the existing worker.
+- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
+  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
+  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
+  failed with "No task prefix is registered", and from inside a repository it planned a new session
+  named after the whole string in the wrong repository.
 
 ### Added
 

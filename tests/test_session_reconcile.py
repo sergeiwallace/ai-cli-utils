@@ -157,6 +157,42 @@ def test_given_live_or_unprovable_run_when_migration_preflights_then_running_is_
     assert registry.registry_path().read_bytes() == before
 
 
+def test_given_earlier_boot_run_proved_gone_when_migration_preflights_then_it_plans_without_rewriting(stale_record):
+    # Frozen reproduction: after a reboot the record still said running, reconcile leaves an
+    # earlier boot's record alone, and the preflight refused "liveness is unprovable" forever.
+    registry._mutate(lambda doc: doc["sessions"][0].update(boot_id="previous-boot") or True)
+    before = registry.registry_path().read_bytes()
+    moves = _plan_iterm2("session-1", "session-2", Path("/nonexistent/old-worktree"))
+    assert [move.kind for move in moves] == ["iTerm2 restore record"]
+    assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("guard", "blocker"),
+    [
+        ("tmux", "live tmux session c-session-1"),
+        ("unknown_tmux", "the tmux probe could not answer"),
+        ("process_table", "the process table probe could not answer"),
+        ("other_host", "belongs to host host-b"),
+    ],
+)
+def test_given_earlier_boot_run_not_proved_gone_when_migration_preflights_then_it_refuses(
+    stale_record, monkeypatch, guard, blocker
+):
+    import psutil
+
+    change = {"boot_id": "previous-boot"} | ({"owning_host": "host-b"} if guard == "other_host" else {})
+    registry._mutate(lambda doc: doc["sessions"][0].update(change) or True)
+    if guard in {"tmux", "unknown_tmux"}:
+        monkeypatch.setattr(registry, "_local_session_alive", lambda _name: True if guard == "tmux" else None)
+    elif guard == "process_table":
+        monkeypatch.setattr(psutil, "process_iter", Mock(side_effect=psutil.AccessDenied(42)))
+    before = registry.registry_path().read_bytes()
+    with pytest.raises(MigrationError, match=blocker):
+        _plan_iterm2("session-1", "session-2", Path("/nonexistent/old-worktree"))
+    assert registry.registry_path().read_bytes() == before
+
+
 def test_given_legacy_record_when_listed_then_state_is_explicit_and_other_boot_is_unknown(stale_record):
     def change(doc):
         first = doc["sessions"][0]

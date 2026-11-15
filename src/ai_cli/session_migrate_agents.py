@@ -12,6 +12,8 @@ after ``ai migrate-session`` renames its slot, so this module moves them too:
   :func:`ai_cli.branch_rename.rename_branch_anchored`, so its tip is anchored first;
 * every ``branch.*.<prefix>-session-home`` marker naming the old slot or a moved
   worktree is rewritten to the new path, under the branch's new name;
+* a moved worktree's ``.venv``, when it links into a shared store, has its
+  ``.<prefix>-checkout`` record rewritten to the new path when it names the old one;
 * a worktree on a ``wt/<old>/`` (or already renamed ``wt/<new>/``) branch under a
   host-prefixed container ``<host>--<old>-agents/`` moves to ``<host>--<new>-agents/``;
 * every Claude Code project directory whose slug embeds an old-name agents container,
@@ -45,7 +47,7 @@ from pathlib import Path
 from . import config as _config
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
-from .venv_relocate import needs_relocation, relocate_venv
+from .venv_relocate import needs_relocation, relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
 
@@ -92,6 +94,9 @@ class AgentEntry:
     tip: str = ""
     ownership: WorktreeOwnership | None = None
     venv_old: Path | None = None
+    #: The venv's back-pointer record, when it still names the worktree's path before the move.
+    venv_record: Path | None = None
+    venv_record_old: Path | None = None
 
     @property
     def moves(self) -> bool:
@@ -475,6 +480,8 @@ def plan_agents(
                 original = next((source for source, target in recovered.items() if target == path), path)
                 if needs_relocation(path / ".venv", original):
                     entry.venv_old = original
+                entry.venv_record = stale_checkout_record(path / ".venv", original)
+                entry.venv_record_old = original if entry.venv_record else None
             if dest == path:
                 entry.worktree = None
                 if (
@@ -483,7 +490,12 @@ def plan_agents(
                     and entry.ownership.stamp_value in {None, str(dest)}
                 ):
                     entry.ownership = None
-                if entry.branch is None and entry.ownership is None and entry.venv_old is None:
+                if (
+                    entry.branch is None
+                    and entry.ownership is None
+                    and entry.venv_old is None
+                    and entry.venv_record is None
+                ):
                     continue
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
@@ -539,6 +551,8 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
             lines += describe_worktree_ownership(e.ownership)
         if e.venv_old is not None:
             lines.append(("virtual environment", str(e.venv_old / ".venv"), str(e.dest), "rewrite"))
+        if e.venv_record is not None:
+            lines.append(("venv back-pointer", str(e.venv_record), str(e.dest), "rewrite"))
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -584,6 +598,11 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 relocate_venv(e.dest / ".venv", e.venv_old, e.dest)
             except OSError as exc:
                 warnings.append(f"virtual environment {e.dest / '.venv'} FAILED to relocate: {exc}")
+        if e.venv_record is not None and e.venv_record_old is not None and e.dest is not None:
+            try:
+                repoint_checkout_record(e.venv_record, e.venv_record_old, e.dest)
+            except (OSError, UnicodeDecodeError) as exc:
+                warnings.append(f"venv back-pointer {e.venv_record} FAILED to name {e.dest}: {exc}")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:

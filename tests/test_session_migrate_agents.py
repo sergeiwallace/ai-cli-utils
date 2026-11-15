@@ -764,6 +764,76 @@ def test_given_a_direct_url_in_file_uri_form_when_relocated_then_the_uri_names_t
     assert relocate_venv(tmp_path / "venv", old, new) == []
 
 
+def _store_venv(root: Path, name: str, owner: Path) -> tuple[Path, Path]:
+    """A venv in a shared store with the back-pointer record naming ``owner``: ``(venv, record)``."""
+    venv = _venv_in_root(root, name, owner)
+    record = venv / ".hub-checkout"
+    record.write_bytes(f"{owner}\n".encode())
+    return venv, record
+
+
+@pytest.fixture
+def store(fleet, tmp_path):
+    """A venv store whose records name the slot, its agent worktree and two checkouts the migration never moves."""
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    root = tmp_path / "local-io" / "venvs"
+    agent_venv, agent_record = _store_venv(root, "otherrepo--leaf-a", fleet["leaf_a"])
+    slot_venv, slot_record = _store_venv(root, f"myrepo--{OLD}", fleet["slot"])
+    unrelated = [
+        _store_venv(root, "otherrepo--unrelated-1", fleet["other"] / ".worktrees" / "unrelated-1")[1],
+        # A sibling whose path extends the moved worktree's: a prefix match would wrongly take it.
+        _store_venv(root, "otherrepo--leaf-a-2", fleet["leaf_a"].with_name("leaf-a-2"))[1],
+    ]
+    return {
+        "agent": (agent_venv, agent_record),
+        "slot": (slot_venv, slot_record),
+        "unrelated": {record: record.read_bytes() for record in unrelated},
+        "new_a": fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a",
+        "new_slot": fleet["repo"] / ".worktrees" / NEW,
+    }
+
+
+def test_given_venv_back_pointers_naming_moved_checkouts_when_migrated_then_they_name_the_new_paths(fleet, store):
+    (fleet["leaf_a"] / ".venv").symlink_to(store["agent"][0], target_is_directory=True)
+    (fleet["slot"] / ".venv").symlink_to(store["slot"][0], target_is_directory=True)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert store["agent"][1].read_bytes() == f"{store['new_a']}\n".encode()
+    assert store["slot"][1].read_bytes() == f"{store['new_slot']}\n".encode()
+    assert {record: record.read_bytes() for record in store["unrelated"]} == store["unrelated"]
+
+
+def test_given_a_verified_pair_whose_venv_back_pointers_name_old_paths_when_finished_then_they_are_repointed(
+    fleet, store
+):
+    from ai_cli.config import get_xdg_state_home
+    from ai_cli.session_migrate_status import finish_state
+
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    assert finish_state(OLD, NEW, get_xdg_state_home()) == "verified"
+    # What a migration that never carried the back-pointers left: the checkouts moved, their records did not.
+    (store["new_a"] / ".venv").symlink_to(store["agent"][0], target_is_directory=True)
+    (store["new_slot"] / ".venv").symlink_to(store["slot"][0], target_is_directory=True)
+    stale = {store["agent"][1]: store["agent"][1].read_bytes(), store["slot"][1]: store["slot"][1].read_bytes()}
+
+    code, out, err = _migrate(fleet, "--finish", "-n")
+
+    assert code == 0, out + err
+    assert "venv back-pointer" in out
+    assert {record: record.read_bytes() for record in stale} == stale
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    assert store["agent"][1].read_bytes() == f"{store['new_a']}\n".encode()
+    assert store["slot"][1].read_bytes() == f"{store['new_slot']}\n".encode()
+    assert {record: record.read_bytes() for record in store["unrelated"]} == store["unrelated"]
+
+
 # A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` still
 # names the old, now missing, directory: anything reading source through a code object then
 # finds nothing. The migration removes those caches (Python rebuilds them on the next import),

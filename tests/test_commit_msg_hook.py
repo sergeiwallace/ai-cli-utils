@@ -173,3 +173,33 @@ def test_given_a_new_feat_commit_in_the_same_second_as_head_when_committed_then_
 
     assert result.returncode != 0
     assert "feat: commits require a CHANGELOG.md [Unreleased] entry" in result.stdout + result.stderr
+
+
+def _commit_with_fragment(
+    repo: Path, env: dict[str, str], message: str, fragment: str
+) -> subprocess.CompletedProcess[str]:
+    (repo / "feature.txt").write_text(message, encoding="utf-8")
+    path = repo / "changelog.d" / fragment
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(f"- {message}\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt", f"changelog.d/{fragment}", env=env)
+    return _git(repo, "commit", "-m", message, env=env)
+
+
+def test_given_a_feat_commit_staging_a_changelog_fragment_when_committed_then_it_lands(hooked_repo):
+    repo, env = hooked_repo
+
+    result = _commit_with_fragment(repo, env, "feat: add a thing", "add-a-thing.added.md")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(repo, "log", "-1", "--format=%s", env=env).stdout.strip() == "feat: add a thing"
+
+
+def test_given_a_feat_commit_staging_a_misnamed_fragment_when_committed_then_the_hook_refuses_it(hooked_repo):
+    repo, env = hooked_repo
+
+    result = _commit_with_fragment(repo, env, "feat: add a thing", "add-a-thing.md")
+
+    assert result.returncode != 0
+    assert "changelog.d/<name>.<type>.md" in result.stdout + result.stderr
+    assert _git(repo, "log", "-1", "--format=%s", env=env).stdout.strip() == "chore: seed"
