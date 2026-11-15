@@ -176,6 +176,13 @@ it well under the cap. The cost is a second MSYS2 setup per run, which doubles t
 transient MSYS2 download failure. The step also passes `--durations=15` and omits `-q`, so every log
 shows the worker count and the slowest tests.
 
+### Four Windows shards since 2026-11-15
+
+The session-name registry's real-Dolt test cases are slow on Windows, where every `dolt` call
+pays a process start, and they pushed both Windows shards past the 40-minute cap at 46% and 62%
+(PR #582). The Windows matrix now runs four shards, `(shard 1/4)` to `(4/4)`, under the same
+`test-windows` rollup check.
+
 ## macOS suite runtime: two shards
 
 `test-macos` had a 45-minute cap and one job. Healthy runs on `main` took 42 minutes by
