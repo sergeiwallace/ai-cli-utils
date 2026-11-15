@@ -176,6 +176,15 @@ it well under the cap. The cost is a second MSYS2 setup per run, which doubles t
 transient MSYS2 download failure. The step also passes `--durations=15` and omits `-q`, so every log
 shows the worker count and the slowest tests.
 
+## macOS suite runtime: two shards
+
+`test-macos` had a 45-minute cap and one job. Healthy runs on `main` took 42 minutes by
+2026-11-15 (PR #583: 16:54 to 17:36 UTC), and a pull request adding the session-name
+registry's real-Dolt test cases was cancelled at the cap at 83% with no failing test. It now
+runs the same way as Windows: `test-macos (shard 1/2)` and `(shard 2/2)` split the suite with
+`pytest_ci_shard`, and a small `test-macos` job that `needs` both reports the required check
+under `always()`. The 45-minute cap stays and applies to each shard.
+
 ## Session checklist
 
 1. Treat CI results as meaningful. A failure is a code or workflow problem.

@@ -239,8 +239,19 @@ jobs:
       - name: Every Windows shard passed
         run: test "${{ needs.test-windows-shard.result }}" = "success"
 
-  test-macos:
+  # The macOS suite runs as two shards in parallel, like Windows, and `test-macos`
+  # below is the one check that reports for both, so the required-check name did not
+  # change. Healthy single runs on main took 42 minutes by 2026-11-15 against the
+  # 45-minute cap, and the session-name registry's real-Dolt cases pushed a pull
+  # request run past it at 83% with no failing test.
+  test-macos-shard:
+    name: test-macos (shard ${{ matrix.shard }}/2)
     runs-on: macos-latest
+    strategy:
+      # A failure in one shard should not cancel the other: both results are wanted.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # A REQUIRED CHECK as of AI-CLI-66mk, alongside `lint`, `test` and
     # `test-windows`. It used to carry `continue-on-error: true` because it was
     # expected to be red when first added (AI-CLI-3cai) and a job permitted to fail
@@ -302,4 +313,12 @@ jobs:
           echo "$RUNNER_TEMP/dolt-darwin-arm64/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/dolt-darwin-arm64/bin/dolt" version
       - run: uv sync --locked --dev
-      - run: uv run pytest --tb=short -q
+      - run: uv run pytest --tb=short -q -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
+
+  test-macos:
+    if: always()
+    needs: test-macos-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every macOS shard passed
+        run: test "${{ needs.test-macos-shard.result }}" = "success"
