@@ -237,6 +237,18 @@ def canonical_name(name: str) -> str:
     return _ENGINE_PREFIX.sub("", name, count=1)
 
 
+def _live_claim(row: dict, pid: int, started_at: float) -> bool:
+    """Whether ROW holds a current attestation of the process ``pid`` born at ``started_at``."""
+    identity = row.get("agent_identity") or {}
+    return (
+        row.get("kind") == "local"
+        and identity.get("pid") == pid
+        and identity.get("started_at") == started_at
+        and identity.get("generation") == row.get("generation")
+        and row.get("run_state") != "exited"
+    )
+
+
 def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
     """Record the interactive agent process the launcher started on its session row.
 
@@ -253,7 +265,8 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
     * ``interactive``: true, the process is an interactive client in a session pane.
     * ``generation``: the run generation the row held when the agent started.
 
-    Returns False, writing nothing, when the row is missing or belongs to another generation.
+    Returns False, writing nothing, when the row is missing, belongs to another generation,
+    or another session's row holds a live attestation of the same process.
     """
     import psutil
 
@@ -267,6 +280,10 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
     def change(doc):
         row = next((r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name), None)
         if row is None or (generation and row.get("generation") != generation):
+            return False
+        # One attested agent has exactly one owning session: a second live claim on the
+        # same process is refused, never last-write-wins.
+        if any(_live_claim(other, pid, started_at) for other in doc["sessions"] if other is not row):
             return False
         row["agent_identity"] = {
             "pid": pid,

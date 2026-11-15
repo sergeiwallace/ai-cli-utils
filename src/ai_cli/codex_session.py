@@ -40,6 +40,24 @@ FIFO_START_SECONDS = 5.0
 _TMUX_TIMEOUT_SECONDS = 5.0
 
 
+def exclusive_process_flags(codex: str = "codex") -> list[str]:
+    """``["--no-daemon"]`` when the installed Codex offers it, else nothing.
+
+    By default Codex 0.169 starts one shared app-server daemon that every TUI on the host
+    connects to, so tool processes would descend from that shared server rather than from
+    the session's own Codex. ``--no-daemon`` keeps each session in its own process. An
+    older Codex without the option would refuse it, so it is passed only when listed.
+    """
+    path = shutil.which(codex)
+    if path is None:
+        return []
+    try:
+        shown = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return ["--no-daemon"] if "--no-daemon" in shown.stdout else []
+
+
 def codex_home() -> Path:
     """Codex's state directory: ``$CODEX_HOME``, else ``~/.codex`` on every OS."""
     configured = os.environ.get("CODEX_HOME", "").strip()

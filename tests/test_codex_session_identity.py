@@ -306,3 +306,38 @@ def test_given_bare_exec_launch_of_ai_cx_when_it_hands_off_then_the_row_records_
     # execvp keeps the pid, so the launcher's pid and start time become Codex's.
     assert row["agent_identity"]["pid"] == os.getpid()
     assert row["agent_identity"]["started_at"] == psutil.Process().create_time()
+
+
+# --- one owner per attested agent ------------------------------------------------------
+
+
+def test_given_agent_attested_by_one_session_when_another_session_claims_the_same_process_then_it_is_refused(
+    codex_session, tmp_path
+):
+    name, _generation, _supervisor, agent = codex_session
+    other = "cx-r-myproject-box-session-2"
+    other_generation = _register("cx", other, tmp_path)
+    state.mark_running(other, generation=other_generation)
+    before = _row(name)["agent_identity"]
+
+    with pytest.raises(SystemExit) as exc_info:
+        _handle_internal(["record-agent-identity", other, str(agent.pid), other_generation])
+
+    assert exc_info.value.code == 1
+    assert "agent_identity" not in _row(other)
+    assert _row(name)["agent_identity"] == before
+
+
+def test_given_session_relaunched_when_it_gets_a_new_generation_then_the_old_attestation_no_longer_proves_it(
+    codex_session, monkeypatch
+):
+    name, old_generation, _supervisor, agent = codex_session
+
+    new_generation = state.begin(name)
+    _ancestry(monkeypatch, [psutil.Process(agent.pid)])
+    result = CliRunner().invoke(cli, ["exit-session", "-d"])
+
+    assert new_generation != old_generation
+    assert _row(name)["agent_identity"]["generation"] == old_generation
+    assert result.exit_code != 0
+    assert "cannot verify current session" in result.output
