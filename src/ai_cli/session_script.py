@@ -1460,6 +1460,12 @@ def get_engine_script(
         _ai_emit info host "AI_HOST source=inherited: keeping ${{AI_HOST:-<unset>}} (fresh value unavailable)"
       fi
     # END HOST REFRESH
+      # A restart never goes back through `ai c`, which finishes a migration recorded for
+      # this name before the first agent starts. No agent runs here, so finish one now; a
+      # refusal or a part left only warns, and the agent restarts either way.
+      if ! $first_run; then
+        {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal finish-migrations "$tmux_session" "$ai_name" || true
+      fi
       start_watcher
       start_ts=$(date +%s)
       agent_attempted=false
