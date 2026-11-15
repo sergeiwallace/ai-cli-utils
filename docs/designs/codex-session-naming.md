@@ -167,10 +167,26 @@ owning host), and in the launcher for `--once` and bare launches. Codex's home i
 script exports `AI_SESSION_NAME=<canonical name>` into every agent (all four families), and
 for Codex also `CLAUDE_CODE_TASK_LIST_ID=<canonical name>`, as Claude Code already had; the
 bare and `--once` launches set the same. `AI_TMUX_SESSION` stays the tmux name. Every launch
-row in the session registry records the agent `family` (`claude`, `codex`, `gemini`, `pi`),
-and once the agent starts the script records `agent_identity`:
-`{"pid": <int>, "started_at": <epoch seconds, psutil create_time>, "generation": <run
-generation>}`, the shape of `supervisor_identity`. `ai exit-session <canonical name>` maps the
+row in the session registry records `family` (`claude`, `codex`, `gemini`, `pi`) and
+`canonical_name` (the tmux key without its `cx-` or `cx-r-` prefix). Once the agent starts,
+the row gets `agent_identity` for the interactive process the launcher started:
+
+| Key | Value |
+|---|---|
+| `pid` | the agent process itself; the shell that started it exec'd it, so this is never the tmux server or the supervisor shell |
+| `started_at` | start time, epoch seconds, as psutil reports it |
+| `proc_start` | start marker in the platform probe's own unit (procfs start ticks on Linux, psutil epoch seconds elsewhere), checked by `process_probe.probe_for().start_time_match` |
+| `proc_start_backend` | `procfs` or `psutil`, naming that unit |
+| `boot_id` | Linux `boot_id`, macOS `kern.bootsessionuuid`; null on Windows, which exposes none |
+| `interactive` | `true` |
+| `generation` | the run generation the row held when the agent started |
+
+The session script records it after each agent start; a bare launch records the launcher's
+own pid just before it execs (the exec keeps pid and start time), or the pty host's child
+pid. A Windows bare launch records nothing, because `execvp` there starts a new process.
+On an npm-installed Codex the recorded process is Codex's Node entry point, whose child is
+the native binary, so every Codex tool process descends from it.
+`ai exit-session <canonical name>` maps the
 canonical name to the row keyed `cx-<name>` or `cx-r-<name>` (any family), and `ai
 exit-session` with no name, run inside an agent with no Claude Code session record, proves the
 session from `agent_identity` against the process table. A pid whose start time has moved is
