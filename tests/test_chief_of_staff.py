@@ -1396,7 +1396,7 @@ class TestChiefSettings:
             code, _out, err = _run_cli(["ai", "cos"], config=config)
             launch.assert_not_called()
         assert code == 1
-        assert f"chief_of_staff.{key} is not set" in err
+        assert f"firstmate.{key} is not set" in err
         assert not cos.registration_path(seeded_home).exists()
         assert not cos.registry_path(seeded_home).exists()
 
@@ -1512,7 +1512,7 @@ class TestChiefAliases:
         with patch("ai_cli.main._dispatch_session") as dispatch:
             code, _out, err = _run_cli(["ai", "c", "--chief"], config=config)
         assert code == 1
-        assert f"chief_of_staff.{key} must be a list of bare names" in err
+        assert f"firstmate.{key} must be a list of bare names" in err
         dispatch.assert_not_called()
 
 
