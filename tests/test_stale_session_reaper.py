@@ -2896,14 +2896,20 @@ def test_given_a_ctrl_c_during_the_last_promotion_attempt_when_the_budget_runs_o
     promote = promote.replace(tty_guard, "", 1).replace(_PRODUCTION_PROMOTION_BUDGET, "_promotion_budget_seconds=1")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_executable(bin_dir / "python3", '#!/bin/sh\nkill -INT "$PPID"\nsleep 2\nexit 1\n')
+    trace = tmp_path / "trace"
+    _write_executable(
+        bin_dir / "python3",
+        f'#!/bin/sh\nprintf "attempt sends INT to %s\\n" "$PPID" >> {shlex.quote(str(trace))}\n'
+        'kill -INT "$PPID"\nsleep 2\nexit 1\n',
+    )
     ready = tmp_path / "ready"
     ready.write_text("12345\n", encoding="utf-8")
     status = tmp_path / "status"
     harness = tmp_path / "harness.sh"
     harness.write_text(
-        f"""trap '_supervisor_int_count=$((_supervisor_int_count + 1))' INT
+        f"""trap '_supervisor_int_count=$((_supervisor_int_count + 1)); printf "trap ran\\n" >> {shlex.quote(str(trace))}' INT
 _supervisor_int_count=0
+printf 'harness %s\\n' "$$" >> {shlex.quote(str(trace))}
 _child_pid=$$
 _supervisor_child_ready_path={shlex.quote(str(ready))}
 {promote}
@@ -2917,17 +2923,19 @@ printf '%s\\n' "$?" > {shlex.quote(str(status))}
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
-    subprocess.run(
+    result = subprocess.run(
         [supported_session_shell, str(harness)],
         env=environment,
         stdin=subprocess.DEVNULL,
         capture_output=True,
+        text=True,
         timeout=_PROCESS_WAIT_SECONDS,
         check=False,
     )
 
     assert status.read_text(encoding="utf-8").strip() == "2", (
-        "a Ctrl+C during the last promotion attempt was reported as a promotion failure"
+        "a Ctrl+C during the last promotion attempt was reported as a promotion failure; "
+        f"trace={trace.read_text(encoding='utf-8') if trace.exists() else ''!r} stderr={result.stderr!r}"
     )
 
 
