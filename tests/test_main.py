@@ -1649,6 +1649,9 @@ class TestDoSessionLaunchTmuxGuard:
             "project_prefix_override": "test",
             "extra_args": [],
             "config": {},
+            # The direnv preflight runs first and, on a host without direnv, would reach the
+            # patched subprocess.run before the tmux guard these tests exercise.
+            "no_direnv": True,
         }
 
     def test_when_win32_and_tmux_not_found_then_falls_back_to_bare_mode(self, capsys):
