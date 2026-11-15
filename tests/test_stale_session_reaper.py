@@ -274,28 +274,6 @@ def _wait_for_missing_session(socket: str, session_id: str) -> None:
     pytest.fail("tmux session did not terminate")
 
 
-def _assert_returned_shell(socket: str, session_id: str, proof: Path) -> None:
-    def capture():
-        return _tmux_run(socket, "capture-pane", "-p", "-J", "-S", "-", "-t", session_id).stdout
-
-    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        if "Returning to an interactive shell" in capture():
-            break
-        time.sleep(0.05)
-    else:
-        pytest.fail(f"the shell handoff never appeared; pane: {capture()!r}")
-    command = f"printf ready > {shlex.quote(str(proof))}"
-    assert _tmux_run(socket, "send-keys", "-t", session_id, command, "Enter").returncode == 0
-    # The redirect creates the file before printf writes to it, so existence alone can be
-    # observed while the file is still empty; wait for the content itself.
-    _wait_for_condition(
-        "a command executed by the returned shell",
-        lambda: proof.exists() and proof.read_text() == "ready",
-    )
-    assert _tmux_run(socket, "has-session", "-t", session_id).returncode == 0
-
-
 def _wait_for_lines(path: Path, count: int) -> list[str]:
     deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
@@ -768,16 +746,12 @@ fi
     assert replacement_marker.returncode != 0, "the replacement must never receive the supervisor marker"
 
     finish_child.touch()
-    _assert_returned_shell(real_tmux_socket, original_id, tmp_path / "shell-proof")
-    assert _tmux_run(real_tmux_socket, "has-session", "-t", replacement_id).returncode == 0
-    # Only an explicit exit from the returned shell closes the original pane.
-    assert _tmux_run(real_tmux_socket, "send-keys", "-t", original_id, "exit", "Enter").returncode == 0
     _wait_for_missing_session(real_tmux_socket, original_id)
     assert _tmux_run(real_tmux_socket, "has-session", "-t", replacement_id).returncode == 0
 
 
 @pytest.mark.real_tmux
-def test_given_child_exits_before_the_supervisor_waits_when_status_collected_then_shell_starts_without_respawn(
+def test_given_child_exits_before_the_supervisor_waits_when_status_collected_then_session_ends_without_respawn(
     real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
 ):
     """A child that is already reaped when the wait begins must still report its real exit code.
@@ -791,9 +765,9 @@ def test_given_child_exits_before_the_supervisor_waits_when_status_collected_the
 
     At that point `kill -0` fails, so a wait guarded by it never runs and the clean 77 is replaced
     by the initialised 0. Since 0 is neither 77 nor 79, the supervisor reads it as "restart the
-    child" and respawns forever instead of returning the pane to a shell.
+    child" and respawns forever instead of ending the session.
 
-    The launch count is asserted as well as the shell handoff, so the test pins the mechanism rather
+    The launch count is asserted as well as session teardown, so the test pins the mechanism rather
     than only the symptom -- with the defect present it runs into the hundreds.
     """
     launch_log = tmp_path / "child-launches"
@@ -810,7 +784,7 @@ fi
         is_remote=False,
         child_body=child_body,
     )
-    _assert_returned_shell(real_tmux_socket, session_id, tmp_path / "shell-proof")
+    _wait_for_missing_session(real_tmux_socket, session_id)
     launches = launch_log.read_text().count("launched") if launch_log.exists() else 0
     assert launches == 1, f"a clean 77 must not respawn the child; it launched {launches} times"
 
@@ -995,12 +969,7 @@ fi
     assert _wait_for_lines(events, 1) == ["WINCH"]
 
     assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
-    _assert_returned_shell(real_tmux_socket, session_id, tmp_path / "shell-proof")
-    assert launches.read_text().splitlines() == ["START"]
-    assert events.read_text(encoding="utf-8").splitlines() == ["WINCH", "INT"]
-
-    assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
-    assert _tmux_run(real_tmux_socket, "has-session", "-t", session_id).returncode == 0
+    _wait_for_missing_session(real_tmux_socket, session_id)
     assert launches.read_text().splitlines() == ["START"]
     assert events.read_text(encoding="utf-8").splitlines() == ["WINCH", "INT"]
 
