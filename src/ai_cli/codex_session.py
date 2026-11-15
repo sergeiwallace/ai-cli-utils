@@ -27,7 +27,10 @@ INDEX_FILE = "session_index.jsonl"
 #: drawn earlier, while Codex is still loading, and keys typed then are lost or queued.
 READY_MARKER = "? for shortcuts"
 READY_WAIT_SECONDS = 30.0
-CONFIRM_WAIT_SECONDS = 10.0
+#: A ``/rename`` submitted while Codex is still starting is queued until startup ends, and a
+#: first start in a new Codex home installs its app-server first (measured: the name landed
+#: 28 s after launch). The namer is detached, so a long wait costs nothing.
+CONFIRM_WAIT_SECONDS = 120.0
 POLL_SECONDS = 0.5
 #: A pause between the typed command and its Enter, so a TUI that treats a fast burst
 #: of keys as a paste does not take the Enter as a newline inside it.
@@ -161,10 +164,10 @@ def name_session(
     fifo: Path | None = None,
     prompt_file: Path | None = None,
     home: Path | None = None,
-    ready_wait_seconds: float = READY_WAIT_SECONDS,
-    confirm_wait_seconds: float = CONFIRM_WAIT_SECONDS,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
+    ready_wait_seconds: float | None = None,
+    confirm_wait_seconds: float | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
 ) -> str | None:
     """Type ``/rename <name>`` into a newly started Codex, then confirm it from the index.
 
@@ -175,6 +178,10 @@ def name_session(
     way. Returns None once Codex recorded the name, else the reason it did not.
     """
     home = home or codex_home()
+    sleep = sleep or time.sleep
+    monotonic = monotonic or time.monotonic
+    ready_wait_seconds = READY_WAIT_SECONDS if ready_wait_seconds is None else ready_wait_seconds
+    confirm_wait_seconds = CONFIRM_WAIT_SECONDS if confirm_wait_seconds is None else confirm_wait_seconds
     try:
         prompt = prompt_file.read_text(encoding="utf-8") if prompt_file is not None else None
     except OSError:

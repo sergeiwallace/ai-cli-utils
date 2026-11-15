@@ -195,6 +195,27 @@ def test_given_codex_never_becomes_ready_when_naming_then_types_nothing_and_says
     assert "not named" in err and f"/rename {NAME}" in err
 
 
+def test_given_codex_records_the_name_only_after_a_slow_startup_when_naming_then_it_is_confirmed(
+    fake_codex_tmux, codex_home, capsys, monkeypatch
+):
+    # Measured live: on a first start the submitted /rename waited behind "Waiting for
+    # startup" and landed 28 s after launch, past the namer's old 10 s window.
+    fake_codex_tmux["records"] = False
+    clock = {"now": 0.0}
+
+    def sleep(seconds: float) -> None:
+        clock["now"] += seconds
+        if clock["now"] >= 30 and not (codex_home / "session_index.jsonl").exists():
+            _index(codex_home, (THREAD, NAME))
+
+    monkeypatch.setattr("ai_cli.codex_session.time.sleep", sleep)
+    monkeypatch.setattr("ai_cli.codex_session.time.monotonic", lambda: clock["now"])
+
+    code, err = _name(capsys)
+
+    assert code == 0, err
+
+
 def test_given_codex_does_not_record_the_name_when_naming_then_reports_it_unconfirmed(fake_codex_tmux, capsys):
     fake_codex_tmux["records"] = False
 
