@@ -652,6 +652,25 @@ def test_given_git_set_to_repack_after_every_fetch_when_the_registry_fetches_the
     assert housekeeping == []
 
 
+def test_given_a_caller_git_config_when_dolt_runs_git_then_long_paths_are_on_and_the_caller_key_survives(
+    fleet, monkeypatch
+):
+    # Dolt's git cache nests refs past Windows' 260-character limit; the push failed "Filename too long".
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.example")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "kept")
+    env = fleet.registry.dolt_env()
+
+    def read(key):
+        return subprocess.run(
+            ["git", "config", "--get", key], env=env, capture_output=True, text=True, check=False
+        ).stdout.strip()
+
+    assert read("core.longpaths") == "true"
+    assert read("user.example") == "kept"
+    assert read("maintenance.auto") == "false"
+
+
 def test_given_a_reservation_with_a_spare_top_up_when_published_then_both_rows_are_one_dolt_commit(fleet):
     commits_before = len(_remote_sql(fleet, "select commit_hash from dolt_log"))
 

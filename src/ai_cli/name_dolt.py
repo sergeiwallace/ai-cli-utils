@@ -42,6 +42,12 @@ ROOT_CONFIG = {
 # while Dolt's next `git cat-file` is still reading them ("packfile ... index unavailable").
 # The host lock cannot cover a detached process, so the git that Dolt runs does no housekeeping.
 GIT_HOUSEKEEPING_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
+# That cache nests Dolt's own refs deep under the data directory
+# (`.dolt/git-remote-cache/<64 hex>/repo.git/refs/dolt/blobstore/origin/<ref>/<uuid>.lock`), which
+# passes Windows' 260-character path limit from an ordinary profile directory and fails the push
+# with "Filename too long". Git for Windows lifts the limit with core.longpaths; git elsewhere
+# ignores the key.
+GIT_LONG_PATHS = (("core.longpaths", "true"),)
 
 
 def dolt_remote_url(url: str) -> str:
@@ -93,7 +99,7 @@ class DoltRegistry(reg.FleetRegistry):
             count = max(0, int(env.get("GIT_CONFIG_COUNT") or 0))
         except ValueError:
             count = 0
-        for key, value in GIT_HOUSEKEEPING_OFF:
+        for key, value in (*GIT_HOUSEKEEPING_OFF, *GIT_LONG_PATHS):
             env[f"GIT_CONFIG_KEY_{count}"] = key
             env[f"GIT_CONFIG_VALUE_{count}"] = value
             count += 1

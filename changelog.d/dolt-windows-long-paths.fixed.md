@@ -1,0 +1,1 @@
+The session-name registry's Dolt push no longer fails on Windows with "Filename too long": the git that Dolt runs now sets `core.longpaths`, since Dolt's git cache nests its refs past the 260-character path limit from an ordinary profile directory.
