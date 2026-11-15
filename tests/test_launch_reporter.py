@@ -398,6 +398,23 @@ def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applie
     assert launch_reporter.active() is default
 
 
+def test_given_no_launch_when_installed_is_asked_then_none_even_after_active_made_its_default(monkeypatch):
+    monkeypatch.setattr(launch_reporter, "_active", None)
+    monkeypatch.setattr(launch_reporter, "_fallback", None)
+    assert launch_reporter.installed() is None
+
+    default = launch_reporter.active()
+    assert launch_reporter.installed() is None
+
+    launched = LaunchReporter(quiet=True)
+    previous = launched.activate()
+    assert launch_reporter.installed() is launched
+
+    assert previous is default
+    previous.activate()
+    assert launch_reporter.installed() is None
+
+
 # --- the launch path uses one reporter ---------------------------------------------
 
 

@@ -213,6 +213,7 @@ class LaunchReporter:
 
 
 _active: LaunchReporter | None = None
+_fallback: LaunchReporter | None = None
 
 
 def activate(reporter: LaunchReporter | None) -> LaunchReporter | None:
@@ -231,7 +232,17 @@ def active() -> LaunchReporter:
     reporter parameter for a logging concern. Outside a launch it still prints, so
     an event is never lost for want of a caller that installed one.
     """
-    global _active
+    global _active, _fallback
     if _active is None:
-        _active = LaunchReporter()
+        _active = _fallback = LaunchReporter()
     return _active
+
+
+def installed() -> LaunchReporter | None:
+    """The reporter a launch in progress installed, or ``None`` outside a launch.
+
+    For a helper other commands share with the launcher: it reports a launch's
+    progress only during a launch, so a command that installed no reporter prints
+    no launch-progress lines. :func:`active`'s plain default never counts here.
+    """
+    return None if _active is _fallback else _active
