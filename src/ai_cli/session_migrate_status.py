@@ -102,6 +102,24 @@ def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dic
     return left, plan.live
 
 
+def judge_pair(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str, bool]:
+    """``(parts left, live refusal or "", whether a plan ran)`` for one recorded pair, read-only.
+
+    The one judgement ``ai migrate-session --status`` and the launch guard of ``ai c NEW`` both
+    use, so they cannot disagree about a pair. A NEW slot that is gone is judged by the ledger: a
+    slot that moved on to a later migration (:func:`moved_on`) leaves nothing to plan here, and one
+    that is simply missing is a part left. Otherwise the pair is re-planned (:func:`replan_live`).
+    """
+    state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
+    slot = repo_root / ".worktrees" / new
+    if not slot.is_dir():
+        if moved_on(new, repo_root, state) is not None:
+            return {}, "", True
+        return {"slot": f"missing: {slot} does not exist"}, "", False
+    left, live = replan_live(repo_root, old, new, **kwargs)
+    return left, live, UNPLANNED not in left
+
+
 def _bookkeeping(row: dict) -> bool:
     """Whether a ledger row only notes a delivered context, recorded transcripts or archived files.
 

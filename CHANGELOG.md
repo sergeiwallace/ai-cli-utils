@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a host reboot, `ai sessions list` no longer shows a session as `running` when its record
+  says `running` from an earlier boot but its tmux session and processes are both gone. Before
+  the boot pass runs, or with `on_boot` off, such a row now shows STATUS `stale` and CAUSE
+  `host_reboot`, using the same proof as the migration preflight. The record is not rewritten,
+  so the boot relaunch keeps its evidence. `-j/--json` gives every record an `earlier_boot_gone`
+  field, `true` for such a row, while its `run_state` stays `running`
+  ([docs/bugs/stale-running-records.md](docs/bugs/stale-running-records.md)).
 - `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
   with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
   was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
@@ -45,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
   a positional argument, and a token that started with `-` was read as an option, so the
   supervisor exited before the agent started. Such a token now gets a leading letter.
+- `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
+  the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
+  worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
+  time. On a loaded host that gap measured 19 to 67 seconds with nothing printed.
 - After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
   `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
   still says `running` from an earlier boot. When tmux and the process table on its owning host
@@ -110,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
   refuses contradictory running records before moving files. Detached replay and all local engines
   also schedule the existing worker.
+- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
+  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
+  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
+  failed with "No task prefix is registered", and from inside a repository it planned a new session
+  named after the whole string in the wrong repository.
 
 ### Added
 

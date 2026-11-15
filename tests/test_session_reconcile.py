@@ -193,6 +193,49 @@ def test_given_earlier_boot_run_not_proved_gone_when_migration_preflights_then_i
     assert registry.registry_path().read_bytes() == before
 
 
+def _listed_row(name):
+    result = CliRunner().invoke(_cli_group, ["sessions", "list", "-a", "-S", "host", "-g", "none"])
+    assert result.exit_code == 0, result.output
+    cells = next(line.split() for line in result.stdout.splitlines() if name in line.split())
+    return cells[cells.index(name) + 1 :]
+
+
+def test_given_earlier_boot_run_proved_gone_when_listed_then_row_reads_stale_host_reboot_without_rewriting(
+    stale_record,
+):
+    # Frozen reproduction: after a reboot, with no boot pass yet (or on_boot off), the list
+    # still said running for a session whose tmux session and processes were provably gone.
+    registry._mutate(lambda doc: doc["sessions"][0].update(boot_id="previous-boot") or True)
+    before = registry.registry_path().read_bytes()
+    assert _listed_row("c-session-1")[:2] == ["stale", "host_reboot"]
+    result = CliRunner().invoke(_cli_group, ["sessions", "list", "-j"])
+    assert result.exit_code == 0, result.output
+    [listed] = json.loads(result.stdout)
+    assert listed["run_state"] == "running"
+    assert listed["earlier_boot_gone"] is True
+    assert registry.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("guard", ["tmux", "unknown_tmux", "process_table", "other_host", "same_boot_live"])
+def test_given_running_record_not_proved_gone_when_listed_then_row_still_reads_running(
+    stale_record, monkeypatch, guard
+):
+    import psutil
+
+    change = {} if guard == "same_boot_live" else {"boot_id": "previous-boot"}
+    if guard == "other_host":
+        change["owning_host"] = "host-b"
+    registry._mutate(lambda doc: doc["sessions"][0].update(change) or True)
+    if guard in {"tmux", "unknown_tmux", "same_boot_live"}:
+        monkeypatch.setattr(registry, "_local_session_alive", lambda _name: None if guard == "unknown_tmux" else True)
+    elif guard == "process_table":
+        monkeypatch.setattr(psutil, "process_iter", Mock(side_effect=psutil.AccessDenied(42)))
+    assert _listed_row("c-session-1")[0] == "running"
+    [listed] = json.loads(CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).stdout)
+    assert listed["run_state"] == "running"
+    assert listed["earlier_boot_gone"] is False
+
+
 def test_given_legacy_record_when_listed_then_state_is_explicit_and_other_boot_is_unknown(stale_record):
     def change(doc):
         first = doc["sessions"][0]

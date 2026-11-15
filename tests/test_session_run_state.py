@@ -226,3 +226,21 @@ def test_given_legacy_recipe_when_begin_then_launch_is_preserved_but_restart_pro
     with pytest.raises(ValueError, match="invalid boot recipe"):
         state.can_begin("c-session-1")
     assert registry.registry_path().read_bytes() == before
+
+
+def test_given_running_row_from_an_earlier_boot_when_marked_exited_by_hand_then_the_exit_is_recorded(
+    registered, monkeypatch
+):
+    # The monotonic clock restarts at each boot, so the dead supervisor's last sequence
+    # is larger than any reading taken after the reboot (AI-CLI-facu).
+    from click.testing import CliRunner
+
+    from ai_cli import main
+
+    assert state.mark_running("c-session-1", generation=registered, sequence=9_000_000_000_000)
+    monkeypatch.setattr(registry, "current_boot_id", lambda: "next-boot")
+    monkeypatch.setattr(state.time, "monotonic_ns", lambda: 120_000_000_000)
+    result = CliRunner().invoke(main._cli_group, ["sessions", "mark", "c-session-1", "exited", "-c", "host_reboot"])
+    assert result.exit_code == 0, result.output
+    assert state.run_state(record()) == "exited"
+    assert record()["exit"]["cause"] == "host_reboot"

@@ -235,17 +235,36 @@ def _resolve_from(host: str, sources: list[Path]) -> str:
     raise _not_configured(host, sources)
 
 
+def _host_refresh_phase():
+    """A timed ``session`` phase for the host id refresh, during a launch only.
+
+    The refresh is a login-shell probe that takes seconds on a loaded host. A launch
+    prints it as a phase through the reporter it installed; any other command that
+    resolves the alias installed none, so it gets a null context and prints nothing.
+    """
+    from . import launch_reporter
+
+    reporter = launch_reporter.installed()
+    if reporter is None:
+        return contextlib.nullcontext()
+    return reporter.phase("session", "refreshing this host's id")
+
+
 def resolve_host_alias() -> str:
     """Return this machine's host alias from the first source that names it.
 
     Raises :class:`HostAliasNotConfiguredError` naming every file checked, in order,
     when none does, and :class:`HostAliasError` for an invalid entry or a conflict.
+    During a launch the host id refresh prints as a timed ``session`` phase.
     """
     from .host_env import refresh_host_env
 
     inherited = os.environ.get("AI_HOST", "")
-    refresh_host_env(_config.load_config())
-    host = host_id()
+    with _host_refresh_phase() as phase:
+        refresh_host_env(_config.load_config())
+        host = host_id()
+        if phase is not None:
+            phase.outcome(f"host id {host}")
     try:
         return _resolve_from(host, alias_sources())
     except HostAliasNotConfiguredError as exc:
@@ -421,7 +440,11 @@ class LaunchNaming:
 
 
 def resolve_launch_naming(
-    repo_alias: str, config: dict, *, prompt: bool = False, dry_run: bool = False
+    repo_alias: str,
+    config: dict,
+    *,
+    prompt: bool = False,
+    dry_run: bool = False,
 ) -> LaunchNaming:
     """Choose the naming convention for one launch from the ``[naming]`` section.
 
@@ -456,7 +479,10 @@ def resolve_launch_naming(
     if not alias_on:
         from .host_env import refresh_host_env
 
-        refresh_host_env(config)
+        with _host_refresh_phase() as phase:
+            refresh_host_env(config)
+            if phase is not None:
+                phase.outcome(f"host id {os.environ.get('AI_HOST') or 'unset'}")
     return LaunchNaming(repo_alias, None, "", True)
 
 

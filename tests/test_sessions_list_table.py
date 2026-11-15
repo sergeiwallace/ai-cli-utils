@@ -214,6 +214,7 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
             "cause": "manual_exit",
             "changed_at": "2026-01-03T00:00:00Z",
             "relaunch": "auto",
+            "earlier_boot_gone": False,
         },
         {
             "name": "c-myproject-bob",
@@ -221,6 +222,7 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
             "cause": "",
             "changed_at": "2026-01-01T00:00:00Z",
             "relaunch": "auto",
+            "earlier_boot_gone": False,
         },
         {
             "name": "c-myproject-amy",
@@ -228,6 +230,7 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
             "cause": "",
             "changed_at": "2026-01-02T03:04:05Z",
             "relaunch": "auto",
+            "earlier_boot_gone": False,
         },
         {
             "name": "c-myproject-ada",
@@ -235,6 +238,7 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
             "cause": "",
             "changed_at": "2026-01-02T00:00:00Z",
             "relaunch": "never",
+            "earlier_boot_gone": False,
         },
     ]
     refused = CliRunner().invoke(_cli_group, ["sessions", "list", "-j", "-S", "fleet"])

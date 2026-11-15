@@ -143,8 +143,11 @@ Two causes, both reproduced on macOS:
   the test's 60 s deadline under load before the failure message was printed. At that
   rate production's 3000-attempt "30 s" bound would take over an hour. The loop now stops
   on elapsed time (`SECONDS`, a builtin in bash 3.2 and zsh) against
-  `_promotion_budget_seconds=30`. The harness shortens that one line to 10 s and asserts
-  the line is present, so the replace cannot silently stop matching.
+  `_promotion_budget_seconds=30`. The harness shortens that one line to 10 s, stretched
+  by the same host-load scale as its other waits, and asserts the line is present, so the
+  replace cannot silently stop matching. Its other real-supervisor tests keep 30 s, scaled
+  the same way: the budget also covers the child starting an interpreter to report its
+  group, and on a loaded host that alone outran an unscaled 30 s.
   `test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_supervisor_gives_up_on_time`
   holds each attempt for 2 s. It was red on both shells before the fix (still retrying
   after 30 s, empty stderr) and finishes in 12 to 16 s after it.
