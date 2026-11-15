@@ -161,6 +161,10 @@ _POSIX_HOST = os.name == "posix"
 # it simply never exits. The worst case is a genuinely broken build taking a minute
 # longer to say so. Overridable so a slow runner can raise it without a code change.
 _PROCESS_WAIT_SECONDS = process_wait_seconds()
+# The suite's default 300 s bound (pyproject) is for a test that waits on nothing. These tests
+# chain several real-process waits of up to _PROCESS_WAIT_SECONDS each, which reaches 240 s on a
+# loaded runner, so their bound is derived from the same load scale.
+pytestmark = pytest.mark.timeout(300 + 4 * _PROCESS_WAIT_SECONDS)
 
 # How a test child body idles until its test ends it (AI-CLI-72hf): a `read` from a FIFO
 # nothing ever writes, opened read-write so it never sees EOF. That blocks in the shell
