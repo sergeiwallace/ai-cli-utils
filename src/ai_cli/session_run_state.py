@@ -319,8 +319,12 @@ def mark(
         teardown = exit_teardown(record)
         if teardown and teardown.get("generation") == record.get("generation"):
             raise ValueError("manual exit fenced this supervisor generation")
-        seq = sequence if sequence is not None else time.monotonic_ns()
-        if seq <= record.get("transition_seq", 0):
+        # The monotonic clock restarts at boot, so an unsequenced (manual) transition is
+        # ordered after the stored one: a supervisor that died with the host left a
+        # sequence no reading in this boot can exceed.
+        stored = record.get("transition_seq", 0)
+        seq = sequence if sequence is not None else max(time.monotonic_ns(), stored + 1)
+        if seq <= stored:
             raise ValueError("stale supervisor transition sequence")
         safety = tombstone_path(name, record.get("owning_host", ""))
         if (
