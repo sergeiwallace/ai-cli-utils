@@ -186,7 +186,8 @@ class DoltRegistry(reg.FleetRegistry):
     def has_clone(self) -> bool:
         return (self.path / ".dolt").is_dir()
 
-    def _ensure_clone(self) -> None:
+    def _ensure_clone(self) -> bool:
+        """Clone the database if this host has none; whether it did, so its tip is already fresh."""
         self.check_version()
         url = self.remote_url()
         if not self.has_clone():
@@ -201,12 +202,19 @@ class DoltRegistry(reg.FleetRegistry):
                     f"{(result.stderr or result.stdout).strip()}"
                 )
             self._url_file().write_text(url, encoding="utf-8")
-            return
+            return True
         recorded = self._url_file().read_text(encoding="utf-8").strip() if self._url_file().is_file() else ""
         if recorded != url:
             self.dolt("remote", "remove", "origin", check=False)
             self.dolt("remote", "add", "--ref", self.dolt_ref, "origin", url)
             self._url_file().write_text(url, encoding="utf-8")
+        return False
+
+    def _sync(self, cloned: bool) -> None:
+        """Bring the local branch to the remote tip: a clone just made is already there."""
+        if not cloned:
+            self._fetch()
+            self._reset()
 
     @contextlib.contextmanager
     def locked(self) -> Iterator[None]:
@@ -294,10 +302,9 @@ class DoltRegistry(reg.FleetRegistry):
                 return reg.Snapshot(
                     tip=None, fetched=False, statuses={}, verdicts={}, policy_schemas=self.policy_schemas
                 )
-            self._ensure_clone()
+            cloned = self._ensure_clone()
             if fetch:
-                self._fetch()
-                self._reset()
+                self._sync(cloned)
             # The local branch is the last fetched tip: every fetch is followed by a reset to it,
             # and it survives a remote re-added for a new URL, which drops the tracking ref.
             tables, tip = self._read("main")
@@ -345,10 +352,10 @@ class DoltRegistry(reg.FleetRegistry):
     def transact(self, build: reg.Build, *, exempt: bool = False) -> reg.Change | None:
         """One write under the claim protocol; ``exempt`` lets import and seed write while writes are off."""
         with self.locked():
-            self._ensure_clone()
+            cloned = self._ensure_clone()
             for _attempt in range(self.attempts):
-                self._fetch()
-                self._reset()
+                self._sync(cloned)
+                cloned = False
                 tables, tip = self._read("main")
                 if tables.meta.get("writes_enabled") != "1" and not exempt:
                     raise reg.WriteRefusedError(
@@ -380,9 +387,7 @@ class DoltRegistry(reg.FleetRegistry):
     def _query(self, statement: schema.Statement) -> list[dict]:
         """``statement``'s rows at the freshly fetched remote tip."""
         with self.locked():
-            self._ensure_clone()
-            self._fetch()
-            self._reset()
+            self._sync(self._ensure_clone())
             try:
                 return self.sql_rows(f"{render(statement)};\n")[0]
             except reg.WriteRefusedError as exc:

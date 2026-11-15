@@ -827,6 +827,27 @@ def test_given_an_invalid_timeout_setting_when_writing_then_it_refuses_naming_th
     assert fleet.tip() == tip
 
 
+def test_given_a_host_with_no_clone_yet_when_it_reads_then_the_clone_is_its_only_trip_to_the_remote(fleet, monkeypatch):
+    fresh = fleet.other_machine("first-read")
+    calls = _dolt_calls(monkeypatch)
+
+    snapshot = fresh.snapshot()
+
+    assert [command[1] for command, _env, _timeout in calls if command[1] in ("clone", "fetch", "reset")] == ["clone"]
+    assert snapshot.names == sorted(fleet.snapshot().names)
+
+
+def test_given_a_host_with_no_clone_yet_when_it_writes_then_it_fetches_only_to_read_its_write_back(fleet, monkeypatch):
+    fresh = fleet.other_machine("first-write")
+    calls = _dolt_calls(monkeypatch)
+
+    reservation = reg.reserve_picked(fresh, _slot(), words=frozenset())
+
+    remote = [command[1] for command, _env, _timeout in calls if command[1] in ("clone", "fetch", "push")]
+    assert remote == ["clone", "push", "fetch"]
+    assert fleet.rows()[reservation.name]["machine"] == HOST
+
+
 def test_given_a_host_with_no_clone_yet_when_the_last_known_snapshot_is_read_then_it_clones_first(fleet):
     fresh = fleet.other_machine("never-cloned")
     assert not fresh.has_clone()
