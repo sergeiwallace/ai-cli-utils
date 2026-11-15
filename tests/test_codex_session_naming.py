@@ -399,3 +399,53 @@ def test_given_pi_bare_launch_without_resume_flag_when_launching_then_continues_
     command = _bare_engine_command("p", NAME, Path.cwd(), None, "gemini", "--no-sandbox", [])
 
     assert command == ["pi", "--continue", "--provider", "openai-codex", "--name", NAME]
+
+
+@posix_only
+def test_given_session_named_by_hand_in_codex_before_this_change_when_relaunching_with_remote_then_resumes_it_by_id(
+    tmp_path,
+):
+    # Amendment 4: the owner ran /rename <name> inside Codex on the remote host, used it,
+    # then relaunched with `ai cx <name> -R`. The launcher never recorded that name; only
+    # Codex's own index holds it, and the remote session script runs on that host.
+    home = tmp_path / "codex-home"
+    _index(home, (OLDER, "myproject-2"), (THREAD, NAME))
+    _rollout(home, THREAD)
+    script = get_engine_script(
+        engine="cx",
+        ai_name=NAME,
+        session=f"cx-r-{NAME}",
+        prefix="cx-r-myproject-",
+        project_prefix="myproject",
+        is_remote=True,
+    )
+    start = script.index("_ai_run_codex() {")
+    end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
+    log = tmp_path / "calls.log"
+    harness = tmp_path / "dispatch.sh"
+    harness.write_text(
+        f"""
+engine=cx
+ai_name={NAME}
+tmux_session=cx-r-{NAME}
+first_run=true
+prompt_file={tmp_path}/no-prompt
+_ai_launch_log=""
+run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
+ai() {{
+  if [[ "$1 $2" == "internal resolve-codex-session" ]]; then
+    CODEX_HOME={home} {sys.executable} -c 'import sys; from ai_cli.codex_session import find_thread; print(find_thread(sys.argv[1]) or "")' "$3"
+  else
+    printf 'AI %s\\n' "$*" >> {log}
+  fi
+}}
+{script[start:end]}
+wait
+""",
+        encoding="utf-8",
+    )
+    done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=60, check=False)
+
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls == [f"RUN codex resume {THREAD}"]
