@@ -1096,8 +1096,8 @@ def _spare_writes(
     policy = snapshot.policy
     approved = snapshot.approved()
     host_rejected = frozenset(
-        held for held, kind, value in (snapshot.verdicts or {})
-        if kind == "host" and value == slot.machine and snapshot.verdicts[(held, kind, value)].get("verdict") == "rejected"
+        held for (held, kind, value), row in (snapshot.verdicts or {}).items()
+        if kind == "host" and value == slot.machine and row.get("verdict") == "rejected"
     )  # fmt: skip
     shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
     writes: dict[str, bytes | None] = {}

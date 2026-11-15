@@ -34,6 +34,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import name_registry as reg
 from . import name_schema as schema
@@ -145,18 +146,18 @@ def _read_toml(text: str, source: str) -> dict:
 def normalized_parts(document: dict) -> dict[str, object]:
     """Each oracle part as sorted normalized rows, so equal content compares and hashes equal."""
 
-    def names(value: object) -> list[str]:
+    def names(value: Any) -> list[str]:
         if isinstance(value, str):
             value = [value]
         return sorted({str(item).strip().lower() for item in (value or [])})
 
-    def table(value: object) -> list[dict]:
+    def table(value: Any) -> list[dict]:
         rows = [
             {"session": str(entry.get("session") or ""), "name": str(entry["name"]).lower()} for entry in value or []
         ]
         return sorted(rows, key=lambda row: (row["name"], row["session"]))
 
-    def answers(value: object) -> list[dict]:
+    def answers(value: Any) -> list[dict]:
         rows = [
             {
                 "name": str(entry["name"]).lower(),
@@ -168,7 +169,7 @@ def normalized_parts(document: dict) -> dict[str, object]:
         ]
         return sorted(rows, key=lambda row: (row["name"], row["scope_kind"], row["scope_value"]))
 
-    def verdicts(value: object) -> list[dict]:
+    def verdicts(value: Any) -> list[dict]:
         rows = [
             {
                 "name": str(entry["name"]).lower(),
