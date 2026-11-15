@@ -23,7 +23,9 @@ import pytest
 from ai_cli.main import _bare_engine_command, _handle_internal
 from ai_cli.session_script import get_engine_script
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the session script and tmux are POSIX-only")
+# The resolver, the tmux namer and the bare builder run on every OS. The session script
+# runs under bash inside tmux, and a submission FIFO is a POSIX pty-host feature.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="bash dispatch and FIFOs are POSIX-only")
 
 NAME = "myproject-1"
 THREAD = "01a1e138-42c6-7643-af6a-48768d55c843"
@@ -240,6 +242,7 @@ def test_given_resume_prompt_when_naming_a_new_session_then_pastes_it_after_the_
     assert not prompt.exists()
 
 
+@posix_only
 def test_given_bare_pty_submission_fifo_when_naming_then_writes_rename_and_enter_into_it(codex_home, tmp_path, capsys):
     fifo = tmp_path / "submit.fifo"
     os.mkfifo(fifo)
@@ -328,6 +331,7 @@ wait
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
+@posix_only
 def test_given_named_codex_thread_when_relaunching_ai_cx_then_resumes_that_thread_without_renaming(tmp_path):
     # The owner's relaunch: a new tmux session, so first_run is true.
     calls = _run_dispatch(tmp_path, "cx", first_run=True, thread=THREAD)
@@ -336,6 +340,7 @@ def test_given_named_codex_thread_when_relaunching_ai_cx_then_resumes_that_threa
     assert not any("name-codex-session" in call for call in calls)
 
 
+@posix_only
 def test_given_no_named_codex_thread_when_launching_ai_cx_then_starts_codex_and_names_it(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True)
 
@@ -343,6 +348,7 @@ def test_given_no_named_codex_thread_when_launching_ai_cx_then_starts_codex_and_
     assert f"AI internal name-codex-session cx-{NAME} {NAME}" in calls
 
 
+@posix_only
 def test_given_in_loop_restart_with_no_named_thread_when_relaunching_then_resumes_last_and_names_it(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=False)
 
@@ -350,6 +356,7 @@ def test_given_in_loop_restart_with_no_named_thread_when_relaunching_then_resume
     assert f"AI internal name-codex-session cx-{NAME} {NAME}" in calls
 
 
+@posix_only
 def test_given_resume_prompt_and_named_thread_when_relaunching_then_prompt_rides_on_the_resume(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True, thread=THREAD, prompt="continue the task")
 
@@ -357,6 +364,7 @@ def test_given_resume_prompt_and_named_thread_when_relaunching_then_prompt_rides
     assert not any(call.startswith("TMUX send-keys") for call in calls)
 
 
+@posix_only
 def test_given_resume_prompt_and_no_named_thread_when_launching_then_namer_delivers_it_after_naming(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True, prompt="continue the task")
 
@@ -367,6 +375,7 @@ def test_given_resume_prompt_and_no_named_thread_when_launching_then_namer_deliv
     assert not any(call.startswith("TMUX send-keys") for call in calls)
 
 
+@posix_only
 def test_given_existing_pi_session_when_relaunching_ai_p_then_continues_it(tmp_path):
     # AI-CLI-tc25: a relaunch is a new tmux session, so first_run is true.
     calls = _run_dispatch(tmp_path, "p", first_run=True)
