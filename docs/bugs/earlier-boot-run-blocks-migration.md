@@ -116,8 +116,9 @@ The existing same-boot preflight and reconcile tests pass unchanged.
 - A record's run status lives in two places: `exit`/`ended_at`, written by the restore sweep
   and `ai iterm2 sessions -x`, and `run_state`/`supervisor_exit`, written by the supervisor
   and reconcile. A writer of only the first leaves readers of the second seeing `running`.
-- `ai sessions list` still shows an earlier boot's record as `running`. Showing that it is from
-  an earlier boot, without rewriting its evidence, is tracked separately.
+- `ai sessions list` showed an earlier boot's record as `running`. It now shows such a record,
+  once proved gone, as `stale` with cause `host_reboot`, using the same proof and without
+  rewriting its evidence ([stale-running-records.md](stale-running-records.md)).
 - A refusal that ends "inspect the evidence" must name what the evidence said.
 
 <!-- /doc:region name="summary" -->

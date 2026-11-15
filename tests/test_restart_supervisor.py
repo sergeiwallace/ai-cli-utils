@@ -22,6 +22,7 @@ import psutil
 import pytest
 from conftest import run_cli
 from process_ownership import reap_tree, watch_session
+from process_wait import process_wait_seconds
 
 from ai_cli import config, main, session_restart, session_run_state
 
@@ -30,6 +31,11 @@ OTHER_ID = "22222222-2222-4222-8222-222222222222"
 SESSION = "c-myproject-box-1"
 TITLE = "myproject-box-1"
 _REAL_SOCKET = socket.socket
+# Every exec in these fixtures can cost a second or more on a loaded host, and one restart
+# starts dozens of them, so fixed 5 s and 60 s bounds let a fixture agent's start, its
+# shutdown or a replacement's verification time out before it had a chance to finish.
+# Scaled with host load; each wait still returns as soon as its condition holds.
+_PROCESS_WAIT_SECONDS = process_wait_seconds()
 
 
 class _ModuleView:
@@ -54,8 +60,21 @@ def restart_ipc():
         pytest.skip("sandbox prohibits local sockets required for the exec acknowledgement")
 
 
-def _wait_for(check, process, timeout=60):
-    deadline = time.monotonic() + timeout
+def _launch_records(path):
+    """Every complete record the fixture agent appended to ``path``, oldest first.
+
+    The agent opens the file for append before it writes, so a reader can find it
+    existing and empty, or holding a line still being written. Only a line ended by
+    its newline is a whole record.
+    """
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.split("\n")[:-1] if line]
+
+
+def _wait_for(check, process):
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         value = check()
         if value:
@@ -300,7 +319,7 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
         fenced: dict = {"status": "failed"}
         if request.param == "dead-fenced":
             target = subprocess.Popen([sys.executable, "-c", "pass"])
-            target.wait(timeout=5)
+            target.wait(timeout=_PROCESS_WAIT_SECONDS)
             fenced.update(
                 version=1,
                 request_id=OTHER_ID,
@@ -392,9 +411,8 @@ def test_given_failed_request_when_recovered_then_ac_a_3_same_child_resumes(fenc
             },
         )
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    replacement = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     assert (root / "child-launches").read_text(encoding="utf-8") == children
-    replacement = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])
     assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
     assert supervisor.poll() is None
 
@@ -417,7 +435,7 @@ def test_given_dead_fenced_target_when_command_clears_then_remedy_named_and_same
     assert audit["actor"]["pid"] == os.getpid()
     assert audit["proof"]["state"] == "gone"
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    _wait_for(lambda: _launch_records(launches), supervisor)
     assert (root / "child-launches").read_text(encoding="utf-8") == children
     assert supervisor.poll() is None
 
@@ -433,9 +451,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     launches_path = root / "launches"
 
     def launches():
-        if not launches_path.exists():
-            return []
-        return [json.loads(line) for line in launches_path.read_text(encoding="utf-8").splitlines()]
+        return _launch_records(launches_path)
 
     initial = _wait_for(launches, supervisor)[0]
     old_child = initial["ppid"]
@@ -463,8 +479,8 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
         "restart_session": {
             "min_uptime_seconds": 4,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }
@@ -516,10 +532,7 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
 ):
     root, script, supervisor = supervisor_fixture
     launches = root / "launches"
-    initial = _wait_for(
-        lambda: json.loads(launches.read_text(encoding="utf-8").splitlines()[0]) if launches.exists() else None,
-        supervisor,
-    )
+    initial = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     observed = time.monotonic()
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     original_kill = os.kill
@@ -546,8 +559,8 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
         "restart_session": {
             "min_uptime_seconds": 0,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }

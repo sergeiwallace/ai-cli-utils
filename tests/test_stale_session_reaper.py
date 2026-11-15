@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import logging
+import math
 import os
 import re
 import shlex
@@ -29,7 +30,7 @@ import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
 from legacy_run_state import legacy_run_state_helpers  # noqa: F401  (autouse fixture)
 from process_ownership import reap, reap_tree, spawn_owned_sleeper, watch_tmux_directory
-from process_wait import process_wait_seconds
+from process_wait import DEFAULT_WAIT_SECONDS, process_wait_seconds
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import CHILD_BODY_SHIM, get_engine_script
@@ -160,6 +161,22 @@ _POSIX_HOST = os.name == "posix"
 # longer to say so. Overridable so a slow runner can raise it without a code change.
 _PROCESS_WAIT_SECONDS = process_wait_seconds()
 
+_PRODUCTION_PROMOTION_BUDGET = "_promotion_budget_seconds=30"
+
+
+def _with_promotion_budget(script: str, seconds: float) -> str:
+    """``script`` with its promotion budget set to ``seconds`` stretched by host load.
+
+    The budget runs from the child's start, so it also covers the child's own exec
+    wrapper starting an interpreter to report its group. On a loaded host that alone
+    outran production's 30 s, and the supervisor gave up with "never reported a process
+    group" and ended its pane before the test saw a child at all. Asserted, because a
+    replace that no longer matches would silently restore the production budget.
+    """
+    assert _PRODUCTION_PROMOTION_BUDGET in script, "the promotion budget line moved; update this harness"
+    budget = math.ceil(seconds * _PROCESS_WAIT_SECONDS / DEFAULT_WAIT_SECONDS)
+    return script.replace(_PRODUCTION_PROMOTION_BUDGET, f"_promotion_budget_seconds={budget}")
+
 
 def isolated_tmux_socket() -> Iterator[str]:
     """An isolated tmux server, torn down on EVERY exit path including a skip.
@@ -182,7 +199,7 @@ def isolated_tmux_socket() -> Iterator[str]:
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
     with watch_tmux_directory(socket_dir):
-        probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
+        probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sh", "-c", "read -r _")
         if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
             # Marked as a tmux-provisioning skip, unlike the POSIX check above: tmux is
             # installed here and still cannot host a session, so the coverage this
@@ -241,8 +258,12 @@ def _assert_returned_shell(socket: str, session_id: str, proof: Path) -> None:
         pytest.fail(f"the shell handoff never appeared; pane: {capture()!r}")
     command = f"printf ready > {shlex.quote(str(proof))}"
     assert _tmux_run(socket, "send-keys", "-t", session_id, command, "Enter").returncode == 0
-    _wait_for_condition("a command executed by the returned shell", proof.exists)
-    assert proof.read_text() == "ready"
+    # The redirect creates the file before printf writes to it, so existence alone can be
+    # observed while the file is still empty; wait for the content itself.
+    _wait_for_condition(
+        "a command executed by the returned shell",
+        lambda: proof.exists() and proof.read_text() == "ready",
+    )
     assert _tmux_run(socket, "has-session", "-t", session_id).returncode == 0
 
 
@@ -350,6 +371,7 @@ def _start_real_tmux_supervisor(
         is_remote=is_remote,
         worktree_dir=str(tmp_path),
     ).replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
+    script = _with_promotion_budget(script, 30)
     if ownership_bootstrap_barrier is not None:
         # Deliberately NOT rebinding `ready`: that name is exported as
         # AI_CLI_TEST_CHILD_READY below, so reusing it here would silently make the
@@ -684,10 +706,13 @@ fi
     original_id = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{session_id}").stdout.strip()
     assert original_id
     assert _tmux_run(real_tmux_socket, "rename-session", "-t", original_id, "renamed-supervisor").returncode == 0
+    # Blocks on its pane's terminal until the server is torn down. A fixed `sleep 30` ended
+    # on its own once a loaded host took longer than that to reach the final assertion, and
+    # the test then reported the replacement as killed by the supervisor.
     replacement = _tmux_new_session(
         real_tmux_socket,
         session_id,
-        ["sleep", "30"],
+        ["sh", "-c", "read -r _"],
         {**os.environ},
         (),
     )
@@ -885,7 +910,7 @@ fi
         )
     (sessions_dir / f"{session_id}.sh").write_text(child_script, encoding="utf-8")
     supervisor = tmp_path / "supervisor.sh"
-    supervisor.write_text(supervisor_script, encoding="utf-8")
+    supervisor.write_text(_with_promotion_budget(supervisor_script, 30), encoding="utf-8")
     environment = {
         **os.environ,
         "AI_CLI_TEST_EVENTS": str(events),
@@ -1028,7 +1053,10 @@ def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_e
 
 @pytest.mark.real_tmux
 def test_given_foreign_tokenless_session_when_identity_is_captured_then_session_survives(real_tmux_socket: str):
-    assert _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "foreign-session", "sleep", "30").returncode == 0
+    assert (
+        _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "foreign-session", "sh", "-c", "read -r _").returncode
+        == 0
+    )
 
     identity = capture_tmux_session_identity("foreign-session", tmux_command=("tmux", "-S", real_tmux_socket))
 
@@ -1038,7 +1066,10 @@ def test_given_foreign_tokenless_session_when_identity_is_captured_then_session_
 
 @pytest.mark.real_tmux
 def test_given_generation_changes_before_owned_kill_when_fence_runs_then_session_survives(real_tmux_socket: str):
-    assert _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "managed-session", "sleep", "30").returncode == 0
+    assert (
+        _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "managed-session", "sh", "-c", "read -r _").returncode
+        == 0
+    )
     assert (
         _tmux_run(
             real_tmux_socket,
@@ -1077,7 +1108,9 @@ def test_given_respawn_before_atomic_fence_when_fence_runs_then_live_session_sur
     candidate = adapter.sessions()[0]
     fingerprint = adapter.capture_fingerprint(candidate)
     assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
-    respawned = _tmux_run(real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "sleep", "30")
+    respawned = _tmux_run(
+        real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "sh", "-c", "read -r _"
+    )
     assert respawned.returncode == 0, respawned.stderr
 
     assert not adapter.fence_and_kill(candidate.session_id, fingerprint)
@@ -1787,17 +1820,9 @@ def _start_generated_supervisor(
     fast_heartbeat: bool = False,
     child_group_delay: float = 0,
     pseudo_terminal: bool = False,
-    # 45s, not 15s: every test through here starts a REAL supervisor, under `script` and a
-    # pseudo-terminal, and a reload test starts two children in sequence. Measured on one
-    # host, `test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promoted`
-    # completed in 6-8s alone and exceeded 15s in two of three full `-n auto` runs, so the
-    # budget was failing on wall clock rather than on the promotion defect it exists to
-    # catch. A child that genuinely is left STOPPED never writes its ready file at all, so a
-    # longer budget still fails -- only later.
-    ready_timeout: float = 45,
     extra_commands: dict[str, str] | None = None,
     stdin_fd: int | None = None,
-    fast_promotion_retry: bool = False,
+    promotion_budget_seconds: float = 30,
     wait_for_child_ready: bool = True,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
@@ -1889,15 +1914,11 @@ fi
         )
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
-    if fast_promotion_retry:
-        # Shortened only in the test harness (docs/bugs/terminal-promotion-failure-hang.md),
-        # so a promotion that can never succeed gives up in 10 s instead of production's 30 s.
-        # Long enough for the child to report its group on a loaded host, so the failure is
-        # the "could not promote" one the tests assert. Asserted, because a replace that no
-        # longer matches would silently restore the 30 s budget.
-        budget = "_promotion_budget_seconds=30"
-        assert budget in script, "the promotion budget line moved; update this harness"
-        script = script.replace(budget, "_promotion_budget_seconds=10")
+    # Production's 30 s, scaled with host load. The promotion-failure tests pass 10 s
+    # (docs/bugs/terminal-promotion-failure-hang.md), so a promotion that can never succeed
+    # gives up sooner, still scaled so the child reports its group first and the failure is
+    # the "could not promote" one they assert.
+    script = _with_promotion_budget(script, promotion_budget_seconds)
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -1946,7 +1967,13 @@ fi
     )
     _SPAWNED_SUPERVISORS.append(process)
     if wait_for_child_ready:
-        _wait_for_path(child_ready, process, timeout=ready_timeout)
+        # The wait is _PROCESS_WAIT_SECONDS, which scales with host load. Every test through here
+        # starts a REAL supervisor, and a reload test starts two children in sequence. A fixed
+        # 15 s and then a fixed 45 s both failed on wall clock rather than on the promotion
+        # defect the wait exists to catch: on a host where each exec costs about a second, one
+        # child took over 45 s to become ready. A child that genuinely is left STOPPED never
+        # writes its ready file at all, so a longer budget still fails -- only later.
+        _wait_for_path(child_ready, process)
     return process, event_log, heartbeat_log
 
 
@@ -2027,6 +2054,38 @@ def test_given_a_child_body_that_traps_a_signal_when_inspected_then_the_trap_pre
     )
 
 
+def _fixed_deadlines() -> list[str]:
+    """Every wait in this module bounded by a literal number of seconds rather than a scaled one."""
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    found = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.keyword) and node.arg == "timeout":
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, int | float) and value.value > 0:
+                found.append(f"line {value.lineno}: timeout={value.value!r}")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            clock = node.left
+            if (
+                isinstance(clock, ast.Call)
+                and isinstance(clock.func, ast.Attribute)
+                and clock.func.attr == "monotonic"
+                and isinstance(node.right, ast.Constant)
+            ):
+                found.append(f"line {node.lineno}: time.monotonic() + {node.right.value!r}")
+    return found
+
+
+def test_given_this_module_when_its_waits_are_inspected_then_none_is_bounded_by_a_fixed_number_of_seconds():
+    """A wait on a real process must scale with host load (AI-CLI-a0p4).
+
+    Each fixed bound here once passed alone and failed under load, a different test in
+    each whole-module run: a 45 s ready wait, a 5 s restart poll and 60 and 90 s process
+    waits all overran on a host where every exec cost about a second. _PROCESS_WAIT_SECONDS
+    stretches with the measured load and still returns the moment its condition holds.
+    """
+    assert not _fixed_deadlines(), "use _PROCESS_WAIT_SECONDS instead: " + "; ".join(_fixed_deadlines())
+
+
 def _run_supervisor_on_a_terminal_owned_elsewhere(
     tmp_path: Path,
     shell: str,
@@ -2057,7 +2116,7 @@ def _run_supervisor_on_a_terminal_owned_elsewhere(
 
     owner_fd = os.open(slave_name, os.O_RDWR)
     owner = subprocess.Popen(
-        ["bash", "-c", "echo owner-up; sleep 120"],
+        ["bash", "-c", "echo owner-up; read -r _"],
         stdin=owner_fd,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -2075,7 +2134,7 @@ def _run_supervisor_on_a_terminal_owned_elsewhere(
                 tmp_path,
                 shell,
                 stdin_fd=slave_fd,
-                fast_promotion_retry=True,
+                promotion_budget_seconds=10,
                 wait_for_child_ready=False,
                 extra_commands=extra_commands,
             )
@@ -2144,11 +2203,11 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
     assert returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
 
 
-# Each promotion attempt is held this long. Twenty of them, the harness's former attempt bound,
-# take at least 40 s, so the regression below can tell a count-bounded loop from a timed one
-# by wall clock alone, however loaded the host is.
+# Each promotion attempt is held this long. Production's attempt bound is 3000, so a loop bounded
+# by count alone would retry for well over an hour, far past any wait this file allows, while a
+# timed loop gives up once its budget has passed. That gap is what the regression below reads, so
+# its wait can scale with host load without losing the distinction.
 _SLOW_PROMOTION_ATTEMPT_SECONDS = 2
-_SLOW_PROMOTION_GIVE_UP_SECONDS = 30
 
 
 def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_supervisor_gives_up_on_time(
@@ -2165,7 +2224,7 @@ def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_sup
     blank for over an hour before reporting a promotion it could never make.
 
     Here every attempt is made slow on purpose, the way a loaded host makes it slow, so a
-    count-bounded loop needs at least 40 s and a timed one gives up within seconds.
+    count-bounded loop needs over an hour and a timed one gives up soon after its budget.
     """
     real_python = shlex.quote(sys.executable)
     slow_promotion = (
@@ -2178,7 +2237,7 @@ def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_sup
     returncode, stdout, stderr = _run_supervisor_on_a_terminal_owned_elsewhere(
         tmp_path,
         supported_session_shell,
-        timeout=_SLOW_PROMOTION_GIVE_UP_SECONDS,
+        timeout=_PROCESS_WAIT_SECONDS,
         extra_commands={"python3": slow_promotion},
     )
     elapsed = time.monotonic() - started
@@ -2210,7 +2269,7 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
     os.close(initial_slave_fd)
     owner_fd = os.open(slave_name, os.O_RDWR)
     owner = subprocess.Popen(
-        ["bash", "-c", "echo owner-up; sleep 60"],
+        ["bash", "-c", "echo owner-up; read -r _"],
         stdin=owner_fd,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -2224,7 +2283,13 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         slave_fd = os.open(slave_name, os.O_RDWR)
         try:
             process, _, _ = _start_generated_supervisor(
-                tmp_path, supported_session_shell, stdin_fd=slave_fd, wait_for_child_ready=False
+                tmp_path,
+                supported_session_shell,
+                stdin_fd=slave_fd,
+                wait_for_child_ready=False,
+                # As long as this test waits for the loop to start, so the press it sends once
+                # the child reports still lands inside the loop on a loaded host.
+                promotion_budget_seconds=DEFAULT_WAIT_SECONDS,
             )
         finally:
             os.close(slave_fd)
@@ -2351,7 +2416,7 @@ fi
         tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body
     )
 
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         if (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2":
             break
@@ -2755,7 +2820,7 @@ fi
         wait_for_child_ready=False,
     )
     try:
-        process.wait(timeout=60)
+        process.wait(timeout=_PROCESS_WAIT_SECONDS)
     except subprocess.TimeoutExpired:
         pass
     count = (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip()
@@ -2792,7 +2857,7 @@ fi
         wait_for_child_ready=False,
     )
     try:
-        process.wait(timeout=60)
+        process.wait(timeout=_PROCESS_WAIT_SECONDS)
     except subprocess.TimeoutExpired:
         pass
     count = (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip()
@@ -2807,6 +2872,71 @@ def _supervisor_function(script: str, name: str) -> str:
     start = script.index(f"{name}() {{")
     end = script.index("\n      }\n", start) + len("\n      }\n")
     return script[start:end]
+
+
+def test_given_a_ctrl_c_during_the_last_promotion_attempt_when_the_budget_runs_out_then_it_reports_the_interrupt(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A Ctrl+C pressed while the final promotion attempt runs is an interrupt (AI-CLI-a0p4).
+
+    The INT trap only counts the press, and the loop read that count at the top of the next
+    attempt, after its deadline check. A press that landed during the attempt in which the
+    budget ran out was therefore reported as "could not promote", and the supervisor exited
+    1 instead of tearing its session down as a deliberate stop. Seen on a loaded host, where
+    each attempt starts an interpreter and lasts seconds.
+
+    The attempt here sends the press itself and outlasts a 1 s budget, so it lands exactly
+    in that window.
+    """
+    script = get_engine_script("c", "session-1", "test-session", "test-", "myproject")
+    promote = _supervisor_function(script, "_supervisor_promote_child")
+    # The terminal is what the shipped function promotes to; this drives the loop alone.
+    tty_guard = "[[ -t 0 ]] || return 0\n"
+    assert promote.count(tty_guard) == 1 and _PRODUCTION_PROMOTION_BUDGET in promote
+    promote = promote.replace(tty_guard, "", 1).replace(_PRODUCTION_PROMOTION_BUDGET, "_promotion_budget_seconds=1")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    trace = tmp_path / "trace"
+    _write_executable(
+        bin_dir / "python3",
+        f'#!/bin/sh\nprintf "attempt sends INT to %s\\n" "$PPID" >> {shlex.quote(str(trace))}\n'
+        'kill -INT "$PPID"\nsleep 2\nexit 1\n',
+    )
+    ready = tmp_path / "ready"
+    ready.write_text("12345\n", encoding="utf-8")
+    status = tmp_path / "status"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        f"""trap '_supervisor_int_count=$((_supervisor_int_count + 1)); printf "trap ran\\n" >> {shlex.quote(str(trace))}' INT
+_supervisor_int_count=0
+printf 'harness %s\\n' "$$" >> {shlex.quote(str(trace))}
+_child_pid=$$
+_supervisor_child_ready_path={shlex.quote(str(ready))}
+{promote}
+_supervisor_promote_child
+printf '%s\\n' "$?" > {shlex.quote(str(status))}
+""",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
+    }
+    result = subprocess.run(
+        [supported_session_shell, str(harness)],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=_PROCESS_WAIT_SECONDS,
+        check=False,
+    )
+
+    assert status.read_text(encoding="utf-8").strip() == "2", (
+        "a Ctrl+C during the last promotion attempt was reported as a promotion failure; "
+        f"trace={trace.read_text(encoding='utf-8') if trace.exists() else ''!r} stderr={result.stderr!r}"
+    )
 
 
 def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty_then_it_reads_77(
@@ -2826,7 +2956,7 @@ def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty
     if script_bin is None:
         pytest.skip("script binary unavailable for terminal process-group test")
 
-    script = get_engine_script("c", "session-1", "test-session", "test-", "myproject")
+    script = _with_promotion_budget(get_engine_script("c", "session-1", "test-session", "test-", "myproject"), 30)
     ready = tmp_path / "ready"
     ready.touch()
     status = tmp_path / "status"
@@ -2855,7 +2985,14 @@ printf '%s\\n' "$?" > {shlex.quote(str(status))}
         command = [script_bin, "-q", "/dev/null", *command]
     else:
         command = [script_bin, "-q", "-c", shlex.join(command), "/dev/null"]
-    subprocess.run(command, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, check=False)
+    subprocess.run(
+        command,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=_PROCESS_WAIT_SECONDS,
+        check=False,
+    )
 
     assert status.read_text(encoding="utf-8").strip() == "77", (
         "the supervisor's wait misread a clean 77 exit, so it would restart the child"
