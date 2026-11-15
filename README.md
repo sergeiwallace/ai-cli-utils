@@ -232,8 +232,9 @@ after changing a command's help, never edit it by hand.
 | [`ai ps cron`](docs/reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](docs/reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](docs/reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
+| [`ai quota scrape-fable`](docs/reference/cli.md#ai-quota-scrape-fable) | Scrape /usage for the per-model weekly cap into the quota DB |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |

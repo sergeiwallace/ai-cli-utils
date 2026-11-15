@@ -7505,11 +7505,18 @@ def cmd_quota_history():
     sys.exit(quota_history())
 
 
-@cmd_quota_group.command("scrape", help="Scrape /usage from a fresh CC session")
-def cmd_quota_scrape():
-    from .quota import quota_scrape
+@cmd_quota_group.command("publish", help="Publish the statusline's current native quota reading to NATS")
+def cmd_quota_publish():
+    from .quota import quota_publish
 
-    sys.exit(quota_scrape())
+    sys.exit(quota_publish())
+
+
+@cmd_quota_group.command("scrape-fable", help="Scrape /usage for the per-model weekly cap into the quota DB")
+def cmd_quota_scrape_fable():
+    from .quota import quota_scrape_fable
+
+    sys.exit(quota_scrape_fable())
 
 
 @cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")

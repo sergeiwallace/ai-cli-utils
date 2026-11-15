@@ -58,8 +58,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai ps cron`](#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](#ai-quota-history) | Print quota history |
+| [`ai quota publish`](#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](#ai-quota-scrape) | Scrape /usage from a fresh CC session |
+| [`ai quota scrape-fable`](#ai-quota-scrape-fable) | Scrape /usage for the per-model weekly cap into the quota DB |
 | [`ai quota status`](#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](#ai-quota-sync) | Sync quota snapshot from the remote server |
@@ -1015,6 +1016,18 @@ Print quota history
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai quota publish
+
+```text
+ai quota publish [OPTIONS]
+```
+
+Publish the statusline's current native quota reading to NATS
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai quota record
 
 ```text
@@ -1035,13 +1048,13 @@ Arguments:
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
-## ai quota scrape
+## ai quota scrape-fable
 
 ```text
-ai quota scrape [OPTIONS]
+ai quota scrape-fable [OPTIONS]
 ```
 
-Scrape /usage from a fresh CC session
+Scrape /usage for the per-model weekly cap into the quota DB
 
 | Short | Long | Value | Description |
 |---|---|---|---|

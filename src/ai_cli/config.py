@@ -758,6 +758,13 @@ notify_on_exit = true
 ## of this flag; this only gates the automatic per-session registration.
 # auto_start = false
 
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true

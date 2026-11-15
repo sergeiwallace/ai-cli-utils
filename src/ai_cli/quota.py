@@ -1,9 +1,10 @@
-"""Quota tracking — monitors Claude usage and publishes threshold events.
+"""Quota tracking — renders, stores and publishes Claude usage.
 
-Polls Claude usage data via a hidden tmux window and publishes
-quota.threshold.{50,75,90} events when thresholds are crossed.
-Uses JetStream deduplication to avoid re-alerting the same threshold
-within a calendar day. Stores snapshots and usage records in local SQLite
+The seven-day and five-hour figures come from Claude Code's native ``rate_limits``
+statusline payload: the statusline exports them to ``quota statusline-part`` and writes
+them to a state file that ``quota publish`` reads. The hidden-pane ``/usage`` scrape
+remains only for the per-model weekly (Fable) cap, which that payload does not carry,
+and for the ``quota watch`` daemon. Snapshots and usage records live in local SQLite
 at ~/.local/state/ai-cli/quota.db (no external server dependency).
 """
 
@@ -723,47 +724,8 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         reap_cc_update_staging()
 
 
-def _get_usage_via_print_mode() -> QuotaSnapshot | None:
-    """Fetch /usage non-interactively via ``claude -p /usage``.
-
-    Robust primary path (AI-CLI-94). Print mode runs the slash
-    command, waits for the data, prints the complete result to stdout, and exits —
-    deterministic, ~1-2s, and $0 (measured: num_turns=0, zero tokens, total_cost_usd=0;
-    /usage is metadata, not a model turn). It has none of the interactive-TUI hidden-pane
-    scrape's nondeterminism: no readiness race (print mode blocks until the command
-    completes), no async mid-render sampling (the per-model "Current week (<model>)" line
-    is always present), no terminal-size/animation dependence.
-
-    Returns None if print mode is unavailable or the output can't be parsed, so the caller
-    falls back to the legacy hidden-pane scrape (belt-and-suspenders for CC versions where
-    slash commands aren't yet supported under -p).
-    """
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "/usage"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except Exception:
-        return None
-    if result.returncode != 0 or "% used" not in (result.stdout or ""):
-        return None
-    return _parse_usage_output(result.stdout)
-
-
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
-    """Return a QuotaSnapshot via the hidden-pane ``/usage`` scrape.
-
-    Print mode (``claude -p /usage``) is **retired** from this capture path — on CC
-    2.1.207 it emits an insights-only view with no quota bars, so it always returned ``None``.
-    The all-models weekly + 5-hour numbers now come from the official statusLine ``rate_limits``
-    stdin (see :func:`quota_statusline_part`); this scrape remains the capture fallback and the
-    sole source of the secondary ``Current week (<model>)`` (Fable) cap (T-06). The
-    :func:`_get_usage_via_print_mode` helper is kept (dormant, unit-tested) in case a future CC
-    restores quota bars under ``-p``, but is intentionally no longer called here.
-    """
+    """Return a QuotaSnapshot via the hidden-pane ``/usage`` scrape (used by ``quota_watch``)."""
     return _scrape_usage_hidden_pane()
 
 
@@ -811,7 +773,7 @@ def quota_watch(poll_interval: int = 300) -> int:
 
     _out.emit(Tag.QUOTA, "watch", f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
 
-    # Start background NATS listener for on-demand scrape requests + heartbeat.
+    # Start the background NATS heartbeat.
     stop_event = threading.Event()
     if machine:
         listener_thread = threading.Thread(
@@ -862,11 +824,9 @@ def quota_watch(poll_interval: int = 300) -> int:
 
 
 def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -> None:
-    """NATS listener for on-demand scrape requests and periodic heartbeat.
+    """Publish the quota-watch heartbeat to ``hw_state[quota_watch.heartbeat.{machine}]`` every 60 s.
 
-    Runs in a daemon thread started by quota_watch. Subscribes to
-    ``quota.scrape.request.{machine}`` and publishes a heartbeat to
-    ``hw_state[quota_watch.heartbeat.{machine}]`` every 60 seconds.
+    Runs in a daemon thread started by quota_watch.
     """
     import threading as _threading
 
@@ -892,15 +852,6 @@ def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -
         if not client.nc:
             return
 
-        async def _on_scrape_request(msg: Any) -> None:
-            # Dedup: if scrape lock exists a scrape is already in-flight.
-            if not _SCRAPE_LOCK_PATH.exists():
-                _launch_background_scrape()
-
-        sub = None
-        with contextlib.suppress(Exception):
-            sub = await client.nc.subscribe(f"quota.scrape.request.{machine}", cb=_on_scrape_request)
-
         heartbeat_interval = 60.0
         last_heartbeat = 0.0
 
@@ -919,9 +870,6 @@ def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -
                         pass
                 await asyncio.sleep(2.0)
         finally:
-            if sub is not None:
-                with contextlib.suppress(Exception):
-                    await sub.unsubscribe()
             with contextlib.suppress(Exception):
                 await client.close()
 
@@ -1091,7 +1039,7 @@ def _maybe_trigger_fable_scrape(now, fable_ts: str | None) -> None:
         interval = min(_FABLE_BACKOFF_BASE_MINUTES * (2**misses), _FABLE_BACKOFF_MAX_MINUTES)
         elapsed_min = (now.timestamp() - float(state.get("last_attempt", 0.0))) / 60
         if elapsed_min >= interval:
-            _launch_background_scrape()
+            _launch_fable_scrape()
             state["misses"] = min(misses + 1, _FABLE_BACKOFF_MAX_MISSES)
             state["last_attempt"] = now.timestamp()
             _save_fable_backoff(state)
@@ -1156,10 +1104,11 @@ def _clear_scrape_format_mismatch() -> None:
         _set_quota_meta("scrape_format_mismatch_count", "0")
 
 
-def _launch_background_scrape() -> None:
-    """Launch `ai quota scrape` in the background if no scrape is already running.
+def _launch_fable_scrape() -> None:
+    """Launch `ai quota scrape-fable` in the background if no scrape is already running.
 
-    Must never raise — the statusline path must be silent on errors.
+    Called only by :func:`_maybe_trigger_fable_scrape`; the statusline never launches it.
+    Must never raise.
     """
     try:
         from datetime import datetime
@@ -1172,7 +1121,7 @@ def _launch_background_scrape() -> None:
 
         _SCRAPE_LOCK_PATH.touch()
         subprocess.Popen(
-            ["ai", "quota", "scrape"],
+            ["ai", "quota", "scrape-fable"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -1181,51 +1130,39 @@ def _launch_background_scrape() -> None:
         pass
 
 
-def _maybe_trigger_background_scrape(snapshotted_at: str) -> None:
-    """Fire a background `ai quota scrape` if the latest snapshot is stale.
+def quota_scrape_fable() -> int:
+    """Scrape /usage for the per-model weekly (Fable) cap and store it in local SQLite.
 
-    Must never raise — the statusline path must be silent on errors.
+    Claude Code's statusline payload carries no per-model window, so this hidden-pane scrape is
+    the only writer of ``weekly_sonnet_pct``/``weekly_model_name``, which readers of the local
+    quota DB consume. The all-models figure is published by ``ai quota publish`` from the
+    statusline's native data; this command publishes nothing to NATS.
     """
-    try:
-        from datetime import datetime
-
-        now = datetime.now(UTC)
-        snapshot_dt = datetime.fromisoformat(snapshotted_at.replace("Z", "+00:00"))
-        age_minutes = (now - snapshot_dt).total_seconds() / 60
-
-        if age_minutes < _SCRAPE_TTL_MINUTES:
-            return  # snapshot is fresh enough
-
-        _launch_background_scrape()
-    except Exception:
-        pass
-
-
-def quota_scrape() -> int:
-    """Scrape /usage from a hidden CC session and store in local SQLite."""
     from .quota_db import record_quota_snapshot
 
     try:
         missing = [binary for binary in ("tmux", "claude") if shutil.which(binary) is None]
         if missing:
-            _out.emit(Tag.QUOTA, "scrape", f"quota scrape: required binary not found: {', '.join(missing)}", err=True)
+            _out.emit(
+                Tag.QUOTA, "scrape", f"quota scrape-fable: required binary not found: {', '.join(missing)}", err=True
+            )
             return EX_CONFIG
 
-        _out.emit(Tag.QUOTA, "scrape", "Scraping /usage from Claude Code session (hidden tmux window)...")
         global _last_scrape_had_format_mismatch
         _last_scrape_had_format_mismatch = False
         snapshot = _scrape_usage_hidden_pane()
         if snapshot is None:
-            _out.emit(Tag.QUOTA, "scrape", "Could not extract usage percentage.", err=True)
+            _out.emit(Tag.QUOTA, "scrape", "quota scrape-fable: could not read /usage.", err=True)
             return EX_CONFIG if _last_scrape_had_format_mismatch else EX_TEMPFAIL
 
-        scraped = f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%"
-        if snapshot.weekly_sonnet_pct is not None:
-            scraped += f", {snapshot.weekly_model_name or 'Sonnet'} {snapshot.weekly_sonnet_pct:.1f}%"
-        if snapshot.session_pct is not None:
-            scraped += f", session {snapshot.session_pct:.1f}%"
-        _out.emit(Tag.QUOTA, "scrape", scraped)
-
+        if snapshot.weekly_sonnet_pct is None:
+            _out.emit(Tag.QUOTA, "scrape", "quota scrape-fable: /usage shows no per-model weekly line.")
+        else:
+            _out.emit(
+                Tag.QUOTA,
+                "scrape",
+                f"Scraped: {snapshot.weekly_model_name or 'per-model'} weekly {snapshot.weekly_sonnet_pct:.1f}%",
+            )
         record_quota_snapshot(
             usage_percent=snapshot.weekly_all_models_pct,
             session_pct=snapshot.session_pct,
@@ -1234,8 +1171,6 @@ def quota_scrape() -> int:
             extra_pct=snapshot.extra_pct,
             reset_at=snapshot.reset_at,
         )
-        _out.emit(Tag.QUOTA, "scrape", "Stored snapshot in local quota DB.")
-        _publish_quota_snapshot(snapshot)
         _print_mismatch_warning()
         return 0
     finally:
@@ -1437,6 +1372,90 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
 
     with contextlib.suppress(Exception):
         asyncio.run(_do_publish())
+
+
+_QUOTA_STATE_FILE_DEFAULT = "~/.claude/state/quota.json"
+_QUOTA_STATE_MAX_AGE_SECONDS_DEFAULT = 1800
+
+
+def _quota_state_settings() -> tuple[Path, float]:
+    """Return the statusline quota state file and its freshness limit from ``[quota]`` in config.toml."""
+    try:
+        from .config import load_config
+
+        section = load_config().get("quota", {})
+    except Exception:
+        section = {}
+    if not isinstance(section, dict):
+        section = {}
+    path = Path(str(section.get("state_file", _QUOTA_STATE_FILE_DEFAULT))).expanduser()
+    try:
+        max_age = float(section.get("max_age_seconds", _QUOTA_STATE_MAX_AGE_SECONDS_DEFAULT))
+    except (TypeError, ValueError):
+        max_age = float(_QUOTA_STATE_MAX_AGE_SECONDS_DEFAULT)
+    return path, max_age
+
+
+def _current_window(state: dict, window: str, now: float, max_age: float) -> tuple[float, float] | None:
+    """Return ``(pct, reset_epoch)`` for a window whose reading is current, else None.
+
+    Current means a percentage in 0-100, a reset time that has not passed, and an observation
+    (``<window>_updated_at``) no older than ``max_age`` seconds: the rule ``quota-pct`` reports
+    as ``<window>_status == "ok"``, applied here to the state file directly.
+    """
+
+    def _number(value: Any) -> float | None:
+        return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+    pct = _number(state.get(f"{window}_pct"))
+    reset = _number(state.get(f"{window}_reset"))
+    observed_raw = state.get(f"{window}_updated_at")
+    if pct is None or reset is None or not isinstance(observed_raw, str) or not 0 <= pct <= 100:
+        return None
+    try:
+        observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    if reset < now or now - observed > max_age:
+        return None
+    return pct, reset
+
+
+def quota_publish() -> int:
+    """Publish the statusline's native seven-day quota reading when it is current.
+
+    Reads the state file the statusline writes from Claude Code's ``rate_limits`` payload. When
+    the seven-day window is current it publishes the same three items a quota snapshot always
+    has (``quota.snapshot``, ``hw.events.usage.claude.snapshot`` and the ``hw_state`` KV key
+    ``quota.claude.current.<host>``). A missing, unreadable, stale or reset state file publishes
+    nothing and still exits 0: an idle host has no fresh reading, which is not a failure.
+    """
+    path, max_age = _quota_state_settings()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _out.emit(Tag.QUOTA, "publish", f"quota publish: no readable state file at {path} ({type(exc).__name__})")
+        return 0
+    if not isinstance(state, dict):
+        _out.emit(Tag.QUOTA, "publish", f"quota publish: state file {path} is not a JSON object")
+        return 0
+
+    now = time.time()
+    seven_day = _current_window(state, "seven_day", now, max_age)
+    if seven_day is None:
+        _out.emit(Tag.QUOTA, "publish", "quota publish: no current seven-day reading; nothing published")
+        return 0
+    five_hour = _current_window(state, "five_hour", now, max_age)
+
+    pct, reset_epoch = seven_day
+    snapshot = QuotaSnapshot(
+        weekly_all_models_pct=pct,
+        session_pct=five_hour[0] if five_hour is not None else None,
+        reset_at=datetime.fromtimestamp(reset_epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    _publish_quota_snapshot(snapshot)
+    _out.emit(Tag.QUOTA, "publish", f"quota publish: seven-day {pct:.1f}% sent")
+    return 0
 
 
 def _try_read_kv_snapshot() -> dict | None:
@@ -1702,21 +1721,15 @@ def quota_statusline_part() -> int:
                         pass
 
         if not rows:
-            # No data anywhere — show placeholder and kick off a scrape
-            _launch_background_scrape()
-            DIM = "\033[2m"
-            RESET = "\033[0m"
-            _out.raw(Untagged.STATUSLINE, f"\U0001f4ca {DIM}-{RESET}")  # 📊 -
+            # No seven-day value from any source: render nothing. The statusline never
+            # starts a scrape; the value arrives with Claude Code's next rate_limits payload.
             return 0
 
         usage_pct = rows[0]["usage_percent"]
-        # Without the official rate_limits input, retain the legacy all-models refresh cadence.
-        if not os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
-            _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
-        stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
+        stale = snapshot_age_hours > 2.0  # no fresh value for >2h
         # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
         if len(rows) >= 3:

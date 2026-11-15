@@ -136,15 +136,12 @@ class TestStatuslineBrokenIndicator:
 
     def test_no_broken_prefix_when_count_is_zero(self):
         _set_quota_meta("scrape_format_mismatch_count", "0")
-        # Also mock scraping to avoid tmux calls — statusline should work without data
-        with patch("ai_cli.quota._launch_background_scrape"):
-            output = self._capture_statusline()
+        output = self._capture_statusline()
         assert _SCRAPER_BROKEN_PREFIX not in output
 
     def test_no_broken_prefix_when_key_absent(self):
         # Key not set at all — no mismatch flag
-        with patch("ai_cli.quota._launch_background_scrape"):
-            output = self._capture_statusline()
+        output = self._capture_statusline()
         assert _SCRAPER_BROKEN_PREFIX not in output
 
     def test_quota_data_still_rendered_after_prefix(self):

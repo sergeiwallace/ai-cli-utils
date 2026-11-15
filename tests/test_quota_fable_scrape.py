@@ -28,7 +28,7 @@ def test_fresh_fable_resets_backoff_no_scrape(tmp_path, monkeypatch):
     state.write_text('{"last_attempt": 0.0, "misses": 3}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
     now = datetime.now(UTC)
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._launch_fable_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(minutes=5)))  # 5 min old = fresh
     scrape.assert_not_called()
     import json
@@ -40,7 +40,7 @@ def test_stale_fable_no_prior_attempt_scrapes(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
     now = datetime.now(UTC)
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._launch_fable_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(hours=2)))  # stale
     scrape.assert_called_once()
     import json
@@ -54,7 +54,7 @@ def test_stale_fable_within_backoff_does_not_scrape(tmp_path, monkeypatch):
     # misses=1 → interval 20 min; last attempt 5 min ago → within backoff.
     state.write_text(f'{{"last_attempt": {(now - timedelta(minutes=5)).timestamp()}, "misses": 1}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._launch_fable_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(hours=2)))
     scrape.assert_not_called()
 
@@ -65,7 +65,7 @@ def test_stale_fable_after_backoff_interval_scrapes_and_grows(tmp_path, monkeypa
     # misses=1 → interval 20 min; last attempt 25 min ago → elapsed.
     state.write_text(f'{{"last_attempt": {(now - timedelta(minutes=25)).timestamp()}, "misses": 1}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._launch_fable_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(hours=2)))
     scrape.assert_called_once()
     import json
@@ -78,7 +78,7 @@ def test_backoff_caps_at_max_misses(tmp_path, monkeypatch):
     now = datetime.now(UTC)
     state.write_text(f'{{"last_attempt": {(now - timedelta(hours=5)).timestamp()}, "misses": 9}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._launch_fable_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, None)  # missing Fable
     scrape.assert_called_once()
     import json
@@ -133,7 +133,7 @@ def test_last_good_fable_survives_lookup_but_render_never_shows_it(monkeypatch, 
     assert pct == 7.0 and name == "Fable"
 
     monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", "24")
-    with patch("ai_cli.quota._launch_background_scrape"):
+    with patch("ai_cli.quota._launch_fable_scrape"):
         quota_statusline_part()
     out = capsys.readouterr().out
     # Check the Fable label specifically, not a raw "7%" substring -- the real (unmocked)

@@ -19,8 +19,6 @@ from ai_cli.quota import (
     EX_TEMPFAIL,
     QuotaSnapshot,
     _get_claude_usage_snapshot,
-    _get_usage_via_print_mode,
-    _maybe_trigger_background_scrape,
     _parse_reset_datetime,
     _parse_usage_output,
     _publish_quota_snapshot,
@@ -29,7 +27,7 @@ from ai_cli.quota import (
     _try_read_kv_snapshot,
     quota_history,
     quota_record,
-    quota_scrape,
+    quota_scrape_fable,
     quota_status,
     quota_statusline_part,
     quota_sync_from_remote,
@@ -932,74 +930,15 @@ class TestScrapeUsageHiddenPane:
 # Real `claude -p /usage` print-mode output (CC v2.1.207): inline "label: N% used · resets"
 # form, per-model line always present. This is the deterministic replacement for the flaky
 # interactive-TUI scrape.
-_PRINT_MODE_USAGE_OUTPUT = (
-    "You are currently using your subscription to power your Claude Code usage\n\n"
-    "Current session: 4% used · resets Jul 13 at 5:30pm (America/New_York)\n"
-    "Current week (all models): 17% used · resets Jul 14 at 2pm (America/New_York)\n"
-    "Current week (Fable): 0% used\n\n"
-    "What's contributing to your limits usage?\n"
-)
-
-
-class TestGetUsageViaPrintMode:
-    def test_when_print_mode_output_then_parsed(self):
-        proc = MagicMock(returncode=0, stdout=_PRINT_MODE_USAGE_OUTPUT)
-        with patch("ai_cli.quota.subprocess.run", return_value=proc) as run:
-            snap = _get_usage_via_print_mode()
-        # Invoked non-interactively — no tmux, just `claude -p /usage`.
-        run.assert_called_once()
-        assert run.call_args.args[0] == ["claude", "-p", "/usage"]
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 17.0
-        assert snap.session_pct == 4.0
-        assert snap.weekly_sonnet_pct == 0.0
-        assert snap.weekly_model_name == "Fable"
-
-    def test_when_nonzero_returncode_then_none(self):
-        proc = MagicMock(returncode=1, stdout="")
-        with patch("ai_cli.quota.subprocess.run", return_value=proc):
-            assert _get_usage_via_print_mode() is None
-
-    def test_when_no_percent_used_then_none(self):
-        proc = MagicMock(returncode=0, stdout="some unrelated output\n")
-        with patch("ai_cli.quota.subprocess.run", return_value=proc):
-            assert _get_usage_via_print_mode() is None
-
-    def test_when_subprocess_raises_then_none(self):
-        with patch("ai_cli.quota.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 30)):
-            assert _get_usage_via_print_mode() is None
 
 
 class TestGetClaudeUsageSnapshot:
-    def test_print_mode_retired_scrape_is_sole_path(self):
-        """Print mode is retired from the capture path (dead on CC 2.1.207); the
-        hidden-pane scrape is the sole fallback and is called without consulting print mode."""
+    def test_given_hidden_pane_snapshot_when_called_then_returns_it(self):
         snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode") as print_mode,
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
-        ):
+        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape:
             result = _get_claude_usage_snapshot()
         assert result is snap
         scrape.assert_called_once()
-        print_mode.assert_not_called()
-
-    def test_when_print_mode_none_then_falls_back_to_scraper(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
-        ):
-            result = _get_claude_usage_snapshot()
-        assert result is snap
-        scrape.assert_called_once()
-
-    def test_when_both_none_then_returns_none(self):
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
-        ):
-            assert _get_claude_usage_snapshot() is None
 
 
 # --- _notify_threshold ---
@@ -1106,24 +1045,26 @@ class TestQuotaRecord:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
 
-# --- quota_scrape ---
+# --- quota_scrape_fable ---
 
 
-class TestQuotaScrape:
+class TestQuotaScrapeFable:
     @pytest.fixture
     def scrape_prerequisites_available(self):
         """Make scraper-result tests independent of executables on the test runner's PATH."""
         with patch("ai_cli.quota.shutil.which", return_value="/test/bin"):
             yield
 
-    def test_given_no_output_when_scrape_runs_then_returns_ex_tempfail(self, scrape_prerequisites_available, capsys):
+    def test_given_no_output_when_scrape_fable_runs_then_returns_ex_tempfail(
+        self, scrape_prerequisites_available, capsys
+    ):
         with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
-            result = quota_scrape()
+            result = quota_scrape_fable()
         assert result == EX_TEMPFAIL
-        assert "Could not extract" in capsys.readouterr().err
+        assert "could not read /usage" in capsys.readouterr().err
 
     @pytest.mark.parametrize("missing_binary", ["tmux", "claude"])
-    def test_given_missing_prerequisite_when_scrape_runs_then_returns_ex_config(self, missing_binary, capsys):
+    def test_given_missing_prerequisite_when_scrape_fable_runs_then_returns_ex_config(self, missing_binary, capsys):
         with (
             patch(
                 "ai_cli.quota.shutil.which",
@@ -1131,35 +1072,35 @@ class TestQuotaScrape:
             ),
             patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
         ):
-            result = quota_scrape()
+            result = quota_scrape_fable()
 
         assert result == EX_CONFIG
         assert missing_binary in capsys.readouterr().err
         scrape.assert_not_called()
 
-    def test_given_format_mismatch_when_scrape_runs_then_returns_ex_config(self, scrape_prerequisites_available):
+    def test_given_format_mismatch_when_scrape_fable_runs_then_returns_ex_config(self, scrape_prerequisites_available):
         def format_mismatch() -> None:
             import ai_cli.quota as quota
 
             quota._last_scrape_had_format_mismatch = True
 
         with patch("ai_cli.quota._scrape_usage_hidden_pane", side_effect=format_mismatch):
-            result = quota_scrape()
+            result = quota_scrape_fable()
 
         assert result == EX_CONFIG
 
-    def test_given_stale_mismatch_flag_when_scrape_has_no_output_then_returns_ex_tempfail(
+    def test_given_stale_mismatch_flag_when_scrape_fable_has_no_output_then_returns_ex_tempfail(
         self, scrape_prerequisites_available
     ):
         import ai_cli.quota as quota
 
         quota._last_scrape_had_format_mismatch = True
         with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
-            result = quota_scrape()
+            result = quota_scrape_fable()
 
         assert result == EX_TEMPFAIL
 
-    def test_when_scrape_succeeds_then_stores_snapshot_and_returns_0(
+    def test_given_fable_line_when_scrape_fable_succeeds_then_stores_it_and_publishes_nothing(
         self, scrape_prerequisites_available, tmp_path, capsys
     ):
         import ai_cli.quota_db as qdb
@@ -1170,51 +1111,34 @@ class TestQuotaScrape:
                 weekly_all_models_pct=72.0,
                 session_pct=15.0,
                 weekly_sonnet_pct=38.0,
+                weekly_model_name="Fable",
                 extra_pct=0.0,
             )
             with (
                 patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
-                patch("ai_cli.quota._publish_quota_snapshot") as mock_publish,
+                patch("ai_cli.messaging.NATSClient") as nats_client,
             ):
-                result = quota_scrape()
+                result = quota_scrape_fable()
             assert result == 0
             conn = qdb._get_conn()
-            row = conn.execute("SELECT usage_percent FROM quota_snapshots").fetchone()
+            row = conn.execute("SELECT weekly_sonnet_pct, weekly_model_name FROM quota_snapshots").fetchone()
             conn.close()
-            assert row["usage_percent"] == 72.0
-            mock_publish.assert_called_once_with(snap)
+            assert row["weekly_sonnet_pct"] == 38.0
+            assert row["weekly_model_name"] == "Fable"
+            nats_client.assert_not_called()
+            assert "Fable weekly 38.0%" in capsys.readouterr().out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_scrape_fails_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path):
-        """quota_scrape must always remove the lock file, even on failure."""
+    def test_when_scrape_fable_fails_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path):
         lock_path = tmp_path / "quota-scrape.lock"
         lock_path.touch()
         with (
             patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
             patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
         ):
-            quota_scrape()
+            quota_scrape_fable()
         assert not lock_path.exists()
-
-    def test_when_scrape_succeeds_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path, capsys):
-        """quota_scrape removes the lock file on success too."""
-        import ai_cli.quota_db as qdb
-
-        qdb.set_db_path(tmp_path / "quota.db")
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-        try:
-            snap = QuotaSnapshot(weekly_all_models_pct=50.0)
-            with (
-                patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-                patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
-                patch("ai_cli.quota._publish_quota_snapshot"),
-            ):
-                quota_scrape()
-            assert not lock_path.exists()
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
 
 
 # --- _publish_quota_snapshot ---
@@ -1701,20 +1625,13 @@ class TestRunNATSQuotaListener:
         mock_client.close = fake_close
         return mock_client
 
-    def test_subscribes_to_machine_specific_subject(self):
-        """Listener subscribes to quota.scrape.request.{machine}."""
+    def test_given_running_listener_when_started_then_subscribes_to_nothing(self):
+        """The on-demand scrape request subject is retired; the listener only heartbeats."""
         import threading
 
         stop_event = threading.Event()
-        subscribed_subjects = []
-
         mock_client = self._make_mock_client()
-
-        async def fake_subscribe(subject, cb):
-            subscribed_subjects.append(subject)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
+        mock_client.nc.subscribe = MagicMock()
 
         async def fake_wait_for(coro, timeout):
             return await coro
@@ -1727,81 +1644,9 @@ class TestRunNATSQuotaListener:
             patch("asyncio.wait_for", side_effect=fake_wait_for),
             patch("asyncio.sleep", fake_sleep),
         ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+            _run_nats_quota_listener("myhost", stop_event=stop_event)
 
-        assert "quota.scrape.request.hetzner" in subscribed_subjects
-
-    def test_launches_scrape_when_lock_absent(self, tmp_path):
-        """On scrape request, _launch_background_scrape called when no lock file."""
-        import threading
-
-        stop_event = threading.Event()
-        lock_path = tmp_path / "quota-scrape.lock"
-
-        mock_client = self._make_mock_client()
-        captured_cb = []
-
-        async def fake_subscribe(subject, cb):
-            captured_cb.append(cb)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        async def fake_sleep(n):
-            # Deliver a fake scrape request then stop
-            if captured_cb:
-                await captured_cb[0](MagicMock())
-            stop_event.set()
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        mock_launch.assert_called_once()
-
-    def test_skips_scrape_when_lock_exists(self, tmp_path):
-        """On scrape request, skip launch if lock file exists (scrape already running)."""
-        import threading
-
-        stop_event = threading.Event()
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-
-        mock_client = self._make_mock_client()
-        captured_cb = []
-
-        async def fake_subscribe(subject, cb):
-            captured_cb.append(cb)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        async def fake_sleep(n):
-            if captured_cb:
-                await captured_cb[0](MagicMock())
-            stop_event.set()
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        mock_launch.assert_not_called()
+        mock_client.nc.subscribe.assert_not_called()
 
     def test_publishes_heartbeat_via_kv(self):
         """Listener writes heartbeat to hw_state[quota_watch.heartbeat.{machine}]."""
@@ -2093,14 +1938,13 @@ class TestConftestQuotaHermeticity:
         assert "quota_state" in p
         assert str(Path.home() / ".local" / "state" / "ai-cli") not in p
 
-    def test_scrape_spawners_are_neutralized(self):
+    def test_scrape_spawner_is_neutralized(self):
         import ai_cli.quota as q
 
-        # The autouse fixture no-ops both spawners, so no real `ai quota scrape`
-        # subprocess is launched (which would touch real DB/NATS). Prove no Popen fires.
+        # The autouse fixture no-ops the Fable spawner, so no real `ai quota scrape-fable`
+        # subprocess is launched (which would touch the real DB). Prove no Popen fires.
         with patch("subprocess.Popen") as mock_popen:
-            q._launch_background_scrape()
-            q._maybe_trigger_background_scrape("2020-01-01T00:00:00Z")  # stale ts
+            q._launch_fable_scrape()
         mock_popen.assert_not_called()
 
     def test_scrape_lock_path_is_isolated_not_real(self):
@@ -2142,33 +1986,25 @@ class TestQuotaStatuslinePart:
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         return week_start_str, week_start_dt
 
-    @pytest.mark.real_quota_scrape
-    def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
-        """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
-        import ai_cli.quota as q
+    def test_given_no_snapshot_when_rendered_then_prints_nothing_and_spawns_no_process(self, tmp_path, capsys):
+        """No seven-day value from any source renders nothing; the statusline never starts a scrape."""
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
-        # Initialize the DB schema without inserting any snapshots
         qdb._get_conn().close()
-        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
             with (
                 patch("subprocess.Popen") as mock_popen,
-                # Ensure NATS KV returns no data so the no-snapshot path is taken.
+                patch("subprocess.run") as mock_run,
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
             ):
                 result = quota_statusline_part()
             assert result == 0
-            out = capsys.readouterr().out
-            assert "📊" in out
-            assert "-" in out
-            # Background scrape should have been launched
-            mock_popen.assert_called_once()
-            assert "scrape" in mock_popen.call_args[0][0]
+            assert capsys.readouterr().out == ""
+            mock_popen.assert_not_called()
+            mock_run.assert_not_called()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
-            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
     def test_when_under_pace_then_shows_green_signed_delta_and_steady_arrow(self, tmp_path, capsys, frozen_week):
         """delta < -5 uses the green truecolor anchor and preserves its negative sign."""
@@ -2421,18 +2257,34 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_snapshot_exists_then_calls_maybe_trigger_with_snapshotted_at(self, tmp_path, capsys):
-        """quota_statusline_part must call _maybe_trigger_background_scrape with the snapshot timestamp."""
+    def test_given_stale_snapshot_without_native_input_when_rendered_then_spawns_no_process(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """An hours-old snapshot and no rate_limits input once fired a scrape; now nothing is spawned."""
         import ai_cli.quota_db as qdb
 
+        monkeypatch.delenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", raising=False)
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            qdb.record_quota_snapshot(usage_percent=50.0, weekly_sonnet_pct=40.0)
-            with patch("ai_cli.quota._maybe_trigger_background_scrape") as mock_trigger:
+            conn = qdb._get_conn()
+            stale = (datetime.now(UTC) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "INSERT INTO quota_snapshots (usage_percent, week_start, snapshotted_at) VALUES (?, ?, ?)",
+                (50.0, qdb._get_current_week_start(), stale),
+            )
+            conn.commit()
+            conn.close()
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                patch("subprocess.run") as mock_run,
+                patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
+                patch("ai_cli.quota._launch_fable_scrape") as fable_launch,
+            ):
                 quota_statusline_part()
-            mock_trigger.assert_called_once()
-            ts_arg = mock_trigger.call_args[0][0]
-            assert isinstance(ts_arg, str) and len(ts_arg) > 0
+            assert "50%" in capsys.readouterr().out
+            mock_popen.assert_not_called()
+            mock_run.assert_not_called()
+            fable_launch.assert_not_called()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2572,12 +2424,11 @@ class TestQuotaStatuslinePartLegacyDb:
         try:
             with (
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
-                patch("ai_cli.quota._launch_background_scrape"),
             ):
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
-            assert "📊" in out
+            assert out == ""
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2632,7 +2483,6 @@ class TestQuotaStatuslinePartKvSync:
             }
             with (
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=kv_payload),
-                patch("ai_cli.quota._maybe_trigger_background_scrape"),
             ):
                 result = quota_statusline_part()
             assert result == 0
@@ -2887,54 +2737,33 @@ class TestQuotaSyncRemoteWithoutSqliteCli:
         assert not (missing_home / ".local").exists()
 
 
-# --- _maybe_trigger_background_scrape ---
+# --- _launch_fable_scrape ---
 
 
 @pytest.mark.real_quota_scrape
-class TestMaybeBackgroundScrape:
-    def _stale_ts(self, minutes_ago: int = 35) -> str:
-        now = datetime.now(UTC)
-        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def _fresh_ts(self, minutes_ago: int = 5) -> str:
-        now = datetime.now(UTC)
-        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def test_when_snapshot_fresh_then_no_scrape_triggered(self, tmp_path):
+class TestLaunchFableScrape:
+    def test_given_no_lock_when_launched_then_spawns_scrape_fable_and_creates_lock(self, tmp_path):
         lock_path = tmp_path / "quota-scrape.lock"
         with (
             patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
             patch("subprocess.Popen") as mock_popen,
         ):
-            _maybe_trigger_background_scrape(self._fresh_ts())
-        mock_popen.assert_not_called()
-        assert not lock_path.exists()
-
-    def test_when_snapshot_stale_and_no_lock_then_triggers_scrape_and_creates_lock(self, tmp_path):
-        lock_path = tmp_path / "quota-scrape.lock"
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen") as mock_popen,
-        ):
-            _maybe_trigger_background_scrape(self._stale_ts())
+            quota_module._launch_fable_scrape()
         mock_popen.assert_called_once()
-        args = mock_popen.call_args[0][0]
-        assert args == ["ai", "quota", "scrape"]
+        assert mock_popen.call_args[0][0] == ["ai", "quota", "scrape-fable"]
         assert lock_path.exists()
 
-    def test_when_snapshot_stale_and_fresh_lock_then_no_scrape(self, tmp_path):
-        """Fresh lock = scrape already running — skip."""
+    def test_given_fresh_lock_when_launched_then_spawns_nothing(self, tmp_path):
         lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()  # lock written just now
+        lock_path.touch()
         with (
             patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
             patch("subprocess.Popen") as mock_popen,
         ):
-            _maybe_trigger_background_scrape(self._stale_ts())
+            quota_module._launch_fable_scrape()
         mock_popen.assert_not_called()
 
-    def test_when_snapshot_stale_and_stale_lock_then_removes_lock_and_triggers_scrape(self, tmp_path):
-        """Stale lock (crashed scrape) is removed and a new scrape is launched."""
+    def test_given_stale_lock_when_launched_then_replaces_lock_and_spawns(self, tmp_path):
         lock_path = tmp_path / "quota-scrape.lock"
         lock_path.touch()
         stale_lock_time = time.time() - (16 * 60)  # 16 min old > _SCRAPE_LOCK_STALE_MINUTES
@@ -2943,24 +2772,17 @@ class TestMaybeBackgroundScrape:
             patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
             patch("subprocess.Popen") as mock_popen,
         ):
-            _maybe_trigger_background_scrape(self._stale_ts())
+            quota_module._launch_fable_scrape()
         mock_popen.assert_called_once()
-        assert lock_path.exists()  # new lock created after stale one removed
+        assert lock_path.exists()
 
-    def test_when_popen_raises_then_no_exception_propagated(self, tmp_path):
-        """Errors must never propagate — statusline path must be silent."""
+    def test_given_popen_error_when_launched_then_does_not_raise(self, tmp_path):
         lock_path = tmp_path / "quota-scrape.lock"
         with (
             patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
             patch("subprocess.Popen", side_effect=OSError("popen failed")),
         ):
-            _maybe_trigger_background_scrape(self._stale_ts())  # must not raise
-
-    def test_when_invalid_timestamp_then_no_exception_propagated(self, tmp_path):
-        """Malformed snapshotted_at must be handled silently."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        with patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path):
-            _maybe_trigger_background_scrape("not-a-timestamp")  # must not raise
+            quota_module._launch_fable_scrape()
 
 
 # --- statusline single-line contract ---
@@ -3008,23 +2830,18 @@ class TestQuotaStatuslinePartSingleLine:
         non_empty = [l for l in out.split("\n") if l]
         assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
 
-    def test_when_no_data_placeholder_is_single_line(self, tmp_path, capsys):
-        """No snapshot data: placeholder output must also be a single line."""
-        import ai_cli.quota as q
+    def test_when_no_data_then_output_is_empty(self, tmp_path, capsys):
+        """No snapshot data: nothing is printed, so no stray line reaches the statusline."""
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
         qdb._get_conn().close()
-        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
-            with patch("subprocess.Popen"):
+            with patch("ai_cli.quota._try_read_kv_snapshot", return_value=None):
                 quota_statusline_part()
-            out = capsys.readouterr().out
-            non_empty = [l for l in out.split("\n") if l]
-            assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
+            assert capsys.readouterr().out == ""
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
-            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
@@ -3211,9 +3028,8 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
                 qdb.record_quota_snapshot(usage_percent=usage_percent)
-                with patch("ai_cli.quota._launch_background_scrape"):
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
-                        quota_statusline_part()
+                with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
+                    quota_statusline_part()
             return capsys.readouterr().out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]

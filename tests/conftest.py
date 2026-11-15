@@ -1811,13 +1811,11 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
        ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
        test reads/writes real quota history (which carries live ``Fable`` model data).
        Redirect it to a per-test tmp file.
-    2. **Real background scrape subprocess.** ``quota_statusline_part()`` fires
-       ``_launch_background_scrape`` / ``_maybe_trigger_background_scrape``, which
-       ``subprocess.Popen(["ai","quota","scrape"], start_new_session=True)`` — a real
-       detached process that scrapes live usage and writes the real DB + NATS KV.
-       Under xdist these race across workers and inject real ``Fable`` data into a
-       test expecting isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake).
-       No-op both spawners.
+    2. **Real background scrape subprocess.** ``_launch_fable_scrape`` runs
+       ``subprocess.Popen(["ai","quota","scrape-fable"], start_new_session=True)`` — a real
+       detached process that scrapes live usage and writes the real DB. Under xdist it
+       would race across workers and inject real ``Fable`` data into a test expecting
+       isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake). No-op the spawner.
     3. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
        redirected, so any test reaching ``record_quota_snapshot(reset_at=...)`` wrote the
        real ``~/.local/state/ai-cli/quota-reset-anchor.txt``. That file *defines* the quota
@@ -1826,12 +1824,12 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
        recorded then carried a different ``week_start`` than the one the statusline queried,
        no rows came back, and the render fell through to its ``📊 -`` placeholder. Redirect
        it to a per-test tmp path so the anchor resolves to the deterministic built-in default.
-    4. **Real scrape lock file.** ``_launch_background_scrape()`` skips spawning when
+    4. **Real scrape lock file.** ``_launch_fable_scrape()`` skips spawning when
        its process-global lock exists. Redirect it to a per-test path so a live
        statusline or another xdist worker cannot make a test's launch assertion
        depend on shared user state.
 
-    Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
+    Tests that exercise the scrape spawner itself (they mock ``subprocess.Popen``
     locally and assert the real functions' behavior) opt out of the no-op via the
     ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path, and the
     anchor-persistence tests patch ``_get_reset_anchor_path`` with their own path — an inner
@@ -1856,10 +1854,7 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
         if request.node.get_closest_marker("real_quota_scrape"):
             yield  # test drives the real scrape functions (with its own Popen mock)
         else:
-            with (
-                patch("ai_cli.quota._launch_background_scrape"),
-                patch("ai_cli.quota._maybe_trigger_background_scrape"),
-            ):
+            with patch("ai_cli.quota._launch_fable_scrape"):
                 yield
     finally:
         _qdb.set_db_path(None)
