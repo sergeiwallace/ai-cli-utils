@@ -55,9 +55,9 @@ def _process(target: ProcessIdentity) -> psutil.Process | None:
         return None
 
 
-def _tmux(args: list[str]) -> str | None:
+def _tmux(args: list[str], timeout: float = 2) -> str | None:
     try:
-        result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=2, check=False)
+        result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         # A loaded host can answer slowly; report it as an ordinary failure to establish ownership.
         raise ValueError("tmux did not answer in time") from exc
@@ -71,9 +71,10 @@ def _tmux(args: list[str]) -> str | None:
     return result.stdout.strip()
 
 
-def _tmux_server(target: TmuxIdentity) -> int | None:
+def _tmux_server(target: TmuxIdentity, timeout: float = 2) -> int | None:
     answer = _tmux(
-        ["display-message", "-p", "-t", target.session_id, "#{session_id}|#{@ai_cli_session_generation}|#{pid}"]
+        ["display-message", "-p", "-t", target.session_id, "#{session_id}|#{@ai_cli_session_generation}|#{pid}"],
+        timeout=timeout,
     )
     if answer is None:
         return None
