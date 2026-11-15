@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import logging
 import math
 import os
@@ -1759,10 +1760,15 @@ def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it
 
 
 def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | None = None) -> None:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
     deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
+        if owned is not None:
+            owned.note_tree(throttle=True)
         # The writer creates the file before it writes, so an empty file is not ready yet.
         if path.exists() and path.stat().st_size:
+            if owned is not None:
+                owned.note_tree()
             return
         if process.poll() is not None:
             stdout, stderr = _communicate_supervisor(process)
@@ -1772,39 +1778,94 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | 
 
 
 def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
+    if owned is not None:
+        owned.note_tree()
     if process.stdout is None:
         process.wait(timeout=_PROCESS_WAIT_SECONDS)
         return "", ""
     return process.communicate(timeout=_PROCESS_WAIT_SECONDS)
 
 
-_SPAWNED_SUPERVISORS: list[subprocess.Popen[str]] = []
+class _OwnedSupervisor:
+    """A started supervisor, and every process group and session its tree was seen in.
+
+    The root's own pid names the session and group it was started in. The rest are
+    learned while the root is alive, because the tree leaves them: the child under a
+    terminal calls ``setpgrp()``, ``script`` puts the supervisor in a session of its
+    own, and the heartbeat ticker calls ``setsid()``. Once the root has exited, its
+    remaining members are reparented to init and only these ids still reach them.
+    """
+
+    _NOTE_INTERVAL = 0.5
+
+    def __init__(self, process: subprocess.Popen[str], started: float) -> None:
+        self.process = process
+        self.started = started
+        self.groups = {process.pid}
+        self.sessions = {process.pid}
+        self._noted_at = 0.0
+
+    def note_tree(self, *, throttle: bool = False) -> None:
+        if throttle and time.monotonic() - self._noted_at < self._NOTE_INTERVAL:
+            return
+        self._noted_at = time.monotonic()
+        if self.process.poll() is not None:
+            return
+        with contextlib.suppress(psutil.Error):
+            for member in psutil.Process(self.process.pid).children(recursive=True):
+                with contextlib.suppress(OSError):
+                    self.groups.add(os.getpgid(member.pid))
+                    self.sessions.add(os.getsid(member.pid))
+
+    def _live_groups(self) -> set[int]:
+        """The groups of every live process in a noted group or session, started after the root."""
+        found = set()
+        for pid in psutil.pids():
+            try:
+                group, session = os.getpgid(pid), os.getsid(pid)
+                if (group in self.groups or session in self.sessions) and psutil.Process(
+                    pid
+                ).create_time() >= self.started:
+                    found.add(group)
+            except (OSError, psutil.Error):
+                continue
+        return found - {os.getpgrp(), os.getsid(0)}
+
+    def reap(self) -> None:
+        if self.process.poll() is None:
+            self.note_tree()
+            with contextlib.suppress(Exception):
+                reap_tree(self.process)
+        deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+        while (groups := self._live_groups()) and time.monotonic() < deadline:
+            for group in groups:
+                with contextlib.suppress(OSError):
+                    os.killpg(group, signal.SIGKILL)
+            time.sleep(0.05)
+        with contextlib.suppress(Exception):
+            self.process.wait(timeout=_PROCESS_WAIT_SECONDS)
+
+
+_SPAWNED_SUPERVISORS: dict[int, _OwnedSupervisor] = {}
 
 
 @pytest.fixture(autouse=True)
 def _reap_leaked_supervisors() -> Iterator[None]:
-    """Guarantee every supervisor spawned via ``_start_generated_supervisor`` is
-    killed at test end, even on assertion failure or timeout (AI-CLI-1xg0).
+    """Kill every supervisor tree ``_start_generated_supervisor`` started, whatever the test did.
 
-    Without this, a failure between spawn and the test's own
-    ``_finish_supervisor`` call left the whole process tree running forever —
-    63 such orphaned ``supervisor.sh``/heartbeat-ticker processes (some 1+ day
-    old) were found accumulating from this exact file across prior runs, and
-    are a concrete explanation for this file's own "supervisor child did not
-    become ready" flakiness: a fresh run competes with dozens of leaked
-    processes for PTY/process-table resources. Walks the real process tree via
-    psutil rather than the OS process group, since the generated supervisor's
-    heartbeat ticker deliberately ``os.setsid()``s itself out of the original
-    group (mirroring the /remote-control bridge-leak shape found elsewhere
-    this session) while remaining a psutil-visible descendant.
+    A test's own teardown is its last line, ``_finish_supervisor``, so a failed
+    assertion or an expired wait anywhere before it skips that line. This finalizer
+    runs regardless (AI-CLI-1xg0). It also covers a supervisor that has ALREADY
+    exited by teardown, which the first version skipped (AI-CLI-72hf): its child, in
+    a group of its own, was left running under init, and 46 such processes from
+    earlier runs were found still looping hours later. So the reap goes by the groups
+    and sessions noted while the tree was alive, not through the root.
     """
     yield
     while _SPAWNED_SUPERVISORS:
-        process = _SPAWNED_SUPERVISORS.pop()
-        if process.poll() is not None:
-            continue
-        with contextlib.suppress(Exception):
-            reap_tree(process)
+        _, owned = _SPAWNED_SUPERVISORS.popitem()
+        owned.reap()
 
 
 def _start_generated_supervisor(
@@ -1956,6 +2017,8 @@ fi
         stdin_value: int | None = stdin_fd
     else:
         stdin_value = subprocess.PIPE if terminal else None
+    # Create times are compared against this, so allow for their one-second resolution.
+    started = time.time() - 1
     process = subprocess.Popen(
         command,
         env=environment,
@@ -1965,7 +2028,7 @@ fi
         stdin=stdin_value,
         start_new_session=True,
     )
-    _SPAWNED_SUPERVISORS.append(process)
+    _SPAWNED_SUPERVISORS[process.pid] = _OwnedSupervisor(process, started)
     if wait_for_child_ready:
         # The wait is _PROCESS_WAIT_SECONDS, which scales with host load. Every test through here
         # starts a REAL supervisor, and a reload test starts two children in sequence. A fixed
@@ -1978,6 +2041,9 @@ fi
 
 
 def _finish_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
+    if owned is not None:
+        owned.note_tree()
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
@@ -2320,6 +2386,122 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         owner.kill()
         owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)
+
+
+_FAILING_SUPERVISOR_TEST = """
+import json
+import os
+import signal
+from pathlib import Path
+
+import psutil
+import pytest
+from test_stale_session_reaper import _reap_leaked_supervisors, _start_generated_supervisor  # noqa: F401
+
+
+# A supervisor still running at teardown, on a terminal so its child is in a group of
+# its own; and one that already exited, leaving its child to init.
+@pytest.mark.parametrize(("root_outcome", "pseudo_terminal"), [("alive", True), ("killed", False)])
+def test_inner(tmp_path, root_outcome, pseudo_terminal):
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, os.environ["AI_CLI_TEST_INNER_SHELL"], lease_acquired=False, pseudo_terminal=pseudo_terminal
+    )
+    root = psutil.Process(process.pid)
+    tree = [root, *root.children(recursive=True)]
+    record = [{"pid": member.pid, "created": member.create_time(), "group": os.getpgid(member.pid)} for member in tree]
+    out = Path(os.environ["AI_CLI_TEST_INNER_RECORDS"]) / f"{root_outcome}-{pseudo_terminal}.json"
+    out.write_text(json.dumps(record), encoding="utf-8")
+    if root_outcome == "killed":
+        # Only the root: what is left is the tree a supervisor that died first leaves behind.
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait()
+    pytest.fail("deliberate failure before the test's own teardown line")
+"""
+
+
+def _surviving_members(record: list[dict[str, float]]) -> list[str]:
+    survivors = []
+    for member in record:
+        with contextlib.suppress(psutil.Error):
+            if abs(psutil.Process(int(member["pid"])).create_time() - member["created"]) < 1:
+                survivors.append(f"pid {int(member['pid'])}")
+    for group in sorted({int(member["group"]) for member in record} - {os.getpgrp()}):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(group, 0)
+            survivors.append(f"group {group}")
+    return survivors
+
+
+def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_process_from_its_groups_survives(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A failing supervisor test must not leak its process tree (AI-CLI-72hf).
+
+    The body fails on purpose, both with the supervisor alive and after the supervisor
+    has already exited and left its child behind, in a separate pytest run so its
+    teardown is the only thing that can end the tree. Each recorded process and
+    process group is gone once that run returns.
+    """
+    records = tmp_path / "records"
+    records.mkdir()
+    inner = tmp_path / "test_failing_supervisor.py"
+    inner.write_text(_FAILING_SUPERVISOR_TEST, encoding="utf-8")
+    tests_dir = Path(__file__).resolve().parent
+    environment = {
+        **os.environ,
+        "AI_CLI_TEST_INNER_SHELL": supported_session_shell,
+        "AI_CLI_TEST_INNER_RECORDS": str(records),
+        "PYTHONPATH": os.pathsep.join([str(tests_dir), str(tests_dir.parent / "src")]),
+    }
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(inner),
+                "-q",
+                "-o",
+                "addopts=",
+                "-p",
+                "no:randomly",
+                "-p",
+                "no:cacheprovider",
+                "--rootdir",
+                str(tmp_path),
+                "--basetemp",
+                str(tmp_path / "inner-tmp"),
+            ],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_PROCESS_WAIT_SECONDS * 8,
+        )
+        summary = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else result.stderr
+        assert "2 failed" in summary and "error" not in summary, result.stdout + result.stderr
+        recorded = {path.name: json.loads(path.read_text(encoding="utf-8")) for path in records.iterdir()}
+        assert len(recorded) == 2, sorted(recorded)
+        survivors: dict[str, list[str]] = {}
+
+        def all_gone() -> bool:
+            survivors.clear()
+            survivors.update(
+                {name: found for name, record in recorded.items() if (found := _surviving_members(record))}
+            )
+            return not survivors
+
+        with contextlib.suppress(pytest.fail.Exception):
+            _wait_for_condition("the failed test's processes to exit", all_gone)
+        assert not survivors, f"processes outlived the failed test's teardown: {survivors}"
+    finally:
+        for path in records.iterdir():
+            for member in json.loads(path.read_text(encoding="utf-8")):
+                with contextlib.suppress(psutil.Error):
+                    survivor = psutil.Process(int(member["pid"]))
+                    if abs(survivor.create_time() - member["created"]) < 1:
+                        survivor.kill()
 
 
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(
