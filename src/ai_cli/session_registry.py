@@ -270,6 +270,8 @@ DURABLE_FIELDS = (
     "boot_recipe",
     "supervisor_exit",
     "supervisor_identity",
+    "family",
+    "agent_identity",
     "owning_host",
     "ended_at",
     "exit",

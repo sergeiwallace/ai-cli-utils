@@ -2246,6 +2246,25 @@ def _handle_internal(argv: list[str]) -> None:
         if thread:
             _out.raw(Untagged.INTERNAL_REPLY, thread)
         sys.exit(0)
+    elif action == "record-agent-identity":
+        if len(argv) not in (3, 4) or not argv[2].isdigit():
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal record-agent-identity <tmux_session> <pid> [generation]",
+                err=True,
+            )
+            sys.exit(1)
+        from . import session_run_state as _run_state
+
+        try:
+            recorded = _run_state.record_agent(argv[1], int(argv[2]), argv[3] if len(argv) == 4 else None)
+        except Exception as exc:
+            _out.emit(
+                Tag.INTERNAL, "session", f"{argv[1]}: agent identity not recorded: {type(exc).__name__}", err=True
+            )
+            sys.exit(1)
+        sys.exit(0 if recorded else 1)
     elif action == "name-codex-session":
         usage = (
             "Usage: ai internal name-codex-session <tmux_session> <ai_name> [-p|--prompt-file FILE]\n"
@@ -5913,9 +5932,11 @@ def _do_session_launch(
         except OSError as exc:
             reporter.error("session", f"cannot enter session directory {target_root}: {exc}")
             sys.exit(1)
-        if engine == "c":
-            # Pin the task-list namespace to ai_name, matching the tmux session
-            # script, so the CC task panel survives process restarts.
+        # Pin the identity the tmux session script exports: the canonical name for every
+        # agent, and the task-list namespace for Claude Code and Codex, so the CC task
+        # panel survives process restarts and a Codex session resolves its caller.
+        os.environ["AI_SESSION_NAME"] = ai_name
+        if engine in ("c", "cx"):
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
         try:
             command = _bare_engine_command(
@@ -6023,12 +6044,16 @@ def _do_session_launch(
             )
             if engine == "cx":
                 _name_new_codex_session(command, ai_name, reporter, tmux_target=session_id, fifo=None)
+        _identity_flags = ["-e", f"AI_SESSION_NAME={ai_name}"]
+        if engine in ("c", "cx"):
+            _identity_flags += ["-e", f"CLAUDE_CODE_TASK_LIST_ID={ai_name}"]
         once_argv = [
             "tmux",
             "new-session",
             "-s",
             session_id,
             *_tmux_env_flags,
+            *_identity_flags,
             "--",
             _session_shell,
             "-c",

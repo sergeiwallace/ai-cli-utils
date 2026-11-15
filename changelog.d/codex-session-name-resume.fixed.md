@@ -8,3 +8,10 @@
   `/rename` once yourself.
 - `ai p <name>` now continues the session's Pi conversation on every launch. A relaunch used
   to start a new Pi session unless it was an in-place restart or a bare launch with `-r`.
+- An `ai cx` session now carries the same identity as an `ai c` session. Every agent sees
+  `AI_SESSION_NAME` set to its canonical session name, and Codex also gets
+  `CLAUDE_CODE_TASK_LIST_ID`. Each session row in the registry records the agent's `family`,
+  plus `agent_identity` (pid, process start time, run generation) once the agent starts.
+  `ai exit-session <name>` now accepts the canonical name of a Codex, Gemini or Pi session,
+  and `ai exit-session` with no name works from inside one. It used to refuse with "not
+  registered; refusing an untracked transition".

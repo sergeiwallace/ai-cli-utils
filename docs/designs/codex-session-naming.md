@@ -163,11 +163,28 @@ owning host), and in the launcher for `--once` and bare launches. Codex's home i
 **D-4. Pi continues on every launch.** Every Pi launch (tmux, `--once`, bare) passes
 `--continue`.
 
+**D-5. A Codex session carries the same identity as a Claude Code session.** The session
+script exports `AI_SESSION_NAME=<canonical name>` into every agent (all four families), and
+for Codex also `CLAUDE_CODE_TASK_LIST_ID=<canonical name>`, as Claude Code already had; the
+bare and `--once` launches set the same. `AI_TMUX_SESSION` stays the tmux name. Every launch
+row in the session registry records the agent `family` (`claude`, `codex`, `gemini`, `pi`),
+and once the agent starts the script records `agent_identity`:
+`{"pid": <int>, "started_at": <epoch seconds, psutil create_time>, "generation": <run
+generation>}`, the shape of `supervisor_identity`. `ai exit-session <canonical name>` maps the
+canonical name to the row keyed `cx-<name>` or `cx-r-<name>` (any family), and `ai
+exit-session` with no name, run inside an agent with no Claude Code session record, proves the
+session from `agent_identity` against the process table. A pid whose start time has moved is
+refused. The heartbeat stays keyed by the tmux name for every family, `ai c` included, with
+the canonical name in its payload's `ai_name`.
+
+**Amendment 4 (a name set by hand inside Codex).** The resolver reads Codex's own
+`session_index.jsonl`, not a launcher record, so a thread the owner named `/rename <canonical
+name>` by hand, before this change or after it, is resumed by id on the next `ai cx <name>`,
+local or `-R` (the remote session script resolves on the owning host). A thread named
+anything other than the exact canonical name is not matched.
+
 ## Not changed here
 
-- `ai exit-session` resolves a session only by its registry key (`cx-<name>`,
-  `cx-r-<name>`), and with no name it can verify only a Claude Code session record. The
-  cx launch is registered; the lookup is the gap. Filed separately (AI-CLI-8ur2).
 - Pi 1.5.2 refuses `--provider` without `--model` ("Error: --provider requires --model"),
   so `ai p` with the default provider exits at once on that Pi. Recorded on AI-CLI-tc25.
 - A second Ctrl+C that lands while the wrapper writes the exit prints "Session exit
