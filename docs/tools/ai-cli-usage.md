@@ -496,7 +496,7 @@ ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the sam
 ```
 
 Attach to, resume or launch this machine's one chief-of-staff session (with `-R`, the remote
-machine's). It needs the `[chief_of_staff]` settings in `config.toml`; the first four have no
+machine's). It needs the `[firstmate]` settings in `config.toml`; the first four have no
 built-in default, and a launch that needs one that is unset exits 1 and names it:
 
 | Setting | Used for |

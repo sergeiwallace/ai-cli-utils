@@ -5,10 +5,10 @@ user, dispatches to the other ("VP") sessions and surfaces their blockers. It ru
 an ordinary interactive session whose chief home (``FM_HOME``) is a per-machine
 state directory outside every repository, seeded by the environment's installer:
 
-    <[chief_of_staff] homes_dir>/<machine-key>
+    <[firstmate] homes_dir>/<machine-key>
 
 The names that tie a chief to one environment are configuration, read from the
-``[chief_of_staff]`` section of ``config.toml`` at call time and never guessed:
+``[firstmate]`` section of ``config.toml`` at call time and never guessed:
 ``project`` (the repository every chief launches into), ``session_name`` (the session-name
 segment that marks a chief), ``instance_key_prefix`` (the registry's chief instance key is
 ``<prefix>/<machine-key>``) and ``homes_dir`` (relative to ``$XDG_STATE_HOME`` unless
@@ -52,7 +52,7 @@ MACHINE_KEY_ENV = "AI_MACHINE_ID"
 ROLE_ENV = "AI_SESSION_ROLE"
 ROLE = "chief-of-staff"
 FM_HOME_ENV = "FM_HOME"
-SETTINGS_SECTION = "chief_of_staff"
+SETTINGS_SECTION = "firstmate"
 REGISTRY_SCHEMA_VERSION = 2
 REGISTRATION_SCHEMA_VERSION = 1
 # The installer seeds these; a home without them has no transport policy and must not
@@ -67,14 +67,14 @@ class ChiefOfStaffError(Exception):
 
 
 def setting(key: str) -> str:
-    """``[chief_of_staff] <key>`` from config.toml, read at call time; "" when unset."""
+    """``[firstmate] <key>`` from config.toml, read at call time; "" when unset."""
     section = _config.load_config().get(SETTINGS_SECTION)
     value = section.get(key) if isinstance(section, dict) else None
     return value.strip() if isinstance(value, str) else ""
 
 
 def alias_setting(key: str) -> tuple[str, ...]:
-    """``[chief_of_staff] <key>``: a list of extra names, read at call time; () when unset.
+    """``[firstmate] <key>``: a list of extra names, read at call time; () when unset.
 
     Command routing reads it on every ``ai`` invocation, dry runs and session scripts
     included, so it reads config.toml without creating it or registering the machine.
@@ -92,7 +92,7 @@ def alias_setting(key: str) -> tuple[str, ...]:
 
 
 def required_setting(key: str) -> str:
-    """``[chief_of_staff] <key>``, or a refusal naming the setting when it is unset."""
+    """``[firstmate] <key>``, or a refusal naming the setting when it is unset."""
     value = setting(key)
     if not value:
         raise ChiefOfStaffError(
@@ -215,7 +215,7 @@ def tmux_panes_all_dead(target: str) -> bool:
 def chief_homes_root() -> Path | None:
     """The directory holding one chief home per machine key; None when none is configured.
 
-    ``[chief_of_staff] homes_dir``, resolved under ``$XDG_STATE_HOME`` unless it is absolute
+    ``[firstmate] homes_dir``, resolved under ``$XDG_STATE_HOME`` unless it is absolute
     or starts with ``~``.
     """
     configured = setting("homes_dir")

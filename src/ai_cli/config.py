@@ -986,7 +986,7 @@ stale_after_seconds = 600
 ## registry is read with equal weight.
 # environment_repo = "myenv"
 
-[chief_of_staff]
+[firstmate]
 ## Settings for `ai cos` / `-F/--chief`. A chief launch that needs one of these and finds
 ## it unset refuses and names it; nothing here has a built-in default.
 ## The repository every chief launches into, whatever repository you run the command from.

@@ -1942,7 +1942,7 @@ def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
 #: a test that exercises one merges this into the config it hands the launcher.
 CHIEF_PROJECT = "myhub"
 ENVIRONMENT_CONFIG = {
-    "chief_of_staff": {
+    "firstmate": {
         "project": CHIEF_PROJECT,
         "session_name": "chief",
         "instance_key_prefix": "example-chief",

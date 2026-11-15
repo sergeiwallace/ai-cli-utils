@@ -260,7 +260,7 @@ Arguments:
 | `-u` | `--no-name` |  | With a label, drop the first name |
 | `-w` | `--with-name` |  | With a label, keep a first name after it |
 | `-N` | `--name` | `TEXT` | Use this first name for the new session |
-| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[firstmate] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
 | `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
@@ -441,7 +441,7 @@ Propagate project-template changes to downstream projects
 ai cos [OPTIONS] [NAME]
 ```
 
-Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). Needs the [chief_of_staff] settings in config.toml, whose command_aliases and flag_aliases add synonyms for `cos` and `--chief`
+Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). Needs the [firstmate] settings in config.toml, whose command_aliases and flag_aliases add synonyms for `cos` and `--chief`
 
 Arguments:
 
@@ -457,7 +457,7 @@ Arguments:
 | `-u` | `--no-name` |  | With a label, drop the first name |
 | `-w` | `--with-name` |  | With a label, keep a first name after it |
 | `-N` | `--name` | `TEXT` | Use this first name for the new session |
-| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[firstmate] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
 | `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
@@ -496,7 +496,7 @@ Arguments:
 | `-u` | `--no-name` |  | With a label, drop the first name |
 | `-w` | `--with-name` |  | With a label, keep a first name after it |
 | `-N` | `--name` | `TEXT` | Use this first name for the new session |
-| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[firstmate] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
 | `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
@@ -582,7 +582,7 @@ Arguments:
 | `-u` | `--no-name` |  | With a label, drop the first name |
 | `-w` | `--with-name` |  | With a label, keep a first name after it |
 | `-N` | `--name` | `TEXT` | Use this first name for the new session |
-| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[firstmate] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
 | `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
@@ -919,7 +919,7 @@ Arguments:
 | `-u` | `--no-name` |  | With a label, drop the first name |
 | `-w` | `--with-name` |  | With a label, keep a first name after it |
 | `-N` | `--name` | `TEXT` | Use this first name for the new session |
-| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[firstmate] homes_dir>/&lt;machine-key>) |
 | `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
 | `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
 | `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |

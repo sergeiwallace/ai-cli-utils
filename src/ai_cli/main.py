@@ -6490,19 +6490,19 @@ def _chief_alias_setting(key: str) -> tuple[str, ...]:
 
 
 def _chief_command_aliases(group: click.Group) -> tuple[str, ...]:
-    """``[chief_of_staff] command_aliases``; one naming a built-in command is refused, never shadowed."""
+    """``[firstmate] command_aliases``; one naming a built-in command is refused, never shadowed."""
     aliases = _chief_alias_setting("command_aliases")
     for alias in aliases:
         if alias in group.commands:
             raise click.UsageError(
-                f"[chief_of_staff] command_aliases names {alias!r}, which is already the `ai {alias}` command; "
+                f"[firstmate] command_aliases names {alias!r}, which is already the `ai {alias}` command; "
                 f"remove it from {_config.config_file_text()}"
             )
     return aliases
 
 
 class _ChiefFlagCommand(click.Command):
-    """A command whose ``--chief`` also answers to each ``[chief_of_staff] flag_aliases`` name."""
+    """A command whose ``--chief`` also answers to each ``[firstmate] flag_aliases`` name."""
 
     def make_parser(self, ctx):
         parser = super().make_parser(ctx)
@@ -6513,7 +6513,7 @@ class _ChiefFlagCommand(click.Command):
             flag = f"--{alias}"
             if flag in taken:
                 raise click.UsageError(
-                    f"[chief_of_staff] flag_aliases names {alias!r}, but {flag} is already an option of "
+                    f"[firstmate] flag_aliases names {alias!r}, but {flag} is already an option of "
                     f"`ai {ctx.info_name}`; remove it from {_config.config_file_text()}"
                 )
             # Parsed into the same destination as --chief, so the declared option reads it.
@@ -6522,7 +6522,7 @@ class _ChiefFlagCommand(click.Command):
 
 
 class _ChiefAliasGroup(RootHelpGroup):
-    """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
+    """Routes each ``[firstmate] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
 
@@ -6726,7 +6726,7 @@ def _session_options(func):
         "-H",
         "--fm-home",
         default="",
-        help="With -F: chief home directory (default: <[chief_of_staff] homes_dir>/<machine-key>)",
+        help="With -F: chief home directory (default: <[firstmate] homes_dir>/<machine-key>)",
     )(func)
     # Human session names. -N/--name is declared, so it is never forwarded to the engine.
     func = click.option(
@@ -6854,7 +6854,7 @@ def _prepare_chief_launch(
     Shared by ``--chief`` on every engine command and by ``ai cos`` (the Claude
     shorthand), so there is one place that resolves the home, enforces one chief per
     machine, records the registration other sessions read, and exports FM_HOME and the
-    role. Refuses rather than guesses: an unset ``[chief_of_staff]`` setting it needs, no
+    role. Refuses rather than guesses: an unset ``[firstmate]`` setting it needs, no
     home, a home without its transport policy, or a
     request for a different chief while one is running all exit 1 before anything is
     created.
@@ -7261,7 +7261,7 @@ def cmd_cx(ctx, **options):
     context_settings=SESSION_CONTEXT,
     help=(
         "Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a "
-        "remote machine (`ai c --chief`). Needs the [chief_of_staff] settings in config.toml, whose "
+        "remote machine (`ai c --chief`). Needs the [firstmate] settings in config.toml, whose "
         "command_aliases and flag_aliases add synonyms for `cos` and `--chief`"
     ),
 )

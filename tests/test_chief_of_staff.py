@@ -31,7 +31,7 @@ VALID_POLICY = '{"schema_version":1,"primary":"native","fallbacks":["agent-mail"
 
 
 def run_cli(argv, config=None, env=None):
-    """``conftest.run_cli`` with the ``[chief_of_staff]`` settings configured."""
+    """``conftest.run_cli`` with the ``[firstmate]`` settings configured."""
     return _run_cli(argv, config=with_environment_config(config), env=env)
 
 
@@ -1378,12 +1378,12 @@ class TestRegistryLock:
 
 def _config_without(key: str) -> dict:
     config = with_environment_config()
-    del config["chief_of_staff"][key]
+    del config["firstmate"][key]
     return config
 
 
 class TestChiefSettings:
-    """The names that tie a chief to one environment come from ``[chief_of_staff]``, never code."""
+    """The names that tie a chief to one environment come from ``[firstmate]``, never code."""
 
     @pytest.mark.parametrize("key", ["project", "session_name", "instance_key_prefix", "homes_dir"])
     def test_given_a_required_setting_unset_when_cos_launched_then_refuses_naming_it_and_writes_nothing(
@@ -1413,7 +1413,7 @@ class TestChiefSettings:
     def test_given_a_configured_instance_key_prefix_when_registered_then_the_registry_key_carries_it(
         self, seeded_home, monkeypatch
     ):
-        config = with_environment_config({"chief_of_staff": {"instance_key_prefix": "other-env-chief"}})
+        config = with_environment_config({"firstmate": {"instance_key_prefix": "other-env-chief"}})
         monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
         with ExitStack() as stack:
             _launch_patches(stack, live=False)
@@ -1424,12 +1424,12 @@ class TestChiefSettings:
 
     def test_given_an_absolute_homes_dir_when_resolved_then_it_is_used_as_given(self, tmp_path, monkeypatch):
         homes = tmp_path / "chief-homes"
-        config = with_environment_config({"chief_of_staff": {"homes_dir": str(homes)}})
+        config = with_environment_config({"firstmate": {"homes_dir": str(homes)}})
         monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
         assert cos.resolve_chief_home(None, "key-1") == homes / "key-1"
 
     def test_given_a_configured_session_name_when_named_positionally_then_it_is_the_chief_launch(self, monkeypatch):
-        config = with_environment_config({"chief_of_staff": {"session_name": "Lead"}})
+        config = with_environment_config({"firstmate": {"session_name": "Lead"}})
         monkeypatch.setattr("ai_cli.config.load_config", lambda *_args, **_kwargs: config)
         assert cos.is_chief_positional("lead-2")
         assert cos.chief_session_name("review") == "lead-review"
@@ -1484,7 +1484,7 @@ class TestChiefAliases:
 
     @pytest.mark.parametrize("argv", [["cos"], ["ls"]])
     def test_given_a_command_alias_naming_a_built_in_when_any_command_runs_then_refuses_naming_it(self, argv):
-        config = with_environment_config({"chief_of_staff": {"command_aliases": ["ls"]}})
+        config = with_environment_config({"firstmate": {"command_aliases": ["ls"]}})
         with patch("ai_cli.main._dispatch_session") as dispatch, patch("ai_cli.main._do_ls") as do_ls:
             code, _out, err = _run_cli(["ai", *argv], config=config)
         assert code == 1
@@ -1494,7 +1494,7 @@ class TestChiefAliases:
 
     @pytest.mark.parametrize("alias", ["resume", "chief", "help"])
     def test_given_a_flag_alias_naming_an_existing_option_when_launched_then_refuses_naming_it(self, alias):
-        config = with_environment_config({"chief_of_staff": {"flag_aliases": [alias]}})
+        config = with_environment_config({"firstmate": {"flag_aliases": [alias]}})
         with patch("ai_cli.main._dispatch_session") as dispatch:
             code, _out, err = _run_cli(["ai", "c", "--chief"], config=config)
         assert code == 1
@@ -1508,7 +1508,7 @@ class TestChiefAliases:
     def test_given_an_alias_setting_that_is_not_a_list_of_bare_names_when_launched_then_refuses_naming_it(
         self, key, value
     ):
-        config = with_environment_config({"chief_of_staff": {key: value}})
+        config = with_environment_config({"firstmate": {key: value}})
         with patch("ai_cli.main._dispatch_session") as dispatch:
             code, _out, err = _run_cli(["ai", "c", "--chief"], config=config)
         assert code == 1
