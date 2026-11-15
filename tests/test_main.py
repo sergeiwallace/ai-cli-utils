@@ -341,8 +341,9 @@ class TestGetEngineScript:
         )
 
         assert 'export PI_TMUX_SESSION="$tmux_session"' in script
-        assert 'run_agent pi --provider openai-codex --name "$ai_name"' in script
-        assert 'run_agent pi --continue --provider openai-codex --name "$ai_name"' in script
+        assert (
+            '[[ "$engine" == "p" ]]; then run_agent pi --continue --provider openai-codex --name "$ai_name"' in script
+        )
         assert '[[ "$engine" == "p" ]] && export CLAUDE_CODE_TASK_LIST_ID' not in script
 
     def test_given_pi_provider_configured_when_generating_script_then_uses_configured_provider(self):
@@ -357,7 +358,6 @@ class TestGetEngineScript:
             pi_provider="anthropic",
         )
 
-        assert 'run_agent pi --provider anthropic --name "$ai_name"' in script
         assert 'run_agent pi --continue --provider anthropic --name "$ai_name"' in script
 
     def test_given_codex_engine_when_generating_script_then_resumes_last_worktree_session(self):
@@ -690,10 +690,11 @@ class TestGetEngineScript:
         assert done.returncode == 0, done.stderr
 
 
-def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
+def test_given_pi_bare_launch_when_not_resuming_then_still_continues_named_session():
+    # AI-CLI-tc25: --continue is worktree-scoped and starts fresh when there is nothing to continue.
     command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
 
-    assert command == ["pi", "--provider", "openai-codex", "--name", "myproject-1"]
+    assert command == ["pi", "--continue", "--provider", "openai-codex", "--name", "myproject-1"]
 
 
 def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
@@ -709,7 +710,7 @@ def test_given_pi_bare_launch_when_provider_configured_then_uses_configured_prov
         "p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], pi_provider="anthropic"
     )
 
-    assert command == ["pi", "--provider", "anthropic", "--name", "myproject-1"]
+    assert command == ["pi", "--continue", "--provider", "anthropic", "--name", "myproject-1"]
 
 
 def test_given_codex_bare_launch_when_not_resuming_then_starts_interactive_codex():
