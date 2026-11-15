@@ -2087,7 +2087,8 @@ def registered_project_names() -> dict[str, str]:
                         "load",
                         f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
                         f"the fleet registry declares {fleet_entry['prefix']!r}. "
-                        f"Edit the project's task_prefix in {source} to match the fleet registry.",
+                        f"If {source} is in a repository checkout, pull it first: the fix may already "
+                        "be upstream. Otherwise edit the project's task_prefix there to match the fleet registry.",
                     )
                     _warned_stale_project_aliases.add(warning_key)
                 continue
