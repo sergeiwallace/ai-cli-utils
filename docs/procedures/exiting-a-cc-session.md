@@ -5,6 +5,7 @@ tags: [procedure, session-launch, process-lifecycle, proc]
 status: active
 template_version: "procedure-1.0.0"
 ---
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # Exiting a Claude Code session so the name can be resumed
 
@@ -54,12 +55,33 @@ A session started before this command existed has no recorded process identities
 `ai exit-session` refuses it and says so: relaunch it once, then exit it the same way. The manual
 steps below stay as the fallback for that case and for a process the registry never knew about.
 
+<!-- /doc:region name="overview" -->
+
+<!-- doc:region name="steps" kind="replaceable" -->
+
 ## Procedure
 
 ### 1. Exit from inside the session
 
 Use `/exit`, or Ctrl-D at an empty prompt. Let the session close itself so its shutdown work
 (transcript flush, worktree state, cleanup traps) runs.
+
+For `ai c` and `ai cx`, Ctrl+C ends the session when the agent exits. If the agent
+keeps running, press Ctrl+C again within three seconds to stop its restart loop.
+This also applies to remote sessions launched with `-R/--remote`: the session's
+tmux pane closes, the connection ends, and control returns to the original local
+shell in the directory where you launched `ai`. The local terminal pane stays open.
+An interrupt during startup or teardown also ends the session; a registry write
+failure cannot restart the agent after a final exit request.
+Successful agent exits also end the session immediately, including an early
+Ctrl+C handled by a raw-mode terminal interface. These rules apply to sessions
+started with the updated launcher; existing supervisors retain their loaded
+script until they are stopped and relaunched.
+
+A failed remote launch can still offer a recovery shell for fixing credentials.
+In that shell, `exit 78` retries the agent and `exit` closes the remote session,
+returning to the local shell. Changing a running session's restart policy to
+`never`, or disabling `[session] auto_restart`, retains the worktree shell behavior.
 
 Ctrl-Z does not exit. In an `ai c` session it does not even suspend for long: Claude Code says
 "Run `fg` to bring Claude Code back", but an `ai c` pane has no job-control shell, so `fg` and
@@ -155,6 +177,10 @@ A stopped process that still owns its terminal's foreground is a suspended sessi
 abandoned one, so step 4 above never ends it: the launcher resumes it and keeps treating the
 name as in use. Bug record: [Ctrl+Z suspends an `ai c` session](../bugs/ai-cli-y6el-ctrl-z-suspends-session-with-no-way-back.md).
 
+<!-- /doc:region name="steps" -->
+
+<!-- doc:region name="rationale" kind="replaceable" -->
+
 ## Platform note
 
 The automatic reclamation in step 4 works on every platform; only how the launcher reads the
@@ -176,3 +202,11 @@ name, and leaves the process alone. End that process by hand as in step 4.
 
 - [Bug record: exiting a session can leave its process stopped, not dead](../bugs/ai-cli-2139-session-exit-leaves-stopped-process.md)
 - [Bug record: Ctrl+Z suspends an `ai c` session and no key resumes it](../bugs/ai-cli-y6el-ctrl-z-suspends-session-with-no-way-back.md)
+
+<!-- /doc:region name="rationale" -->
+
+<!-- doc:region name="revision_log" kind="append_only" -->
+
+2026-11-15: Documented interrupt return to the calling shell and remote recovery-shell exit.
+
+<!-- /doc:region name="revision_log" -->
