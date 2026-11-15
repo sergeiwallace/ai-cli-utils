@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import portalocker
@@ -119,7 +120,54 @@ def boot_recipe_refusal(record: dict) -> str | None:
     return None if problem is None else f"{BOOT_RECIPE_REFUSAL}: {problem}"
 
 
-def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive: bool | None) -> str | None:
+NOT_RUNNING_AT_REBOOT = "so it was not running when the host went down"
+
+
+def _epoch(stamp: object) -> float | None:
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def not_running_at_reboot(record: dict, *, boot_id: str | None, booted: float | None) -> str | None:
+    """Why a record this boot would replay was not running when the host went down, else None.
+
+    Replay brings back what the reboot stopped. A reservation an earlier boot made that
+    never started, an exit recorded before this boot began (except a maintenance wind-down,
+    which stops a session for the reboot), and a run an earlier boot's relaunch already
+    judged and nothing started since were all down before the reboot. ``booted`` is this
+    boot's start in epoch seconds; an exit that cannot be placed against it is refused.
+    """
+    current = run_state(record)
+    if current == "relaunched":
+        return f"reserved by an earlier boot's relaunch but never started, {NOT_RUNNING_AT_REBOOT}"
+    decided = (record.get("boot_decision") or {}).get("boot_id")
+    if boot_id and record.get("boot_id") != boot_id and decided and decided not in (boot_id, record.get("boot_id")):
+        return f"kept down by an earlier boot's relaunch and not started since, {NOT_RUNNING_AT_REBOOT}"
+    settled = cause(record, boot_id)
+    if current != "exited" or settled == WIND_DOWN_CAUSE:
+        return None
+    exited = record.get("supervisor_exit") or record.get("exit") or {}
+    ended = _epoch(record.get("ended_at")) or _epoch(exited.get("at"))
+    if booted is None or ended is None:
+        return "the exit cannot be placed before or after this boot's start"
+    if ended < booted:
+        return f"exited ({settled}) before this boot, {NOT_RUNNING_AT_REBOOT}"
+    return None
+
+
+def boot_veto(
+    record: dict,
+    *,
+    cfg: dict,
+    host: str,
+    boot_id: str | None,
+    alive: bool | None,
+    booted: float | None = None,
+) -> str | None:
     """Return the first winning boot veto; every policy obeys the same safety order."""
     if not cfg["on_boot"]:
         return "session_relaunch.on_boot is off"
@@ -141,7 +189,7 @@ def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive:
         return f"policy {policy} forbids boot relaunch"
     if settled not in cfg["causes"]:
         return f"cause {settled} is disabled by profile"
-    return boot_recipe_refusal(record)
+    return not_running_at_reboot(record, boot_id=boot_id, booted=booted) or boot_recipe_refusal(record)
 
 
 def default_relaunch(record: dict) -> None:
