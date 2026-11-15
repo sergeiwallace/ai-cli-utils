@@ -162,6 +162,30 @@ _POSIX_HOST = os.name == "posix"
 # longer to say so. Overridable so a slow runner can raise it without a code change.
 _PROCESS_WAIT_SECONDS = process_wait_seconds()
 
+# How a test child body idles until its test ends it (AI-CLI-72hf): a `read` from a FIFO
+# nothing ever writes, opened read-write so it never sees EOF. That blocks in the shell
+# itself, with no process behind it. The `while true; do sleep 0.05; done` it replaces
+# started 20 `sleep` processes a second per child and fed the load that makes these tests
+# time out. A background `sleep` that `wait` blocks on is no substitute: it holds the
+# supervisor's output pipes open and outlives a child killed by an untrapped signal, so
+# the test's `communicate()` never returns. A trapped signal interrupts the `read`, its
+# trap runs at once, and the loop reads again; a removed FIFO ends the loop rather than
+# letting `<>` create a regular file that reads EOF in a spin. Builtins only, and POSIX
+# sh, for the shebang-less body as well.
+_BLOCK_UNTIL_KILLED = (
+    """while [ -p "${AI_CLI_TEST_CHILD_READY}.idle" ]; do read -r _ <> "${AI_CLI_TEST_CHILD_READY}.idle"; done"""
+)
+
+
+def _make_idle_fifo(child_ready: Path) -> None:
+    """The FIFO ``_BLOCK_UNTIL_KILLED`` reads, made here so the idle loop runs no command.
+
+    A ``mkfifo`` in the body would be a foreground process that a group signal sent once
+    the child is ready can land on, and zsh then ends the script without running its trap.
+    """
+    os.mkfifo(f"{child_ready}.idle")
+
+
 _PRODUCTION_PROMOTION_BUDGET = "_promotion_budget_seconds=30"
 
 
@@ -321,6 +345,7 @@ def _start_real_tmux_supervisor(
         '#!/bin/sh\nexec "$AI_CLI_TEST_PYTHON" -m ai_cli.main "$@"\n',
     )
     ready = tmp_path / "child-ready"
+    _make_idle_fifo(ready)
     launches = tmp_path / "launches"
     _write_executable(
         bin_dir / "claude",
@@ -454,7 +479,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$count" > "$count_file"
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   if (( count == 1 )); then sleep 4; exit 0; fi
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, launches = _start_real_tmux_supervisor(
@@ -508,7 +533,7 @@ def test_given_a_generation_token_draw_that_encodes_with_a_leading_dash_when_the
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -583,7 +608,7 @@ def test_given_real_supervisor_crash_when_lease_and_ticker_exist_then_lease_rele
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -653,7 +678,7 @@ def test_given_real_supervisor_crash_when_the_ticker_is_detached_then_the_ticker
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -1901,6 +1926,7 @@ def _start_generated_supervisor(
     event_log = tmp_path / "events.log"
     heartbeat_log = tmp_path / "heartbeats.log"
     child_ready = tmp_path / "child-ready"
+    _make_idle_fifo(child_ready)
     _write_executable(
         bin_dir / "tmux",
         "#!/bin/sh\n"
@@ -1958,7 +1984,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   trap 'printf "INT\\n" >> "$AI_CLI_TEST_EVENTS"' INT
   trap 'printf "WINCH\\n" >> "$AI_CLI_TEST_EVENTS"' WINCH
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     )
@@ -2546,9 +2572,9 @@ def test_given_shebangless_stable_script_when_generated_supervisor_starts_child_
     not carry a shebang.  The supervisor therefore has to pass its selected
     interpreter to the Python exec wrapper, as it already does for the ticker.
     """
-    child_body = """if [ \"${1:-}\" = \"--ai-cli-child-body\" ]; then
+    child_body = f"""if [ \"${{1:-}}\" = \"--ai-cli-child-body\" ]; then
   printf '%s\\n' \"$$\" > \"$AI_CLI_TEST_CHILD_READY\"
-  while :; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
 
@@ -2591,7 +2617,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   fi
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2818,7 +2844,7 @@ def test_given_child_exits_during_term_relay_when_supervisor_receives_term_then_
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2844,7 +2870,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   IFS= read -r line
   printf 'READ=%s\\n' "$line" >> "$AI_CLI_TEST_EVENTS"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2911,7 +2937,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$count" > "$count_file"
   if (( count == 1 )); then exit 0; fi
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, _, _ = _start_generated_supervisor(
@@ -2958,7 +2984,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
     exit 78
   fi
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, _, _ = _start_generated_supervisor(
