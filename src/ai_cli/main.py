@@ -7271,7 +7271,7 @@ def cmd_cos(ctx, **options):
 
     Everything that makes a session the chief -- resolving and validating the chief
     home, one chief per machine, the registration other sessions read, FM_HOME and
-    AI_SESSION_ROLE=chief-of-staff in the pane -- lives in the shared --chief path, so
+    AI_SESSION_ROLE=firstmate in the pane -- lives in the shared --chief path, so
     this command is only the engine choice. With ``-R`` all of it happens on the remote
     machine, which then hosts the chief.
     """

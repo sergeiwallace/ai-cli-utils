@@ -26,7 +26,7 @@ This module owns the launch-side bookkeeping around that home:
   startup to learn which agent to message and whether it is running.
 
 Nothing here starts a process; ``main.py`` composes these with the ordinary Claude
-launch path after exporting ``FM_HOME`` and ``AI_SESSION_ROLE=chief-of-staff``.
+launch path after exporting ``FM_HOME`` and ``AI_SESSION_ROLE=firstmate``.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ except ImportError:  # Platform-specific: Windows has no fcntl, so the registry 
 
 MACHINE_KEY_ENV = "AI_MACHINE_ID"
 ROLE_ENV = "AI_SESSION_ROLE"
-ROLE = "chief-of-staff"
+ROLE = "firstmate"
 FM_HOME_ENV = "FM_HOME"
 SETTINGS_SECTION = "firstmate"
 REGISTRY_SCHEMA_VERSION = 2

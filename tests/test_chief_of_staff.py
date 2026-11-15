@@ -309,7 +309,7 @@ class TestCosCommand:
         assert kwargs["name"] == "chief"
         assert kwargs["no_worktree"] is False
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
-        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+        assert launch.seen_env[cos.ROLE_ENV] == "firstmate"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
         assert registration["native_agent_name"] == "hub-chief-1"
         assert registration["tmux_target"] == "c-hub-chief-1"
@@ -429,7 +429,7 @@ class TestChiefFlag:
         assert kwargs["name"] == "chief"
         assert kwargs["no_worktree"] is False
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
-        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+        assert launch.seen_env[cos.ROLE_ENV] == "firstmate"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
         assert registration["native_agent_name"] == "hub-tst-chief-1"
         assert registration["tmux_target"] == "c-hub-tst-chief-1"
@@ -568,9 +568,9 @@ class TestChiefFlag:
 def test_tmux_env_forwarding_carries_the_chief_home_and_role_only_when_set():
     from ai_cli.main import build_tmux_env_flags
 
-    flags = build_tmux_env_flags({"PATH": "/bin", "FM_HOME": "/state/chief", "AI_SESSION_ROLE": "chief-of-staff"})
+    flags = build_tmux_env_flags({"PATH": "/bin", "FM_HOME": "/state/chief", "AI_SESSION_ROLE": "firstmate"})
     assert "FM_HOME=/state/chief" in flags
-    assert "AI_SESSION_ROLE=chief-of-staff" in flags
+    assert "AI_SESSION_ROLE=firstmate" in flags
     plain = build_tmux_env_flags({"PATH": "/bin"})
     assert not any(flag.startswith(("FM_HOME=", "AI_SESSION_ROLE=")) for flag in plain)
     xdg = next(flag for flag in plain if flag.startswith("XDG_STATE_HOME="))
@@ -748,7 +748,7 @@ class TestRemoteChief:
         assert registration["native_agent_name"] == "hub-fw-chief-1"
         assert registration["tmux_target"] == "c-r-hub-fw-chief-1"
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
-        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+        assert launch.seen_env[cos.ROLE_ENV] == "firstmate"
 
     def test_given_live_chief_on_remote_when_remote_side_runs_then_refuses(self, seeded_home):
         cos.registration_path(seeded_home).write_text(
@@ -864,7 +864,7 @@ class TestChiefLaunchForms:
             kwargs = launch.call_args.kwargs
         assert kwargs["project"] == CHIEF_PROJECT
         assert launch.seen_env[cos.FM_HOME_ENV] == str(seeded_home)
-        assert launch.seen_env[cos.ROLE_ENV] == "chief-of-staff"
+        assert launch.seen_env[cos.ROLE_ENV] == "firstmate"
         registration = json.loads(cos.registration_path(seeded_home).read_text())
         assert registration["native_agent_name"] == ("hub-fw-chief-3" if name.endswith("3") else "hub-fw-chief-1")
 
