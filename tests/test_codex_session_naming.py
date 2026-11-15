@@ -266,7 +266,8 @@ def _dispatch_block(engine: str) -> str:
         project_prefix="myproject",
     )
     start = script.index("_ai_run_codex() {")
-    end = script.index("# BEGIN BACKGROUND ATTACH prompted-end")
+    # The Claude-only attach branch opens before the Codex dispatch and closes after it.
+    end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
     return script[start:end]
 
 

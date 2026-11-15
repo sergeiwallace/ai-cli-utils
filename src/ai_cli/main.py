@@ -26,6 +26,7 @@ import portalocker
 # several helpers in this file.
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
+from . import codex_session as _codex_session
 from . import compact_transport as _compact_transport
 from . import config as _config
 from . import direnv_setup as _direnv_setup
@@ -1072,25 +1073,23 @@ def _bare_engine_command(
         return command + extra_args
 
     if engine == "p":
-        # Pi scopes its saved sessions to the current worktree.  Continuing here
-        # therefore resumes this session's prior conversation without needing a
-        # provider-specific UUID registry.
+        # Pi scopes its saved sessions to the current worktree, and --continue starts a
+        # fresh session when the worktree holds none, so every launch continues.
         # AI-CLI-1rk1: pi's own default provider (google) is silently unready on
         # a fresh/typical setup, so an explicit --provider is required on every
         # launch -- omitting it makes pi fail (near-)silently on every attempt.
-        command = ["pi"]
-        if resume:
-            command.append("--continue")
-        return [*command, "--provider", pi_provider, "--name", ai_name, *extra_args]
+        return ["pi", "--continue", "--provider", pi_provider, "--name", ai_name, *extra_args]
 
     if engine == "cx":
-        # Codex does not offer a launch-time session-name option. Its resume
-        # command scopes --last to the current working directory by default,
-        # which is this session's isolated worktree.
-        command = ["codex"]
+        # Codex has no launch-time name option: resume the thread this session's name
+        # already carries, by id (Codex's own by-name lookup skips a thread with no turn).
+        # A launch that resumes nothing is named afterwards by _name_new_codex_session.
+        thread = _codex_session.find_thread(ai_name)
+        if thread:
+            return ["codex", "resume", thread, *extra_args]
         if resume:
-            command += ["resume", "--last"]
-        return [*command, *extra_args]
+            return ["codex", "resume", "--last", *extra_args]
+        return ["codex", *extra_args]
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
@@ -1098,6 +1097,31 @@ def _bare_engine_command(
     else:
         command += ["-i", f"/resume load {ai_name}"]
     return command + extra_args
+
+
+def _name_new_codex_session(
+    command: list[str], ai_name: str, reporter: LaunchReporter, *, tmux_target: str | None, fifo: Path | None
+) -> None:
+    """Have a detached helper type ``/rename <ai_name>`` into a Codex that resumes no named thread.
+
+    ``tmux_target`` is the pane the session runs in, ``fifo`` the bare pty's submission
+    FIFO. With neither (a native Windows bare launch), nothing can type into the session,
+    so the operator is told once how to name it; later launches then resume it by name.
+    """
+    if command[:2] == ["codex", "resume"] and command[2:3] != ["--last"]:
+        return
+    if tmux_target is None and fifo is None:
+        reporter.warning(
+            "session", f"this terminal cannot be typed into; type /rename {ai_name} once in Codex to name it"
+        )
+        return
+    where = ["-f", str(fifo)] if fifo is not None else [str(tmux_target)]
+    try:
+        _iterm2._spawn_detached(
+            [sys.executable, "-m", "ai_cli.main", "internal", "name-codex-session", *where, ai_name]
+        )
+    except OSError as exc:
+        reporter.warning("session", f"could not start the Codex namer ({exc}); type /rename {ai_name} once in Codex")
 
 
 def _is_root() -> bool:
@@ -2214,6 +2238,59 @@ def _handle_internal(argv: list[str]) -> None:
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)
+    elif action == "resolve-codex-session":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-codex-session <ai_name>", err=True)
+            sys.exit(1)
+        thread = _codex_session.find_thread(argv[1])
+        if thread:
+            _out.raw(Untagged.INTERNAL_REPLY, thread)
+        sys.exit(0)
+    elif action == "name-codex-session":
+        usage = (
+            "Usage: ai internal name-codex-session <tmux_session> <ai_name> [-p|--prompt-file FILE]\n"
+            "       ai internal name-codex-session -f|--fifo FIFO <ai_name>"
+        )
+        fifo_arg: str | None = None
+        prompt_arg: str | None = None
+        positional: list[str] = []
+        rest = iter(argv[1:])
+        for arg in rest:
+            if arg in ("-f", "--fifo"):
+                fifo_arg = next(rest, None)
+            elif arg in ("-p", "--prompt-file"):
+                prompt_arg = next(rest, None)
+            else:
+                positional.append(arg)
+        if len(positional) != (1 if fifo_arg else 2):
+            _out.emit(Tag.INTERNAL, "usage", usage, err=True)
+            sys.exit(1)
+        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+        launch_log = open_launch_log(log_path) if log_path else None
+        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
+        codex_name = positional[-1]
+        try:
+            failure = _codex_session.name_session(
+                codex_name,
+                tmux_target=None if fifo_arg else positional[0],
+                fifo=Path(fifo_arg) if fifo_arg else None,
+                prompt_file=Path(prompt_arg) if prompt_arg else None,
+            )
+            if failure:
+                _out.emit(
+                    Tag.INTERNAL,
+                    "session",
+                    f"{codex_name}: Codex session not named: {failure}; type /rename {codex_name} once in Codex",
+                    err=True,
+                )
+        finally:
+            _out.flush_sinks()
+            _out.attach_file_sink(previous_sink)
+            if launch_log is not None:
+                launch_log.close()
+        sys.exit(1 if failure else 0)
     elif action == "update-session-map":
         if len(argv) < 4:
             _out.emit(
@@ -5877,8 +5954,14 @@ def _do_session_launch(
             _register_run_state(new_start=True)
             if engine == "c":
                 _refresh_claude_plugins()
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            if engine == "cx":
+                from .pty_host import submit_fifo_path
+
+                _name_new_codex_session(
+                    command, ai_name, reporter, tmux_target=None, fifo=submit_fifo_path(session_id) if on_pty else None
+                )
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_with_direnv(
                 target_root,
                 command,
@@ -5934,10 +6017,12 @@ def _do_session_launch(
                 command += ["-r", uuid]
             else:
                 command += ["-i", f"/resume load {ai_name}"]
-        elif engine == "p":
-            command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
-            command = ["codex"]
+            command = _bare_engine_command(
+                engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, [], pi_provider=pi_provider
+            )
+            if engine == "cx" and not probe:
+                _name_new_codex_session(command, ai_name, reporter, tmux_target=session_id, fifo=None)
         once_argv = [
             "tmux",
             "new-session",

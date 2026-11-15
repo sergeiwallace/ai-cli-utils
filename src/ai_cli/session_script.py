@@ -1638,6 +1638,31 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN AGENT NAMING codex-launch
+      # Codex: resume the thread that carries this session's name, by id, because
+      # Codex's own by-name lookup skips a thread that has had no turn. With none,
+      # start Codex and type `/rename $ai_name` into it once; a waiting resume prompt
+      # is handed to the namer so it lands after the name. The pre-naming launch
+      # lines below stay, unreachable, so a running older supervisor still certifies
+      # (session_restart._compatible). docs/designs/codex-session-naming.md.
+      _ai_run_codex() {{
+        local _cx_thread
+        _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
+        if [[ -n "$_cx_thread" ]]; then
+          run_agent codex resume "$_cx_thread" "$@"
+          return
+        fi
+        local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
+        if [[ $# -gt 0 ]]; then
+          printf '%s' "$1" > "$prompt_file.codex"
+          _cx_namer+=(--prompt-file "$prompt_file.codex")
+        fi
+        ({LAUNCH_LOG_ENV}="$_ai_launch_log" "${{_cx_namer[@]}}" >/dev/null 2>&1 || true) &
+        if $first_run; then run_agent codex
+        else run_agent codex resume --last
+        fi
+      }}
+    # END AGENT NAMING
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1663,14 +1688,26 @@ with open(path, 'w') as f:
           fi
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
+    # BEGIN AGENT NAMING pi
+          if [[ "$engine" == "p" ]]; then run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"; else
+    # END AGENT NAMING
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
+    # BEGIN AGENT NAMING pi-end
+          fi
+    # END AGENT NAMING
         else
+    # BEGIN AGENT NAMING codex-prompted
+          if [[ "$engine" == "cx" ]]; then _ai_run_codex "$resume_msg"; else
+    # END AGENT NAMING
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent codex
           else run_agent codex resume --last
           fi
+    # BEGIN AGENT NAMING codex-prompted-end
+          fi
+    # END AGENT NAMING
         fi
       else
         if [[ "$engine" == "c" ]]; then
@@ -1691,13 +1728,25 @@ with open(path, 'w') as f:
       else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
+    # BEGIN AGENT NAMING pi
+          if [[ "$engine" == "p" ]]; then run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"; else
+    # END AGENT NAMING
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
+    # BEGIN AGENT NAMING pi-end
+          fi
+    # END AGENT NAMING
         else
+    # BEGIN AGENT NAMING codex
+          if [[ "$engine" == "cx" ]]; then _ai_run_codex; else
+    # END AGENT NAMING
           if $first_run; then run_agent codex
           else run_agent codex resume --last
           fi
+    # BEGIN AGENT NAMING codex-end
+          fi
+    # END AGENT NAMING
         fi
       fi
     # BEGIN BACKGROUND ATTACH prompted-end
