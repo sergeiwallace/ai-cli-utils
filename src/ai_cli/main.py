@@ -6021,7 +6021,7 @@ def _do_session_launch(
             command = _bare_engine_command(
                 engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, [], pi_provider=pi_provider
             )
-            if engine == "cx" and not probe:
+            if engine == "cx":
                 _name_new_codex_session(command, ai_name, reporter, tmux_target=session_id, fifo=None)
         once_argv = [
             "tmux",
