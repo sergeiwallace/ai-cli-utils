@@ -147,7 +147,9 @@ asked to resume; the session name already carries the project and host.
 
 **D-2. Name a new thread once, by typing `/rename <name>`.** `ai internal
 name-codex-session` waits for the idle footer (F-6, up to 30 s), types the command, presses
-Enter, and confirms by watching the index grow with an entry for that name. On tmux it uses
+Enter, and confirms by watching the index grow with an entry for that name, for up to 120 s:
+a `/rename` typed during a first start waits behind Codex's "Waiting for startup" (measured:
+it landed 28 s after launch). On tmux it uses
 `send-keys` (as the auto-compact and resume-prompt deliveries do); on a bare launch hosted
 on a launcher-owned pty it writes to that session's submission FIFO. A resume prompt waiting
 for a fresh thread is pasted only after the name is confirmed, so the `/rename` is not
@@ -168,10 +170,18 @@ owning host), and in the launcher for `--once` and bare launches. Codex's home i
   cx launch is registered; the lookup is the gap. Filed separately (AI-CLI-8ur2).
 - Pi 1.5.2 refuses `--provider` without `--model` ("Error: --provider requires --model"),
   so `ai p` with the default provider exits at once on that Pi. Recorded on AI-CLI-tc25.
+- A second Ctrl+C that lands while the wrapper writes the exit prints "Session exit
+  persistence failed" although the exit was recorded. A resumed Codex quits on the first
+  Ctrl+C, so a double press hits this more often. Filed separately (AI-CLI-1m8b).
 
 ## Verification
 
 - Behaviour tests run the generated session script's Codex and Pi dispatch with stubbed
   `codex`, `pi` and `ai`, and run the resolver and the injector against a real index and a
   scripted tmux.
-- Live: a real Codex 0.169.0 under the launcher, as recorded in the change's report.
+- Live, 2026-11-15, Codex 0.169.0 under `ai cx -t -W` on Linux with a throwaway
+  `CODEX_HOME`. First launch: the namer typed `/rename ai-cli-ec2-probe-1`, the footer showed
+  `· ai-cli-ec2-probe-1` and the index gained one entry for thread `01a1e157-...`. Exit, then
+  `ai cx -t -W 1` in a new tmux session: the process was `codex resume 01a1e157-...`, the same
+  name was in the footer, and there was still one index entry and one rollout. The same
+  relaunch with the base code ran a bare `codex` with no name.
