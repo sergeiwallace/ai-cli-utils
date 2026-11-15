@@ -271,6 +271,7 @@ DURABLE_FIELDS = (
     "supervisor_exit",
     "supervisor_identity",
     "family",
+    "canonical_name",
     "agent_identity",
     "owning_host",
     "ended_at",

@@ -359,7 +359,7 @@ def _refresh_claude_plugins() -> None:
     refresh_plugins(emit)
 
 
-def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
+def _pty_handoff(session: str, on_start: Callable[[int], None] | None = None) -> Callable[[str, list[str]], NoReturn]:
     """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
 
     Used on the bare paths when the compact transport resolved to the pty, so the
@@ -371,7 +371,7 @@ def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
         from . import pty_host
 
         try:
-            sys.exit(pty_host.host(file, args, session=session))
+            sys.exit(pty_host.host(file, args, session=session, on_start=on_start))
         except FileNotFoundError:
             raise
         except OSError as exc:
@@ -5983,11 +5983,21 @@ def _do_session_launch(
                     command, ai_name, reporter, tmux_target=None, fifo=submit_fifo_path(session_id) if on_pty else None
                 )
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            from . import session_run_state as _run_state
+
+            def _record_agent(pid: int) -> None:
+                with contextlib.suppress(Exception):
+                    _run_state.record_agent(session_id, pid)
+
+            if not on_pty and sys.platform != "win32":
+                # The exec (and direnv's own exec) keeps this pid and its start time for the
+                # agent. Windows has no exec: execvp starts a new process, so nothing is recorded.
+                _record_agent(os.getpid())
             _exec_with_direnv(
                 target_root,
                 command,
                 handoff=_session_launch_state.handoff(
-                    session_id, _pty_handoff(session_id) if on_pty else _exec_handoff
+                    session_id, _pty_handoff(session_id, _record_agent) if on_pty else _exec_handoff
                 ),
             )
 

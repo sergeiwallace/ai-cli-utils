@@ -232,24 +232,51 @@ def family_for(name: str, engine: str | None = None) -> str | None:
     return FAMILIES[match.group(1)] if match else None
 
 
-def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
-    """Record the running agent's pid and start time on its session row.
+def canonical_name(name: str) -> str:
+    """The session name every client shows: the tmux key without its engine/transport prefix."""
+    return _ENGINE_PREFIX.sub("", name, count=1)
 
-    ``agent_identity`` is ``{"pid", "started_at", "generation"}``, the shape of
-    ``supervisor_identity``: ``started_at`` is the process start time in epoch seconds as
-    psutil reports it, so a reader proves the pid still names this agent by comparing it.
+
+def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
+    """Record the interactive agent process the launcher started on its session row.
+
+    ``agent_identity`` holds:
+
+    * ``pid``: the agent process itself (a shell that ran it exec'd it, so the pid is
+      the agent's), never the tmux server or the supervisor shell.
+    * ``started_at``: its start time in epoch seconds, as psutil reports it.
+    * ``proc_start`` and ``proc_start_backend``: the start marker in the unit the
+      platform probe captures and compares (``procfs`` start ticks on Linux, ``psutil``
+      epoch seconds elsewhere), so ``process_probe.probe_for().start_time_match`` verifies it.
+    * ``boot_id``: the host boot identity (Linux ``boot_id``, macOS
+      ``kern.bootsessionuuid``); null on Windows, which exposes no boot id to read.
+    * ``interactive``: true, the process is an interactive client in a session pane.
+    * ``generation``: the run generation the row held when the agent started.
+
     Returns False, writing nothing, when the row is missing or belongs to another generation.
     """
     import psutil
 
+    from .process_probe import probe_for
+
     started_at = psutil.Process(pid).create_time()
+    marker = probe_for().capture_identity(pid)
+    boot_id = registry.current_boot_id()
     written = []
 
     def change(doc):
         row = next((r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name), None)
         if row is None or (generation and row.get("generation") != generation):
             return False
-        row["agent_identity"] = {"pid": pid, "started_at": started_at, "generation": row.get("generation")}
+        row["agent_identity"] = {
+            "pid": pid,
+            "started_at": started_at,
+            "proc_start": marker.marker if marker else None,
+            "proc_start_backend": marker.backend if marker else None,
+            "boot_id": boot_id,
+            "interactive": True,
+            "generation": row.get("generation"),
+        }
         written.append(True)
         return True
 
@@ -295,6 +322,7 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
         family = family_for(name, recipe.get("engine"))
         if family:
             existing["family"] = family
+        existing["canonical_name"] = canonical_name(name)
         if probe:
             existing["probe"] = True
         default_relaunch(existing)

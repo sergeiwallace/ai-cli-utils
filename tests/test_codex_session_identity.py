@@ -21,6 +21,7 @@ from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.main import _cli_group as cli
 from ai_cli.main import _handle_internal
+from ai_cli.process_probe import StartTimeMatch, probe_for
 from ai_cli.session_script import get_engine_script
 
 CANONICAL = "myproject-box-session-1"
@@ -112,16 +113,24 @@ def test_given_any_engine_when_launch_registers_then_row_records_its_family(tmp_
     assert _row(f"{engine}-{CANONICAL}")["family"] == family
 
 
-def test_given_running_codex_agent_when_its_identity_is_recorded_then_row_holds_pid_and_start_time(codex_session):
+def test_given_running_codex_agent_when_its_identity_is_recorded_then_row_holds_what_a_consumer_verifies(
+    codex_session,
+):
     name, generation, _supervisor, agent = codex_session
 
-    identity = _row(name)["agent_identity"]
+    row = _row(name)
+    identity = row["agent_identity"]
 
-    assert identity == {
-        "pid": agent.pid,
-        "started_at": psutil.Process(agent.pid).create_time(),
-        "generation": generation,
-    }
+    assert row["family"] == "codex"
+    assert row["canonical_name"] == CANONICAL
+    assert identity["pid"] == agent.pid
+    assert identity["started_at"] == psutil.Process(agent.pid).create_time()
+    assert identity["interactive"] is True
+    assert identity["generation"] == generation
+    assert identity["boot_id"] == registry.current_boot_id()
+    probe = probe_for()
+    assert identity["proc_start_backend"] == probe.capture_identity(agent.pid).backend
+    assert probe.start_time_match(agent.pid, identity["proc_start"]) is StartTimeMatch.MATCH
 
 
 def test_given_stale_generation_when_agent_identity_is_recorded_then_row_is_left_alone(codex_session):
@@ -245,3 +254,55 @@ wait
     assert done.returncode == 0, done.stderr
     agent_pid = (tmp_path / "agent.pid").read_text().strip()
     assert f"AI internal record-agent-identity cx-{CANONICAL} {agent_pid} " in log.read_text() + " "
+
+
+# --- bare launches --------------------------------------------------------------------
+
+
+@posix_only
+def test_given_bare_launch_on_a_launcher_owned_pty_when_the_agent_starts_then_its_pid_is_handed_over(tmp_path):
+    pid_file = tmp_path / "agent.pid"
+    program = (
+        "import sys\n"
+        "from ai_cli import pty_host\n"
+        "seen = []\n"
+        f"status = pty_host.host('sh', ['sh', '-c', 'echo $$ > {pid_file}'], session='test-session', on_start=seen.append)\n"
+        "print(seen, status)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "XDG_STATE_HOME": str(tmp_path / "state")},
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == [f"[{pid_file.read_text().strip()}]", "0"]
+
+
+@posix_only
+def test_given_bare_exec_launch_of_ai_cx_when_it_hands_off_then_the_row_records_the_process_that_becomes_codex(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from test_session_launch_locality import _launch_in, _make_repo
+
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    no_pty = SimpleNamespace(kind="tmux", must_refuse=False, platform_limited=False, detail="no pty in this test")
+    with (
+        patch("ai_cli.compact_transport.resolve", return_value=no_pty),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/codex"),
+        patch("ai_cli.main._name_new_codex_session"),
+    ):
+        _launch_in(monkeypatch, tmp_path, engine="cx")
+
+    row = next(r for r in registry.load_registry()["sessions"] if r.get("name", "").startswith("cx-"))
+    # execvp keeps the pid, so the launcher's pid and start time become Codex's.
+    assert row["agent_identity"]["pid"] == os.getpid()
+    assert row["agent_identity"]["started_at"] == psutil.Process().create_time()
