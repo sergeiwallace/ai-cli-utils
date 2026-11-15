@@ -133,6 +133,7 @@ class DoltRegistry(reg.FleetRegistry):
         timeout: float | None = None,
         cwd: Path | None = None,
         check: bool = True,
+        budget_setting: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self._ensure_root()
         budget = timeout if timeout is not None else self.timeout_s
@@ -150,7 +151,13 @@ class DoltRegistry(reg.FleetRegistry):
         except FileNotFoundError as exc:
             raise reg.RegistryUnreachableError(f"the dolt program is not installed: {INSTALL_HINT}") from exc
         except subprocess.TimeoutExpired as exc:
-            raise reg.RegistryUnreachableError(f"`dolt {args[0]}` did not finish within {budget:g} s") from exc
+            message = f"`dolt {args[0]}` did not finish within {budget:g} s"
+            if budget_setting:
+                message += f" (raise [session_names] {budget_setting} for a slower host)"
+            output = "".join(_text(part) for part in (exc.stdout, exc.stderr)).strip()
+            if output:
+                message += f"; its last output: {output.splitlines()[-1]}"
+            raise reg.RegistryUnreachableError(message) from exc
         if check and result.returncode != 0:
             raise reg.RegistryError(f"dolt {' '.join(args[:2])} failed: {(result.stderr or result.stdout).strip()}")
         return result
@@ -180,6 +187,13 @@ class DoltRegistry(reg.FleetRegistry):
             raise reg.RegistryError(f"{self.repo} has no git remote {self.remote!r}")
         return dolt_remote_url(url)
 
+    def clone_timeout_s(self) -> float:
+        """The clone budget from config.toml, read on every clone."""
+        try:
+            return _config.read_registry_clone_timeout(_config.load_config(read_only=True))
+        except ValueError as exc:
+            raise reg.RegistryError(str(exc)) from exc
+
     def _url_file(self) -> Path:
         return self.path.parent / f"{self.path.name}.remote"
 
@@ -194,7 +208,8 @@ class DoltRegistry(reg.FleetRegistry):
             self.path.parent.mkdir(parents=True, exist_ok=True)
             result = self.dolt(
                 "clone", "--ref", self.dolt_ref, url, str(self.path),
-                cwd=self.path.parent, timeout=self.fetch_timeout_s(), check=False,
+                cwd=self.path.parent, timeout=self.clone_timeout_s(), check=False,
+                budget_setting="registry_clone_timeout_seconds",
             )  # fmt: skip
             if result.returncode != 0:
                 raise reg.RegistryUnreachableError(
@@ -398,6 +413,12 @@ class DoltRegistry(reg.FleetRegistry):
 
     def history(self, name: str) -> list[dict]:
         return schema.changes_only(self._query(schema.history_query(name)))
+
+
+def _text(output: str | bytes | None) -> str:
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output or ""
 
 
 def literal(value: object) -> str:

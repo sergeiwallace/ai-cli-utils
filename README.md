@@ -743,6 +743,7 @@ them on one machine:
 # max_name_length = 4       # used only where no shared name registry exists
 # registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
 # registry_push_timeout_seconds = 60   # one push to a shared registry
+# registry_clone_timeout_seconds = 60  # a host's first clone of a Dolt registry (300 on Windows)
 ```
 
 An older release seeded these four keys active. The first `ai` command after an

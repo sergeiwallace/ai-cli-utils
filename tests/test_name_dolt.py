@@ -848,6 +848,67 @@ def test_given_a_host_with_no_clone_yet_when_it_writes_then_it_fetches_only_to_r
     assert fleet.rows()[reservation.name]["machine"] == HOST
 
 
+def test_given_no_clone_timeout_setting_when_cloning_then_windows_waits_longer_than_other_platforms(fleet, monkeypatch):
+    budgets = {}
+    for platform in ("linux", "darwin", "win32"):
+        fresh = fleet.other_machine(f"clone-{platform}")
+        calls = _dolt_calls(monkeypatch)
+        with monkeypatch.context() as patched:
+            patched.setattr(sys, "platform", platform)
+            fresh.snapshot()
+        budgets[platform] = {timeout for command, _env, timeout in calls if command[1] == "clone"}
+
+    assert budgets == {"linux": {60}, "darwin": {60}, "win32": {300}}
+
+
+def test_given_a_clone_timeout_setting_when_cloning_then_only_the_clone_uses_it(fleet, monkeypatch):
+    _user_config(
+        fleet,
+        monkeypatch,
+        "[session_names]\nregistry_clone_timeout_seconds = 41\nregistry_fetch_timeout_seconds = 31\n",
+    )
+    fresh = fleet.other_machine("configured-clone")
+    calls = _dolt_calls(monkeypatch)
+
+    reg.reserve_picked(fresh, _slot(), words=frozenset())
+
+    assert {timeout for command, _env, timeout in calls if command[1] == "clone"} == {41}
+    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {31}
+
+
+def test_given_an_invalid_clone_timeout_setting_when_cloning_then_it_refuses_naming_the_setting(fleet, monkeypatch):
+    _user_config(fleet, monkeypatch, "[session_names]\nregistry_clone_timeout_seconds = 0\n")
+    fresh = fleet.other_machine("bad-clone-budget")
+
+    with pytest.raises(reg.RegistryError, match="registry_clone_timeout_seconds"):
+        fresh.snapshot()
+
+    assert not fresh.has_clone()
+
+
+def test_given_a_clone_that_overruns_its_budget_when_it_is_stopped_then_the_error_names_the_setting_and_dolts_output(
+    fleet, monkeypatch
+):
+    _user_config(fleet, monkeypatch, "[session_names]\nregistry_clone_timeout_seconds = 7\n")
+    fresh = fleet.other_machine("slow-clone")
+    real_run = subprocess.run
+
+    def stalled_clone(command, *args, **kwargs):
+        if isinstance(command, list) and command[:2] == ["dolt", "clone"]:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="cloning git+file:///remote.git\n")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", stalled_clone)
+
+    with pytest.raises(reg.RegistryUnreachableError) as raised:
+        fresh.snapshot()
+
+    message = str(raised.value)
+    assert "within 7 s" in message
+    assert "registry_clone_timeout_seconds" in message
+    assert "cloning git+file:///remote.git" in message
+
+
 def test_given_a_host_with_no_clone_yet_when_the_last_known_snapshot_is_read_then_it_clones_first(fleet):
     fresh = fleet.other_machine("never-cloned")
     assert not fresh.has_clone()

@@ -361,7 +361,10 @@ CLI processes never open the database for writing together. Reads take the same 
 time a read runs, because Dolt's own lock falls back silently to read-only for a second opener.
 
 Every `dolt fetch` reads and uses `registry_fetch_timeout_seconds`; every `dolt push` reads and uses
-`registry_push_timeout_seconds`. These remain independent of the shorter transaction/lock budget
+`registry_push_timeout_seconds`; every `dolt clone` reads and uses `registry_clone_timeout_seconds`,
+which defaults to 300 seconds on Windows, where a first clone has overrun 60, and 60 elsewhere. A
+host's first read or write clones and goes straight on: the clone already holds the remote tip, so
+no fetch follows it. These remain independent of the shorter transaction/lock budget
 derived from `publish_timeout_s`, so a normal remote operation does not consume offline capacity
 merely because it outlasts that local budget. A `dolt` binary older than the version floor, or a
 database whose `meta.min_reader_version` is above the package's, refuses with a message naming the
