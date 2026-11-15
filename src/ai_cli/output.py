@@ -116,7 +116,6 @@ class Tag(StrEnum):
     PLAN = "plan"
     PS = "ps"
     QUOTA = "quota"
-    QUOTA_WATCH = "quota-watch"
     REGISTER = "register"
     REMOTE = "remote"
     RESTORE = "restore"

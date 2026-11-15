@@ -234,15 +234,9 @@ after changing a command's help, never edit it by hand.
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
 | [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape-fable`](docs/reference/cli.md#ai-quota-scrape-fable) | Scrape /usage for the per-model weekly cap into the quota DB |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](docs/reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](docs/reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](docs/reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](docs/reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](docs/reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](docs/reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](docs/reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](docs/reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -1274,7 +1268,7 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
 ai ps clean              # Kill orphaned processes after a prompt; -f/--force adds suspect ones
 ai memory watch          # Watch for Claude Code memory file changes
-ai quota watch           # Monitor API quota usage
+ai quota publish         # Publish the statusline's native quota reading to NATS
 ai telemetry writer      # Run telemetry writer daemon
 ai doctor [-n/--dry-run] # Check required native tools and direnv
 ai register -p <path> -x <prefix>  # Register a repository and task prefix

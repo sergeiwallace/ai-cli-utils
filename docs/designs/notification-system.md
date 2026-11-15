@@ -49,6 +49,8 @@ template_version: "design-1.0.0"
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
+> **Retired 2026-11-15 (AI-CLI-pyaz):** the `ai quota watch` daemon described here is gone. Its loop scraped `/usage`, which is retired; the quota figures now come from Claude Code's native statusline data, published by `ai quota publish`. The rest of this document is kept as history.
+
 ## Problem Statement
 
 `ai quota watch` polls Claude usage and fires threshold alerts (50%, 75%, 90%), but it has three gaps:

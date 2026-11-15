@@ -2,7 +2,7 @@
 
 Stores usage records, quota snapshots, and weekly state in
 ~/.local/state/ai-cli/quota.db. This is the storage layer for the
-quota tracking subsystem; quota.py owns the scraping and watching logic.
+quota tracking subsystem; quota.py owns rendering and publishing.
 """
 
 from __future__ import annotations

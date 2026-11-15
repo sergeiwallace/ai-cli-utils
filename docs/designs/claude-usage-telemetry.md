@@ -707,15 +707,16 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 ## Integration
 
-> **2026-11-15 (AI-CLI-pyaz):** the all-models `/usage` scrape is retired. The statusline writes
+> **2026-11-15 (AI-CLI-pyaz):** every `/usage` scrape is retired. The statusline writes
 > Claude Code's native `rate_limits` values to a state file (`[quota] state_file`, default
 > `~/.claude/state/quota.json`), and `ai quota publish` sends the seven-day reading to the three
 > targets below when it is current (at most `[quota] max_age_seconds`, default 1800, old, with its
 > reset time not yet passed). Otherwise it exits 0 and publishes nothing. An external scheduler calls it
-> in place of `ai quota scrape`, which is gone, as is the `quota.scrape.request.<host>` subject.
-> The hidden-pane scrape survives only as `ai quota scrape-fable` for the per-model weekly cap,
-> which the native payload does not carry, and inside `ai quota watch`. The bullets below
-> describe the original design.
+> in place of `ai quota scrape`. Removed with the scrape: `ai quota scrape`, the
+> `quota.scrape.request.<host>` subject, the Fable backoff scrape, and the `ai quota watch` daemon,
+> whose loop ran the scrape. Fable weekly data has no source until Claude Code reports a Fable
+> window; readers of `quota.db` see its last stored value or none. The bullets below describe the
+> original design.
 
 - **Claude Code**: statusLine hook in `~/.claude/settings.json` on both machines
 - **ai-cli**: `ai quota` subcommands for scrape, status, history, sync, statusline-part

@@ -60,15 +60,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai quota history`](#ai-quota-history) | Print quota history |
 | [`ai quota publish`](#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape-fable`](#ai-quota-scrape-fable) | Scrape /usage for the per-model weekly cap into the quota DB |
 | [`ai quota status`](#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -1048,18 +1042,6 @@ Arguments:
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
-## ai quota scrape-fable
-
-```text
-ai quota scrape-fable [OPTIONS]
-```
-
-Scrape /usage for the per-model weekly cap into the quota DB
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
 ## ai quota status
 
 ```text
@@ -1091,67 +1073,6 @@ ai quota sync [OPTIONS]
 ```
 
 Sync quota snapshot from the remote server
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch
-
-```text
-ai quota watch [OPTIONS] COMMAND [ARGS]...
-```
-
-Quota-watch Circus daemon management
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch run
-
-```text
-ai quota watch run [OPTIONS]
-```
-
-Run quota-watch daemon (Circus entry point)
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-i` | `--interval` | `INTEGER` | Poll interval in seconds  [default: 300] |
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch start
-
-```text
-ai quota watch start [OPTIONS]
-```
-
-Register quota-watch with Circus and start it
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch status
-
-```text
-ai quota watch status [OPTIONS]
-```
-
-Show quota-watch Circus status
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch stop
-
-```text
-ai quota watch stop [OPTIONS]
-```
-
-Stop quota-watch
 
 | Short | Long | Value | Description |
 |---|---|---|---|

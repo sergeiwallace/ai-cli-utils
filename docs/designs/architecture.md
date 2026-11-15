@@ -60,7 +60,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `process_manager.py` | Circus daemon bootstrap and quota-watch lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
 | `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals; its Ctrl+Z watchdog (`SUSPEND_WATCHDOG_SNIPPET`) continues a stopped pane foreground group, since the pane has no job-control shell to run `fg` |
-| `quota.py` | Claude quota statusline, publisher and watcher; the statusline renders Claude Code's native `rate_limits` values and never starts a scrape; `ai quota publish` sends the native seven-day reading from the statusline's state file to `quota.snapshot`, `hw.events.usage.claude.snapshot` and NATS KV; the hidden-pane `/usage` scrape remains for the per-model weekly (Fable) cap (`ai quota scrape-fable`) and the `quota watch` daemon; threshold alerts delivered via `Notifier` |
+| `quota.py` | Claude quota statusline and publisher; the statusline renders Claude Code's native `rate_limits` values and never starts a process; `ai quota publish` sends the native seven-day reading from the statusline's state file to `quota.snapshot`, `hw.events.usage.claude.snapshot` and NATS KV; nothing scrapes `/usage` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
@@ -106,10 +106,7 @@ The tool installs as a single `ai` command. There is no server component — all
 > **Removed in v0.7.0:** `ai gemini` and the `gemini.py` and `research.py` modules were removed. The historical `ai spend gemini` command remains only to report logs created before that removal.
 
 ### Quota Tracking
-- `ai quota watch start|stop|status` — manage quota-watch Circus daemon lifecycle
-- `ai quota watch run [-i/--interval]` — raw daemon entry point (Circus uses this)
 - `ai quota publish` — publish the statusline's current native seven-day reading; exits 0 and publishes nothing when the reading is missing or stale
-- `ai quota scrape-fable` — one-shot hidden-pane scrape of the per-model weekly cap into SQLite; publishes nothing
 - `ai quota status` — read current quota from SQLite (with KV sync if stale)
 
 ### Notifications

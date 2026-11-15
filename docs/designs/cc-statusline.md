@@ -243,7 +243,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 - **`quota_statusline_part()`** in `quota.py` reads from `quota.db` (SQLite, `quota_snapshots` table) and the `quota_meta` table for format-change detection.
 - **`ai quota record`** writes to `quota_snapshots` via `QuotaDB.record()`.
 - **The statusline never starts a scrape** (2026-11-15). With no seven-day value from any source, `quota_statusline_part()` prints nothing. `ai quota publish` sends the native reading to NATS from the state file the statusline writes.
-- **`ai quota scrape-fable`** populates `quota_snapshots`, including the per-model weekly columns, via `_scrape_usage_hidden_pane()`. Format-change detection writes to `quota_meta`. It is kept because Claude Code's statusline payload has no per-model window and readers of the local quota DB use those columns; nothing on the statusline path launches it.
+- **No `/usage` scrape remains.** The per-model weekly (Fable) columns in `quota_snapshots` keep their last stored values and get no new ones: Claude Code's statusline payload has no Fable window, and `/usage` stopped showing a per-model line in July 2026. The scrape-format `quota_meta` keys and the broken-scraper prefix went with the scrape.
 - **CC statusLine hook** — configured in `.claude/settings.json`: `{"hooks": {"statusLine": [{"type": "command", "command": "~/.claude/statusline-command.sh"}]}}`.
 
 ## Open Questions

@@ -1328,11 +1328,11 @@ class TestCliDispatchExtended:
                 cli()
             assert exc.value.code == 0
 
-    def test_when_quota_scrape_fable_subcommand_then_dispatches(self):
+    def test_when_quota_publish_subcommand_then_dispatches(self):
         with (
-            patch("sys.argv", ["ai", "quota", "scrape-fable"]),
+            patch("sys.argv", ["ai", "quota", "publish"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.quota.quota_scrape_fable", return_value=0),
+            patch("ai_cli.quota.quota_publish", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
