@@ -214,7 +214,7 @@ def test_fenced_tmux_when_supervisor_binds_then_command_removes_exact_session(ex
     row = registry.load_registry()["sessions"][0]
     commands = []
 
-    def tmux(args):
+    def tmux(args, timeout=2):
         commands.append(args)
         return "$42|token-1|999999" if args[0] == "display-message" else ""
 
@@ -250,6 +250,36 @@ def test_slow_tmux_when_supervisor_binds_then_the_bind_retries_instead_of_failin
     binding = CliRunner().invoke(cli, ["sessions", "_bind-exit-tmux", name, row["generation"], "$42", "token-1"])
     assert binding.exit_code == 0, binding.output
     assert len(calls) == 2
+
+
+def test_tmux_answering_slower_than_teardown_allows_when_supervisor_binds_then_the_bind_succeeds(
+    exit_target, monkeypatch
+):
+    """A loaded host can take seconds just to start the tmux client (AI-CLI-a0p4).
+
+    Every bind attempt used teardown's 2 s budget, so a tmux that answered in 3 s timed out on
+    all four attempts and the supervisor ended its launch before its child ran.
+    """
+    import subprocess
+
+    from ai_cli import session_exit
+
+    proc, name = exit_target
+    row = registry.load_registry()["sessions"][0]
+    answer_seconds = 3
+    real_run = subprocess.run
+
+    def answers_in_three_seconds(command, *args, **kwargs):
+        if command[:1] == ["tmux"]:
+            if kwargs["timeout"] < answer_seconds:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return subprocess.CompletedProcess(command, 0, stdout="$42|token-1|999999\n", stderr="")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(session_exit.subprocess, "run", answers_in_three_seconds)
+    monkeypatch.setattr("ai_cli.session_commands.time.sleep", lambda _seconds: None)
+    binding = CliRunner().invoke(cli, ["sessions", "_bind-exit-tmux", name, row["generation"], "$42", "token-1"])
+    assert binding.exit_code == 0, binding.output
 
 
 def test_unresponsive_tmux_when_supervisor_binds_then_the_bind_fails_with_a_message_not_a_traceback(
