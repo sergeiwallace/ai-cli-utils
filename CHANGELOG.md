@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On a loaded host a session could end at launch with `tmux did not answer in time` before its
+  agent started. The supervisor's tmux ownership bind gave each of its four attempts 2 s, and
+  starting the tmux client alone could take longer than that on every attempt. Each attempt
+  now has 10 s.
 - `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
   with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
   was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and

@@ -191,6 +191,9 @@ def begin(name, launch_metadata, supervisor_pid):
 
 
 _BIND_TMUX_ATTEMPTS = 4
+# Per attempt. Starting the tmux client is itself an exec, which on a loaded host took over
+# the 2 s that teardown allows, on every attempt, so the launch ended before its child ran.
+_BIND_TMUX_TIMEOUT_SECONDS = 10
 
 
 @sessions.command("_bind-exit-tmux", hidden=True)
@@ -208,7 +211,7 @@ def bind_exit_tmux(name, generation, session_id, token):
     server = None
     for attempt in range(_BIND_TMUX_ATTEMPTS):
         try:
-            server = _tmux_server(TmuxIdentity(session_id, token))
+            server = _tmux_server(TmuxIdentity(session_id, token), timeout=_BIND_TMUX_TIMEOUT_SECONDS)
             break
         except ValueError as exc:
             if attempt == _BIND_TMUX_ATTEMPTS - 1:
