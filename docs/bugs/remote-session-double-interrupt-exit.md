@@ -297,7 +297,7 @@ Result: `72 passed, 2 warnings in 223.40s (0:03:43)`. Both warnings observed
 concurrent changes to the real worktree registry while test-state redirection
 remained intact. Formatting and lint checks passed across `src/`, `tests/`, and
 `scripts/`; source type checking reported zero errors, warnings, or information.
-All changed documents passed `aido validate-doc`.
+All changed documents passed the repository's document validation.
 
 | Acceptance criterion | Behavioral coverage |
 |---|---|
