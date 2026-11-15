@@ -297,6 +297,20 @@ def get_xdg_config_home() -> Path:
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
+def auto_restart_enabled(path: str | Path) -> bool:
+    """``[session] auto_restart`` in the config file at ``path``, read now; never raises.
+
+    Missing, true or anything but ``false`` means the supervisor restarts the agent on exit, so
+    an unreadable or malformed file never stops restarts. The supervisor calls this at every
+    exit rather than reading a launch-time copy, so an edit applies at the next exit.
+    """
+    try:
+        section = tomllib.loads(Path(path).read_text(encoding="utf-8")).get("session", {})
+    except Exception:  # any read or parse failure keeps restarts on
+        return True
+    return not (isinstance(section, dict) and section.get("auto_restart") is False)
+
+
 def config_file_text() -> str:
     """``config.toml``'s path as text, never migrating the old directory.
 
@@ -810,6 +824,10 @@ stale_session_timeout = 15
 ## terminal stays the terminal, and the pty path gives you no detach/reattach and no
 ## scrollback (install tmux for those).
 # use_pty = true
+## Restart Claude Code when it exits inside a tmux session? Default true; missing also
+## means true. false lets the session end at the agent's next exit. The supervisor reads
+## this from this file at every exit, so a change applies at the next exit, no relaunch.
+# auto_restart = true
 
 [session_names]
 ## Every key here ships commented out. Unset, a key comes from the shared name
@@ -994,6 +1012,9 @@ nats_servers = ["nats://localhost:4222"]
 ## machine when the local NATS port is unreachable. Read on every connect. Empty (the
 ## default) opens no tunnel on any machine.
 # tunnel_hosts = ["my-workstation"]
+## Local port of the NATS SSH tunnel, started on demand when this is set. Unset (the
+## default) starts no tunnel.
+# tunnel_port = 4223
 
 [machine]
 ## Identifier for this machine.
@@ -1030,6 +1051,8 @@ boot = false
 ## Persistent Chrome profile directory for CDP sessions (survives restarts)
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
+## Port `ai cdp start` opens when -p/--port is not given.
+# port = 9222
 
 [gemini_billing]
 ## GCP project that holds the BigQuery billing export dataset.
