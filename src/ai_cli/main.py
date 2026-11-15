@@ -2111,6 +2111,23 @@ def _handle_internal(argv: list[str]) -> None:
         if res:
             _out.raw(Untagged.INTERNAL_REPLY, str(res))
         sys.exit(0)
+    elif action == "finish-migrations":
+        if len(argv) != 3:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
+            sys.exit(1)
+        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+        launch_log = open_launch_log(log_path) if log_path else None
+        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
+        try:
+            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
+        finally:
+            _out.flush_sinks()
+            _out.attach_file_sink(previous_sink)
+            if launch_log is not None:
+                launch_log.close()
+        sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
 
@@ -3694,6 +3711,75 @@ def _finish_recorded_migrations(
                 for old, repo, _left in partial
             )
         )
+
+
+def _in_own_tmux_session(tmux_session: str) -> bool:
+    """Whether this process runs in a pane of ``tmux_session``, as tmux itself reports for ``$TMUX_PANE``."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if not os.environ.get("TMUX") or not pane:
+        return False
+    try:
+        res = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0 and res.stdout.strip() == tmux_session
+
+
+def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: LaunchReporter) -> None:
+    """Finish each migration to ``ai_name`` this host records unfinished, as its supervisor restarts the agent.
+
+    The session wrapper calls this between one agent's exit and the next agent's start, the
+    restart's equivalent of the launch-time finish in :func:`_finish_recorded_migrations`. No
+    agent of this session runs then, but its own tmux session still hosts ``ai_name``, so that
+    one tmux session, and only once tmux confirms this process runs inside it, is left out of
+    the finish's live check. Every other check stands: a live agent named ``ai_name`` or inside
+    either slot, or any other tmux session hosting either name, refuses the finish. A finish
+    that refuses, raises or leaves a part never stops the restart: each such pair is one
+    warning naming the ``--finish`` command. Only a pair with no ``finished`` row is tried, so
+    a restart with nothing pending costs one ledger read.
+    """
+    from .session_migrate import _session_variants, _tmux_names, finish_session, pending_finishes
+    from .session_migrate_status import finish_command, left_after
+
+    pending = pending_finishes(ai_name, _config.get_xdg_state_home())
+    if not pending:
+        return
+    own = tmux_session if tmux_session in _session_variants(ai_name) and _in_own_tmux_session(tmux_session) else None
+
+    def others() -> list[str]:
+        return [name for name in _tmux_names() if name != own]
+
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
+
+    for old, repo in pending:
+        pair = f"migration {old} -> {ai_name}"
+        command = finish_command(old, ai_name, repo)
+        progress(f"{pair}: finishing before the agent restarts")
+        try:
+            result = finish_session(
+                repo, old, ai_name, regenerate_script=_engine_script_from_meta, tmux_names=others, progress=progress
+            )
+        except Exception as exc:  # a refused or failed finish never stops the restart
+            reason = " ".join(str(exc).split()) or type(exc).__name__
+            reporter.warning("migrate", f"{pair} not finished: {reason}; restarting the agent; run `{command}`")
+            continue
+        for move in result.moves:
+            reporter.detail("migrate", move.describe())
+        left = left_after(result)
+        if left:
+            named = "; ".join(f"{part} ({status})" for part, status in left.items())
+            reporter.warning("migrate", f"{pair} partial; parts left: {named}; restarting the agent; run `{command}`")
+        else:
+            progress(f"finished the migration {old} -> {ai_name}")
+        for straggler in result.references_left:
+            reporter.warning("migrate", f"{pair}: reference left: {straggler}")
 
 
 def _legacy_launch_name(repo_alias: str, name: str) -> str | None:
