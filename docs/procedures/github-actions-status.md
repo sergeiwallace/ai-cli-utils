@@ -176,12 +176,24 @@ it well under the cap. The cost is a second MSYS2 setup per run, which doubles t
 transient MSYS2 download failure. The step also passes `--durations=15` and omits `-q`, so every log
 shows the worker count and the slowest tests.
 
-### Four Windows shards since 2026-11-15
+### Eight Windows shards since 2026-11-15
 
-The session-name registry's real-Dolt test cases are slow on Windows, where every `dolt` call
-pays a process start, and they pushed both Windows shards past the 40-minute cap at 46% and 62%
-(PR #582). The Windows matrix now runs four shards, `(shard 1/4)` to `(4/4)`, under the same
-`test-windows` rollup check.
+The session-name registry's real-Dolt test cases are slow on Windows, and they pushed both
+Windows shards past the 40-minute cap at 46% and 62% (PR #582). Four shards were not enough
+either. In run 43758174269, shard 1/4 finished in 36 minutes with 24 failures, and shards 2/4 to
+4/4 were cancelled at the cap at about 84%. Of the 73 Dolt cases in shard 1/4, 22 failed because a
+`dolt clone` overran its 60-second budget. Those cases took 70 to 137 seconds each, against 12 to
+24 seconds for the same cases on macOS. No `dolt fetch`, `push`, `sql` or `reset` overran its own
+budget. Most Dolt cases clone the registry at least once, for their observer and for each other
+machine they simulate, so Windows pays that clone cost many times in every shard.
+
+The product now gives a clone its own budget, `[session_names] registry_clone_timeout_seconds`,
+which defaults to 300 seconds on Windows and 60 elsewhere. A clone is also the only remote call a
+host's first read makes, with no fetch straight after it. Cases that used to stop at 60 seconds
+now run to the end, so each shard's work goes up. The Windows matrix therefore runs eight shards,
+`(shard 1/8)` to `(8/8)`, under the same `test-windows` rollup check. That halves the work of a
+four-shard shard, which projects to about 25 minutes from the 4/4 shards' pace. Every Dolt case
+still runs on Windows: none is skipped or deselected.
 
 ## macOS suite runtime: two shards
 
