@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import logging
 import math
 import os
@@ -160,6 +161,30 @@ _POSIX_HOST = os.name == "posix"
 # it simply never exits. The worst case is a genuinely broken build taking a minute
 # longer to say so. Overridable so a slow runner can raise it without a code change.
 _PROCESS_WAIT_SECONDS = process_wait_seconds()
+
+# How a test child body idles until its test ends it (AI-CLI-72hf): a `read` from a FIFO
+# nothing ever writes, opened read-write so it never sees EOF. That blocks in the shell
+# itself, with no process behind it. The `while true; do sleep 0.05; done` it replaces
+# started 20 `sleep` processes a second per child and fed the load that makes these tests
+# time out. A background `sleep` that `wait` blocks on is no substitute: it holds the
+# supervisor's output pipes open and outlives a child killed by an untrapped signal, so
+# the test's `communicate()` never returns. A trapped signal interrupts the `read`, its
+# trap runs at once, and the loop reads again; a removed FIFO ends the loop rather than
+# letting `<>` create a regular file that reads EOF in a spin. Builtins only, and POSIX
+# sh, for the shebang-less body as well.
+_BLOCK_UNTIL_KILLED = (
+    """while [ -p "${AI_CLI_TEST_CHILD_READY}.idle" ]; do read -r _ <> "${AI_CLI_TEST_CHILD_READY}.idle"; done"""
+)
+
+
+def _make_idle_fifo(child_ready: Path) -> None:
+    """The FIFO ``_BLOCK_UNTIL_KILLED`` reads, made here so the idle loop runs no command.
+
+    A ``mkfifo`` in the body would be a foreground process that a group signal sent once
+    the child is ready can land on, and zsh then ends the script without running its trap.
+    """
+    os.mkfifo(f"{child_ready}.idle")
+
 
 _PRODUCTION_PROMOTION_BUDGET = "_promotion_budget_seconds=30"
 
@@ -320,6 +345,7 @@ def _start_real_tmux_supervisor(
         '#!/bin/sh\nexec "$AI_CLI_TEST_PYTHON" -m ai_cli.main "$@"\n',
     )
     ready = tmp_path / "child-ready"
+    _make_idle_fifo(ready)
     launches = tmp_path / "launches"
     _write_executable(
         bin_dir / "claude",
@@ -453,7 +479,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$count" > "$count_file"
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   if (( count == 1 )); then sleep 4; exit 0; fi
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, launches = _start_real_tmux_supervisor(
@@ -507,7 +533,7 @@ def test_given_a_generation_token_draw_that_encodes_with_a_leading_dash_when_the
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -582,7 +608,7 @@ def test_given_real_supervisor_crash_when_lease_and_ticker_exist_then_lease_rele
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -652,7 +678,7 @@ def test_given_real_supervisor_crash_when_the_ticker_is_detached_then_the_ticker
     child_body = f"""#!{real_supervisor_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     session_id, state_home, _ = _start_real_tmux_supervisor(
@@ -1759,10 +1785,15 @@ def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it
 
 
 def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | None = None) -> None:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
     deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
+        if owned is not None:
+            owned.note_tree(throttle=True)
         # The writer creates the file before it writes, so an empty file is not ready yet.
         if path.exists() and path.stat().st_size:
+            if owned is not None:
+                owned.note_tree()
             return
         if process.poll() is not None:
             stdout, stderr = _communicate_supervisor(process)
@@ -1772,39 +1803,109 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | 
 
 
 def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
+    if owned is not None:
+        owned.note_tree()
     if process.stdout is None:
         process.wait(timeout=_PROCESS_WAIT_SECONDS)
         return "", ""
     return process.communicate(timeout=_PROCESS_WAIT_SECONDS)
 
 
-_SPAWNED_SUPERVISORS: list[subprocess.Popen[str]] = []
+class _OwnedSupervisor:
+    """A started supervisor, and every process group and session its tree was seen in.
+
+    The root's own pid names the session and group it was started in. The rest are
+    learned while the root is alive, because the tree leaves them: the child under a
+    terminal calls ``setpgrp()``, ``script`` puts the supervisor in a session of its
+    own, and the heartbeat ticker calls ``setsid()``. Once the root has exited, its
+    remaining members are reparented to init and only these ids still reach them.
+
+    An id alone is not ownership: once every process in a group has exited, its id is
+    free for an unrelated process to take as its pid. So each member seen is recorded
+    by pid AND create time, and a group or session is killed only while it still holds
+    a live recorded member. One with none left is a reuse, and is left alone.
+    """
+
+    _NOTE_INTERVAL = 0.5
+
+    def __init__(self, process: subprocess.Popen[str], started: float) -> None:
+        self.process = process
+        self.started = started
+        self.groups = {process.pid}
+        self.sessions = {process.pid}
+        self.members: dict[int, float] = {}
+        with contextlib.suppress(psutil.Error):
+            self.members[process.pid] = psutil.Process(process.pid).create_time()
+        self._noted_at = 0.0
+
+    def note_tree(self, *, throttle: bool = False) -> None:
+        if throttle and time.monotonic() - self._noted_at < self._NOTE_INTERVAL:
+            return
+        self._noted_at = time.monotonic()
+        if self.process.poll() is not None:
+            return
+        with contextlib.suppress(psutil.Error):
+            for member in psutil.Process(self.process.pid).children(recursive=True):
+                with contextlib.suppress(OSError, psutil.Error):
+                    created = member.create_time()
+                    group, session = os.getpgid(member.pid), os.getsid(member.pid)
+                    self.members[member.pid] = created
+                    self.groups.add(group)
+                    self.sessions.add(session)
+
+    def _live_groups(self) -> set[int]:
+        """The groups of live processes sharing a group or session with a live recorded member."""
+        candidates = []
+        for pid in psutil.pids():
+            try:
+                group, session = os.getpgid(pid), os.getsid(pid)
+                if group not in self.groups and session not in self.sessions:
+                    continue
+                created = psutil.Process(pid).create_time()
+            except (OSError, psutil.Error):
+                continue
+            if created >= self.started:
+                candidates.append((group, session, self.members.get(pid) == created))
+        owned_groups = {group for group, _, recorded in candidates if recorded}
+        owned_sessions = {session for _, session, recorded in candidates if recorded}
+        found = {group for group, session, _ in candidates if group in owned_groups or session in owned_sessions}
+        return found - {os.getpgrp(), os.getsid(0)}
+
+    def reap(self) -> None:
+        if self.process.poll() is None:
+            self.note_tree()
+            with contextlib.suppress(Exception):
+                reap_tree(self.process)
+        deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+        while (groups := self._live_groups()) and time.monotonic() < deadline:
+            for group in groups:
+                with contextlib.suppress(OSError):
+                    os.killpg(group, signal.SIGKILL)
+            time.sleep(0.05)
+        with contextlib.suppress(Exception):
+            self.process.wait(timeout=_PROCESS_WAIT_SECONDS)
+
+
+_SPAWNED_SUPERVISORS: dict[int, _OwnedSupervisor] = {}
 
 
 @pytest.fixture(autouse=True)
 def _reap_leaked_supervisors() -> Iterator[None]:
-    """Guarantee every supervisor spawned via ``_start_generated_supervisor`` is
-    killed at test end, even on assertion failure or timeout (AI-CLI-1xg0).
+    """Kill every supervisor tree ``_start_generated_supervisor`` started, whatever the test did.
 
-    Without this, a failure between spawn and the test's own
-    ``_finish_supervisor`` call left the whole process tree running forever —
-    63 such orphaned ``supervisor.sh``/heartbeat-ticker processes (some 1+ day
-    old) were found accumulating from this exact file across prior runs, and
-    are a concrete explanation for this file's own "supervisor child did not
-    become ready" flakiness: a fresh run competes with dozens of leaked
-    processes for PTY/process-table resources. Walks the real process tree via
-    psutil rather than the OS process group, since the generated supervisor's
-    heartbeat ticker deliberately ``os.setsid()``s itself out of the original
-    group (mirroring the /remote-control bridge-leak shape found elsewhere
-    this session) while remaining a psutil-visible descendant.
+    A test's own teardown is its last line, ``_finish_supervisor``, so a failed
+    assertion or an expired wait anywhere before it skips that line. This finalizer
+    runs regardless (AI-CLI-1xg0). It also covers a supervisor that has ALREADY
+    exited by teardown, which the first version skipped (AI-CLI-72hf): its child, in
+    a group of its own, was left running under init, and 46 such processes from
+    earlier runs were found still looping hours later. So the reap goes by the groups
+    and sessions noted while the tree was alive, not through the root.
     """
     yield
     while _SPAWNED_SUPERVISORS:
-        process = _SPAWNED_SUPERVISORS.pop()
-        if process.poll() is not None:
-            continue
-        with contextlib.suppress(Exception):
-            reap_tree(process)
+        _, owned = _SPAWNED_SUPERVISORS.popitem()
+        owned.reap()
 
 
 def _start_generated_supervisor(
@@ -1840,6 +1941,7 @@ def _start_generated_supervisor(
     event_log = tmp_path / "events.log"
     heartbeat_log = tmp_path / "heartbeats.log"
     child_ready = tmp_path / "child-ready"
+    _make_idle_fifo(child_ready)
     _write_executable(
         bin_dir / "tmux",
         "#!/bin/sh\n"
@@ -1897,7 +1999,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   trap 'printf "INT\\n" >> "$AI_CLI_TEST_EVENTS"' INT
   trap 'printf "WINCH\\n" >> "$AI_CLI_TEST_EVENTS"' WINCH
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     )
@@ -1956,6 +2058,8 @@ fi
         stdin_value: int | None = stdin_fd
     else:
         stdin_value = subprocess.PIPE if terminal else None
+    # Create times are compared against this, so allow for their one-second resolution.
+    started = time.time() - 1
     process = subprocess.Popen(
         command,
         env=environment,
@@ -1965,7 +2069,7 @@ fi
         stdin=stdin_value,
         start_new_session=True,
     )
-    _SPAWNED_SUPERVISORS.append(process)
+    _SPAWNED_SUPERVISORS[process.pid] = _OwnedSupervisor(process, started)
     if wait_for_child_ready:
         # The wait is _PROCESS_WAIT_SECONDS, which scales with host load. Every test through here
         # starts a REAL supervisor, and a reload test starts two children in sequence. A fixed
@@ -1978,6 +2082,9 @@ fi
 
 
 def _finish_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
+    owned = _SPAWNED_SUPERVISORS.get(process.pid)
+    if owned is not None:
+        owned.note_tree()
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
@@ -2322,6 +2429,168 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
         os.close(master_fd)
 
 
+_FAILING_SUPERVISOR_TEST = """
+import json
+import os
+import signal
+from pathlib import Path
+
+import psutil
+import pytest
+from test_stale_session_reaper import _reap_leaked_supervisors, _start_generated_supervisor  # noqa: F401
+
+
+# A supervisor still running at teardown, on a terminal so its child is in a group of
+# its own; and one that already exited, leaving its child to init.
+@pytest.mark.parametrize(("root_outcome", "pseudo_terminal"), [("alive", True), ("killed", False)])
+def test_inner(tmp_path, root_outcome, pseudo_terminal):
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, os.environ["AI_CLI_TEST_INNER_SHELL"], lease_acquired=False, pseudo_terminal=pseudo_terminal
+    )
+    root = psutil.Process(process.pid)
+    tree = [root, *root.children(recursive=True)]
+    record = [{"pid": member.pid, "created": member.create_time(), "group": os.getpgid(member.pid)} for member in tree]
+    out = Path(os.environ["AI_CLI_TEST_INNER_RECORDS"]) / f"{root_outcome}-{pseudo_terminal}.json"
+    out.write_text(json.dumps(record), encoding="utf-8")
+    if root_outcome == "killed":
+        # Only the root: what is left is the tree a supervisor that died first leaves behind.
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait()
+    pytest.fail("deliberate failure before the test's own teardown line")
+"""
+
+
+def _surviving_members(record: list[dict[str, float]]) -> list[str]:
+    survivors = []
+    for member in record:
+        with contextlib.suppress(psutil.Error):
+            if abs(psutil.Process(int(member["pid"])).create_time() - member["created"]) < 1:
+                survivors.append(f"pid {int(member['pid'])}")
+    for group in sorted({int(member["group"]) for member in record} - {os.getpgrp()}):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(group, 0)
+            survivors.append(f"group {group}")
+    return survivors
+
+
+def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_process_from_its_groups_survives(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A failing supervisor test must not leak its process tree (AI-CLI-72hf).
+
+    The body fails on purpose, both with the supervisor alive and after the supervisor
+    has already exited and left its child behind, in a separate pytest run so its
+    teardown is the only thing that can end the tree. Each recorded process and
+    process group is gone once that run returns.
+    """
+    records = tmp_path / "records"
+    records.mkdir()
+    inner = tmp_path / "test_failing_supervisor.py"
+    inner.write_text(_FAILING_SUPERVISOR_TEST, encoding="utf-8")
+    tests_dir = Path(__file__).resolve().parent
+    environment = {
+        **os.environ,
+        "AI_CLI_TEST_INNER_SHELL": supported_session_shell,
+        "AI_CLI_TEST_INNER_RECORDS": str(records),
+        "PYTHONPATH": os.pathsep.join([str(tests_dir), str(tests_dir.parent / "src")]),
+    }
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(inner),
+                "-q",
+                "-o",
+                "addopts=",
+                "-p",
+                "no:randomly",
+                "-p",
+                "no:cacheprovider",
+                "--rootdir",
+                str(tmp_path),
+                "--basetemp",
+                str(tmp_path / "inner-tmp"),
+            ],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_PROCESS_WAIT_SECONDS * 8,
+        )
+        summary = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else result.stderr
+        assert "2 failed" in summary and "error" not in summary, result.stdout + result.stderr
+        recorded = {path.name: json.loads(path.read_text(encoding="utf-8")) for path in records.iterdir()}
+        assert len(recorded) == 2, sorted(recorded)
+        survivors: dict[str, list[str]] = {}
+
+        def all_gone() -> bool:
+            survivors.clear()
+            survivors.update(
+                {name: found for name, record in recorded.items() if (found := _surviving_members(record))}
+            )
+            return not survivors
+
+        with contextlib.suppress(pytest.fail.Exception):
+            _wait_for_condition("the failed test's processes to exit", all_gone)
+        assert not survivors, f"processes outlived the failed test's teardown: {survivors}"
+    finally:
+        for path in records.iterdir():
+            for member in json.loads(path.read_text(encoding="utf-8")):
+                with contextlib.suppress(psutil.Error):
+                    survivor = psutil.Process(int(member["pid"]))
+                    if abs(survivor.create_time() - member["created"]) < 1:
+                        survivor.kill()
+
+
+class _ExitedRoot:
+    pid = 500
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_given_a_recorded_group_id_reused_by_a_stranger_when_teardown_reaps_then_the_stranger_is_not_signalled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Teardown must not kill a group whose id was freed and reused (AI-CLI-72hf).
+
+    Every recorded member of group and session 500 has exited, and a process the
+    supervisor never started now holds that id as its pid, group and session. It
+    started after the supervisor did, so only its identity tells it apart.
+    """
+    stranger = 500
+    world = {stranger: {"group": 500, "session": 500, "created": 20.0}}
+    signalled: list[int] = []
+
+    class _View:
+        def __init__(self, pid: int) -> None:
+            if pid not in world:
+                raise psutil.NoSuchProcess(pid)
+            self.pid = pid
+
+        def create_time(self) -> float:
+            return world[self.pid]["created"]
+
+    monkeypatch.setattr(psutil, "pids", lambda: list(world))
+    monkeypatch.setattr(psutil, "Process", _View)
+    monkeypatch.setattr(os, "getpgid", lambda pid: world[pid]["group"], raising=False)
+    monkeypatch.setattr(os, "getsid", lambda pid: world[pid]["session"] if pid else 1, raising=False)
+    monkeypatch.setattr(os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(os, "killpg", lambda group, sig: signalled.append(group), raising=False)
+
+    owned = _OwnedSupervisor(_ExitedRoot(), started=10.0)  # type: ignore[arg-type]
+    owned.members = {500: 11.0}
+    owned.reap()
+
+    assert signalled == [], f"teardown signalled a group it never owned: {signalled}"
+
+
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -2364,9 +2633,9 @@ def test_given_shebangless_stable_script_when_generated_supervisor_starts_child_
     not carry a shebang.  The supervisor therefore has to pass its selected
     interpreter to the Python exec wrapper, as it already does for the ticker.
     """
-    child_body = """if [ \"${1:-}\" = \"--ai-cli-child-body\" ]; then
+    child_body = f"""if [ \"${{1:-}}\" = \"--ai-cli-child-body\" ]; then
   printf '%s\\n' \"$$\" > \"$AI_CLI_TEST_CHILD_READY\"
-  while :; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
 
@@ -2409,7 +2678,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   fi
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2636,7 +2905,7 @@ def test_given_child_exits_during_term_relay_when_supervisor_receives_term_then_
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2662,7 +2931,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   IFS= read -r line
   printf 'READ=%s\\n' "$line" >> "$AI_CLI_TEST_EVENTS"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, events, _ = _start_generated_supervisor(
@@ -2729,7 +2998,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$count" > "$count_file"
   if (( count == 1 )); then exit 0; fi
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, _, _ = _start_generated_supervisor(
@@ -2776,7 +3045,7 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
     exit 78
   fi
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
-  while true; do sleep 0.05; done
+  {_BLOCK_UNTIL_KILLED}
 fi
 """
     process, _, _ = _start_generated_supervisor(

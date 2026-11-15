@@ -669,6 +669,17 @@ then attaches. Refusing it would leave the running session unreachable while
 `--finish` refuses it for being live. A bare or `--sandbox` launch, which replaces
 rather than attaches, and a launch of a stopped NEW are judged as above.
 
+A running NEW whose agent exits and is restarted by its own tmux supervisor never
+goes back through `ai c`, so the session wrapper finishes each pair still pending
+itself, after the old agent has exited and before the replacement starts. Only a pair
+with no later `finished` row is tried, and a restart with none costs one ledger read.
+The finish runs as `--finish -y` does, with one exception: NEW's own tmux session,
+once tmux confirms the wrapper runs inside it, does not count as live. A live agent
+named OLD or NEW or running inside either slot, and any other tmux session hosting
+either name, still refuse the finish. A refused, failed or partial finish is one
+warning naming the `--finish` command, and the agent restarts anyway. A supervisor
+still running under OLD finishes nothing: OLD is the session being migrated away from.
+
 `-P/--allow-partial-migration` on `ai c` (and `ai g`/`ai p`/`ai cx`, forwarded to
 the remote side of `-R`) and on `ai sessions relaunch` starts the session anyway.
 It is read only from that invocation's command line, never from config, the
