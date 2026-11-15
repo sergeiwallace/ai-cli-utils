@@ -219,6 +219,44 @@ def _find(doc: dict, name: str) -> dict:
     raise ValueError(f"session {name!r} is not registered; refusing an untracked transition")
 
 
+#: The agent family a launcher engine starts, as recorded in a row's ``family`` field.
+FAMILIES = {"c": "claude", "cx": "codex", "g": "gemini", "p": "pi"}
+_ENGINE_PREFIX = re.compile(r"^(cx|c|g|p)(?:-r)?-")
+
+
+def family_for(name: str, engine: str | None = None) -> str | None:
+    """The family of the agent a session runs, from its engine or its tmux name's prefix."""
+    if engine in FAMILIES:
+        return FAMILIES[engine]
+    match = _ENGINE_PREFIX.match(name)
+    return FAMILIES[match.group(1)] if match else None
+
+
+def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
+    """Record the running agent's pid and start time on its session row.
+
+    ``agent_identity`` is ``{"pid", "started_at", "generation"}``, the shape of
+    ``supervisor_identity``: ``started_at`` is the process start time in epoch seconds as
+    psutil reports it, so a reader proves the pid still names this agent by comparing it.
+    Returns False, writing nothing, when the row is missing or belongs to another generation.
+    """
+    import psutil
+
+    started_at = psutil.Process(pid).create_time()
+    written = []
+
+    def change(doc):
+        row = next((r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name), None)
+        if row is None or (generation and row.get("generation") != generation):
+            return False
+        row["agent_identity"] = {"pid": pid, "started_at": started_at, "generation": row.get("generation")}
+        written.append(True)
+        return True
+
+    registry._mutate(change, timeout=2)
+    return bool(written)
+
+
 def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:
     """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
 
@@ -254,6 +292,9 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False, pro
         else:
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
+        family = family_for(name, recipe.get("engine"))
+        if family:
+            existing["family"] = family
         if probe:
             existing["probe"] = True
         default_relaunch(existing)

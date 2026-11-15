@@ -1141,6 +1141,11 @@ def get_engine_script(
         "$@" <&0 &
       fi
       active_agent_pid=$!
+    # BEGIN AGENT NAMING agent-identity
+      # Record the agent's own pid and start time on the session's registry row, so the
+      # session can be proved from the process table (`ai exit-session` from inside it).
+      (ai internal record-agent-identity "$tmux_session" "$active_agent_pid" "${{AI_CLI_RUN_GENERATION:-}}" >/dev/null 2>&1 || true) &
+    # END AGENT NAMING
     # BEGIN SHELL RETURN agent-wait
       # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
       # its actual exit before resetting the terminal or replacing the body.
@@ -1399,6 +1404,12 @@ def get_engine_script(
     # CC creates ~/.claude/tasks/$ai_name/ as a permanent, human-readable namespace.
     # (anthropics/claude-code#20664 — CLAUDE_CODE_TASK_LIST_ID env var override)
     [[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"
+    # BEGIN AGENT NAMING identity
+    # Every agent sees its canonical session name, and a Codex session also gets the
+    # task-list id per-session tools read, so it resolves as a Claude Code session does.
+    export AI_SESSION_NAME="$ai_name"
+    if [[ "$engine" == "cx" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name"; fi
+    # END AGENT NAMING
 
     # Only the persistent supervisor owns final cleanup.  A child may be replaced
     # many times, so its EXIT trap can stop only its per-child monitor.
