@@ -110,7 +110,7 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .launch_logging import create_launch_log
+from .launch_logging import REMOTE_DIAGNOSTIC_ENV, create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
@@ -3339,6 +3339,29 @@ def _print_launch_plan(
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
 
 
+def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
+    """The shell command mosh runs on the remote host for ``remote_cmd``.
+
+    Mosh restores the terminal after the remote command exits, which erases what it printed,
+    and it carries no exit status back. So the remote ``ai`` copies its launch log lines into
+    ``$HOME/<remote_diagnostic_file>`` (``AI_CLI_REMOTE_DIAGNOSTIC_FILE``), and a nonzero exit
+    also writes its status beside it, as ``<file>.status``, for the local loop to read with a
+    read-only SSH command once mosh ends. stderr itself stays on the terminal, so the remote
+    side's progress lines are seen while it works. A clean exit removes both files.
+    """
+    return (
+        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'mkdir -p "$(dirname "$diagnostic_file")"; '
+        'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
+        f'export {REMOTE_DIAGNOSTIC_ENV}="$diagnostic_file"; '
+        f"{remote_cmd}; "
+        "status=$?; "
+        'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
+        'else printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        'exit "$status"'
+    )
+
+
 def _print_remote_launch_plan(
     *,
     engine: str,
@@ -3591,10 +3614,10 @@ def _finish_recorded_migrations(
     from .session_migrate_status import (
         finish_command,
         finish_state,
+        judge_pair,
         left_after,
         newest_format,
         recorded_pairs,
-        replan,
     )
 
     def progress(line: str) -> None:
@@ -3622,7 +3645,9 @@ def _finish_recorded_migrations(
         if old not in pending or live:
             why = f"{ai_name} is running, so it cannot be finished now" if live else "not verified"
             progress(f"{pair}: re-planning read-only ({why})")
-            left = replan(repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress)
+            left, _live, _planned = judge_pair(
+                repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
+            )
         else:
             progress(f"{pair}: finishing")
             try:
@@ -5051,20 +5076,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
-        # Mosh restores the terminal after a remote command exits, erasing its
-        # stderr before it prints its own exit message. Save the real command's
-        # stderr during this one attempt so the local loop can retrieve it with
-        # a read-only SSH command if mosh exits immediately.
         remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
-        mosh_remote_cmd = (
-            f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
-            'mkdir -p "$(dirname "$diagnostic_file")"; '
-            f'{remote_cmd} 2>"$diagnostic_file"; '
-            "status=$?; "
-            'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
-            'else cat "$diagnostic_file" >&2; fi; '
-            'exit "$status"'
-        )
+        mosh_remote_cmd = _mosh_remote_command(remote_cmd, remote_diagnostic_file)
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
@@ -5118,7 +5131,7 @@ def _do_session_launch(
             )
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
-                _asyncio.run(
+                _transport_code = _asyncio.run(
                     _transport._run_transport_loop(
                         ssh_args,
                         mosh_args,
@@ -5133,7 +5146,7 @@ def _do_session_launch(
                 )
             finally:
                 _transport._maybe_stop_vpn_watcher()
-            sys.exit(0)
+            sys.exit(_transport_code or 0)
         else:
             # Pure SSH transport — no VPN switching.
             if sys.platform == "win32":
@@ -6167,6 +6180,9 @@ def _session_command(engine: str):
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
+        # The remote side of -R prints its own launcher lines beside the launching machine's;
+        # each is marked with this host so the two headers are told apart.
+        previous_origin = _out.set_origin(_session_naming.host_id() or "host") if is_remote else None
         # Startup hooks happen only when launching a new session.
         launch_log = create_launch_log(name or engine)
         launch_log.install_stderr()
@@ -6212,6 +6228,9 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_log.mirror_path:
+                        # The re-run launch is the one that may refuse, so it keeps the copy.
+                        os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
                     _exec_handoff(ai_bin, [ai_bin, *sys.argv[1:]])
                 _tunnel._ensure_nats_tunnel(config)
                 if not remote:
@@ -6245,6 +6264,8 @@ def _session_command(engine: str):
         finally:
             _launch_reporter.activate(previous_reporter)
             _out.attach_file_sink(previous_file_sink)
+            if previous_origin is not None:
+                _out.set_origin(previous_origin)
             # Released here, not at process exit: Windows refuses to delete or prune a
             # file another handle still holds, and a launch that returns may be followed
             # by another in the same process.
@@ -8770,15 +8791,9 @@ def _recorded_pairs(names: list[str]) -> list[tuple[str, str, Path]] | None:
 
 def _replan_recorded(old: str, new: str, repo: Path) -> tuple[dict[str, str], str, bool]:
     """``(parts left, live refusal or "", whether the plan ran)`` for one recorded pair, read-only."""
-    from .session_migrate_status import UNPLANNED, moved_on, replan_live
+    from .session_migrate_status import judge_pair
 
-    slot = repo / ".worktrees" / new
-    if not slot.is_dir():
-        if moved_on(new, repo, _config.get_xdg_state_home()) is not None:
-            return {}, "", True
-        return {"slot": f"missing: {slot} does not exist"}, "", False
-    left, live = replan_live(repo, old, new, progress=_migrate_progress)
-    return left, live, UNPLANNED not in left
+    return judge_pair(repo, old, new, progress=_migrate_progress)
 
 
 def _migration_row(old: str, new: str, repo: Path, state: str, left: dict[str, str]) -> str:

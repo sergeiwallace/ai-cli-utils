@@ -699,10 +699,21 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     return False
 
 
-def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> str:
-    """Print and remove stderr saved by the failed mosh command; return it ("" when none)."""
+#: The first line the diagnostic read prints when the remote command recorded a nonzero exit.
+_REMOTE_STATUS_PREFIX = "remote-exit-status: "
+
+
+def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> tuple[int | None, str]:
+    """``(the remote command's recorded exit status or None, its saved diagnostic)``, both then removed.
+
+    One read-only SSH command reads what the mosh wrapper left (:func:`ai_cli.main._mosh_remote_command`):
+    the ``.status`` file a nonzero exit writes, and the last 50 lines of the diagnostic file.
+    """
     diagnostic_command = (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'if test -f "$diagnostic_file.status"; then '
+        f'printf "{_REMOTE_STATUS_PREFIX}%s\\n" "$(cat "$diagnostic_file.status")"; '
+        'rm -f "$diagnostic_file.status"; fi; '
         'if test -f "$diagnostic_file"; then '
         'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi'
     )
@@ -715,8 +726,21 @@ def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_f
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if diagnostic := result.stdout.strip():
+        return None, ""
+    if not isinstance(result.stdout, str):
+        return None, ""
+    lines = result.stdout.strip().splitlines()
+    status: int | None = None
+    if lines and lines[0].startswith(_REMOTE_STATUS_PREFIX):
+        value = lines.pop(0)[len(_REMOTE_STATUS_PREFIX) :].strip()
+        status = int(value) if value.isdigit() else None
+    return status, "\n".join(lines).strip()
+
+
+def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> str:
+    """Print and remove the diagnostic the failed mosh command saved; return it ("" when none)."""
+    _status, diagnostic = _read_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+    if diagnostic:
         _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
     return diagnostic
 
@@ -742,8 +766,12 @@ async def _run_transport_loop(
     diagnostic_ssh_args: list[str] | None = None,
     remote_diagnostic_file: str = "",
     on_exit_receipt: Callable[[], bool] | None = None,
-) -> None:
-    """Run the mosh/SSH transport loop with VPN-aware switching.
+) -> int:
+    """Run the mosh/SSH transport loop with VPN-aware switching; return the exit status to leave with.
+
+    0 for a session that ended normally; the remote command's own status when it recorded a
+    nonzero one (mosh carries none back, so the wrapper writes it, see
+    :func:`_read_remote_diagnostic`); 1 when the loop gave up.
 
     Subscribes to ``vpn.state.changed`` on NATS. When a message arrives the
     active transport child is terminated and the loop restarts with the correct
@@ -784,6 +812,7 @@ async def _run_transport_loop(
     # and mosh always fails again immediately, which retried unboundedly here
     # before this cap (AI-CLI-gg9s).
     tailscale_retries = 0
+    exit_code = 0
     with _terminate_after_child() as raise_if_terminated:
         try:
             while True:
@@ -847,7 +876,7 @@ async def _run_transport_loop(
                 transport_file.unlink(missing_ok=True)
 
                 if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
-                    return
+                    return 0
                 if vpn_changed.is_set():
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True)
                     continue
@@ -867,6 +896,7 @@ async def _run_transport_loop(
                                 f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
                                 err=True,
                             )
+                            exit_code = 1
                             break
                     if await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval):
                         _out.emit(
@@ -929,9 +959,9 @@ async def _run_transport_loop(
                         transport_file.unlink(missing_ok=True)
                         raise_if_terminated()
                         if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
-                            return
+                            return 0
                         if proc2.returncode == 0:
-                            return  # SSH succeeded
+                            return 0  # SSH succeeded
                         if vpn_changed.is_set():
                             _out.emit(
                                 Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True
@@ -940,6 +970,7 @@ async def _run_transport_loop(
                     if vpn_changed.is_set():
                         continue
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nSSH failed after retries — giving up.", err=True)
+                    exit_code = 1
                     break
 
                 if elapsed < 3:
@@ -961,7 +992,31 @@ async def _run_transport_loop(
                             f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
                             err=True,
                         )
+                    exit_code = 1
                     break
+
+                # Mosh carries no exit status back and clears what the remote command printed,
+                # so a launch the remote side refused after a while (a migration guard that
+                # re-planned for minutes) used to end here silently with exit 0. The mosh
+                # wrapper records a nonzero status and the launch's own log lines; read them.
+                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                    remote_status, remote_diagnostic = await asyncio.to_thread(
+                        _read_remote_diagnostic, diagnostic_ssh_args, remote_diagnostic_file
+                    )
+                    if remote_status:
+                        if remote_diagnostic:
+                            _out.emit(
+                                Tag.TRANSPORT, "connect", f"\nRemote command error:\n{remote_diagnostic}", err=True
+                            )
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            f"\nThe remote launch exited {remote_status} after {elapsed:.1f}s; "
+                            "its reason is above. Fix that, then re-run the same command.",
+                            err=True,
+                        )
+                        exit_code = remote_status
+                        break
 
                 # A mosh session that ends quickly with a "successful" exit code is
                 # ambiguous: mosh propagates whatever the remote command exited with,
@@ -1015,3 +1070,4 @@ async def _run_transport_loop(
             with contextlib.suppress(Exception):
                 await nc.close()
             subprocess.run(cleanup_cmd, capture_output=True, check=False)
+    return exit_code
