@@ -1398,12 +1398,12 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. -j/--json prints this host's registry records unchanged
+List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print this host's registry records as JSON |
-| `-a` | `--all` |  | Include exited and unknown sessions |
+| `-a` | `--all` |  | Include exited, stale and unknown sessions |
 | `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
 | `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
 | `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |

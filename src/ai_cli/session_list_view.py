@@ -19,8 +19,12 @@ DEFAULTS = {
 GROUP_KEYS = ("host", "status", "relaunch", "none")
 SORT_KEYS = ("status", "name", "changed", "host", "relaunch")
 SCOPES = ("host", "pair", "fleet")
+#: The status and cause a row shows for a running record from an earlier boot of this host that
+#: tmux and the process table both prove gone; the record itself still says running.
+STALE = "stale"
+STALE_CAUSE = "host_reboot"
 #: Active sessions first; a state not listed here sorts after ``unknown``.
-STATUS_ORDER = ("running", "relaunched", "unknown", "exited")
+STATUS_ORDER = ("running", "relaunched", STALE, "unknown", "exited")
 ACTIVE = frozenset({"running", "relaunched"})
 
 _COLUMNS = (

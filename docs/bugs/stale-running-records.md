@@ -130,7 +130,10 @@ is settled on the next tick. A failed scheduler can also be corrected by a reade
 invocation. No periodic observer can distinguish a session that ended immediately
 before power loss from one killed by that power loss without additional durable
 evidence. Rewriting records after a changed boot would violate interruption
-recovery, so this fix deliberately preserves that evidence. It does not promise
+recovery, so this fix deliberately preserves that evidence. `ai sessions list` still
+reports such a record honestly: once `session_reconcile.liveness_blocker()` proves it gone,
+its row shows `stale` with cause `host_reboot` and `-j/--json` sets `earlier_boot_gone`,
+while the record keeps `run_state = running`. It does not promise
 unconditional recovery when the scheduler, storage or liveness probes are unavailable.
 
 <!-- /doc:region name="fix" -->
@@ -190,5 +193,6 @@ after a reboot.
 |---|---|
 | 2026-11-11 | Reproduced the missing observer through CLI and periodic worker entry points before changing production code. |
 | 2026-11-11 | Added same-boot reconciliation, migration refusal, explicit legacy unknown state, and scheduler coverage for detached replay and other engines. |
+| 2026-11-15 | The list showed an earlier boot's proved-gone record as `running`; it now shows `stale`/`host_reboot` and `-j/--json` carries `earlier_boot_gone`, without rewriting the record. |
 
 <!-- /doc:region name="fix_log" -->

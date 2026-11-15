@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a host reboot, `ai sessions list` no longer shows a session as `running` when its record
+  says `running` from an earlier boot but its tmux session and processes are both gone. Before
+  the boot pass runs, or with `on_boot` off, such a row now shows STATUS `stale` and CAUSE
+  `host_reboot`, using the same proof as the migration preflight. The record is not rewritten,
+  so the boot relaunch keeps its evidence. `-j/--json` gives every record an `earlier_boot_gone`
+  field, `true` for such a row, while its `run_state` stays `running`
+  ([docs/bugs/stale-running-records.md](docs/bugs/stale-running-records.md)).
 - `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
   with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
   was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
