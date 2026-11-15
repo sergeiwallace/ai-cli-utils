@@ -186,6 +186,16 @@ own pid just before it execs (the exec keeps pid and start time), or the pty hos
 pid. A Windows bare launch records nothing, because `execvp` there starts a new process.
 On an npm-installed Codex the recorded process is Codex's Node entry point, whose child is
 the native binary, so every Codex tool process descends from it.
+
+One attested agent has exactly one owning session. A write that would attest a process
+(same `pid` and `started_at`) that another row still holds live is refused: the other
+row's attestation is live while its `generation` is the row's current one and the row is
+not exited. A relaunch takes a new generation, so the previous attestation stops proving
+the session. To keep that collision out of normal use, each `ai cx` session runs its own
+Codex process: Codex 0.169 by default starts one shared app-server daemon per host
+(measured: `codex app-server --listen unix:// --managed-daemon`) that every TUI connects
+to, so the launcher passes `--no-daemon` whenever the installed Codex's `--help` lists it.
+An older Codex without the option gets no flag.
 `ai exit-session <canonical name>` maps the
 canonical name to the row keyed `cx-<name>` or `cx-r-<name>` (any family), and `ai
 exit-session` with no name, run inside an agent with no Claude Code session record, proves the

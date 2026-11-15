@@ -449,3 +449,78 @@ wait
     assert done.returncode == 0, done.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls == [f"RUN codex resume {THREAD}"]
+
+
+# --- its own Codex process ------------------------------------------------------------
+
+
+def _fake_codex(bin_dir: Path, help_text: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    codex = bin_dir / "codex"
+    codex.write_text(f"#!/bin/sh\ncat <<'HELP'\n{help_text}\nHELP\n", encoding="utf-8")
+    codex.chmod(0o755)
+
+
+@posix_only
+def test_given_codex_offering_no_daemon_when_bare_launching_then_each_session_runs_its_own_codex_process(
+    tmp_path, monkeypatch, codex_home
+):
+    _fake_codex(tmp_path / "bin", "      --no-daemon\n          Run without the shared background server")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    _index(codex_home, (THREAD, NAME))
+    _rollout(codex_home, THREAD)
+
+    assert _bare_engine_command("cx", "myproject-2", Path.cwd(), None, "gemini", "--no-sandbox", []) == [
+        "codex",
+        "--no-daemon",
+    ]
+    assert _bare_engine_command("cx", NAME, Path.cwd(), None, "gemini", "--no-sandbox", []) == [
+        "codex",
+        "resume",
+        "--no-daemon",
+        THREAD,
+    ]
+
+
+@posix_only
+def test_given_older_codex_without_no_daemon_when_bare_launching_then_the_flag_is_not_passed(tmp_path, monkeypatch):
+    _fake_codex(tmp_path / "bin", "      --search\n          Enable live web search")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+
+    assert _bare_engine_command("cx", NAME, Path.cwd(), None, "gemini", "--no-sandbox", []) == ["codex"]
+
+
+@posix_only
+def test_given_codex_offering_no_daemon_when_the_session_script_launches_then_it_passes_it(tmp_path):
+    script = get_engine_script(
+        engine="cx", ai_name=NAME, session=f"cx-{NAME}", prefix="cx-myproject-", project_prefix="myproject"
+    )
+    start = script.index("_ai_run_codex() {")
+    end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
+    log = tmp_path / "calls.log"
+    calls = {}
+    for thread in ("", THREAD):
+        log.write_text("", encoding="utf-8")
+        harness = tmp_path / "dispatch.sh"
+        harness.write_text(
+            f"""
+engine=cx
+ai_name={NAME}
+tmux_session=cx-{NAME}
+first_run=true
+prompt_file={tmp_path}/no-prompt
+_ai_launch_log=""
+codex() {{ echo '      --no-daemon'; }}
+run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
+ai() {{ if [[ "$1 $2" == "internal resolve-codex-session" && -n "{thread}" ]]; then echo "{thread}"; fi; return 0; }}
+{script[start:end]}
+wait
+""",
+            encoding="utf-8",
+        )
+        done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
+        assert done.returncode == 0, done.stderr
+        calls[thread] = [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("RUN")]
+
+    assert calls[""] == ["RUN codex --no-daemon"]
+    assert calls[THREAD] == [f"RUN codex resume --no-daemon {THREAD}"]

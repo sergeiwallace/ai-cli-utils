@@ -1084,12 +1084,13 @@ def _bare_engine_command(
         # Codex has no launch-time name option: resume the thread this session's name
         # already carries, by id (Codex's own by-name lookup skips a thread with no turn).
         # A launch that resumes nothing is named afterwards by _name_new_codex_session.
+        own = _codex_session.exclusive_process_flags()
         thread = _codex_session.find_thread(ai_name)
         if thread:
-            return ["codex", "resume", thread, *extra_args]
+            return ["codex", "resume", *own, thread, *extra_args]
         if resume:
-            return ["codex", "resume", "--last", *extra_args]
-        return ["codex", *extra_args]
+            return ["codex", "resume", *own, "--last", *extra_args]
+        return ["codex", *own, *extra_args]
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
@@ -1108,7 +1109,7 @@ def _name_new_codex_session(
     FIFO. With neither (a native Windows bare launch), nothing can type into the session,
     so the operator is told once how to name it; later launches then resume it by name.
     """
-    if command[:2] == ["codex", "resume"] and command[2:3] != ["--last"]:
+    if command[:2] == ["codex", "resume"] and "--last" not in command:
         return
     if tmux_target is None and fifo is None:
         reporter.warning(

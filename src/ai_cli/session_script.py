@@ -1657,10 +1657,13 @@ with open(path, 'w') as f:
       # lines below stay, unreachable, so a running older supervisor still certifies
       # (session_restart._compatible). docs/designs/codex-session-naming.md.
       _ai_run_codex() {{
-        local _cx_thread
+        local _cx_thread _cx_own=()
+        # Its own Codex process, not the host's shared app-server daemon, when this Codex
+        # offers --no-daemon, so tool processes descend from the attested agent.
+        if codex --help 2>/dev/null | grep -q -- '--no-daemon'; then _cx_own=(--no-daemon); fi
         _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
         if [[ -n "$_cx_thread" ]]; then
-          run_agent codex resume "$_cx_thread" "$@"
+          run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
           return
         fi
         local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
@@ -1669,8 +1672,8 @@ with open(path, 'w') as f:
           _cx_namer+=(--prompt-file "$prompt_file.codex")
         fi
         ({LAUNCH_LOG_ENV}="$_ai_launch_log" "${{_cx_namer[@]}}" >/dev/null 2>&1 || true) &
-        if $first_run; then run_agent codex
-        else run_agent codex resume --last
+        if $first_run; then run_agent codex "${{_cx_own[@]}}"
+        else run_agent codex resume "${{_cx_own[@]}}" --last
         fi
       }}
     # END AGENT NAMING
