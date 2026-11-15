@@ -955,10 +955,10 @@ unrelated project-registry discovery prompts.
 
 ```bash
 ai sessions                       # Running sessions of this host and its paired host, as a table
-ai sessions list -a/--all         # Add exited and unknown sessions
+ai sessions list -a/--all         # Add exited, stale and unknown sessions
 ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
 ai sessions list -g/--group-by status -s/--sort-by changed,name
-ai sessions list -j/--json        # This host's registry records, unchanged by the options above
+ai sessions list -j/--json        # This host's records with earlier_boot_gone, unchanged by the options above
 ```
 
 The table groups rows by host (this host first) and puts running sessions at the top of each

@@ -191,6 +191,9 @@ def begin(name, launch_metadata, supervisor_pid):
 
 
 _BIND_TMUX_ATTEMPTS = 4
+# Per attempt. Starting the tmux client is itself an exec, which on a loaded host took over
+# the 2 s that teardown allows, on every attempt, so the launch ended before its child ran.
+_BIND_TMUX_TIMEOUT_SECONDS = 10
 
 
 @sessions.command("_bind-exit-tmux", hidden=True)
@@ -208,7 +211,7 @@ def bind_exit_tmux(name, generation, session_id, token):
     server = None
     for attempt in range(_BIND_TMUX_ATTEMPTS):
         try:
-            server = _tmux_server(TmuxIdentity(session_id, token))
+            server = _tmux_server(TmuxIdentity(session_id, token), timeout=_BIND_TMUX_TIMEOUT_SECONDS)
             break
         except ValueError as exc:
             if attempt == _BIND_TMUX_ATTEMPTS - 1:
@@ -265,6 +268,16 @@ def _pair_host(view: dict) -> tuple[str, str]:
     return alias, ""
 
 
+def _earlier_boot_gone(record: dict, boot: str | None) -> bool:
+    """Whether a running record is from an earlier boot of this host and is proved gone.
+
+    Only the reader's view changes: the record keeps its running state for the boot relaunch.
+    """
+    if state.run_state(record) != "running" or not boot or record.get("boot_id") in (None, "", boot):
+        return False
+    return session_reconcile.liveness_blocker(record) is None
+
+
 def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
     rows = []
     for name, fields in doc["sessions"].items():
@@ -286,12 +299,13 @@ def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
 @sessions.command(
     "list",
     help="List sessions as a table grouped by host, active sessions first: this host's running sessions and, "
-    "with the default pair scope, its paired host's published ones. -a/--all adds exited and unknown rows; "
+    "with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; "
     "-S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] "
-    "defaults in config.toml. -j/--json prints this host's registry records unchanged",
+    "defaults in config.toml. A running record from an earlier boot of this host that tmux and the process "
+    "table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone",
 )
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print this host's registry records as JSON")
-@click.option("-a", "--all", "show_all", is_flag=True, default=None, help="Include exited and unknown sessions")
+@click.option("-a", "--all", "show_all", is_flag=True, default=None, help="Include exited, stale and unknown sessions")
 @click.option(
     "-S",
     "--scope",
@@ -317,6 +331,7 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
     session_reconcile.reconcile()
     session_reconcile.age_out()
     doc = registry.load_registry()
+    boot = registry.current_boot_id()
     records = [
         {
             "name": r["name"],
@@ -324,6 +339,7 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
             "cause": state.cause(r) if state.run_state(r) == "exited" else "",
             "changed_at": r.get("changed_at", ""),
             "relaunch": r.get("relaunch", "auto"),
+            "earlier_boot_gone": _earlier_boot_gone(r, boot),
         }
         for r in doc["sessions"]
     ]
@@ -335,8 +351,8 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
         session_list_view.Row(
             host=local,
             name=r["name"],
-            status=r["run_state"],
-            cause=r["cause"],
+            status=session_list_view.STALE if r["earlier_boot_gone"] else r["run_state"],
+            cause=session_list_view.STALE_CAUSE if r["earlier_boot_gone"] else r["cause"],
             changed=r["changed_at"],
             relaunch=r["relaunch"],
         )

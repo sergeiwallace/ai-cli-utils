@@ -555,8 +555,11 @@ ai sessions [list] [-a] [-S host|pair|fleet] [-g host|status|relaunch|none] [-s 
 
 Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
 with the columns `HOST`, `SESSION`, `STATUS`, `CAUSE`, `CHANGED` and `RELAUNCH`, grouped by host
-with this host first, and sorted by status (`running`, `relaunched`, `unknown`, `exited`) and then
-by name. Only running sessions are listed unless `-a/--all` is given. `CHANGED` is the time of the
+with this host first, and sorted by status (`running`, `relaunched`, `stale`, `unknown`, `exited`)
+and then by name. A record from an earlier boot of this host that still says `running`, but whose
+tmux session and processes are both gone, shows as `stale` with cause `host_reboot`; the record
+itself is not rewritten, so the boot relaunch keeps its evidence. The proof is the one the
+migration preflight uses, and a row whose liveness cannot be proved still shows `running`. Only running sessions are listed unless `-a/--all` is given. `CHANGED` is the time of the
 session's last run-state change; a policy change does not move it. `RELAUNCH` is the boot relaunch
 policy (`auto`, `always` or `never`).
 
@@ -567,7 +570,8 @@ policy (`auto`, `always` or `never`).
   time is printed under the table.
 - `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
   keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
-- `-j/--json` prints this host's registry records exactly as before; it ignores the other options
+- `-j/--json` prints this host's registry records, each with `earlier_boot_gone` (`true` for a
+  row the table shows as `stale`, whose `run_state` stays `running`); it ignores the other options
   and refuses `-S pair` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
   registry file itself ([fields](../iterm2-persistence.md)).
 

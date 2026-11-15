@@ -22,6 +22,7 @@ import psutil
 import pytest
 from conftest import run_cli
 from process_ownership import reap_tree, watch_session
+from process_wait import process_wait_seconds
 
 from ai_cli import config, main, session_restart, session_run_state
 
@@ -30,6 +31,11 @@ OTHER_ID = "22222222-2222-4222-8222-222222222222"
 SESSION = "c-myproject-box-1"
 TITLE = "myproject-box-1"
 _REAL_SOCKET = socket.socket
+# Every exec in these fixtures can cost a second or more on a loaded host, and one restart
+# starts dozens of them, so fixed 5 s and 60 s bounds let a fixture agent's start, its
+# shutdown or a replacement's verification time out before it had a chance to finish.
+# Scaled with host load; each wait still returns as soon as its condition holds.
+_PROCESS_WAIT_SECONDS = process_wait_seconds()
 
 
 class _ModuleView:
@@ -67,8 +73,8 @@ def _launch_records(path):
     return [json.loads(line) for line in text.split("\n")[:-1] if line]
 
 
-def _wait_for(check, process, timeout=60):
-    deadline = time.monotonic() + timeout
+def _wait_for(check, process):
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         value = check()
         if value:
@@ -313,7 +319,7 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
         fenced: dict = {"status": "failed"}
         if request.param == "dead-fenced":
             target = subprocess.Popen([sys.executable, "-c", "pass"])
-            target.wait(timeout=5)
+            target.wait(timeout=_PROCESS_WAIT_SECONDS)
             fenced.update(
                 version=1,
                 request_id=OTHER_ID,
@@ -473,8 +479,8 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
         "restart_session": {
             "min_uptime_seconds": 4,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }
@@ -553,8 +559,8 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
         "restart_session": {
             "min_uptime_seconds": 0,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }
