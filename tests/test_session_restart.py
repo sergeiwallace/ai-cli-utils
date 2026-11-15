@@ -2468,6 +2468,9 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
 
     # The registry resolves its state directory per platform; keep it where the fixture registered.
     monkeypatch.setattr(session_registry, "get_xdg_state_home", config.get_xdg_state_home)
+    # The script embeds config.toml's path, which is also chosen per platform; keep the one it was written with.
+    config_path = config.config_file_text()
+    monkeypatch.setattr(config, "config_file_text", lambda: config_path)
     monkeypatch.setattr(restart.sys, "platform", "darwin")
     world.script.write_text(world.script.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     reads = []

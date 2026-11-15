@@ -391,6 +391,7 @@ class TestRootEscalation:
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch("os.geteuid", return_value=1000, create=True),
+            patch("ai_cli.native_deps.passwordless_sudo", return_value=(False, "a password is required")),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=False),
             patch("subprocess.run", side_effect=AssertionError("escalated with no terminal to ask on")),
         ):
@@ -412,6 +413,7 @@ class TestRootEscalation:
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch("os.geteuid", return_value=1000, create=True),
+            patch("ai_cli.native_deps.passwordless_sudo", return_value=(False, "a password is required")),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=True),
             patch("ai_cli.native_deps._authenticate_root", return_value=False),
             patch("subprocess.run", side_effect=_record),
@@ -438,6 +440,7 @@ class TestRootEscalation:
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch("os.geteuid", return_value=1000, create=True),
+            patch("ai_cli.native_deps.passwordless_sudo", return_value=(False, "a password is required")),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=True),
             patch("ai_cli.native_deps._authenticate_root", return_value=True),
             patch("subprocess.run", side_effect=_record),
