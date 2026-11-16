@@ -5006,6 +5006,15 @@ def _do_session_launch(
             "cannot be established (a server restart does not change this)"
         )
 
+    # -A/--split refuses -b and -R at parse time, but config or a missing tmux can still
+    # turn the launch bare here, and a bare launch has no tmux session to split to.
+    if split and bare:
+        reporter.warning(
+            "terminal",
+            f"{SPLIT_OPTS[1]} needs a tmux session, and this launch runs bare"
+            f"{f' ({tmux_reason})' if tmux_reason else ''}, so nothing is split",
+        )
+
     # One block per launch: presence, path, client version, the running server's
     # version, the resolved mode and its reason. stderr so it never contaminates
     # anything parsing stdout. Client and server are separate lines on purpose --

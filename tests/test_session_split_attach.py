@@ -147,6 +147,23 @@ def test_given_a_failing_osascript_when_splitting_then_it_warns_and_the_session_
     assert split_launch.execs == []
 
 
+def test_given_a_config_that_turns_the_launch_bare_when_launching_with_split_then_it_warns_nothing_is_split(
+    split_launch, monkeypatch, capsys
+):
+    _in_iterm2(monkeypatch)
+    split_launch.use_osascript(split_launch.with_osascript(AssertionError("osascript must not run")))
+    config = {"worktree": {"enabled": False}, "session": {"use_tmux": False}}
+
+    with pytest.raises(SystemExit):
+        split_launch.invoke(attach=False, split=True, config=config)
+
+    assert split_launch.osascript == []
+    assert not any(argv[:2] == ["tmux", "new-session"] for argv, _ in split_launch.calls)
+    err = capsys.readouterr().err
+    assert err.count("--split needs a tmux session, and this launch runs bare") == 1
+    assert "use_tmux = false" in err
+
+
 @pytest.mark.parametrize("engine", ["c", "g", "p", "cx", "agy"])
 @pytest.mark.parametrize("flag", ["-A", "--split"])
 def test_given_the_split_flag_when_any_engine_launches_then_it_launches_detached_with_split(engine, flag):
