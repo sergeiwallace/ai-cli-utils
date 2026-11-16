@@ -6,3 +6,7 @@
 - A process can be attested by only one session: a second live claim on the same agent
   process is refused. `ai cx` now starts each session's Codex with `--no-daemon` when the
   installed Codex offers it, so sessions do not share Codex's per-host app-server.
+- `agent_identity` records `engine_binding`: `exclusive`, or `shared-daemon` for a Codex that
+  runs its tools in the host's shared app-server. A shared-daemon session never proves its
+  identity from process ancestry, and `ai exit-session` with no name inside one now refuses
+  and asks for the session name.

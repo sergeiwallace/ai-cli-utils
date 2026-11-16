@@ -232,6 +232,9 @@ def exit_session(
 def _verified_agent(row: dict) -> ProcessIdentity | None:
     """The row's recorded agent, when its pid still names that process and generation."""
     identity = row.get("agent_identity") or {}
+    if identity.get("engine_binding") != "exclusive":
+        # A shared-daemon agent's tools descend from the daemon, never from this pid.
+        return None
     pid, started_at = identity.get("pid"), identity.get("started_at")
     if (
         type(pid) is not int
@@ -245,6 +248,24 @@ def _verified_agent(row: dict) -> ProcessIdentity | None:
     except psutil.Error:
         return None
     return ProcessIdentity(pid, float(started_at))
+
+
+def _shared_daemon_session(doc: dict, host: str) -> str | None:
+    """The canonical name of the caller's session when its agent is daemon-backed.
+
+    The caller is named by ``AI_SESSION_NAME``, which the launcher exports into the agent.
+    That variable is only a name, never ownership evidence: it selects the refusal message.
+    """
+    caller = os.environ.get("AI_SESSION_NAME", "")
+    for row in doc["sessions"]:
+        if (
+            row.get("kind") == "local"
+            and row.get("owning_host") == host
+            and row.get("canonical_name") == caller
+            and (row.get("agent_identity") or {}).get("engine_binding") == "shared-daemon"
+        ):
+            return caller
+    return None
 
 
 def _registry_name(doc: dict, name: str, host: str) -> str:
@@ -318,6 +339,12 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
                 and agent.pid in ancestors
             ]
             if not matches:
+                shared = _shared_daemon_session(doc, host)
+                if shared:
+                    raise ValueError(
+                        f"cannot verify current session: {shared} runs on Codex's shared app-server daemon, so no "
+                        f"process ancestry proves it from inside; pass the name: ai exit-session {shared}"
+                    )
                 raise ValueError(
                     "cannot verify current session: expected one ancestor with a matching session record and process start time"
                 )

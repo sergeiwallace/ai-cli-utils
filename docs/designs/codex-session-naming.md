@@ -184,8 +184,49 @@ the row gets `agent_identity` for the interactive process the launcher started:
 The session script records it after each agent start; a bare launch records the launcher's
 own pid just before it execs (the exec keeps pid and start time), or the pty host's child
 pid. A Windows bare launch records nothing, because `execvp` there starts a new process.
-On an npm-installed Codex the recorded process is Codex's Node entry point, whose child is
-the native binary, so every Codex tool process descends from it.
+Every start, fresh or `codex resume <id>`, is a new process recorded under the generation
+of the supervisor that started it; a relaunch's supervisor takes a new generation.
+Nothing re-execs Codex under an earlier pid: the one exec in the path (the pinned-restart
+wrapper) runs inside the same start, before Codex, and keeps that start's generation.
+
+`engine_binding` is read from the process's own command line once its launch has exec'd:
+`exclusive` for a Codex running `--no-daemon` and for every other family, `shared-daemon`
+for a default `codex`. Only an `exclusive` agent proves ancestry. With no name, `ai
+exit-session` inside a `shared-daemon` session refuses with "runs on Codex's shared
+app-server daemon, so no process ancestry proves it from inside; pass the name: ai
+exit-session <name>". It never borrows the daemon's pid.
+
+### Where a Codex tool process runs (measured 2026-11-15, Codex 0.169.0, Linux)
+
+Each Codex below ran in tmux against a throwaway `CODEX_HOME`. A local command typed as
+`!sleep <n>` runs through the engine's exec path, and the sleep's ancestors were read with
+`ps -o pid=,ppid=,args=`, walking up `ppid` to pid 1.
+
+Default `codex`, the second session on the host (TUI pid 2112030):
+
+```text
+2119244 2101885 sleep 4444
+2101885 2099146 .../home/packages/app-server-daemon/releases/0.169.0-.../bin/codex app-server ...
+2099146 2099142 .../vendor/x86_64-unknown-linux-musl/bin/codex          (the FIRST session's TUI)
+2099142 2099129 bash -c ... codex; sleep 600
+```
+
+The tool ran in the shared daemon that the first session's Codex had started, so it does not
+descend from its own session (2112030). A daemon that outlives its starter is reparented to
+the init process, which is what a peer saw on a long-running host.
+
+`codex --no-daemon`, started while that daemon was still running:
+
+```text
+2130863 2124769 sleep 4545
+2124769 2124768 .../vendor/x86_64-unknown-linux-musl/bin/codex --no-daemon
+2124768 2099129 bash -c ... codex --no-daemon; sleep 600
+```
+
+The tool is a child of the session's own Codex, and that Codex is the process the shell
+started, so the pid the session script records is the engine. No Node process sits in either
+chain: on this install the `codex` entry point ends up as the native binary under the pid it
+was started with.
 
 One attested agent has exactly one owning session. A write that would attest a process
 (same `pid` and `started_at`) that another row still holds live is refused: the other
@@ -195,7 +236,7 @@ the session. To keep that collision out of normal use, each `ai cx` session runs
 Codex process: Codex 0.169 by default starts one shared app-server daemon per host
 (measured: `codex app-server --listen unix:// --managed-daemon`) that every TUI connects
 to, so the launcher passes `--no-daemon` whenever the installed Codex's `--help` lists it.
-An older Codex without the option gets no flag.
+An older Codex without the option gets no flag, and its session is recorded `shared-daemon`.
 `ai exit-session <canonical name>` maps the
 canonical name to the row keyed `cx-<name>` or `cx-r-<name>` (any family), and `ai
 exit-session` with no name, run inside an agent with no Claude Code session record, proves the

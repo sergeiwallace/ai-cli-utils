@@ -2259,13 +2259,12 @@ def _handle_internal(argv: list[str]) -> None:
         from . import session_run_state as _run_state
 
         try:
-            recorded = _run_state.record_agent(argv[1], int(argv[2]), argv[3] if len(argv) == 4 else None)
+            refusal = _run_state.record_agent(argv[1], int(argv[2]), argv[3] if len(argv) == 4 else None)
         except Exception as exc:
-            _out.emit(
-                Tag.INTERNAL, "session", f"{argv[1]}: agent identity not recorded: {type(exc).__name__}", err=True
-            )
-            sys.exit(1)
-        sys.exit(0 if recorded else 1)
+            refusal = type(exc).__name__
+        if refusal:
+            _out.emit(Tag.INTERNAL, "session", f"{argv[1]}: agent identity not recorded: {refusal}", err=True)
+        sys.exit(1 if refusal else 0)
     elif action == "name-codex-session":
         usage = (
             "Usage: ai internal name-codex-session <tmux_session> <ai_name> [-p|--prompt-file FILE]\n"

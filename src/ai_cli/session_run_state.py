@@ -249,12 +249,41 @@ def _live_claim(row: dict, pid: int, started_at: float) -> bool:
     )
 
 
-def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
+#: The program name an agent of each family shows once its launch has exec'd.
+_AGENT_PROGRAMS = {"claude": "claude", "codex": "codex", "gemini": "gemini", "pi": "pi"}
+_EXEC_SETTLE_SECONDS = 5.0
+
+
+def engine_binding(family: str | None, cmdline: list[str]) -> str:
+    """``exclusive`` when the recorded process runs its own engine, else ``shared-daemon``.
+
+    Measured on Codex 0.169.0: a default ``codex`` runs its turns, and every tool process,
+    in the host's shared ``codex app-server`` daemon, so no tool descends from the session's
+    own process. ``codex --no-daemon`` runs the engine in that process, and its tools are its
+    children. Every other family runs its engine in the launched process.
+    """
+    if family != "codex":
+        return "exclusive"
+    return "exclusive" if "--no-daemon" in cmdline[1:] else "shared-daemon"
+
+
+def _settled_cmdline(process, family: str | None) -> list[str]:
+    """The agent's command line once the forked child has exec'd it, or the last one seen."""
+    want = _AGENT_PROGRAMS.get(family or "")
+    deadline = time.monotonic() + _EXEC_SETTLE_SECONDS
+    while True:
+        cmdline = process.cmdline()
+        if want is None or any(want in Path(arg).name for arg in cmdline) or time.monotonic() >= deadline:
+            return cmdline
+        time.sleep(0.05)
+
+
+def record_agent(name: str, pid: int, generation: str | None = None) -> str | None:
     """Record the interactive agent process the launcher started on its session row.
 
     ``agent_identity`` holds:
 
-    * ``pid``: the agent process itself (a shell that ran it exec'd it, so the pid is
+    * ``pid``: the agent process itself (the shell that ran it exec'd it, so the pid is
       the agent's), never the tmux server or the supervisor shell.
     * ``started_at``: its start time in epoch seconds, as psutil reports it.
     * ``proc_start`` and ``proc_start_backend``: the start marker in the unit the
@@ -263,27 +292,38 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
     * ``boot_id``: the host boot identity (Linux ``boot_id``, macOS
       ``kern.bootsessionuuid``); null on Windows, which exposes no boot id to read.
     * ``interactive``: true, the process is an interactive client in a session pane.
+    * ``engine_binding``: ``exclusive`` or ``shared-daemon`` (:func:`engine_binding`), read
+      from the process's own command line. Only an ``exclusive`` agent proves ancestry.
     * ``generation``: the run generation the row held when the agent started.
 
-    Returns False, writing nothing, when the row is missing, belongs to another generation,
-    or another session's row holds a live attestation of the same process.
+    Returns None once written, else why nothing was written: the row is missing, belongs to
+    another generation, or another session's row holds a live attestation of the same process.
     """
     import psutil
 
     from .process_probe import probe_for
 
-    started_at = psutil.Process(pid).create_time()
+    process = psutil.Process(pid)
+    started_at = process.create_time()
+    family = family_for(name)
+    cmdline = _settled_cmdline(process, family)
     marker = probe_for().capture_identity(pid)
     boot_id = registry.current_boot_id()
-    written = []
+    refusal: list[str] = []
 
     def change(doc):
         row = next((r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name), None)
-        if row is None or (generation and row.get("generation") != generation):
+        if row is None:
+            refusal.append(f"session {name!r} is not registered")
+            return False
+        if generation and row.get("generation") != generation:
+            refusal.append(f"generation {generation} is not the current generation of {name}")
             return False
         # One attested agent has exactly one owning session: a second live claim on the
         # same process is refused, never last-write-wins.
-        if any(_live_claim(other, pid, started_at) for other in doc["sessions"] if other is not row):
+        owner = next((o for o in doc["sessions"] if o is not row and _live_claim(o, pid, started_at)), None)
+        if owner is not None:
+            refusal.append(f"pid {pid} is already attested by live session {owner['name']}")
             return False
         row["agent_identity"] = {
             "pid": pid,
@@ -292,13 +332,13 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> bool:
             "proc_start_backend": marker.backend if marker else None,
             "boot_id": boot_id,
             "interactive": True,
+            "engine_binding": engine_binding(family, cmdline),
             "generation": row.get("generation"),
         }
-        written.append(True)
         return True
 
     registry._mutate(change, timeout=2)
-    return bool(written)
+    return refusal[0] if refusal else None
 
 
 def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:

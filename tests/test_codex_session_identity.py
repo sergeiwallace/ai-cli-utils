@@ -65,39 +65,61 @@ def _ancestry(monkeypatch, ancestors: list) -> None:
     monkeypatch.setattr(psutil.Process, "parents", lambda self: ancestors if self.pid == me else _real_parents(self))
 
 
-@pytest.fixture
-def codex_session(tmp_path, monkeypatch):
-    """A registered, running `ai cx -R` session whose supervisor and agent are real processes."""
+def _start_session(tmp_path, monkeypatch, name: str, agent_argv: list[str]):
+    """Register and run NAME with a real supervisor whose child is the agent process.
+
+    The agent child carries AGENT_ARGV in its command line, as a launched Codex does
+    (``codex --no-daemon`` or a default ``codex``), because the engine binding is read
+    from the process's own command line.
+    """
     _ancestry(monkeypatch, [])
     # The supervisor starts the agent, as the session script does: exit-session refuses an
     # agent that does not descend from the recorded supervisor.
     supervisor = spawn_owned_python(
         "import subprocess, sys, time\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)', *{agent_argv!r}])\n"
         "print(child.pid, flush=True)\n"
         "time.sleep(120)\n",
         stdout=subprocess.PIPE,
         text=True,
     )
     agent = psutil.Process(int(supervisor.stdout.readline()))
+    generation = _register("cx", name, tmp_path)
+    state.mark_running(name, generation=generation)
+
+    def bind(doc):
+        row = next(r for r in doc["sessions"] if r["name"] == name)
+        row["supervisor_identity"] = {
+            "pid": supervisor.pid,
+            "started_at": psutil.Process(supervisor.pid).create_time(),
+            "generation": generation,
+        }
+        return True
+
+    registry._mutate(bind)
+    with pytest.raises(SystemExit) as exc_info:
+        _handle_internal(["record-agent-identity", name, str(agent.pid), generation])
+    assert exc_info.value.code == 0
+    return generation, supervisor, agent
+
+
+@pytest.fixture
+def codex_session(tmp_path, monkeypatch):
+    """A registered, running `ai cx -R` session whose Codex runs its own engine (--no-daemon)."""
+    name = f"cx-r-{CANONICAL}"
+    generation, supervisor, agent = _start_session(tmp_path, monkeypatch, name, ["codex", "--no-daemon"])
     try:
-        name = f"cx-r-{CANONICAL}"
-        generation = _register("cx", name, tmp_path)
-        state.mark_running(name, generation=generation)
+        yield name, generation, supervisor, agent
+    finally:
+        reap_tree(supervisor)
 
-        def bind(doc):
-            row = next(r for r in doc["sessions"] if r["name"] == name)
-            row["supervisor_identity"] = {
-                "pid": supervisor.pid,
-                "started_at": psutil.Process(supervisor.pid).create_time(),
-                "generation": generation,
-            }
-            return True
 
-        registry._mutate(bind)
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_internal(["record-agent-identity", name, str(agent.pid), generation])
-        assert exc_info.value.code == 0
+@pytest.fixture
+def shared_daemon_session(tmp_path, monkeypatch):
+    """The same session on a default Codex, whose engine is the host's shared app-server daemon."""
+    name = f"cx-r-{CANONICAL}"
+    generation, supervisor, agent = _start_session(tmp_path, monkeypatch, name, ["codex"])
+    try:
         yield name, generation, supervisor, agent
     finally:
         reap_tree(supervisor)
@@ -126,6 +148,7 @@ def test_given_running_codex_agent_when_its_identity_is_recorded_then_row_holds_
     assert identity["pid"] == agent.pid
     assert identity["started_at"] == psutil.Process(agent.pid).create_time()
     assert identity["interactive"] is True
+    assert identity["engine_binding"] == "exclusive"
     assert identity["generation"] == generation
     assert identity["boot_id"] == registry.current_boot_id()
     probe = probe_for()
@@ -225,7 +248,7 @@ def test_given_codex_session_when_the_agent_starts_then_its_task_list_id_is_the_
 
 
 @posix_only
-def test_given_agent_started_by_the_session_script_when_running_then_its_own_pid_is_recorded(tmp_path):
+def test_given_agent_started_twice_by_the_session_script_when_running_then_each_start_records_its_own_pid(tmp_path):
     script = get_engine_script(
         engine="cx", ai_name=CANONICAL, session=f"cx-{CANONICAL}", prefix="cx-myproject-", project_prefix="myproject"
     )
@@ -244,7 +267,9 @@ _reset_agent_terminal() {{ :; }}
 _ai_emit() {{ :; }}
 ai() {{ printf 'AI %s\\n' "$*" >> {log}; }}
 {script[start:end]}
-run_agent sh -c 'echo $$ > {tmp_path}/agent.pid'
+export AI_CLI_RUN_GENERATION=generation-2
+run_agent sh -c 'echo $$ > {tmp_path}/agent-1.pid'
+run_agent sh -c 'echo $$ > {tmp_path}/agent-2.pid'
 wait
 """,
         encoding="utf-8",
@@ -252,8 +277,12 @@ wait
     done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
 
     assert done.returncode == 0, done.stderr
-    agent_pid = (tmp_path / "agent.pid").read_text().strip()
-    assert f"AI internal record-agent-identity cx-{CANONICAL} {agent_pid} " in log.read_text() + " "
+    # Every start (a fresh codex, or `codex resume <id>` on a relaunch) is a new process,
+    # recorded under the generation of the supervisor that started it.
+    pids = [(tmp_path / f"agent-{n}.pid").read_text().strip() for n in (1, 2)]
+    recorded = sorted(line for line in log.read_text().splitlines() if "record-agent-identity" in line)
+    assert pids[0] != pids[1]
+    assert recorded == sorted(f"AI internal record-agent-identity cx-{CANONICAL} {pid} generation-2" for pid in pids)
 
 
 # --- bare launches --------------------------------------------------------------------
@@ -312,7 +341,7 @@ def test_given_bare_exec_launch_of_ai_cx_when_it_hands_off_then_the_row_records_
 
 
 def test_given_agent_attested_by_one_session_when_another_session_claims_the_same_process_then_it_is_refused(
-    codex_session, tmp_path
+    codex_session, tmp_path, capsys
 ):
     name, _generation, _supervisor, agent = codex_session
     other = "cx-r-myproject-box-session-2"
@@ -324,6 +353,9 @@ def test_given_agent_attested_by_one_session_when_another_session_claims_the_sam
         _handle_internal(["record-agent-identity", other, str(agent.pid), other_generation])
 
     assert exc_info.value.code == 1
+    assert f"agent identity not recorded: pid {agent.pid} is already attested by live session {name}" in (
+        capsys.readouterr().err
+    )
     assert "agent_identity" not in _row(other)
     assert _row(name)["agent_identity"] == before
 
@@ -341,3 +373,34 @@ def test_given_session_relaunched_when_it_gets_a_new_generation_then_the_old_att
     assert _row(name)["agent_identity"]["generation"] == old_generation
     assert result.exit_code != 0
     assert "cannot verify current session" in result.output
+
+
+# --- a Codex on the shared app-server daemon ------------------------------------------
+
+
+def test_given_default_codex_on_the_shared_daemon_when_recorded_then_its_binding_is_shared_daemon(
+    shared_daemon_session,
+):
+    name, _generation, _supervisor, agent = shared_daemon_session
+
+    identity = _row(name)["agent_identity"]
+
+    assert identity["pid"] == agent.pid
+    assert identity["engine_binding"] == "shared-daemon"
+
+
+def test_given_shared_daemon_session_when_exit_session_runs_inside_without_name_then_it_refuses_and_asks_for_it(
+    shared_daemon_session, monkeypatch
+):
+    _name, _generation, supervisor, agent = shared_daemon_session
+    monkeypatch.setenv("AI_SESSION_NAME", CANONICAL)
+    _ancestry(monkeypatch, [psutil.Process(agent.pid)])
+    before = registry.registry_path().read_bytes()
+
+    result = CliRunner().invoke(cli, ["exit-session"])
+
+    assert result.exit_code != 0
+    assert "shared app-server daemon" in result.output
+    assert f"ai exit-session {CANONICAL}" in result.output
+    assert registry.registry_path().read_bytes() == before
+    assert supervisor.poll() is None
