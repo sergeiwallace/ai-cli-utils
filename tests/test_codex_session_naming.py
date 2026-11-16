@@ -159,7 +159,7 @@ def fake_codex_tmux(monkeypatch, codex_home):
     return state
 
 
-def _name(capsys, *extra: str) -> tuple[int, str]:
+def _name(capsys, *extra: str) -> tuple[object, str]:
     with patch("ai_cli.config.load_config", return_value={}), pytest.raises(SystemExit) as exc_info:
         _handle_internal(["name-codex-session", "cx-myproject-1", NAME, *extra])
     return exc_info.value.code, capsys.readouterr().err

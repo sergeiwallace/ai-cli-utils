@@ -83,6 +83,7 @@ def _start_session(tmp_path, monkeypatch, name: str, agent_argv: list[str]):
         stdout=subprocess.PIPE,
         text=True,
     )
+    assert supervisor.stdout is not None
     agent = psutil.Process(int(supervisor.stdout.readline()))
     generation = _register("cx", name, tmp_path)
     state.mark_running(name, generation=generation)
@@ -152,7 +153,9 @@ def test_given_running_codex_agent_when_its_identity_is_recorded_then_row_holds_
     assert identity["generation"] == generation
     assert identity["boot_id"] == registry.current_boot_id()
     probe = probe_for()
-    assert identity["proc_start_backend"] == probe.capture_identity(agent.pid).backend
+    captured = probe.capture_identity(agent.pid)
+    assert captured is not None
+    assert identity["proc_start_backend"] == captured.backend
     assert probe.start_time_match(agent.pid, identity["proc_start"]) is StartTimeMatch.MATCH
 
 
