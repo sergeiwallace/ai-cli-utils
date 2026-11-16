@@ -2239,6 +2239,11 @@ def _handle_internal(argv: list[str]) -> None:
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)
+    elif action == "codex-exclusive-flags":
+        flags = _codex_session.exclusive_process_flags()
+        if flags:
+            _out.raw(Untagged.INTERNAL_REPLY, " ".join(flags))
+        sys.exit(0)
     elif action == "resolve-codex-session":
         if len(argv) != 2:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-codex-session <ai_name>", err=True)

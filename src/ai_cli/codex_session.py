@@ -38,24 +38,55 @@ SUBMIT_SETTLE_SECONDS = 0.5
 #: The bare pty path has no screen to read, so it waits this long before typing.
 FIFO_START_SECONDS = 5.0
 _TMUX_TIMEOUT_SECONDS = 5.0
+_HELP_TIMEOUT_SECONDS = 10.0
 
 
-def exclusive_process_flags(codex: str = "codex") -> list[str]:
+def exclusive_process_flags(codex: str = "codex", cache_dir: Path | None = None) -> list[str]:
     """``["--no-daemon"]`` when the installed Codex offers it, else nothing.
 
     By default Codex 0.169 starts one shared app-server daemon that every TUI on the host
     connects to, so tool processes would descend from that shared server rather than from
     the session's own Codex. ``--no-daemon`` keeps each session in its own process. An
-    older Codex without the option would refuse it, so it is passed only when listed.
+    older Codex without the option would refuse it, so it is passed only when ``codex
+    --help`` lists it. The answer is cached per binary (resolved path, size, mtime), so the
+    help runs once per Codex install, and the probe is bounded so a Codex that does not
+    answer ``--help`` cannot stall a launch.
     """
     path = shutil.which(codex)
     if path is None:
         return []
+    resolved = Path(path).resolve()
     try:
-        shown = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=10, check=False)
+        stat = resolved.stat()
+    except OSError:
+        return []
+    key = f"{resolved}\t{stat.st_size}\t{stat.st_mtime_ns}"
+    cache = (cache_dir or _flags_cache_dir()) / "codex-exclusive-flags"
+    try:
+        cached_key, _, cached_flags = cache.read_text(encoding="utf-8").partition("\n")
+        if cached_key == key:
+            return cached_flags.split()
+    except OSError:
+        pass
+    try:
+        shown = subprocess.run(
+            [path, "--help"], capture_output=True, text=True, timeout=_HELP_TIMEOUT_SECONDS, check=False
+        )
     except (OSError, subprocess.TimeoutExpired):
         return []
-    return ["--no-daemon"] if "--no-daemon" in shown.stdout else []
+    flags = ["--no-daemon"] if "--no-daemon" in shown.stdout else []
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(f"{key}\n{' '.join(flags)}", encoding="utf-8")
+    except OSError:
+        pass
+    return flags
+
+
+def _flags_cache_dir() -> Path:
+    from .config import get_xdg_state_home
+
+    return get_xdg_state_home()
 
 
 def codex_home() -> Path:

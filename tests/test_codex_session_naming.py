@@ -448,7 +448,8 @@ wait
 
     assert done.returncode == 0, done.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert calls == [f"RUN codex resume {THREAD}"]
+    assert [call for call in calls if call.startswith("RUN")] == [f"RUN codex resume {THREAD}"]
+    assert not any("name-codex-session" in call for call in calls)
 
 
 # --- its own Codex process ------------------------------------------------------------
@@ -510,9 +511,12 @@ tmux_session=cx-{NAME}
 first_run=true
 prompt_file={tmp_path}/no-prompt
 _ai_launch_log=""
-codex() {{ echo '      --no-daemon'; }}
 run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
-ai() {{ if [[ "$1 $2" == "internal resolve-codex-session" && -n "{thread}" ]]; then echo "{thread}"; fi; return 0; }}
+ai() {{
+  if [[ "$1 $2" == "internal codex-exclusive-flags" ]]; then echo "--no-daemon"; fi
+  if [[ "$1 $2" == "internal resolve-codex-session" && -n "{thread}" ]]; then echo "{thread}"; fi
+  return 0
+}}
 {script[start:end]}
 wait
 """,
@@ -524,3 +528,35 @@ wait
 
     assert calls[""] == ["RUN codex --no-daemon"]
     assert calls[THREAD] == [f"RUN codex resume --no-daemon {THREAD}"]
+
+
+@posix_only
+def test_given_codex_that_never_answers_help_when_probing_then_launch_goes_on_without_the_flag(tmp_path, monkeypatch):
+    from ai_cli import codex_session
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex").write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(codex_session, "_HELP_TIMEOUT_SECONDS", 0.5)
+
+    assert codex_session.exclusive_process_flags(cache_dir=tmp_path / "cache") == []
+
+
+@posix_only
+def test_given_same_codex_install_when_probed_twice_then_its_help_runs_once(tmp_path, monkeypatch):
+    from ai_cli import codex_session
+
+    runs = tmp_path / "runs"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex").write_text(f"#!/bin/sh\necho run >> {runs}\necho '      --no-daemon'\n", encoding="utf-8")
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    first = codex_session.exclusive_process_flags(cache_dir=tmp_path / "cache")
+    second = codex_session.exclusive_process_flags(cache_dir=tmp_path / "cache")
+
+    assert first == second == ["--no-daemon"]
+    assert runs.read_text().splitlines() == ["run"]

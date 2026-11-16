@@ -70,6 +70,8 @@ def pane_session(request, tmp_path, monkeypatch):
     agent = (
         f"#!{sys.executable}\n"
         "import os, signal, sys, time, tty\nfrom pathlib import Path\n"
+        # The launcher reads `codex --help` once to find --no-daemon, as the real CLI answers it.
+        "if sys.argv[1:] == ['--help']: print('      --no-daemon'); sys.exit(0)\n"
         "import json\nfrom ai_cli.process_probe import probe_for\n"
         "records = Path.home() / '.claude' / 'sessions'\nrecords.mkdir(parents=True, exist_ok=True)\n"
         "pid = os.getpid()\n"

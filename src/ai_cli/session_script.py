@@ -1660,7 +1660,7 @@ with open(path, 'w') as f:
         local _cx_thread _cx_own=()
         # Its own Codex process, not the host's shared app-server daemon, when this Codex
         # offers --no-daemon, so tool processes descend from the attested agent.
-        if codex --help 2>/dev/null | grep -q -- '--no-daemon'; then _cx_own=(--no-daemon); fi
+        if [[ "$(ai internal codex-exclusive-flags 2>/dev/null)" == "--no-daemon" ]]; then _cx_own=(--no-daemon); fi
         _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
         if [[ -n "$_cx_thread" ]]; then
           run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
