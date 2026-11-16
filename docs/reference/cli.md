@@ -211,6 +211,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -300,6 +301,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -497,6 +499,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -536,6 +539,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -641,6 +645,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -1006,6 +1011,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |

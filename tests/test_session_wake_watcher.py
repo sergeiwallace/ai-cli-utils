@@ -119,7 +119,7 @@ def launch(tmp_path, monkeypatch):
             patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
             patch("ai_cli.iterm2._rename_tmux_window", side_effect=lambda *args: state.renames.append(args)),
         ):
-            if options.get("detached"):
+            if options.get("detached") or options.get("attach") is False:
                 # A detached launch returns once its session exists; it never exits.
                 main._do_session_launch(**options)
             else:

@@ -3692,18 +3692,55 @@ def _tmux_session_has_live_pane(session_name: str) -> bool:
     return result.returncode == 0 and "0" in (result.stdout or "").split()
 
 
-def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None:
-    """Report success only after tmux confirms a live pane, without attaching."""
+def _report_detached_launch(session_name: str, reporter: LaunchReporter, split: bool = False) -> None:
+    """Report success only after tmux confirms a live pane; with ``split``, attach it in an iTerm2 split."""
     if not _tmux_session_has_live_pane(session_name):
         reporter.error("tmux", f"session '{session_name}' has no live pane after launch")
         sys.exit(1)
     reporter.phase("session").outcome(f"{session_name} running detached")
+    if split:
+        _split_attach(session_name, reporter)
+
+
+def _caller_terminal_tty() -> str:
+    """The tty of the terminal pane this launch was typed in, or "".
+
+    Inside tmux the process's own tty is a tmux pane, so the tmux client's tty (the
+    terminal pane showing it) is the one the terminal knows.
+    """
+    if os.environ.get("TMUX"):
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{client_tty}"], capture_output=True, text=True, check=False
+        )
+        return (result.stdout or "").strip() if result.returncode == 0 else ""
+    return _iterm2._current_pane_tty()
+
+
+def _split_attach(session_name: str, reporter: LaunchReporter) -> None:
+    """Attach ``session_name`` in a vertical iTerm2 split of the launching pane, keeping its focus.
+
+    Every failure only warns: the session is already running detached and stays so.
+    """
+    attach_hint = f"attach with `ai attach {session_name}`"
+    # iTerm2 exists only on macOS; anywhere else the split is reported, never attempted.
+    if sys.platform != "darwin" or not _iterm2._is_iterm2():
+        reporter.warning("terminal", f"split needs iTerm2 on macOS; the session was started detached: {attach_hint}")
+        return
+    tmux = shlex.quote(shutil.which("tmux") or "tmux")
+    failure = _iterm2.split_attach_by_tty(_caller_terminal_tty(), f"{tmux} attach-session -t ={session_name}")
+    if failure:
+        reporter.warning(
+            "terminal", f"iTerm2 split failed ({failure}); the session keeps running detached: {attach_hint}"
+        )
+        return
+    reporter.phase("session").outcome(f"{session_name} attached in an iTerm2 split pane")
 
 
 #: The launch override for a partial migration. Per invocation only: never read from
 #: config or the environment, and never written into a boot recipe.
 ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
 PROBE_OPTS = ("-t", "--probe")
+SPLIT_OPTS = ("-A", "--split")
 
 
 class PartialMigrationRefusal(SystemExit):
@@ -4742,6 +4779,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    split: bool = False,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -5640,7 +5678,7 @@ def _do_session_launch(
         reporter.handoff(engine=_engine_display_name(engine), session=session)
         _resume_suspended_panes(session)
         if not attach:
-            _report_detached_launch(session, reporter)
+            _report_detached_launch(session, reporter, split=split)
             return
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
@@ -6128,7 +6166,7 @@ def _do_session_launch(
             sys.exit(1)
         _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
@@ -6243,7 +6281,7 @@ def _do_session_launch(
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
@@ -6372,7 +6410,7 @@ def _do_session_launch(
         if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
@@ -6413,6 +6451,7 @@ def _session_command(engine: str):
         naming=None,
         allow_partial_migration=False,
         probe=False,
+        split=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -6492,10 +6531,12 @@ def _session_command(engine: str):
                 launch_log_path=str(launch_log.path) if launch_log.path is not None else None,
                 dry_run=dry_run,
                 remote_args=list(remote_args),
-                attach=sys.stdin.isatty(),
+                # A split attaches in a new pane, so this one launches detached.
+                attach=sys.stdin.isatty() and not split,
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                split=split,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -6891,6 +6932,15 @@ def _session_options(func):
     func = click.option("-S", "--session-names", is_flag=True, help="Use a first name for this launch")(func)
     func = click.option("-I", "--no-session-names", is_flag=True, help="Use an index for this launch")(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
+    func = click.option(
+        *SPLIT_OPTS,
+        "split",
+        is_flag=True,
+        help=(
+            "Start the session detached and attach it in a vertical iTerm2 split of this pane, "
+            "keeping the focus here (macOS iTerm2; elsewhere the session is only started detached)"
+        ),
+    )(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
         "-p",
@@ -7133,6 +7183,9 @@ def _prepare_chief_launch(
                 sys.exit(0)
             if not registered:
                 register(agent, target)
+            if options.get("split"):
+                _split_attach(target, _launch_reporter.active())
+                sys.exit(0)
             _out.emit(
                 Tag.COS, "attach", f"attaching to the running chief-of-staff {agent} (tmux session {target})", err=True
             )
@@ -7292,6 +7345,13 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         raise click.UsageError(
             f"NAME {name!r} contains whitespace, and no session name does. If it holds options, "
             f"pass each as its own argument: `ai {engine} {' '.join(name.split())}`"
+        )
+    if options.get("split") and (options.get("remote") or options.get("bare")):
+        # A remote launch attaches through its ssh/mosh connection in this pane, with no
+        # detached local session to split to, and a bare launch has no tmux session at all.
+        conflict = "-R/--remote" if options.get("remote") else "-b/--bare"
+        raise click.UsageError(
+            f"{SPLIT_OPTS[1]} attaches a local tmux session in an iTerm2 split and cannot be combined with {conflict}"
         )
     chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")

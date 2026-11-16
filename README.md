@@ -316,6 +316,7 @@ ai agy <name>          # Start an Antigravity (agy) session on its Google sign-i
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
 ai c -t [NAME]         # Throwaway probe or test session: no name, no canonical worktree, no boot relaunch
 ai c -b/--bare         # Run bare (no tmux wrapper)
+ai c -A/--split        # Start detached and attach in an iTerm2 split of this pane, keeping focus (macOS)
 ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
