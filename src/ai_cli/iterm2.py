@@ -443,6 +443,8 @@ def _iterm2_session_type(engine: str) -> str:
         if engine == "p"
         else "codex"
         if engine == "cx"
+        else "agy"
+        if engine == "agy"
         else "shell"
     )
 

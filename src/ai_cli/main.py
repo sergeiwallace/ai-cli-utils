@@ -24,6 +24,7 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import agy_session as _agy_session
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
 from . import codex_session as _codex_session
@@ -1080,6 +1081,10 @@ def _bare_engine_command(
         # launch -- omitting it makes pi fail (near-)silently on every attempt.
         return ["pi", "--continue", "--provider", pi_provider, "--name", ai_name, *extra_args]
 
+    if engine == "agy":
+        # A fresh interactive session each launch: agy's resume flags are not used here.
+        return _agy_session.launch_command(extra_args)
+
     if engine == "cx":
         # Codex has no launch-time name option: resume the thread this session's name
         # already carries, by id (Codex's own by-name lookup skips a thread with no turn).
@@ -1142,7 +1147,7 @@ def _is_root() -> bool:
 
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
-    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex", "agy": "Antigravity"}[engine]
 
 
 def _find_aicli_project_path(config: dict) -> "Path | None":
@@ -3334,7 +3339,7 @@ def _do_ls(show_all: bool) -> None:
         """Extract project prefix from a provider session name."""
         parts = name.split("-")
         # Format: {c|g|p|cx}[-r]-{project}-{index}
-        if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx"):
+        if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx", "agy"):
             start = 2 if parts[1] == "r" else 1
             # project is everything between start and last segment
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
@@ -3914,7 +3919,7 @@ def _migration_target_is_occupied(repo_root: Path, name: str) -> bool:
 
 
 def _session_migrate_variants(name: str) -> set[str]:
-    return {f"{engine}{remote}-{name}" for engine in ("c", "g", "p", "cx") for remote in ("", "-r")}
+    return {f"{engine}{remote}-{name}" for engine in ("c", "g", "p", "cx", "agy") for remote in ("", "-r")}
 
 
 def _manual_migration(old: str, new: str, repo_root: Path) -> str:
@@ -5088,6 +5093,16 @@ def _do_session_launch(
     if engine == "cx" and not shutil.which("codex"):
         reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
+    if engine == "agy" and not remote:
+        # A remote launch is checked by `ai agy` on the machine that runs it.
+        if not shutil.which("agy"):
+            reporter.error("request", "agy executable not found on PATH. Install Antigravity, then retry.")
+            sys.exit(1)
+        refusal = _agy_session.subscription_refusal()
+        if refusal:
+            reporter.error("request", refusal)
+            sys.exit(1)
+        _agy_session.strip_api_keys(os.environ)
 
     if not name and extra_args:
         name = extra_args[0]
@@ -5951,7 +5966,7 @@ def _do_session_launch(
         # agent, and the task-list namespace for Claude Code and Codex, so the CC task
         # panel survives process restarts and a Codex session resolves its caller.
         os.environ["AI_SESSION_NAME"] = ai_name
-        if engine in ("c", "cx"):
+        if engine in ("c", "cx", "agy"):
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
         try:
             command = _bare_engine_command(
@@ -6070,7 +6085,7 @@ def _do_session_launch(
             if engine == "cx":
                 _name_new_codex_session(command, ai_name, reporter, tmux_target=session_id, fifo=None)
         _identity_flags = ["-e", f"AI_SESSION_NAME={ai_name}"]
-        if engine in ("c", "cx"):
+        if engine in ("c", "cx", "agy"):
             _identity_flags += ["-e", f"CLAUDE_CODE_TASK_LIST_ID={ai_name}"]
         once_argv = [
             "tmux",
@@ -7389,6 +7404,13 @@ def cmd_cx(ctx, **options):
     # through eight places, and missing one is silent -- click accepts the
     # option, the wrapper drops it.
     _dispatch_session("cx", ctx, options)
+
+
+@_cli_group.command("agy", context_settings=SESSION_CONTEXT, help="Launch an Antigravity (agy) session")
+@_session_options
+def cmd_agy(ctx, **options):
+    # Pure delegation, as for the other engines.
+    _dispatch_session("agy", ctx, options)
 
 
 @_cli_group.command(

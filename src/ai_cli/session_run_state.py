@@ -58,7 +58,7 @@ def cause(record: dict, boot_id: str | None = None) -> str:
 
 
 BOOT_RECIPE_REFUSAL = "unsupported or incomplete boot recipe"
-_ENGINES = ("c", "g", "p", "cx")
+_ENGINES = ("c", "g", "p", "cx", "agy")
 
 
 def _string_list(value: object) -> bool:
@@ -220,7 +220,7 @@ def _find(doc: dict, name: str) -> dict:
 
 
 #: The agent family a launcher engine starts, as recorded in a row's ``family`` field.
-FAMILIES = {"c": "claude", "cx": "codex", "g": "gemini", "p": "pi"}
+FAMILIES = {"c": "claude", "cx": "codex", "g": "gemini", "p": "pi", "agy": "antigravity"}
 _ENGINE_PREFIX = re.compile(r"^(cx|c|g|p)(?:-r)?-")
 
 

@@ -186,6 +186,7 @@ after changing a command's help, never edit it by hand.
 |---|---|
 | [`ai add-name`](docs/reference/cli.md#ai-add-name) | Session names: add a name to the name database without a prompt |
 | [`ai adopt-session`](docs/reference/cli.md#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai agy`](docs/reference/cli.md#ai-agy) | Launch an Antigravity (agy) session |
 | [`ai attach`](docs/reference/cli.md#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](docs/reference/cli.md#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](docs/reference/cli.md#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -311,6 +312,7 @@ ai c <name>            # Start/resume Claude Code session
 ai g <name>            # Start/resume Gemini CLI session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
+ai agy <name>          # Start an Antigravity (agy) session on its Google sign-in
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
 ai c -t [NAME]         # Throwaway probe or test session: no name, no canonical worktree, no boot relaunch
 ai c -b/--bare         # Run bare (no tmux wrapper)

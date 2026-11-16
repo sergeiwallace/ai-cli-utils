@@ -1,0 +1,1 @@
+`ai agy <name>` launches an interactive Antigravity (`agy`) session in a named tmux session, like `ai cx`. It runs only on the Google sign-in: the launch refuses when the sign-in is missing or agy is set to an API provider, and the agent starts with the Gemini and Google API-key variables removed from its environment.

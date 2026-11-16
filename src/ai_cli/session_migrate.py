@@ -132,7 +132,7 @@ from .session_migrate_progress import Progress, timed
 from .venv_relocate import relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
-ENGINES = ("c", "g", "p", "cx")
+ENGINES = ("c", "g", "p", "cx", "agy")
 
 #: A session name: lowercase hyphen-separated segments ending in ``-<N>``.
 _NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*-\d+")

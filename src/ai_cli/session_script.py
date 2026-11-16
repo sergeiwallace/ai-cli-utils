@@ -229,7 +229,7 @@ def get_engine_script(
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
-    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
+    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX", "agy": "AGY"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
@@ -1410,6 +1410,7 @@ def get_engine_script(
     # task-list id per-session tools read, so it resolves as a Claude Code session does.
     export AI_SESSION_NAME="$ai_name"
     if [[ "$engine" == "cx" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name"; fi
+    if [[ "$engine" == "agy" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name" ITERM2_SESSION_TYPE="agy"; fi
     # END AGENT NAMING
 
     # Only the persistent supervisor owns final cleanup.  A child may be replaced
@@ -1650,6 +1651,12 @@ with open(path, 'w') as f:
     # END PINNED RESTART
 
     # BEGIN AGENT NAMING codex-launch
+      # Antigravity (agy): an interactive session on the Google sign-in. The API-key
+      # variables are removed from its environment so it can never bill an API key;
+      # the launcher refused the launch earlier if the sign-in was missing.
+      _ai_run_agy() {{
+        run_agent env -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GENAI_USE_VERTEXAI agy "$@"
+      }}
       # Codex: resume the thread that carries this session's name, by id, because
       # Codex's own by-name lookup skips a thread that has had no turn. With none,
       # start Codex and type `/rename $ai_name` into it once; a waiting resume prompt
@@ -1716,7 +1723,8 @@ with open(path, 'w') as f:
     # END AGENT NAMING
         else
     # BEGIN AGENT NAMING codex-prompted
-          if [[ "$engine" == "cx" ]]; then _ai_run_codex "$resume_msg"; else
+          if [[ "$engine" == "agy" ]]; then (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) & _ai_run_agy
+          elif [[ "$engine" == "cx" ]]; then _ai_run_codex "$resume_msg"; else
     # END AGENT NAMING
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent codex
@@ -1756,7 +1764,8 @@ with open(path, 'w') as f:
     # END AGENT NAMING
         else
     # BEGIN AGENT NAMING codex
-          if [[ "$engine" == "cx" ]]; then _ai_run_codex; else
+          if [[ "$engine" == "agy" ]]; then _ai_run_agy
+          elif [[ "$engine" == "cx" ]]; then _ai_run_codex; else
     # END AGENT NAMING
           if $first_run; then run_agent codex
           else run_agent codex resume --last
