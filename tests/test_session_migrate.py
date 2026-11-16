@@ -904,16 +904,17 @@ def test_given_the_old_slot_is_still_registered_when_finished_then_it_is_refused
     assert _everything(slot) == before
 
 
-def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slot):
+def test_given_the_new_session_runs_in_tmux_when_finished_then_its_leftovers_are_carried(slot):
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     left = _leftovers(slot)
 
-    code, _out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
+    code, out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
 
-    assert code == 2
-    assert f"hosts {NEW}" in err
-    assert left["slot_lock"].exists()
+    # None of these leftovers is a file the running NEW holds open, so nothing is deferred.
+    assert code == 0, out + err
+    assert f"hosts {NEW}" in out
+    assert not left["slot_lock"].exists()
 
 
 # A stand-in for ``bd``: it serves each store's issues from one JSON file and logs every call,
@@ -1315,8 +1316,6 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
             {"pid": os.getpid(), "name": NEW, "cwd": str(stores["repo"] / ".worktrees" / NEW), "sessionId": UUID}
         )
     )
-    code, out, err = _finish(stores["repo"], "-y")
-    assert code == 2 and "still running" in err, out + err
 
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
         code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])

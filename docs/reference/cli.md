@@ -874,7 +874,7 @@ Arguments:
 | `-r` | `--repo` | `DIRECTORY` | Repo root that owns .worktrees/ (default: detected from the current directory) |
 | `-n` | `--dry-run` |  | Print every planned move without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt |
-| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it |
+| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every step except those writing NEW's open transcript and task files, which it defers and names; a running OLD refuses it |
 | `-b` | `--beads-only` |  | Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running |
 | `-t` | `--to-name` | `TEXT` | Reserve a first name (this one, or the shortest free one) and migrate OLD to it |
 | `-s` | `--status` |  | List each recorded migration not verified finished as complete or partial, read-only |
