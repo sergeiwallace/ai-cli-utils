@@ -346,6 +346,10 @@ def _claim_race(fleet, name: str, slots: tuple[reg.Slot, reg.Slot], registries) 
     return outcomes
 
 
+# Twenty trials, each two concurrent writes plus a read-back: on a loaded host or a Windows
+# runner the whole case outlasts the 900 s Dolt bound while every trial still finishes
+# inside its own 120 s join, so it gets a bound sized to its trial count.
+@pytest.mark.timeout(1800)
 def test_given_two_hosts_claiming_one_free_name_together_when_repeated_twenty_times_then_each_trial_has_one_winner(
     tmp_path, monkeypatch
 ):
