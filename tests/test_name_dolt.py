@@ -865,15 +865,15 @@ def test_given_a_clone_timeout_setting_when_cloning_then_only_the_clone_uses_it(
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_clone_timeout_seconds = 41\nregistry_fetch_timeout_seconds = 31\n",
+        "[session_names]\nregistry_clone_timeout_seconds = 601\nregistry_fetch_timeout_seconds = 302\n",
     )
     fresh = fleet.other_machine("configured-clone")
     calls = _dolt_calls(monkeypatch)
 
     reg.reserve_picked(fresh, _slot(), words=frozenset())
 
-    assert {timeout for command, _env, timeout in calls if command[1] == "clone"} == {41}
-    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {31}
+    assert {timeout for command, _env, timeout in calls if command[1] == "clone"} == {601}
+    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {302}
 
 
 def test_given_an_invalid_clone_timeout_setting_when_cloning_then_it_refuses_naming_the_setting(fleet, monkeypatch):
