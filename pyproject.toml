@@ -131,6 +131,13 @@ tmp_path_retention_policy = "failed"
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-n auto -p pytest_memory_guard"
+# A default bound for every test, so one stuck test fails with every thread's stack instead of
+# holding a whole run for hours (a bare-pty test once held one for 3h19m). The slowest real test
+# measured 49 s at about 2.5 load per core (the migrate store-hang case, which waits out a hang on
+# purpose); 300 s leaves room for a much heavier host. A test that needs longer raises it with
+# `@pytest.mark.timeout(N)`. The thread method, because the signal one does not exist on Windows.
+timeout = 300
+timeout_method = "thread"
 markers = [
     "registry_backends(*names): collect a registry_backend-parametrized test only for these backends",
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",

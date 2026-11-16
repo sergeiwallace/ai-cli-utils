@@ -13,6 +13,7 @@ its ``execvp`` (the no-pty-API test pins that path on every platform).
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import shutil
@@ -47,9 +48,11 @@ _WAIT = 20.0
 
 _AGENT = textwrap.dedent(
     """\
-    import fcntl, os, signal, struct, sys, termios, tty
+    import fcntl, os, signal, struct, sys, termios, time, tty
 
     out = os.environ["FAKE_AGENT_DIR"]
+    # A slow start, as a loaded host gives one: the agent records nothing until it is over.
+    time.sleep(float(os.environ.get("FAKE_AGENT_START_DELAY", "0")))
 
     def size():
         rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\\0" * 8))
@@ -172,8 +175,11 @@ def agent(tmp_path, monkeypatch):
     return record
 
 
-def _stub_only_popen(stub_root: Path):
-    """Let the launcher spawn the test's stand-in agent and nothing else protected."""
+def _stub_only_popen(stub_root: Path, spawned: list[subprocess.Popen] | None = None):
+    """Let the launcher spawn the test's stand-in agent and nothing else protected.
+
+    Each stand-in agent spawned is appended to ``spawned``: the exact processes this test owns.
+    """
 
     def popen(args, *rest, **kwargs):
         program = kwargs.get("executable") or args[0]
@@ -182,7 +188,10 @@ def _stub_only_popen(stub_root: Path):
             assert resolved and Path(resolved).resolve().is_relative_to(stub_root.resolve()), (
                 f"the launcher tried to spawn a real {program!r}"
             )
-        return _REAL_POPEN(args, *rest, **kwargs)
+        proc = _REAL_POPEN(args, *rest, **kwargs)
+        if Path(program).name == "claude" and spawned is not None:
+            spawned.append(proc)
+        return proc
 
     return popen
 
@@ -212,12 +221,14 @@ def _launch_patches(stack: ExitStack, config: dict, argv: list[str], stream) -> 
         stack.enter_context(patch(target, **kwargs))
 
 
-def _launch(terminal: OperatorTerminal, tmp_path: Path, config: dict) -> int:
+def _launch(
+    terminal: OperatorTerminal, tmp_path: Path, config: dict, spawned: list[subprocess.Popen] | None = None
+) -> int:
     """Run ``ai c -b`` through ``cli()`` with the operator's terminal on *terminal*; return the exit code."""
     with ExitStack() as stack:
         _launch_patches(stack, config, ["ai", "c", "-b", "-W", "1"], terminal.stdout)
         stack.enter_context(patch("sys.stdin", terminal.stdin))
-        stack.enter_context(patch("subprocess.Popen", side_effect=_stub_only_popen(tmp_path / "bin")))
+        stack.enter_context(patch("subprocess.Popen", side_effect=_stub_only_popen(tmp_path / "bin", spawned)))
         with pytest.raises(SystemExit) as exc_info:
             cli()
     assert isinstance(exc_info.value.code, int)
@@ -237,6 +248,8 @@ class _Session:
         self.error: BaseException | None = None
         self._drive = drive
         self._tmp_path = tmp_path
+        #: The stand-in agents this launch spawned, recorded at the spawn itself.
+        self._spawned: list[subprocess.Popen] = []
 
     def ready(self) -> bool:
         return "AGENT READY" in self.terminal.text()
@@ -248,7 +261,22 @@ class _Session:
     def fifo(self) -> Path:
         return Path((self.agent / "env").read_text())
 
+    def _end_agent_until(self, launched: threading.Event) -> None:
+        """Kill the stand-in agent, now or whenever it starts, until the launch has returned.
+
+        A pid the agent records is not enough: under host load its interpreter can still be
+        starting when the drive gives up, so there is no pid yet, and the agent then waits on
+        its terminal for input nobody will type, holding the launch forever.
+        """
+        while not launched.is_set():
+            for proc in list(self._spawned):
+                with contextlib.suppress(OSError):
+                    proc.kill()
+            launched.wait(0.1)
+
     def run(self) -> int:
+        launched = threading.Event()
+
         def drive() -> None:
             try:
                 _wait_for(self.ready, "the agent to start on the pty")
@@ -257,15 +285,14 @@ class _Session:
                 self.error = exc
                 # A broken relay may not deliver "EXIT", so end the agent directly
                 # rather than leave the launch on the main thread waiting forever.
-                pid = self.agent / "pid"
-                if pid.exists():
-                    os.kill(int(pid.read_text()), signal.SIGKILL)
+                self._end_agent_until(launched)
 
         helper = threading.Thread(target=drive, daemon=True)
         helper.start()
         try:
-            code = _launch(self.terminal, self._tmp_path, _BARE)
+            code = _launch(self.terminal, self._tmp_path, _BARE, self._spawned)
         finally:
+            launched.set()
             helper.join(timeout=_WAIT)
         if self.error is not None:
             raise self.error
@@ -284,6 +311,31 @@ def session_factory(tmp_path, agent, repo):
     yield make
     for session in made:
         session.terminal.close()
+
+
+# --- The harness: a drive that fails must still end the launch ---------------
+
+
+@posix_pty
+@pytest.mark.timeout(60)
+def test_given_an_agent_slower_to_start_than_the_drive_waits_when_the_drive_gives_up_then_the_launch_still_ends(
+    session_factory, monkeypatch
+):
+    """A drive that times out before the agent has even recorded its pid must not leave it running.
+
+    Under host load the stand-in agent's interpreter start outlasted the drive's wait for it, so
+    the drive's cleanup found no pid to kill; the agent then started, waited on its terminal for
+    input nobody would type, and held the launch, and the whole suite, for hours.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_WAIT", 1.0)
+    monkeypatch.setenv("FAKE_AGENT_START_DELAY", "3")
+    session = session_factory(lambda s: s.terminal.type(b"EXIT"))
+
+    started = time.monotonic()
+    with pytest.raises(AssertionError, match="the agent to start on the pty"):
+        session.run()
+
+    assert time.monotonic() - started < 30, "the launch must end once its drive has given up"
 
 
 # --- AC-1, AC-2: the submission reaches what the agent reads -------------------

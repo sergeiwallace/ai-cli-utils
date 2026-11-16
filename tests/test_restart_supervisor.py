@@ -36,6 +36,10 @@ _REAL_SOCKET = socket.socket
 # shutdown or a replacement's verification time out before it had a chance to finish.
 # Scaled with host load; each wait still returns as soon as its condition holds.
 _PROCESS_WAIT_SECONDS = process_wait_seconds()
+# The suite's default 300 s bound (pyproject) is for a test that waits on nothing. These tests
+# chain several real-process waits of up to _PROCESS_WAIT_SECONDS each, which reaches 240 s on a
+# loaded runner, so their bound is derived from the same load scale.
+pytestmark = pytest.mark.timeout(300 + 4 * _PROCESS_WAIT_SECONDS)
 
 
 class _ModuleView:
