@@ -9,6 +9,7 @@ session in a leftover slot, or a live OLD, still refuses the writing run.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from unittest.mock import patch
@@ -127,3 +128,19 @@ def test_given_old_is_live_when_a_full_migration_dry_runs_then_it_is_still_refus
 
     assert code == 2
     assert "still running" in err
+
+
+def test_given_no_answer_on_stdin_when_finish_writes_without_yes_then_it_aborts_naming_the_closed_stdin(migrated):
+    """Another program running the finish gets EOF at the prompt: an unanswered prompt reads no and
+    aborts, not a preflight refusal with an empty reason and exit 2."""
+    before = _everything(migrated)
+
+    with patch("sys.stdin", io.StringIO("")):  # a closed stdin: the prompt reads EOF
+        code, out, err = _finish(migrated["repo"], tmux=[f"c-{NEW}"])
+
+    assert code == 1, out + err
+    assert "no answer (stdin is closed), so no" in err
+    assert "Aborted." in err
+    assert "preflight refused" not in out + err
+    assert "migration | failed" not in out + err
+    assert _everything(migrated) == before
