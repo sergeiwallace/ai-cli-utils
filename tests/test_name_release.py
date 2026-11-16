@@ -599,6 +599,9 @@ def test_given_a_row_rewritten_while_it_is_probed_when_reconciled_then_it_is_hel
     _repo(fleet)
     _session(fleet, "cleo")
     other = fleet.other_machine("rewriter")
+    # Its first read clones, which a Windows runner has taken over 40 s to do: make that
+    # clone here, so the probe's window holds only the rewrite itself.
+    other.snapshot()
 
     def rewrite():
         other.transact(
@@ -610,8 +613,9 @@ def test_given_a_row_rewritten_while_it_is_probed_when_reconciled_then_it_is_hel
     client = _HeldProbe(session_clients.ABSENT, during=rewrite)
     client.release.set()
     thread, outcome = _reconcile_in_thread(fleet, client)
-    thread.join(60)
+    thread.join(300)
 
+    assert not thread.is_alive(), "the reconcile did not finish"
     assert "error" not in outcome, outcome
     report = outcome["report"]
     assert "cleo" not in report.released
