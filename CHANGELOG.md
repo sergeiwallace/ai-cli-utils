@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pending `ai migrate-session OLD NEW --finish` no longer waits forever for a NEW session its
+  supervisor keeps restarting. While NEW runs, the finish (by hand, at `ai c NEW` or at a
+  supervisor restart) now does every step except the ones that write NEW's open files: its
+  project directory and transcript titles, its sub-agent and background-job records, and its
+  task namespace. Those read `deferred while live` and the run exits 1. The run records them in
+  a `"deferred_recorded": true` ledger row, so the first launch or restart warns once, naming
+  the parts, `ai sessions stop NEW` and the `--finish` command, and later ones print only a
+  progress line. A pair left with deferred parts only no longer refuses `ai c NEW`, and the
+  finish after NEW stops completes it. A running OLD still refuses the finish with nothing
+  written.
 - After a host reboot, `ai sessions list` no longer shows a session as `running` when its record
   says `running` from an earlier boot but its tmux session and processes are both gone. Before
   the boot pass runs, or with `on_boot` off, such a row now shows STATUS `stale` and CAUSE

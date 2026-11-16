@@ -161,3 +161,4 @@ def test_given_new_stays_live_when_its_supervisor_restarts_it_twice_then_the_def
     assert len(_warnings(first[2])) == 1, first[2]
     assert _warnings(second[2]) == [], second[2]
     assert "still deferred while" in second[2]
+    assert len(_deferred_rows(pending)) == 1, "an unchanged deferral is recorded once"

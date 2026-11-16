@@ -1,8 +1,10 @@
-"""``ai migrate-session --finish -n`` plans a migration whose session is live; a writing run still refuses.
+"""``ai migrate-session --finish`` on a migration whose NEW session is live.
 
 A live NEW session is either a Claude Code process record naming it, or the tmux session
 whose wrapper restarts it. The dry run must print the plan, name the live session and write
-nothing; the writing run must refuse with exit 2 before its first write.
+nothing; the writing run carries every leftover that is not a file of the running session
+(``tests/test_session_migrate_finish_while_live.py`` covers the ones it defers). A live
+session in a leftover slot, or a live OLD, still refuses the writing run.
 """
 
 from __future__ import annotations
@@ -56,32 +58,34 @@ def test_given_new_is_live_when_finish_dry_runs_then_it_plans_names_the_session_
     assert code in (0, 1), out + err
     assert "slot lock:" in out and "memory file:" in out
     line = next(line for line in out.splitlines() if "live session:" in line)
-    assert named in line and "a writing run refuses until it is stopped" in line
+    assert named in line and "a writing run does every other step and defers" in line
+    assert "task namespace, transcript title until it is stopped" in line
     assert f"ai sessions stop {NEW}" in line
     assert _everything(migrated) == before
 
 
 @pytest.mark.parametrize(("live", "named"), LIVE)
-def test_given_new_is_live_when_finish_writes_then_it_refuses_with_exit_2_and_writes_nothing(migrated, live, named):
+def test_given_new_is_live_with_nothing_of_its_own_left_when_finish_writes_then_it_carries_every_leftover(
+    migrated, live, named
+):
+    """None of these leftovers is a file of the running NEW, so the finish completes while it runs."""
     if live.get("process"):
         _live_process(migrated)
-    before = _everything(migrated)
 
     code, out, err = _finish(migrated["repo"], "-y", tmux=live.get("tmux"))
 
-    assert code == 2, out + err
-    assert named in err
-    assert migrated["left"]["slot_lock"].exists()
-    assert _everything(migrated) == before
+    assert code == 0, out + err
+    assert named in out
+    test_session_migrate._assert_leftovers_carried(migrated, migrated["left"])
 
 
-def test_given_new_is_live_when_finish_writes_without_yes_then_it_refuses_before_asking(migrated):
+def test_given_new_is_live_when_finish_writes_without_yes_then_it_asks_before_writing(migrated):
     before = _everything(migrated)
 
     code, out, err = _finish(migrated["repo"], tmux=[f"c-{NEW}"])
 
-    assert code == 2, out + err
-    assert "Migrate " not in out + err
+    assert code == 1, out + err
+    assert "Migrate " in out + err and "Aborted." in err
     assert _everything(migrated) == before
 
 
