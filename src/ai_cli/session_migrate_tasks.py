@@ -88,8 +88,9 @@ def plan(old: str, new: str, home: Path, state: Path, *, resuming: bool) -> tupl
             if _digest(source.read_bytes()) != item["before"]:
                 raise MigrationError(f"task source {source} changed after its migration intent")
             remaining.append(TaskMove(source, dest, source.stem if source.stem != dest.stem else None))
-        elif not dest.exists():
-            raise MigrationError(f"task migration has neither {source} nor {dest}; restore the missing artifact")
+        # Neither file: `apply` writes the destination before it removes the source, so an
+        # interrupted move always leaves one of them. With both gone the user deleted the task
+        # after the migration, and there is nothing left to move, so the id counts as done.
     return remaining, saved
 
 
