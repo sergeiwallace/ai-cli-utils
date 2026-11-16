@@ -269,3 +269,21 @@ anything other than the exact canonical name is not matched.
   `ai cx -t -W 1` in a new tmux session: the process was `codex resume 01a1e157-...`, the same
   name was in the footer, and there was still one index entry and one rollout. The same
   relaunch with the base code ran a bare `codex` with no name.
+- Live identity check, 2026-11-15, the branch's `ai cx -t -W` with Codex 0.169.0 and a
+  throwaway `CODEX_HOME`. The registry row held `family: codex`, `canonical_name:
+  ai-cli-ec2-probe-1` and an `agent_identity` with `pid` 2907635, `proc_start` 17261056
+  (`procfs`) and `engine_binding: exclusive`. A `!sleep 4747` typed into that session ran as
+  pid 2998974, whose ancestors were:
+
+  ```text
+  2998974 2907635 sleep 4747
+  2907635 2906358 .../bin/codex --no-daemon
+  2906358 2905440 /usr/bin/zsh .../sessions/cx-ai-cli-ec2-probe-1.sh --ai-cli-child-body
+  2905440    1585 /usr/bin/zsh .../sessions/cx-ai-cli-ec2-probe-1.sh
+  ```
+
+  `probe_for().start_time_match(2907635, 17261056)` returned `MATCH`, and no app-server
+  daemon was started under that Codex home. `!ai exit-session -d` typed into the same
+  session printed "Would exit cx-ai-cli-ec2-probe-1; verified targets: {'agent': {'pid':
+  2907635, ...}, 'supervisor': {'pid': 2905440, ...}, ...}", so the no-name path proved the
+  session from the recorded agent.
