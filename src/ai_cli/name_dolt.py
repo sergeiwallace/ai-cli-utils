@@ -206,9 +206,12 @@ class DoltRegistry(reg.FleetRegistry):
         url = self.remote_url()
         if not self.has_clone():
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Run from this registry's own root, never the shared parent: Dolt on Windows
+            # spools a clone's table files under `<working directory>/.dolt/tmp`, and two
+            # clones started from one directory delete each other's spools.
             result = self.dolt(
                 "clone", "--ref", self.dolt_ref, url, str(self.path),
-                cwd=self.path.parent, timeout=self.clone_timeout_s(), check=False,
+                cwd=self.root, timeout=self.clone_timeout_s(), check=False,
                 budget_setting="registry_clone_timeout_seconds",
             )  # fmt: skip
             if result.returncode != 0:

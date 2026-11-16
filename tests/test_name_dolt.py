@@ -909,6 +909,31 @@ def test_given_a_clone_that_overruns_its_budget_when_it_is_stopped_then_the_erro
     assert "cloning git+file:///remote.git" in message
 
 
+def test_given_two_registries_in_one_directory_when_both_clone_then_neither_clones_from_the_shared_directory(
+    fleet, monkeypatch
+):
+    # Dolt on Windows spools a clone's table files under `<working directory>/.dolt/tmp`,
+    # so two clones run from one directory delete each other's spools.
+    registries = (fleet.other_machine("side-a"), fleet.other_machine("side-b"))
+    assert registries[0].path.parent == registries[1].path.parent
+    cwds = []
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if isinstance(command, list) and command[:2] == ["dolt", "clone"]:
+            cwds.append(Path(kwargs["cwd"]))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    for registry in registries:
+        registry.snapshot()
+
+    assert len(cwds) == 2
+    assert cwds[0] != cwds[1]
+    assert registries[0].path.parent not in cwds
+
+
 def test_given_a_host_with_no_clone_yet_when_the_last_known_snapshot_is_read_then_it_clones_first(fleet):
     fresh = fleet.other_machine("never-cloned")
     assert not fresh.has_clone()
