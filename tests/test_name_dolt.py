@@ -751,15 +751,19 @@ def test_given_no_dolt_program_when_the_registry_is_used_then_it_is_unreachable_
 
 
 def test_given_a_dolt_older_than_the_floor_when_the_registry_is_used_then_it_refuses_naming_the_upgrade(
-    fleet, monkeypatch, tmp_path
+    fleet, monkeypatch
 ):
-    bin_dir = tmp_path / "old-bin"
-    bin_dir.mkdir()
-    fake = bin_dir / "dolt"
-    fake.write_text("#!/bin/sh\necho 'dolt version 2.3.3'\n")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     fresh = fleet.other_machine("old-dolt")
+    real_run = subprocess.run
+
+    # The reply is stubbed, not a fake `dolt` script on PATH: Windows resolves only
+    # `dolt.exe`, so a script there would leave the real binary answering.
+    def old_dolt(command, *args, **kwargs):
+        if isinstance(command, list) and command[:2] == ["dolt", "version"]:
+            return subprocess.CompletedProcess(command, 0, "dolt version 2.3.3\n", "")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", old_dolt)
 
     with pytest.raises(reg.RegistryError, match="upgrade Dolt"):
         fresh.snapshot()
