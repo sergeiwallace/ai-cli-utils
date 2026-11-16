@@ -917,3 +917,119 @@ def test_given_a_symlink_to_an_outside_cache_when_migrated_then_the_outside_cach
     new_slot = fleet["repo"] / ".worktrees" / NEW
     assert (new_slot / "linked").is_symlink()
     assert (new_slot / "linkedcache").is_symlink()
+
+
+# A checkout's links can name the agents container by its old name: a ``.venv`` linking to a
+# venv kept elsewhere in the session's worktrees, or a link to a sibling worktree. After the
+# rename each would dangle, so the migration rewrites every link inside the session's worktrees
+# that names an old-name path, and a writing run fails closed on any it cannot rewrite.
+
+
+def _links_naming(root: Path, needle: Path) -> list[Path]:
+    """Every symlink under ``root`` whose target names ``needle`` or a path inside it."""
+    found = []
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            target = Path(os.path.normpath(path.parent / path.readlink()))
+            if target == needle or needle in target.parents:
+                found.append(path)
+    return found
+
+
+@pytest.fixture
+def linked_fleet(fleet, tmp_path):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    repo, other = fleet["repo"], fleet["other"]
+    old_a = other / ".worktrees" / f"{OLD}-agents"
+    old_c = repo / ".worktrees" / f"{OLD}-agents"
+    venv = fleet["leaf_a"] / ".venvs" / "own"
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    (fleet["leaf_c"] / "data").mkdir()
+    (fleet["leaf_c"] / "data" / "notes.txt").write_text("notes\n", encoding="utf-8")
+    (fleet["leaf_a"] / ".venv").symlink_to(old_a / "leaf-a" / ".venvs" / "own", target_is_directory=True)
+    (fleet["leaf_c"] / "shared").symlink_to(old_c / "leaf-c" / "data", target_is_directory=True)
+    (fleet["leaf_c"] / "relative").symlink_to(
+        Path("..") / ".." / f"{OLD}-agents" / "leaf-c" / "data", target_is_directory=True
+    )
+    (fleet["slot"] / "notes.txt").symlink_to(old_c / "leaf-c" / "data" / "notes.txt")
+    fleet["old_roots"] = [old_a, old_c, fleet["slot"]]
+    fleet["new_trees"] = [
+        other / ".worktrees" / f"{NEW}-agents",
+        repo / ".worktrees" / f"{NEW}-agents",
+        repo / ".worktrees" / NEW,
+    ]
+    return fleet
+
+
+def test_given_agent_worktrees_with_links_into_the_old_agents_dir_when_migrated_then_every_link_names_the_new_path(
+    linked_fleet,
+):
+    code, out, err = _migrate(linked_fleet, "-y")
+
+    assert code == 0, out + err
+    for tree in linked_fleet["new_trees"]:
+        for old_root in linked_fleet["old_roots"]:
+            assert _links_naming(tree, old_root) == []
+    new_a = linked_fleet["new_trees"][0] / "leaf-a"
+    new_c = linked_fleet["new_trees"][1] / "leaf-c"
+    assert (new_a / ".venv").resolve() == (new_a / ".venvs" / "own").resolve()
+    assert (new_c / "shared" / "notes.txt").read_text(encoding="utf-8") == "notes\n"
+    assert not (new_c / "relative").readlink().is_absolute()
+    assert (new_c / "relative" / "notes.txt").read_text(encoding="utf-8") == "notes\n"
+    assert (linked_fleet["new_trees"][2] / "notes.txt").read_text(encoding="utf-8") == "notes\n"
+
+
+def test_given_a_venv_link_resolving_through_an_outside_link_into_the_old_agents_dir_when_migrated_then_it_fails_closed(
+    fleet, tmp_path
+):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    venv = fleet["leaf_a"] / ".venvs" / "own"
+    venv.mkdir(parents=True)
+    store = tmp_path / "store"
+    store.mkdir()
+    slot_link = store / "otherrepo--leaf-a"
+    slot_link.symlink_to(venv, target_is_directory=True)
+    (fleet["leaf_a"] / ".venv").symlink_to(slot_link, target_is_directory=True)
+    before = slot_link.readlink()
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 1, out + err
+    assert str(slot_link) in out + err
+    assert "NOT finished" in out + err
+    assert slot_link.readlink() == before
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 1, out + err
+    assert str(slot_link) in out + err
+    assert slot_link.readlink() == before
+
+
+def test_given_links_pointing_outside_the_sessions_worktrees_when_migrated_then_they_are_left_untouched(
+    fleet, tmp_path
+):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    shared = tmp_path / "shared"
+    (shared / "cache").mkdir(parents=True)
+    other_session = fleet["other"] / ".worktrees" / "other-session-1-agents" / "leaf-x"
+    other_session.mkdir(parents=True)
+    (fleet["leaf_a"] / "cache").symlink_to(shared / "cache", target_is_directory=True)
+    (fleet["leaf_a"] / "peer").symlink_to(other_session, target_is_directory=True)
+    outside_link = shared / "back"
+    outside_link.symlink_to(fleet["leaf_a"], target_is_directory=True)
+    before = {link: link.readlink() for link in (fleet["leaf_a"] / "cache", fleet["leaf_a"] / "peer")}
+    outside_before = outside_link.readlink()
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_a = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    assert {new_a / link.name: (new_a / link.name).readlink() for link in before} == {
+        new_a / link.name: target for link, target in before.items()
+    }
+    assert outside_link.readlink() == outside_before
