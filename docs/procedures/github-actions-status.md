@@ -176,7 +176,7 @@ it well under the cap. The cost is a second MSYS2 setup per run, which doubles t
 transient MSYS2 download failure. The step also passes `--durations=15` and omits `-q`, so every log
 shows the worker count and the slowest tests.
 
-### Eight Windows shards since 2026-11-15
+### Twelve Windows shards since 2026-11-16
 
 The session-name registry's real-Dolt test cases are slow on Windows, and they pushed both
 Windows shards past the 40-minute cap at 46% and 62% (PR #582). Four shards were not enough
@@ -194,6 +194,15 @@ now run to the end, so each shard's work goes up. The Windows matrix therefore r
 `(shard 1/8)` to `(8/8)`, under the same `test-windows` rollup check. That halves the work of a
 four-shard shard, which projects to about 25 minutes from the 4/4 shards' pace. Every Dolt case
 still runs on Windows: none is skipped or deselected.
+
+Eight shards were not enough either. In run 43786033751 the eight Windows shards took 20 to 34
+minutes, and shard 5/8 was cancelled at the cap at about 95% with no failing test. In the same
+run, three Dolt cases were killed by the suite-wide 300-second per-test bound. That bound uses
+pytest-timeout's thread method, which ends the worker with `os._exit`, so xdist reported each
+kill as a crashed worker. Real-Dolt cases now get a 900-second bound of their own
+(`DOLT_TEST_TIMEOUT_S` in `tests/conftest.py`), and the Windows matrix runs twelve shards,
+`(shard 1/12)` to `(12/12)`. At shard 5/8's pace, about 42 minutes for an eighth of the
+suite, a twelfth takes about 28 minutes.
 
 ## macOS suite runtime: two shards
 
