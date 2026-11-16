@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from unittest.mock import patch
 
 import pytest
 import test_session_migrate
@@ -80,12 +81,16 @@ def test_given_new_is_live_with_nothing_of_its_own_left_when_finish_writes_then_
 
 
 def test_given_new_is_live_when_finish_writes_without_yes_then_it_asks_before_writing(migrated):
+    from ai_cli import main
+
     before = _everything(migrated)
 
-    code, out, err = _finish(migrated["repo"], tmux=[f"c-{NEW}"])
+    with patch.object(main._out, "confirm", return_value=False) as confirm:
+        code, out, err = _finish(migrated["repo"], tmux=[f"c-{NEW}"])
 
     assert code == 1, out + err
-    assert "Migrate " in out + err and "Aborted." in err
+    assert confirm.call_args.args[2] == f"Migrate {OLD} to {NEW}?"
+    assert "Aborted." in err
     assert _everything(migrated) == before
 
 
