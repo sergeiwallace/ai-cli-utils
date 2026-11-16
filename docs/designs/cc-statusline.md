@@ -140,12 +140,6 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 📊 Week 12% →+3% 🌱 [⏱]
 ```
 
-**When scrape format changed** (DB mismatch counter raised):
-
-```
-⚠ quota scrape format changed
-```
-
 ### Label Width Adaptation
 
 The `AI_CLI_STATUSLINE_COLS` env var (set from `${COLUMNS:-0}` in the shell) controls label width:
@@ -262,6 +256,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 |------|----------|-------|
 | 2026-04-29 | Initial doc created | Documents current implementation as of AI-CLI-64 + AI-CLI-68 |
 | 2026-07-29 | Retired the `ccF` Fable segment | Upstream `/usage` stopped exposing Fable data; after the rollover mislabeling fix and explicit unavailable state, the permanently unavailable segment was removed. Retained scraper, database, and backoff machinery awaits a separate removal decision. |
+| 2026-11-16 | Removed the scrape-format alert | The `/usage` scrape is retired, so no format-change counter or alert exists; the statusline renders only Claude Code's native `rate_limits`. |
 
 <!-- /doc:region name="overview" -->
 
