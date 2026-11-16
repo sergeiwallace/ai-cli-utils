@@ -2148,3 +2148,43 @@ def hold_file_lock(path: Path):
         yield release
     finally:
         release()
+
+
+@pytest.fixture(params=["git", "sqlite", "dolt"])
+def registry_backend(request, monkeypatch):
+    """Run a session-name test once per registry backend; see ``tests/name_fleet.py``.
+
+    A run without the ``dolt`` program reports the Dolt case as skipped, never as passed;
+    in CI, where the workflow installs it, a missing binary fails the test instead.
+    """
+    import name_fleet
+
+    if request.param == "dolt" and shutil.which("dolt") is None:
+        if os.environ.get("CI"):
+            pytest.fail("the dolt program is not installed, and CI must run every Dolt registry test")
+        pytest.skip("the dolt program is not installed: the Dolt registry case was not run")
+    monkeypatch.setattr(name_fleet, "BACKEND", request.param)
+    return request.param
+
+
+# The per-test bound for a case that runs the real `dolt` program. The suite-wide 300 s
+# bound is sized for Linux, where these cases take seconds. On a hosted Windows runner
+# each Dolt call costs seconds: these cases took 100-250 s there, and three were killed
+# at 300 s with the worker (CI run 43786033751), so they get their own, wider bound.
+DOLT_TEST_TIMEOUT_S = 900
+
+
+def pytest_collection_modifyitems(config, items):
+    """Collect a test marked ``registry_backends(...)`` only for the backends it names,
+    and give every real-Dolt case the Dolt time bound unless it sets its own."""
+    kept, dropped = [], []
+    for item in items:
+        marker = item.get_closest_marker("registry_backends")
+        backend = getattr(getattr(item, "callspec", None), "params", {}).get("registry_backend")
+        (dropped if marker and backend and backend not in marker.args else kept).append(item)
+        runs_dolt = backend == "dolt" or item.path.name == "test_name_dolt.py"
+        if runs_dolt and item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(DOLT_TEST_TIMEOUT_S))
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept

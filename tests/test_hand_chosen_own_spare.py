@@ -14,7 +14,7 @@ import pytest
 import test_migrate_to_name
 import test_session_migrate
 import test_session_name_launch
-from name_fleet import HOST, OTHER_HOST, REF, build_fleet, git
+from name_fleet import HOST, OTHER_HOST, build_fleet
 from test_migrate_to_name import STEM, migrate
 from test_session_migrate import OLD
 
@@ -25,20 +25,13 @@ fleet = test_migrate_to_name.fleet
 slot = test_session_migrate.slot
 launch = test_session_name_launch.launch
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 
 def _seed_spare(registry: reg.Registry, name: str, machine: str) -> dict:
     row = reg.spare_row(name=name, host_alias="box", machine=machine)
     registry.transact(lambda snapshot: reg.Change({reg.row_path(name): reg.checked_row(row)}, f"seed spare {name}"))
     return row
-
-
-def _rows_at(remote, commit: str) -> dict[str, dict]:
-    listing = git(remote, "ls-tree", "--name-only", f"{commit}:names")
-    return {
-        path.removesuffix(".json"): json.loads(git(remote, "show", f"{commit}:names/{path}"))
-        for path in listing.splitlines()
-        if path
-    }
 
 
 def _spares_of(rows: dict[str, dict], machine: str) -> list[str]:
@@ -61,17 +54,17 @@ def test_given_this_machines_own_spare_when_migrated_to_it_then_the_spare_is_act
 
     assert code == 0, out + err
     new = f"{STEM}-cleo"
-    history = git(fleet.remote, "log", "--format=%H", REF).splitlines()
+    history = fleet.history()
     reserving = next(commit for commit in reversed(history) if f"migrations/{OLD}.json" in fleet.changed(commit))
     assert "names/cleo.json" in fleet.changed(reserving)
-    rows = _rows_at(fleet.remote, reserving)
+    rows = fleet.rows_at(reserving)
     taken = rows["cleo"]
     assert taken["kind"] == "session" and taken["title"] == new
     changed = {key for key in reg.ROW_FIELDS if taken[key] != spare[key]}
     assert changed <= reg.SPARE_ACTIVATION_FIELDS, changed
     assert len(_spares_of(rows, HOST)) == 1  # offline_spares in the fixture policy
     assert "cleo" not in _spares_of(rows, HOST)
-    assert json.loads(git(fleet.remote, "show", f"{reserving}:migrations/{OLD}.json"))["status"] == "intent"
+    assert json.loads(fleet.file(f"migrations/{OLD}.json", at=reserving))["status"] == "intent"
     assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "complete"
 
 
