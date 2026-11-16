@@ -24,6 +24,9 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | Feature | Description |
 |---------|-------------|
 | **Session management** | `ai c 1`, `ai g 1`, `ai p 1`, `ai cx 1` — named tmux sessions with auto-resume on disconnect |
+| **Human session names** | `ai c` names each new session with a short human first name (for example `ada`) from a shared registry (git ref, Dolt or SQLite); `ai locate-session` finds which host holds one, and `ai reconcile-names` frees the names of retired sessions |
+| **Session migration** | `ai migrate-session OLD NEW` renames a session and carries its worktree, branch, transcripts, virtual environments, tasks and issues; `--finish` completes whatever was left while the new session ran |
+| **Session lifecycle** | `ai sessions list/stop/wind-down/relaunch` with durable run state per session; `ai -X/--restart-session` restarts a session behind safety gates; `ai sessions relaunch --boot` brings sessions back after a reboot |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -35,6 +38,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
+| **iTerm2 restore** | `ai iterm2 restore` reopens recorded sessions in their panes after a terminal quit or a reboot, recording why each one ended |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
 | **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |
