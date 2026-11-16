@@ -613,7 +613,7 @@ def test_given_a_row_rewritten_while_it_is_probed_when_reconciled_then_it_is_hel
     client = _HeldProbe(session_clients.ABSENT, during=rewrite)
     client.release.set()
     thread, outcome = _reconcile_in_thread(fleet, client)
-    thread.join(300)
+    thread.join(240)  # inside the suite-wide 300 s test bound, so this assertion is what reports
 
     assert not thread.is_alive(), "the reconcile did not finish"
     assert "error" not in outcome, outcome
