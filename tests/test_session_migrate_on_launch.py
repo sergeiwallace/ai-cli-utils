@@ -536,10 +536,14 @@ def _legacy_finished_row(slot) -> None:
     ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
 
 
-@pytest.mark.parametrize("row", ["pending", "unverified"])
-def test_given_new_running_and_a_part_left_when_new_is_launched_then_it_attaches_with_one_warning(migrated, row):
-    if row == "unverified":
-        _legacy_finished_row(migrated)
+def test_given_new_running_and_an_unverified_part_left_when_new_is_launched_then_it_attaches_with_one_warning(
+    migrated,
+):
+    """An unverified pair is only re-planned; a pending one is finished as far as a live NEW allows.
+
+    The pending case is covered in ``tests/test_session_migrate_finish_while_live.py``.
+    """
+    _legacy_finished_row(migrated)
     rows = _ledger(migrated)
 
     code, out, err, launched = _launch(migrated, [f"c-{NEW}"], live=True)

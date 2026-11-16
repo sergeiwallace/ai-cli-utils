@@ -561,10 +561,24 @@ to NEW: a migration run before one of these steps existed, or one whose agent wo
 a live process held. It repeats every step keyed by the old name that is safe to
 repeat (agent worktrees, branches, containers and markers; launcher state, maps and
 locks; held-output and memory files; the task namespace and resume tree; every hook)
-and refuses while `.worktrees/OLD` is still a registered slot or either session is
-running; stop a running one with `ai sessions stop NAME` first. A hook that refuses its
+and refuses while `.worktrees/OLD` is still a registered slot or OLD is running; stop
+it with `ai sessions stop OLD` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
 other parts and hooks still run, and the command exits 1 so it is re-run.
+
+A running NEW does not refuse the finish. NEW counts as running when a Claude Code
+process is named NEW or runs inside its slot, or when a tmux session hosts it. The
+finish then does every step except the ones that write files the running session holds
+open: the project directory and transcript titles (`project dir`, `transcript title`),
+the sub-agent and background-job records (`sub-agent record`, `job record`, `job
+name`) and the task namespace. Each of those reads `deferred while live` in the plan
+and `deferred: NEW is running; stop it with ai sessions stop NEW` in the parts table.
+Every other part runs, including the venv back-pointers, the resume and poller keys,
+held output, memory files, launcher state and hooks. On this host's record of the
+migration the run appends a ledger row with `"deferred_recorded": true` and the
+deferred parts, warns `NOT finished` naming them and the `--finish` command, and exits
+1. The pair stays pending, so the next finish after NEW stops does the rest and
+records it `finished`.
 
 When NEW already holds its own copy of something OLD still holds, NEW's copy is kept,
 since it belongs to the session now running under NEW, and OLD's is neither merged
@@ -579,9 +593,11 @@ there); a hook does it for its own state and names each file it archived on a
 same ledger row records. `-n` plans each archive as `archive OLD, keep NEW` and moves
 nothing. `-n` prints its
 plan with nothing written, and runs while either session is live: its first line,
-`live session: ...`, names the running session and says a writing run refuses until it
-is stopped with `ai sessions stop NAME`. The writing run keeps that refusal and exits 2
-before its first write.
+`live session: ...`, names the running session. For a running OLD it says a writing
+run refuses until it is stopped with `ai sessions stop NAME`, and the writing run keeps
+that refusal and exits 2 before its first write. For a running NEW it says a writing
+run does every other step and names the parts it defers until NEW is stopped. Without
+`-y`, a writing run that will defer asks for confirmation as any other writing run does.
 
 `--finish` needs only one name. `ai migrate-session NEW --finish`, the old name,
 NEW's first name (`cleo` in `myrepo-box-cleo`) or `ai migrate-session --finish -t
@@ -644,8 +660,7 @@ remote side of `-R`, and a detached replay of NEW's recorded recipe by
 `ai sessions relaunch`) checks the ledger once the session name is resolved and,
 before the worktree or the session exists, judges every pair migrated to NEW once.
 A pair with no later `finished` row is finished: the same planner, hooks and Beads
-rule as `--finish -y`, verified by that run's own re-plan. That covers a migration
-made while NEW was live, which `--finish` itself could never complete. A pair whose
+rule as `--finish -y`, verified by that run's own re-plan. A pair whose
 latest row is a verified `finished` is trusted and not re-planned: that row is the
 proof of record, and `--status -a` or `--finish` re-checks it on demand. A pair
 whose `finished` row carries no `verified` is re-planned read-only. Before each pair
@@ -661,13 +676,21 @@ session the same way, records the refusal as its relaunch reason, still relaunch
 the others, and exits 1. A ledger row naming NEW in a migration record format newer
 than the running `ai` reads refuses the launch with `ai update --force`.
 
-A launch that will attach to NEW's tmux session while it has a live pane cannot
-finish anything, since a writing finish refuses a live session. It re-plans each pair
-that is not verified read-only instead, and a pair still partial is one warning
-naming the parts left and the `--finish` command to run once NEW exits; the launch
-then attaches. Refusing it would leave the running session unreachable while
-`--finish` refuses it for being live. A bare or `--sandbox` launch, which replaces
-rather than attaches, and a launch of a stopped NEW are judged as above.
+A pending pair is finished at launch even while NEW is running, as far as a running
+NEW allows: every step runs except the ones `--finish` defers for a running NEW. A pair
+whose only parts left are those deferred ones never refuses the launch. The first
+launch that defers them prints one warning naming the parts, the `ai sessions stop NEW`
+step and the `--finish` command; the ledger row that finish records makes every later
+launch print only a progress line saying they are still deferred. A launch or
+restart once NEW has stopped finishes them.
+
+A launch that will attach to NEW's tmux session while it has a live pane finishes
+each pending pair that way. A pair whose `finished` row is not verified is re-planned
+read-only, and a pair still partial with anything other than deferred parts is one
+warning naming the parts left and the `--finish` command to run once NEW exits; the
+launch then attaches. Refusing it would leave the running session unreachable until it
+is stopped. A bare or `--sandbox` launch, which replaces rather than attaches, and a
+launch of a stopped NEW are judged as above.
 
 A running NEW whose agent exits and is restarted by its own tmux supervisor never
 goes back through `ai c`, so the session wrapper finishes each pair still pending
@@ -675,9 +698,13 @@ itself, after the old agent has exited and before the replacement starts. Only a
 with no later `finished` row is tried, and a restart with none costs one ledger read.
 The finish runs as `--finish -y` does, with one exception: NEW's own tmux session,
 once tmux confirms the wrapper runs inside it, does not count as live. A live agent
-named OLD or NEW or running inside either slot, and any other tmux session hosting
-either name, still refuse the finish. A refused, failed or partial finish is one
-warning naming the `--finish` command, and the agent restarts anyway. A supervisor
+named OLD or running inside OLD's slot, and any tmux session hosting OLD, still refuse
+the finish. A live agent named NEW or running inside NEW's slot, or another tmux
+session hosting NEW, makes it defer the parts that write NEW's open files and do the
+rest. A refused, failed or partial finish is one warning naming the `--finish`
+command, and the agent restarts anyway. A finish left with deferred parts only warns
+the first time, as a launch does, and prints a progress line on each later restart.
+A supervisor
 still running under OLD finishes nothing: OLD is the session being migrated away from.
 
 `-P/--allow-partial-migration` on `ai c` (and `ai g`/`ai p`/`ai cx`, forwarded to

@@ -206,7 +206,9 @@ after changing a command's help, never edit it by hand.
 | [`ai deploy`](docs/reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](docs/reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
 | [`ai g`](docs/reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](docs/reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](docs/reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](docs/reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
 | [`ai iterm2 sessions`](docs/reference/cli.md#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
@@ -214,8 +216,9 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
-| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client and kind |
+| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](docs/reference/cli.md#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
 | [`ai ls`](docs/reference/cli.md#ai-ls) | List tmux sessions (fzf picker when available) |
 | [`ai memory`](docs/reference/cli.md#ai-memory) | Memory-file watchers and helpers |
@@ -249,6 +252,7 @@ after changing a command's help, never edit it by hand.
 | [`ai release-name`](docs/reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](docs/reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
 | [`ai retire-session`](docs/reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](docs/reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](docs/reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](docs/reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](docs/reference/cli.md#ai-session-reaper-status) | Show stale-session reaper status |
@@ -271,6 +275,8 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions repair-policy`](docs/reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](docs/reference/cli.md#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
@@ -711,7 +717,12 @@ A name is picked from the name database: a generated list of first names of 3 to
 letters with common English words removed, plus any name added by hand. The picker
 never hands out a held name, a name one typo away from a held name, or a name whose
 title would be a prefix of another session's. A name you choose with `-N` passes the
-same checks. If it is not in the database yet, `ai` asks
+same checks. On a database registry (the local SQLite one, or the fleet's Dolt one) each
+name also has a general status, `unreviewed`, `rejected` or `approved`, and may be approved
+or rejected for one repository, host or session only. The picker hands out only approved
+names that no verdict rejects for the launch, and refuses when the status data cannot be
+read. A name you choose needs no approval, but a rejected one needs a session approval,
+and a scoped rejection always refuses it. If it is not in the database yet, `ai` asks
 `cleo is not in the name database. Add it? [y/n]`. Answering `n`, or choosing a name
 that is refused, leads to `Name to use instead, or "auto" to pick one:`, which takes
 another name (added without a second question) or `auto`. A value outside the limits
@@ -732,6 +743,7 @@ them on one machine:
 # max_name_length = 4       # used only where no shared name registry exists
 # registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
 # registry_push_timeout_seconds = 60   # one push to a shared registry
+# registry_clone_timeout_seconds = 60  # a host's first clone of a Dolt registry (300 on Windows)
 ```
 
 An older release seeded these four keys active. The first `ai` command after an
@@ -742,8 +754,12 @@ The registry is the first repository under the projects directory that ships
 `config/session-names.toml`. That file names a git ref, and every machine reserves
 names on it with a fast-forward push, so two machines can never take the same name.
 It also sets the length limits for every machine that uses it, plus per-host
-`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With no such
-repository, the registry is a local directory seeded with the shipped list.
+`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With
+`registry_backend = "dolt"` and `schema = 2` the registry is a Dolt database on its own ref
+of that repository's remote (`registry_dolt_ref`, default `refs/dolt/session-names`), reached
+through the `dolt` program, which each such machine needs installed. With no such
+repository, the registry is a local SQLite file seeded with the shipped list, every name
+approved.
 `ai show-name-config` prints each setting with the layer that set it.
 
 Offline, a launch takes one of the spare names its machine reserved earlier and
@@ -763,7 +779,13 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. An unactivated spare has no worktree or transcript to test, so it is released when no offline launch has taken it and only by the host that holds it. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
-| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. |
+| `ai list-names [-j/--json] [-p/--pool]` | Every held name with its title, host, client, kind and general status, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. `-p/--pool` lists every name in the database with its status and holder. |
+| `ai set-name-status -a/--actor WHO [-r/--reason TEXT] STATUS NAME...` | Set the general status (`unreviewed`, `rejected` or `approved`) of every name given, in one write; refuses the whole call when one is not in the database. |
+| `ai set-name-verdict -s/--scope repo\|host\|session -v/--value V -a/--actor WHO [-r/--reason TEXT] [-d/--delete] VERDICT NAME...` | Approve or reject names for one repository, host or session only, or remove that verdict. |
+| `ai find-names [-s/--status S] [-k/--scope KIND] [-v/--value V] [-m/--machine M] [-t/--state STATE] [-H/--history NAME] [-j/--json]` | Names matching every filter, with their verdicts and holder; `-H/--history` lists every past value of one name (fleet Dolt registry only). |
+| `ai list-migrations [-j/--json]` | Every recorded rename and its state. |
+| `ai import-names [-f/--from-ref REF] [-d/--dry-run]` | Copy the git-ref registry into the fleet's Dolt database in one commit, printing what it holds; a second run finds nothing to import. |
+| `ai seed-name-verdicts -f/--file PATH` | Apply the owner's approvals from a seed file, each at the scope it was given, once the file matches the owner-approved oracle the fleet repository pins. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
 | `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |
