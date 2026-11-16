@@ -1177,3 +1177,15 @@ def test_given_a_newer_regeneration_landing_first_when_a_sync_retries_then_it_pu
     assert result.published is False
     assert json.loads(_remote_file(fleet, reg.GENERATION_JSON))["policy_commit"] == newer
     assert commit != newer
+
+
+def test_given_a_case_run_per_registry_backend_when_collected_then_only_the_dolt_case_gets_the_dolt_bound(
+    request, registry_backend
+):
+    from conftest import DOLT_TEST_TIMEOUT_S
+
+    marker = request.node.get_closest_marker("timeout")
+    if registry_backend == "dolt":
+        assert marker.args == (DOLT_TEST_TIMEOUT_S,)
+    else:
+        assert marker is None or marker.args != (DOLT_TEST_TIMEOUT_S,)

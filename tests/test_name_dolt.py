@@ -963,3 +963,9 @@ def test_given_a_fleet_remote_url_when_converted_then_dolt_gets_its_git_remote_f
 
 def test_given_a_local_path_remote_when_converted_then_dolt_gets_a_file_url(tmp_path):
     assert name_dolt.dolt_remote_url(str(tmp_path / "remote.git")) == f"git+{(tmp_path / 'remote.git').as_uri()}"
+
+
+def test_given_a_real_dolt_case_when_collected_then_it_runs_under_the_dolt_time_bound(request):
+    from conftest import DOLT_TEST_TIMEOUT_S
+
+    assert request.node.get_closest_marker("timeout").args == (DOLT_TEST_TIMEOUT_S,)
