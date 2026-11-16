@@ -2252,6 +2252,14 @@ def _handle_internal(argv: list[str]) -> None:
         if thread:
             _out.raw(Untagged.INTERNAL_REPLY, thread)
         sys.exit(0)
+    elif action == "bind-codex-pane":
+        if len(argv) != 3:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal bind-codex-pane <pane> <ai_name>", err=True)
+            sys.exit(1)
+        failure = _codex_session.bind_pane(argv[2], argv[1])
+        if failure:
+            _out.emit(Tag.INTERNAL, "session", f"{argv[2]}: Codex pane not recorded: {failure}", err=True)
+        sys.exit(1 if failure else 0)
     elif action == "record-agent-identity":
         if len(argv) not in (3, 4) or not argv[2].isdigit():
             _out.emit(

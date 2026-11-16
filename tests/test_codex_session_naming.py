@@ -32,6 +32,7 @@ THREAD = "01a1e138-42c6-7643-af6a-48768d55c843"
 OLDER = "01a1e100-0000-7000-8000-000000000001"
 READY_PANE = "› Ask Codex to do anything\n  model default · /work · \n  ← for agents · ? for shortcuts\n"
 LOADING_PANE = "  >_ OpenAI Codex\n     loading\n› \n"
+PANE = "%42"
 
 
 # --- Codex's own store ------------------------------------------------------------
@@ -305,6 +306,7 @@ def _run_dispatch(tmp_path: Path, engine: str, *, first_run: bool, thread: str =
         f"""
 engine={engine}
 ai_name={NAME}
+TMUX_PANE={PANE}
 tmux_session={engine}-{NAME}
 first_run={"true" if first_run else "false"}
 prompt_file={prompt_file}
@@ -560,3 +562,124 @@ def test_given_same_codex_install_when_probed_twice_then_its_help_runs_once(tmp_
 
     assert first == second == ["--no-daemon"]
     assert runs.read_text().splitlines() == ["run"]
+
+
+# --- pane binding (a tool inside Codex finds its own pane) --------------------------
+
+
+@posix_only
+@pytest.mark.parametrize("thread", ["", THREAD], ids=["new-session", "named-thread"])
+def test_given_a_codex_launch_in_a_pane_when_the_session_script_dispatches_then_it_records_that_pane(tmp_path, thread):
+    calls = _run_dispatch(tmp_path, "cx", first_run=True, thread=thread)
+
+    assert f"AI internal bind-codex-pane {PANE} {NAME}" in calls
+
+
+@pytest.fixture
+def fake_pane_tmux(monkeypatch):
+    """tmux answering ``display-message`` for one live pane in one session."""
+    state: dict = {"sessions": {PANE: f"cx-{NAME}"}}
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if Path(str(command[0])).name != "tmux":
+            return real_run(command, *args, **kwargs)
+        if command[1] == "display-message":
+            session = state["sessions"].get(command[command.index("-t") + 1], "")
+            return subprocess.CompletedProcess(command, 0, f"{session}\n" if session else "\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
+    return state
+
+
+def _bind(capsys) -> tuple[object, str]:
+    with patch("ai_cli.config.load_config", return_value={}), pytest.raises(SystemExit) as exc_info:
+        _handle_internal(["bind-codex-pane", PANE, NAME])
+    return exc_info.value.code, capsys.readouterr().err
+
+
+def _binding(home: Path, thread: str = THREAD) -> dict:
+    return json.loads((home / "pane-bindings" / f"{thread}.json").read_text(encoding="utf-8"))
+
+
+def test_given_a_named_thread_when_binding_its_pane_then_the_record_names_thread_pane_and_tmux_session(
+    fake_pane_tmux, codex_home, capsys
+):
+    # Named but not yet saved: a running thread is bound before Codex writes its rollout.
+    _index(codex_home, (THREAD, NAME))
+
+    code, err = _bind(capsys)
+
+    assert code == 0, err
+    record = _binding(codex_home)
+    assert record["thread_id"] == THREAD
+    assert record["pane_id"] == PANE
+    assert record["tmux_session"] == f"cx-{NAME}"
+
+
+def test_given_a_new_session_named_only_after_codex_starts_when_binding_then_it_waits_for_the_name(
+    fake_pane_tmux, codex_home, capsys, monkeypatch
+):
+    polls = {"n": 0}
+
+    def sleep(_seconds):
+        polls["n"] += 1
+        if polls["n"] == 3:
+            _index(codex_home, (THREAD, NAME))
+
+    monkeypatch.setattr("ai_cli.codex_session.time.sleep", sleep)
+
+    code, err = _bind(capsys)
+
+    assert code == 0, err
+    assert polls["n"] >= 3
+    assert _binding(codex_home)["pane_id"] == PANE
+
+
+def test_given_a_rebinding_after_a_relaunch_in_another_pane_when_binding_then_the_record_follows_the_live_pane(
+    fake_pane_tmux, codex_home, capsys
+):
+    _index(codex_home, (THREAD, NAME))
+    (codex_home / "pane-bindings").mkdir(parents=True)
+    (codex_home / "pane-bindings" / f"{THREAD}.json").write_text(
+        json.dumps({"thread_id": THREAD, "pane_id": "%7", "tmux_session": "old", "written_at": 1}), encoding="utf-8"
+    )
+
+    code, err = _bind(capsys)
+
+    assert code == 0, err
+    assert _binding(codex_home)["pane_id"] == PANE
+    assert not [p.name for p in (codex_home / "pane-bindings").iterdir() if p.name.startswith(".")]
+
+
+def test_given_a_pane_tmux_does_not_report_when_binding_then_nothing_is_written_and_it_says_why(
+    fake_pane_tmux, codex_home, capsys
+):
+    _index(codex_home, (THREAD, NAME))
+    fake_pane_tmux["sessions"].clear()
+
+    code, err = _bind(capsys)
+
+    assert code == 1
+    assert f"tmux does not report pane {PANE}" in err
+    assert not (codex_home / "pane-bindings" / f"{THREAD}.json").exists()
+
+
+def test_given_no_thread_ever_carries_the_name_when_binding_then_it_gives_up_and_writes_nothing(
+    fake_pane_tmux, codex_home, capsys, monkeypatch
+):
+    clock = {"now": 0.0}
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr("ai_cli.codex_session.time.sleep", sleep)
+    monkeypatch.setattr("ai_cli.codex_session.time.monotonic", lambda: clock["now"])
+
+    code, err = _bind(capsys)
+
+    assert code == 1
+    assert "no Codex thread carried the name" in err
+    assert not (codex_home / "pane-bindings").exists()

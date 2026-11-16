@@ -1662,6 +1662,9 @@ with open(path, 'w') as f:
         # offers --no-daemon, so tool processes descend from the attested agent.
         if [[ "$(ai internal codex-exclusive-flags 2>/dev/null)" == "--no-daemon" ]]; then _cx_own=(--no-daemon); fi
         _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
+        # Record this pane for the thread, so a tool inside Codex finds its own pane even
+        # when the app-server it runs under inherited a pane that has since closed.
+        (ai internal bind-codex-pane "${{TMUX_PANE:-}}" "$ai_name" >/dev/null 2>&1 || true) &
         if [[ -n "$_cx_thread" ]]; then
           run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
           return

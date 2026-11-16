@@ -250,6 +250,19 @@ name>` by hand, before this change or after it, is resumed by id on the next `ai
 local or `-R` (the remote session script resolves on the owning host). A thread named
 anything other than the exact canonical name is not matched.
 
+**Amendment 5 (a tool finds its own pane).** A tool process inside Codex sees its thread id
+in `CODEX_THREAD_ID`, but its `TMUX_PANE` comes from whatever started the app-server it runs
+under. A long-lived server can carry the pane of a session that has since closed, so a tool
+that types into "its own" pane by `TMUX_PANE` finds no pane, or the wrong one. The launcher
+owns the pane, so on every launch and relaunch the session script runs `ai internal
+bind-codex-pane "$TMUX_PANE" <name>` in the background. It waits until a thread carries the
+name (a new session is named only after Codex starts), then writes
+`$CODEX_HOME/pane-bindings/<thread id>.json` with `thread_id`, `pane_id`, `tmux_session` and
+`written_at`, replacing the file atomically. A tool reads the record by its own
+`CODEX_THREAD_ID` and checks that tmux still shows that pane in that session before it trusts
+it. The thread id selects a record and is never treated as authentication. Only the session
+script's path writes a record; a `--once` or bare launch does not yet.
+
 ## Not changed here
 
 - Pi 1.5.2 refuses `--provider` without `--model` ("Error: --provider requires --model"),

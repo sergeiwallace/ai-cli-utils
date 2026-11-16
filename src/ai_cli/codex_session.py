@@ -37,6 +37,10 @@ POLL_SECONDS = 0.5
 SUBMIT_SETTLE_SECONDS = 0.5
 #: The bare pty path has no screen to read, so it waits this long before typing.
 FIFO_START_SECONDS = 5.0
+#: Where :func:`bind_pane` records each thread's pane, under ``$CODEX_HOME``.
+BINDINGS_DIR = "pane-bindings"
+#: A new session is named only after Codex starts and records the ``/rename``.
+BIND_WAIT_SECONDS = READY_WAIT_SECONDS + CONFIRM_WAIT_SECONDS
 _TMUX_TIMEOUT_SECONDS = 5.0
 _HELP_TIMEOUT_SECONDS = 10.0
 
@@ -118,12 +122,14 @@ def _has_rollout(home: Path, thread_id: str) -> bool:
     return any(sessions.rglob(f"rollout-*{thread_id}.jsonl")) or any(sessions.rglob(f"rollout-*{thread_id}.jsonl.zst"))
 
 
-def find_thread(name: str, home: Path | None = None) -> str | None:
+def find_thread(name: str, home: Path | None = None, *, resumable: bool = True) -> str | None:
     """The id of the newest resumable Codex thread whose current name is ``name``.
 
     A thread counts only while its newest non-empty index entry still says ``name`` (a
-    later ``/rename`` moves it away) and its rollout is still under ``sessions/`` (an
-    archived or deleted thread cannot be resumed there).
+    later ``/rename`` moves it away) and, when ``resumable``, its rollout is still under
+    ``sessions/`` (an archived or deleted thread cannot be resumed there). A running
+    thread is named before Codex saves its rollout, so :func:`bind_pane` passes
+    ``resumable=False``.
     """
     name = name.strip()
     if not name:
@@ -135,8 +141,58 @@ def find_thread(name: str, home: Path | None = None) -> str | None:
         if not thread_name or thread_id in seen:
             continue
         seen.add(thread_id)
-        if thread_name == name and _has_rollout(home, thread_id):
+        if thread_name == name and (not resumable or _has_rollout(home, thread_id)):
             return thread_id
+    return None
+
+
+def bind_pane(
+    name: str,
+    pane: str,
+    *,
+    home: Path | None = None,
+    wait_seconds: float | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    now: Callable[[], float] | None = None,
+) -> str | None:
+    """Record which tmux pane runs the Codex thread named ``name``.
+
+    A tool process inside Codex sees its thread id (``CODEX_THREAD_ID``) but inherits
+    ``TMUX_PANE`` from whatever first started Codex's long-lived app-server, which can name
+    a pane that has since closed. The launcher owns the pane, so it writes
+    ``$CODEX_HOME/pane-bindings/<thread id>.json`` holding ``thread_id``, ``pane_id``,
+    ``tmux_session`` and ``written_at``, for such a tool to find its own pane. It runs on
+    every launch and relaunch in the pane, so the record follows the live pane. A new
+    session has no thread id until its name is recorded, so this waits for the name.
+    Returns None once written, else the reason it was not.
+    """
+    if not pane.startswith("%"):
+        return "no tmux pane to bind"
+    home = home or codex_home()
+    sleep = sleep or time.sleep
+    monotonic = monotonic or time.monotonic
+    wait_seconds = BIND_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    deadline = monotonic() + wait_seconds
+    while (thread_id := find_thread(name, home, resumable=False)) is None:
+        if monotonic() >= deadline:
+            return f"no Codex thread carried the name within {wait_seconds:.0f}s"
+        sleep(POLL_SECONDS)
+    shown = _tmux("display-message", "-p", "-t", pane, "#{session_name}")
+    session = shown.stdout.strip() if shown is not None and shown.returncode == 0 else ""
+    if not session:
+        return f"tmux does not report pane {pane}"
+    record = {"thread_id": thread_id, "pane_id": pane, "tmux_session": session, "written_at": (now or time.time)()}
+    directory = home / BINDINGS_DIR
+    target = directory / f"{thread_id}.json"
+    staging = directory / f".{thread_id}.{os.getpid()}.tmp"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        staging.write_text(json.dumps(record), encoding="utf-8")
+        staging.replace(target)
+    except OSError as exc:
+        staging.unlink(missing_ok=True)
+        return f"could not write {target}: {exc}"
     return None
 
 
