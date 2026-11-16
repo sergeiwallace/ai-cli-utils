@@ -14,6 +14,9 @@ after ``ai migrate-session`` renames its slot, so this module moves them too:
   worktree is rewritten to the new path, under the branch's new name;
 * a moved worktree's ``.venv``, when it links into a shared store, has its
   ``.<prefix>-checkout`` record rewritten to the new path when it names the old one;
+* every symlink inside a moved worktree that names an old-name path (the slot, or an agents
+  container) is repointed at the new one (:mod:`ai_cli.session_migrate_links`); one that
+  resolves through a link outside the session's worktrees naming such a path is reported;
 * a worktree on a ``wt/<old>/`` (or already renamed ``wt/<new>/``) branch under a
   host-prefixed container ``<host>--<old>-agents/`` moves to ``<host>--<new>-agents/``;
 * every Claude Code project directory whose slug embeds an old-name agents container,
@@ -45,6 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as _config
+from . import session_migrate_links as _links
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
 from .venv_relocate import needs_relocation, relocate_venv, repoint_checkout_record, stale_checkout_record
@@ -97,6 +101,8 @@ class AgentEntry:
     #: The venv's back-pointer record, when it still names the worktree's path before the move.
     venv_record: Path | None = None
     venv_record_old: Path | None = None
+    #: Links inside the worktree that name an old-name path, as they will be after the move.
+    links: list[_links.StaleLink] = field(default_factory=list)
 
     @property
     def moves(self) -> bool:
@@ -147,6 +153,12 @@ class AgentPlan:
     #: ``<host>--<old>-agents`` containers a planned worktree moves out of, removed once empty.
     host_containers: list[Path] = field(default_factory=list)
     project_dirs: list[AgentProjectDir] = field(default_factory=list)
+    #: Each renamed root, ``(old, new)``: the slot and every agents container.
+    link_pairs: list[tuple[Path, Path]] = field(default_factory=list)
+
+    def moved_trees(self) -> list[Path]:
+        """Where each worktree this plan moves, or found already moved, is after the move."""
+        return [e.dest for e in self.entries if e.moves and e.dest is not None]
 
     def renames(self, repo: Path) -> dict[str, str]:
         """The branch renames planned in ``repo``."""
@@ -407,6 +419,7 @@ def plan_agents(
     plan = AgentPlan()
     home = claude_home if claude_home is not None else Path.home() / ".claude"
     prefix, new_prefix = f"wt/{old}/", f"wt/{new}/"
+    plan.link_pairs = _links.pairs_for(_repos(projects_dir, slot_repo), slot_repo, old, new)
     for repo in _repos(projects_dir, slot_repo):
         listed = _git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{prefix}")
         if listed.returncode != 0:
@@ -482,6 +495,7 @@ def plan_agents(
                     entry.venv_old = original
                 entry.venv_record = stale_checkout_record(path / ".venv", original)
                 entry.venv_record_old = original if entry.venv_record else None
+                entry.links = _links.scan([(path, dest)], plan.link_pairs)
             if dest == path:
                 entry.worktree = None
                 if (
@@ -495,6 +509,7 @@ def plan_agents(
                     and entry.ownership is None
                     and entry.venv_old is None
                     and entry.venv_record is None
+                    and not entry.links
                 ):
                     continue
             repo_entries.append(entry)
@@ -553,6 +568,7 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
             lines.append(("virtual environment", str(e.venv_old / ".venv"), str(e.dest), "rewrite"))
         if e.venv_record is not None:
             lines.append(("venv back-pointer", str(e.venv_record), str(e.dest), "rewrite"))
+        lines += _links.describe(e.links)
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -603,6 +619,7 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 repoint_checkout_record(e.venv_record, e.venv_record_old, e.dest)
             except (OSError, UnicodeDecodeError) as exc:
                 warnings.append(f"venv back-pointer {e.venv_record} FAILED to name {e.dest}: {exc}")
+        warnings += _links.apply(e.links)
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:
