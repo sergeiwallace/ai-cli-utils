@@ -5435,7 +5435,9 @@ def _do_session_launch(
                     auth_fault_patterns=remote_cfg.get(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
-                    on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    # The id is bound as a default: inside this long function pyright no longer
+                    # narrows a captured `_record_id` to str.
+                    on_clean_exit=(lambda rid=_record_id: _mark_session_ended(reporter, rid)) if _record_id else None,
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
