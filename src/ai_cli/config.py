@@ -548,6 +548,11 @@ REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
 # A registry push's own budget, for the same reason: a push of one small commit to the
 # registry ref from such a checkout has been measured at 30 seconds.
 REGISTRY_PUSH_TIMEOUT_DEFAULT_S = 60
+# A host's first clone of a Dolt registry has its own budget. On Windows CI, with Dolt
+# 2.3.4, clones of a small test registry overran 60 seconds in 22 of 73 tests of one
+# shard, while every fetch and push of the same registries stayed inside its own 60.
+REGISTRY_CLONE_TIMEOUT_DEFAULT_S = 60
+REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S = 300
 
 
 def _read_registry_timeout(config: dict, key: str, default: float) -> float:
@@ -568,6 +573,12 @@ def read_registry_fetch_timeout(config: dict) -> float:
 def read_registry_push_timeout(config: dict) -> float:
     """``[session_names] registry_push_timeout_seconds``; every registry push reads it fresh."""
     return _read_registry_timeout(config, "registry_push_timeout_seconds", REGISTRY_PUSH_TIMEOUT_DEFAULT_S)
+
+
+def read_registry_clone_timeout(config: dict) -> float:
+    """``[session_names] registry_clone_timeout_seconds``; every registry clone reads it fresh."""
+    default = REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S if sys.platform == "win32" else REGISTRY_CLONE_TIMEOUT_DEFAULT_S
+    return _read_registry_timeout(config, "registry_clone_timeout_seconds", default)
 
 
 RELAUNCH_DEFAULTS = {
@@ -851,6 +862,9 @@ stale_session_timeout = 15
 ## registry's publish timeout.
 # registry_fetch_timeout_seconds = 60
 # registry_push_timeout_seconds = 60
+## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
+## 300 on Windows.
+# registry_clone_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false

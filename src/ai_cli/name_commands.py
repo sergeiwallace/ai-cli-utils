@@ -143,8 +143,8 @@ def show_name_config_command() -> None:
         _out.error(Tag.NAMES, "config", str(exc))
         sys.exit(1)
     registry = discovery.registry
-    fleet = isinstance(registry, reg.GitRegistry)
-    policy_config = reg.read_policy_file(registry.policy_file) if isinstance(registry, reg.GitRegistry) else None
+    fleet = isinstance(registry, reg.FleetRegistry)
+    policy_config = reg.read_policy_file(registry.policy_file) if isinstance(registry, reg.FleetRegistry) else None
     source = reg.policy_source(registry) if registry else "config/session-names.toml"
     try:
         settings = session_title.resolve_settings(
@@ -183,7 +183,7 @@ def show_name_config_command() -> None:
     for key in ("pick_floor", "low_water", "offline_spares", "publish_timeout_s", "publish_attempts"):
         lines.append(f"{key:<18} {policy.get(key)!s:<8} ({layer})")
     lines.append(f"max_edit_distance  {policy.get('confusable', {}).get('max_edit_distance')!s:<8} ({layer})")
-    if isinstance(registry, reg.GitRegistry):
+    if isinstance(registry, reg.FleetRegistry):
         generation = snapshot.generation or {}
         commit, _committed_at = reg.policy_revision(registry)
         local_digest = name_list.policy_digest(reg.local_policy(registry))
@@ -259,6 +259,7 @@ def reconcile_names_command(title: str | None, dry_run: bool, as_json: bool) -> 
         "spares_released": report.spares_released,
         "spares_added": report.spares_added,
         "held": report.held,
+        "top_up_skipped": report.top_up_skipped,
     }
     if as_json:
         _out.raw(Untagged.JSON, json.dumps(summary, sort_keys=True))
@@ -269,6 +270,8 @@ def reconcile_names_command(title: str | None, dry_run: bool, as_json: bool) -> 
         lines.append(f"{verb} spares outside the limits: {', '.join(report.spares_released)}")
     if report.spares_added:
         lines.append(f"added spares: {', '.join(report.spares_added)}")
+    if report.top_up_skipped:
+        lines.append(f"spare top-up skipped: {report.top_up_skipped}")
     lines += [f"published: {name}" for name in report.published]
     lines += [f"recovered: {item}" for item in report.recovered]
     lines += [f"held: {token}: {why}" for token, why in sorted(report.held.items())]
@@ -392,9 +395,308 @@ def check_names_command(as_json: bool) -> None:
     _out.emit(Tag.NAMES, "check", "\n".join(lines))
 
 
-@click.command("list-names", help="Session names: list every held name with its title, host, client and kind")
+@click.command(
+    "set-name-status",
+    help=(
+        "Session names: set the general status of one or more names in one commit; only approved names are "
+        "picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand"
+    ),
+)
+@click.option("-a", "--actor", required=True, help="Who decided, for example the owner whose verdict this records")
+@click.option("-r", "--reason", default=None, help="Why, recorded with each name's status")
+@click.argument("status", type=click.Choice(reg.NAME_STATUSES))
+@click.argument("names", nargs=-1, required=True)
+def set_name_status_command(actor: str, reason: str | None, status: str, names: tuple[str, ...]) -> None:
+    registry = open_registry()
+    values = [name.lower() for name in names]
+    try:
+        changed = reg.set_name_status(registry, values, status, actor=actor, recorded_by=_added_by(), reason=reason)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    unchanged = sorted(set(values) - set(changed))
+    lines = [f"{status}: {', '.join(changed)}"] if changed else []
+    if unchanged:
+        lines.append(f"already {status}, nothing written for: {', '.join(unchanged)}")
+    _out.emit(Tag.NAMES, "set", "\n".join(lines))
+
+
+@click.command(
+    "set-name-verdict",
+    help=(
+        "Session names: approve or reject names for one repository, host or session only; a scoped rejection "
+        "keeps the name out of picks there, a session approval lets that session take it by hand"
+    ),
+)
+@click.option(
+    "-s", "--scope", "scope_kind", required=True, type=click.Choice(reg.SCOPE_KINDS), help="What the verdict applies to"
+)
+@click.option("-v", "--value", "scope_value", required=True, help="The repository name, host id or session title")
+@click.option("-a", "--actor", required=True, help="Who decided")
+@click.option("-r", "--reason", default=None, help="Why, recorded with each verdict")
+@click.option("-d", "--delete", is_flag=True, help="Remove the verdict instead of setting it")
+@click.argument("verdict", type=click.Choice(reg.VERDICT_VALUES))
+@click.argument("names", nargs=-1, required=True)
+def set_name_verdict_command(
+    scope_kind: str,
+    scope_value: str,
+    actor: str,
+    reason: str | None,
+    delete: bool,
+    verdict: str,
+    names: tuple[str, ...],
+) -> None:
+    registry = open_registry()
+    values = [name.lower() for name in names]
+    try:
+        changed = reg.set_name_verdict(
+            registry,
+            values,
+            verdict,
+            scope_kind=scope_kind,
+            scope_value=scope_value,
+            actor=actor,
+            recorded_by=_added_by(),
+            reason=reason,
+            delete=delete,
+        )
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    action = "removed" if delete else verdict
+    if changed:
+        _out.emit(Tag.NAMES, "set", f"{action} for {scope_kind} {scope_value}: {', '.join(changed)}")
+    else:
+        _out.emit(Tag.NAMES, "set", f"nothing to change for {scope_kind} {scope_value}")
+
+
+def _fleet_database(registry: reg.Registry, *, create: bool = True) -> reg.Registry | None:
+    """The fleet's Dolt database, before or after the policy switches to it; refuses with no fleet.
+
+    A database the remote does not hold yet is created with writes off, or, without
+    ``create``, None is returned.
+    """
+    from .name_dolt import DEFAULT_DOLT_REF, DoltRegistry
+
+    if isinstance(registry, DoltRegistry):
+        return registry
+    if not isinstance(registry, reg.FleetRegistry):
+        raise reg.WriteRefusedError("this needs the fleet registry; an install with no fleet keeps a local one")
+    policy = reg.read_policy_file(registry.policy_file)
+    database = DoltRegistry(
+        registry.repo,
+        dolt_ref=str(policy.get("registry_dolt_ref", DEFAULT_DOLT_REF)),
+        remote=registry.remote,
+        policy_file=registry.policy_file,
+        timeout_s=registry.timeout_s,
+        attempts=registry.attempts,
+    )
+    exists = database._git(
+        "ls-remote", registry.remote, database.dolt_ref, timeout=database.fetch_timeout_s(), check=False
+    )
+    if exists.returncode == 0 and not exists.stdout.strip() and not database.has_clone():
+        if not create:
+            return None
+        database.initialize(writes_enabled=False)
+    return database
+
+
+@click.command(
+    "import-names",
+    help=(
+        "Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's "
+        "Dolt database in one commit; a second run finds nothing to import"
+    ),
+)
+@click.option("-f", "--from-ref", "from_ref", default=None, help="The old registry ref (default: registry_ref)")
+@click.option("-d", "--dry-run", is_flag=True, help="Count what would be imported and write nothing")
+def import_names_command(from_ref: str | None, dry_run: bool) -> None:
+    from . import name_import
+
+    registry = open_registry(read_only=True)
+    try:
+        if not isinstance(registry, reg.FleetRegistry):
+            raise reg.WriteRefusedError("import-names needs the fleet registry; an install with no fleet has none")
+        policy = reg.read_policy_file(registry.policy_file)
+        ref = from_ref or policy.get("registry_ref")
+        if not isinstance(ref, str) or not ref:
+            raise reg.WriteRefusedError("the policy names no registry_ref; pass the old ref with -f/--from-ref")
+        source = reg.GitRegistry(
+            registry.repo,
+            ref=ref,
+            remote=registry.remote,
+            policy_file=registry.policy_file,
+            timeout_s=registry.timeout_s,
+            attempts=registry.attempts,
+        )
+        tree = source.snapshot()
+        target = _fleet_database(registry, create=not dry_run)
+        if target is None:
+            report = name_import.tree_counts(tree)
+            report.written = True
+        else:
+            report = name_import.import_tree(target, tree, dry_run=dry_run)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    if dry_run:
+        lines = ["dry run: would import" if report.written else "dry run: nothing to import", *report.lines()]
+    else:
+        lines = ["imported" if report.written else "nothing to import", *report.lines()]
+    _out.emit(Tag.NAMES, "load", "\n".join(lines))
+
+
+@click.command(
+    "seed-name-verdicts",
+    help=(
+        "Session names: apply the owner's approvals from a seed file, after checking it part by part against "
+        "the owner-approved oracle the cutover record pins"
+    ),
+)
+@click.option(
+    "-f", "--file", "path", required=True, type=click.Path(dir_okay=False, path_type=Path), help="The seed file (TOML)"
+)
+def seed_name_verdicts_command(path: Path) -> None:
+    from . import name_import
+
+    registry = open_registry(read_only=True)
+    try:
+        if not isinstance(registry, reg.FleetRegistry):
+            raise reg.WriteRefusedError("seeding needs the fleet registry; an install with no fleet has none")
+        manifest = path.read_text(encoding="utf-8")
+        oracle = name_import.load_oracle(registry.repo)
+        denylist = frozenset(str(name) for name in reg.read_policy_file(registry.policy_file).get("denylist", []))
+        database = _fleet_database(registry)
+        assert database is not None
+        report = name_import.seed_verdicts(
+            database, manifest, oracle=oracle, denylist=denylist, recorded_by=_added_by()
+        )
+    except OSError as exc:
+        _fail(reg.WriteRefusedError(f"cannot read {path}: {exc}"))
+        return
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    head = "seeded" if report.written else "this seed revision was already applied; nothing was written"
+    _out.emit(Tag.NAMES, "apply", "\n".join([head, *name_import.describe(report)]))
+
+
+@click.command("list-migrations", help="Session names: list every recorded rename with its state")
 @click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
-def list_names_command(as_json: bool) -> None:
+def list_migrations_command(as_json: bool) -> None:
+    registry = open_registry(read_only=True)
+    try:
+        snapshot = registry.snapshot()
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    records = [snapshot.migrations[title] for title in sorted(snapshot.migrations)]
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(records, sort_keys=True))
+        return
+    if not records:
+        _out.emit(Tag.NAMES, "list", "no renames are recorded")
+        return
+    lines = [
+        f"{record['old_title']!s:<32} {record['new_title']!s:<32} {record['status']!s:<9} {record['machine']}"
+        for record in records
+    ]
+    _out.emit(Tag.NAMES, "list", "\n".join(lines))
+
+
+@click.command(
+    "find-names",
+    help="Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history",
+)
+@click.option("-s", "--status", type=click.Choice(reg.NAME_STATUSES), default=None, help="General status")
+@click.option(
+    "-k", "--scope", "scope_kind", type=click.Choice(reg.SCOPE_KINDS), default=None, help="Verdict scope kind"
+)
+@click.option("-v", "--value", "scope_value", default=None, help="Verdict scope value")
+@click.option("-m", "--machine", default=None, help="The host holding the name")
+@click.option(
+    "-t",
+    "--state",
+    type=click.Choice(("reserved", "active", "migration-incomplete", "cutover-quarantined")),
+    default=None,
+    help="Hold state",
+)
+@click.option(
+    "-H", "--history", "history_of", default=None, metavar="NAME", help="Every past value of NAME (Dolt only)"
+)
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
+def find_names_command(
+    status: str | None,
+    scope_kind: str | None,
+    scope_value: str | None,
+    machine: str | None,
+    state: str | None,
+    history_of: str | None,
+    as_json: bool,
+) -> None:
+    registry = open_registry(read_only=True)
+    try:
+        if history_of:
+            rows = registry.history(history_of.lower())
+            if as_json:
+                _out.raw(Untagged.JSON, json.dumps(rows, sort_keys=True, default=str))
+                return
+            lines = [
+                f"{row['commit_date']!s:<24} {row['committer']!s:<20} {row['what']:<8} {row['scope'] or '-'!s:<28} "
+                f"{row['value']}"
+                for row in rows
+            ]
+            _out.emit(Tag.NAMES, "list", "\n".join(lines) or f"no history for {history_of}")
+            return
+        filters = {
+            "status": status,
+            "scope_kind": scope_kind,
+            "scope_value": scope_value,
+            "machine": machine,
+            "state": state,
+        }
+        found = registry.find_names(filters)
+    except reg.RegistryError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps(found, sort_keys=True))
+        return
+    lines = []
+    for entry in found:
+        verdicts = ", ".join(f"{v['verdict']} for {v['scope_kind']} {v['scope_value']}" for v in entry["verdicts"])
+        hold = entry["hold"]
+        held = f"{hold['kind']} {hold['state']} on {hold['machine']}" if hold else "free"
+        lines.append(f"{entry['name']:<6} {entry['status']:<11} {held:<36} {verdicts or '-'}")
+    _out.emit(Tag.NAMES, "list", "\n".join(lines) or "no name matches")
+
+
+def _list_pool(snapshot: reg.Snapshot, as_json: bool) -> None:
+    """Every name in the database with its general status and holder; exit 3 when status is unusable."""
+    try:
+        statuses = {name: snapshot.status_of(name) for name in sorted(snapshot.available)}
+    except reg.NameStatusError as exc:
+        _out.error(Tag.NAMES, "list", str(exc))
+        sys.exit(EXIT_UNREADABLE)
+    if as_json:
+        entries = [
+            {"name": name, "status": status, "held_by": snapshot.holder(name)} for name, status in statuses.items()
+        ]
+        _out.raw(Untagged.JSON, json.dumps(entries, sort_keys=True))
+        return
+    counts = ", ".join(f"{value} {list(statuses.values()).count(value)}" for value in reg.NAME_STATUSES)
+    lines = [f"{name:<6} {status:<11} {snapshot.holder(name) or '-'}" for name, status in statuses.items()]
+    _out.emit(Tag.NAMES, "list", "\n".join([*lines, f"{len(statuses)} names: {counts}"]))
+
+
+@click.command(
+    "list-names", help="Session names: list every held name with its title, host, client, kind and general status"
+)
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print the rows as JSON")
+@click.option(
+    "-p", "--pool", is_flag=True, help="List every name in the database instead, with its general status and holder"
+)
+def list_names_command(as_json: bool, pool: bool) -> None:
     from .session import _tmux_session_names
 
     registry = open_registry()
@@ -409,9 +711,22 @@ def list_names_command(as_json: bool) -> None:
             err=True,
             level=_out.Level.WARNING,
         )
+    if pool:
+        if snapshot.statuses is None:
+            _out.error(Tag.NAMES, "list", "this registry keeps no name status; it arrives with the database registry")
+            sys.exit(EXIT_UNREADABLE)
+        _list_pool(snapshot, as_json)
+        return
     host = _host()
     live = set(_tmux_session_names())
     rows = sorted(snapshot.rows.values(), key=lambda row: (str(row.get("machine")), row["token"]))
+    try:
+        statuses = (
+            {row["token"]: snapshot.status_of(row["token"]) for row in rows} if snapshot.statuses is not None else {}
+        )
+    except reg.NameStatusError as exc:
+        _out.emit(Tag.NAMES, "list", f"{exc}; statuses show as -", err=True, level=_out.Level.WARNING)
+        statuses = {}
 
     def running(row: dict) -> bool | None:
         """Whether this machine runs the row's session; None for another machine's row or a spare."""
@@ -422,7 +737,13 @@ def list_names_command(as_json: bool) -> None:
         )
 
     if as_json:
-        _out.raw(Untagged.JSON, json.dumps([{**row, "running": running(row)} for row in rows], sort_keys=True))
+        _out.raw(
+            Untagged.JSON,
+            json.dumps(
+                [{**row, "running": running(row), "status": statuses.get(row["token"])} for row in rows],
+                sort_keys=True,
+            ),
+        )
         return
     from .session_locate import unregistered_sessions
 
@@ -436,7 +757,8 @@ def list_names_command(as_json: bool) -> None:
         state = {True: " running", False: " stopped", None: ""}[running(row)]
         lines.append(
             f"{row['token']:<6} {row.get('title') or '-'!s:<32} {row.get('machine')!s:<16} "
-            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {row.get('reserved_at')}{state}"
+            f"{row.get('client') or '-'!s:<12} {row['kind']:<8} {statuses.get(row['token'], '-'):<11} "
+            f"{row.get('reserved_at')}{state}"
         )
     # Sessions named before the registry hold no row, so they are listed from this
     # host's tmux and worktrees, each with the command that resumes it.
@@ -626,6 +948,12 @@ COMMANDS = (
     add_name_command,
     remove_name_command,
     show_name_config_command,
+    set_name_status_command,
+    set_name_verdict_command,
+    import_names_command,
+    seed_name_verdicts_command,
+    list_migrations_command,
+    find_names_command,
     reconcile_names_command,
     release_name_command,
     reassign_name_command,

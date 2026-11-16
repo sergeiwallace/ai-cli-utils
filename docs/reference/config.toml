@@ -212,6 +212,9 @@ stale_session_timeout = 15
 ## registry's publish timeout.
 # registry_fetch_timeout_seconds = 60
 # registry_push_timeout_seconds = 60
+## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
+## 300 on Windows.
+# registry_clone_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false

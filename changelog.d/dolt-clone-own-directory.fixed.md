@@ -1,0 +1,1 @@
+Two Dolt session-name registries cloning side by side in one directory no longer break each other's clone on Windows with "The system cannot find the path specified". Each clone now runs from its registry's own directory, where Dolt keeps its temporary files.

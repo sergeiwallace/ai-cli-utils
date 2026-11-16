@@ -27,7 +27,7 @@ from process_wait import scaled
 from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
-from ai_cli.config import get_xdg_config_home, get_xdg_state_home
+from ai_cli.config import get_xdg_config_home, get_xdg_data_home, get_xdg_state_home
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
@@ -161,9 +161,27 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
         return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), *flags])
 
 
+def _without_registry_cache(tree: dict | None, root: Path) -> dict | None:
+    """``tree`` less the Dolt name registry's local clone, when it lives under ``root``.
+
+    The clone is a cache that every registry read, a preview's included, fetches into.
+    On Windows the data directory is the state directory, so the clone sits in the state
+    tree; elsewhere it has its own directory. Whether a preview wrote the registry is
+    checked against the remote tip instead.
+    """
+    if tree is None:
+        return None
+    try:
+        prefix = (get_xdg_data_home().relative_to(root) / "session-names.dolt").as_posix()
+    except ValueError:
+        return tree
+    return {path: entry for path, entry in tree.items() if not path.startswith(prefix)}
+
+
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
     trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees["state"] = _without_registry_cache(trees["state"], slot["state"])
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
     trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")
     return trees
