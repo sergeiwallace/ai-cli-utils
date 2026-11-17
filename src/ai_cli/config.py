@@ -915,7 +915,8 @@ scope = "group"
 ## Fallback member ID or SSH alias when [machine] session_group_members is unset.
 ## Empty uses the default remote machine, when configured.
 group_host = ""
-## Deprecated aliases: use "group" for "pair" and group_host for pair_host.
+## Deprecated alias of group_host, still read: pair_host. Use group_host.
+# pair_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
