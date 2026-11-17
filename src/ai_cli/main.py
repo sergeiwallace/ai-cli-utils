@@ -4976,7 +4976,7 @@ def _do_session_launch(
         if _tmux_report.versions_disagree:
             reporter.error(
                 "tmux",
-                "tmux client is "
+                f"{_tmux_report.kind} client is "
                 f"{_tmux_report.client_version} ({_tmux_report.path}) but the running server is "
                 f"{_tmux_report.server_version}.\n"
                 "  With more than one tmux installed, the server may belong to the other one: stop it\n"

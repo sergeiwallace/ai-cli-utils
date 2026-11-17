@@ -262,6 +262,9 @@ class TmuxReport:
     # tmux process whatsoever, so it cannot report a version and must not imply
     # the binary is broken by printing that it has none.
     versions_probed: bool = True
+    # Which multiplexer answers to ``tmux``: "tmux", or "psmux" for the native
+    # Windows multiplexer that installs itself under that name. Read from ``-V``.
+    kind: str = "tmux"
 
     @property
     def runs(self) -> bool:
@@ -423,7 +426,7 @@ def _probe_output(argv: list[str], timeout: int) -> str | None:
     return value or None
 
 
-_VERSION_TOKEN = re.compile(r"^(?:next-)?\d+\.\d+[a-z]?(?:-rc\d*)?$")
+_VERSION_TOKEN = re.compile(r"^(?:next-)?\d+\.\d+(?:\.\d+)?[a-z]?(?:-rc\d*)?$")
 
 
 def parse_client_version(printed: str) -> str | None:
@@ -433,11 +436,22 @@ def parse_client_version(printed: str) -> str | None:
     (a port name, a build date). The first token shaped like a version is the version; the
     last token is not, which is how a trailing ``2026-10-13)`` was once reported as one.
     """
-    text = printed.strip()
+    # The first line only: psmux prints a second, human-facing line
+    # ("psmux 3.4.0 (<commit> <date>)") that is not part of tmux's -V contract.
+    text = printed.strip().splitlines()[0].strip() if printed.strip() else ""
     for token in text.split():
         if _VERSION_TOKEN.match(token.strip("(),;")):
             return token.strip("(),;")
     return text.removeprefix("tmux ").strip() or None
+
+
+def parse_kind(printed: str) -> str:
+    """``"psmux"`` when ``tmux -V`` output carries psmux's provenance line, else ``"tmux"``.
+
+    psmux keeps tmux's first line ("tmux <version>") for tools that parse it and adds
+    a second line starting "psmux ", so the second line is the only marker.
+    """
+    return "psmux" if any(line.strip().startswith("psmux ") for line in printed.splitlines()) else "tmux"
 
 
 def _comparable(version: str) -> str:
@@ -467,13 +481,13 @@ def probe(timeout: int = 10, *, query_versions: bool = True) -> TmuxReport:
     if not query_versions:
         return TmuxReport(present=True, path=path, versions_probed=False)
 
-    client = _probe_output(["tmux", "-V"], timeout)
-    if client is not None:
-        client = parse_client_version(client)
+    printed = _probe_output(["tmux", "-V"], timeout)
+    client = parse_client_version(printed) if printed is not None else None
+    kind = parse_kind(printed) if printed is not None else "tmux"
 
     server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
 
-    return TmuxReport(present=True, path=path, client_version=client, server_version=server)
+    return TmuxReport(present=True, path=path, client_version=client, server_version=server, kind=kind)
 
 
 def report_lines(
@@ -505,6 +519,8 @@ def report_lines(
         return lines
 
     detail = report.client_version or "version unavailable (binary does not run)"
+    if report.kind != "tmux":
+        detail = f"{report.kind} {detail}"
     lines.append(("tmux", f"{detail} at {report.path}"))
 
     if report.server_version and not report.formats_unexpanded:
@@ -524,7 +540,7 @@ def report_lines(
         lines.append(
             (
                 "Warning",
-                f"tmux client {report.client_version} ({report.path}) but the running "
+                f"{report.kind} client {report.client_version} ({report.path}) but the running "
                 f"server is {report.server_version}. The server answers every "
                 f"format query, so it decides compatibility; relaunch every session "
                 f"to converge.",
