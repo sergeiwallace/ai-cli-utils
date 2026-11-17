@@ -646,6 +646,13 @@ def get_engine_script(
         # runs once per child: an earlier Ctrl+C that correctly restarted the
         # agent would otherwise abort every later promotion before it began.
         _promotion_int_baseline=$_supervisor_int_count
+    # BEGIN RUN STATE promotion-int-baseline
+        # The count as it stood before the child was spawned, not as it stands now: the
+        # child starts in the background, so on a loaded host it can report its group, and
+        # a Ctrl+C can be counted, before this shell gets here. Taken here, that press was
+        # already in the baseline and the loop retried for its whole budget.
+        _promotion_int_baseline=$_supervisor_spawn_int_count
+    # END RUN STATE
         while (( _promotion_attempt < 3000 )); do
           if (( _supervisor_int_count > _promotion_int_baseline )); then
             # Ctrl+C while the terminal is being transferred must end this wait.
@@ -781,6 +788,9 @@ def get_engine_script(
     # END RUN STATE
         _supervisor_child_ready_path=$(mktemp "$_ai_state_dir/child-ready.XXXXXX") || exit 1
         export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
+    # BEGIN RUN STATE promotion-int-baseline
+        _supervisor_spawn_int_count=$_supervisor_int_count
+    # END RUN STATE
         # With job control disabled, Bash backgrounds a command with SIGINT and
         # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
         # dispositions in a short exec wrapper before the child shell starts,
