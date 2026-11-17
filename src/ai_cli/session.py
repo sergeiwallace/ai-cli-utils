@@ -1028,6 +1028,40 @@ def _contains_git_checkout(directory: Path) -> Path | None:
     return None
 
 
+def _slot_registration_gone(wt_dir: Path, registered: list[Path]) -> bool:
+    """Return whether ``wt_dir`` is a linked worktree whose admin directory no longer exists.
+
+    Its ``.git`` file reads ``gitdir: <path>``; when that path is gone, no git record refers
+    to the checkout, so moving it aside keeps everything: its commits are on its branch in
+    the repository, and its uncommitted files move with it. A ``.git`` directory (an
+    independent clone) never qualifies, nor does a slot holding a registered worktree
+    nested inside it, which a move would break.
+    """
+    git_entry = wt_dir / ".git"
+    if not git_entry.is_file():
+        return False
+    try:
+        line = git_entry.read_text(errors="replace").strip()
+    except OSError:
+        return False
+    if not line.startswith("gitdir:"):
+        return False
+    target = line.removeprefix("gitdir:").strip()
+    # Windows: Git Bash's git can write ``/c/Users/...``, which Windows Python reads as a
+    # path on the current drive's root. Read it as ``C:/Users/...`` so a live slot never
+    # looks unregistered.
+    msys = re.match(r"^/([A-Za-z])/(.*)$", target)
+    if sys.platform == "win32" and msys:
+        target = f"{msys.group(1)}:/{msys.group(2)}"
+    admin = Path(target)
+    if not admin.is_absolute():
+        admin = wt_dir / admin
+    if admin.exists():
+        return False
+    slot = wt_dir.resolve()
+    return not any(p != slot and p.is_relative_to(slot) for p in (path.resolve() for path in registered))
+
+
 def _is_empty_dir(directory: Path) -> bool:
     """Return whether ``directory`` is a directory holding no entries at all.
 
@@ -1532,7 +1566,11 @@ def create_worktree(
                 # live process leaves the slot present and deregistered, and every
                 # later launch refused over a directory git would have accepted.
                 holder = _contains_git_checkout(wt_dir)
-                if holder == wt_dir:
+                if holder == wt_dir and _slot_registration_gone(wt_dir, registered_worktrees(repo_root)):
+                    # The repair above could not relink it: its admin directory is gone, so
+                    # git refers to it nowhere. Moving it aside below loses nothing.
+                    holder = None
+                elif holder == wt_dir:
                     raise RuntimeError(_slot_checkout_refusal(repo_root, wt_dir, branch_name))
                 if holder is not None:
                     raise RuntimeError(
