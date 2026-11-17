@@ -342,9 +342,9 @@ class TestLogNotification:
             body="Weekly: 76.0%",
             priority="high",
             tags=["warning"],
-            channels_attempted=["discord", "ntfy"],
+            channels_attempted=["discord", "os"],
             channels_succeeded=["discord"],
-            channels_failed=["ntfy"],
+            channels_failed=["os"],
         )
         conn = quota_db._get_conn()
         row = conn.execute("SELECT * FROM notification_log").fetchone()
@@ -440,15 +440,15 @@ class TestQueryNotificationLog:
 
     def test_when_channels_are_deserialized_as_lists(self):
         self._insert(
-            channels_attempted=["discord", "ntfy"],
+            channels_attempted=["discord", "os"],
             channels_succeeded=["discord"],
-            channels_failed=["ntfy"],
+            channels_failed=["os"],
         )
         rows = quota_db.query_notification_log()
         assert isinstance(rows[0]["channels_attempted"], list)
-        assert rows[0]["channels_attempted"] == ["discord", "ntfy"]
+        assert rows[0]["channels_attempted"] == ["discord", "os"]
         assert rows[0]["channels_succeeded"] == ["discord"]
-        assert rows[0]["channels_failed"] == ["ntfy"]
+        assert rows[0]["channels_failed"] == ["os"]
 
     def test_when_source_filter_applied_then_only_matching_rows(self):
         self._insert(source="quota-watch")
@@ -459,10 +459,10 @@ class TestQueryNotificationLog:
 
     def test_when_failed_only_then_only_rows_with_failures(self):
         self._insert(channels_failed=[])
-        self._insert(channels_failed=["ntfy"])
+        self._insert(channels_failed=["os"])
         rows = quota_db.query_notification_log(failed_only=True)
         assert len(rows) == 1
-        assert rows[0]["channels_failed"] == ["ntfy"]
+        assert rows[0]["channels_failed"] == ["os"]
 
     def test_when_since_relative_2h_then_filters_old_rows(self):
         from datetime import datetime as _dt
