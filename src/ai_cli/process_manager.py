@@ -110,7 +110,7 @@ def _cmd_quota_watch_start(auto: bool = False) -> None:
 
     ``auto=True`` is the per-session-launch auto-start path (session_script.py);
     it is gated on ``[quota_watch] auto_start`` in config.toml (default off — the
-    CC statusline already surfaces weekly usage, so unattended ntfy/discord alerts
+    CC statusline already surfaces weekly usage, so unattended Discord alerts
     are opt-in). A bare, explicitly-typed ``ai quota watch start`` (``auto=False``)
     always registers regardless of the config flag — explicit intent is honored.
     """
