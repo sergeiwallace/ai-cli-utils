@@ -220,7 +220,10 @@ claude_perms_flag=""
 printf 'WRAPPER %s\\n' "$$" >> {calls}
 run_agent() {{ printf 'RUN %s\\n' "$*" >> {calls}; "$@"; }}
 ai() {{
-  if [[ "$1 $2" == "internal codex-publisher" ]]; then {shlex.quote(sys.executable)} -m ai_cli.main "$@"; return; fi
+  # exec, as the real ``ai`` executable is the process itself: the session script signals the
+  # monitor by ``$!``, which for a backgrounded function is its subshell, and a subshell that
+  # only forwarded to a child would leave the monitor running past SIGTERM.
+  if [[ "$1 $2" == "internal codex-publisher" ]]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi
   printf 'AI %s\\n' "$*" >> {calls}
   return 0
 }}
