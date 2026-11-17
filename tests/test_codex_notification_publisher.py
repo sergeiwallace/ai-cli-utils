@@ -484,6 +484,7 @@ def test_given_an_invalid_timeout_when_launching_then_the_publisher_is_off_with_
 def begin_env(world, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(world["tmp"] / "state"))
     monkeypatch.setenv("AI_CLI_RUN_GENERATION", "gen-1")
+    monkeypatch.setenv("CODEX_HOME", str(world["tmp"] / "codex-home"))
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.chdir(world["tmp"])
     return world

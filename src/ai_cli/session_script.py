@@ -1668,12 +1668,16 @@ with open(path, 'w') as f:
         # Its own Codex process, not the host's shared app-server daemon, when this Codex
         # offers --no-daemon, so tool processes descend from the attested agent.
         if [[ "$(ai internal codex-exclusive-flags 2>/dev/null)" == "--no-daemon" ]]; then _cx_own=(--no-daemon); fi
+        # With a notification publisher that accepts this session, the TUI attaches to the
+        # session's own app-server instead (docs/designs/codex-notification-publisher.md).
+        if _ai_codex_publisher_start; then _cx_own=("${{_cx_attach_args[@]}}"); fi
         _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
         # Record this pane for the thread, so a tool inside Codex finds its own pane even
         # when the app-server it runs under inherited a pane that has since closed.
         (ai internal bind-codex-pane "${{TMUX_PANE:-}}" "$ai_name" >/dev/null 2>&1 || true) &
         if [[ -n "$_cx_thread" ]]; then
           run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
+          _ai_codex_publisher_end
           return
         fi
         local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
@@ -1685,6 +1689,55 @@ with open(path, 'w') as f:
         if $first_run; then run_agent codex "${{_cx_own[@]}}"
         else run_agent codex resume "${{_cx_own[@]}}" --last
         fi
+        _ai_codex_publisher_end
+      }}
+      # The notification publisher's phases, when [codex.publisher] command is set. begin runs
+      # before the app-server, which listens on the socket the publisher names; running proves
+      # it; a background monitor enrolls the thread and refreshes it, and calls finish when the
+      # TUI exits. Every refusal or failure returns 1 here, and Codex launches as before.
+      _cx_engine_pid=""
+      _cx_monitor_pid=""
+      _cx_attach_args=()
+      _ai_codex_publisher_start() {{
+        local _cx_socket="" _cx_attach="" _cx_line=""
+        _cx_engine_pid="" _cx_monitor_pid=""
+        _cx_attach_args=()
+        _cx_socket=$(ai internal codex-publisher begin "$tmux_session" "$ai_name" "$$") || _cx_socket=""
+        [[ -n "$_cx_socket" ]] || return 1
+        codex app-server --listen "unix://$_cx_socket" </dev/null >/dev/null 2>&1 &
+        _cx_engine_pid=$!
+        _cx_attach=$(ai internal codex-publisher running "$tmux_session" "$$" "$_cx_engine_pid") || _cx_attach=""
+        if [[ -z "$_cx_attach" ]]; then
+          _ai_codex_publisher_stop_engine
+          return 1
+        fi
+        while IFS= read -r _cx_line; do
+          [[ -n "$_cx_line" ]] && _cx_attach_args+=("$_cx_line")
+        done <<< "$_cx_attach"
+        ai internal codex-publisher monitor "$tmux_session" "$$" "$_cx_engine_pid" </dev/null >/dev/null &
+        _cx_monitor_pid=$!
+        return 0
+      }}
+      _ai_codex_publisher_stop_engine() {{
+        [[ -n "$_cx_engine_pid" ]] || return 0
+        local _cx_wait=0
+        kill -TERM "$_cx_engine_pid" 2>/dev/null || true
+        while kill -0 "$_cx_engine_pid" 2>/dev/null && (( _cx_wait < 50 )); do
+          sleep 0.1
+          _cx_wait=$((_cx_wait + 1))
+        done
+        kill -0 "$_cx_engine_pid" 2>/dev/null && kill -KILL "$_cx_engine_pid" 2>/dev/null
+        wait "$_cx_engine_pid" 2>/dev/null || true
+        _cx_engine_pid=""
+      }}
+      _ai_codex_publisher_end() {{
+        if [[ -n "$_cx_monitor_pid" ]]; then
+          # The monitor calls finish on TERM, bounded by the publisher timeout.
+          kill -TERM "$_cx_monitor_pid" 2>/dev/null || true
+          while kill -0 "$_cx_monitor_pid" 2>/dev/null; do wait "$_cx_monitor_pid" 2>/dev/null; done
+          _cx_monitor_pid=""
+        fi
+        _ai_codex_publisher_stop_engine
       }}
     # END AGENT NAMING
     # BEGIN BACKGROUND ATTACH prompted

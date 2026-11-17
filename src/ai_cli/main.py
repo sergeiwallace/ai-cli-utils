@@ -2265,6 +2265,10 @@ def _handle_internal(argv: list[str]) -> None:
         if failure:
             _out.emit(Tag.INTERNAL, "session", f"{argv[2]}: Codex pane not recorded: {failure}", err=True)
         sys.exit(1 if failure else 0)
+    elif action == "codex-publisher":
+        from . import codex_publisher as _codex_publisher
+
+        sys.exit(_codex_publisher.main(config, argv[1:]))
     elif action == "record-agent-identity":
         if len(argv) not in (3, 4) or not argv[2].isdigit():
             _out.emit(

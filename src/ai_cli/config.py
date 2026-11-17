@@ -615,6 +615,43 @@ def read_messaging_config(config: dict) -> dict:
     return result
 
 
+CODEX_PUBLISHER_DEFAULTS: dict = {
+    # The notification publisher's argv; each phase runs it as `<command> <phase>`. Empty: off.
+    "command": [],
+    # The launcher's outer bound on each phase child, which it kills and reaps when it passes.
+    "timeout_ms": 15000,
+    "refresh_seconds": 60,
+    "enroll_window_seconds": 600,
+    # The Codex TUI option that attaches it to a running app-server. Not confirmed against a
+    # Codex release by the launcher, so it is kept here where a machine can correct it.
+    "remote_flag": "--remote",
+}
+CODEX_PUBLISHER_LIMITS = {"timeout_ms": 600_000, "refresh_seconds": 86_400, "enroll_window_seconds": 86_400}
+
+
+def read_codex_publisher_config(config: dict) -> dict:
+    """Validate ``[codex.publisher]`` read at call time; any invalid value raises ``ValueError``."""
+    codex = config.get("codex", {})
+    if not isinstance(codex, dict):
+        raise ValueError("codex must be a table")
+    section = codex.get("publisher", {})
+    if not isinstance(section, dict):
+        raise ValueError("codex.publisher must be a table")
+    result = CODEX_PUBLISHER_DEFAULTS | section
+    command = result["command"]
+    if not isinstance(command, list) or not all(isinstance(arg, str) and arg and "\0" not in arg for arg in command):
+        raise ValueError("invalid codex.publisher.command: use a list of non-empty strings")
+    for key, limit in CODEX_PUBLISHER_LIMITS.items():
+        value = result[key]
+        if type(value) is not int or not 0 < value <= limit:
+            raise ValueError(f"invalid codex.publisher.{key}: use a whole number from 1 to {limit}")
+    if not isinstance(result["remote_flag"], str) or not re.fullmatch(
+        r"--?[A-Za-z][A-Za-z0-9-]*", result["remote_flag"]
+    ):
+        raise ValueError("invalid codex.publisher.remote_flag: use one option name, such as --remote")
+    return result
+
+
 def read_relaunch_config(config: dict) -> dict:
     """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
     section = config.get("relaunch", {})
@@ -748,6 +785,23 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Command used to launch gemini-cli. Override if the binary is not on PATH
 ## (e.g. "npx @google/gemini-cli" for npx-only installs).
 # command = "gemini"
+
+[codex.publisher]
+## An optional notification publisher for supervised `ai cx` sessions (not bare ones, and
+## never on Windows, which has no Unix-socket transport). With command set, the session asks
+## it to `begin`; on acceptance Codex runs on its own app-server at the socket the publisher
+## names, so notices can reach the session's thread. Any refusal, timeout or bad answer
+## launches Codex as before and prints one notice. Read on every call; no environment knob.
+## The argv of the publisher; each phase runs it as `<command> <phase>`. Unset or empty: off.
+# command = ["/path/to/publisher", "codex-publish"]
+## Milliseconds each phase may take before its process group is killed (1 to 600000).
+# timeout_ms = 15000
+## Seconds between refreshes once the session's Codex thread is enrolled (1 to 86400).
+# refresh_seconds = 60
+## Seconds to keep asking to enroll before notifications are given up for the session.
+# enroll_window_seconds = 600
+## The Codex TUI option that attaches it to the app-server, passed as `<flag> unix://<socket>`.
+# remote_flag = "--remote"
 
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
