@@ -142,6 +142,12 @@ enabled = true
 ## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
 ## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
