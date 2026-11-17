@@ -54,6 +54,14 @@ def _session_with_uncommitted_work(repo: Path, name: str) -> Path:
     return slot
 
 
+def _rewrite(path: Path, text: str) -> None:
+    """Replace ``path``'s text in place. Git for Windows marks a worktree's ``.git`` file hidden,
+    and Windows refuses to open a hidden file for writing with truncate-or-create (``"w"``)."""
+    with path.open("r+", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.truncate()
+
+
 def _admin_dir(slot: Path) -> Path:
     return Path((slot / ".git").read_text().split("gitdir:", 1)[1].strip())
 
@@ -80,7 +88,7 @@ def test_given_both_linkage_records_name_another_spelling_when_relaunched_then_t
     admin = _admin_dir(slot)
     other = _other_spelling(tmp_path, slot)
     (admin / "gitdir").write_text(f"{other / '.git'}\n")
-    (slot / ".git").write_text(f"gitdir: {tmp_path / 'other-spelling' / admin.relative_to(tmp_path)}\n")
+    _rewrite(slot / ".git", f"gitdir: {tmp_path / 'other-spelling' / admin.relative_to(tmp_path)}\n")
 
     result = create_worktree("session-2", repo_root=repo, with_status=True)
 
