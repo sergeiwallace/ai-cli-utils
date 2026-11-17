@@ -792,6 +792,12 @@ enabled = true
 ## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
 ## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
@@ -1766,6 +1772,33 @@ def get_worktree_marker_prefix() -> str:
     except Exception:
         return ""
     return value.strip() if isinstance(value, str) else ""
+
+
+#: ``[worktree] venv`` values: a private ``uv sync`` environment per worktree, or a link to main's.
+WORKTREE_VENV_MODES = ("private", "link")
+#: Seconds a new worktree's ``uv sync`` may take before the launch stops and says so.
+DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT = 900.0
+
+
+def get_worktree_venv_mode() -> str:
+    """``[worktree] venv``, read at call time: "private" (the default) or "link"."""
+    try:
+        value = load_config().get("worktree", {}).get("venv")
+    except Exception:
+        return "private"
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if value in WORKTREE_VENV_MODES else "private"
+
+
+def get_worktree_venv_sync_timeout() -> float:
+    """``[worktree] venv_sync_timeout_seconds``, read at call time; positive, else the default."""
+    try:
+        value = load_config().get("worktree", {}).get("venv_sync_timeout_seconds")
+    except Exception:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    return float(value)
 
 
 def get_environment_repo() -> str:

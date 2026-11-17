@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from .config import (
     _get_projects_dir,
     get_current_project_name,
     get_worktree_upstream_branches,
+    get_worktree_venv_mode,
+    get_worktree_venv_sync_timeout,
     get_xdg_state_home,
     load_project_registry,
     resolve_project_prefix,
@@ -1195,6 +1198,61 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
     )
 
 
+_VENV_ENV_OVERRIDES = ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT")
+
+
+def _provision_private_venv(repo_root: Path, worktree_path: Path) -> bool:
+    """Give a uv-locked project's worktree its own ``.venv``; True when ``.venv`` is already there.
+
+    ``.venv`` used to be linked to the main checkout, so every session of a project shared one
+    environment, and a ``uv sync`` in any of them rewrote the editable install the others
+    imported to point at that session's checkout. A project with a ``uv.lock`` now gets
+    ``uv sync --frozen`` run inside the new worktree before it is returned, so its environment is
+    built from the same lock without rewriting it. An existing ``.venv`` (a reused worktree, or one
+    a store links in) is left as it is. ``[worktree] venv = "link"`` keeps the shared link, and a
+    project without a ``uv.lock`` keeps it too, since its environment cannot be rebuilt from a lock.
+    A failed or missing ``uv`` stops the launch with the reason rather than falling back to a
+    shared environment.
+    """
+    dst = worktree_path / ".venv"
+    if dst.exists() or dst.is_symlink():
+        return True
+    if get_worktree_venv_mode() != "private" or not (worktree_path / "uv.lock").is_file():
+        return False
+    remedy = (
+        'or set [worktree] venv = "link" in your ai-cli-utils config.toml to share '
+        f"{repo_root / '.venv'} (every session then changes that one environment)"
+    )
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError(
+            f"create_worktree: {worktree_path} needs its own virtual environment, but `uv` is not on "
+            f"PATH. Install uv, {remedy}."
+        )
+    command = [uv, "sync", "--frozen"]
+    env = {key: value for key, value in os.environ.items() if key not in _VENV_ENV_OVERRIDES}
+    timeout = get_worktree_venv_sync_timeout()
+    try:
+        result = subprocess.run(
+            command, cwd=worktree_path, env=env, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"create_worktree: `uv sync --frozen` in {worktree_path} did not finish in {timeout:g}s. "
+            f"Raise [worktree] venv_sync_timeout_seconds, {remedy}."
+        ) from error
+    except OSError as error:
+        raise RuntimeError(f"create_worktree: could not run `uv sync --frozen` in {worktree_path}: {error}") from error
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-5:])
+        raise RuntimeError(
+            f"create_worktree: `uv sync --frozen` in {worktree_path} exited {result.returncode}:\n{tail}\n"
+            f"Fix the project's environment, {remedy}."
+        )
+    launch_reporter.active().phase("worktree").outcome(f"created its own virtual environment at {dst}")
+    return True
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1224,8 +1282,13 @@ def _initialize_worktree(
         else:
             _set_upstream_or_raise(repo_root, branch, upstream)
 
+    # A uv-locked project's worktree gets its own environment; a link to main's would let
+    # one session's sync rewrite what every other session imports.
+    private_venv = _provision_private_venv(repo_root, worktree_path)
     # Symlink critical environment files
     for item in [".venv", ".claude", ".gemini", ".direnv"]:
+        if item == ".venv" and private_venv:
+            continue
         src = repo_root / item
         dst = worktree_path / item
         if src.exists() and not dst.exists():
