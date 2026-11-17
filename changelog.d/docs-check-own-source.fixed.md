@@ -1,0 +1,1 @@
+- The docs check run by the pre-commit hook now documents the checkout it runs in, even when a venv shared with another worktree imports that worktree's source.

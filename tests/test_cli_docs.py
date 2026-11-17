@@ -7,6 +7,8 @@ and real options, and that the narrative guide defers to the generated reference
 import os
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -236,6 +238,32 @@ def test_given_the_committed_reference_and_readme_when_compared_with_the_tree_th
     diff = gen.stale(REPO, _cli_group)
 
     assert diff == "", f"Generated docs are stale. Run: {gen.REGENERATE}\n{diff}"
+
+
+def test_given_the_venv_imports_another_checkouts_source_when_the_docs_check_runs_then_it_checks_this_checkout(
+    tmp_path,
+):
+    """Worktrees can share one venv, whose editable install points at whichever worktree synced last.
+
+    The pre-commit docs check runs ``uv run --no-sync python scripts/generate_docs.py --check``, so it
+    must document the checkout it runs in, not the source the venv happens to import.
+    """
+    foreign = tmp_path / "foreign" / "ai_cli"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_text('raise ImportError("imported another checkout")\n', encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(foreign.parent)}
+
+    result = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "generate_docs.py"), "--check"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _region(text, begin, end):
