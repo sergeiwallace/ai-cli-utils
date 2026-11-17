@@ -1796,7 +1796,7 @@ def get_worktree_venv_sync_timeout() -> float:
         value = load_config().get("worktree", {}).get("venv_sync_timeout_seconds")
     except Exception:
         return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
-    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
         return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
     return float(value)
 
