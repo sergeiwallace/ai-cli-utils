@@ -37,6 +37,7 @@ from pathlib import Path
 import portalocker
 
 from . import output as _out
+from . import tmux_binary
 from .cc_migrate import _rewrite_line
 from .git_repair import _git_env
 from .output import Tag
@@ -1406,11 +1407,11 @@ def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> str | Non
     """
     del project_name
     session_name = f"=c-{wt_dir.name}"
-    has_session = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
+    has_session = subprocess.run(tmux_binary.argv("has-session", "-t", session_name), capture_output=True, check=False)
     if has_session.returncode != 0:
         return None
     pane = subprocess.run(
-        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"],
+        tmux_binary.argv("list-panes", "-t", session_name, "-F", "#{pane_pid}"),
         capture_output=True,
         text=True,
         check=False,

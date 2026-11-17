@@ -24,6 +24,7 @@ from . import (
     session_publish_timer,
     session_reconcile,
     session_state_publish,
+    tmux_binary,
 )
 from . import session_registry as registry
 from . import session_run_state as state
@@ -433,7 +434,7 @@ class StopReport:
 def _pane_pids(tmux_session: str) -> list[int]:
     try:
         listed = subprocess.run(
-            ["tmux", "list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"],
+            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"),
             capture_output=True,
             text=True,
             check=False,

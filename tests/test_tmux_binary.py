@@ -73,7 +73,7 @@ def probes(monkeypatch):
             return "3.4.0"
         raise AssertionError(f"unexpected probe: {argv}")
 
-    real_which = tmux_setup.shutil.which
+    real_which = tmux_binary.shutil.which
 
     def _which(name, *args, **kwargs):
         if name == "tmux":
@@ -81,7 +81,7 @@ def probes(monkeypatch):
         return real_which(name, *args, **kwargs)
 
     monkeypatch.setattr(tmux_setup, "_probe_output", _probe)
-    monkeypatch.setattr(tmux_setup.shutil, "which", _which)
+    monkeypatch.setattr(tmux_binary.shutil, "which", _which)
     return calls
 
 
@@ -246,19 +246,19 @@ def _dry_run_launch(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "state"))
     with contextlib.ExitStack() as stack:
-        for target, kwargs in (
-            ("sys.argv", {"new": ["ai", "c", "7", "--dry-run", "--no-direnv"]}),
-            ("ai_cli.main.sys.platform", {"new": "linux"}),
-            ("ai_cli.tmux_setup.install_tmux", {"side_effect": AssertionError("a dry run installed tmux")}),
-            ("ai_cli.session.detect_repo_root", {"return_value": str(tmp_path)}),
-            ("ai_cli.session._resolve_is_remote", {"return_value": False}),
-            ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
-            ("ai_cli.session.get_project_prefix", {"return_value": "myproject"}),
-            ("ai_cli.session.is_current_project_resolved", {"return_value": True}),
-            ("ai_cli.session.build_session_name", {"return_value": ("c-myproject-7", "myproject-7")}),
-            ("ai_cli.main.os.execvp", {"side_effect": AssertionError("a dry run must not exec")}),
+        for patcher in (
+            patch("sys.argv", ["ai", "c", "7", "--dry-run", "--no-direnv"]),
+            patch("ai_cli.main.sys.platform", "linux"),
+            patch("ai_cli.tmux_setup.install_tmux", side_effect=AssertionError("a dry run installed tmux")),
+            patch("ai_cli.session.detect_repo_root", return_value=str(tmp_path)),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="myproject"),
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.build_session_name", return_value=("c-myproject-7", "myproject-7")),
+            patch("ai_cli.main.os.execvp", side_effect=AssertionError("a dry run must not exec")),
         ):
-            stack.enter_context(patch(target, **kwargs))
+            stack.enter_context(patcher)
         yield
 
 
@@ -323,9 +323,13 @@ def test_given_no_tmux_binary_setting_when_the_shell_prelude_is_built_then_it_is
 # --------------------------------------------------------------------------
 
 
+# Calls whose first argument names the program to find or exec.
+_NAMED_PROGRAM_CALLS = ("which", "execvp", "execlp", "_exec_handoff")
+
+
 def _literal_tmux_argv_sites(root: Path = SRC) -> list[str]:
     """Every list whose first element is the literal ``"tmux"``, every ``("tmux",)``
-    command tuple, and every ``which("tmux")``, outside the resolver module."""
+    command tuple, and every ``which("tmux")`` or exec of ``"tmux"``, outside the resolver."""
     sites: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if path.name == "tmux_binary.py":
@@ -335,10 +339,10 @@ def _literal_tmux_argv_sites(root: Path = SRC) -> list[str]:
             first = None
             if (isinstance(node, ast.List) and node.elts) or (isinstance(node, ast.Tuple) and len(node.elts) == 1):
                 first = node.elts[0]
-            elif isinstance(node, ast.Call) and ast.unparse(node.func).endswith("which") and node.args:
+            elif isinstance(node, ast.Call) and ast.unparse(node.func).endswith(_NAMED_PROGRAM_CALLS) and node.args:
                 first = node.args[0]
             if isinstance(first, ast.Constant) and first.value == "tmux":
-                sites.append(f"{path.relative_to(root)}:{node.lineno}: {ast.unparse(node)[:80]}")
+                sites.append(f"{path.relative_to(root)}:{getattr(node, 'lineno', 0)}: {ast.unparse(node)[:80]}")
     return sites
 
 
@@ -353,8 +357,9 @@ def test_given_a_literal_tmux_argv_when_scanned_then_the_guard_finds_it(tmp_path
     planted = tmp_path / "ai_cli"
     planted.mkdir()
     (planted / "planted.py").write_text(
-        'import shutil, subprocess\nsubprocess.run(["tmux", "-V"])\nshutil.which("tmux")\nX = ("tmux",)\n',
+        'import os, shutil, subprocess\nsubprocess.run(["tmux", "-V"])\nshutil.which("tmux")\nX = ("tmux",)\n'
+        'os.execvp("tmux", argv)\n',
         encoding="utf-8",
     )
 
-    assert len(_literal_tmux_argv_sites(planted)) == 3
+    assert len(_literal_tmux_argv_sites(planted)) == 4

@@ -14,6 +14,7 @@ from portalocker.exceptions import LockException
 
 from . import session_registry as registry
 from . import session_run_state as state
+from . import tmux_binary
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ def _process(target: ProcessIdentity) -> psutil.Process | None:
             raise ValueError(f"process identity mismatch for pid {target.pid}")
         # A server can be shared by unrelated sessions. This is a refusal check,
         # never a way to discover or select signal targets by process name.
-        if proc.name().split(":", 1)[0] in ("tmux", "tmux.exe"):
+        if proc.name().split(":", 1)[0] in tmux_binary.server_process_names():
             raise ValueError("refusing to signal a tmux server process")
         if proc.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
             return None
@@ -57,7 +58,7 @@ def _process(target: ProcessIdentity) -> psutil.Process | None:
 
 def _tmux(args: list[str], timeout: float = 2) -> str | None:
     try:
-        result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(tmux_binary.argv(*args), capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         # A loaded host can answer slowly; report it as an ordinary failure to establish ownership.
         raise ValueError("tmux did not answer in time") from exc

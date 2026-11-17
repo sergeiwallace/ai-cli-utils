@@ -263,6 +263,7 @@ def get_engine_script(
     from .config import config_file_text
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
+    from .tmux_binary import shell_prelude
     from .transport import _TERMINAL_RESTORE
 
     _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
@@ -326,7 +327,9 @@ def get_engine_script(
         }
     )
 
-    return f"""
+    # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
+    # so PATH decides as before); baked in at generation like the session shell above.
+    return f"""{shell_prelude()}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.

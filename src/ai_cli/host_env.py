@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
 
+from . import tmux_binary
 from .config import RELAUNCH_DEFAULTS, read_relaunch_config
 
 
@@ -29,7 +31,10 @@ def resolve_host_env(config: dict) -> tuple[str, str]:
         probes.append(
             ("login-shell", [shell, "-lic", 'printf "AI_HOST_FRESH=%s\\n" "${AI_HOST:-}"'], "AI_HOST_FRESH=", login_env)
         )
-    probes.append(("tmux", ["tmux", "show-environment", "-g", "AI_HOST"], "AI_HOST=", None))
+    # A configured multiplexer that is missing has no server to ask, and PATH's tmux is
+    # never asked in its place.
+    with contextlib.suppress(tmux_binary.TmuxBinaryMissing):
+        probes.append(("tmux", tmux_binary.argv("show-environment", "-g", "AI_HOST"), "AI_HOST=", None))
     for source, command, prefix, probe_env in probes:
         try:
             completed = subprocess.run(

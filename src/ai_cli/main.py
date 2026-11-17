@@ -42,6 +42,7 @@ from . import session_registry as _session_registry
 from . import session_script as _session_script
 from . import stale_session_reaper as _stale_session_reaper
 from . import suspended_session as _suspended_session
+from . import tmux_binary
 from . import tmux_ownership as _tmux_ownership
 from . import tmux_setup as _tmux_setup
 from . import transport as _transport
@@ -325,7 +326,7 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         return
     try:
         created = subprocess.run(
-            ["tmux", "new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop],
+            tmux_binary.argv("new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop),
             capture_output=True,
             timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
             check=False,
@@ -344,6 +345,15 @@ def _exec_handoff(file: str, args: list[str]) -> NoReturn:
     """
     _out.flush_sinks()
     os.execvp(file, args)
+
+
+def _exec_tmux(args: list[str]) -> NoReturn:
+    """Replace this process with the tmux command line ``args`` (from ``tmux_binary.argv``).
+
+    The file exec'd is ``args[0]``, the resolved multiplexer, so ``[tmux] binary`` decides
+    it exactly as it decides every other tmux call.
+    """
+    _exec_handoff(args[0], args)
 
 
 def _refresh_claude_plugins() -> None:
@@ -786,7 +796,7 @@ def _resume_suspended_panes(session: str) -> None:
     it (AI-CLI-y6el), so attaching alone would hand the operator a frozen pane.
     """
     listed = subprocess.run(
-        ["tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_pid}"],
+        tmux_binary.argv("list-panes", "-s", "-t", session, "-F", "#{pane_pid}"),
         capture_output=True,
         text=True,
         check=False,
@@ -1759,7 +1769,7 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
 
     try:
         ls = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            tmux_binary.argv("list-sessions", "-F", "#{session_name}"),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2436,13 +2446,13 @@ def _handle_internal(argv: list[str]) -> None:
             supervisor_pid = argv[4]
             try:
                 marker = subprocess.run(
-                    ["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"],
+                    tmux_binary.argv("show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"),
                     capture_output=True,
                     text=True,
                     check=False,
                 )
                 pane = subprocess.run(
-                    ["tmux", "list-panes", "-t", argv[1], "-F", "#{pane_pid}\t#{pane_dead}"],
+                    tmux_binary.argv("list-panes", "-t", argv[1], "-F", "#{pane_pid}\t#{pane_dead}"),
                     capture_output=True,
                     text=True,
                     check=False,
@@ -3167,17 +3177,17 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
 
 
 def _do_attach(session_name: str) -> NoReturn:
-    check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
+    check = subprocess.run(tmux_binary.argv("has-session", "-t", session_name), capture_output=True, check=False)
     if check.returncode != 0:
         _out.emit(Tag.ATTACH, "attach", f"No tmux session named '{session_name}'", err=True)
         sys.exit(1)
     _resume_suspended_panes(session_name)
-    _exec_handoff("tmux", ["tmux", "attach-session", "-t", session_name])
+    _exec_tmux(tmux_binary.argv("attach-session", "-t", session_name))
 
 
 def _do_ls(show_all: bool) -> None:
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        tmux_binary.argv("list-sessions", "-F", "#{session_name} #{session_activity}"),
         capture_output=True,
         text=True,
         check=False,
@@ -3258,7 +3268,7 @@ def _do_ls(show_all: bool) -> None:
             sys.exit(0)
         selected = result.stdout.strip().split("\t")[0]
         _resume_suspended_panes(selected)
-        _exec_handoff("tmux", ["tmux", "attach-session", "-t", selected])
+        _exec_tmux(tmux_binary.argv("attach-session", "-t", selected))
     else:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
@@ -3569,7 +3579,7 @@ def _tmux_session_has_live_pane(session_name: str) -> bool:
     ``c-x-1`` would answer for a live ``c-x-10``.
     """
     result = subprocess.run(
-        ["tmux", "list-panes", "-s", "-t", f"={session_name}", "-F", "#{pane_dead}"],
+        tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}", "-F", "#{pane_dead}"),
         capture_output=True,
         text=True,
         check=False,
@@ -3741,7 +3751,7 @@ def _in_own_tmux_session(tmux_session: str) -> bool:
         return False
     try:
         res = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            tmux_binary.argv("display-message", "-p", "-t", pane, "#{session_name}"),
             capture_output=True,
             text=True,
             timeout=10,
@@ -4752,7 +4762,10 @@ def _do_session_launch(
     # Not for a remote dispatch either: the tmux that will host the session lives
     # on the REMOTE host, so reporting the local binary's version would state a
     # fact about the wrong machine.
-    tmux_report_wanted = not remote and not (sys.platform == "win32" and not _tmux_setup.tmux_present())
+    # A configured multiplexer that is missing is never silent, on Windows included.
+    tmux_report_wanted = not remote and not (
+        sys.platform == "win32" and not _tmux_setup.tmux_present() and not tmux_binary.resolve().missing
+    )
 
     # direnv preflight, alongside tmux above for the same reason: it is a native
     # binary that pip/uv can never supply. Unlike tmux it is never fatal — the
@@ -4861,6 +4874,19 @@ def _do_session_launch(
     # there: the tmux that will host the session lives on the REMOTE host, so the
     # local binary's health says nothing about whether this launch can work, and
     # degrading to bare over it would be a decision about the wrong machine.
+    # A `[tmux] binary` that names no executable is refused by name, before any repair,
+    # install or bare fallback: the operator chose one multiplexer for this machine, and
+    # neither the tmux on PATH nor a session without one is what was configured.
+    _tmux_refusal = None if bare or remote else tmux_binary.resolve().refusal
+    if _tmux_refusal:
+        if detached:
+            raise RuntimeError(_tmux_refusal)
+        reporter.error(
+            "tmux",
+            f"{_tmux_refusal}\n  Nothing was created. Or launch with -b/--bare, which uses no tmux at all.",
+        )
+        sys.exit(1)
+
     if not bare and not remote and not _tmux_setup.tmux_runs():
         if detached:
             raise RuntimeError("detached replay requires a working tmux executable")
@@ -5411,14 +5437,13 @@ def _do_session_launch(
                     # the directory its launch stood in, which is where a relaunch
                     # (it recreates a dead session) must stand too.
                     result = subprocess.run(
-                        [
-                            "tmux",
+                        tmux_binary.argv(
                             "display-message",
                             "-p",
                             "-t",
                             f"={remote_session_id}:",
                             "#{?pane_current_path,#{pane_current_path},#{pane_start_path}}",
-                        ],
+                        ),
                         capture_output=True,
                         text=True,
                         check=False,
@@ -5598,7 +5623,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session, reporter)
             return
-        _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
+        _exec_tmux(tmux_binary.argv("attach-session", "-t", session))
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -5939,8 +5964,10 @@ def _do_session_launch(
             # raw bare process has no shared terminal to attach to, so refuse
             # rather than silently fork another Claude Code session.
             tmux_session = (
-                subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
-                if shutil.which("tmux")
+                subprocess.run(
+                    tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False
+                )
+                if tmux_binary.which()
                 else None
             )
             if tmux_session is not None and tmux_session.returncode == 0:
@@ -6020,8 +6047,7 @@ def _do_session_launch(
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
-        once_argv = [
-            "tmux",
+        once_argv = tmux_binary.argv(
             "new-session",
             "-s",
             session_id,
@@ -6033,7 +6059,7 @@ def _do_session_launch(
             + _session_launch_state.single_run_shell(
                 session_id, command if replay_bare else [*_direnv, *command], launch_log_path
             ),
-        ]
+        )
         if detached:
             if _session_registry._local_session_alive(session_id) is not False:
                 raise RuntimeError("session already exists or tmux could not be checked")
@@ -6049,7 +6075,7 @@ def _do_session_launch(
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
         if loop is None and attach:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            _exec_handoff("tmux", once_argv)
+            _exec_tmux(once_argv)
         result = subprocess.run(
             [*once_argv[:2], "-d", *once_argv[2:]],
             capture_output=True,
@@ -6063,7 +6089,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
+        _exec_tmux(tmux_binary.argv("attach-session", "-t", f"={session_id}"))
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -6110,7 +6136,7 @@ def _do_session_launch(
     # bare name is a unique-PREFIX match in tmux, so with slot 1 free and slot 10 live
     # `-t c-x-1` answers for c-x-10 -- which attached to slot 10, and under --sandbox
     # killed it as the session "to replace" (AI-CLI-gqb3).
-    existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
+    existing = subprocess.run(tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False)
     if detached and existing.returncode == 0:
         raise RuntimeError("session already exists; detached replay refuses a duplicate")
     if existing.returncode == 0 and sandbox:
@@ -6123,7 +6149,9 @@ def _do_session_launch(
         if not _tmux_ownership.kill_owned_tmux_session(identity):
             reporter.error("tmux", f"tmux session '{session_id}' changed before replacement; refusing to kill it")
             sys.exit(1)
-        existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
+        existing = subprocess.run(
+            tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False
+        )
     if existing.returncode == 0:
         # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
         # a dead pane and no process to react to a fresh script. Reattaching to it
@@ -6146,7 +6174,9 @@ def _do_session_launch(
             and fingerprint is not None
             and adapter.fence_and_kill(candidate.session_id, fingerprint)
         ):
-            existing = subprocess.run(["tmux", "has-session", "-t", f"={session_id}"], capture_output=True, check=False)
+            existing = subprocess.run(
+                tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False
+            )
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
@@ -6163,7 +6193,7 @@ def _do_session_launch(
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
         active_window = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", f"={session_id}", "#{window_name}"],
+            tmux_binary.argv("display-message", "-p", "-t", f"={session_id}", "#{window_name}"),
             capture_output=True,
             text=True,
             check=False,
@@ -6177,15 +6207,14 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session_id, reporter)
             return
-        _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
+        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", session_id))
     else:
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
         _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            [
-                "tmux",
+            tmux_binary.argv(
                 "new-session",
                 "-d",
                 "-P",
@@ -6197,7 +6226,7 @@ def _do_session_launch(
                 "--",
                 _session_shell,
                 _script_path,
-            ],
+            ),
             capture_output=True,
             text=True,
             check=False,
@@ -6207,8 +6236,7 @@ def _do_session_launch(
             stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "new-session",
                     "-d",
                     "-P",
@@ -6219,7 +6247,7 @@ def _do_session_launch(
                     *_tmux_env_flags,
                     _session_shell,
                     _script_path,
-                ],
+                ),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -6268,7 +6296,7 @@ def _do_session_launch(
             sys.exit(1)
         generation = secrets.token_urlsafe(32)
         marked = subprocess.run(
-            ["tmux", "set-option", "-t", created_session_id, "@ai_cli_session_generation", generation],
+            tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
             capture_output=True,
             check=False,
         )
@@ -6283,9 +6311,9 @@ def _do_session_launch(
             sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
         tmux_options = (
-            ["tmux", "set-window-option", "-t", identity.session_id, "remain-on-exit", "on"],
-            ["tmux", "set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode],
-            ["tmux", "set-option", "-s", "set-clipboard", "on"],
+            tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
+            tmux_binary.argv("set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode),
+            tmux_binary.argv("set-option", "-s", "set-clipboard", "on"),
         )
         for tmux_option in tmux_options:
             configured = subprocess.run(tmux_option, capture_output=True, check=False)
@@ -6307,7 +6335,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
+        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", identity.session_id))
 
 
 # --- Click command tree ---

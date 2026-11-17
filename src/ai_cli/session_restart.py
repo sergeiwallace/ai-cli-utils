@@ -39,7 +39,7 @@ from typing import TypeGuard
 import portalocker
 import psutil
 
-from . import config, session_run_state
+from . import config, session_run_state, tmux_binary
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
@@ -199,9 +199,9 @@ def _pane_attach_client(target: str | None) -> str | None:
     """
     pane = os.environ.get("TMUX_PANE")
     if target:
-        query = ["tmux", "list-panes", "-s", "-t", target, "-F", "#{pane_pid}"]
+        query = tmux_binary.argv("list-panes", "-s", "-t", target, "-F", "#{pane_pid}")
     elif pane:
-        query = ["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"]
+        query = tmux_binary.argv("display-message", "-p", "-t", pane, "#{pane_pid}")
     else:
         return None
     try:
@@ -1008,7 +1008,7 @@ def _tmux_pane_environment(session: str) -> dict[str, str]:
     """The environment tmux hands a new pane in *session*: global, then session overrides."""
     environment: dict[str, str] = {}
     for scope in (["-g"], ["-t", session]):
-        for line in _run(["tmux", "show-environment", *scope]).splitlines():
+        for line in _run(tmux_binary.argv("show-environment", *scope)).splitlines():
             name, separator, value = line.partition("=")
             if separator:
                 environment[name] = value
@@ -1072,14 +1072,13 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
             raise Refusal("uptime")
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}\t#{pane_start_command}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -1348,14 +1347,13 @@ def _validate_request(request: dict, session: str, *, child: bool) -> None:
         pane_session, pane = _pane({"tmux": request["tmux"]})
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -1572,7 +1570,7 @@ def trigger_verdicts(record: dict, commands: dict) -> dict:
     if update != "YES":
         try:
             _, pane = _pane(record)
-            footer = _run(["tmux", "capture-pane", "-p", "-t", pane, "-S", "-12"])
+            footer = _run(tmux_binary.argv("capture-pane", "-p", "-t", pane, "-S", "-12"))
             if "Update installed · Restart to apply" in footer:
                 update = "YES"
         except Refusal:
@@ -1707,14 +1705,13 @@ def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> b
             return False
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -2092,14 +2089,13 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                 request = _object(state_paths(session)[2])
                 shown = (
                     _run(
-                        [
-                            "tmux",
+                        tmux_binary.argv(
                             "display-message",
                             "-p",
                             "-t",
                             pane,
                             "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                        ]
+                        )
                     )
                     .strip()
                     .split("\t")
