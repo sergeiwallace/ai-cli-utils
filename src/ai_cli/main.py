@@ -2314,7 +2314,9 @@ def _handle_internal(argv: list[str]) -> None:
         def forwarded_value(flag: str) -> str:
             return forwarded[forwarded.index(flag) + 1] if flag in forwarded[:-1] else ""
 
-        session_id = _running_chief_session(forwarded_value("--machine-key"), forwarded_value("--fm-home"))
+        session_id = _running_chief_session(
+            forwarded_value("--machine-key"), forwarded_value("--fm-home"), forwarded_value("--name")
+        )
         if not session_id:
             sys.exit(1)
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id}))
@@ -5149,13 +5151,15 @@ def _do_session_launch(
         # An unnumbered chief request (`ai cos -R`, `ai c chief -R`) means whichever
         # chief the remote host has, which only that host's registration can say: a slot
         # allocated here would be the next free index, a second chief the remote refuses.
-        chief_unnumbered = "--chief" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
-            _chief_of_staff.chief_slot(name)
+        # A -N/--name chief is left to the remote host too, which checks its running chief
+        # before it reserves the name; the name rides in remote_args.
+        remote_picks_chief = "--chief" in (remote_args or []) and (
+            bool(naming and naming.custom) or not _chief_of_staff.is_numbered_slot(_chief_of_staff.chief_slot(name))
         )
         # The tmux session the pane is titled after. For an unnumbered chief only the remote
         # host knows it, so it is asked; the placeholder below stands in when it cannot say.
         remote_pane_session = ""
-        if chief_unnumbered:
+        if remote_picks_chief:
             remote_pane_session = _request_remote_chief_session(preflight_ssh_args, remote_shell, remote_args or [])
             reporter.phase("session").outcome(f"{remote_pane_session or name} (the remote host selects its chief)")
         else:
@@ -6846,14 +6850,20 @@ def _running_chief(registration: dict | None, naming_prefix: str, session_name: 
     return (*found[0], False) if found else None
 
 
-def _running_chief_session(machine_key: str, fm_home: str) -> str:
+def _requested_chief_slot(session_name: str, naming: "_NamingRequest") -> str:
+    """The chief slot a launch asks for; ``-N NAME`` makes it ``<session name>-NAME``, as its title is."""
+    return _chief_of_staff.chief_slot(f"{session_name}-{naming.custom}" if naming.custom else session_name)
+
+
+def _running_chief_session(machine_key: str, fm_home: str, custom: str = "") -> str:
     """The tmux session of the chief running on this machine, or ``""``; nothing is written.
 
-    A dispatching machine asks for this when it launches an unnumbered chief here, so
-    its terminal title, colour lease and cleanup command name the session that exists
-    (``ai internal resolve-chief-session``). A live registration answers on its own; only
-    the fallback search of tmux session names needs this host's naming prefix, and with
-    none it finds nothing.
+    A dispatching machine asks for this when it launches an unnumbered or ``-N``-named
+    chief here, so its terminal title, colour lease and cleanup command name the session
+    that exists (``ai internal resolve-chief-session``). With ``custom`` only the chief of
+    that name answers: the launch refuses any other. A live registration answers on its
+    own; only the fallback search of tmux session names needs this host's naming prefix,
+    and with none it finds nothing.
     """
     try:
         chief_project = _chief_of_staff.required_setting("project")
@@ -6869,7 +6879,13 @@ def _running_chief_session(machine_key: str, fm_home: str) -> str:
     except (_config.ProjectPrefixError, _session_naming.HostAliasError, _session_naming.NamingConventionError):
         pass
     running = _running_chief(existing, naming_prefix, chief_name)
-    return running[1] if running is not None else ""
+    if running is None:
+        return ""
+    if custom and _chief_of_staff.chief_slot(running[0]) != _requested_chief_slot(
+        chief_name, _NamingRequest(custom=custom)
+    ):
+        return ""
+    return running[1]
 
 
 def _prepare_chief_launch(
@@ -6926,12 +6942,15 @@ def _prepare_chief_launch(
             f"{chief_project}: pass `-p {alias}` (or drop -p)"
         )
     options["project"] = chief_project
+    naming = naming or _NamingRequest()
     if options.get("remote"):
         options["name"] = session_name
+        # -N/--name picks the chief, so the remote host must see it to check its running chief.
         return [
             "--chief",
             *(["--machine-key", machine_key] if machine_key else []),
             *(["--fm-home", fm_home] if fm_home else []),
+            *(["--name", naming.custom] if naming.custom else []),
         ]
     try:
         instance_key_prefix = _chief_of_staff.required_setting("instance_key_prefix")
@@ -6973,7 +6992,13 @@ def _prepare_chief_launch(
         )
         _out.emit(Tag.COS, "register", f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
 
-    requested_slot = _chief_of_staff.chief_slot(session_name)
+    requested_slot = _requested_chief_slot(session_name, naming)
+    named = bool(naming.custom)
+
+    def asked_for(slot: str) -> bool:
+        # A -N/--name request is for that chief only; an unnumbered one means any of its name.
+        return slot == requested_slot if named else _chief_of_staff.same_chief(requested_slot, slot)
+
     running = _running_chief(existing, naming_prefix, chief_name)
     resuming = False
     # The session name the chief being resumed was recorded under.
@@ -6981,7 +7006,7 @@ def _prepare_chief_launch(
     if running is not None:
         agent, target, registered = running
         running_slot = _chief_of_staff.chief_slot(agent)
-        if not _chief_of_staff.same_chief(requested_slot, running_slot):
+        if not asked_for(running_slot):
             _out.error(
                 Tag.COS,
                 "start",
@@ -7027,7 +7052,7 @@ def _prepare_chief_launch(
         options["resume"] = False
     elif existing is not None and existing.get("native_agent_name"):
         registered_slot = _chief_of_staff.chief_slot(str(existing.get("native_agent_name")))
-        if _chief_of_staff.same_chief(requested_slot, registered_slot):
+        if asked_for(registered_slot):
             _out.emit(
                 Tag.COS,
                 "start",
@@ -7042,6 +7067,9 @@ def _prepare_chief_launch(
                 # In tmux mode -r means "attach to the running session", and there is none:
                 # the relaunch under the same name is what resumes the conversation.
                 options["resume"] = False
+    if resuming and named:
+        # The chief already holds its name: reattach to that title rather than reserve it again.
+        naming = replace(naming, custom=None, session_names=True)
 
     try:
         tmux_target, ai_name = _resolve_session_identity(
@@ -7052,7 +7080,7 @@ def _prepare_chief_launch(
             is_remote=is_remote,
             use_tmux=not bare,
             legacy_prefix=launch_naming.legacy_prefix,
-            naming=naming or _NamingRequest(),
+            naming=naming,
             repo=chief_project,
             repo_alias=prefix,
             host_alias=launch_naming.host_alias,

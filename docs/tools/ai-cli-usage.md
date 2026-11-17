@@ -513,6 +513,8 @@ built-in default, and a launch that needs one that is unset exits 1 and names it
 - `-H`/`--fm-home DIR` — an explicit chief home.
 - `-R` — run the chief on the remote machine; the dispatching machine reads only `project` and
   `session_name`, and the remote `ai` resolves and registers everything else.
+- `-N`/`--name NAME` — the chief named NAME (`<session_name>-NAME`), carried to the remote
+  machine with `-R`; a different running chief is refused, never attached to.
 
 Both `-k` and `-H` are refused without `-F`/`--chief` or `ai cos`. The full behaviour (attach,
 resume, create, one chief per machine) is in the README's "Chief-of-staff session" section.

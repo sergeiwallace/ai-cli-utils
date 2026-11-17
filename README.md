@@ -1242,6 +1242,7 @@ ai c -F --dry-run           # Print the resolved plan; registers and starts noth
 ai c chief-2 -R -m box      # Run the chief on remote machine `box`: named, homed and registered there
 ai cos -R -m box            # Same, through the shorthand
 ai cos 1 -r -R -p env       # From another machine: attach to or resume chief 1 on the remote machine
+ai cx -F -N ada -R -m box   # The chief named ada on `box`: env-box-chief-ada; another running chief is refused
 ```
 
 Every one of these attaches, resumes or creates, decided on the machine the chief runs on (the remote one with `-R`):
@@ -1253,7 +1254,7 @@ Every one of these attaches, resumes or creates, decided on the machine the chie
 | nothing | create and register it; with `-r`, refuse with "no resumable chief session …" |
 | a different chief is running | refuse, naming the running chief and the command that attaches to it |
 
-An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered.
+An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered. A `-N/--name NAME` request means the chief named `{session_name}-NAME` only: it attaches to or resumes that chief, creates it when none is running, and refuses while a different chief is running.
 
 The name is `{repo-alias}-{host-alias}-{session_name}-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `<project>/.worktrees/` under that name. A positional `chief` or `chief-N` (your `session_name`) is the chief launch itself, with everything `--chief` does; any other name carrying that segment (`chief-x`) is refused without the flag, so an ordinary session can never pass for the chief. With no `session_name` configured, no positional name is a chief launch.
 
@@ -1261,7 +1262,7 @@ Worktree isolation is **on**, like every other session: a session working in a m
 
 `-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); with neither `-k` nor `$AI_MACHINE_ID` set (a non-interactive shell, such as the remote side of `-R`, can miss an rc-file export) the one seeded home under `homes_dir` is used, and several are refused; a chief launch refuses a missing or unseeded home and refuses a second chief while the first is running (it names the command that attaches to it). A chief running in tmux under a registration that names another (a later launch overwrote it and died) is still found by its tmux session name and re-registered when you attach. On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json` (with `chief_instance_key = "<instance_key_prefix>/<machine-key>"`), then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
 
-A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
+A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k`, `-H` and `-N`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered or `-N`-named `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief, or checks the named one before it reserves the name. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
 
 ### SSH tunnels
 
