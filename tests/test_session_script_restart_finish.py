@@ -229,9 +229,10 @@ def test_given_a_pending_migration_when_the_supervisor_restarts_new_then_the_fin
 
 
 @pytest.mark.parametrize("live", ["agent-in-slot", "other-tmux-session"])
-def test_given_new_is_live_elsewhere_when_the_supervisor_restarts_then_the_finish_refuses_and_the_agent_restarts(
+def test_given_new_is_live_elsewhere_when_the_supervisor_restarts_then_the_finish_does_what_is_safe_and_the_agent_restarts(
     migrated, wrapper, live
 ):
+    """None of the seeded leftovers is a file of the live NEW, so the finish completes beside it."""
     root, _process, _log = wrapper
     new_wt = migrated["repo"] / ".worktrees" / NEW
     sleeper = None
@@ -250,7 +251,8 @@ def test_given_new_is_live_elsewhere_when_the_supervisor_restarts_then_the_finis
         if sleeper is not None:
             reap_tree(sleeper)
 
-    replacement = launches[1]
-    assert replacement["old_logs"] == launches[0]["old_logs"] != [], "a live guard refusal moved nothing"
-    assert replacement["finished"] == []
-    assert f"migration {OLD} -> {NEW}" in output and "still" in output, output
+    first, replacement = launches[0], launches[1]
+    assert first["old_logs"], "the first agent started with the migration unfinished"
+    assert replacement["old_logs"] == [], f"the restart did not carry the launch logs:\n{output}"
+    assert replacement["finished"] == [[OLD, NEW]]
+    assert f"migration {OLD} -> {NEW}" in output, output

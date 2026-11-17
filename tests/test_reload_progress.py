@@ -407,7 +407,7 @@ def _reload_rows(rows: list[str]) -> list[int]:
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
-def test_given_quick_agent_exit_when_startup_fails_then_session_ends_without_interactive_shell(
+def test_given_quick_agent_exit_when_session_ends_then_no_interactive_shell_starts(
     session_factory, monkeypatch, exit_code
 ):
     original = Session._fakes
@@ -428,7 +428,11 @@ def test_given_quick_agent_exit_when_startup_fails_then_session_ends_without_int
         time.sleep(0.1)
     assert session.wait_for_exit() == 0
     assert len(session.agents()) == 1
-    assert b"exited too quickly" in session.received
+    if exit_code:
+        assert b"exited too quickly" in session.received
+    else:
+        assert b"Returning to the calling shell." in session.received
+        assert b"exited too quickly" not in session.received
     assert b"Returning to an interactive shell." not in session.received
 
 
@@ -492,14 +496,14 @@ def test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_o
         next_text = "agent-output 1"
     elif closer == "record":
         # The second child finds a recorded double Ctrl+C and exits before closing the row, so the
-        # supervisor's shell handoff is the next line written.
+        # supervisor's final-exit message is the next line written.
         session = session_factory(reload_on=(1,), exit_on_cron=2)
-        session.wait_for_shell()
-        next_text = "Auto-restart stopped. Returning to an interactive shell."
+        assert session.wait_for_exit() == 0
+        next_text = "Auto-restart stopped. Returning to the calling shell."
     else:
         session = session_factory(reload_on=(1,), exit_on_cron=2, own_tmux_session=True)
-        session.wait_for_shell()
-        next_text = "Auto-restart stopped. Returning to an interactive shell."
+        assert session.wait_for_exit() == 0
+        next_text = "Auto-restart stopped. Returning to the calling shell."
     screen = session.screen()
     rows = [row.rstrip() for row in screen.display]
 

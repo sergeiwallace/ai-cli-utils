@@ -15,6 +15,8 @@ from name_fleet import HOST, HOST_ALIAS, OTHER_HOST, REPO, STEM, build_fleet, qu
 from ai_cli import main, session_title
 from ai_cli import name_registry as reg
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 LIVE_TMUX: list[str] = []
 
 
