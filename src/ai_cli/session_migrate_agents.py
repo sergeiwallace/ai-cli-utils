@@ -156,6 +156,10 @@ class AgentPlan:
     #: Each renamed root, ``(old, new)``: the slot and every agents container.
     link_pairs: list[tuple[Path, Path]] = field(default_factory=list)
 
+    def unmoved_trees(self) -> list[Path]:
+        """Where each worktree this plan leaves in place (held, or its destination taken) is."""
+        return [tree for e in self.entries if not e.moves and (tree := e.worktree or e.dest) is not None]
+
     def moved_trees(self) -> list[Path]:
         """Where each worktree this plan moves, or found already moved, is after the move."""
         return [e.dest for e in self.entries if e.moves and e.dest is not None]
@@ -548,7 +552,24 @@ def plan_agents(
                 plan.markers.append(AgentMarker(repo, key, str(recovered[target])))
             elif target == old_wt and repo != slot_repo:
                 plan.markers.append(AgentMarker(repo, key, str(new_wt)))
+    _keep_links_into_unmoved(plan)
     return plan
+
+
+def _keep_links_into_unmoved(plan: AgentPlan) -> None:
+    """Map each worktree this plan leaves in place onto itself, ahead of its container's pair.
+
+    A held or conflicting worktree is not moved, so a link into it must keep its path, not
+    follow its container to the new name, where nothing will exist. The pairs are known only
+    once every worktree is planned, so the moving worktrees' links are scanned again here.
+    """
+    kept = [(tree, tree) for tree in plan.unmoved_trees()]
+    if not kept:
+        return
+    plan.link_pairs = kept + plan.link_pairs
+    for entry in plan.entries:
+        if entry.moves and entry.dest is not None:
+            entry.links = _links.scan([(entry.worktree or entry.dest, entry.dest)], plan.link_pairs)
 
 
 def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None) -> list[tuple[str, str, str, str]]:

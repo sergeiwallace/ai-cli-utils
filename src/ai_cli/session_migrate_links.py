@@ -89,7 +89,8 @@ def _outside_hop(start: Path, pairs: list[tuple[Path, Path]]) -> Path | None:
             hop = current.parent / _readlink(current)
         except OSError:
             return None
-        if _renamed(hop, pairs) is not None:
+        renamed = _renamed(hop, pairs)
+        if renamed is not None and renamed not in _spellings(hop):  # an identity pair keeps a path
             return current
         current = _normal(hop)
     return None
@@ -136,6 +137,8 @@ def scan(trees: list[tuple[Path, Path]], pairs: list[tuple[Path, Path]]) -> list
                 continue
             # A relative link is judged where it will be: one into a sibling moves with it.
             renamed = _renamed(after.parent / raw, pairs)
+            if renamed is not None and renamed in _spellings(after.parent / raw):
+                continue  # an identity pair: the worktree it names stays where it is
             if renamed is not None:
                 if _is_junction(link):
                     found.append(StaleLink(after, raw, None, "a junction, which this tool cannot recreate"))
