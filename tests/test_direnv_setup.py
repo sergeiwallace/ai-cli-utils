@@ -349,6 +349,16 @@ def test_given_no_new_entries_when_refreshing_path_then_unchanged(monkeypatch):
     assert os.environ["PATH"] == r"C:\existing"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has a real registry module")
+def test_given_a_host_without_a_registry_when_the_windows_branch_is_forced_then_path_is_untouched(monkeypatch):
+    """Off Windows the guard is the absence itself: the consumer's import fails first."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+
+    assert refresh_windows_path() is False
+    assert os.environ["PATH"] == r"C:\existing"
+
+
 def test_given_unreadable_registry_when_refreshing_path_then_no_raise(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("PATH", r"C:\existing")
@@ -378,6 +388,7 @@ def test_given_a_host_without_a_registry_when_a_dependency_imports_winreg_then_t
         import winreg  # noqa: F401
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows has a real registry to shadow")
 def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is_unreachable(monkeypatch):
     """The suite-wide guard, pinned from the consumer side (AI-CLI-8elu).
 
