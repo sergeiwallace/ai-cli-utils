@@ -22,6 +22,7 @@ bare mode is the correct permanent answer there.
 """
 
 import contextlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -298,7 +299,7 @@ class TmuxReport:
         return (
             self.client_version is not None
             and self.server_version is not None
-            and self.client_version != self.server_version
+            and _comparable(self.client_version) != _comparable(self.server_version)
         )
 
 
@@ -422,6 +423,28 @@ def _probe_output(argv: list[str], timeout: int) -> str | None:
     return value or None
 
 
+_VERSION_TOKEN = re.compile(r"^(?:next-)?\d+\.\d+[a-z]?(?:-rc\d*)?$")
+
+
+def parse_client_version(printed: str) -> str | None:
+    """The version token of ``tmux -V`` output, or the raw text when it carries none.
+
+    ``tmux -V`` prints "tmux 3.7c", but a packaged build may append text after the version
+    (a port name, a build date). The first token shaped like a version is the version; the
+    last token is not, which is how a trailing ``2026-10-13)`` was once reported as one.
+    """
+    text = printed.strip()
+    for token in text.split():
+        if _VERSION_TOKEN.match(token.strip("(),;")):
+            return token.strip("(),;")
+    return text.removeprefix("tmux ").strip() or None
+
+
+def _comparable(version: str) -> str:
+    """``version`` with a trailing ``.0`` dropped, so a server's 3.4.0 matches a client's 3.4."""
+    return version[:-2] if version.endswith(".0") and version.count(".") >= 2 else version
+
+
 def probe(timeout: int = 10, *, query_versions: bool = True) -> TmuxReport:
     """Detect tmux without changing anything. A diagnostic must never block a launch.
 
@@ -446,9 +469,7 @@ def probe(timeout: int = 10, *, query_versions: bool = True) -> TmuxReport:
 
     client = _probe_output(["tmux", "-V"], timeout)
     if client is not None:
-        # `tmux -V` prints "tmux 3.7c"; keep only the version token.
-        parts = client.split()
-        client = parts[-1] if parts else None
+        client = parse_client_version(client)
 
     server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
 
@@ -503,7 +524,7 @@ def report_lines(
         lines.append(
             (
                 "Warning",
-                f"tmux client {report.client_version} but the running "
+                f"tmux client {report.client_version} ({report.path}) but the running "
                 f"server is {report.server_version}. The server answers every "
                 f"format query, so it decides compatibility; relaunch every session "
                 f"to converge.",
