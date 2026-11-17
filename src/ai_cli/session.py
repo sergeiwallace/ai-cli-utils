@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
@@ -347,7 +348,7 @@ def _resolve_explicit_bare_slot(
     return None
 
 
-def find_next_index(prefix: str, use_tmux: bool = True) -> int:
+def find_next_index(prefix: str, use_tmux: bool = True, *, retired_names: Collection[str] = ()) -> int:
     """Return the lowest unused session index for ``prefix``.
 
     With tmux, occupancy is authoritative: a live tmux session using either
@@ -356,19 +357,21 @@ def find_next_index(prefix: str, use_tmux: bool = True) -> int:
     are the only durable record a bare session leaves behind.
     """
     if not use_tmux:
-        return _find_next_index_from_worktrees(prefix)
+        return _find_next_index_from_worktrees(prefix, retired_names=retired_names)
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
     if not match:
         return 1
     engine_short, project_prefix = match.groups()
     i = 1
     while True:
-        if not _matching_tmux_sessions(engine_short, project_prefix, i):
+        if f"{project_prefix}-{i}" not in retired_names and not _matching_tmux_sessions(
+            engine_short, project_prefix, i
+        ):
             return i
         i += 1
 
 
-def _find_next_index_from_worktrees(prefix: str) -> int:
+def _find_next_index_from_worktrees(prefix: str, *, retired_names: Collection[str] = ()) -> int:
     """Return the lowest index with no live bare session, using worktrees on disk.
 
     ``prefix`` is a tmux-style session prefix (``c-myproject-``); worktrees are
@@ -383,14 +386,13 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
         repo_root = detect_repo_root()
     except RuntimeError:
         repo_root = None
-    if not repo_root:
-        return 1
     # A probe slot lives under the probe directory, not .worktrees/, and is occupied the same way.
-    wt_bases = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root))
+    wt_bases = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root)) if repo_root else ()
     i = 1
     while True:
-        candidates = [path for base in wt_bases for path in _matching_worktrees(base, f"{ai_prefix}{i}")]
-        if not candidates or not any(_worktree_has_live_session(candidate) for candidate in candidates):
+        title = f"{ai_prefix}{i}"
+        candidates = (path for base in wt_bases for path in _matching_worktrees(base, title))
+        if title not in retired_names and not any(_worktree_has_live_session(candidate) for candidate in candidates):
             return i
         i += 1
 
@@ -682,6 +684,8 @@ def build_session_name(
     is_remote: bool = False,
     use_tmux: bool = True,
     legacy_prefix: str | None = None,
+    *,
+    retired_names: Collection[str] = (),
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
@@ -731,13 +735,13 @@ def build_session_name(
             compose_session_name(naming_prefix, clean_name),
         )
     if not clean_name:
-        idx = find_next_index(tmux_base, use_tmux=use_tmux)
+        idx = find_next_index(tmux_base, use_tmux=use_tmux, retired_names=retired_names)
         return (
             _new_session_display_name(engine_short, project_prefix, str(idx), is_remote),
             compose_session_name(naming_prefix, idx),
         )
     tmux_named = f"{tmux_base}{clean_name}-"
-    idx = find_next_index(tmux_named, use_tmux=use_tmux)
+    idx = find_next_index(tmux_named, use_tmux=use_tmux, retired_names=retired_names)
     return (
         _new_session_display_name(engine_short, project_prefix, f"{clean_name}-{idx}", is_remote),
         compose_session_name(naming_prefix, clean_name, idx),
