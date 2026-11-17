@@ -1,0 +1,1 @@
+- `ai migrate-session --finish` plans agent worktrees with a fixed number of git calls per repo, so its "other repos" step no longer takes most of an hour on a host with many agent worktrees.
