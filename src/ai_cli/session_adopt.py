@@ -206,8 +206,8 @@ class AdoptionResult:
 # --- refusals ---------------------------------------------------------------
 
 
-def _pid_is_live(pid: int, proc_dir: Path | None = None) -> bool:
-    """True when ``pid`` names a running process.
+def _pid_is_live(pid: int, proc_dir: Path | None = None, *, recorded_start: object = None) -> bool:
+    """True when ``pid`` could still name the running session.
 
     Reads ``/proc/<pid>`` on Linux rather than shelling out: a ``ps`` pipeline
     matching a pattern also matches the ``grep`` in its own pipeline, which has
@@ -225,8 +225,10 @@ def _pid_is_live(pid: int, proc_dir: Path | None = None) -> bool:
         return False
     try:
         from .process_probe import probe_for
+        from .session import _proc_start_refutes
 
-        return probe_for(proc_dir).is_present(pid)
+        probe = probe_for(proc_dir)
+        return probe.is_present(pid) and not _proc_start_refutes(probe, pid, recorded_start)
     except Exception:
         return True
 
@@ -235,8 +237,8 @@ def live_sessions(claude_home: Path | None = None, proc_dir: Path | None = None)
     """Return every session in ``~/.claude/sessions/`` whose process still runs.
 
     Claude Code writes one ``<pid>.json`` per live session and does not always
-    remove it on exit, so the file's presence proves nothing — the pid must be
-    checked.
+    remove it on exit. The pid must still be live and, where procfs can prove
+    it was reused, its current process must match the record's birth marker.
     """
     home = claude_home if claude_home is not None else Path.home() / ".claude"
     found: list[LiveSession] = []
@@ -254,7 +256,7 @@ def live_sessions(claude_home: Path | None = None, proc_dir: Path | None = None)
             pid = int(data.get("pid", 0))
         except (TypeError, ValueError):
             continue
-        if not _pid_is_live(pid, proc_dir):
+        if not _pid_is_live(pid, proc_dir, recorded_start=data.get("procStart")):
             continue
         found.append(
             LiveSession(
