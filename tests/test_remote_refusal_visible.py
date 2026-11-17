@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import os
 import shlex
 import shutil
@@ -20,11 +19,13 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from test_session_migrate import NEW, OLD
+from test_session_migrate import NEW
 from test_session_migrate_on_launch import (  # noqa: F401 - fixture
     FINISH,
     _launch,
     _ledger,
+    _legacy_finished_row,
+    hooks,
     migrated,
     slot,
 )
@@ -170,11 +171,10 @@ def test_given_the_remote_side_refuses_over_mosh_when_dispatched_then_the_local_
 def test_given_a_partial_migration_when_the_remote_side_refuses_then_the_refusal_is_recorded_for_the_launcher(
     migrated,  # noqa: F811 - the imported fixture
     tmp_path,
+    hooks,  # noqa: F811 - the imported fixture
 ):
     """The real remote-side refusal lands in the file the mosh wrapper names, finish command included."""
-    ledger = migrated["state"] / "session-migrations.jsonl"
-    legacy = {"old": OLD, "new": NEW, "repo": str(migrated["repo"]), "finished": True}
-    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+    _refusing(migrated, hooks)
     record = tmp_path / "remote-diagnostic.stderr"
 
     with patch.dict(os.environ, {"AI_CLI_REMOTE_DIAGNOSTIC_FILE": str(record)}):
@@ -188,11 +188,10 @@ def test_given_a_partial_migration_when_the_remote_side_refuses_then_the_refusal
     assert _ledger(migrated)
 
 
-def _refusing(fixture: dict) -> None:
-    """A finished row without ``verified: true``, which the launch guard re-plans and refuses."""
-    ledger = fixture["state"] / "session-migrations.jsonl"
-    legacy = {"old": OLD, "new": NEW, "repo": str(fixture["repo"]), "finished": True}
-    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+def _refusing(fixture: dict, add_hook) -> None:
+    """An unverified finish that still has a blocking hook."""
+    _legacy_finished_row(fixture)
+    add_hook("10-notes", "notes", fail="plan")
 
 
 def _launcher_lines(err: str) -> list[str]:
@@ -201,8 +200,9 @@ def _launcher_lines(err: str) -> list[str]:
 
 def test_given_the_remote_side_of_a_launch_when_it_prints_then_every_launcher_line_names_its_host(
     migrated,  # noqa: F811 - the imported fixture
+    hooks,  # noqa: F811 - the imported fixture
 ):
-    _refusing(migrated)
+    _refusing(migrated, hooks)
 
     with patch("ai_cli.session_naming.host_id", return_value="remote-host"):
         code, out, err, _launched = _launch(migrated, None, "--is-remote", "-p", "myrepo")
@@ -216,8 +216,9 @@ def test_given_the_remote_side_of_a_launch_when_it_prints_then_every_launcher_li
 
 def test_given_a_local_launch_when_it_prints_then_no_line_is_marked_remote(
     migrated,  # noqa: F811 - the imported fixture
+    hooks,  # noqa: F811 - the imported fixture
 ):
-    _refusing(migrated)
+    _refusing(migrated, hooks)
 
     with patch("ai_cli.session_naming.host_id", return_value="remote-host"):
         code, out, err, _launched = _launch(migrated)

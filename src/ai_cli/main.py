@@ -3612,8 +3612,9 @@ def _finish_recorded_migrations(
     pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
     and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
     with no ``finished`` row is finished here, since the launch is the one moment the new
-    session is known not to be running, and that finish's own re-plan is the verdict. A pair
-    whose ``finished`` row carries no ``verified`` is re-planned read-only. A finish that
+    session may have stopped, and that finish's own re-plan is the verdict. An unverified
+    ``finished`` pair is also finished if its slot exists and the launch is starting NEW.
+    Otherwise that pair is checked read-only. A finish that
     refuses, raises or leaves any part refuses the launch with the parts left and the
     ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
     given: the session then starts and the parts left go into the launch log.
@@ -3662,7 +3663,7 @@ def _finish_recorded_migrations(
             continue
         if live is None:
             live = attaching_live()
-        if old not in pending:
+        if old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir()):
             progress(f"{pair}: re-planning read-only (not verified)")
             left, _live, _planned = judge_pair(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
@@ -7250,7 +7251,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
         "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
-        "re-checks it), and one recorded finished without verification is re-planned. If any is "
+        "re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is "
         "still partial, the launch is refused: it starts nothing, prints the parts left and the "
         "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
         "When the session is already running, nothing can be finished, so attaching to it warns "
