@@ -578,3 +578,73 @@ def test_given_a_publisher_configured_when_bare_launching_ai_cx_then_no_phase_is
 
     assert "--remote" not in command
     assert _read_log(begin_env["tmp"] / "publisher.log") == []
+
+
+def _phases(world) -> list[str]:
+    return [entry["phase"] for entry in _read_log(world["tmp"] / "publisher.log") if "phase" in entry]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"exit": 3, "status": "unavailable", "reason": "registry-busy", "possiblyPersisted": True},
+        {"exit": 3, "status": "unavailable", "reason": "registry-busy", "recordId": RECORD},
+    ],
+    ids=["possibly-persisted", "record-known"],
+)
+def test_given_begin_refused_with_a_possible_effect_when_beginning_then_reconcile_runs_once_and_begin_is_never_retried(
+    begin_env, capsys, answer
+):
+    settings = _publisher_settings(begin_env, {"begin": [answer]})
+    config = {"codex": {"publisher": settings}}
+
+    first, _out, _err = _begin(capsys, config)
+    second, _out, _err = _begin(capsys, config)
+
+    assert first != 0 and second != 0
+    assert _phases(begin_env) == ["begin", "reconcile"]
+
+
+def test_given_begin_refused_with_no_effect_when_the_agent_restarts_then_begin_is_tried_again(begin_env, capsys):
+    settings = _publisher_settings(begin_env, {"begin": [{"exit": 3, "status": "unavailable", "reason": "disabled"}]})
+    config = {"codex": {"publisher": settings}}
+
+    _begin(capsys, config)
+    _begin(capsys, config)
+
+    assert _phases(begin_env) == ["begin", "begin"]
+
+
+def test_given_begin_accepted_with_a_record_id_that_is_not_a_uuid_when_beginning_then_reconcile_runs(begin_env, capsys):
+    answer = {"exit": 0, "recordId": "not-a-uuid", "socketPath": str(begin_env["short"] / "s")}
+    settings = _publisher_settings(begin_env, {"begin": [answer]})
+
+    code, out, _err = _begin(capsys, {"codex": {"publisher": settings}})
+
+    assert code != 0 and out == ""
+    assert _phases(begin_env) == ["begin", "reconcile"]
+
+
+@posix_only
+def test_given_the_session_shell_is_gone_when_the_monitor_sees_it_then_it_stops_the_engine_without_calling_finish(
+    begin_env, capsys
+):
+    settings = _publisher_settings(begin_env, {"begin": [_accepted_begin(begin_env)]})
+    config = {"codex": {"publisher": settings}}
+    _begin(capsys, config)
+    wrapper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    wrapper.kill()
+    wrapper.wait()
+    engine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+    try:
+        with patch("ai_cli.config.load_config", return_value=config), pytest.raises(SystemExit):
+            _handle_internal(["codex-publisher", "monitor", SESSION, str(wrapper.pid), str(engine.pid)])
+        engine.wait(timeout=10)
+    finally:
+        if engine.poll() is None:
+            engine.kill()
+            engine.wait()
+
+    assert _phases(begin_env) == ["begin"]
+    assert capsys.readouterr().err.count(NOTICE) == 1
