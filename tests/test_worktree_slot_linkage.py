@@ -100,7 +100,7 @@ def test_given_the_slot_lost_its_registration_when_relaunched_then_the_refusal_n
         create_worktree("session-3", repo_root=repo)
 
     message = str(caught.value)
-    assert "session-3-agents" not in message
+    assert f"{slot}-agents" not in message, "no command may send the session's own checkout into -agents/"
     assert "git worktree move" not in message
     assert "own checkout" in message
     assert str(slot) in message
