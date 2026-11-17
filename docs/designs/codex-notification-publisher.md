@@ -27,6 +27,15 @@ reaps the child. The child prints one JSON object on stdout with exactly these k
 `schemaVersion`, `phase`, `status`, `reason`, `possiblyPersisted`, `recordId`, `socketPath`.
 Diagnostics on stderr go to the launch log, not the terminal.
 
+The publisher may run its own internal worker in a separate process group, so the
+launcher's group kill does not reach it directly. Containing that worker is the publisher's
+job: the worker must exit when its CLI dies (for example by watching a pipe whose write end
+the CLI holds), and the launcher never kills or deletes anything beyond the phase child's own
+group. An acceptance case stays open until it passes against a real publisher: kill the
+phase child's group mid-phase, then check that the worker's group is gone within 2 seconds and
+that the launcher touched no socket or record file. The unit tests use a fake publisher with
+no internal worker, so they do not cover this case.
+
 | Exit | Meaning | Launcher action |
 | --- | --- | --- |
 | 0 | accepted (`status` must be `accepted`) | continue |
