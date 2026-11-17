@@ -54,6 +54,11 @@ The tool installs as a single `ai` command. There is no server component — all
 | `direnv_setup.py` | Portable checks and approval helpers for project `.envrc` files |
 | `git_repair.py` | Detects and repairs missing tracked symlinks, phantom deletions, and bare-worktree configuration |
 | `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
+| `name_registry.py` | The human session-name registry: the allocation, release, migration and status operations, each one change built against the current tip and published by the backend, plus discovery of which backend this host uses ([session-name-registry-dolt.md](session-name-registry-dolt.md)) |
+| `name_schema.py` | The registry's six tables written once and rendered as Dolt and SQLite DDL; compiles a change into guarded statements, one per record, and checks the read-back |
+| `name_dolt.py` | The fleet registry as a Dolt database on its own ref of the fleet repository, run through the `dolt` CLI under the claim protocol |
+| `name_sqlite.py` | The registry of an install with no fleet: a local SQLite file with the same schema, seeded with the shipped names |
+| `name_import.py` | The one-shot import from the git-tree registry and the verdict seed checked against the owner-approved oracle |
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |

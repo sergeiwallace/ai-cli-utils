@@ -1,7 +1,7 @@
 [project]
 name = "ai-cli-utils"
-version = "0.8.0"
-description = "Unified AI session manager for Claude Code and Gemini CLI"
+version = "0.9.0"
+description = "Unified AI session manager and automation toolkit for Claude Code, Codex, Gemini CLI and pi"
 readme = "README.md"
 license = "MIT"
 # ONE supported interpreter, upper bound included on purpose. The project is
@@ -24,7 +24,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "AI CLI Utils Contributors" },
 ]
-keywords = ["ai", "cli", "claude", "gemini", "tmux", "mosh", "developer-tools"]
+keywords = ["ai", "cli", "claude", "codex", "gemini", "pi", "tmux", "mosh", "git-worktree", "developer-tools"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -139,6 +139,7 @@ addopts = "-n auto -p pytest_memory_guard"
 timeout = 300
 timeout_method = "thread"
 markers = [
+    "registry_backends(*names): collect a registry_backend-parametrized test only for these backends",
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
     "real_nats: test drives NATSClient.connect itself (opts out of the conftest connection block)",
     "real_reaper_spawn: test drives _start_stale_session_reaper_for_launch itself (opts out of the conftest no-op; must mock subprocess.Popen itself)",

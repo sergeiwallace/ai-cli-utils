@@ -20,6 +20,8 @@ from ai_cli import name_registry as reg
 
 STEM = "myrepo-box"  # the legacy slot myrepo-3 predates the host alias in names
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch, slot):  # noqa: F811
@@ -45,10 +47,10 @@ def test_given_a_stopped_session_when_migrated_to_a_chosen_name_then_the_reservi
     assert (fleet.slot["repo"] / ".worktrees" / new).is_dir()
     record = json.loads(fleet.file(f"migrations/{OLD}.json"))
     assert record["status"] == "complete" and record["new_title"] == new
-    history = git(fleet.remote, "log", "--format=%H", "refs/heads/fleet-session-names/registry").splitlines()
+    history = fleet.history()
     reserving = next(commit for commit in history if "names/cleo.json" in fleet.changed(commit))
     assert f"migrations/{OLD}.json" in fleet.changed(reserving)
-    assert json.loads(git(fleet.remote, "show", f"{reserving}:migrations/{OLD}.json"))["status"] == "intent"
+    assert json.loads(fleet.file(f"migrations/{OLD}.json", at=reserving))["status"] == "intent"
     assert fleet.rows()["cleo"]["source"] == "migrated"
 
 
@@ -91,7 +93,7 @@ def test_given_a_max_length_inside_the_limits_when_migrated_then_the_name_is_no_
     code, out, err = migrate(fleet, OLD, "--to-name", "--max-length", "3")
 
     assert code != 0
-    assert "no free session name" in out + err
+    assert "no free session name" in out + err or "no approved session name is free" in out + err
 
 
 def test_given_the_rename_failing_with_nothing_left_when_migrated_then_the_row_and_intent_are_released(
@@ -423,6 +425,7 @@ def _registry_refs(fleet) -> tuple[str, str]:
     )
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 def test_given_no_published_generation_when_the_host_sweep_dry_runs_then_it_plans_from_the_shipped_list(
     unpublished,
 ):
@@ -436,6 +439,7 @@ def test_given_no_published_generation_when_the_host_sweep_dry_runs_then_it_plan
     assert _registry_refs(unpublished) == before
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 def test_given_no_published_generation_when_one_session_dry_runs_to_a_name_then_a_shipped_name_is_planned(
     unpublished,
 ):
@@ -454,6 +458,7 @@ def test_given_no_published_generation_when_one_session_dry_runs_to_a_name_then_
     assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
 
 
+@pytest.mark.registry_backends("git", "dolt")  # a local registry is seeded on first open
 @pytest.mark.parametrize("args", [("--to-name",), ("--all", "--to-names")])
 def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_naming_sync_names(unpublished, args):
     before = _registry_refs(unpublished)
@@ -467,3 +472,76 @@ def test_given_no_published_generation_when_migrated_for_real_then_it_refuses_na
     assert "no available/generation.json; run `ai sync-names` to publish one" in out + err
     assert _registry_refs(unpublished) == before
     assert (unpublished.slot["repo"] / ".worktrees" / OLD).is_dir()
+
+
+def test_given_a_migration_incomplete_hold_when_a_clean_failure_release_is_asked_then_it_refuses_keeping_it(fleet):
+    named = reg.Slot(
+        repo="myrepo", repo_alias="myrepo", host_alias="box", label=None, machine=HOST, client="claude-code"
+    )
+    reservation = reg.reserve_for_migration(fleet.registry, named, OLD, name="cleo", max_length=None, words=frozenset())
+    survivors = [{"kind": "worktree", "identifier": f".worktrees/{reservation.title}"}]
+    reg.mark_migration_incomplete(fleet.registry, OLD, HOST, survivors)
+    tip = fleet.tip()
+
+    with pytest.raises(reg.WriteRefusedError, match="migration-incomplete"):
+        reg.release_failed_migration(fleet.registry, OLD, HOST)
+
+    assert fleet.tip() == tip
+    row = fleet.rows()["cleo"]
+    assert row["state"] == "migration-incomplete" and row["recovery"] == survivors
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"
+
+
+class _Killed(BaseException):
+    """The process dying at a durable boundary: no ``except Exception`` handler sees it."""
+
+
+@pytest.mark.parametrize("boundary", ["intent-committed", "between-artifact-moves", "rename-finished"])
+def test_given_a_migration_killed_at_a_durable_boundary_when_run_again_then_it_reaches_the_completed_rows(
+    fleet, monkeypatch, boundary
+):
+    killed: list[str] = []
+    if boundary == "between-artifact-moves":
+        import shutil
+
+        real_move = shutil.move
+        moved: list[str] = []
+
+        def die_between_moves(source, dest, *args, **kwargs):
+            # One of the session's own artifacts has moved; the process dies before the next.
+            if not killed and OLD in str(source):
+                if moved:
+                    killed.append(boundary)
+                    raise _Killed
+                moved.append(str(source))
+            return real_move(source, dest, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "move", die_between_moves)
+    else:
+        seam = "_migrate_session_for_names" if boundary == "intent-committed" else "_complete_migration_for_names"
+        real = getattr(main, seam)
+
+        def die_once(*args, **kwargs):
+            if not killed and not kwargs.get("dry_run"):
+                killed.append(boundary)
+                raise _Killed
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(main, seam, die_once)
+    with pytest.raises(_Killed):
+        migrate(fleet, OLD, "--to-name", "cleo")
+    assert killed == [boundary]
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "intent"
+    assert fleet.rows()["cleo"]["state"] == "active"
+
+    code, out, err = migrate(fleet, OLD, "--to-name", "cleo")
+
+    assert code == 0, out + err
+    assert killed == [boundary]
+    assert json.loads(fleet.file(f"migrations/{OLD}.json"))["status"] == "complete"
+    row = fleet.rows()["cleo"]
+    assert row["state"] == "active" and row["recovery"] is None and row["title"] == f"{STEM}-cleo"
+    assert (fleet.slot["repo"] / ".worktrees" / f"{STEM}-cleo").is_dir()
+    tip = fleet.tip()
+    assert migrate(fleet, OLD, "--to-name", "cleo")[0] == 0
+    assert fleet.tip() == tip  # a third identical run changes nothing

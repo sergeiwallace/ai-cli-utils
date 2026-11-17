@@ -3616,16 +3616,20 @@ def _finish_recorded_migrations(
     ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
     given: the session then starts and the parts left go into the launch log.
 
-    When ``attaching_live()`` says the launch attaches to an ``ai_name`` already running
-    (asked once, and only for a pair not verified), no writing finish can run: each pair not
-    verified is re-planned read-only, and a part left is one warning naming the ``--finish``
-    command to run once the session exits, never a refusal. A ledger row in a format newer
+    A pending pair's finish still runs when ``ai_name`` is already live: it does every step
+    except the ones that write the running session's own files, which it defers. A pair whose
+    only parts left are those deferred ones never refuses the launch; it warns the first time
+    and prints a progress line after that (:func:`_report_deferral`). When ``attaching_live()``
+    says the launch attaches to an ``ai_name`` already running (asked once, and only for a pair
+    not verified), any other part left is one warning naming the ``--finish`` command to run
+    once the session exits, never a refusal. A ledger row in a format newer
     than this build reads refuses the launch, override or not. Every refusal raises
     :class:`PartialMigrationRefusal`. Each pair, and each slow step of its finish or
     re-plan, prints a line as it starts and ends.
     """
-    from .session_migrate import MIGRATION_FORMAT, finish_session, pending_finishes
+    from .session_migrate import MIGRATION_FORMAT, finish_session, noted_deferral, pending_finishes
     from .session_migrate_status import (
+        deferred_only,
         finish_command,
         finish_state,
         judge_pair,
@@ -3656,14 +3660,14 @@ def _finish_recorded_migrations(
             continue
         if live is None:
             live = attaching_live()
-        if old not in pending or live:
-            why = f"{ai_name} is running, so it cannot be finished now" if live else "not verified"
-            progress(f"{pair}: re-planning read-only ({why})")
+        if old not in pending:
+            progress(f"{pair}: re-planning read-only (not verified)")
             left, _live, _planned = judge_pair(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
             )
         else:
             progress(f"{pair}: finishing")
+            noted = noted_deferral(old, ai_name, state)
             try:
                 result = finish_session(
                     repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
@@ -3676,6 +3680,10 @@ def _finish_recorded_migrations(
                 left = left_after(result)
                 if not left:
                     reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+                elif deferred_only(left):
+                    # Only the parts writing the running NEW's own files are left: they wait for it to stop.
+                    _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+                    left = {}
                 for straggler in result.references_left:
                     reporter.warning("migrate", f"migration {old} -> {ai_name}: reference left: {straggler}")
         if left:
@@ -3710,6 +3718,19 @@ def _finish_recorded_migrations(
         )
 
 
+def _report_deferral(
+    reporter: LaunchReporter, old: str, ai_name: str, repo: Path, parts: list[str], noted: list[str] | None
+) -> None:
+    """Warn once that a finish deferred ``parts`` while ``ai_name`` runs; later, only a progress line."""
+    from .session_migrate_status import deferral_report
+
+    first, line = deferral_report(old, ai_name, repo, parts, noted)
+    if first:
+        reporter.warning("migrate", line)
+    else:
+        reporter.phase("migrate").outcome(line)
+
+
 def _in_own_tmux_session(tmux_session: str) -> bool:
     """Whether this process runs in a pane of ``tmux_session``, as tmux itself reports for ``$TMUX_PANE``."""
     pane = os.environ.get("TMUX_PANE", "")
@@ -3735,14 +3756,17 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
     restart's equivalent of the launch-time finish in :func:`_finish_recorded_migrations`. No
     agent of this session runs then, but its own tmux session still hosts ``ai_name``, so that
     one tmux session, and only once tmux confirms this process runs inside it, is left out of
-    the finish's live check. Every other check stands: a live agent named ``ai_name`` or inside
-    either slot, or any other tmux session hosting either name, refuses the finish. A finish
-    that refuses, raises or leaves a part never stops the restart: each such pair is one
-    warning naming the ``--finish`` command. Only a pair with no ``finished`` row is tried, so
-    a restart with nothing pending costs one ledger read.
+    the finish's live check. Every other check stands: a live agent named OLD or inside OLD's
+    slot, or any tmux session hosting OLD, refuses the finish, and a live agent named
+    ``ai_name`` or inside its slot, or another tmux session hosting it, makes the finish defer
+    the parts that write that session's files and do the rest. A finish that refuses, raises
+    or leaves a part never stops the restart: each such pair is one warning naming the
+    ``--finish`` command, except a pair left with deferred parts only, which warns only the
+    first time (:func:`_report_deferral`). Only a pair with no ``finished`` row is tried, so a
+    restart with nothing pending costs one ledger read.
     """
-    from .session_migrate import _session_variants, _tmux_names, finish_session, pending_finishes
-    from .session_migrate_status import finish_command, left_after
+    from .session_migrate import _session_variants, _tmux_names, finish_session, noted_deferral, pending_finishes
+    from .session_migrate_status import deferred_only, finish_command, left_after
 
     pending = pending_finishes(ai_name, _config.get_xdg_state_home())
     if not pending:
@@ -3759,6 +3783,7 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
         pair = f"migration {old} -> {ai_name}"
         command = finish_command(old, ai_name, repo)
         progress(f"{pair}: finishing before the agent restarts")
+        noted = noted_deferral(old, ai_name)
         try:
             result = finish_session(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, tmux_names=others, progress=progress
@@ -3770,7 +3795,9 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
         for move in result.moves:
             reporter.detail("migrate", move.describe())
         left = left_after(result)
-        if left:
+        if deferred_only(left):
+            _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+        elif left:
             named = "; ".join(f"{part} ({status})" for part, status in left.items())
             reporter.warning("migrate", f"{pair} partial; parts left: {named}; restarting the agent; run `{command}`")
         else:
@@ -4089,7 +4116,9 @@ def _resolve_session_identity(
         _naming_exit(reporter, str(exc), 1)
     registry = discovery.registry
     host = _session_naming.host_id()
-    policy_config = _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.GitRegistry) else None
+    policy_config = (
+        _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.FleetRegistry) else None
+    )
     try:
         settings = session_title.resolve_settings(
             enabled_flag=naming.session_names,
@@ -4161,7 +4190,7 @@ def _resolve_session_identity(
         return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
-    except (_names.NoNameListError, _names.PolicyUnknownError) as exc:
+    except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
         _naming_exit(reporter, str(exc), 1)
     except _session_naming.NamePoolExhaustedError as exc:
         _naming_exit(reporter, str(exc), 1)
@@ -4520,7 +4549,7 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
     if dry_run:
         verdict, reason = _names.check_hand_chosen(snapshot, value.lower(), slot, words)
         title = slot.title_for(value.lower())
-        if verdict in ("held", "confusable", "word", "limits"):
+        if verdict in ("held", "rejected", "confusable", "word", "limits"):
             _naming_exit(reporter, f"dry run: {reason}", 2)
         note = {"unknown": "would ask to add it to the name database", "spare": "this machine's spare"}.get(
             verdict, "free"
@@ -5565,8 +5594,8 @@ def _do_session_launch(
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched. A launch that
     # will attach to NEW's live tmux session (the same test the worktree sync makes below)
-    # cannot finish anything, so a part left only warns: refusing it would leave the running
-    # session unreachable while `--finish` refuses it for being live.
+    # finishes only what is safe while NEW runs, so a part left only warns: refusing it would
+    # leave the running session unreachable until it is stopped.
     _finish_recorded_migrations(
         ai_name,
         reporter,
@@ -8510,14 +8539,14 @@ def _migrate_one_to_name(
             return 1 if result.references_left else 0
         words = _names.common_words(snapshot.policy) if name else frozenset()
         if name:
-            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
+            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
             if verdict not in ("ok", "spare"):
                 if verdict == "unknown":
                     reason += f"; add it with `ai add-name {name}` first"
                 raise AdoptionError(reason)
             planned = name
         else:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length)
+            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, session=old)
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
             repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True
@@ -9052,7 +9081,9 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
     is_flag=True,
     help=(
         "The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; "
-        "with -n/--dry-run it plans even while a session is live and names it"
+        "with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every "
+        "step except those writing NEW's open transcript and task files, which it defers and names; a "
+        "running OLD refuses it"
     ),
 )
 @click.option(
@@ -9176,7 +9207,9 @@ def cmd_migrate_session(
     try:
         result = _run(True)
         if not dry_run:
-            if not yes and not result.live:
+            # A live session refuses the writing run, so there is nothing to confirm, unless the
+            # finish defers only NEW's own files and writes the rest.
+            if not yes and (not result.live or result.deferred):
                 _print_migration(result)
                 if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {new}?"):
                     _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)

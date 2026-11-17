@@ -27,7 +27,7 @@ from test_output_sinks import _event_fields, _fields
 from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
 
 DIRENV_TEXT = "direnv could not load"
-SHELL_TEXT = "Auto-restart stopped. Returning to an interactive shell."
+SHELL_TEXT = "Auto-restart stopped. Returning to the calling shell."
 _SEED = "launch log started for session test-session"
 # The script's own plain line when the renderer cannot run: a stamp, then `[session] <op>: ...`.
 _FALLBACK = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} \[session\] direnv: Warning: ")
@@ -94,7 +94,7 @@ def test_given_a_session_script_warning_when_emitted_then_terminal_log_and_telem
 
 def _info_and_warning_session(start, launch_log: Path, config: str = "") -> Session:
     # Child 1 fails its direnv export (a warning) and runs the agent; child 2 finds an exit
-    # request, so the supervisor emits the shell-return info line. Exit that shell to end the test.
+    # request, so the supervisor emits the final-exit info line and ends.
     session = start(
         reload_on=(),
         agent_runs=(4.0, 600.0),
@@ -103,7 +103,7 @@ def _info_and_warning_session(start, launch_log: Path, config: str = "") -> Sess
         exit_on_cron=2,
         config=config,
     )
-    session.exit_shell()
+    assert session.wait_for_exit() == 0
     return session
 
 

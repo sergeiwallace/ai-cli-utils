@@ -681,7 +681,8 @@ def get_engine_script(
       }}
     # BEGIN SHELL RETURN terminal
       _supervisor_preserve_pane() {{
-        # A command stop closes the session; terminal interrupts return a shell.
+        # Policy changes may leave a worktree shell. Interrupts end the tmux
+        # session so its attach client returns to the original calling shell.
         [[ "$(cat "$_ai_state_dir/session-int-exit-$tmux_session" 2>/dev/null)" == stop ]] && return
         # A script launched as tmux's pane command has no interactive shell
         # parent to return to. Keep that pane and replace its supervisor below.
@@ -830,7 +831,6 @@ def get_engine_script(
           # A real promotion failure still exits 1 and leaves its error on screen.
     # BEGIN RUN STATE promotion-interrupt
           (( _promotion_status == 2 )) && _ai_final_manual_exit
-          (( _promotion_status == 2 )) && _supervisor_preserve_pane
     # END RUN STATE
           (( _promotion_status == 2 )) && break
           exit 1
@@ -843,7 +843,6 @@ def get_engine_script(
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
     # BEGIN RUN STATE supervisor-interrupt
           _ai_final_manual_exit
-          _supervisor_preserve_pane
     # END RUN STATE
           break
         fi
@@ -852,7 +851,6 @@ def get_engine_script(
         if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then
     # BEGIN RUN STATE supervisor-final-exit
           _ai_final_manual_exit
-          (( _child_status != 79 )) && _supervisor_preserve_pane
     # END RUN STATE
           break
         fi
@@ -916,6 +914,9 @@ def get_engine_script(
         if [[ -n "${{SHELL:-}}" && -x "$SHELL" ]]; then exec "$SHELL" -i; fi
         exec {shlex.quote(_session_shell)} -i
       fi
+    # BEGIN RUN STATE final-exit-message
+      _ai_emit info exit "Auto-restart stopped. Returning to the calling shell."
+    # END RUN STATE
     # END SHELL RETURN
       exit 0
     fi
@@ -1701,11 +1702,10 @@ with open(path, 'w') as f:
 
     # BEGIN SHELL RETURN interrupt-exit
       # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
-      # a healthy clean exit or status 130 is a deliberate stop. Short clean
-      # exits still reach the existing quick-failure guard below. The supervisor
-      # applies policy after failed-start guards have recorded their cause.
-      if $agent_attempted && (( agent_exit_code == 130 || \\
-        (agent_exit_code == 0 && $(date +%s) - start_ts >= 3) )); then
+      # a clean exit or status 130 is a deliberate stop, even immediately after
+      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell
+      # whose interactive prompt consumes all further interrupts.
+      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then
         _ai_final_manual_exit
         exit 77
       fi
