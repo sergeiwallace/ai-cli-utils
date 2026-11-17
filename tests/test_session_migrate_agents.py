@@ -981,6 +981,21 @@ def test_given_agent_worktrees_with_links_into_the_old_agents_dir_when_migrated_
     assert (linked_fleet["new_trees"][2] / "notes.txt").read_text(encoding="utf-8") == "notes\n"
 
 
+def test_given_a_link_into_a_held_agent_worktree_when_migrated_then_it_still_names_the_worktree_where_it_stayed(
+    linked_fleet,
+):
+    """A held worktree is not moved, so a link into it must keep naming its old path."""
+    _live(linked_fleet["leaf_c"] / "data")
+    slot_link = linked_fleet["new_trees"][2] / "notes.txt"
+
+    code, out, err = _migrate(linked_fleet, "-y")
+
+    assert code == 1, out + err  # the held worktree is left, which the run reports
+    assert linked_fleet["leaf_c"].is_dir()
+    assert slot_link.read_text(encoding="utf-8") == "notes\n", "the link was rewritten to a path nothing moved to"
+    assert "stale link NOT fixed" not in out + err
+
+
 def test_given_a_venv_link_resolving_through_an_outside_link_into_the_old_agents_dir_when_migrated_then_it_fails_closed(
     fleet, tmp_path
 ):
