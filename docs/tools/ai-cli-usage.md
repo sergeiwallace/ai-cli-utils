@@ -382,6 +382,19 @@ The question asked is always whether tmux *runs*, never whether it is on `PATH`.
 doctor` runs `tmux -V` too, so a build that resolves and then dies on a missing shared
 library reads as unusable instead of `OK`.
 
+**Which tmux.** `[tmux] binary` in config.toml names the multiplexer executable that
+every tmux call runs: the launch and its preflight, `ai attach`, `ai ls`, every query,
+and the supervisor script inside the session. `[tmux.hosts.<host id>] binary` sets it
+for one machine (its `[machine] host_id`) and wins over the global value there. Both
+are read on every call. Unset or empty, the launcher runs `tmux` and PATH decides. Set
+it where more than one build answers to `tmux`, such as a Windows machine with psmux,
+which installs `tmux.exe`, `pmux.exe` and `psmux.exe`, beside an MSYS2 tmux: one path
+here makes every shell on the machine run the same build, so a session is never
+started by one build and queried by another. A bare name is looked up on PATH; a path
+is used as given. A configured binary that does not exist is refused by name, citing
+the file and table that set it: `ai c` exits before creating anything (unless
+`-b/--bare`), and the tmux on PATH is never run in its place.
+
 **Recovering an unusable tmux.** Two different faults, two different answers:
 
 - **tmux is absent** — one unattended install attempt (rootless managers first:
