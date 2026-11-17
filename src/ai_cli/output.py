@@ -116,7 +116,6 @@ class Tag(StrEnum):
     PLAN = "plan"
     PS = "ps"
     QUOTA = "quota"
-    QUOTA_WATCH = "quota-watch"
     REGISTER = "register"
     REMOTE = "remote"
     RESTORE = "restore"
@@ -873,8 +872,26 @@ def error(tag: Tag, op: str, message: object, *, file: TextIO | None = None) -> 
 
 
 def confirm(tag: Tag, op: str, question: str, *, default: bool = False) -> bool:
-    """A yes/no prompt whose prompt line carries ``[tag] op:``."""
-    return click.confirm(render(tag, op, question.strip(), stream=sys.stdout), default=default)
+    """A yes/no prompt whose prompt line carries ``[tag] op:``.
+
+    A closed stdin (a script or another program running the command) answers the default and
+    says so. click raises ``Abort`` for it, and callers that catch ``RuntimeError`` (which
+    ``Abort`` subclasses) used to report an unanswered prompt as an empty-reason failure. Ctrl+C
+    still raises.
+    """
+    try:
+        return click.confirm(render(tag, op, question.strip(), stream=sys.stdout), default=default)
+    except click.Abort as exc:
+        if not isinstance(exc.__context__, EOFError):
+            raise
+        answer = "yes" if default else "no"
+        emit(
+            tag,
+            op,
+            f"no answer (stdin is closed), so {answer}; answer from a terminal, or pass -y where the command takes it",
+            err=True,
+        )
+        return default
 
 
 def ask(tag: Tag, op: str, prompt: str, *, err: bool = False) -> str:

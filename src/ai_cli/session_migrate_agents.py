@@ -75,6 +75,87 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=_git_env(), check=False)
 
 
+def _local_branches(repo: Path) -> dict[str, str] | None:
+    """Every local branch of ``repo`` and its tip, from one ``for-each-ref``; ``None`` if git cannot list them.
+
+    Planning asks, for each agent worktree, whether its renamed branch already exists and where its
+    branch points. One call per repo answers both for every worktree; two calls per worktree took
+    most of an hour on a host with dozens of agent worktrees and a slow git.
+    """
+    listed = _git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/")
+    if listed.returncode != 0:
+        return None
+    tips: dict[str, str] = {}
+    for line in listed.stdout.splitlines():
+        tip, _, ref = line.partition(" ")
+        if ref.startswith("refs/heads/"):
+            tips[ref[len("refs/heads/") :]] = tip
+    return tips
+
+
+def _agent_worktree_stamps(repo: Path) -> dict[str, str] | None:
+    """Every ``branch.<name>.<prefix>-agent-worktree`` value in ``repo`` from one call.
+
+    Keys come back as ``git config`` canonicalises them: the section and variable names
+    lowercased, the branch name as written. ``None`` means the read failed, so the caller asks
+    for each key on its own; an empty mapping means there are none.
+    """
+    prefix = _config.get_worktree_marker_prefix()
+    if not prefix:
+        return {}
+    name = re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", f"{prefix}-agent-worktree".lower())
+    read = _git(repo, "config", "-z", "--get-regexp", rf"^branch\..*\.{name}$")
+    if read.returncode == 1:
+        return {}
+    if read.returncode != 0:
+        return None
+    stamps: dict[str, str] = {}
+    for record in read.stdout.split("\0"):
+        key, _, value = record.partition("\n")
+        if key:
+            stamps[key] = value
+    return stamps
+
+
+def _canonical_key(key: str) -> str:
+    """``key`` as ``git config --get-regexp`` prints it: section and variable lowercased."""
+    section, _, rest = key.partition(".")
+    subsection, dot, variable = rest.rpartition(".")
+    return f"{section.lower()}.{subsection}{dot}{variable.lower()}" if dot else f"{section.lower()}.{rest.lower()}"
+
+
+def _git_dir(worktree: Path) -> Path | None:
+    """The worktree's own git directory, read from its ``.git`` without running git."""
+    dotgit = worktree / ".git"
+    if dotgit.is_dir():
+        return dotgit
+    try:
+        text = dotgit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    path = Path(text[len("gitdir:") :].strip())
+    path = path if path.is_absolute() else worktree / path
+    return path if path.is_dir() else None
+
+
+def _provenance_path(worktree: Path, provenance_file: str) -> Path | None:
+    """Where ``git rev-parse --git-path <provenance_file>`` points, without a git call when it can.
+
+    The provenance file is not one of git's shared paths, so it lives in the worktree's own git
+    directory, which its ``.git`` names. Only when that cannot be read does this ask git.
+    """
+    git_dir = _git_dir(worktree)
+    if git_dir is not None:
+        return git_dir / provenance_file
+    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
+    if located.returncode != 0 or not located.stdout.strip():
+        return None
+    path = Path(located.stdout.strip())
+    return path if path.is_absolute() else worktree / path
+
+
 def renamed_key(key: str, renames: dict[str, str]) -> str:
     """``key`` after ``git branch -m`` of each pair in ``renames``, which moves the branch's config section."""
     for old, new in renames.items():
@@ -195,12 +276,9 @@ def _provenance(worktree: Path) -> tuple[dict | None, str]:
     provenance_file = _provenance_file()
     if provenance_file is None:
         return None, "unconfigured"
-    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
-    if located.returncode != 0 or not located.stdout.strip():
+    path = _provenance_path(worktree, provenance_file)
+    if path is None:
         return None, "unreadable"
-    path = Path(located.stdout.strip())
-    if not path.is_absolute():
-        path = worktree / path
     try:
         value = json.loads(path.read_bytes())
     except FileNotFoundError:
@@ -220,14 +298,21 @@ def plan_worktree_ownership(
     new_owner: str,
     branch: str | None,
     new_branch: str | None,
+    stamps: dict[str, str] | None = None,
 ) -> WorktreeOwnership:
-    """Inspect the existing ownership records for one planned worktree move."""
+    """Inspect the existing ownership records for one planned worktree move.
+
+    ``stamps`` is :func:`_agent_worktree_stamps` for ``repo``, read once for every worktree a
+    plan inspects there; without it the one key is asked for.
+    """
     provenance, state = _provenance(worktree)
     if provenance is not None and provenance["owner_session"] != old_owner:
         state = "different-owner"
     stamp_value = None
     key = _agent_worktree_key(branch) if branch else None
-    if key:
+    if key and stamps is not None:
+        stamp_value = stamps.get(_canonical_key(key))
+    elif key:
         stamp = _git(repo, "config", "--get", key)
         if stamp.returncode == 0:
             stamp_value = stamp.stdout.rstrip("\n")
@@ -284,12 +369,9 @@ def _replace_provenance_owner(worktree: Path, old_owner: str, new_owner: str) ->
     provenance_file = _provenance_file()
     if provenance_file is None:
         return "no [worktree] marker_prefix is configured"
-    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
-    if located.returncode != 0 or not located.stdout.strip():
+    path = _provenance_path(worktree, provenance_file)
+    if path is None:
         return "record path is unreadable"
-    path = Path(located.stdout.strip())
-    if not path.is_absolute():
-        path = worktree / path
     payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
     descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     temporary = Path(temporary_name)
@@ -433,14 +515,20 @@ def plan_agents(
         new_container = container.parent / f"{new}-agents"
         worktrees = _worktrees(repo)
         holding = {branch: path for path, branch in worktrees if branch}
+        local_branches = _local_branches(repo)
+        stamps = _agent_worktree_stamps(repo)
 
         def _new_branch(branch: str | None) -> str | None:
             return new_prefix + branch[len(prefix) :] if branch and branch.startswith(prefix) else None
 
-        def _branch_exists(branch: str | None, repo: Path = repo) -> bool:
-            return (
-                bool(branch) and _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
-            )
+        def _branch_exists(
+            branch: str | None, repo: Path = repo, known: dict[str, str] | None = local_branches
+        ) -> bool:
+            if not branch:
+                return False
+            if known is not None:
+                return branch in known
+            return _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
 
         repo_entries: list[AgentEntry] = []
         recovered: dict[Path, Path] = {}
@@ -493,6 +581,7 @@ def plan_agents(
                     new,
                     branch,
                     entry.new_branch or branch,
+                    stamps,
                 )
                 original = next((source for source, target in recovered.items() if target == path), path)
                 if needs_relocation(path / ".venv", original):
@@ -527,7 +616,9 @@ def plan_agents(
             entry.conflict = _branch_exists(entry.new_branch)
             repo_entries.append(entry)
         for entry in repo_entries:
-            if entry.branch:
+            if entry.branch and local_branches is not None:
+                entry.tip = local_branches.get(entry.branch, "")
+            elif entry.branch:
                 tip = _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{entry.branch}")
                 entry.tip = tip.stdout.strip()
         plan.entries += repo_entries

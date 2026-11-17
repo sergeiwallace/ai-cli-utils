@@ -124,14 +124,14 @@
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
@@ -142,6 +142,12 @@ enabled = true
 ## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
 ## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not

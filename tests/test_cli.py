@@ -497,7 +497,7 @@ class TestCliDispatchBranches:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_quota_no_watch_then_exits_1(self):
+    def test_cli_when_quota_unknown_subcommand_then_exits_1(self):
         with patch("sys.argv", ["ai", "quota", "bad"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
@@ -1986,34 +1986,6 @@ class TestCliDaemonDispatch:
                         cli()
         assert exc.value.code == 0
         mock_watch.assert_called_once()
-
-    def test_cli_when_quota_watch_run_then_calls_quota_watch(self):
-        with patch("sys.argv", ["ai", "quota", "watch", "run"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.quota.quota_watch", return_value=0) as mock_watch:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-        assert exc.value.code == 0
-        mock_watch.assert_called_once()
-
-    def test_cli_when_quota_watch_start_bare_then_auto_is_false(self):
-        # An explicitly-typed `ai quota watch start` always honors user intent —
-        # it must not be silently gated on the [quota_watch] auto_start config flag.
-        with patch("sys.argv", ["ai", "quota", "watch", "start"]):
-            with patch("ai_cli.process_manager._cmd_quota_watch_start") as mock_start:
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-        assert exc.value.code == 0
-        mock_start.assert_called_once_with(auto=False)
-
-    def test_cli_when_quota_watch_start_with_auto_flag_then_auto_is_true(self):
-        # session_script.py's per-session auto-start path passes --auto.
-        with patch("sys.argv", ["ai", "quota", "watch", "start", "--auto"]):
-            with patch("ai_cli.process_manager._cmd_quota_watch_start") as mock_start:
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-        assert exc.value.code == 0
-        mock_start.assert_called_once_with(auto=True)
 
     def test_cli_when_telemetry_writer_then_calls_telemetry_writer(self):
         with patch("sys.argv", ["ai", "telemetry", "writer"]):

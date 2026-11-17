@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-16
+
 ### Added
 
+- `ai import-names` copies the git-tree registry (pool, manual names, held rows, renames and policy
+  snapshot) into the fleet's Dolt database in one commit and prints its counts; a second run finds
+  nothing to import. `ai seed-name-verdicts -f FILE` applies the owner's approvals at the scope each
+  was given, after checking every part of the seed file against an owner-approved oracle pinned at
+  a fleet-repository commit by a separate cutover record. `ai list-migrations` lists every rename,
+  and `ai find-names` searches names by status, verdict scope, holder and hold state in one query,
+  or with `-H/--history NAME` shows every past value (Dolt only).
+- On the database registries every session name has a general status (`unreviewed`, `rejected` or
+  `approved`), and names can be approved or rejected for one repository, host or session only.
+  The picker, spare top-up and offline spares use only approved names that no verdict rejects
+  for the launch, and refuse when the status data is missing or unreadable. A name chosen by hand
+  needs no approval, but a rejected one needs a session approval. `ai set-name-status` and
+  `ai set-name-verdict` record who decided (`-a/--actor`) apart from the session that wrote it;
+  `ai list-names` shows each name's status and `-p/--pool` lists the whole pool.
+- The session-name registry can live in a Dolt database on its own ref of the fleet repository
+  (`registry_backend = "dolt"` with `schema = 2` in `config/session-names.toml`), reached through
+  the `dolt` program. Every write is guarded in the statement itself, pushed without force and read
+  back from the remote tip before it counts. An install with no fleet repository now keeps its
+  registry in a local SQLite file with the same tables and constraints, seeded with the shipped
+  name list.
+- A `[session] auto_restart` key in `config.toml` turns off the restart of Claude Code when it
+  exits inside a tmux session. Missing or `true` keeps today's behaviour; `false` lets the
+  session end at the agent's next exit and says why. The supervisor reads the key from the file
+  at every exit, so an edit applies at the next exit with no relaunch, and an unreadable or
+  malformed file never stops restarts.
+- `docs/reference/config.toml` is the complete, commented `config.toml` that `ai` writes for a
+  new user, with every key and its default. A test keeps it identical to that text, fails when
+  the code reads a key in a documented table that the template does not list, and fails when a
+  table validated by a `*_DEFAULTS` dict lists a key nothing reads.
 - `ai migrate-session` no longer finishes silently with the old name still written in code or
   config. Once a migration finishes, it runs the `[migrate_session] references_command` from
   `config.toml`, if one is set, as `<argv> --old OLD --new NEW`, then scans the repo's tracked
@@ -30,114 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attach to a session (`ai attach` is not needed for a session `ai` started), and ends with the
   URL of the CLI guide. The README and the CLI guide carry the same command index and
   start/resume/attach rows, generated from the same source.
-
-### Fixed
-
-- A pending `ai migrate-session OLD NEW --finish` no longer waits forever for a NEW session its
-  supervisor keeps restarting. While NEW runs, the finish (by hand, at `ai c NEW` or at a
-  supervisor restart) now does every step except the ones that write NEW's open files: its
-  project directory and transcript titles, its sub-agent and background-job records, and its
-  task namespace. Those read `deferred while live` and the run exits 1. The run records them in
-  a `"deferred_recorded": true` ledger row, so the first launch or restart warns once, naming
-  the parts, `ai sessions stop NEW` and the `--finish` command, and later ones print only a
-  progress line. A pair left with deferred parts only no longer refuses `ai c NEW`, and the
-  finish after NEW stops completes it. A running OLD still refuses the finish with nothing
-  written.
-- After a host reboot, `ai sessions list` no longer shows a session as `running` when its record
-  says `running` from an earlier boot but its tmux session and processes are both gone. Before
-  the boot pass runs, or with `on_boot` off, such a row now shows STATUS `stale` and CAUSE
-  `host_reboot`, using the same proof as the migration preflight. The record is not rewritten,
-  so the boot relaunch keeps its evidence. `-j/--json` gives every record an `earlier_boot_gone`
-  field, `true` for such a row, while its `run_state` stays `running`
-  ([docs/bugs/stale-running-records.md](docs/bugs/stale-running-records.md)).
-- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
-  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
-  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
-  stayed stopped. SIGCONT to a running process does nothing.
-- A migrate-session hook, Beads publish or references command written as an interpreter and
-  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
-  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
-  in any argument is now expanded to the home directory.
-- A session no longer ends at launch, about one time in 64, with `No such option` from
-  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
-  a positional argument, and a token that started with `-` was read as an option, so the
-  supervisor exited before the agent started. Such a token now gets a leading letter.
-- `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
-  the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
-  worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
-  time. On a loaded host that gap measured 19 to 67 seconds with nothing printed.
-- After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
-  `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
-  still says `running` from an earlier boot. When tmux and the process table on its owning host
-  both show nothing, such a record is proved gone (no process survives a reboot), so the
-  migration proceeds. The record is not rewritten, so the boot relaunch keeps its evidence.
-  A refusal now names the reason: a live tmux session or process, a probe that could not answer,
-  or a record owned by another host
-  ([docs/bugs/earlier-boot-run-blocks-migration.md](docs/bugs/earlier-boot-run-blocks-migration.md)).
-- Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
-  `never`, so boot replay brings them back like any other session. Probes still default to
-  `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
-  (`ai sessions policy`) or a default, and no automatic write replaces an owner's policy.
-  `ai sessions policy` records `relaunch_changed_at` and no longer moves `changed_at`, the
-  run-state time `ai sessions list` shows. The new `ai sessions repair-policy [-d]` turns the
-  `never` older releases wrote into `auto` once; see the README's boot relaunch section.
-
-- `ai c NEW` no longer re-plans a migration whose ledger row is a verified `finished`. That
-  re-plan read every Beads store, hook and repo on the host, so an unrelated failure there
-  refused the launch of a migration already proved finished, after minutes with no output.
-  `ai migrate-session -s -a` and `--finish` still re-check a verified pair. A launch that
-  attaches to an already running NEW now warns with the parts left and the `--finish` command
-  instead of refusing, since a finish cannot run against a live session.
-- The launch guard and `ai migrate-session` print a line as each slow migration step starts and
-  ends with its elapsed time: each hook's dry run and live run, each Beads store's read, re-key
-  and publish, the scan of other repos and the verifying re-plan.
-- `could not list registered git worktrees` names git's exit status, or the signal that ended
-  it, when git printed nothing on stderr.
-- `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
-  bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
-  its code objects, so tools reading source through them found nothing until the caches were
-  rebuilt. Caches inside a virtual environment or a nested checkout, files git tracks and
-  anything behind a symlink are left alone; Python rebuilds the rest on the next import.
-  A checkout moved before this fix can be cleaned by hand with
-  `python -m ai_cli.worktree_move <checkout>...`.
-- `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
-  remove a local row once tmux and the process table prove its session gone and it has not
-  changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier
-  boot counts from this boot's start). The minute worker, never the list, also removes a
-  client-side remote row past the retention whose launcher is gone when the remote host
-  reports no such tmux session, which clears rows for sessions renamed or retired on their own
-  host. `ai retire-session` drops the retired session's rows.
-- `ai sessions stop NAME` now also sends SIGTERM to a Claude Code process running under a wrapper
-  it marked when that process's record names another session, as it does after a rename. Before,
-  it signalled only records named NAME, so it waited out its timeout naming only the wrapper, and
-  the agent had to exit by itself. Such a process is still signalled only when its record's start
-  time proves its pid; one that cannot be proved is named as still running and is not signalled.
-- `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
-  environment looking for files that name the old path. It now reads only the records at the top
-  of each site-packages directory (`.pth` files, legacy `.egg-link` files and the
-  `__editable___*_finder.py` module of an editable install, which it now also rewrites) and the
-  `direct_url.json` in each `*.dist-info` directory, which is everywhere those records can live. A venv holding a package with a large bundled data
-  tree (a browser driver, node modules) made planning take many minutes on a busy disk.
-- A hand-chosen session name (`ai migrate-session --to-name NAME`, a launch with `--name NAME`,
-  `ai adopt-session`) that is one of this machine's own unactivated spares is now taken by
-  activating that spare in place, with this machine's spares topped back up in the same registry
-  commit. Before, it was refused as held, and the only way round was to release the name and
-  reserve it again, which another machine could race. A spare of another machine, or one an
-  offline launch already took, is still refused as held. A `--name` dry run reports the name as
-  this machine's spare and reserves nothing.
-- Reconcile vanished local sessions from the current boot instead of leaving their run records
-  running indefinitely. The existing minute worker and session list/publication/enrol/stop paths
-  retain an unknown exit with liveness evidence; live, uncertain, foreign and earlier-boot records
-  are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
-  refuses contradictory running records before moving files. Detached replay and all local engines
-  also schedule the existing worker.
-- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
-  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
-  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
-  failed with "No task prefix is registered", and from inside a repository it planned a new session
-  named after the whole string in the wrong repository.
-
-### Added
 
 - `ai c -t/--probe [NAME]` (and `ai g`, `ai p`, `ai cx`) launches a throwaway probe or test
   session that nothing treats as a session home. It is titled `<prefix>-probe[-NAME]-N` by index
@@ -231,259 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max(request_lifetime_floor_seconds, term_grace_seconds + relaunch_timeout_seconds)` seconds after
   it is written. The floor used to be a fixed one second, and the default leaves behaviour
   unchanged.
-
-### Changed
-
-- `ai c NEW` (and `ai g`/`ai p`/`ai cx`) and `ai sessions relaunch` no longer start a session
-  whose recorded migration is partial. Each migration to NEW this host records is judged once at
-  launch: one with no `finished` row is finished as before, and one recorded finished is
-  re-planned read-only. If a finish refuses, raises or leaves any part, the launch starts
-  nothing, prints the parts left and the `ai migrate-session OLD NEW --finish -r REPO` command,
-  and exits 1, where it used to warn and launch. `ai sessions relaunch` refuses each such session,
-  records the refusal as its relaunch reason, relaunches the others and exits 1. A ledger row in a
-  migration record format newer than the running build refuses the launch with
-  `ai update --force`. `-P/--allow-partial-migration` on either command starts the session anyway
-  and writes the parts left into its launch log; it is never read from config, the environment or
-  a boot recipe, and does not override the format refusal. A detached relaunch now writes a launch
-  log too.
-
-### Fixed
-
-- `ai c NAME -r` (and `-R -r`) reaches the existing session NAME names, whether its title ends
-  in a first name or a legacy index, or exits 1 before reserving a name or creating anything. A
-  NAME no session held used to be reserved a fresh first name by the remote allocator, which the
-  remote side then "resumed" by creating its worktree. The refusal lists the closest existing
-  titles and the command that starts a new session; a stopped session is relaunched from its
-  worktree or transcript; `-r --dry-run` plans the attach, the relaunch or the refusal. Without
-  `-r`, a positional word that is not an existing title prints `new session <title>` first.
-- `ai locate-session` and `ai list-names` report sessions named before the session-name
-  registry, from this host's worktrees and tmux sessions, with the command that resumes each.
-
-- `ai migrate-session --finish` now converges when the session already ran under its new name
-  and holds its own copy of something the old name still holds. Before, a resume log or
-  hand-off written under the new name ("resume artifact ... was NOT re-keyed: ... already
-  exists"), or a hook refusing because the new name already has an identity, failed every
-  re-run the same way. The new name's copy is kept; the old name's moves into a dated archive
-  under the state directory (`session-migration-archive/`), is recorded in the migration ledger
-  and is never deleted, and the part reads `archived OLD, NEW kept`. A hook names each file it
-  archived on a `migrate-archived: <path>` line. `-n` plans each archive and moves nothing.
-- `ai migrate-session -s` and `--finish -a` read a recorded pair as complete when its new slot
-  is gone because the ledger records that name's own later migration to a slot that exists,
-  instead of `slot (missing: ...)` forever. A gone slot with no such record still reads missing.
-
-- A migrated session that Claude Code had once run in the background now keeps its new name when
-  `ai c NEW -r` resumes it. Claude Code keeps a job record for such a session under
-  `~/.claude/jobs/<short session id>/state.json` and renames a resumed session to that record's
-  name, whatever `--name` the launch passed, so the session came back as OLD and wrote OLD name
-  records into its transcript. `ai migrate-session OLD NEW` now renames that record to NEW, and
-  `--finish` reports (`job name`) and renames one still naming OLD, also on a pair already
-  finished. A record naming another session id is left alone.
-
-- A migrated session now resumes the transcript `ai migrate-session OLD NEW` moved, not a later
-  transcript also titled NEW that a relaunch started before the migration finished. Before, the
-  resume took the most recently active transcript titled NEW, so that short stray won and the
-  migrated conversation was lost. The migration now records the session ids of the transcripts it
-  moves in `session-migrations.jsonl`, `--finish` records any that no row names yet and that it
-  retitles or that began before the pair's migration (a pair already finished and fully retitled
-  included), and the resume note names each transcript it skipped. A
-  session with no migration on record resumes as before.
-
-- `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker
-  (`~/.claude/resume/pollers/<name>__<id>.notified`) exists under both the old and the new name.
-  Both copies hold one timestamp, so the rename keeps the later one under the new name and
-  removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
-  `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
-  finished. Every other resume artifact found under both names is still reported and left alone.
-- `ai migrate-session` records a migration `finished` only when a read-only re-plan of the
-  pair, run after every writing full migration, `--finish` and `--to-name`, finds nothing
-  left. The row then carries `"verified": true`. Otherwise the run names each part left in a
-  `NOT finished` warning, marks it failed, records nothing and exits 1, and `--to-name` marks
-  the registry entry incomplete. A hook counts as done only when its `--dry-run` prints
-  `migrate-status: done`, so a hook without a status line keeps a migration unfinished. Before,
-  `finished` came from the run's own warnings and was written while parts were still on disk.
-- `ai migrate-session --finish -n` now plans a migration whose session is live instead of
-  refusing it, so a running session can be checked read-only. Its first line names the live
-  session and says a writing run refuses until it is stopped with `ai sessions stop NAME`; the
-  writing `--finish` still refuses with exit 2 before its first write, now without asking first.
-- `ai migrate-session` now checks the `ai` on `PATH`, which the migrated session relaunches
-  under, before it writes anything. A build older than the migration record format this one
-  writes (it answers `ai internal get-migration-format` with a lower number, or not at all) is
-  updated with `ai update --force`; when the update fails or cannot run, the command exits 2
-  naming the build and the update command. A dry run names the skew and updates nothing. Every
-  `session-migrations.jsonl` row now carries `"format"`. Before, a host whose installed build
-  predated the boot-recipe rename relaunched a migrated session from stale boot recipes.
-- `ai migrate-session --finish` given one name now finds the pair and its repo in this host's
-  migration record, from any directory: `ai migrate-session NEW --finish`, the old name, NEW's
-  first name, or `--finish -t FIRST`. Before, it needed both names run from the repo root, and
-  `--finish -t FIRST` failed with "not a registered worktree". A name matching no recorded pair
-  exits 2 naming the ledger it searched, and one matching several exits 2 listing the full
-  command for each. Both names given from outside the repo also use the recorded repo.
-- A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
-  boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
-  already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
-  after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
-
-- `ai migrate-session OLD NEW --finish`, and the finish `ai c NEW` runs at launch, now regenerate
-  the session's wrapper script for NEW. They used to move it verbatim, so it still set the old name
-  and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
-  the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
-  or the next launch.
-- An unnumbered remote chief launch (`ai cos -R`) now titles the local pane, leases its colour and
-  names its cleanup command after the tmux session the remote host actually runs. The remote host
-  picks the chief, so the dispatching machine used to invent a name that matched no session. It now
-  asks the remote host (`ai internal resolve-chief-session`, read-only) and keeps the old
-  placeholder only when the remote has no running chief to name or predates the command.
-
-- `ai migrate-session OLD NEW --finish`, including the finish `ai c` runs at launch, no
-  longer stops when one external hook refuses its `--dry-run`. The slot has already moved, so
-  that hook is skipped and reported as pending, the core parts and the other hooks still run,
-  no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
-  fresh migration still refuses before its first write.
-
-- `ai migrate-session OLD NEW -n` now names the fate of each `OLD-agents` container the real
-  run sweeps: `would be removed: empty`, or `kept` with what it holds or the pid working in it,
-  and it exits 1 when the real run would keep one. The preview used to print only
-  `removed once empty` and exit 0 for a container the real run then kept, exiting 1.
-
-- `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
-  its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
-  so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
-  recipe", and neither a boot nor a manual relaunch could start it. `--finish` repairs a record
-  migrated before this fix.
-- `ai c NEW` and the session supervisor's relaunch now resume the session's own transcript after
-  `ai migrate-session OLD NEW` left it titled OLD (a session running during the migration writes
-  its old title back). They used to find no transcript titled NEW and start a fresh session, and
-  that fresh transcript then shadowed the real one on every later relaunch. With a migration from
-  OLD to NEW recorded in `session-migrations.jsonl`, the newest transcript titled OLD is resumed
-  unless a transcript titled NEW predates the migration.
-- `ai migrate-session` now renames a transcript's `agent-name` records as well as its
-  `custom-title` records. Claude Code restores a resumed session's name from the last
-  `agent-name` record, so a migrated session used to come back under its old name and
-  recreate state keyed by it. `--finish` and a re-run now find a transcript still carrying
-  the old `agentName` and rewrite it, the post-migrate resolve check fails while the
-  resolved transcript's current `agentName` is another name, and a host sweep's
-  transcript-only rename rewrites both fields.
-- Session final-exit persistence now uses the launcher's installation with configurable
-  deadlines, command timeouts and bounded backoff under `[session_relaunch.exit_persistence]`.
-  Interrupts stop retries promptly; exhausted retries write a generation-scoped deny-boot
-  safety record and stop the agent, reporting failures even when safety storage is unavailable.
-- `ai locate-session` for a session on another host prints its liveness record as the word and
-  rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
-  "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
-  runs past its 20 s bound now reads `unknown: fleet-liveness timed out after 20 s` rather than an
-  answer, and an empty or unreadable record says so.
-- `ai --restart-session --event-completion` no longer reports a healthy restart as
-  `verification-failed` ("replacement or local bridge verification timed out") on a slow disk. The
-  replacement opened its receipt connection before writing its launch marker, and the engine drops
-  a connection that sends no receipt within 0.25 s; the marker's fsyncs could take longer. The
-  replacement now connects only once the receipt is ready to send.
-- `ai retire-session` no longer refuses a reissued session name. A name retired and then
-  reissued reuses the same `wt-NAME` branch with a new tip, and the retirement refused because
-  `refs/preserved/retire-session/wt-NAME` already preserved the first holder's tip. That anchor
-  is now kept and the new tip is anchored beside it as `wt-NAME--<first 12 hex of the tip>`.
-- A `-o/--once` tmux session no longer exits the moment it starts. The single-run
-  wrapper captured the agent's output to relay it, so the agent saw a pipe instead of a
-  terminal; Claude Code took that as `--print`, refused for want of a prompt, and the pane
-  closed with a bare `[exited]` and no transcript. The agent now runs on the pane's
-  terminal, and the wrapper ignores Ctrl+C while it runs so the agent decides what an
-  interrupt means.
-- A `-o/--once` session records why its agent ended (exit status, signal, or start
-  failure) in the launch log, so a detached session that dies leaves a reason.
-- A tmux launch from a terminal already inside tmux refuses up front, before it reserves
-  a name or synchronizes a worktree, instead of failing at the final attach and leaving
-  the reserved name held by a session that never ran.
-- `-r/--resume <name>` relaunches a title this machine holds when no tmux session runs it,
-  and a positional name reaches a labelled title (`<stem>-<label>-<name>`) this machine
-  holds. Both used to refuse, leaving such a title no route back short of retiring it.
-  A name held by another machine is still refused.
-- A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
-  `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
-  `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's
-  `[hosts.<host id>]` and `[defaults]`, so those layers never applied on a seeded machine,
-  `ai show-name-config` reported config.toml, and every launch with a shared registry warned
-  that the length limits had no effect. The template now ships the keys commented out. On a
-  config seeded by the older template, the first `ai` command after the upgrade comments out
-  each of the four keys whose value is still the seeded one and keeps every other key and
-  comment. With no shared policy setting `enabled`, a new machine now uses index names.
-- A launch no longer refuses a clean worktree as "stranded" because another worktree of the same
-  repository pushed a stash while the sync pull ran. The stash stack is shared by every worktree,
-  and the strand check counted every new entry as the pull's own autostash. It now counts an entry
-  only when git recorded it as an autostash for this worktree's branch and pre-pull commit.
-- A launch that falls back to a spare name now says why. The `offline: using reserved spare`
-  warning, on the terminal and in the launch log, now ends with the failure that sent it there:
-  a registry fetch or push that failed or timed out, or a reservation that lost every race to
-  another writer. Before, the cause was recorded only when no spare was left.
-- A launch no longer takes a spare, or refuses for want of one, because publishing a reserved
-  name to a shared registry took longer than the registry's publish timeout. On a loaded host a
-  push of one small commit to the registry ref was measured at 30 seconds against the 15-second
-  publish timeout. Pushes now have their own `[session_names] registry_push_timeout_seconds`
-  (default `60`, must be positive), read on every push. When no spare is left, the refusal now
-  quotes the failure that sent the launch to the spares, such as a push that timed out, instead
-  of saying only that the registry is unreachable.
-- A shared name registry is no longer reported unreachable when fetching it takes longer than its
-  publish timeout. In a checkout with thousands of refs on a loaded host, the fetch of the one
-  registry ref ran past the 15-second publish timeout, so `ai c` refused once no spare was left
-  and `ai reconcile-names` failed. Fetches now offer only the last fetched registry tip during
-  negotiation and have their own `[session_names] registry_fetch_timeout_seconds` (default `60`,
-  must be positive), read on every fetch. Pushes keep the publish timeout.
-- A session started by an older supervisor now stops when Ctrl-C or SIGTERM interrupts the
-  back-off sleep after a failed generation acquisition. It used to relaunch instead, now and
-  then, on macOS. There a process-group signal can kill `sleep` and the shell can reap it before
-  the signal is pending in the shell, so the shell reached its retry exit without running its
-  stop trap. The script now acts on the interrupted sleep's own exit status.
-- An unqualified `ai c` or `ai c --dry-run` in a registered project no longer exits 1 with
-  `unregistered project directories: ...` when other checkouts under the projects directory are
-  not in the project registry. Only the project being launched must be registered; the launch
-  prints one warning naming the other unregistered directories and continues. An unregistered
-  launch target is still prompted for on a terminal and refused without one.
-- The first human-named launch, `--name` launch or dry run in a checkout that has never fetched
-  the session-name registry no longer exits 1 with `the registry has no available/generation.json`.
-  `git clone` does not copy the registry ref, so a fresh clone read an empty registry. The launch
-  now fetches the ref once when it has no local copy. When that fetch cannot finish, the launch
-  exits 75 naming the failed fetch and creates nothing, because a checkout that never fetched the
-  registry holds no spare it could take.
-- A launch from an iTerm2 pane on macOS no longer waits on iTerm2's AppleScript bridge before it
-  hands off. The pane rename and the session-registry position refresh each used to block for up
-  to 5 seconds, so a busy host added about 10 seconds to the launch and printed `osascript did
-  not answer within 5s` and `refresh skipped (iTerm2 did not answer in 5s)`. Both now run in
-  background processes that finish after the hand-off, so the pane still gets its name and the
-  registry its positions when iTerm2 answers late.
-- A tmux session no longer prints `<session>.sh:<line>: 3: bad file descriptor` when its agent
-  restarts after an attaching `ai c` rewrote the session script. The child body now restores
-  stderr from the descriptor its running supervisor holds rather than from its own launch log
-  setting, so a supervisor and child rendered at different times always agree, and an agent's
-  stderr no longer lands in the launch-log relay. Live sessions pick this up when `ai update`
-  refreshes their scripts, with no supervisor restart.
-- The session run-state publisher and the stale-session reaper no longer log their routine,
-  nothing-to-do outcomes as warnings once a minute. A debounced or clean publish tick and a live
-  session or fresh heartbeat now log below WARNING, so the journal's warnings are the failed
-  pushes and the sessions that need a look.
-- `ai quota sync` no longer needs the `sqlite3` command line tool on the remote host. The remote
-  query runs through Python's standard library `sqlite3` module (`python3` is required there) and
-  opens the remote quota database read-only, so a missing database fails instead of being created.
-- Session naming now refreshes host identity before alias lookup across engine and chief
-  launches, migrations, audits and name commands, using the existing bounded login-shell,
-  tmux, then inherited source order. `ai cos` and `--chief` honor `[naming]` legacy fallback
-  and reachability. Both conventions remain enabled by default (`alias_convention = true`,
-  `legacy_convention = "full"`); alias only uses `true`/`"off"`, legacy only uses
-  `false`/`"full"`, and neither uses `false`/`"off"` and refuses new launches.
-- Reconnect suggestions preserve the complete remote session title and registered project,
-  including host aliases, labels and human names.
-- `ai copier-update` in isolated mode installs a consumer's JS dependencies before it
-  commits, so pre-commit hooks that run npm scripts find their tools. A `package.json`
-  with `package-lock.json` runs `npm ci`, `pnpm-lock.yaml` runs
-  `pnpm install --frozen-lockfile` and `yarn.lock` runs `yarn install --frozen-lockfile`.
-  A failed install, a missing installer or a `node_modules` that is not git-ignored fails
-  the project with a message naming the cause, and nothing is committed. A project with no
-  `package.json` is updated as before.
-- `ai copier-update` in isolated mode runs `uv sync --frozen` before it commits when the
-  project has both `pyproject.toml` and `uv.lock`, so hooks that run through
-  `uv run --no-sync` find the project's locked dependencies, `dev` group included, instead
-  of an empty environment. A missing `uv`, a failed sync or a `.venv` that the commit
-  would stage fails the project with a message naming the cause, and nothing is committed.
-  A project without `uv.lock` is updated as before.
-
-### Added
 
 - `ai -X/--restart-session` accepts `-E/--event-completion` to return a JSON
   receipt after starting the pinned replacement, without polling for registration.
@@ -732,7 +402,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the live pane, prints the recipe, turns boot relaunch off, changes nothing on a second
   run, and never touches the running process. `--dry-run` writes nothing.
 
+- An `[output]` table in `config.toml` controls every element of every output line:
+  which elements appear, their order, the separator, each element's prefix, suffix and
+  colour, per-tag, per-operation and per-level colours, and the regex patterns values
+  must match. It is read again whenever the file changes, so an edit applies to the next
+  line of a running session. An invalid table is ignored as a whole. Lines then render
+  with the shipped defaults, and each problem is reported once as a `[config]` error
+  naming the file and the key. With no `[output]` table, output is unchanged. Turning on
+  the datetime element or requiring an operation is refused as not supported yet. The README's
+  "Output configuration" section lists every key.
+
+- The commit-msg hook now runs: `.githooks/install.sh` installs the commit-msg stage, and a
+  `feat:` or `feat(scope):` commit that does not stage a `CHANGELOG.md` change is refused. The
+  script existed before but no hook stage ran it, so about half of recent features reached
+  `main` without an entry. `SKIP_CHANGELOG=1` bypasses it for one commit.
+
+- `ai adopt-session -t/--transcript FILE` adopts a transcript whose source directory no longer
+  exists, the case where `-s/--source` cannot be guessed. It refuses alongside `-s` or `-a`, and
+  refuses a file that is not the one its title resolves to.
+
+- `ai retire-session NAME` retires a dead session's home slot `.worktrees/NAME`. It
+  refuses, before writing anything, while the session runs (a Claude Code process, its
+  tmux session or a fresh heartbeat), while the checkout holds uncommitted or untracked
+  work, or while its checked-out commit is in neither its upstream nor `origin/main`.
+  Otherwise it anchors the branch tips under `refs/preserved/retire-session/`, runs
+  `git worktree remove`, drops the canonical-registry entry and appends a row to
+  `session-retirements.jsonl`. The branches and the Claude Code project directory stay.
+
+- `ai c -R` over ssh now says what a long-lived launcher is running and how it is doing.
+  Each drop notice gives the connection's uptime. The outcome record in
+  `transport-outcomes/` names the launcher's pid, launch time and loaded commit, and it is
+  rewritten at every drop, so a running launcher's remaining budget is on disk. When an
+  update has been installed since launch, a drop warns once that the launcher's code is
+  older and that reattaching with the same command loads the fix.
+
+- `ai migrate-session OLD NEW` now also carries the session's delegated work in every
+  repository under `[project] projects_dir`. Agent worktrees under
+  `.worktrees/OLD-agents/` move to `.worktrees/NEW-agents/`, and `wt/OLD/*` branches,
+  checked out or parked, are renamed with each tip anchored under
+  `refs/preserved/migrate-session/` first. Session-home markers naming the old slot
+  follow. A worktree a live Claude Code process is working in is left alone with its
+  branch, an existing destination is skipped, and a git refusal warns and exits 1.
+
+- Each iTerm2 session-registry record now carries why its session ended (`exit`:
+  `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
+  was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`
+  records one. Before relaunching, `ai iterm2 restore` classifies each record whose
+  session is proved gone, relaunches it only when
+  `[iterm2.persistence.restore.relaunch.scenarios]` allows its cause (a manual exit is
+  not relaunched by default), lists the rest as skipped with their cause, and launches
+  each relaunched session with `AIH_LAUNCH_REASON=<cause>`.
+  `[iterm2.persistence.restore.relaunch] on_terminal_reopen = false` makes
+  `restore --startup` relaunch nothing. A registry written by an earlier version reads
+  as having no exit causes and is upgraded on its next change.
+
+- `ai iterm2 sessions --adopt [--dry-run]` records the sessions that were already
+  running before the iTerm2 session registry existed, so `ai iterm2 restore` can bring
+  them back: each local tmux session named `c-<prefix>-<n>` (re-attached with
+  `ai c -p <project> <slot>`) and each running `ai c -R` launcher (re-run with its own
+  command line). A session that already has a record is left alone, a command line that
+  cannot be read or parsed is skipped with its pid and the reason, and tracking switched
+  off is a refusal naming the key. Run it once after installing. See
+  `docs/iterm2-persistence.md`.
+
+- `ai iterm2 restore [--startup] [--dry-run] [--only local|remote] [--arrangement NAME]`
+  re-attaches the sessions in the iTerm2 session registry after an iTerm2 restart
+  (macOS). It opens the saved arrangement on demand (through iTerm2's `it2` when it
+  answers, else it prints the menu path), then types each session's `ai` command into
+  its recorded pane when that pane is an idle shell, or into a new tab, staggered, and
+  prints one `restored`, `skipped` or `dead` line per session. A session that is
+  already attached is skipped rather than pulled out of the pane showing it. Off
+  unless `[iterm2.persistence.restore] enabled = true`; `--startup` is the form an
+  iTerm2 startup hook runs. See `docs/iterm2-persistence.md`.
+
+- `ai c` now requires a way to submit its auto-compact prompt. Either transport
+  satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
+  bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The
+  transport is fixed by the terminal that owns the engine process and cannot be
+  added later, so a session started without one did not fail at launch — it failed
+  hours later with a full context and no managed way to compact.
+
+  Three outcomes. A transport resolves and the launch proceeds. A transport was
+  achievable here and is not available (`[session] use_pty = false` with no tmux,
+  or a pty that will not allocate) and the launch is **refused**, naming what each
+  side failed on, above every write it would perform, so nothing is left to clean
+  up. Or no transport is implementable on the platform at all — `os.openpty` is
+  POSIX-only, so a Windows host without tmux can satisfy neither side — and the
+  launch **proceeds** with one notice naming the upgrade path. Windows is not
+  refused: a condition no in-process action can satisfy is not a guard, and what is
+  lost there is harness-*driven* compaction, not compaction itself, since the
+  engine's own auto-compact needs no terminal.
+
+  The pty carries the submission only: your terminal stays the terminal, and the
+  pty path provides no detach/reattach and no scrollback.
+
+- `-F/--coordinator` launches a machine's single chief-of-staff session on **any**
+  engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
+  shorthand. It resolves the chief home from `-k/--machine-key` (default
+  `$AI_MACHINE_ID`) or `-H/--fm-home` — both refused without `-F` rather than
+  silently ignored — refuses a missing or unseeded home, `-R/--remote`, and a
+  second chief whose tmux session is still running, writes
+  `state/chief-session.json` and the schema-2 `registry.json` (generation and
+  route revision incremented, VP entries preserved), and hands off to the
+  ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
+  into the tmux pane. `--dry-run` registers nothing.
+
+  The session is named `{project-prefix}-{host-alias}-coordinator-[suffix-]{index}` (the
+  positional NAME is the optional suffix) off the ordinary index allocator, and
+  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-coordinator-[suffix-]{index}`:
+  with every main tree read-only under the worktree model, a chief running in a
+  repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
+
+- **A commit that deletes a file still live on the default branch is now rejected.**
+  Files have gone missing from worktrees repeatedly and silently — `git status` reports
+  a tracked path as deleted, every exit code reads fine, and the loss only surfaces
+  later as someone else's work missing from `main`. Three investigations failed to
+  identify what removes the file in the first place, and the cause is not identifiable
+  even in principle: `rm` + `git add -A` and `git rm` produce identical index states,
+  so an accidental deletion and an intentional one are structurally indistinguishable.
+  The outcome is guardable, so that is what is now guarded — a missing file is harmless
+  and recoverable from `HEAD`, only the commit is not. A new pre-commit-stage hook
+  (`live-file-deletion-guard`, `scripts/check_live_file_deletions.py`) compares HEAD
+  against the index and refuses any staged deletion of a path that still exists on the
+  last-fetched upstream default branch. Only what *that* commit removes can block it,
+  so a deletion an earlier commit on the branch made on purpose does not fail every
+  later one. Intentional deletions are acknowledged per path with
+  `ALLOW_DELETIONS=path/a,path/b git commit` — per path rather than all-or-nothing,
+  because an intentional deletion riding along with an accidental one is precisely the
+  case worth catching; `ALLOW_DELETIONS=1` and `SKIP=live-file-deletion-guard` are the
+  blanket forms. An unresolvable comparison ref fails CLOSED when deletions are staged
+  (and passes silently when none are): an unavailable probe treated as "no problem" is
+  how a guard comes to enforce nothing while every exit code still reads fine. It never
+  touches the network, so the comparison is a lower bound on what is live upstream — a
+  stale ref can miss a deletion but cannot invent one, and a false positive is the
+  failure mode that gets a guard switched off. The pre-commit framework itself is not
+  patched or worked around; restoring unstaged changes after hooks run is its correct
+  designed behaviour. Standard library and `git` only, with no import from this
+  package, so the checker is copyable into any repo. (`AI-CLI-9sy`)
+
 ### Changed
+
+- A changelog entry now goes in its own file, `changelog.d/<name>.<type>.md`, instead of at the
+  top of `CHANGELOG.md`, so two open pull requests no longer conflict on the changelog.
+  `scripts/fold_changelog.py` folds the fragments into `[Unreleased]` at release time, in the same
+  layout as entries written by hand, and the commit-msg hook accepts a fragment for a `feat:`
+  commit. See CONTRIBUTING.md, Changelog Fragments.
+- `ai c NEW` (and `ai g`/`ai p`/`ai cx`) and `ai sessions relaunch` no longer start a session
+  whose recorded migration is partial. Each migration to NEW this host records is judged once at
+  launch: one with no `finished` row is finished as before, and one recorded finished is
+  re-planned read-only. If a finish refuses, raises or leaves any part, the launch starts
+  nothing, prints the parts left and the `ai migrate-session OLD NEW --finish -r REPO` command,
+  and exits 1, where it used to warn and launch. `ai sessions relaunch` refuses each such session,
+  records the refusal as its relaunch reason, relaunches the others and exits 1. A ledger row in a
+  migration record format newer than the running build refuses the launch with
+  `ai update --force`. `-P/--allow-partial-migration` on either command starts the session anyway
+  and writes the parts left into its launch log; it is never read from config, the environment or
+  a boot recipe, and does not override the format refusal. A detached relaunch now writes a launch
+  log too.
 
 - Seven commands are renamed to the verb-noun form: `session-migrate` is now
   `migrate-session`, `session-adopt` is `adopt-session`, `session-retire` is
@@ -772,7 +598,476 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag instead of being tagged twice. structlog and Rich are new runtime dependencies; the
   `--version`, statusline and `ai internal` reply paths do not import them.
 
+- **CI now refuses to install from a stale lockfile.** All four jobs synced with
+  `uv sync --dev`, which RE-RESOLVES silently whenever `pyproject.toml` and `uv.lock`
+  disagree — so a pull request could pass every required check having installed versions
+  that were not the ones it shipped, and merge a stale lock, with no log line saying so.
+  Every sync step now passes `--locked`, which fails with ``The lockfile at `uv.lock`
+  needs to be updated`` and names `uv lock` as the remedy. `--frozen` was rejected as the
+  alternative on measurement: against one deliberately staled lock, `--frozen` exited 0
+  and installed the stale versions while `--locked` exited 1, so `--frozen` makes the
+  disagreement quiet rather than loud. Local `uv sync --dev` is unchanged and still
+  re-resolves, so an edit-and-run loop needs no relock at every step; CI is the boundary
+  where it stops. `tests/test_ci_lock_assertion.py` fails if any workflow sync step stops
+  asserting the lock, since the flag is one word that a later unrelated step rewrite would
+  drop silently. (`AI-CLI-qqnx`)
+- **BREAKING: Python 3.14 is now the only supported version.** `requires-python` was
+  `>=3.11` and is now `>=3.14,<3.15`, so installing under 3.11, 3.12 or 3.13 is refused
+  rather than silently unsupported, and installing under a future 3.15 will be refused
+  until that version is adopted deliberately. The trove classifiers advertise only 3.14.
+  The reason is that the version was declared in six independent places that disagreed —
+  the local venv on 3.14 while CI ran 3.11/3.12/3.13 — and under that arrangement a defect
+  could be *unobservable* locally rather than merely unobserved: `pathlib` allows a
+  `WindowsPath` on POSIX on 3.14 and refuses it at or below 3.13, so a test passed every
+  local run and went red on four CI jobs. Every CI job now pins 3.14, matching the
+  interpreter `.python-version` gives the local venv, so a local run predicts CI.
+  `scripts/check_python_version_sync.py` runs as a pre-commit hook and as CI's first lint
+  step and fails if `.python-version`, `requires-python`, the pyright target, the
+  classifiers, any workflow's pinned version or the running interpreter disagree. The cost
+  is real and is not hidden: CI no longer runs more than one interpreter, so
+  version-dependent behaviour has to be pinned down by a test that forces it explicitly
+  instead of by the matrix. (`AI-CLI-6rwp`)
+- Documentation, tests and one source comment no longer name a real machine or
+  network. A VPN-range IP address was used as a test fixture and appeared in an
+  archived plan document's example config, and several provenance notes
+  ("Measured on `<machine>`: ...") named private hosts and the organization whose
+  network they sit on. The measurements are unchanged; the names are now generic
+  ("an EC2 Linux host", "a corporate-managed machine") and the address is an
+  RFC 5737 documentation address. The public-repository hygiene suite gained a
+  standing guard for both classes, so the next one fails a test rather than
+  reaching a published commit: literal IPv4 addresses are checked against an
+  enumerated list of synthetic values plus the RFC 5737 ranges, and the private
+  host-name prefixes are matched with a left-only word boundary so a suffixed
+  hostname cannot slip past.
+
+### Removed
+
+- The optional `internal-testkit` extra and dependency group, which pinned a package
+  to a private git repository. Nothing about it was reachable for a public
+  contributor, and its presence in the resolution graph made every dependency bump
+  fail: an optional, never-installed extra is still resolved, so a change to
+  `pyproject.toml` with no matching relock forced `uv` to re-resolve and fetch a
+  revision from a repository the runner cannot read. All four required checks then
+  failed before a single test ran, with a git clone error naming neither the cause
+  nor the remedy, and the automated dependency updater's own lock-file update failed
+  the same way — which is why its pull requests arrived without the relock that would
+  have avoided the fetch at all. A new guard
+  (`tests/test_dependency_source_hygiene.py`) fails if any dependency or locked
+  package is reintroduced from a VCS or direct URL rather than a package index.
+  The now-orphaned `testkit_enabled` pytest option went with it, which also silences
+  the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
+
 ### Fixed
+
+- `ai migrate-session OLD NEW --finish` no longer fails its Beads step when an issue the
+  migration re-keyed has since been handed to another session. Before, an issue held by neither
+  OLD nor NEW was reported as "no longer assigned to OLD or NEW; completion unverified", and the
+  whole store counted as unreadable. That issue is no longer the migration's to re-key, so it
+  now reads `already done`.
+- `ai migrate-session OLD NEW --finish` no longer refuses every step when a task file the
+  migration recorded has since been deleted. Before, a task id with neither its OLD nor its NEW
+  file stopped the finish at preflight with "restore the missing artifact", which also skipped
+  every other step. The task step writes NEW's file before it removes OLD's, so an interrupted
+  move always leaves one of them. A task with neither file was deleted by the user, and it now
+  counts as done. A task destination that differs from the recorded intent, or a source that
+  changed after it, still refuses.
+- Two Dolt session-name registries cloning side by side in one directory no longer break each other's clone on Windows with "The system cannot find the path specified". Each clone now runs from its registry's own directory, where Dolt keeps its temporary files.
+- A host's first clone of a Dolt session-name registry no longer fails on Windows after 60 seconds. A clone now has its own budget, `[session_names] registry_clone_timeout_seconds`, which defaults to 300 seconds on Windows and 60 elsewhere and is read on every clone. A host's first read or write makes no extra fetch after its clone, and a clone that still overruns its budget names the setting and Dolt's last output.
+- The session-name registry's Dolt push no longer fails on Windows with "Filename too long": the git that Dolt runs now sets `core.longpaths`, since Dolt's git cache nests its refs past the 260-character path limit from an ordinary profile directory.
+- Ctrl+C in Claude Code and Codex launcher sessions now closes the session's tmux
+  pane and returns to the original calling shell and directory, including remote
+  launches. Exiting a remote recovery shell leaves the local terminal pane open.
+- The test suite now bounds every test at 300 seconds by default (thread method, so it works on
+  Windows too), so one stuck test fails with every thread's stack instead of holding a whole run
+  for hours. The bare-pty launch tests also end their stand-in agent when a drive gives up before
+  the agent has started, which had left a run waiting for over three hours on a loaded host.
+- When direnv is not usable, `ai c` prints its full remediation block (install commands, shell
+  hooks and bypasses) only the first time on a host. Later launches print one line saying
+  direnv is not installed and `.envrc` is not loaded, and pointing at `ai doctor` for the fix.
+  `ai doctor` always prints the full block. The record lives in the state directory and is
+  cleared once direnv is usable again, so a later breakage shows the block once more.
+- The automatic install of a native tool (direnv, tmux, zsh) now tries passwordless `sudo -n`
+  before reporting that a system package manager needs root, and prints the exact command
+  (`installing direnv with: sudo -n apt-get install -y direnv`) before it runs. It never prompts
+  for a password, and it is skipped on Windows and when `sudo` is not on PATH. When passwordless
+  sudo is not available, a line on stderr, which the launch log records, says why.
+- The supervisor tests no longer leave processes running after a failed test. Teardown
+  already killed a supervisor that was still running, but skipped one that had already
+  exited, so its child kept running under init after the run ended. Teardown now kills
+  every process group and session the supervisor's tree was seen in. The test child
+  bodies now idle on a blocking read instead of starting a new `sleep` every 50 ms.
+- A session's tmux supervisor now finishes a pending `ai migrate-session` migration to that
+  session when it restarts the agent, between the old agent's exit and the new one's start.
+  Before, only `ai c NEW` and `ai sessions relaunch` ran that finish, so a migration whose
+  launch-time finish was refused stayed unfinished for as long as the supervisor kept
+  restarting the agent. The session's own tmux session no longer counts as live for that
+  finish. A live agent in either slot, or another tmux session hosting either name, still
+  refuses it, and a refused finish only warns: the agent restarts anyway.
+- A Ctrl+C pressed while a session's terminal handoff made its last attempt is now treated as a
+  deliberate stop. It used to be reported as `could not promote the session shell's process group`
+  and the supervisor exited 1 instead of tearing its session down, which happened on loaded hosts,
+  where each attempt can take seconds.
+- On a loaded host a session could end at launch with `tmux did not answer in time` before its
+  agent started. The supervisor's tmux ownership bind gave each of its four attempts 2 s, and
+  starting the tmux client alone could take longer than that on every attempt. Each attempt
+  now has 10 s.
+- `ai sessions relaunch --boot` replays only a session that was running when the host went down.
+  It no longer replays a crash exit recorded before the boot, a reservation an earlier boot made
+  that never started, or a row an earlier boot's relaunch kept down. A run from an earlier boot
+  it does not replay is recorded as exited once tmux and the process table show it gone, so a
+  later boot cannot replay it. `ai sessions mark <name> exited` now settles a row whose
+  supervisor died with the host, which it refused as a stale transition sequence because the
+  monotonic clock restarts at boot.
+- `ai c NAME -R` over mosh now shows a launch the remote host refused, and exits with its status.
+  Mosh clears the screen when the remote command ends and carries no exit status back, and the
+  remote command's stderr was redirected into a file that was only read when mosh failed within
+  a minute. A refusal that took longer, such as a migration guard re-planning for minutes,
+  returned to the prompt with exit 0 and nothing printed. The remote `ai` now copies its launch
+  log lines into that file and records a nonzero status beside it; once mosh ends, the launching
+  terminal prints them with the finish command and exits with that status. stderr stays on the
+  terminal, so the remote side's progress lines show while it works.
+- `ai migrate-session --status` and the launch guard of `ai c NEW` now judge a recorded pair with
+  one shared function, so they cannot disagree about whether a migration is partial.
+- An `ai c -R` launch no longer prints two identical-looking launcher headers. Every line the
+  remote side prints now starts with `[remote <host>]`, so its `start`, `install` and other steps
+  read apart from the launching machine's own.
+- A pending `ai migrate-session OLD NEW --finish` no longer waits forever for a NEW session its
+  supervisor keeps restarting. While NEW runs, the finish (by hand, at `ai c NEW` or at a
+  supervisor restart) now does every step except the ones that write NEW's open files: its
+  project directory and transcript titles, its sub-agent and background-job records, and its
+  task namespace. Those read `deferred while live` and the run exits 1. The run records them in
+  a `"deferred_recorded": true` ledger row, so the first launch or restart warns once, naming
+  the parts, `ai sessions stop NEW` and the `--finish` command, and later ones print only a
+  progress line. A pair left with deferred parts only no longer refuses `ai c NEW`, and the
+  finish after NEW stops completes it. A running OLD still refuses the finish with nothing
+  written.
+- After a host reboot, `ai sessions list` no longer shows a session as `running` when its record
+  says `running` from an earlier boot but its tmux session and processes are both gone. Before
+  the boot pass runs, or with `on_boot` off, such a row now shows STATUS `stale` and CAUSE
+  `host_reboot`, using the same proof as the migration preflight. The record is not rewritten,
+  so the boot relaunch keeps its evidence. `-j/--json` gives every record an `earlier_boot_gone`
+  field, `true` for such a row, while its `run_state` stays `running`
+  ([docs/bugs/stale-running-records.md](docs/bugs/stale-running-records.md)).
+- `ai exit-session` (and the exit path that tears a session down) now continues every POSIX target
+  with SIGCONT before SIGTERM. It used to send SIGCONT only when one status read said the target
+  was stopped, and on macOS that read could miss a stopped target, which then got SIGTERM alone and
+  stayed stopped. SIGCONT to a running process does nothing.
+- A migrate-session hook, Beads publish or references command written as an interpreter and
+  a script under home (`["python3", "~/bin/rekey.py"]`, the form the docs show) failed with
+  `can't open file '.../~/bin/rekey.py'`: only the program's `~` was expanded. A leading `~`
+  in any argument is now expanded to the home directory.
+- A session no longer ends at launch, about one time in 64, with `No such option` from
+  `ai sessions _bind-exit-tmux`. The supervisor's random generation token is passed to `ai` as
+  a positional argument, and a token that started with `-` was read as an option, so the
+  supervisor exited before the agent started. Such a token now gets a leading letter.
+- `ai c` no longer goes silent between "mode: launching inside tmux" and the session line. Refreshing
+  the host id, reading and fetching the name registry, reserving a new session's name and a dry run's
+  worktree lookup each print a start line, a heartbeat every 10 s, and an end line with the elapsed
+  time. On a loaded host that gap measured 19 to 67 seconds with nothing printed.
+- After a host reboot, `ai migrate-session OLD NEW --finish` and the migration re-plan that
+  `ai c NEW` runs no longer refuse with "liveness is unprovable" for a session whose record
+  still says `running` from an earlier boot. When tmux and the process table on its owning host
+  both show nothing, such a record is proved gone (no process survives a reboot), so the
+  migration proceeds. The record is not rewritten, so the boot relaunch keeps its evidence.
+  A refusal now names the reason: a live tmux session or process, a probe that could not answer,
+  or a record owned by another host
+  ([docs/bugs/earlier-boot-run-blocks-migration.md](docs/bugs/earlier-boot-run-blocks-migration.md)).
+- Enrolled and recovered sessions now get the default boot relaunch policy `auto` instead of
+  `never`, so boot replay brings them back like any other session. Probes still default to
+  `never`. Each record's new `relaunch_set_by` says whether the policy is the owner's
+  (`ai sessions policy`) or a default, and no automatic write replaces an owner's policy.
+  `ai sessions policy` records `relaunch_changed_at` and no longer moves `changed_at`, the
+  run-state time `ai sessions list` shows. The new `ai sessions repair-policy [-d]` turns the
+  `never` older releases wrote into `auto` once; see the README's boot relaunch section.
+
+- `ai c NEW` no longer re-plans a migration whose ledger row is a verified `finished`. That
+  re-plan read every Beads store, hook and repo on the host, so an unrelated failure there
+  refused the launch of a migration already proved finished, after minutes with no output.
+  `ai migrate-session -s -a` and `--finish` still re-check a verified pair. A launch that
+  attaches to an already running NEW now warns with the parts left and the `--finish` command
+  instead of refusing, since a finish cannot run against a live session.
+- The launch guard and `ai migrate-session` print a line as each slow migration step starts and
+  ends with its elapsed time: each hook's dry run and live run, each Beads store's read, re-key
+  and publish, the scan of other repos and the verifying re-plan.
+- `could not list registered git worktrees` names git's exit status, or the signal that ended
+  it, when git printed nothing on stderr.
+- `ai migrate-session` and the launcher's slot relocation now remove the `__pycache__`
+  bytecode a `git worktree move` carries along. Each cached `.pyc` named the old directory in
+  its code objects, so tools reading source through them found nothing until the caches were
+  rebuilt. Caches inside a virtual environment or a nested checkout, files git tracks and
+  anything behind a symlink are left alone; Python rebuilds the rest on the next import.
+  A checkout moved before this fix can be cleaned by hand with
+  `python -m ai_cli.worktree_move <checkout>...`.
+- `ai sessions list` no longer keeps rows for sessions that are gone. It and the minute worker
+  remove a local row once tmux and the process table prove its session gone and it has not
+  changed for `[session_registry] stale_row_retention_hours` (default 72; a row from an earlier
+  boot counts from this boot's start). The minute worker, never the list, also removes a
+  client-side remote row past the retention whose launcher is gone when the remote host
+  reports no such tmux session, which clears rows for sessions renamed or retired on their own
+  host. `ai retire-session` drops the retired session's rows.
+- `ai sessions stop NAME` now also sends SIGTERM to a Claude Code process running under a wrapper
+  it marked when that process's record names another session, as it does after a rename. Before,
+  it signalled only records named NAME, so it waited out its timeout naming only the wrapper, and
+  the agent had to exit by itself. Such a process is still signalled only when its record's start
+  time proves its pid; one that cannot be proved is named as still running and is not signalled.
+- `ai migrate-session` no longer walks the whole `lib/` tree of each agent worktree's virtual
+  environment looking for files that name the old path. It now reads only the records at the top
+  of each site-packages directory (`.pth` files, legacy `.egg-link` files and the
+  `__editable___*_finder.py` module of an editable install, which it now also rewrites) and the
+  `direct_url.json` in each `*.dist-info` directory, which is everywhere those records can live. A venv holding a package with a large bundled data
+  tree (a browser driver, node modules) made planning take many minutes on a busy disk.
+- A hand-chosen session name (`ai migrate-session --to-name NAME`, a launch with `--name NAME`,
+  `ai adopt-session`) that is one of this machine's own unactivated spares is now taken by
+  activating that spare in place, with this machine's spares topped back up in the same registry
+  commit. Before, it was refused as held, and the only way round was to release the name and
+  reserve it again, which another machine could race. A spare of another machine, or one an
+  offline launch already took, is still refused as held. A `--name` dry run reports the name as
+  this machine's spare and reserves nothing.
+- Reconcile vanished local sessions from the current boot instead of leaving their run records
+  running indefinitely. The existing minute worker and session list/publication/enrol/stop paths
+  retain an unknown exit with liveness evidence; live, uncertain, foreign and earlier-boot records
+  are preserved. Legacy records without lifecycle evidence display `unknown`. Session migration
+  refuses contradictory running records before moving files. Detached replay and all local engines
+  also schedule the existing worker.
+- `ai c NAME` refuses a NAME that contains whitespace and prints the command with each option as its
+  own argument. A shell that does not split a variable on spaces (zsh, unquoted) passed
+  `session-1 -p myproject` as one argument, so the launch never saw `-p`: from the projects root it
+  failed with "No task prefix is registered", and from inside a repository it planned a new session
+  named after the whole string in the wrong repository.
+
+- `ai c NAME -r` (and `-R -r`) reaches the existing session NAME names, whether its title ends
+  in a first name or a legacy index, or exits 1 before reserving a name or creating anything. A
+  NAME no session held used to be reserved a fresh first name by the remote allocator, which the
+  remote side then "resumed" by creating its worktree. The refusal lists the closest existing
+  titles and the command that starts a new session; a stopped session is relaunched from its
+  worktree or transcript; `-r --dry-run` plans the attach, the relaunch or the refusal. Without
+  `-r`, a positional word that is not an existing title prints `new session <title>` first.
+- `ai locate-session` and `ai list-names` report sessions named before the session-name
+  registry, from this host's worktrees and tmux sessions, with the command that resumes each.
+
+- `ai migrate-session --finish` now converges when the session already ran under its new name
+  and holds its own copy of something the old name still holds. Before, a resume log or
+  hand-off written under the new name ("resume artifact ... was NOT re-keyed: ... already
+  exists"), or a hook refusing because the new name already has an identity, failed every
+  re-run the same way. The new name's copy is kept; the old name's moves into a dated archive
+  under the state directory (`session-migration-archive/`), is recorded in the migration ledger
+  and is never deleted, and the part reads `archived OLD, NEW kept`. A hook names each file it
+  archived on a `migrate-archived: <path>` line. `-n` plans each archive and moves nothing.
+- `ai migrate-session -s` and `--finish -a` read a recorded pair as complete when its new slot
+  is gone because the ledger records that name's own later migration to a slot that exists,
+  instead of `slot (missing: ...)` forever. A gone slot with no such record still reads missing.
+
+- A migrated session that Claude Code had once run in the background now keeps its new name when
+  `ai c NEW -r` resumes it. Claude Code keeps a job record for such a session under
+  `~/.claude/jobs/<short session id>/state.json` and renames a resumed session to that record's
+  name, whatever `--name` the launch passed, so the session came back as OLD and wrote OLD name
+  records into its transcript. `ai migrate-session OLD NEW` now renames that record to NEW, and
+  `--finish` reports (`job name`) and renames one still naming OLD, also on a pair already
+  finished. A record naming another session id is left alone.
+
+- A migrated session now resumes the transcript `ai migrate-session OLD NEW` moved, not a later
+  transcript also titled NEW that a relaunch started before the migration finished. Before, the
+  resume took the most recently active transcript titled NEW, so that short stray won and the
+  migrated conversation was lost. The migration now records the session ids of the transcripts it
+  moves in `session-migrations.jsonl`, `--finish` records any that no row names yet and that it
+  retitles or that began before the pair's migration (a pair already finished and fully retitled
+  included), and the resume note names each transcript it skipped. A
+  session with no migration on record resumes as before.
+
+- `ai migrate-session OLD NEW --finish`, and `ai adopt-session`, now finish when a poller marker
+  (`~/.claude/resume/pollers/<name>__<id>.notified`) exists under both the old and the new name.
+  Both copies hold one timestamp, so the rename keeps the later one under the new name and
+  removes the old copy; `--dry-run` names the merge. Before, the `resume` part failed with
+  `was NOT re-keyed: ... already exists`, so the finish exited 1 and never recorded itself as
+  finished. Every other resume artifact found under both names is still reported and left alone.
+- `ai migrate-session` records a migration `finished` only when a read-only re-plan of the
+  pair, run after every writing full migration, `--finish` and `--to-name`, finds nothing
+  left. The row then carries `"verified": true`. Otherwise the run names each part left in a
+  `NOT finished` warning, marks it failed, records nothing and exits 1, and `--to-name` marks
+  the registry entry incomplete. A hook counts as done only when its `--dry-run` prints
+  `migrate-status: done`, so a hook without a status line keeps a migration unfinished. Before,
+  `finished` came from the run's own warnings and was written while parts were still on disk.
+- `ai migrate-session --finish -n` now plans a migration whose session is live instead of
+  refusing it, so a running session can be checked read-only. Its first line names the live
+  session and says a writing run refuses until it is stopped with `ai sessions stop NAME`; the
+  writing `--finish` still refuses with exit 2 before its first write, now without asking first.
+- `ai migrate-session` now checks the `ai` on `PATH`, which the migrated session relaunches
+  under, before it writes anything. A build older than the migration record format this one
+  writes (it answers `ai internal get-migration-format` with a lower number, or not at all) is
+  updated with `ai update --force`; when the update fails or cannot run, the command exits 2
+  naming the build and the update command. A dry run names the skew and updates nothing. Every
+  `session-migrations.jsonl` row now carries `"format"`. Before, a host whose installed build
+  predated the boot-recipe rename relaunched a migrated session from stale boot recipes.
+- `ai migrate-session --finish` given one name now finds the pair and its repo in this host's
+  migration record, from any directory: `ai migrate-session NEW --finish`, the old name, NEW's
+  first name, or `--finish -t FIRST`. Before, it needed both names run from the repo root, and
+  `--finish -t FIRST` failed with "not a registered worktree". A name matching no recorded pair
+  exits 2 naming the ledger it searched, and one matching several exits 2 listing the full
+  command for each. Both names given from outside the repo also use the recorded repo.
+- A session relaunched detached from its recorded recipe (`ai sessions relaunch`, including the
+  boot relaunch) now finishes a migration recorded to it and not yet finished, as `ai c NEW`
+  already did. Before, only a fresh `ai c NEW` ran that finish, so a session the host relaunched
+  after a reboot kept its old-name leftovers. A finish that refuses still never blocks the relaunch.
+
+- `ai migrate-session OLD NEW --finish`, and the finish `ai c NEW` runs at launch, now regenerate
+  the session's wrapper script for NEW. They used to move it verbatim, so it still set the old name
+  and the old worktree path, and the supervisor relaunched the session under OLD. A run killed after
+  the worktree move now finishes the same way whether it is resumed by the same command, `--finish`
+  or the next launch.
+- An unnumbered remote chief launch (`ai cos -R`) now titles the local pane, leases its colour and
+  names its cleanup command after the tmux session the remote host actually runs. The remote host
+  picks the chief, so the dispatching machine used to invent a name that matched no session. It now
+  asks the remote host (`ai internal resolve-chief-session`, read-only) and keeps the old
+  placeholder only when the remote has no running chief to name or predates the command.
+
+- `ai migrate-session OLD NEW --finish`, including the finish `ai c` runs at launch, no
+  longer stops when one external hook refuses its `--dry-run`. The slot has already moved, so
+  that hook is skipped and reported as pending, the core parts and the other hooks still run,
+  no `finished` ledger row is written, and the command exits 1 so a re-run retries the hook. A
+  fresh migration still refuses before its first write.
+
+- `ai migrate-session OLD NEW -n` now names the fate of each `OLD-agents` container the real
+  run sweeps: `would be removed: empty`, or `kept` with what it holds or the pid working in it,
+  and it exits 1 when the real run would keep one. The preview used to print only
+  `removed once empty` and exit 0 for a container the real run then kept, exiting 1.
+
+- `ai migrate-session` now carries a session's boot recipe to the new name: its `session_name`,
+  its worktree `cwd` and the name in its `argv`. Before, the recipe still named the old session,
+  so `ai sessions relaunch` refused every migrated session with "unsupported or incomplete boot
+  recipe", and neither a boot nor a manual relaunch could start it. `--finish` repairs a record
+  migrated before this fix.
+- `ai c NEW` and the session supervisor's relaunch now resume the session's own transcript after
+  `ai migrate-session OLD NEW` left it titled OLD (a session running during the migration writes
+  its old title back). They used to find no transcript titled NEW and start a fresh session, and
+  that fresh transcript then shadowed the real one on every later relaunch. With a migration from
+  OLD to NEW recorded in `session-migrations.jsonl`, the newest transcript titled OLD is resumed
+  unless a transcript titled NEW predates the migration.
+- `ai migrate-session` now renames a transcript's `agent-name` records as well as its
+  `custom-title` records. Claude Code restores a resumed session's name from the last
+  `agent-name` record, so a migrated session used to come back under its old name and
+  recreate state keyed by it. `--finish` and a re-run now find a transcript still carrying
+  the old `agentName` and rewrite it, the post-migrate resolve check fails while the
+  resolved transcript's current `agentName` is another name, and a host sweep's
+  transcript-only rename rewrites both fields.
+- Session final-exit persistence now uses the launcher's installation with configurable
+  deadlines, command timeouts and bounded backoff under `[session_relaunch.exit_persistence]`.
+  Interrupts stop retries promptly; exhausted retries write a generation-scoped deny-boot
+  safety record and stop the agent, reporting failures even when safety storage is unavailable.
+- `ai locate-session` for a session on another host prints its liveness record as the word and
+  rung, e.g. `liveness   live (via git-inbox)`, instead of the raw `fleet-liveness` JSON followed by
+  "(not known to be active)", which contradicted a `live` record. A `fleet-liveness` probe that
+  runs past its 20 s bound now reads `unknown: fleet-liveness timed out after 20 s` rather than an
+  answer, and an empty or unreadable record says so.
+- `ai --restart-session --event-completion` no longer reports a healthy restart as
+  `verification-failed` ("replacement or local bridge verification timed out") on a slow disk. The
+  replacement opened its receipt connection before writing its launch marker, and the engine drops
+  a connection that sends no receipt within 0.25 s; the marker's fsyncs could take longer. The
+  replacement now connects only once the receipt is ready to send.
+- `ai retire-session` no longer refuses a reissued session name. A name retired and then
+  reissued reuses the same `wt-NAME` branch with a new tip, and the retirement refused because
+  `refs/preserved/retire-session/wt-NAME` already preserved the first holder's tip. That anchor
+  is now kept and the new tip is anchored beside it as `wt-NAME--<first 12 hex of the tip>`.
+- A `-o/--once` tmux session no longer exits the moment it starts. The single-run
+  wrapper captured the agent's output to relay it, so the agent saw a pipe instead of a
+  terminal; Claude Code took that as `--print`, refused for want of a prompt, and the pane
+  closed with a bare `[exited]` and no transcript. The agent now runs on the pane's
+  terminal, and the wrapper ignores Ctrl+C while it runs so the agent decides what an
+  interrupt means.
+- A `-o/--once` session records why its agent ended (exit status, signal, or start
+  failure) in the launch log, so a detached session that dies leaves a reason.
+- A tmux launch from a terminal already inside tmux refuses up front, before it reserves
+  a name or synchronizes a worktree, instead of failing at the final attach and leaving
+  the reserved name held by a session that never ran.
+- `-r/--resume <name>` relaunches a title this machine holds when no tmux session runs it,
+  and a positional name reaches a labelled title (`<stem>-<label>-<name>`) this machine
+  holds. Both used to refuse, leaving such a title no route back short of retiring it.
+  A name held by another machine is still refused.
+- A new `config.toml` no longer seeds active `[session_names]` keys. The template wrote
+  `enabled = true`, `name_with_label = "keep"`, `min_name_length = 3` and
+  `max_name_length = 4` uncommented, and config.toml sits above the shared name policy's
+  `[hosts.<host id>]` and `[defaults]`, so those layers never applied on a seeded machine,
+  `ai show-name-config` reported config.toml, and every launch with a shared registry warned
+  that the length limits had no effect. The template now ships the keys commented out. On a
+  config seeded by the older template, the first `ai` command after the upgrade comments out
+  each of the four keys whose value is still the seeded one and keeps every other key and
+  comment. With no shared policy setting `enabled`, a new machine now uses index names.
+- A launch no longer refuses a clean worktree as "stranded" because another worktree of the same
+  repository pushed a stash while the sync pull ran. The stash stack is shared by every worktree,
+  and the strand check counted every new entry as the pull's own autostash. It now counts an entry
+  only when git recorded it as an autostash for this worktree's branch and pre-pull commit.
+- A launch that falls back to a spare name now says why. The `offline: using reserved spare`
+  warning, on the terminal and in the launch log, now ends with the failure that sent it there:
+  a registry fetch or push that failed or timed out, or a reservation that lost every race to
+  another writer. Before, the cause was recorded only when no spare was left.
+- A launch no longer takes a spare, or refuses for want of one, because publishing a reserved
+  name to a shared registry took longer than the registry's publish timeout. On a loaded host a
+  push of one small commit to the registry ref was measured at 30 seconds against the 15-second
+  publish timeout. Pushes now have their own `[session_names] registry_push_timeout_seconds`
+  (default `60`, must be positive), read on every push. When no spare is left, the refusal now
+  quotes the failure that sent the launch to the spares, such as a push that timed out, instead
+  of saying only that the registry is unreachable.
+- A shared name registry is no longer reported unreachable when fetching it takes longer than its
+  publish timeout. In a checkout with thousands of refs on a loaded host, the fetch of the one
+  registry ref ran past the 15-second publish timeout, so `ai c` refused once no spare was left
+  and `ai reconcile-names` failed. Fetches now offer only the last fetched registry tip during
+  negotiation and have their own `[session_names] registry_fetch_timeout_seconds` (default `60`,
+  must be positive), read on every fetch. Pushes keep the publish timeout.
+- A session started by an older supervisor now stops when Ctrl-C or SIGTERM interrupts the
+  back-off sleep after a failed generation acquisition. It used to relaunch instead, now and
+  then, on macOS. There a process-group signal can kill `sleep` and the shell can reap it before
+  the signal is pending in the shell, so the shell reached its retry exit without running its
+  stop trap. The script now acts on the interrupted sleep's own exit status.
+- An unqualified `ai c` or `ai c --dry-run` in a registered project no longer exits 1 with
+  `unregistered project directories: ...` when other checkouts under the projects directory are
+  not in the project registry. Only the project being launched must be registered; the launch
+  prints one warning naming the other unregistered directories and continues. An unregistered
+  launch target is still prompted for on a terminal and refused without one.
+- The first human-named launch, `--name` launch or dry run in a checkout that has never fetched
+  the session-name registry no longer exits 1 with `the registry has no available/generation.json`.
+  `git clone` does not copy the registry ref, so a fresh clone read an empty registry. The launch
+  now fetches the ref once when it has no local copy. When that fetch cannot finish, the launch
+  exits 75 naming the failed fetch and creates nothing, because a checkout that never fetched the
+  registry holds no spare it could take.
+- A launch from an iTerm2 pane on macOS no longer waits on iTerm2's AppleScript bridge before it
+  hands off. The pane rename and the session-registry position refresh each used to block for up
+  to 5 seconds, so a busy host added about 10 seconds to the launch and printed `osascript did
+  not answer within 5s` and `refresh skipped (iTerm2 did not answer in 5s)`. Both now run in
+  background processes that finish after the hand-off, so the pane still gets its name and the
+  registry its positions when iTerm2 answers late.
+- A tmux session no longer prints `<session>.sh:<line>: 3: bad file descriptor` when its agent
+  restarts after an attaching `ai c` rewrote the session script. The child body now restores
+  stderr from the descriptor its running supervisor holds rather than from its own launch log
+  setting, so a supervisor and child rendered at different times always agree, and an agent's
+  stderr no longer lands in the launch-log relay. Live sessions pick this up when `ai update`
+  refreshes their scripts, with no supervisor restart.
+- The session run-state publisher and the stale-session reaper no longer log their routine,
+  nothing-to-do outcomes as warnings once a minute. A debounced or clean publish tick and a live
+  session or fresh heartbeat now log below WARNING, so the journal's warnings are the failed
+  pushes and the sessions that need a look.
+- `ai quota sync` no longer needs the `sqlite3` command line tool on the remote host. The remote
+  query runs through Python's standard library `sqlite3` module (`python3` is required there) and
+  opens the remote quota database read-only, so a missing database fails instead of being created.
+- Session naming now refreshes host identity before alias lookup across engine and chief
+  launches, migrations, audits and name commands, using the existing bounded login-shell,
+  tmux, then inherited source order. `ai cos` and `--chief` honor `[naming]` legacy fallback
+  and reachability. Both conventions remain enabled by default (`alias_convention = true`,
+  `legacy_convention = "full"`); alias only uses `true`/`"off"`, legacy only uses
+  `false`/`"full"`, and neither uses `false`/`"off"` and refuses new launches.
+- Reconnect suggestions preserve the complete remote session title and registered project,
+  including host aliases, labels and human names.
+- `ai copier-update` in isolated mode installs a consumer's JS dependencies before it
+  commits, so pre-commit hooks that run npm scripts find their tools. A `package.json`
+  with `package-lock.json` runs `npm ci`, `pnpm-lock.yaml` runs
+  `pnpm install --frozen-lockfile` and `yarn.lock` runs `yarn install --frozen-lockfile`.
+  A failed install, a missing installer or a `node_modules` that is not git-ignored fails
+  the project with a message naming the cause, and nothing is committed. A project with no
+  `package.json` is updated as before.
+- `ai copier-update` in isolated mode runs `uv sync --frozen` before it commits when the
+  project has both `pyproject.toml` and `uv.lock`, so hooks that run through
+  `uv run --no-sync` find the project's locked dependencies, `dev` group included, instead
+  of an empty environment. A missing `uv`, a failed sync or a `.venv` that the commit
+  would stage fails the project with a message naming the cause, and nothing is committed.
+  A project without `uv.lock` is updated as before.
 
 - Four options had only a long form: `ai migrate-session --finish` and `--beads-only` now
   also take `-f` and `-b`, and `ai notifications log --source` and `--failed` take `-S`
@@ -1005,209 +1300,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   singleton across concurrent launches, observe-only by default, and a no-op on
   native Windows where tmux is unavailable. A startup failure warns with the
   manual recovery command but never blocks the session launch.
-
-### Added
-
-- An `[output]` table in `config.toml` controls every element of every output line:
-  which elements appear, their order, the separator, each element's prefix, suffix and
-  colour, per-tag, per-operation and per-level colours, and the regex patterns values
-  must match. It is read again whenever the file changes, so an edit applies to the next
-  line of a running session. An invalid table is ignored as a whole. Lines then render
-  with the shipped defaults, and each problem is reported once as a `[config]` error
-  naming the file and the key. With no `[output]` table, output is unchanged. Turning on
-  the datetime element or requiring an operation is refused as not supported yet. The README's
-  "Output configuration" section lists every key.
-
-- The commit-msg hook now runs: `.githooks/install.sh` installs the commit-msg stage, and a
-  `feat:` or `feat(scope):` commit that does not stage a `CHANGELOG.md` change is refused. The
-  script existed before but no hook stage ran it, so about half of recent features reached
-  `main` without an entry. `SKIP_CHANGELOG=1` bypasses it for one commit.
-
-- `ai adopt-session -t/--transcript FILE` adopts a transcript whose source directory no longer
-  exists, the case where `-s/--source` cannot be guessed. It refuses alongside `-s` or `-a`, and
-  refuses a file that is not the one its title resolves to.
-
-- `ai retire-session NAME` retires a dead session's home slot `.worktrees/NAME`. It
-  refuses, before writing anything, while the session runs (a Claude Code process, its
-  tmux session or a fresh heartbeat), while the checkout holds uncommitted or untracked
-  work, or while its checked-out commit is in neither its upstream nor `origin/main`.
-  Otherwise it anchors the branch tips under `refs/preserved/retire-session/`, runs
-  `git worktree remove`, drops the canonical-registry entry and appends a row to
-  `session-retirements.jsonl`. The branches and the Claude Code project directory stay.
-
-- `ai c -R` over ssh now says what a long-lived launcher is running and how it is doing.
-  Each drop notice gives the connection's uptime. The outcome record in
-  `transport-outcomes/` names the launcher's pid, launch time and loaded commit, and it is
-  rewritten at every drop, so a running launcher's remaining budget is on disk. When an
-  update has been installed since launch, a drop warns once that the launcher's code is
-  older and that reattaching with the same command loads the fix.
-
-- `ai migrate-session OLD NEW` now also carries the session's delegated work in every
-  repository under `[project] projects_dir`. Agent worktrees under
-  `.worktrees/OLD-agents/` move to `.worktrees/NEW-agents/`, and `wt/OLD/*` branches,
-  checked out or parked, are renamed with each tip anchored under
-  `refs/preserved/migrate-session/` first. Session-home markers naming the old slot
-  follow. A worktree a live Claude Code process is working in is left alone with its
-  branch, an existing destination is skipped, and a git refusal warns and exits 1.
-
-- Each iTerm2 session-registry record now carries why its session ended (`exit`:
-  `manual_exit`, `terminal_quit_or_crash`, `host_reboot` or `unknown`) and the boot it
-  was launched in; `ai iterm2 sessions --record-exit NAME --cause CAUSE [--evidence JSON]`
-  records one. Before relaunching, `ai iterm2 restore` classifies each record whose
-  session is proved gone, relaunches it only when
-  `[iterm2.persistence.restore.relaunch.scenarios]` allows its cause (a manual exit is
-  not relaunched by default), lists the rest as skipped with their cause, and launches
-  each relaunched session with `AIH_LAUNCH_REASON=<cause>`.
-  `[iterm2.persistence.restore.relaunch] on_terminal_reopen = false` makes
-  `restore --startup` relaunch nothing. A registry written by an earlier version reads
-  as having no exit causes and is upgraded on its next change.
-
-- `ai iterm2 sessions --adopt [--dry-run]` records the sessions that were already
-  running before the iTerm2 session registry existed, so `ai iterm2 restore` can bring
-  them back: each local tmux session named `c-<prefix>-<n>` (re-attached with
-  `ai c -p <project> <slot>`) and each running `ai c -R` launcher (re-run with its own
-  command line). A session that already has a record is left alone, a command line that
-  cannot be read or parsed is skipped with its pid and the reason, and tracking switched
-  off is a refusal naming the key. Run it once after installing. See
-  `docs/iterm2-persistence.md`.
-
-- `ai iterm2 restore [--startup] [--dry-run] [--only local|remote] [--arrangement NAME]`
-  re-attaches the sessions in the iTerm2 session registry after an iTerm2 restart
-  (macOS). It opens the saved arrangement on demand (through iTerm2's `it2` when it
-  answers, else it prints the menu path), then types each session's `ai` command into
-  its recorded pane when that pane is an idle shell, or into a new tab, staggered, and
-  prints one `restored`, `skipped` or `dead` line per session. A session that is
-  already attached is skipped rather than pulled out of the pane showing it. Off
-  unless `[iterm2.persistence.restore] enabled = true`; `--startup` is the form an
-  iTerm2 startup hook runs. See `docs/iterm2-persistence.md`.
-
-- `ai c` now requires a way to submit its auto-compact prompt. Either transport
-  satisfies it: tmux where tmux hosts the session, or a harness-owned pty on the
-  bare paths (`-b/--bare`, `[session] use_tmux = false`, an unusable tmux). The
-  transport is fixed by the terminal that owns the engine process and cannot be
-  added later, so a session started without one did not fail at launch — it failed
-  hours later with a full context and no managed way to compact.
-
-  Three outcomes. A transport resolves and the launch proceeds. A transport was
-  achievable here and is not available (`[session] use_pty = false` with no tmux,
-  or a pty that will not allocate) and the launch is **refused**, naming what each
-  side failed on, above every write it would perform, so nothing is left to clean
-  up. Or no transport is implementable on the platform at all — `os.openpty` is
-  POSIX-only, so a Windows host without tmux can satisfy neither side — and the
-  launch **proceeds** with one notice naming the upgrade path. Windows is not
-  refused: a condition no in-process action can satisfy is not a guard, and what is
-  lost there is harness-*driven* compaction, not compaction itself, since the
-  engine's own auto-compact needs no terminal.
-
-  The pty carries the submission only: your terminal stays the terminal, and the
-  pty path provides no detach/reattach and no scrollback.
-
-- `-F/--coordinator` launches a machine's single chief-of-staff session on **any**
-  engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
-  shorthand. It resolves the chief home from `-k/--machine-key` (default
-  `$AI_MACHINE_ID`) or `-H/--fm-home` — both refused without `-F` rather than
-  silently ignored — refuses a missing or unseeded home, `-R/--remote`, and a
-  second chief whose tmux session is still running, writes
-  `state/chief-session.json` and the schema-2 `registry.json` (generation and
-  route revision incremented, VP entries preserved), and hands off to the
-  ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
-  into the tmux pane. `--dry-run` registers nothing.
-
-  The session is named `{project-prefix}-{host-alias}-coordinator-[suffix-]{index}` (the
-  positional NAME is the optional suffix) off the ordinary index allocator, and
-  it gets a worktree at `.worktrees/{project-prefix}-{host-alias}-coordinator-[suffix-]{index}`:
-  with every main tree read-only under the worktree model, a chief running in a
-  repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
-
-- **A commit that deletes a file still live on the default branch is now rejected.**
-  Files have gone missing from worktrees repeatedly and silently — `git status` reports
-  a tracked path as deleted, every exit code reads fine, and the loss only surfaces
-  later as someone else's work missing from `main`. Three investigations failed to
-  identify what removes the file in the first place, and the cause is not identifiable
-  even in principle: `rm` + `git add -A` and `git rm` produce identical index states,
-  so an accidental deletion and an intentional one are structurally indistinguishable.
-  The outcome is guardable, so that is what is now guarded — a missing file is harmless
-  and recoverable from `HEAD`, only the commit is not. A new pre-commit-stage hook
-  (`live-file-deletion-guard`, `scripts/check_live_file_deletions.py`) compares HEAD
-  against the index and refuses any staged deletion of a path that still exists on the
-  last-fetched upstream default branch. Only what *that* commit removes can block it,
-  so a deletion an earlier commit on the branch made on purpose does not fail every
-  later one. Intentional deletions are acknowledged per path with
-  `ALLOW_DELETIONS=path/a,path/b git commit` — per path rather than all-or-nothing,
-  because an intentional deletion riding along with an accidental one is precisely the
-  case worth catching; `ALLOW_DELETIONS=1` and `SKIP=live-file-deletion-guard` are the
-  blanket forms. An unresolvable comparison ref fails CLOSED when deletions are staged
-  (and passes silently when none are): an unavailable probe treated as "no problem" is
-  how a guard comes to enforce nothing while every exit code still reads fine. It never
-  touches the network, so the comparison is a lower bound on what is live upstream — a
-  stale ref can miss a deletion but cannot invent one, and a false positive is the
-  failure mode that gets a guard switched off. The pre-commit framework itself is not
-  patched or worked around; restoring unstaged changes after hooks run is its correct
-  designed behaviour. Standard library and `git` only, with no import from this
-  package, so the checker is copyable into any repo. (`AI-CLI-9sy`)
-
-### Changed
-
-- **CI now refuses to install from a stale lockfile.** All four jobs synced with
-  `uv sync --dev`, which RE-RESOLVES silently whenever `pyproject.toml` and `uv.lock`
-  disagree — so a pull request could pass every required check having installed versions
-  that were not the ones it shipped, and merge a stale lock, with no log line saying so.
-  Every sync step now passes `--locked`, which fails with ``The lockfile at `uv.lock`
-  needs to be updated`` and names `uv lock` as the remedy. `--frozen` was rejected as the
-  alternative on measurement: against one deliberately staled lock, `--frozen` exited 0
-  and installed the stale versions while `--locked` exited 1, so `--frozen` makes the
-  disagreement quiet rather than loud. Local `uv sync --dev` is unchanged and still
-  re-resolves, so an edit-and-run loop needs no relock at every step; CI is the boundary
-  where it stops. `tests/test_ci_lock_assertion.py` fails if any workflow sync step stops
-  asserting the lock, since the flag is one word that a later unrelated step rewrite would
-  drop silently. (`AI-CLI-qqnx`)
-- **BREAKING: Python 3.14 is now the only supported version.** `requires-python` was
-  `>=3.11` and is now `>=3.14,<3.15`, so installing under 3.11, 3.12 or 3.13 is refused
-  rather than silently unsupported, and installing under a future 3.15 will be refused
-  until that version is adopted deliberately. The trove classifiers advertise only 3.14.
-  The reason is that the version was declared in six independent places that disagreed —
-  the local venv on 3.14 while CI ran 3.11/3.12/3.13 — and under that arrangement a defect
-  could be *unobservable* locally rather than merely unobserved: `pathlib` allows a
-  `WindowsPath` on POSIX on 3.14 and refuses it at or below 3.13, so a test passed every
-  local run and went red on four CI jobs. Every CI job now pins 3.14, matching the
-  interpreter `.python-version` gives the local venv, so a local run predicts CI.
-  `scripts/check_python_version_sync.py` runs as a pre-commit hook and as CI's first lint
-  step and fails if `.python-version`, `requires-python`, the pyright target, the
-  classifiers, any workflow's pinned version or the running interpreter disagree. The cost
-  is real and is not hidden: CI no longer runs more than one interpreter, so
-  version-dependent behaviour has to be pinned down by a test that forces it explicitly
-  instead of by the matrix. (`AI-CLI-6rwp`)
-- Documentation, tests and one source comment no longer name a real machine or
-  network. A VPN-range IP address was used as a test fixture and appeared in an
-  archived plan document's example config, and several provenance notes
-  ("Measured on `<machine>`: ...") named private hosts and the organization whose
-  network they sit on. The measurements are unchanged; the names are now generic
-  ("an EC2 Linux host", "a corporate-managed machine") and the address is an
-  RFC 5737 documentation address. The public-repository hygiene suite gained a
-  standing guard for both classes, so the next one fails a test rather than
-  reaching a published commit: literal IPv4 addresses are checked against an
-  enumerated list of synthetic values plus the RFC 5737 ranges, and the private
-  host-name prefixes are matched with a left-only word boundary so a suffixed
-  hostname cannot slip past.
-
-### Removed
-
-- The optional `internal-testkit` extra and dependency group, which pinned a package
-  to a private git repository. Nothing about it was reachable for a public
-  contributor, and its presence in the resolution graph made every dependency bump
-  fail: an optional, never-installed extra is still resolved, so a change to
-  `pyproject.toml` with no matching relock forced `uv` to re-resolve and fetch a
-  revision from a repository the runner cannot read. All four required checks then
-  failed before a single test ran, with a git clone error naming neither the cause
-  nor the remedy, and the automated dependency updater's own lock-file update failed
-  the same way — which is why its pull requests arrived without the relock that would
-  have avoided the fetch at all. A new guard
-  (`tests/test_dependency_source_hygiene.py`) fails if any dependency or locked
-  package is reintroduced from a VCS or direct URL rather than a package index.
-  The now-orphaned `testkit_enabled` pytest option went with it, which also silences
-  the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
-
-### Fixed
 
 - **`ai c <name> -R` kept running a stale client and said it was current.** A remote
   launch updated the remote host's ai-cli-utils but never the local checkout running
@@ -2056,7 +2148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale session cleanup
 - Session reconnection (`ai reconnect`)
 
-[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.7.0...v0.8.0
 [0.4.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.3.0...v0.4.0

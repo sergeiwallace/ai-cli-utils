@@ -115,9 +115,6 @@ from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
 from .process_manager import (  # noqa: F401
-    _cmd_quota_watch_start,
-    _cmd_quota_watch_status,
-    _cmd_quota_watch_stop,
     _ensure_circusd,
 )
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
@@ -7455,44 +7452,6 @@ def cmd_quota_group():
     pass
 
 
-@cmd_quota_group.group("watch", help="Quota-watch Circus daemon management")
-def cmd_quota_watch_group():
-    pass
-
-
-@cmd_quota_watch_group.command("start", help="Register quota-watch with Circus and start it")
-@click.option(
-    "--auto",
-    is_flag=True,
-    default=False,
-    hidden=True,
-    help="Per-session auto-start path — gated on [quota_watch] auto_start in config.toml.",
-)
-def cmd_quota_watch_start(auto):
-    _process_manager._cmd_quota_watch_start(auto=auto)
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("stop", help="Stop quota-watch")
-def cmd_quota_watch_stop():
-    _process_manager._cmd_quota_watch_stop()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("status", help="Show quota-watch Circus status")
-def cmd_quota_watch_status():
-    _process_manager._cmd_quota_watch_status()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("run", help="Run quota-watch daemon (Circus entry point)")
-@click.option("-i", "--interval", "poll_interval", default=300, show_default=True, help="Poll interval in seconds")
-def cmd_quota_watch_run(poll_interval):
-    from .quota import quota_watch
-
-    sys.exit(quota_watch(poll_interval))
-
-
 @_cli_group.group("session-reaper", help="Independently managed stale-session reaper")
 def cmd_session_reaper_group():
     pass
@@ -7534,11 +7493,11 @@ def cmd_quota_history():
     sys.exit(quota_history())
 
 
-@cmd_quota_group.command("scrape", help="Scrape /usage from a fresh CC session")
-def cmd_quota_scrape():
-    from .quota import quota_scrape
+@cmd_quota_group.command("publish", help="Publish the statusline's current native quota reading to NATS")
+def cmd_quota_publish():
+    from .quota import quota_publish
 
-    sys.exit(quota_scrape())
+    sys.exit(quota_publish())
 
 
 @cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")

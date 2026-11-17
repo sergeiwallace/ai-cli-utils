@@ -1048,3 +1048,38 @@ def test_given_links_pointing_outside_the_sessions_worktrees_when_migrated_then_
         new_a / link.name: target for link, target in before.items()
     }
     assert outside_link.readlink() == outside_before
+
+
+def test_given_more_agent_worktrees_when_dry_run_then_planning_makes_no_more_git_calls(fleet):
+    """Planning a session's agent worktrees costs a fixed number of git calls per repo.
+
+    One call per agent worktree took most of an hour on a host with dozens of agent worktrees
+    and a slow git, and printed nothing meanwhile, so a caller's timeout ended the run.
+    """
+    from ai_cli import session_migrate_agents as agents
+
+    real = agents._git
+
+    def count_dry_run() -> tuple[list[tuple[str, ...]], str]:
+        calls: list[tuple[str, ...]] = []
+
+        def counting(repo, *args):
+            calls.append(args)
+            return real(repo, *args)
+
+        with patch.object(agents, "_git", counting):
+            code, out, err = _migrate(fleet, "-n")
+        assert code == 0, out + err
+        return calls, out
+
+    before, _ = count_dry_run()
+    for n in range(6):
+        leaf = fleet["other"] / ".worktrees" / f"{OLD}-agents" / f"leaf-x{n}"
+        _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf-x{n}", cwd=fleet["other"])
+        _git("config", f"branch.wt/{OLD}/leaf-x{n}.hub-agent-worktree", str(leaf), cwd=fleet["other"])
+
+    after, out = count_dry_run()
+
+    new_leaf = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-x5"
+    assert f"agent worktree: {fleet['other'] / '.worktrees' / f'{OLD}-agents' / 'leaf-x5'} -> {new_leaf}" in out
+    assert len(after) == len(before), sorted(set(map(tuple, after)) - set(map(tuple, before)))

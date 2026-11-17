@@ -2,12 +2,14 @@
 title: "AI-CLI-68: Quota Scrape Format-Change Detection — Plan"
 category: plan
 tags: [quota, scrape, telemetry, statusline, db]
-status: active
+status: superseded
 source: claude-sonnet-4-6
 task_id: AI-CLI-68
 created: 2026-04-27
 template_version: "plan-1.0.0"
 ---
+
+> **Superseded 2026-11-16 (AI-CLI-pyaz):** the `/usage` scrape this plan built is retired. Quota now comes from Claude Code's native statusline `rate_limits`, published by `ai quota publish`; see [claude-usage-telemetry.md](../designs/claude-usage-telemetry.md) and [cc-statusline.md](../designs/cc-statusline.md). This plan is kept as history.
 <!-- doc:region name="overview" kind="replaceable" -->
 
 # AI-CLI-68: Quota Scrape Format-Change Detection

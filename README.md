@@ -24,6 +24,9 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | Feature | Description |
 |---------|-------------|
 | **Session management** | `ai c 1`, `ai g 1`, `ai p 1`, `ai cx 1` — named tmux sessions with auto-resume on disconnect |
+| **Human session names** | `ai c` names each new session with a short human first name (for example `ada`) from a shared registry (git ref, Dolt or SQLite); `ai locate-session` finds which host holds one, and `ai reconcile-names` frees the names of retired sessions |
+| **Session migration** | `ai migrate-session OLD NEW` renames a session and carries its worktree, branch, transcripts, virtual environments, tasks and issues; `--finish` completes whatever was left while the new session ran |
+| **Session lifecycle** | `ai sessions list/stop/wind-down/relaunch` with durable run state per session; `ai -X/--restart-session` restarts a session behind safety gates; `ai sessions relaunch --boot` brings sessions back after a reboot |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -35,6 +38,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
+| **iTerm2 restore** | `ai iterm2 restore` reopens recorded sessions in their panes after a terminal quit or a reboot, recording why each one ended |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
 | **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |
@@ -235,16 +239,11 @@ after changing a command's help, never edit it by hand.
 | [`ai ps cron`](docs/reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](docs/reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](docs/reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](docs/reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](docs/reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](docs/reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](docs/reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](docs/reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](docs/reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](docs/reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](docs/reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -1295,7 +1294,7 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
 ai ps clean              # Kill orphaned processes after a prompt; -f/--force adds suspect ones
 ai memory watch          # Watch for Claude Code memory file changes
-ai quota watch           # Monitor API quota usage
+ai quota publish         # Publish the statusline's native quota reading to NATS
 ai telemetry writer      # Run telemetry writer daemon
 ai doctor [-n/--dry-run] # Check required native tools and direnv
 ai register -p <path> -x <prefix>  # Register a repository and task prefix
