@@ -3359,21 +3359,21 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     """The shell command mosh runs on the remote host for ``remote_cmd``.
 
     Mosh restores the terminal after the remote command exits, which erases what it printed,
-    and it carries no exit status back. So the remote ``ai`` copies its launch log lines into
-    ``$HOME/<remote_diagnostic_file>`` (``AI_CLI_REMOTE_DIAGNOSTIC_FILE``), and a nonzero exit
-    also writes its status beside it, as ``<file>.status``, for the local loop to read with a
-    read-only SSH command once mosh ends. stderr itself stays on the terminal, so the remote
-    side's progress lines are seen while it works. A clean exit removes both files.
+    and it carries no exit status back. Copy stderr to a file while also showing it live.
+    This captures errors even before the remote launch log is initialized. Keep stdout on
+    the terminal and record a failed command's own status separately from the pipe's status.
     """
     return (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'mkdir -p "$(dirname "$diagnostic_file")"; '
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
-        f'export {REMOTE_DIAGNOSTIC_ENV}="$diagnostic_file"; '
-        f"{remote_cmd}; "
+        "exec 3>&1; "
+        f"{{ ( {remote_cmd} ) 3>&-; "
         "status=$?; "
-        'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
-        'else printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        'if [ "$status" -ne 0 ]; then printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        '} 2>&1 1>&3 | ( umask 077; tee "$diagnostic_file" >&2 ); '
+        'status=0; if [ -f "$diagnostic_file.status" ]; then IFS= read -r status < "$diagnostic_file.status"; '
+        'else rm -f "$diagnostic_file"; fi; '
         'exit "$status"'
     )
 

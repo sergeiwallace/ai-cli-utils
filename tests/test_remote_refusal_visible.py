@@ -93,7 +93,7 @@ def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_th
     tmp_path, capsys
 ):
     # A subshell, as the real remote ``ai`` is its own process: a bare exit would end the wrapper too.
-    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >> "$AI_CLI_REMOTE_DIAGNOSTIC_FILE"; exit 78)'
+    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >&2; exit 78)'
 
     code = _remote_loop(tmp_path, remote_cmd, seconds=180.0)
 
@@ -102,6 +102,21 @@ def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_th
     assert "refusing to launch session-2" in err
     assert "ai migrate-session session-1 session-2 --finish -r /home/user/myproject" in err
     assert not (tmp_path / "home" / DIAGNOSTIC).exists(), "the read removes the remote record"
+
+
+@posix_shell
+@pytest.mark.parametrize("seconds", [1.0, 12.0])
+def test_given_remote_stderr_before_a_launch_log_exists_when_mosh_ends_then_the_refusal_and_status_survive(
+    tmp_path, capsys, seconds
+):
+    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >&2; exit 78)'
+
+    code = _remote_loop(tmp_path, remote_cmd, seconds=seconds)
+
+    err = capsys.readouterr().err
+    assert REFUSAL in err
+    assert code == 78
+    assert "transient session-name collision" not in err
 
 
 @posix_shell
