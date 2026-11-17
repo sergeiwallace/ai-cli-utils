@@ -73,7 +73,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `telemetry.py` | Event recording pipeline: caller → NATS JetStream → background writer → SQLite (`~/.ai-cli/telemetry.db`). Launch log records skip the bus: `store_log_records` writes the batch `output.py` buffered straight to the store, taking the write lock first with a 30 ms timeout, its only wait ([launcher-output-standard.md](launcher-output-standard.md) T-7) |
 | `spend.py` | Historical Gemini CLI cost reporting from local run logs, with optional GCP BigQuery billing export |
 | `memory.py` | inotify/FSEvents-based memory file watcher; debounces MEMORY.md writes; publishes `memory.dream.*` NATS events |
-| `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord webhook, ntfy push, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
+| `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord or Slack webhook, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
 | `vpn_watch.py` | Circus-managed daemon; polls VPN state; publishes `vpn.state.changed` to NATS |
 | `process_hygiene.py` | Orphaned process detection and cleanup for mosh-server, session watchers, autossh, circusd, and nats-server |
 | `layout.py` | iTerm2 YAML layout templating; generates Dynamic Profiles; builds windows/panes via iTerm2 Python API |

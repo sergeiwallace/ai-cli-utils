@@ -657,7 +657,7 @@ ai quota watch status   # show Circus status
 ai quota watch run      # run the daemon directly (Circus entry point)
 ```
 
-Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
+Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
 
 ### ai telemetry writer
 
@@ -676,7 +676,7 @@ ai notifications list
 ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
 ```
 
-`list` prints configured channels (Discord, ntfy, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
+`list` prints configured channels (Discord, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
 
 ---
 

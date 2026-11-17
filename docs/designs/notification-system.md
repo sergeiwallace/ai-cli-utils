@@ -1,7 +1,7 @@
 ---
 title: "Quota Notification System"
 category: design
-tags: [quota, notifications, circus, ntfy, discord, process-management]
+tags: [quota, notifications, circus, discord, process-management]
 status: approved
 source: session-2026-04-20
 task: AI-CLI-25
@@ -16,6 +16,8 @@ template_version: "design-1.0.0"
 **Created:** 2026-04-20
 
 **Task:** AI-CLI-25
+
+> **Update 2026-11-17:** the ntfy channel was removed from the package. The spec sections below describe the two remaining channels, Discord (or Slack) webhooks and the OS fallback; a leftover `[notifications.ntfy]` config section is ignored silently. The decision record, feedback rounds and implementation plan keep their original wording as history.
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -264,10 +266,10 @@ n = Notifier()
 n.send("Build complete", "project-x passed all tests")
 
 # Target specific channels only
-n.send("Critical alert", "quota at 90%", priority="urgent", channels=["discord", "ntfy"])
+n.send("Critical alert", "quota at 90%", priority="urgent", channels=["discord"])
 
 # Override config at construction time
-n = Notifier(channels_config={"ntfy": {"base_url": "...", "topic": "..."}})
+n = Notifier(channels_config={"discord": {"webhook_url": "https://example.com/hook"}})
 ```
 
 ### `Notifier` Class
@@ -294,7 +296,7 @@ class Notifier:
 ```python
 @dataclass
 class NotificationResult:
-    channel: str  # "discord" | "ntfy" | "os"
+    channel: str  # "discord" | "os"
     success: bool
     status_code: int | None
     error: str | None
@@ -302,7 +304,7 @@ class NotificationResult:
 
 ### Delivery Logic
 
-1. Collect enabled channels from config (Discord, ntfy, OS — whichever are configured and enabled).
+1. Collect enabled channels from config (Discord, OS — whichever are configured and enabled).
 2. Fire all primary channels concurrently (thread pool, short timeout per channel).
 3. If **all primary channels fail or none are configured**, fire the OS fallback.
 4. Log each result to `notification_log` in SQLite.
@@ -325,12 +327,6 @@ os_fallback = true
 [notifications.discord]
 # enabled defaults to true when DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL is set
 enabled = true
-
-[notifications.ntfy]
-# enabled defaults to true when NTFY_BASE_URL + NTFY_TOPIC are set
-enabled = true
-# Non-secret defaults (topic, priority cap) may be set here
-# topic = "my-alerts"  # overridden by NTFY_TOPIC env var
 ```
 
 ### Environment Variables
@@ -338,11 +334,8 @@ enabled = true
 | Variable | Channel | Purpose |
 |----------|---------|---------|
 | `DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL` | discord | Incoming webhook URL |
-| `NTFY_BASE_URL` | ntfy | Server base URL, e.g. `https://ntfy.example.com` |
-| `NTFY_TOPIC` | ntfy | Topic name |
-| `NTFY_TOKEN` | ntfy | Bearer token (omit for public topics) |
 
-All four managed in Doppler and injected via direnv/Doppler.
+Managed in Doppler and injected via direnv/Doppler.
 
 ### Auditing Configured Channels
 
@@ -355,7 +348,6 @@ Prints each channel, its enabled state, and whether credentials are present (not
 ```text
 Channel   Enabled   Credentials
 discord   yes       webhook_url: set
-ntfy      yes       base_url: set, topic: set, token: set
 os        yes       (no credentials needed)
 ```
 
@@ -374,9 +366,9 @@ CREATE TABLE notification_log (
     body        TEXT NOT NULL,
     priority    TEXT NOT NULL DEFAULT 'default',
     tags        TEXT,                   -- JSON array, nullable
-    channels_attempted  TEXT NOT NULL,  -- JSON array: ["discord", "ntfy"]
+    channels_attempted  TEXT NOT NULL,  -- JSON array: ["discord", "os"]
     channels_succeeded  TEXT NOT NULL,  -- JSON array: ["discord"]
-    channels_failed     TEXT NOT NULL   -- JSON array: ["ntfy"]
+    channels_failed     TEXT NOT NULL   -- JSON array: ["os"]
 );
 CREATE INDEX notification_log_fired_at ON notification_log (fired_at);
 CREATE INDEX notification_log_source   ON notification_log (source);
@@ -412,8 +404,8 @@ Output format (table):
 
 ```text
 Time                  Source        Title                           Channels
-2026-04-20 14:32:01   quota-watch   Claude quota 75% threshold...  discord✓ ntfy✓
-2026-04-20 09:11:44   quota-watch   Claude quota 50% threshold...  discord✓ ntfy✗
+2026-04-20 14:32:01   quota-watch   Claude quota 75% threshold...  discord✓
+2026-04-20 09:11:44   quota-watch   Claude quota 50% threshold...  discord✗ os✓
 ```
 
 ## quota-watch Daemon and Circus Auto-Start
