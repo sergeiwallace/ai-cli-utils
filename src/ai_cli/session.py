@@ -1068,6 +1068,63 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _repair_slot_linkage(repo_root: Path, wt_dir: Path) -> None:
+    """Relink a slot whose ``.git`` file and admin ``gitdir`` disagree on its path.
+
+    The two records name each other by absolute path. When either one spells the slot
+    differently from where it is (the repository was moved, or one git wrote a Windows
+    path as ``/c/Users/...`` and another reads ``C:\\Users\\...``), ``git worktree list``
+    reports the slot at the other spelling and marks it ``prunable``, and the stale-entry
+    cleanup that follows would drop the live checkout's registration because it holds the
+    slot's branch. ``git worktree repair`` rewrites only those two linkage files, finding
+    the admin directory by its id when the ``.git`` file's path is wrong, and leaves a
+    checkout belonging to another repository untouched, so it is safe to run unasked.
+    """
+    if not (wt_dir / ".git").is_file():
+        return
+    try:
+        res = subprocess.run(
+            ["git", "worktree", "repair", str(wt_dir)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=_git_env(),
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if res.returncode == 0 and (res.stderr or "").startswith("repair:"):
+        launch_reporter.active().phase("worktree").outcome(f"relinked {wt_dir} to its git registration")
+
+
+def _slot_checkout_refusal(repo_root: Path, wt_dir: Path, branch: str) -> str:
+    """The refusal for a slot that is itself a checkout git has no registration for.
+
+    The slot here IS the session's own checkout, not a container of agent worktrees, so
+    moving it into ``<name>-agents/`` would be wrong. With no registration to keep in step,
+    a plain move aside loses nothing and frees the slot.
+    """
+    git_entry = wt_dir / ".git"
+    if git_entry.is_file():
+        link = git_entry.read_text(errors="replace").strip()
+        what = (
+            f"is the session's own checkout, but {repo_root} has no worktree registration for it "
+            f"(its .git file reads `{link}` and `git worktree repair` could not relink it)"
+        )
+        keep = f"Commits on {branch} stay in the repository; uncommitted files exist only in the moved directory."
+    else:
+        what = f"holds a separate repository, not a worktree of {repo_root}"
+        keep = "Its history exists only in that directory, so move it, never delete it."
+    aside = wt_dir.with_name(f"{wt_dir.name}-orphaned")
+    return (
+        f"create_worktree: {wt_dir} {what} — refusing to delete it. It is the slot itself, not a "
+        f"container of nested agent worktrees, so nothing belongs in `{wt_dir.name}-agents/`. Move it "
+        f'aside and re-run: `mv "{wt_dir}" "{aside}"`; the launcher then checks out {branch} there '
+        f"again. {keep}"
+    )
+
+
 def _remove_stale_slot_registrations(repo_root: Path, wt_dir: Path, branch: str) -> None:
     """Drop the stale registrations that belong to this slot, and no others.
 
@@ -1450,6 +1507,9 @@ def create_worktree(
             # Verify it is still registered as a valid worktree; clear this slot's own
             # stale entry first. Compare filesystem identity too: on a case-insensitive
             # filesystem, a differently-cased prefix can spell the same live checkout.
+            # Relink first: a slot whose records name another spelling of its path reads
+            # as a stale entry holding this branch, and the cleanup would deregister it.
+            _repair_slot_linkage(repo_root, wt_dir)
             _remove_stale_slot_registrations(repo_root, wt_dir, branch_name)
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if registered is not None:
@@ -1472,6 +1532,8 @@ def create_worktree(
                 # live process leaves the slot present and deregistered, and every
                 # later launch refused over a directory git would have accepted.
                 holder = _contains_git_checkout(wt_dir)
+                if holder == wt_dir:
+                    raise RuntimeError(_slot_checkout_refusal(repo_root, wt_dir, branch_name))
                 if holder is not None:
                     raise RuntimeError(
                         f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root}, and it "
