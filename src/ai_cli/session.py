@@ -503,19 +503,19 @@ def _sweep_stale_claude_session_state() -> None:
 
 
 def _proc_start_refutes(probe: ProcessProbe, pid: int, recorded: object) -> bool:
-    """Whether a readable procfs ``starttime`` for ``pid`` differs from the recorded one.
+    """Whether two usable procfs start ticks disagree for ``pid``.
 
-    Linux only: procfs ``starttime`` is an exact tick count, so a mismatch proves pid
-    reuse. psutil's ``create_time`` (macOS, Windows) is compared with a tolerance and
-    the recorded forms there vary, so off procfs a live pid's record is always kept.
+    On Linux, Claude Code records the raw ``starttime`` tick as a decimal string.
+    Missing, unreadable or nonpositive ticks cannot establish reuse. Off procfs,
+    the recorded forms vary and a live pid's record is always kept.
     """
     if not isinstance(probe, ProcfsProbe):
         return False
     recorded = normalize_proc_start(recorded)
-    if not isinstance(recorded, int) or isinstance(recorded, bool):
+    if not isinstance(recorded, int) or isinstance(recorded, bool) or recorded <= 0:
         return False
     identity = probe.capture_identity(pid)
-    return identity is not None and identity.marker != recorded
+    return identity is not None and identity.marker > 0 and identity.marker != recorded
 
 
 def cleanup_stale_sessions(config: dict) -> None:
