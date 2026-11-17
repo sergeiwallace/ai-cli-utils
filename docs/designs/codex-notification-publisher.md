@@ -71,15 +71,21 @@ of git's common directory); outside git both are the working directory.
    refreshing for the generation and calls finish.
 7. **finish** when the TUI exits: the script sends the monitor SIGTERM, the monitor calls
    finish, and then the script stops the engine. If the session script dies, the monitor sees
-   it gone, calls finish and stops the engine itself.
+   it gone, stops the engine and prints the notice. It does not call finish: no caller is left
+   that descends from the wrapper the record names, so the publisher's own stale-record cleanup
+   removes the record.
 
 Failure paths. Every one of them leaves the user's session running.
 
-- begin exit 3, or a publisher that cannot be started: Codex launches as before with no
-  app-server, and one notice.
+- begin exit 3 with `possiblyPersisted` false and no `recordId`, or a publisher that cannot
+  be started: Codex launches as before with no app-server, and one notice. The next agent
+  restart under the same supervisor may try begin again.
+- begin exit 3 with `possiblyPersisted` true or a `recordId`: handled like exit 4 below, since
+  a record may exist.
 - begin exit 2, or a request over the stdin bound: the same, and no later begin for the
   generation.
-- begin exit 4, a timeout, or an unreadable answer: `reconcile` runs once. begin is never
+- begin exit 4, a timeout, or an unreadable answer (including a `recordId` that is not a
+  canonical UUID, or a `socketPath` that is not absolute): `reconcile` runs once. begin is never
   retried for the generation and running is never called. Codex launches as before.
 - running refused, or the app-server not answering: finish, stop the engine, launch as before.
 

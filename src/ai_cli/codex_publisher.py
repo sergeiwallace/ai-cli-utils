@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -33,6 +34,8 @@ SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16384
 MAX_RESPONSE_BYTES = 65536
 RESPONSE_KEYS = frozenset({"schemaVersion", "phase", "status", "reason", "possiblyPersisted", "recordId", "socketPath"})
+# A record id is a canonical (lowercase, hyphenated) UUID string.
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The session script's heartbeat ticker sleeps this long between beats; the monitor ticks at
 # the same cadence, or at refresh_seconds when that is shorter.
 HEARTBEAT_SECONDS = 30
@@ -110,7 +113,10 @@ def _parse_response(raw: bytes, phase: str) -> dict | None:
         return None
     if not isinstance(value["possiblyPersisted"], bool):
         return None
-    if not all(value[key] is None or isinstance(value[key], str) for key in ("recordId", "socketPath")):
+    record_id, socket_path = value["recordId"], value["socketPath"]
+    if record_id is not None and not (isinstance(record_id, str) and _UUID.fullmatch(record_id)):
+        return None
+    if socket_path is not None and not (isinstance(socket_path, str) and Path(socket_path).is_absolute()):
         return None
     return value
 
@@ -291,6 +297,11 @@ def begin(config: dict, tmux_session: str, ai_name: str, wrapper_pid: int) -> in
             _out.raw(Untagged.INTERNAL_REPLY, socket_path)
             return 0
         result = PhaseResult("uncertain", "the publisher accepted begin without a record or socket")
+    if result.outcome == "unavailable" and (
+        result.response is None or result.response["possiblyPersisted"] or result.response["recordId"] is not None
+    ):
+        # A refusal that may have left a record behind is not a clean no: reconcile it.
+        result = PhaseResult("uncertain", result.reason)
     if result.outcome == "invalid":
         state["closed"] = True
         _save_state(path, state)
@@ -374,7 +385,8 @@ def monitor(config: dict, tmux_session: str, wrapper_pid: int, engine_pid: int) 
     """Enroll the session's thread, then refresh it, until the session script stops this.
 
     SIGTERM (the TUI has exited) calls finish; the session script then stops the engine. If
-    the session script itself is gone, this calls finish and stops the engine on its own.
+    the session script itself is gone, this stops the engine and does not call finish: no
+    caller is left that descends from the wrapper the record names.
     """
     stop = {"requested": False}
     signal.signal(signal.SIGTERM, lambda *_: stop.update(requested=True))
@@ -396,10 +408,12 @@ def monitor(config: dict, tmux_session: str, wrapper_pid: int, engine_pid: int) 
             _finish(settings, path, state)
             return 0
         if not _same_process(wrapper_pid, wrapper):
-            _finish(settings, path, state)
+            # The session shell is gone, so no caller can prove it descends from it: stop the
+            # engine and leave the record to the publisher's own stale-record cleanup.
             if _same_process(engine_pid, engine):
                 with contextlib.suppress(OSError):
                     os.kill(engine_pid, signal.SIGTERM)
+            _notice(path, state, "the session shell exited before the session ended")
             return 0
         now = time.monotonic()
         if active and now >= next_tick:
