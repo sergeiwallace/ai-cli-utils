@@ -361,3 +361,50 @@ def test_the_refusal_is_reached_only_through_the_disagreement(fake_tmux) -> None
     assert tmux_setup.probe().versions_disagree is True, (
         "positive control: the mismatch this guard exists for IS detected"
     )
+
+
+@pytest.mark.parametrize(
+    ("printed", "expected"),
+    [
+        ("tmux 3.7c", "3.7c"),
+        ("tmux 3.4", "3.4"),
+        ("tmux next-3.8", "next-3.8"),
+        ("tmux 3.8-rc", "3.8-rc"),
+        ("tmux 3.6a (windows port, built 2026-10-13)", "3.6a"),
+    ],
+)
+def test_given_a_tmux_build_when_its_version_is_probed_then_the_version_token_is_kept(fake_tmux, printed, expected):
+    """A build that appends text after its version must not report that text as the version.
+
+    The old reading kept the last whitespace token, so a build printing a trailing build
+    date reported ``2026-10-13)`` as its version.
+    """
+    fake_tmux["client"] = printed.removeprefix("tmux ")
+    fake_tmux["server"] = None
+
+    assert tmux_setup.probe().client_version == expected
+
+
+def test_given_tmux_prints_no_version_token_when_probed_then_the_raw_text_is_reported(fake_tmux) -> None:
+    fake_tmux["client"] = "unknown build"
+    fake_tmux["server"] = None
+
+    assert tmux_setup.probe().client_version == "unknown build"
+
+
+def test_given_the_server_reports_a_trailing_zero_when_compared_then_the_versions_agree(fake_tmux) -> None:
+    fake_tmux["client"] = "3.4"
+    fake_tmux["server"] = "3.4.0"
+
+    assert tmux_setup.probe().versions_disagree is False
+
+
+def test_given_client_and_server_differ_when_reported_then_the_warning_names_the_client_binary(fake_tmux) -> None:
+    fake_tmux["which"] = "/opt/other/bin/tmux"
+    fake_tmux["client"] = NEWER_CLIENT
+    fake_tmux["server"] = OLDER_SERVER
+
+    lines = tmux_setup.report_lines(report=tmux_setup.probe(), bare=False, reason="default")
+
+    warning = next(text for phase, text in lines if phase == "Warning")
+    assert "/opt/other/bin/tmux" in warning
