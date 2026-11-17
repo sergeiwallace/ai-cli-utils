@@ -774,14 +774,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
@@ -792,6 +792,12 @@ enabled = true
 ## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
 ## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
@@ -1768,6 +1774,33 @@ def get_worktree_marker_prefix() -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+#: ``[worktree] venv`` values: a private ``uv sync`` environment per worktree, or a link to main's.
+WORKTREE_VENV_MODES = ("private", "link")
+#: Seconds a new worktree's ``uv sync`` may take before the launch stops and says so.
+DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT = 900.0
+
+
+def get_worktree_venv_mode() -> str:
+    """``[worktree] venv``, read at call time: "private" (the default) or "link"."""
+    try:
+        value = load_config().get("worktree", {}).get("venv")
+    except Exception:
+        return "private"
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if value in WORKTREE_VENV_MODES else "private"
+
+
+def get_worktree_venv_sync_timeout() -> float:
+    """``[worktree] venv_sync_timeout_seconds``, read at call time; positive, else the default."""
+    try:
+        value = load_config().get("worktree", {}).get("venv_sync_timeout_seconds")
+    except Exception:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    return float(value)
+
+
 def get_environment_repo() -> str:
     """``[project] environment_repo``, read at call time; "" when unset."""
     try:
@@ -2101,7 +2134,8 @@ def registered_project_names() -> dict[str, str]:
                         "load",
                         f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
                         f"the fleet registry declares {fleet_entry['prefix']!r}. "
-                        f"Edit the project's task_prefix in {source} to match the fleet registry.",
+                        f"If {source} is in a repository checkout, pull it first: the fix may already "
+                        "be upstream. Otherwise edit the project's task_prefix there to match the fleet registry.",
                     )
                     _warned_stale_project_aliases.add(warning_key)
                 continue

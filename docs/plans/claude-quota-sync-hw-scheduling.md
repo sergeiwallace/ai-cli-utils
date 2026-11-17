@@ -1,6 +1,8 @@
 # Claude Usage Quota Sync — hw-scheduling Integration Plan
 
-**Status:** DEPLOYED — Batches 1–3 shipped; live UAT in progress
+**Status:** SUPERSEDED 2026-11-16 (was: DEPLOYED, Batches 1–3 shipped)
+
+> **Superseded 2026-11-16 (AI-CLI-pyaz):** the `/usage` scrape this plan built is retired. Quota now comes from Claude Code's native statusline `rate_limits`, published by `ai quota publish`; see [claude-usage-telemetry.md](../designs/claude-usage-telemetry.md) and [cc-statusline.md](../designs/cc-statusline.md). This plan is kept as history.
 
 **Created:** 2026-04-07
 

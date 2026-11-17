@@ -239,16 +239,11 @@ after changing a command's help, never edit it by hand.
 | [`ai ps cron`](docs/reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](docs/reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](docs/reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](docs/reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](docs/reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](docs/reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](docs/reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](docs/reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](docs/reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](docs/reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](docs/reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -1247,6 +1242,7 @@ ai c -F --dry-run           # Print the resolved plan; registers and starts noth
 ai c chief-2 -R -m box      # Run the chief on remote machine `box`: named, homed and registered there
 ai cos -R -m box            # Same, through the shorthand
 ai cos 1 -r -R -p env       # From another machine: attach to or resume chief 1 on the remote machine
+ai cx -F -N ada -R -m box   # The chief named ada on `box`: env-box-chief-ada; another running chief is refused
 ```
 
 Every one of these attaches, resumes or creates, decided on the machine the chief runs on (the remote one with `-R`):
@@ -1258,7 +1254,7 @@ Every one of these attaches, resumes or creates, decided on the machine the chie
 | nothing | create and register it; with `-r`, refuse with "no resumable chief session …" |
 | a different chief is running | refuse, naming the running chief and the command that attaches to it |
 
-An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered.
+An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered. A `-N/--name NAME` request means the chief named `{session_name}-NAME` only: it attaches to or resumes that chief, creates it when none is running, and refuses while a different chief is running.
 
 The name is `{repo-alias}-{host-alias}-{session_name}-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `<project>/.worktrees/` under that name. A positional `chief` or `chief-N` (your `session_name`) is the chief launch itself, with everything `--chief` does; any other name carrying that segment (`chief-x`) is refused without the flag, so an ordinary session can never pass for the chief. With no `session_name` configured, no positional name is a chief launch.
 
@@ -1266,7 +1262,7 @@ Worktree isolation is **on**, like every other session: a session working in a m
 
 `-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); with neither `-k` nor `$AI_MACHINE_ID` set (a non-interactive shell, such as the remote side of `-R`, can miss an rc-file export) the one seeded home under `homes_dir` is used, and several are refused; a chief launch refuses a missing or unseeded home and refuses a second chief while the first is running (it names the command that attaches to it). A chief running in tmux under a registration that names another (a later launch overwrote it and died) is still found by its tmux session name and re-registered when you attach. On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json` (with `chief_instance_key = "<instance_key_prefix>/<machine-key>"`), then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
 
-A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
+A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k`, `-H` and `-N`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered or `-N`-named `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief, or checks the named one before it reserves the name. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
 
 ### SSH tunnels
 
@@ -1299,7 +1295,7 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
 ai ps clean              # Kill orphaned processes after a prompt; -f/--force adds suspect ones
 ai memory watch          # Watch for Claude Code memory file changes
-ai quota watch           # Monitor API quota usage
+ai quota publish         # Publish the statusline's native quota reading to NATS
 ai telemetry writer      # Run telemetry writer daemon
 ai doctor [-n/--dry-run] # Check required native tools, direnv, and harness-driven compaction
 ai register -p <path> -x <prefix>  # Register a repository and task prefix

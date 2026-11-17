@@ -8,10 +8,12 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
@@ -23,6 +25,8 @@ from .config import (
     _get_projects_dir,
     get_current_project_name,
     get_worktree_upstream_branches,
+    get_worktree_venv_mode,
+    get_worktree_venv_sync_timeout,
     get_xdg_state_home,
     load_project_registry,
     resolve_project_prefix,
@@ -344,7 +348,7 @@ def _resolve_explicit_bare_slot(
     return None
 
 
-def find_next_index(prefix: str, use_tmux: bool = True) -> int:
+def find_next_index(prefix: str, use_tmux: bool = True, *, retired_names: Collection[str] = ()) -> int:
     """Return the lowest unused session index for ``prefix``.
 
     With tmux, occupancy is authoritative: a live tmux session using either
@@ -353,19 +357,21 @@ def find_next_index(prefix: str, use_tmux: bool = True) -> int:
     are the only durable record a bare session leaves behind.
     """
     if not use_tmux:
-        return _find_next_index_from_worktrees(prefix)
+        return _find_next_index_from_worktrees(prefix, retired_names=retired_names)
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
     if not match:
         return 1
     engine_short, project_prefix = match.groups()
     i = 1
     while True:
-        if not _matching_tmux_sessions(engine_short, project_prefix, i):
+        if f"{project_prefix}-{i}" not in retired_names and not _matching_tmux_sessions(
+            engine_short, project_prefix, i
+        ):
             return i
         i += 1
 
 
-def _find_next_index_from_worktrees(prefix: str) -> int:
+def _find_next_index_from_worktrees(prefix: str, *, retired_names: Collection[str] = ()) -> int:
     """Return the lowest index with no live bare session, using worktrees on disk.
 
     ``prefix`` is a tmux-style session prefix (``c-myproject-``); worktrees are
@@ -380,14 +386,13 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
         repo_root = detect_repo_root()
     except RuntimeError:
         repo_root = None
-    if not repo_root:
-        return 1
     # A probe slot lives under the probe directory, not .worktrees/, and is occupied the same way.
-    wt_bases = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root))
+    wt_bases = (repo_root / WORKTREE_DIR, probe_worktree_base(repo_root)) if repo_root else ()
     i = 1
     while True:
-        candidates = [path for base in wt_bases for path in _matching_worktrees(base, f"{ai_prefix}{i}")]
-        if not candidates or not any(_worktree_has_live_session(candidate) for candidate in candidates):
+        title = f"{ai_prefix}{i}"
+        candidates = (path for base in wt_bases for path in _matching_worktrees(base, title))
+        if title not in retired_names and not any(_worktree_has_live_session(candidate) for candidate in candidates):
             return i
         i += 1
 
@@ -498,19 +503,19 @@ def _sweep_stale_claude_session_state() -> None:
 
 
 def _proc_start_refutes(probe: ProcessProbe, pid: int, recorded: object) -> bool:
-    """Whether a readable procfs ``starttime`` for ``pid`` differs from the recorded one.
+    """Whether two usable procfs start ticks disagree for ``pid``.
 
-    Linux only: procfs ``starttime`` is an exact tick count, so a mismatch proves pid
-    reuse. psutil's ``create_time`` (macOS, Windows) is compared with a tolerance and
-    the recorded forms there vary, so off procfs a live pid's record is always kept.
+    On Linux, Claude Code records the raw ``starttime`` tick as a decimal string.
+    Missing, unreadable or nonpositive ticks cannot establish reuse. Off procfs,
+    the recorded forms vary and a live pid's record is always kept.
     """
     if not isinstance(probe, ProcfsProbe):
         return False
     recorded = normalize_proc_start(recorded)
-    if not isinstance(recorded, int) or isinstance(recorded, bool):
+    if not isinstance(recorded, int) or isinstance(recorded, bool) or recorded <= 0:
         return False
     identity = probe.capture_identity(pid)
-    return identity is not None and identity.marker != recorded
+    return identity is not None and identity.marker > 0 and identity.marker != recorded
 
 
 def cleanup_stale_sessions(config: dict) -> None:
@@ -679,6 +684,8 @@ def build_session_name(
     is_remote: bool = False,
     use_tmux: bool = True,
     legacy_prefix: str | None = None,
+    *,
+    retired_names: Collection[str] = (),
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
@@ -728,13 +735,13 @@ def build_session_name(
             compose_session_name(naming_prefix, clean_name),
         )
     if not clean_name:
-        idx = find_next_index(tmux_base, use_tmux=use_tmux)
+        idx = find_next_index(tmux_base, use_tmux=use_tmux, retired_names=retired_names)
         return (
             _new_session_display_name(engine_short, project_prefix, str(idx), is_remote),
             compose_session_name(naming_prefix, idx),
         )
     tmux_named = f"{tmux_base}{clean_name}-"
-    idx = find_next_index(tmux_named, use_tmux=use_tmux)
+    idx = find_next_index(tmux_named, use_tmux=use_tmux, retired_names=retired_names)
     return (
         _new_session_display_name(engine_short, project_prefix, f"{clean_name}-{idx}", is_remote),
         compose_session_name(naming_prefix, clean_name, idx),
@@ -1065,6 +1072,63 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _repair_slot_linkage(repo_root: Path, wt_dir: Path) -> None:
+    """Relink a slot whose ``.git`` file and admin ``gitdir`` disagree on its path.
+
+    The two records name each other by absolute path. When either one spells the slot
+    differently from where it is (the repository was moved, or one git wrote a Windows
+    path as ``/c/Users/...`` and another reads ``C:\\Users\\...``), ``git worktree list``
+    reports the slot at the other spelling and marks it ``prunable``, and the stale-entry
+    cleanup that follows would drop the live checkout's registration because it holds the
+    slot's branch. ``git worktree repair`` rewrites only those two linkage files, finding
+    the admin directory by its id when the ``.git`` file's path is wrong, and leaves a
+    checkout belonging to another repository untouched, so it is safe to run unasked.
+    """
+    if not (wt_dir / ".git").is_file():
+        return
+    try:
+        res = subprocess.run(
+            ["git", "worktree", "repair", str(wt_dir)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=_git_env(),
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if res.returncode == 0 and (res.stderr or "").startswith("repair:"):
+        launch_reporter.active().phase("worktree").outcome(f"relinked {wt_dir} to its git registration")
+
+
+def _slot_checkout_refusal(repo_root: Path, wt_dir: Path, branch: str) -> str:
+    """The refusal for a slot that is itself a checkout git has no registration for.
+
+    The slot here IS the session's own checkout, not a container of agent worktrees, so
+    moving it into ``<name>-agents/`` would be wrong. With no registration to keep in step,
+    a plain move aside loses nothing and frees the slot.
+    """
+    git_entry = wt_dir / ".git"
+    if git_entry.is_file():
+        link = git_entry.read_text(errors="replace").strip()
+        what = (
+            f"is the session's own checkout, but {repo_root} has no worktree registration for it "
+            f"(its .git file reads `{link}` and `git worktree repair` could not relink it)"
+        )
+        keep = f"Commits on {branch} stay in the repository; uncommitted files exist only in the moved directory."
+    else:
+        what = f"holds a separate repository, not a worktree of {repo_root}"
+        keep = "Its history exists only in that directory, so move it, never delete it."
+    aside = wt_dir.with_name(f"{wt_dir.name}-orphaned")
+    return (
+        f"create_worktree: {wt_dir} {what} — refusing to delete it. It is the slot itself, not a "
+        f"container of nested agent worktrees, so nothing belongs in `{wt_dir.name}-agents/`. Move it "
+        f'aside and re-run: `mv "{wt_dir}" "{aside}"`; the launcher then checks out {branch} there '
+        f"again. {keep}"
+    )
+
+
 def _remove_stale_slot_registrations(repo_root: Path, wt_dir: Path, branch: str) -> None:
     """Drop the stale registrations that belong to this slot, and no others.
 
@@ -1195,6 +1259,90 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
     )
 
 
+#: Variables that would point ``uv sync`` at another project, directory or environment.
+_VENV_ENV_OVERRIDES = ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT", "UV_PROJECT", "UV_WORKING_DIR")
+#: Left in the worktree's git admin directory while its first sync runs.
+_VENV_PROVISIONING_MARKER = "ai-cli-venv-provisioning"
+
+
+def _venv_provisioning_marker(worktree_path: Path) -> Path | None:
+    """``<admin dir>/ai-cli-venv-provisioning`` for a linked worktree, else None."""
+    git = worktree_path / ".git"
+    try:
+        text = git.read_text(encoding="utf-8") if git.is_file() else ""
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    admin = Path(text.split("gitdir:", 1)[1].strip())
+    if not admin.is_absolute():
+        admin = worktree_path / admin
+    return admin / _VENV_PROVISIONING_MARKER if admin.is_dir() else None
+
+
+def _provision_private_venv(repo_root: Path, worktree_path: Path) -> bool:
+    """Give a uv-locked project's worktree its own ``.venv``; True when ``.venv`` is already there.
+
+    ``.venv`` used to be linked to the main checkout, so every session of a project shared one
+    environment, and a ``uv sync`` in any of them rewrote the editable install the others
+    imported to point at that session's checkout. A project with a ``uv.lock`` now gets
+    ``uv sync --frozen`` run inside the new worktree before it is returned, so its environment is
+    built from the same lock without rewriting it. An existing ``.venv`` (a reused worktree, or one
+    a store links in) is left as it is. ``[worktree] venv = "link"`` keeps the shared link, and a
+    project without a ``uv.lock`` keeps it too, since its environment cannot be rebuilt from a lock.
+    A failed or missing ``uv`` stops the launch with the reason rather than falling back to a
+    shared environment. A marker in the worktree's git admin directory stays until the sync
+    succeeds, so a ``.venv`` left by a failed or interrupted sync is rebuilt on the next launch
+    instead of being taken as finished; a ``.venv`` without that marker is never removed.
+    """
+    dst = worktree_path / ".venv"
+    marker = _venv_provisioning_marker(worktree_path)
+    unfinished = marker is not None and marker.exists() and dst.is_dir() and not dst.is_symlink()
+    if unfinished:
+        # Our own first sync stopped part-way, so this .venv was never finished: rebuild it.
+        shutil.rmtree(dst)
+    elif dst.exists() or dst.is_symlink():
+        return True
+    if get_worktree_venv_mode() != "private" or not (worktree_path / "uv.lock").is_file():
+        return False
+    remedy = (
+        'or set [worktree] venv = "link" in your ai-cli-utils config.toml to share '
+        f"{repo_root / '.venv'} (every session then changes that one environment)"
+    )
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError(
+            f"create_worktree: {worktree_path} needs its own virtual environment, but `uv` is not on "
+            f"PATH. Install uv, {remedy}."
+        )
+    if marker is not None:
+        marker.touch()
+    command = [uv, "sync", "--frozen"]
+    env = {key: value for key, value in os.environ.items() if key not in _VENV_ENV_OVERRIDES}
+    timeout = get_worktree_venv_sync_timeout()
+    try:
+        result = subprocess.run(
+            command, cwd=worktree_path, env=env, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"create_worktree: `uv sync --frozen` in {worktree_path} did not finish in {timeout:g}s. "
+            f"Raise [worktree] venv_sync_timeout_seconds, {remedy}."
+        ) from error
+    except OSError as error:
+        raise RuntimeError(f"create_worktree: could not run `uv sync --frozen` in {worktree_path}: {error}") from error
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-5:])
+        raise RuntimeError(
+            f"create_worktree: `uv sync --frozen` in {worktree_path} exited {result.returncode}:\n{tail}\n"
+            f"Fix the project's environment, {remedy}."
+        )
+    if marker is not None:
+        marker.unlink(missing_ok=True)
+    launch_reporter.active().phase("worktree").outcome(f"created its own virtual environment at {dst}")
+    return True
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1224,8 +1372,13 @@ def _initialize_worktree(
         else:
             _set_upstream_or_raise(repo_root, branch, upstream)
 
+    # A uv-locked project's worktree gets its own environment; a link to main's would let
+    # one session's sync rewrite what every other session imports.
+    private_venv = _provision_private_venv(repo_root, worktree_path)
     # Symlink critical environment files
     for item in [".venv", ".claude", ".gemini", ".direnv"]:
+        if item == ".venv" and private_venv:
+            continue
         src = repo_root / item
         dst = worktree_path / item
         if src.exists() and not dst.exists():
@@ -1358,6 +1511,9 @@ def create_worktree(
             # Verify it is still registered as a valid worktree; clear this slot's own
             # stale entry first. Compare filesystem identity too: on a case-insensitive
             # filesystem, a differently-cased prefix can spell the same live checkout.
+            # Relink first: a slot whose records name another spelling of its path reads
+            # as a stale entry holding this branch, and the cleanup would deregister it.
+            _repair_slot_linkage(repo_root, wt_dir)
             _remove_stale_slot_registrations(repo_root, wt_dir, branch_name)
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if registered is not None:
@@ -1380,6 +1536,8 @@ def create_worktree(
                 # live process leaves the slot present and deregistered, and every
                 # later launch refused over a directory git would have accepted.
                 holder = _contains_git_checkout(wt_dir)
+                if holder == wt_dir:
+                    raise RuntimeError(_slot_checkout_refusal(repo_root, wt_dir, branch_name))
                 if holder is not None:
                     raise RuntimeError(
                         f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root}, and it "

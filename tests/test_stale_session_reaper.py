@@ -1881,6 +1881,9 @@ def _reap_leaked_supervisors() -> Iterator[None]:
         owned.reap()
 
 
+_CHILD_SPAWNED = "        _child_pid=$!\n"
+
+
 def _start_generated_supervisor(
     tmp_path: Path,
     shell: str,
@@ -1898,6 +1901,7 @@ def _start_generated_supervisor(
     stdin_fd: int | None = None,
     promotion_budget_seconds: float = 30,
     wait_for_child_ready: bool = True,
+    after_child_spawn: str = "",
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
     # Decide the host-capability question BEFORE building anything. This used to
@@ -1994,6 +1998,11 @@ fi
     # gives up sooner, still scaled so the child reports its group first and the failure is
     # the "could not promote" one they assert.
     script = _with_promotion_budget(script, promotion_budget_seconds)
+    if after_child_spawn:
+        # Shell run between the child's spawn and its promotion: the gap a descheduled
+        # supervisor leaves on a loaded host. Asserted, so a moved line fails loudly.
+        assert script.count(_CHILD_SPAWNED) == 1, "the child spawn line moved; update this harness"
+        script = script.replace(_CHILD_SPAWNED, f"{_CHILD_SPAWNED}{after_child_spawn}\n")
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -2330,17 +2339,11 @@ def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_sup
     assert returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
 
 
-def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it_tears_down_its_tmux_session(
-    tmp_path: Path, supported_session_shell: str
-):
-    """A Ctrl+C while a child is still being started is a deliberate stop (AI-CLI-5t3j).
+@contextlib.contextmanager
+def _terminal_owned_elsewhere() -> Iterator[str]:
+    """A pty whose terminal another session owns, so every promotion attempt on it fails.
 
-    Between children (an `ai` update reload, a restart after a normal exit) only the
-    supervisor sees Ctrl+C, and a press before promotion returns 2. The supervisor used to
-    `exit 1` there, skipping the fenced `kill-session` a final exit runs. The window keeps
-    `remain-on-exit on`, so the pane stayed up dead: keystrokes went nowhere and the tmux
-    session was never removed. The pty is owned by another session, as in the promotion
-    failure test above, so the promotion loop keeps retrying until the press arrives.
+    Yields the slave's name. The owner holds the terminal until the block ends.
     """
     import pty  # not at module scope: see the promotion failure test above (AI-CLI-ta1l)
 
@@ -2360,46 +2363,110 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
     try:
         assert owner.stdout is not None
         owner.stdout.readline()
-        slave_fd = os.open(slave_name, os.O_RDWR)
-        try:
-            process, _, _ = _start_generated_supervisor(
-                tmp_path,
-                supported_session_shell,
-                stdin_fd=slave_fd,
-                wait_for_child_ready=False,
-                # As long as this test waits for the loop to start, so the press it sends once
-                # the child reports still lands inside the loop on a loaded host.
-                promotion_budget_seconds=DEFAULT_WAIT_SECONDS,
-            )
-        finally:
-            os.close(slave_fd)
-        # The supervisor's own ready file holds the child's group once the promotion loop
-        # is running; the press must land inside that loop, not before the child exists.
-        state = tmp_path / "state" / "ai-cli-utils"
-        deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
-        while time.monotonic() < deadline and not any(
-            path.read_text(encoding="utf-8").strip() for path in state.glob("child-ready.*")
-        ):
-            if process.poll() is not None:
-                pytest.fail(f"supervisor exited before its promotion loop: {_communicate_supervisor(process)!r}")
-            time.sleep(0.02)
-        os.kill(process.pid, signal.SIGINT)
-        stdout, stderr = _communicate_supervisor(process)
-
-        assert "interrupted before the session shell reached the terminal foreground" in stderr, stderr
-        events = (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
-        cleanup_events = [event for event in events if event.startswith("if-shell -F -t $1 ")]
-        assert cleanup_events, f"a Ctrl+C during a child's start left its tmux session up: {events!r}"
-        assert cleanup_events[0].endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
-        assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
+        yield slave_name
     finally:
-        if "process" in locals() and process.poll() is None:
-            # The tree, not the supervisor's group: the child it is promoting is in a group of
-            # its own, which a group kill misses and orphans (AI-CLI-ozid).
-            reap_tree(process)
         owner.kill()
         owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)
+
+
+def _start_supervisor_on(slave_name: str, tmp_path: Path, shell: str, **options) -> subprocess.Popen[str]:
+    slave_fd = os.open(slave_name, os.O_RDWR)
+    try:
+        process, _, _ = _start_generated_supervisor(
+            tmp_path, shell, stdin_fd=slave_fd, wait_for_child_ready=False, **options
+        )
+    finally:
+        os.close(slave_fd)
+    return process
+
+
+def _wait_for_child_report(tmp_path: Path, process: subprocess.Popen[str]) -> None:
+    """Wait until the supervisor's ready file holds the group its child reported."""
+    state = tmp_path / "state" / "ai-cli-utils"
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if any(path.read_text(encoding="utf-8").strip() for path in state.glob("child-ready.*")):
+            return
+        if process.poll() is not None:
+            pytest.fail(f"supervisor exited before its child reported: {_communicate_supervisor(process)!r}")
+        time.sleep(0.02)
+    pytest.fail("the supervisor's child never reported its process group")
+
+
+def _assert_interrupt_tore_down_the_session(tmp_path: Path, process: subprocess.Popen[str]) -> None:
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert "interrupted before the session shell reached the terminal foreground" in stderr, stderr
+    events = (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+    cleanup_events = [event for event in events if event.startswith("if-shell -F -t $1 ")]
+    assert cleanup_events, f"a Ctrl+C during a child's start left its tmux session up: {events!r}"
+    assert cleanup_events[0].endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
+    assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
+
+
+def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it_tears_down_its_tmux_session(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A Ctrl+C while a child is still being started is a deliberate stop (AI-CLI-5t3j).
+
+    Between children (an `ai` update reload, a restart after a normal exit) only the
+    supervisor sees Ctrl+C, and a press before promotion returns 2. The supervisor used to
+    `exit 1` there, skipping the fenced `kill-session` a final exit runs. The window keeps
+    `remain-on-exit on`, so the pane stayed up dead: keystrokes went nowhere and the tmux
+    session was never removed. The pty is owned by another session, as in the promotion
+    failure test above, so the promotion loop keeps retrying until the press arrives.
+    """
+    with _terminal_owned_elsewhere() as slave_name:
+        process = _start_supervisor_on(
+            slave_name,
+            tmp_path,
+            supported_session_shell,
+            # As long as this test waits for the loop to start, so the press it sends once
+            # the child reports still lands inside the loop on a loaded host.
+            promotion_budget_seconds=DEFAULT_WAIT_SECONDS,
+        )
+        try:
+            # The press must land once the child exists, not before.
+            _wait_for_child_report(tmp_path, process)
+            os.kill(process.pid, signal.SIGINT)
+            _assert_interrupt_tore_down_the_session(tmp_path, process)
+        finally:
+            if process.poll() is None:
+                # The tree, not the supervisor's group: the child it is promoting is in a group of
+                # its own, which a group kill misses and orphans (AI-CLI-ozid).
+                reap_tree(process)
+
+
+def test_given_ctrl_c_after_the_child_reports_but_before_promotion_starts_when_supervised_then_it_is_an_interrupt(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A Ctrl+C that lands between a child's spawn and its promotion loop still counts.
+
+    The loop compared the INT count against a baseline it took on entry. The child is
+    spawned in the background first, so on a loaded host it could report its group, and a
+    press could be counted, before the supervisor reached that line: the baseline then
+    already held the press, the loop retried for its whole budget, and the supervisor
+    reported a promotion failure, or outlived the test's wait as one CI run measured. The
+    gap is held open here until the press is in, so the order is fixed rather than raced.
+    """
+    pressed = tmp_path / "pressed"
+    with _terminal_owned_elsewhere() as slave_name:
+        process = _start_supervisor_on(
+            slave_name,
+            tmp_path,
+            supported_session_shell,
+            promotion_budget_seconds=10,
+            after_child_spawn=f"        while [ ! -e {shlex.quote(str(pressed))} ]; do sleep 0.01; done",
+        )
+        try:
+            _wait_for_child_report(tmp_path, process)
+            os.kill(process.pid, signal.SIGINT)
+            pressed.touch()
+            _assert_interrupt_tore_down_the_session(tmp_path, process)
+        finally:
+            if process.poll() is None:
+                reap_tree(process)
 
 
 _FAILING_SUPERVISOR_TEST = """
