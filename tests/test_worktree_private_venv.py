@@ -27,12 +27,17 @@ from pathlib import Path
 log = Path(os.environ["FAKE_UV_LOG"])
 with log.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(),
-                             "venv": os.environ.get("VIRTUAL_ENV")}) + "\\n")
+                             "venv": os.environ.get("VIRTUAL_ENV"),
+                             "project": os.environ.get("UV_PROJECT"),
+                             "workdir": os.environ.get("UV_WORKING_DIR")}) + "\\n")
 if os.environ.get("FAKE_UV_FAIL"):
     sys.stderr.write("error: failed to resolve the project\\n")
     sys.exit(2)
 venv = Path(os.getcwd()) / ".venv"
 venv.mkdir()
+if os.environ.get("FAKE_UV_FAIL_AFTER_CREATE"):
+    sys.stderr.write("error: failed to install a package\\n")
+    sys.exit(1)
 (venv / "pyvenv.cfg").write_text("home = /usr/bin\\n", encoding="utf-8")
 """
 
@@ -82,6 +87,8 @@ def fake_uv(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_UV_LOG", str(log))
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "myproject" / ".venv"))
+    monkeypatch.setenv("UV_PROJECT", str(tmp_path / "myproject"))
+    monkeypatch.setenv("UV_WORKING_DIR", str(tmp_path / "myproject"))
     return log
 
 
@@ -108,8 +115,11 @@ def test_given_a_uv_locked_project_when_a_session_worktree_is_created_then_it_ge
     calls = _calls(fake_uv)
     assert [call["argv"] for call in calls] == [["sync", "--frozen"]]
     assert Path(calls[0]["cwd"]).resolve() == slot.resolve()
-    # An activated environment would otherwise be where uv installs.
+    # An activated environment, or a project or directory uv was pointed at, would otherwise
+    # decide where uv installs.
     assert calls[0]["venv"] is None
+    assert calls[0]["project"] is None
+    assert calls[0]["workdir"] is None
 
 
 def test_given_two_session_worktrees_when_one_environment_changes_then_the_other_and_main_do_not(repo, fake_uv):
@@ -182,3 +192,25 @@ def test_given_a_reused_worktree_with_its_own_venv_when_relaunched_then_it_is_le
     assert again == slot
     assert (slot / ".venv" / "kept.txt").exists()
     assert len(_calls(fake_uv)) == 1
+
+
+def test_given_a_sync_that_failed_after_creating_the_venv_when_relaunched_then_it_is_rebuilt(
+    repo, fake_uv, monkeypatch
+):
+    monkeypatch.setenv("FAKE_UV_FAIL_AFTER_CREATE", "1")
+    with pytest.raises(RuntimeError):
+        create_worktree("session-1", repo_root=repo)
+    monkeypatch.delenv("FAKE_UV_FAIL_AFTER_CREATE")
+
+    slot = create_worktree("session-1", repo_root=repo)
+
+    assert slot is not None
+    assert (slot / ".venv" / "pyvenv.cfg").is_file()
+    assert len(_calls(fake_uv)) == 2  # the incomplete environment is not taken as finished
+
+
+@pytest.mark.parametrize("value", ["inf", "nan", "-5", "0", "true", '"10"'])
+def test_given_an_unusable_sync_timeout_when_read_then_the_default_bounds_the_sync(value):
+    _write_config(f"[worktree]\nvenv_sync_timeout_seconds = {value}\n")
+
+    assert config.get_worktree_venv_sync_timeout() == config.DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
