@@ -29,6 +29,29 @@ def test_given_a_legacy_slot_when_launched_noninteractively_then_it_is_not_migra
     assert not (slot["repo"] / ".worktrees" / NEW).exists()
 
 
+def test_given_a_migrated_index_with_no_destination_when_launched_then_the_old_slot_is_not_recreated(slot):
+    destination = "myrepo-box-4"
+    ledger = slot["state"] / MIGRATION_LEDGER
+    ledger.write_text(
+        json.dumps(
+            {
+                "old": NEW,
+                "new": destination,
+                "repo": str(slot["repo"]),
+                "worktree": str(slot["repo"] / ".worktrees" / destination),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    code, out, err, launched = _launch(slot, NEW)
+
+    assert code == 1, out + err
+    assert launched == []
+    assert f"ai migrate-session -s -a {NEW}" in err
+
+
 @pytest.mark.usefixtures("interactive_terminal")
 def test_given_auto_migrate_disabled_when_legacy_slot_is_launched_then_it_prints_the_manual_command(slot):
     code, out, err, launched = _launch(slot, config={"naming": {"auto_migrate": False}})
