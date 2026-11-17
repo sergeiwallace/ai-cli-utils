@@ -15,3 +15,8 @@
   keeps a Circus watcher whose command no longer exists; remove it once with
   `circusctl --endpoint ipc://<state dir>/circus.endpoint rm quota-watch`, where the state dir is
   ai-cli's state directory (for example `~/.local/state/ai-cli-utils`).
+- The statusline now stamps each quota window with its own observation time
+  (`seven_day_updated_at`, `five_hour_updated_at`) and writes every reading, unchanged ones
+  included. A window missing from a payload keeps its last value and its old time, so it ages out
+  instead of reading as fresh. Before this, `ai quota publish` found no per-window time in the
+  file the statusline wrote and published nothing.
