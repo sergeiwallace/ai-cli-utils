@@ -742,9 +742,8 @@ class TestRemoteSessionIterm2Emit:
                 cli()
 
         remote_command = captured["mosh_args"][-1]
-        # The remote side's own log lines are copied there; stderr stays on the terminal so its
-        # progress is seen while it works, and a nonzero status is recorded beside the file.
-        assert 'export AI_CLI_REMOTE_DIAGNOSTIC_FILE="$diagnostic_file"' in remote_command
+        # Stderr is copied while it is shown, and a nonzero status is recorded beside it.
+        assert 'tee "$diagnostic_file" >&2' in remote_command
         assert '2>"$diagnostic_file"' not in remote_command
         assert '"$diagnostic_file.status"' in remote_command
         assert 'rm -f "$diagnostic_file"' in remote_command
