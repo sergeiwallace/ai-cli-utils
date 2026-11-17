@@ -27,6 +27,10 @@ import click
 if __package__:
     from . import wiki_build
 else:  # run as `python scripts/generate_docs.py`
+    # Document this checkout's commands, not whichever checkout the venv's editable install
+    # last pointed at. Worktrees can share one venv, and a sync in one re-points that install
+    # at its own source, so `uv run --no-sync` here would import another worktree's code.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     import wiki_build
 
 REPO = Path(__file__).resolve().parents[1]
