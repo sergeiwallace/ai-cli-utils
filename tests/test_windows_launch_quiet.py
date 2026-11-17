@@ -70,6 +70,9 @@ def _dry_run(capsys, *flags: str) -> str:
             ("ai_cli.session.is_current_project_resolved", {"return_value": True}),
             ("ai_cli.session.build_session_name", {"return_value": ("c-myproject-7", "myproject-7")}),
             ("ai_cli.main.os.execvp", {"side_effect": AssertionError("a dry run must not exec")}),
+            # The checkout this runs in may carry an .envrc on a runner without direnv; that
+            # warning belongs to direnv, not to the tmux and pty behaviour under test here.
+            ("ai_cli.direnv_setup.is_bypassed", {"return_value": True}),
         ]:
             stack.enter_context(patch(target, **kwargs))
         with pytest.raises(SystemExit) as exc_info:
