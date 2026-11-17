@@ -1,4 +1,4 @@
-"""Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
+"""Tests for quota tracking: statusline rendering, snapshot publishing, sync, status and record."""
 
 import os
 import re
@@ -10,325 +10,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import psutil
 import pytest
 
-import ai_cli.quota as quota_module
 from ai_cli.quota import (
     EX_CONFIG,
     EX_TEMPFAIL,
     QuotaSnapshot,
-    _get_claude_usage_snapshot,
-    _get_usage_via_print_mode,
-    _maybe_trigger_background_scrape,
-    _parse_reset_datetime,
-    _parse_usage_output,
     _publish_quota_snapshot,
-    _run_nats_quota_listener,
-    _scrape_usage_hidden_pane,
     _try_read_kv_snapshot,
     quota_history,
     quota_record,
-    quota_scrape,
     quota_status,
     quota_statusline_part,
     quota_sync_from_remote,
-    reap_cc_update_staging,
 )
-from ai_cli.tmux_ownership import TmuxSessionIdentity
-
-# --- _parse_usage_output ---
-
-
-class TestParseUsageOutput:
-    # Actual /usage output format: label on one line, progress bar + % on next line.
-    _REAL_USAGE_OUTPUT = (
-        "  Current session    \n"
-        "  ██                                                 4% used\n\n"
-        "  Current week (all models)\n"
-        "  █████████████                                      26% used\n\n"
-        "  Current week (Sonnet only)\n"
-        "  ████████████                                       24% used\n\n"
-        "  Extra usage\n"
-        "  Extra usage not enabled · /extra-usage to enable\n"
-    )
-
-    def test_when_real_multiline_format_then_all_parsed(self):
-        snap = _parse_usage_output(self._REAL_USAGE_OUTPUT)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 26.0
-        assert snap.session_pct == 4.0
-        assert snap.weekly_sonnet_pct == 24.0
-        assert snap.extra_pct == 0.0
-
-    # CC v2.1.207 replaced "Current week (Sonnet only)" with a per-model
-    # secondary line whose label is now a model NAME ("Fable"), with NO progress bar
-    # before "N% used". The old hardcoded "Sonnet only" regex matched nothing, so
-    # weekly_sonnet_pct went permanently None and the statusline dropped it.
-    _REAL_FABLE_OUTPUT = (
-        "  Current session\n"
-        "  ██████████████████                                 36% used\n"
-        "  Resets 7:59pm (America/New_York)\n\n"
-        "  Current week (all models)\n"
-        "  ██████                                             12% used\n"
-        "  Resets Jul 14 at 1:59pm (America/New_York)\n\n"
-        "  Current week (Fable)\n"
-        "                                                     0% used\n"
-    )
-
-    def test_when_fable_secondary_line_then_parsed_generically(self):
-        snap = _parse_usage_output(self._REAL_FABLE_OUTPUT)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 12.0
-        assert snap.session_pct == 36.0
-        # Secondary per-model weekly line parsed generically (label != "all models"):
-        assert snap.weekly_sonnet_pct == 0.0
-        assert snap.weekly_model_name == "Fable"
-
-    def test_when_legacy_sonnet_only_then_model_name_captured(self):
-        # Back-compat: the old "Sonnet only" label still parses, and its name is captured.
-        snap = _parse_usage_output(self._REAL_USAGE_OUTPUT)
-        assert snap is not None
-        assert snap.weekly_sonnet_pct == 24.0
-        assert snap.weekly_model_name == "Sonnet only"
-
-    def test_when_no_secondary_weekly_line_then_model_name_none(self):
-        output = "  Current week (all models)\n  █████                                              40% used\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 40.0
-        assert snap.weekly_sonnet_pct is None
-        assert snap.weekly_model_name is None
-
-    def test_when_all_models_label_not_mistaken_for_secondary(self):
-        # The "all models" aggregate must never be captured as the secondary model line.
-        snap = _parse_usage_output(self._REAL_FABLE_OUTPUT)
-        assert snap is not None
-        assert snap.weekly_model_name != "all models"
-
-    def test_when_all_fields_present_then_all_parsed(self):
-        output = (
-            "Current session: 12% used\n"
-            "Current week (all models): 86% used\n"
-            "Current week (Sonnet only): 49% used\n"
-            "Extra usage not enabled\n"
-        )
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 86.0
-        assert snap.session_pct == 12.0
-        assert snap.weekly_sonnet_pct == 49.0
-        assert snap.extra_pct == 0.0
-
-    def test_when_extra_usage_has_percent_then_parsed(self):
-        output = "Current week (all models): 70% used\nExtra usage: 15% used\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.extra_pct == 15.0
-
-    def test_when_weekly_all_models_missing_then_returns_none(self):
-        output = "Current session: 12% used\nExtra usage not enabled\n"
-        assert _parse_usage_output(output) is None
-
-    def test_when_optional_fields_absent_then_none(self):
-        output = "Current week (all models): 55% used\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.session_pct is None
-        assert snap.weekly_sonnet_pct is None
-        assert snap.extra_pct is None
-
-    def test_when_decimal_percentages_then_parsed_correctly(self):
-        output = "Current week (all models): 72.5% used\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 72.5
-
-    def test_when_cc_2114_format_with_scanning_and_disclaimer_then_parsed(self):
-        """CC v2.1.114+ always shows 'does not include other devices' and
-        'Scanning local sessions' in the contributing-factors section, even when
-        the main weekly figure is valid API data.  Both must be ignored."""
-        output = (
-            "  Current week (all models)\n"
-            "  █████████████                                      26% used\n"
-            "  Resets Apr 23 at 3pm (America/New_York)\n\n"
-            "  What's contributing to your limits usage?\n"
-            "  Approximate, based on local sessions on this \n"
-            "  machine — does not include other devices or claude.ai\n"
-            "  Scanning local sessions…\n"
-        )
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 26.0
-
-    def test_when_disclaimer_only_no_scanning_then_parsed(self):
-        """'does not include other devices' in the detail section must not block
-        parsing of the headline weekly figure."""
-        output = (
-            "  Current week (all models)\n"
-            "  █                                                  3% used\n\n"
-            "  Approximate, based on local sessions on this \n"
-            "  machine — does not include other devices or claude.ai\n"
-        )
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 3.0
-
-    def test_when_scanning_without_weekly_section_then_returns_none(self):
-        """Return None when 'Current week (all models)' line has not rendered yet."""
-        output = "  Loading usage data…\n  Scanning local sessions…\n"
-        assert _parse_usage_output(output) is None
-
-    def test_when_real_account_data_without_disclaimer_then_parsed(self):
-        """Clean API data (no disclaimers) is always accepted."""
-        output = "  Current week (all models)\n  ████████████████   42% used\n\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 42.0
-
-    def test_when_scanning_with_weekly_section_then_parsed(self):
-        """'Scanning local sessions' in the detail section must not block parsing
-        when the weekly headline is already present."""
-        output = "  Current week (all models)\n  ████████████████   4% used\n\n  Scanning local sessions…\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 4.0
-
-
-# --- _parse_reset_datetime ---
-
-
-class TestParseResetDatetime:
-    # --- Real CC format: time-only label embedded in week row ---
-
-    def test_when_real_cc_format_with_minutes_then_returns_future_utc(self):
-        # "Current week (all models) · Resets 6:59am" — no date, no timezone
-        # The minute component (:59) must be preserved; UTC hour varies by local TZ.
-        text = "  Current week (all models) · Resets 6:59am \n  65% used\n"
-        result = _parse_reset_datetime(text)
-        assert result is not None
-        # Minutes must be preserved regardless of local timezone
-        assert ":59:00Z" in result
-        # Must be in the future
-        from datetime import datetime
-
-        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) > datetime.now(UTC)
-
-    def test_when_real_cc_format_hour_only_pm_then_returns_future_utc(self):
-        # "Resets 11pm" — no minutes, no date, no timezone
-        text = "  Current week (all models) · Resets 11pm \n  65% used\n"
-        result = _parse_reset_datetime(text)
-        assert result is not None
-        # Local midnight → UTC time should be in the future
-        from datetime import datetime
-
-        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) > datetime.now(UTC)
-
-    def test_when_no_all_models_line_then_returns_none(self):
-        # "Current week (Sonnet only) · Resets 11pm" — not the all-models row, skip it
-        text = "  Current week (Sonnet only) · Resets 11pm \n  78% used\n"
-        assert _parse_reset_datetime(text) is None
-
-    def test_when_no_reset_label_then_returns_none(self):
-        text = "Current week (all models): 64% used\n"
-        assert _parse_reset_datetime(text) is None
-
-    # --- Fallback: standalone full date+time line (future-proofing) ---
-
-    def test_when_full_format_with_year_and_est_then_converts_to_utc(self):
-        text = "Resets April 18, 2026 at 6:59 AM EST"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T11:59:00Z"
-
-    def test_when_full_format_with_edt_then_converts_to_utc(self):
-        text = "Resets April 18, 2026 at 6:59 AM EDT"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T10:59:00Z"
-
-    def test_when_utc_timezone_then_no_offset(self):
-        text = "Resets April 18, 2026 at 11:59 PM UTC"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T23:59:00Z"
-
-    # --- CC v2.1.112 IANA timezone format ---
-    # These tests use year-less dates; mock datetime.now so the year-inference
-    # logic always resolves to the current-year candidate rather than rolling
-    # forward to next year when the test date has already passed.
-
-    def test_when_iana_format_with_hour_only_then_converts_to_utc(self):
-        # "Resets Apr 23 at 3pm (America/New_York)" — CC v2.1.112 format
-        # Apr 23 is in EDT (UTC-4), so 3pm EDT = 19:00 UTC.
-        text = "Resets Apr 23 at 3pm (America/New_York)            3% used"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
-        with patch("datetime.datetime") as MockDT:
-            MockDT.now.return_value = _before_apr23
-            MockDT.side_effect = datetime
-            result = _parse_reset_datetime(text)
-        assert result is not None
-        assert result == "2026-04-23T19:00:00Z"
-
-    def test_when_iana_format_with_minutes_then_converts_to_utc(self):
-        # "Resets Apr 23 at 3:30pm (America/New_York)"
-        text = "Resets Apr 23 at 3:30pm (America/New_York)"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
-        with patch("datetime.datetime") as MockDT:
-            MockDT.now.return_value = _before_apr23
-            MockDT.side_effect = datetime
-            result = _parse_reset_datetime(text)
-        assert result is not None
-        assert result == "2026-04-23T19:30:00Z"
-
-    def test_when_iana_format_utc_then_no_offset(self):
-        text = "Resets Apr 23 at 7pm (UTC)"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
-        with patch("datetime.datetime") as MockDT:
-            MockDT.now.return_value = _before_apr23
-            MockDT.side_effect = datetime
-            result = _parse_reset_datetime(text)
-        assert result is not None
-        assert result == "2026-04-23T19:00:00Z"
-
-    # --- Integration: _parse_usage_output ---
-
-    def test_parse_usage_output_captures_reset_at_from_real_format(self):
-        output = (
-            "  Current week (all models) · Resets 6:59am \n"
-            "  ████████████████   65% used\n\n"
-            "  Current week (Sonnet only) · Resets 11pm \n"
-            "  78% used\n"
-        )
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.reset_at is not None
-        # Must be a valid UTC ISO string in the future
-        from datetime import datetime
-
-        dt = datetime.strptime(snap.reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        assert dt > datetime.now(UTC)
-
-    def test_parse_usage_output_reset_at_none_when_absent(self):
-        output = "Current week (all models): 64% used\n"
-        snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.reset_at is None
-
-    def test_parse_usage_output_captures_reset_at_from_v2112_format(self):
-        """CC v2.1.112 format: IANA timezone in parens, reset date on separate line."""
-        output = (
-            "  Current week (all models)\n"
-            "  Resets Apr 23 at 3pm (America/New_York)            3% used\n"
-            "  Current week (Sonnet only)\n"
-            "  Resets Apr 23 at 3pm (America/New_York)            5% used\n"
-        )
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
-        with patch("datetime.datetime") as MockDT:
-            MockDT.now.return_value = _before_apr23
-            MockDT.side_effect = datetime
-            snap = _parse_usage_output(output)
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 3.0
-        assert snap.reset_at == "2026-04-23T19:00:00Z"
-
 
 # --- _parse_reset_datetime anchor persistence ---
 
@@ -409,668 +104,12 @@ class TestResetAnchorPersistence:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
 
-# --- CC auto-update staging leak (AI-CLI-131) ---
-
-
-class TestCcUpdateStagingLeak:
-    """The scrape kills its CC session ~15s after launch, which truncates any update
-    download CC started and orphans the partial binary. On the Hetzner box that reached
-    402 entries / 23 GB under the */10 cron, taking the disk to 0 bytes free.
-    """
-
-    @pytest.fixture
-    def staging(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-        d = tmp_path / "claude" / "staging"
-        d.mkdir(parents=True)
-        return d
-
-    def _entry(self, staging: Path, name: str, age_s: float, size: int = 1024) -> Path:
-        d = staging / name
-        d.mkdir()
-        (d / "claude").write_bytes(b"\0" * size)
-        t = time.time() - age_s
-        os.utime(d, (t, t))
-        return d
-
-    def test_given_cc_session_when_scrape_launches_it_then_autoupdater_is_disabled(self):
-        """Root cause: CC must not start a background download it will be killed mid-way
-        through. The launch command has to carry DISABLE_AUTOUPDATER=1."""
-        sent = []
-
-        def fake_run(cmd, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            r.stdout = "$42\n" if cmd[0] == "tmux" and cmd[1] == "new-session" else ""
-            if cmd[0] == "tmux" and cmd[1] == "send-keys":
-                sent.append(cmd[4])
-            return r
-
-        identity = TmuxSessionIdentity("$42", "ai-quota-scrape-test", "test-generation")
-        with (
-            patch("subprocess.run", side_effect=fake_run),
-            patch("time.sleep"),
-            patch("ai_cli.quota.capture_tmux_session_identity", return_value=identity),
-            patch("ai_cli.quota.kill_owned_tmux_session", return_value=True),
-        ):
-            _scrape_usage_hidden_pane()
-
-        launch = [s for s in sent if "claude" in s]
-        assert launch, "scrape never launched claude"
-        assert launch[0] == "DISABLE_AUTOUPDATER=1 claude --dangerously-skip-permissions"
-
-    def test_given_stale_orphaned_entries_when_reaping_then_all_removed(self, staging):
-        for i in range(5):
-            self._entry(staging, f"2.1.220.{100 + i}.178500000000{i}", age_s=7200)
-
-        assert reap_cc_update_staging() == 5
-        assert list(staging.iterdir()) == []
-
-    def test_given_download_still_in_flight_when_reaping_then_it_survives(self, staging):
-        """A real download takes minutes; reaping one mid-write would break another
-        session's update. Only entries idle past the age bound may go."""
-        self._entry(staging, "2.1.220.4242.1785000000000", age_s=30)
-
-        assert reap_cc_update_staging() == 0
-        assert (staging / "2.1.220.4242.1785000000000").exists()
-
-    def test_given_unrecognised_sibling_when_reaping_then_it_survives(self, staging):
-        """The reaper deletes only what it positively recognises as a staging entry."""
-        other = staging / "locks"
-        other.mkdir()
-        (other / "cc.lock").write_text("held")
-        os.utime(other, (time.time() - 99999, time.time() - 99999))
-
-        assert reap_cc_update_staging() == 0
-        assert (other / "cc.lock").exists()
-
-    def test_given_no_staging_dir_when_reaping_then_returns_zero_without_raising(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "nonexistent"))
-
-        assert reap_cc_update_staging() == 0
-
-    def test_given_stale_entries_when_scrape_runs_then_they_are_reaped(self, staging):
-        """The guard must be wired into the scrape, not merely importable — an unreferenced
-        reaper would leave the box growing exactly as before."""
-        for i in range(3):
-            self._entry(staging, f"2.1.220.{200 + i}.178500000100{i}", age_s=7200)
-
-        fail = MagicMock()
-        fail.returncode = 1
-        with patch("subprocess.run", return_value=fail), patch("time.sleep"):
-            _scrape_usage_hidden_pane()
-
-        assert list(staging.iterdir()) == []
-
-    def test_given_reap_fails_when_scrape_runs_then_snapshot_still_returned(self, staging):
-        """Bounding disk must never cost a scrape."""
-        self._entry(staging, "2.1.220.300.1785000002000", age_s=7200)
-
-        with patch("ai_cli.quota.shutil.rmtree", side_effect=OSError("read-only fs")):
-            assert reap_cc_update_staging() == 0
-
-
-# --- _scrape_usage_hidden_pane ---
-
-
-class TestScrapeUsageHiddenPane:
-    @pytest.fixture(autouse=True)
-    def _managed_scrape_identity(self):
-        identity = TmuxSessionIdentity("$42", "ai-quota-scrape-test", "test-generation")
-        with (
-            patch("ai_cli.quota.capture_tmux_session_identity", return_value=identity) as capture,
-            patch("ai_cli.quota.kill_owned_tmux_session", return_value=True) as kill,
-        ):
-            self.capture_identity = capture
-            self.kill_owned = kill
-            yield
-
-    def _make_cap_result(self, stdout: str, returncode: int = 0) -> MagicMock:
-        r = MagicMock()
-        r.returncode = returncode
-        r.stdout = stdout
-        return r
-
-    def test_when_tmux_new_session_fails_then_returns_none(self):
-        ok = MagicMock()
-        ok.returncode = 0
-        fail = MagicMock()
-        fail.returncode = 1
-
-        def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return fail
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run):
-            result = _scrape_usage_hidden_pane()
-        assert result is None
-
-    def test_given_identity_capture_failure_after_marking_when_scrape_runs_then_created_session_is_killed(self):
-        new_session = MagicMock(returncode=0, stdout="$99\n")
-        ok = MagicMock(returncode=0)
-
-        def fake_run(cmd, **kwargs):
-            if cmd[1] == "new-session":
-                return new_session
-            return ok
-
-        with (
-            patch("subprocess.run", side_effect=fake_run),
-            patch("ai_cli.quota.capture_tmux_session_identity", return_value=None),
-        ):
-            result = _scrape_usage_hidden_pane()
-
-        assert result is None
-        fallback_identity = self.kill_owned.call_args.args[0]
-        assert fallback_identity.session_id == "$99"
-        assert fallback_identity.session_name.startswith(f"ai-quota-scrape-{os.getpid()}-")
-        assert self.kill_owned.call_args.kwargs == {"terminate_pane_processes": True}
-
-    def test_given_stale_and_live_scrape_sessions_when_scrape_starts_then_only_stale_session_is_reaped(self):
-        stale_identity = TmuxSessionIdentity("$7", "ai-quota-scrape-2147483647-deadgen", "dead-generation")
-        sessions = MagicMock(
-            returncode=0,
-            stdout=(
-                "$7\tai-quota-scrape-2147483647-deadgen\n"
-                f"$8\tai-quota-scrape-{os.getpid()}-livegen\n"
-                "$9\tunrelated-session\n"
-            ),
-        )
-        new_session_failure = MagicMock(returncode=1)
-
-        def fake_run(cmd, **kwargs):
-            if cmd[1] == "list-sessions":
-                return sessions
-            if cmd[1] == "new-session":
-                return new_session_failure
-            raise AssertionError(f"unexpected command: {cmd}")
-
-        with (
-            patch("subprocess.run", side_effect=fake_run),
-            patch("ai_cli.quota.capture_tmux_session_identity", return_value=stale_identity),
-        ):
-            assert _scrape_usage_hidden_pane() is None
-
-        self.kill_owned.assert_called_once_with(stale_identity, terminate_pane_processes=True)
-
-    def test_given_unavailable_or_unprovable_session_metadata_when_reaping_then_sessions_are_left_untouched(self):
-        unavailable = OSError("tmux unavailable")
-        with patch("ai_cli.quota.subprocess.run", side_effect=unavailable):
-            assert quota_module._reap_abandoned_quota_sessions() == 0
-
-        malformed = MagicMock(returncode=0, stdout="$7\tai-quota-scrape-not-a-pid-token\n")
-        with (
-            patch("ai_cli.quota.subprocess.run", return_value=malformed),
-            patch("ai_cli.quota.capture_tmux_session_identity") as capture,
-        ):
-            assert quota_module._reap_abandoned_quota_sessions() == 0
-        capture.assert_not_called()
-
-        permission_denied = MagicMock(returncode=0, stdout="$8\tai-quota-scrape-4242-token\n")
-        with (
-            patch("ai_cli.quota.subprocess.run", return_value=permission_denied),
-            patch("ai_cli.quota.psutil.Process", side_effect=psutil.AccessDenied(4242)),
-            patch("ai_cli.quota.capture_tmux_session_identity") as capture,
-        ):
-            assert quota_module._reap_abandoned_quota_sessions() == 0
-        capture.assert_not_called()
-
-    def _make_new_session_result(self) -> MagicMock:
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = "$99\n"
-        return r
-
-    def test_given_session_replaced_before_ownership_mark_when_scraping_then_marker_uses_created_opaque_id(self):
-        """The scrape marker must target the ID emitted by ``new-session``, not its name."""
-        new_sess = self._make_new_session_result()
-        ok = MagicMock(returncode=0)
-        targets: list[str] = []
-
-        def fake_run(cmd, **kwargs):
-            if cmd[1] == "new-session":
-                return new_sess
-            if cmd[1] == "set-option" and "@ai_cli_session_generation" in cmd:
-                targets.append(cmd[cmd.index("-t") + 1])
-                return ok
-            if cmd[1] == "capture-pane":
-                return self._make_cap_result("Starting...\n")
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            _scrape_usage_hidden_pane()
-
-        assert targets == ["$99"]
-        assert self.capture_identity.call_args.args == ("$99",)
-        assert self.capture_identity.call_args.kwargs["expected_generation"]
-
-    def test_when_cc_prompt_never_appears_then_returns_none(self):
-        """No ❯ in capture output → timeout → returns None."""
-        no_prompt = self._make_cap_result("Starting claude...\n")
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                return no_prompt
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-        assert result is None
-        self.kill_owned.assert_called_once()
-
-    def test_given_captured_identity_when_scrape_runs_then_opaque_session_id_is_targeted(self):
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-        targets_seen = []
-
-        def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                if "-t" in cmd:
-                    targets_seen.append(cmd[cmd.index("-t") + 1])
-                return self._make_cap_result("Starting...\n")  # never shows ❯ → timeout
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            _scrape_usage_hidden_pane()
-
-        assert targets_seen, "capture-pane must be called"
-        assert all(t == "$42" for t in targets_seen)
-
-    def test_given_scrape_start_when_session_is_created_then_name_is_unique_and_no_pre_kill_runs(self):
-        new_sess = self._make_new_session_result()
-        ok = MagicMock(returncode=0)
-        commands: list[list[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            commands.append(cmd)
-            if cmd[1] == "new-session":
-                return new_sess
-            if cmd[1] == "capture-pane":
-                return self._make_cap_result("Starting...\n")
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            _scrape_usage_hidden_pane()
-
-        created_name = next(cmd[cmd.index("-s") + 1] for cmd in commands if cmd[1] == "new-session")
-        assert created_name.startswith("ai-quota-scrape-")
-        assert created_name != "ai-quota-scrape"
-        assert not any(cmd[1] == "kill-session" for cmd in commands)
-
-    def test_when_usage_output_captured_then_returns_snapshot(self):
-        """Happy path: prompt appears, /usage output appears, snapshot returned."""
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        prompt_only = self._make_cap_result("❯\n")
-        # Use the real multi-line /usage format to verify regex + scraper work together.
-        usage_output = TestParseUsageOutput._REAL_USAGE_OUTPUT
-        cap_with_usage = self._make_cap_result(usage_output)
-
-        call_count = 0
-
-        def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                call_count += 1
-                if call_count <= 1:
-                    return prompt_only
-                return cap_with_usage
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert isinstance(result, QuotaSnapshot)
-        assert result.session_pct == 4.0
-        assert result.weekly_all_models_pct == 26.0
-        assert result.weekly_sonnet_pct == 24.0
-        assert result.extra_pct == 0.0
-
-    def test_when_data_arrives_returns_first_parseable_result(self):
-        """Scraper returns the first parseable result.
-
-        In CC v2.1.114+, the 'does not include other devices' disclaimer is always
-        present in the contributing-factors section and is no longer a signal that
-        the headline figure is a local-only estimate.  The scraper accepts the first
-        output that contains 'Current week (all models)' and '% used'.
-        """
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        prompt_output = self._make_cap_result("❯\n")
-        first_output = self._make_cap_result("Current week (all models): 1% used\ndoes not include other devices\n")
-
-        call_count = 0
-
-        def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                call_count += 1
-                if call_count == 1:
-                    return prompt_output
-                return first_output
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert isinstance(result, QuotaSnapshot), "should return a snapshot"
-        assert result.weekly_all_models_pct == 1.0, "should return first parseable result"
-
-    def test_when_only_local_estimate_available_then_falls_back_to_it(self):
-        """Scraper falls back to local-session estimate when API data never loads.
-
-        On machines where the quota API never responds in a hidden pane session
-        (e.g. Mac hidden pane sessions), the scraper exhausts its poll budget and
-        returns the best local-session estimate seen instead of None.
-        """
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        prompt_output = self._make_cap_result("❯\n")
-        # Local-sessions estimate that never transitions to real API data.
-        local_only_output = self._make_cap_result(
-            "Current week (all models)\n"
-            "Resets Apr 23 at 3pm (America/New_York)   3% used\n"
-            "does not include other devices or claude.ai\n"
-        )
-
-        call_count = 0
-
-        def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                call_count += 1
-                if call_count == 1:
-                    return prompt_output  # startup poll
-                return local_only_output  # all subsequent polls: local only
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert isinstance(result, QuotaSnapshot), "should fall back to local estimate, not None"
-        assert result.weekly_all_models_pct == 3.0, "should return the local session value"
-
-    def test_given_scrape_exception_when_cleanup_runs_then_owned_session_is_killed(self):
-        """Exception after identity capture must still clean up that identity."""
-
-        def fake_run(cmd, **kwargs):
-            if cmd[1] == "new-session":
-                return MagicMock(returncode=0, stdout="$42\n")
-            if cmd[1] == "set-option":
-                return MagicMock(returncode=0)
-            raise RuntimeError("tmux broken")
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert result is None
-        self.kill_owned.assert_called_once()
-
-    def test_window_size_latest_restored_after_resize(self):
-        """resize-window sets window-size=manual as a tmux side effect.
-
-        The scraper must call `set-option window-size latest` immediately after
-        resize-window so that iTerm2 pane resize keeps working in the host session.
-        """
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-        cmds_seen = []
-
-        def fake_run(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "tmux":
-                cmds_seen.append(cmd[1:])
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            _scrape_usage_hidden_pane()
-
-        resize_idx = next((i for i, c in enumerate(cmds_seen) if c[0] == "resize-window"), None)
-        restore_idx = next(
-            (i for i, c in enumerate(cmds_seen) if c[0] == "set-option" and "window-size" in c and "latest" in c),
-            None,
-        )
-        assert resize_idx is not None, "resize-window must be called"
-        assert restore_idx is not None, "set-option window-size latest must be called"
-        assert restore_idx == resize_idx + 1, "set-option window-size latest must follow resize-window immediately"
-
-    def test_when_sonnet_line_renders_after_all_models_then_waits_for_it(self):
-        """Scraper must not exit immediately if Sonnet % is absent on first valid parse.
-
-        CC renders 'Current week (all models)' before 'Current week (Sonnet only)'.
-        Without the grace-period, the scraper exits early and weekly_sonnet_pct is
-        silently dropped — the root cause of the intermittent Sonnet % bug (AI-CLI-82).
-        """
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        prompt_only = self._make_cap_result("❯\n")
-        all_models_only = self._make_cap_result("Current week (all models)\nResets May 5 at 3pm   26% used\n")
-        full_output = self._make_cap_result(
-            "Current week (all models)\nResets May 5 at 3pm   26% used\nCurrent week (Sonnet only)\n  24% used\n"
-        )
-
-        call_count = 0
-
-        def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                call_count += 1
-                if call_count == 1:
-                    return prompt_only
-                if call_count == 2:
-                    return all_models_only  # first valid parse — no Sonnet yet
-                return full_output  # grace-period poll — Sonnet now rendered
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert isinstance(result, QuotaSnapshot)
-        assert result.weekly_all_models_pct == 26.0
-        assert result.weekly_sonnet_pct == 24.0, "must wait for Sonnet line to render"
-
-    def test_when_sonnet_line_never_renders_then_returns_snapshot_without_it(self):
-        """Scraper must not block forever if account has no Sonnet quota line."""
-        new_sess = self._make_new_session_result()
-        ok = MagicMock()
-        ok.returncode = 0
-
-        prompt_only = self._make_cap_result("❯\n")
-        all_models_only = self._make_cap_result("Current week (all models)\nResets May 5 at 3pm   26% used\n")
-
-        call_count = 0
-
-        def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
-                return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                call_count += 1
-                if call_count == 1:
-                    return prompt_only
-                return all_models_only  # Sonnet line never appears
-            return ok
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            result = _scrape_usage_hidden_pane()
-
-        assert isinstance(result, QuotaSnapshot)
-        assert result.weekly_all_models_pct == 26.0
-        assert result.weekly_sonnet_pct is None, "no Sonnet line means weekly_sonnet_pct is None"
-
-
 # --- _get_claude_usage_snapshot ---
 
 
 # Real `claude -p /usage` print-mode output (CC v2.1.207): inline "label: N% used · resets"
 # form, per-model line always present. This is the deterministic replacement for the flaky
 # interactive-TUI scrape.
-_PRINT_MODE_USAGE_OUTPUT = (
-    "You are currently using your subscription to power your Claude Code usage\n\n"
-    "Current session: 4% used · resets Jul 13 at 5:30pm (America/New_York)\n"
-    "Current week (all models): 17% used · resets Jul 14 at 2pm (America/New_York)\n"
-    "Current week (Fable): 0% used\n\n"
-    "What's contributing to your limits usage?\n"
-)
-
-
-class TestGetUsageViaPrintMode:
-    def test_when_print_mode_output_then_parsed(self):
-        proc = MagicMock(returncode=0, stdout=_PRINT_MODE_USAGE_OUTPUT)
-        with patch("ai_cli.quota.subprocess.run", return_value=proc) as run:
-            snap = _get_usage_via_print_mode()
-        # Invoked non-interactively — no tmux, just `claude -p /usage`.
-        run.assert_called_once()
-        assert run.call_args.args[0] == ["claude", "-p", "/usage"]
-        assert snap is not None
-        assert snap.weekly_all_models_pct == 17.0
-        assert snap.session_pct == 4.0
-        assert snap.weekly_sonnet_pct == 0.0
-        assert snap.weekly_model_name == "Fable"
-
-    def test_when_nonzero_returncode_then_none(self):
-        proc = MagicMock(returncode=1, stdout="")
-        with patch("ai_cli.quota.subprocess.run", return_value=proc):
-            assert _get_usage_via_print_mode() is None
-
-    def test_when_no_percent_used_then_none(self):
-        proc = MagicMock(returncode=0, stdout="some unrelated output\n")
-        with patch("ai_cli.quota.subprocess.run", return_value=proc):
-            assert _get_usage_via_print_mode() is None
-
-    def test_when_subprocess_raises_then_none(self):
-        with patch("ai_cli.quota.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 30)):
-            assert _get_usage_via_print_mode() is None
-
-
-class TestGetClaudeUsageSnapshot:
-    def test_print_mode_retired_scrape_is_sole_path(self):
-        """Print mode is retired from the capture path (dead on CC 2.1.207); the
-        hidden-pane scrape is the sole fallback and is called without consulting print mode."""
-        snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode") as print_mode,
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
-        ):
-            result = _get_claude_usage_snapshot()
-        assert result is snap
-        scrape.assert_called_once()
-        print_mode.assert_not_called()
-
-    def test_when_print_mode_none_then_falls_back_to_scraper(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
-        ):
-            result = _get_claude_usage_snapshot()
-        assert result is snap
-        scrape.assert_called_once()
-
-    def test_when_both_none_then_returns_none(self):
-        with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
-        ):
-            assert _get_claude_usage_snapshot() is None
-
-
-# --- _notify_threshold ---
-
-
-class TestNotifyThreshold:
-    """Tests for _notify_threshold — formats quota alerts and calls Notifier.send()."""
-
-    def _make_snapshot(self, pct: float = 78.5) -> QuotaSnapshot:
-        return QuotaSnapshot(weekly_all_models_pct=pct, session_pct=12.0, weekly_sonnet_pct=40.0)
-
-    def test_when_threshold_90_then_urgent_priority(self):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 90, self._make_snapshot(91.0))
-        mock_notifier.send.assert_called_once()
-        _, kwargs = mock_notifier.send.call_args
-        assert kwargs.get("priority") == "urgent"
-
-    def test_when_threshold_75_then_high_priority(self):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 75, self._make_snapshot(76.0))
-        _, kwargs = mock_notifier.send.call_args
-        assert kwargs.get("priority") == "high"
-
-    def test_when_threshold_50_then_default_priority(self):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 50, self._make_snapshot(51.0))
-        _, kwargs = mock_notifier.send.call_args
-        assert kwargs.get("priority") == "default"
-
-    def test_when_threshold_90_then_slow_down_in_body(self):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 90, self._make_snapshot(92.0))
-        args, _ = mock_notifier.send.call_args
-        body = args[1]
-        assert "slow down" in body.lower()
-
-    def test_when_sonnet_and_session_present_then_included_in_body(self):
-        from ai_cli.quota import _notify_threshold
-
-        snap = QuotaSnapshot(weekly_all_models_pct=80.0, session_pct=15.0, weekly_sonnet_pct=50.0)
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 75, snap)
-        args, _ = mock_notifier.send.call_args
-        body = args[1]
-        assert "Sonnet" in body
-        assert "Session" in body
-
-    def test_when_source_is_quota_watch(self):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        _notify_threshold(mock_notifier, 75, self._make_snapshot())
-        _, kwargs = mock_notifier.send.call_args
-        assert kwargs.get("source") == "quota-watch"
-
-    def test_when_notifier_raises_then_no_crash(self, capsys):
-        from ai_cli.quota import _notify_threshold
-
-        mock_notifier = MagicMock()
-        mock_notifier.send.side_effect = RuntimeError("notifier error")
-        _notify_threshold(mock_notifier, 75, self._make_snapshot())  # must not raise
-        assert "notification failed" in capsys.readouterr().err
 
 
 # --- quota_record ---
@@ -1102,117 +141,6 @@ class TestQuotaRecord:
             row = conn.execute("SELECT cost_usd FROM usage_records").fetchone()
             conn.close()
             assert row["cost_usd"] == pytest.approx(0.75)
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
-
-# --- quota_scrape ---
-
-
-class TestQuotaScrape:
-    @pytest.fixture
-    def scrape_prerequisites_available(self):
-        """Make scraper-result tests independent of executables on the test runner's PATH."""
-        with patch("ai_cli.quota.shutil.which", return_value="/test/bin"):
-            yield
-
-    def test_given_no_output_when_scrape_runs_then_returns_ex_tempfail(self, scrape_prerequisites_available, capsys):
-        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
-            result = quota_scrape()
-        assert result == EX_TEMPFAIL
-        assert "Could not extract" in capsys.readouterr().err
-
-    @pytest.mark.parametrize("missing_binary", ["tmux", "claude"])
-    def test_given_missing_prerequisite_when_scrape_runs_then_returns_ex_config(self, missing_binary, capsys):
-        with (
-            patch(
-                "ai_cli.quota.shutil.which",
-                side_effect=lambda binary: None if binary == missing_binary else f"/bin/{binary}",
-            ),
-            patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
-        ):
-            result = quota_scrape()
-
-        assert result == EX_CONFIG
-        assert missing_binary in capsys.readouterr().err
-        scrape.assert_not_called()
-
-    def test_given_format_mismatch_when_scrape_runs_then_returns_ex_config(self, scrape_prerequisites_available):
-        def format_mismatch() -> None:
-            import ai_cli.quota as quota
-
-            quota._last_scrape_had_format_mismatch = True
-
-        with patch("ai_cli.quota._scrape_usage_hidden_pane", side_effect=format_mismatch):
-            result = quota_scrape()
-
-        assert result == EX_CONFIG
-
-    def test_given_stale_mismatch_flag_when_scrape_has_no_output_then_returns_ex_tempfail(
-        self, scrape_prerequisites_available
-    ):
-        import ai_cli.quota as quota
-
-        quota._last_scrape_had_format_mismatch = True
-        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
-            result = quota_scrape()
-
-        assert result == EX_TEMPFAIL
-
-    def test_when_scrape_succeeds_then_stores_snapshot_and_returns_0(
-        self, scrape_prerequisites_available, tmp_path, capsys
-    ):
-        import ai_cli.quota_db as qdb
-
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            snap = QuotaSnapshot(
-                weekly_all_models_pct=72.0,
-                session_pct=15.0,
-                weekly_sonnet_pct=38.0,
-                extra_pct=0.0,
-            )
-            with (
-                patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
-                patch("ai_cli.quota._publish_quota_snapshot") as mock_publish,
-            ):
-                result = quota_scrape()
-            assert result == 0
-            conn = qdb._get_conn()
-            row = conn.execute("SELECT usage_percent FROM quota_snapshots").fetchone()
-            conn.close()
-            assert row["usage_percent"] == 72.0
-            mock_publish.assert_called_once_with(snap)
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
-    def test_when_scrape_fails_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path):
-        """quota_scrape must always remove the lock file, even on failure."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
-        ):
-            quota_scrape()
-        assert not lock_path.exists()
-
-    def test_when_scrape_succeeds_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path, capsys):
-        """quota_scrape removes the lock file on success too."""
-        import ai_cli.quota_db as qdb
-
-        qdb.set_db_path(tmp_path / "quota.db")
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-        try:
-            snap = QuotaSnapshot(weekly_all_models_pct=50.0)
-            with (
-                patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-                patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
-                patch("ai_cli.quota._publish_quota_snapshot"),
-            ):
-                quota_scrape()
-            assert not lock_path.exists()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -1472,410 +400,10 @@ class TestQuotaHistory:
         assert "2026-04-04" in out
 
 
-# --- quota_watch ---
-
-
-class TestQuotaWatch:
-    def test_when_interrupt_then_returns_0(self):
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            mock_client.nc = MagicMock()
-
-        async def fake_close():
-            pass
-
-        mock_client.connect = fake_connect
-        mock_client.close = fake_close
-
-        def fake_sleep(_):
-            raise KeyboardInterrupt
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
-            patch("time.sleep", fake_sleep),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-        assert result == 0
-
-    def test_when_nats_unavailable_then_still_starts(self):
-        """NATS unavailable is no longer fatal — quota-watch runs with notifications only."""
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            pass
-
-        mock_client.connect = fake_connect
-
-        def fake_sleep(_):
-            raise KeyboardInterrupt
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
-            patch("time.sleep", fake_sleep),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-        assert result == 0
-
-    def test_when_usage_crosses_threshold_then_publishes_and_notifies(self):
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            mock_client.nc = MagicMock()
-
-        async def fake_publish(subject, payload):
-            pass
-
-        async def fake_close():
-            pass
-
-        mock_client.connect = fake_connect
-        mock_client.publish = MagicMock(side_effect=fake_publish)
-        mock_client.close = MagicMock(side_effect=fake_close)
-
-        call_count = 0
-
-        def fake_sleep(_):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                raise KeyboardInterrupt
-
-        snap = QuotaSnapshot(weekly_all_models_pct=80.0, session_pct=10.0)
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=snap),
-            patch("ai_cli.quota._notify_threshold") as mock_notify,
-            patch("time.sleep", fake_sleep),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-
-        assert result == 0
-        assert mock_client.publish.call_count >= 2
-        subjects = [call.args[0] for call in mock_client.publish.call_args_list]
-        assert "quota.threshold.50" in subjects
-        assert "quota.threshold.75" in subjects
-        assert mock_notify.call_count >= 2
-
-    def test_when_publish_raises_then_logs_error(self, capsys):
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            mock_client.nc = MagicMock()
-
-        async def fake_publish_raises(*args, **kwargs):
-            raise Exception("publish failed")
-
-        async def fake_close():
-            pass
-
-        mock_client.connect = fake_connect
-        mock_client.publish = MagicMock(side_effect=fake_publish_raises)
-        mock_client.close = MagicMock(side_effect=fake_close)
-
-        call_count = 0
-
-        def fake_sleep(_):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                raise KeyboardInterrupt
-
-        snap = QuotaSnapshot(weekly_all_models_pct=80.0)
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=snap),
-            patch("ai_cli.quota._notify_threshold"),
-            patch("time.sleep", fake_sleep),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-
-        assert result == 0
-        assert "failed to publish" in capsys.readouterr().err
-
-    def test_starts_nats_listener_thread_when_machine_is_set(self, monkeypatch):
-        """quota_watch starts the NATS listener daemon thread when AI_HOST is set."""
-        monkeypatch.setenv("AI_HOST", "hetzner")
-
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            pass
-
-        mock_client.connect = fake_connect
-
-        def fake_sleep(_):
-            raise KeyboardInterrupt
-
-        started_names = []
-
-        real_thread = __import__("threading").Thread
-
-        def capturing_thread(*args, **kwargs):
-            t = real_thread(*args, **kwargs)
-            started_names.append(kwargs.get("name", ""))
-            return t
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
-            patch("ai_cli.quota._run_nats_quota_listener"),
-            patch("time.sleep", fake_sleep),
-            patch("threading.Thread", side_effect=capturing_thread),
-        ):
-            from ai_cli.quota import quota_watch
-
-            quota_watch()
-
-        assert "nats-quota-listener" in started_names
-
-    def test_no_listener_thread_when_machine_is_empty(self, monkeypatch):
-        """quota_watch does NOT start the listener thread when AI_HOST is unset."""
-        monkeypatch.delenv("AI_HOST", raising=False)
-
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            pass
-
-        mock_client.connect = fake_connect
-
-        def fake_sleep(_):
-            raise KeyboardInterrupt
-
-        started_names = []
-        real_thread = __import__("threading").Thread
-
-        def capturing_thread(*args, **kwargs):
-            t = real_thread(*args, **kwargs)
-            started_names.append(kwargs.get("name", ""))
-            return t
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
-            patch("time.sleep", fake_sleep),
-            patch("threading.Thread", side_effect=capturing_thread),
-        ):
-            from ai_cli.quota import quota_watch
-
-            quota_watch()
-
-        assert "nats-quota-listener" not in started_names
-
-
 # --- _run_nats_quota_listener ---
 
 
-class TestRunNATSQuotaListener:
-    def _make_mock_client(self):
-        mock_client = MagicMock()
-        mock_client.nc = MagicMock()
-        mock_client.js = None
-
-        async def fake_connect():
-            pass
-
-        async def fake_close():
-            pass
-
-        mock_client.connect = fake_connect
-        mock_client.close = fake_close
-        return mock_client
-
-    def test_subscribes_to_machine_specific_subject(self):
-        """Listener subscribes to quota.scrape.request.{machine}."""
-        import threading
-
-        stop_event = threading.Event()
-        subscribed_subjects = []
-
-        mock_client = self._make_mock_client()
-
-        async def fake_subscribe(subject, cb):
-            subscribed_subjects.append(subject)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        async def fake_sleep(n):
-            stop_event.set()
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        assert "quota.scrape.request.hetzner" in subscribed_subjects
-
-    def test_launches_scrape_when_lock_absent(self, tmp_path):
-        """On scrape request, _launch_background_scrape called when no lock file."""
-        import threading
-
-        stop_event = threading.Event()
-        lock_path = tmp_path / "quota-scrape.lock"
-
-        mock_client = self._make_mock_client()
-        captured_cb = []
-
-        async def fake_subscribe(subject, cb):
-            captured_cb.append(cb)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        async def fake_sleep(n):
-            # Deliver a fake scrape request then stop
-            if captured_cb:
-                await captured_cb[0](MagicMock())
-            stop_event.set()
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        mock_launch.assert_called_once()
-
-    def test_skips_scrape_when_lock_exists(self, tmp_path):
-        """On scrape request, skip launch if lock file exists (scrape already running)."""
-        import threading
-
-        stop_event = threading.Event()
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-
-        mock_client = self._make_mock_client()
-        captured_cb = []
-
-        async def fake_subscribe(subject, cb):
-            captured_cb.append(cb)
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        async def fake_sleep(n):
-            if captured_cb:
-                await captured_cb[0](MagicMock())
-            stop_event.set()
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        mock_launch.assert_not_called()
-
-    def test_publishes_heartbeat_via_kv(self):
-        """Listener writes heartbeat to hw_state[quota_watch.heartbeat.{machine}]."""
-        import threading
-
-        stop_event = threading.Event()
-        mock_client = self._make_mock_client()
-        mock_client.js = MagicMock()
-
-        heartbeat_keys = []
-
-        mock_kv = MagicMock()
-
-        async def fake_kv_put(key, value):
-            heartbeat_keys.append(key)
-
-        mock_kv.put = fake_kv_put
-
-        async def fake_key_value(bucket):
-            return mock_kv
-
-        mock_client.js.key_value = fake_key_value
-
-        async def fake_subscribe(subject, cb):
-            return MagicMock()
-
-        mock_client.nc.subscribe = fake_subscribe
-
-        call_count = 0
-
-        async def fake_sleep(n):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                stop_event.set()
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-            patch("asyncio.sleep", fake_sleep),
-            patch("ai_cli.quota.time") as mock_time,
-        ):
-            # Force heartbeat_interval condition to always be true
-            mock_time.time.return_value = 9999.0
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-
-        assert any("quota_watch.heartbeat.hetzner" in k for k in heartbeat_keys)
-
-    def test_exits_cleanly_when_nats_unavailable(self):
-        """If NATS connect fails, listener exits without raising."""
-        import threading
-
-        stop_event = threading.Event()
-
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            pass
-
-        mock_client.connect = fake_connect
-
-        async def fake_wait_for(coro, timeout):
-            return await coro
-
-        with (
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-            patch("asyncio.wait_for", side_effect=fake_wait_for),
-        ):
-            _run_nats_quota_listener("hetzner", stop_event=stop_event)
-        # No assertion needed — must not raise
+# No assertion needed — must not raise
 
 
 # --- _publish_quota_snapshot — KV key rename + ack (AI-CLI-57) ---
@@ -2093,22 +621,6 @@ class TestConftestQuotaHermeticity:
         assert "quota_state" in p
         assert str(Path.home() / ".local" / "state" / "ai-cli") not in p
 
-    def test_scrape_spawners_are_neutralized(self):
-        import ai_cli.quota as q
-
-        # The autouse fixture no-ops both spawners, so no real `ai quota scrape`
-        # subprocess is launched (which would touch real DB/NATS). Prove no Popen fires.
-        with patch("subprocess.Popen") as mock_popen:
-            q._launch_background_scrape()
-            q._maybe_trigger_background_scrape("2020-01-01T00:00:00Z")  # stale ts
-        mock_popen.assert_not_called()
-
-    def test_scrape_lock_path_is_isolated_not_real(self):
-        import ai_cli.quota as q
-
-        assert "scrape_lock" in str(q._SCRAPE_LOCK_PATH)
-        assert Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape.lock" != q._SCRAPE_LOCK_PATH
-
 
 class TestQuotaStatuslinePart:
     """Statusline pace rendering, driven by an injected clock rather than the real one.
@@ -2142,33 +654,25 @@ class TestQuotaStatuslinePart:
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         return week_start_str, week_start_dt
 
-    @pytest.mark.real_quota_scrape
-    def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
-        """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
-        import ai_cli.quota as q
+    def test_given_no_snapshot_when_rendered_then_prints_nothing_and_spawns_no_process(self, tmp_path, capsys):
+        """No seven-day value from any source renders nothing; the statusline never starts a scrape."""
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
-        # Initialize the DB schema without inserting any snapshots
         qdb._get_conn().close()
-        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
             with (
                 patch("subprocess.Popen") as mock_popen,
-                # Ensure NATS KV returns no data so the no-snapshot path is taken.
+                patch("subprocess.run") as mock_run,
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
             ):
                 result = quota_statusline_part()
             assert result == 0
-            out = capsys.readouterr().out
-            assert "📊" in out
-            assert "-" in out
-            # Background scrape should have been launched
-            mock_popen.assert_called_once()
-            assert "scrape" in mock_popen.call_args[0][0]
+            assert capsys.readouterr().out == ""
+            mock_popen.assert_not_called()
+            mock_run.assert_not_called()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
-            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
     def test_when_under_pace_then_shows_green_signed_delta_and_steady_arrow(self, tmp_path, capsys, frozen_week):
         """delta < -5 uses the green truecolor anchor and preserves its negative sign."""
@@ -2421,18 +925,32 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_snapshot_exists_then_calls_maybe_trigger_with_snapshotted_at(self, tmp_path, capsys):
-        """quota_statusline_part must call _maybe_trigger_background_scrape with the snapshot timestamp."""
+    def test_given_stale_snapshot_without_native_input_when_rendered_then_spawns_no_process(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """An hours-old snapshot and no rate_limits input once fired a scrape; now nothing is spawned."""
         import ai_cli.quota_db as qdb
 
+        monkeypatch.delenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", raising=False)
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            qdb.record_quota_snapshot(usage_percent=50.0, weekly_sonnet_pct=40.0)
-            with patch("ai_cli.quota._maybe_trigger_background_scrape") as mock_trigger:
+            conn = qdb._get_conn()
+            stale = (datetime.now(UTC) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "INSERT INTO quota_snapshots (usage_percent, week_start, snapshotted_at) VALUES (?, ?, ?)",
+                (50.0, qdb._get_current_week_start(), stale),
+            )
+            conn.commit()
+            conn.close()
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                patch("subprocess.run") as mock_run,
+                patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
+            ):
                 quota_statusline_part()
-            mock_trigger.assert_called_once()
-            ts_arg = mock_trigger.call_args[0][0]
-            assert isinstance(ts_arg, str) and len(ts_arg) > 0
+            assert "50%" in capsys.readouterr().out
+            mock_popen.assert_not_called()
+            mock_run.assert_not_called()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2572,12 +1090,11 @@ class TestQuotaStatuslinePartLegacyDb:
         try:
             with (
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
-                patch("ai_cli.quota._launch_background_scrape"),
             ):
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
-            assert "📊" in out
+            assert out == ""
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2608,7 +1125,7 @@ class TestQuotaStatuslinePartKvSync:
         qdb.set_db_path(tmp_path / "quota.db")
         try:
             # Insert a stale local snapshot (older than TTL) using the real schema
-            stale_time = datetime.now(UTC) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10)
+            stale_time = datetime.now(UTC) - timedelta(minutes=q._LOCAL_SNAPSHOT_TTL_MINUTES + 10)
             stale_ts = stale_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             week_start = qdb._get_current_week_start()
             # Use _get_conn() to initialise the full schema, then insert with all columns
@@ -2632,7 +1149,6 @@ class TestQuotaStatuslinePartKvSync:
             }
             with (
                 patch("ai_cli.quota._try_read_kv_snapshot", return_value=kv_payload),
-                patch("ai_cli.quota._maybe_trigger_background_scrape"),
             ):
                 result = quota_statusline_part()
             assert result == 0
@@ -2887,82 +1403,6 @@ class TestQuotaSyncRemoteWithoutSqliteCli:
         assert not (missing_home / ".local").exists()
 
 
-# --- _maybe_trigger_background_scrape ---
-
-
-@pytest.mark.real_quota_scrape
-class TestMaybeBackgroundScrape:
-    def _stale_ts(self, minutes_ago: int = 35) -> str:
-        now = datetime.now(UTC)
-        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def _fresh_ts(self, minutes_ago: int = 5) -> str:
-        now = datetime.now(UTC)
-        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def test_when_snapshot_fresh_then_no_scrape_triggered(self, tmp_path):
-        lock_path = tmp_path / "quota-scrape.lock"
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen") as mock_popen,
-        ):
-            _maybe_trigger_background_scrape(self._fresh_ts())
-        mock_popen.assert_not_called()
-        assert not lock_path.exists()
-
-    def test_when_snapshot_stale_and_no_lock_then_triggers_scrape_and_creates_lock(self, tmp_path):
-        lock_path = tmp_path / "quota-scrape.lock"
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen") as mock_popen,
-        ):
-            _maybe_trigger_background_scrape(self._stale_ts())
-        mock_popen.assert_called_once()
-        args = mock_popen.call_args[0][0]
-        assert args == ["ai", "quota", "scrape"]
-        assert lock_path.exists()
-
-    def test_when_snapshot_stale_and_fresh_lock_then_no_scrape(self, tmp_path):
-        """Fresh lock = scrape already running — skip."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()  # lock written just now
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen") as mock_popen,
-        ):
-            _maybe_trigger_background_scrape(self._stale_ts())
-        mock_popen.assert_not_called()
-
-    def test_when_snapshot_stale_and_stale_lock_then_removes_lock_and_triggers_scrape(self, tmp_path):
-        """Stale lock (crashed scrape) is removed and a new scrape is launched."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        lock_path.touch()
-        stale_lock_time = time.time() - (16 * 60)  # 16 min old > _SCRAPE_LOCK_STALE_MINUTES
-        os.utime(lock_path, (stale_lock_time, stale_lock_time))
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen") as mock_popen,
-        ):
-            _maybe_trigger_background_scrape(self._stale_ts())
-        mock_popen.assert_called_once()
-        assert lock_path.exists()  # new lock created after stale one removed
-
-    def test_when_popen_raises_then_no_exception_propagated(self, tmp_path):
-        """Errors must never propagate — statusline path must be silent."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        with (
-            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
-            patch("subprocess.Popen", side_effect=OSError("popen failed")),
-        ):
-            _maybe_trigger_background_scrape(self._stale_ts())  # must not raise
-
-    def test_when_invalid_timestamp_then_no_exception_propagated(self, tmp_path):
-        """Malformed snapshotted_at must be handled silently."""
-        lock_path = tmp_path / "quota-scrape.lock"
-        with patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path):
-            _maybe_trigger_background_scrape("not-a-timestamp")  # must not raise
-
-
 # --- statusline single-line contract ---
 
 
@@ -3008,23 +1448,18 @@ class TestQuotaStatuslinePartSingleLine:
         non_empty = [l for l in out.split("\n") if l]
         assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
 
-    def test_when_no_data_placeholder_is_single_line(self, tmp_path, capsys):
-        """No snapshot data: placeholder output must also be a single line."""
-        import ai_cli.quota as q
+    def test_when_no_data_then_output_is_empty(self, tmp_path, capsys):
+        """No snapshot data: nothing is printed, so no stray line reaches the statusline."""
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
         qdb._get_conn().close()
-        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
-            with patch("subprocess.Popen"):
+            with patch("ai_cli.quota._try_read_kv_snapshot", return_value=None):
                 quota_statusline_part()
-            out = capsys.readouterr().out
-            non_empty = [l for l in out.split("\n") if l]
-            assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
+            assert capsys.readouterr().out == ""
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
-            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
@@ -3211,9 +1646,8 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
                 qdb.record_quota_snapshot(usage_percent=usage_percent)
-                with patch("ai_cli.quota._launch_background_scrape"):
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
-                        quota_statusline_part()
+                with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
+                    quota_statusline_part()
             return capsys.readouterr().out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]

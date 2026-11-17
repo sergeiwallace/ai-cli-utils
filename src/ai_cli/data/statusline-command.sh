@@ -412,33 +412,37 @@ else
     export AI_CLI_QUOTA_FIVE_HOUR_RESET="$_fh_reset"
     _qstate_dir="$HOME/.claude/state"
     _qstate="$_qstate_dir/quota.json"
-    # `// null` coalesce is REQUIRED (audit N-01): CC may omit any rate_limits sub-field
-    # ("each window may be independently absent"); a bare `("" | tonumber?)` yields `empty`,
-    # which collapses the ENTIRE jq object → no output → quota.json silently never written.
-    # Coalescing each optional field to null keeps the object (with a valid seven_day_pct).
-    _qnew=$(jq -cn --argjson sd "$_sd_pct" --arg sdr "$_sd_reset" \
+    # Each window carries its own observation time (<window>_updated_at), which `ai quota
+    # publish` and quota-pct read to judge freshness. A window absent from this payload keeps
+    # its last reading AND its old time, so a retained value is never relabelled fresh. A
+    # legacy file with only updated_at migrates that time onto each window it holds.
+    # `// null` stays REQUIRED (audit N-01): CC may omit any rate_limits sub-field, and a bare
+    # `tonumber?` yields `empty`, which collapses the whole object so nothing is written.
+    _qold=$(jq -c 'objects' "$_qstate" 2>/dev/null)
+    [ -n "$_qold" ] || _qold='{}'
+    _qnew=$(jq -cn --arg sd "$_sd_pct" --arg sdr "$_sd_reset" \
                    --arg fh "$_fh_pct" --arg fhr "$_fh_reset" \
-                   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-      {seven_day_pct:$sd,
-       seven_day_reset:(($sdr|tonumber?) // null),
-       five_hour_pct:(($fh|tonumber?) // null),
-       five_hour_reset:(($fhr|tonumber?) // null),
-       updated_at:$ts, source:"statusline_rate_limits"}' 2>/dev/null)
+                   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson old "$_qold" '
+      $old | {seven_day_pct, seven_day_reset, five_hour_pct, five_hour_reset,
+              seven_day_updated_at, five_hour_updated_at, updated_at}
+      | if .seven_day_pct != null then .seven_day_updated_at //= .updated_at else . end
+      | if .five_hour_pct != null then .five_hour_updated_at //= .updated_at else . end
+      | if (($sd|tonumber?) // null) != null then
+          .seven_day_pct = ($sd|tonumber)
+          | .seven_day_reset = (($sdr|tonumber?) // null)
+          | .seven_day_updated_at = $ts
+        else . end
+      | if (($fh|tonumber?) // null) != null then
+          .five_hour_pct = ($fh|tonumber)
+          | .five_hour_reset = (($fhr|tonumber?) // null)
+          | .five_hour_updated_at = $ts
+        else . end
+      | .updated_at = $ts | .source = "statusline_rate_limits"' 2>/dev/null)
     if [ -n "$_qnew" ]; then
-      # De-dup guard (F-09; audit N-02): skip the atomic write when the account-global numbers
-      # are unchanged — avoids churn. No monotonic/anti-regression guard: CC hands each session
-      # the CURRENT account-global rate_limits, so there is no stale-payload path, and pct is not
-      # monotonic across the weekly reset. Compare pct+reset only (updated_at always differs).
-      _qwrite=1
-      if [ -f "$_qstate" ]; then
-        _cmp_old=$(jq -S '{seven_day_pct,seven_day_reset,five_hour_pct,five_hour_reset}' "$_qstate" 2>/dev/null)
-        _cmp_new=$(echo "$_qnew" | jq -S '{seven_day_pct,seven_day_reset,five_hour_pct,five_hour_reset}' 2>/dev/null)
-        [ -n "$_cmp_old" ] && [ "$_cmp_old" = "$_cmp_new" ] && _qwrite=0
-      fi
-      if (( _qwrite )); then
-        mkdir -p "$_qstate_dir" 2>/dev/null
-        printf '%s\n' "$_qnew" > "$_qstate.tmp.$$" 2>/dev/null && mv -f "$_qstate.tmp.$$" "$_qstate" 2>/dev/null
-      fi
+      # An unchanged reading is still a new observation, so every payload is written: a
+      # skipped write would leave the window's time behind and age a current reading out.
+      mkdir -p "$_qstate_dir" 2>/dev/null
+      printf '%s\n' "$_qnew" > "$_qstate.tmp.$$" 2>/dev/null && mv -f "$_qstate.tmp.$$" "$_qstate" 2>/dev/null
     fi
   fi
 

@@ -774,14 +774,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions

@@ -1314,10 +1314,6 @@ def get_engine_script(
     ai sync watch --auto &>/dev/null &
     ai memory watch &>/dev/null &
 
-    # Auto-start quota-watch (idempotent — circusd skips if already registered).
-    # Gated on [quota_watch] auto_start in config.toml (default off — see config.py).
-    ai quota watch start --auto 2>/dev/null || true
-
     # iTerm2 fleet management: set profile, tab color, pane title.
     # Color slot was assigned by Python before tmux launched (collision-free lease).
     # _it2: wraps OSC sequences in DCS passthrough when inside tmux.

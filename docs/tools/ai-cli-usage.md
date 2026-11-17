@@ -28,7 +28,6 @@ there, not here.
   - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
   - [ai memory watch](#ai-memory-watch)
-  - [ai quota watch](#ai-quota-watch)
   - [ai telemetry writer](#ai-telemetry-writer)
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
@@ -127,16 +126,11 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai ps cron`](../reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](../reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](../reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](../reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](../reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](../reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](../reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](../reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](../reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](../reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](../reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](../reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](../reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](../reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](../reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](../reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -212,7 +206,7 @@ ai -V          # same, short form
 - **Linux / macOS**: full feature set.
 - **Windows (MSYS2 / Git Bash)**: experimental. The Windows-specific session-launch paths exist, but real tmux-server integration is unverified and its integration suite is skipped after a Windows CI hang. Requires tmux installed via MSYS2 (`pacman -S tmux`). Remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), and iTerm2 color slot management are unavailable. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
-Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
@@ -647,17 +641,6 @@ ai memory watch
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
 Acquires PID file `memory-watch` — only one instance runs at a time.
-
-### ai quota watch
-
-```bash
-ai quota watch start    # register with Circus and start the daemon
-ai quota watch stop     # remove from Circus
-ai quota watch status   # show Circus status
-ai quota watch run      # run the daemon directly (Circus entry point)
-```
-
-Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
 
 ### ai telemetry writer
 
