@@ -175,7 +175,7 @@ session is already running, `ai c NAME` attaches to it, so `ai attach` is not ne
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
 | `ai cos -r` | Resume this machine's chief-of-staff session |
-| `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
+| `ai sessions` | List running sessions within the machine profile's visibility limit. Use `ai sessions list -a` to include other session states |
 <!-- start-resume-attach:end -->
 
 ### Command index
@@ -262,7 +262,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions boot-unit status`](docs/reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](docs/reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](docs/reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](docs/reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](docs/reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](docs/reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -954,20 +954,20 @@ unrelated project-registry discovery prompts.
 ### Listing sessions
 
 ```bash
-ai sessions                       # Running sessions of this host and its paired host, as a table
+ai sessions                       # Running sessions allowed by the machine profile
 ai sessions list -a/--all         # Add exited, stale and unknown sessions
-ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
+ai sessions list -S/--scope fleet # All publishing hosts when the machine profile permits it
 ai sessions list -g/--group-by status -s/--sort-by changed,name
 ai sessions list -j/--json        # This host's records with earlier_boot_gone, unchanged by the options above
 ```
 
 The table groups rows by host (this host first) and puts running sessions at the top of each
-group. Other hosts' rows come from the snapshots each host publishes with `ai sessions publish`
-(see [Session boot relaunch](#session-boot-relaunch)); a host that does not publish is not shown,
-and the time of each snapshot is printed under the table. The pair is `[sessions_list] pair_host`,
-or the default `[remote.machines]` alias when that is empty. The defaults are the `[sessions_list]`
-table of `config.toml`, read on every call and documented in
-[docs/reference/sessions-list-defaults.toml](docs/reference/sessions-list-defaults.toml).
+group. Other hosts' rows come from timestamped copies of their session records that each host
+writes to Git with `ai sessions publish` (see [Session boot relaunch](#session-boot-relaunch)).
+Personal profiles include their configured machine host group by default. Work, client, and
+unclassified profiles show local records only. For group listing in both directions, configure
+the same `[machine] session_group_members` on each host. See the
+[session listing configuration](docs/reference/sessions-list-defaults.toml).
 
 ### Remote sessions
 

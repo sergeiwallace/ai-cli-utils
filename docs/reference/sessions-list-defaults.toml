@@ -28,8 +28,15 @@ group_by = "host"
 sort_by = ["status", "name"]
 ## false lists running sessions only; true adds exited and unknown ones (-a/--all).
 show_all = false
-## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
-## host that publishes its sessions to [session_relaunch.publish] repo).
-scope = "pair"
-## The paired host's id; empty means the default [remote.machines] alias.
-pair_host = ""
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
+## Deprecated aliases: use "group" for "pair" and group_host for pair_host.
+
+## Machine profile settings live in [machine] in the same config.toml.
+## Work, client and unclassified profiles are host only. A personal profile permits
+## group by default and can set sessions_list_scope to "host", "group" or "fleet".
+## Set the same session_group_members list of publication host IDs on each group host.
+## See config.toml in this directory for the [machine] and [remote.machines] examples.
