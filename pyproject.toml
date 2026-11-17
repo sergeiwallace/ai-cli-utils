@@ -138,6 +138,11 @@ addopts = "-n auto -p pytest_memory_guard"
 # `@pytest.mark.timeout(N)`. The thread method, because the signal one does not exist on Windows.
 timeout = 300
 timeout_method = "thread"
+# Every thread's stack once a test has run 10 minutes, without failing it. Several tests raise
+# their own bound past 300 s (900 s for real-Dolt cases, 1800 s for one), and a CI job's
+# 40-minute cap can cancel a run before that bound fires. One Windows shard stalled for 20
+# minutes and was cancelled that way with no stack at all. This dump still lands in the log.
+faulthandler_timeout = 600
 markers = [
     "registry_backends(*names): collect a registry_backend-parametrized test only for these backends",
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",
