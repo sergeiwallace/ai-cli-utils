@@ -1650,10 +1650,16 @@ class TestExplicitChiefName:
         from conftest import _run_cli_with_args
 
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        real_which = shutil.which
         with (
             patch("ai_cli.main.sys.platform", "linux"),
             patch("ai_cli.chief_of_staff.write_registration", side_effect=_explode),
             patch("ai_cli.main._request_remote_chief_session", return_value="") as asked,
+            # The cx engine refuses to start without codex on PATH, which a CI runner lacks.
+            patch(
+                "shutil.which",
+                side_effect=lambda cmd, *a, **k: "/usr/bin/codex" if cmd == "codex" else real_which(cmd, *a, **k),
+            ),
         ):
             runner = _run_cli_with_args(
                 ["ai", "cx", "--name", "alice", "-R", "-m", "fw", "-F"], REMOTE_CONFIG, capture_ssh_runner=True
