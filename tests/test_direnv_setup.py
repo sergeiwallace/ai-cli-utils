@@ -364,6 +364,20 @@ def test_given_unreadable_registry_when_refreshing_path_then_no_raise(monkeypatc
     assert refresh_windows_path() is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has a real registry module")
+def test_given_a_host_without_a_registry_when_a_dependency_imports_winreg_then_the_import_fails_as_it_does_outside_the_suite():
+    """The suite's registry guard must not invent a ``winreg`` where none exists.
+
+    Dependencies decide whether they are on Windows by trying ``import winreg``:
+    ``dateutil.tz`` imports its Windows zone support only when that succeeds, then
+    calls ``winreg.ConnectRegistry`` at import time. A stub module present on a
+    Linux or macOS host made that import succeed, so every timezone lookup in a
+    test failed with ``AttributeError: ... ConnectRegistry``.
+    """
+    with pytest.raises(ImportError):
+        import winreg  # noqa: F401
+
+
 def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is_unreachable(monkeypatch):
     """The suite-wide guard, pinned from the consumer side (AI-CLI-8elu).
 
