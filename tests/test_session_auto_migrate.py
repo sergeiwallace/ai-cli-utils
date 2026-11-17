@@ -17,7 +17,7 @@ slot = test_session_migrate.slot
 
 
 def _launch(
-    slot, name: str = "3", *, config: dict | None = None, real_aliases: bool = False
+    slot, name: str = "3", *flags: str, config: dict | None = None, real_aliases: bool = False, remote: bool = False
 ) -> tuple[int, str, str, list[dict]]:
     """Drive the real local ``ai c`` naming and migration path up to worktree reuse."""
     launched: list[dict] = []
@@ -43,7 +43,7 @@ def _launch(
             ("ai_cli.session.create_worktree", {"side_effect": _start}),
             ("ai_cli.session.detect_repo_root", {"return_value": Path(slot["repo"])}),
             ("ai_cli.session.is_current_project_resolved", {"return_value": True}),
-            ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+            ("ai_cli.session._resolve_is_remote", {"return_value": remote}),
             ("ai_cli.session._tmux_session_names", {"return_value": []}),
             ("ai_cli.session_naming.resolve_host_alias", {"return_value": "box"}),
             ("ai_cli.config._get_projects_dir", {"return_value": slot["repo"].parent}),
@@ -55,8 +55,9 @@ def _launch(
             if real_aliases and target == "ai_cli.session_naming.resolve_host_alias":
                 continue
             stack.enter_context(patch(target, **kwargs))
+        remote_flags = ["--is-remote", "-p", "myrepo"] if remote else []
         code, out, err = test_session_migrate.run_cli(
-            ["ai", "c", name, "-b", "-D", "--project-prefix", "myrepo"], config=config
+            ["ai", "c", name, "-b", "-D", "--project-prefix", "myrepo", *flags, *remote_flags], config=config
         )
     return code, out, err, launched
 

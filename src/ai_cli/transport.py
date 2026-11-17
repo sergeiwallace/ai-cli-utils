@@ -707,7 +707,7 @@ def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_fi
     """``(the remote command's recorded exit status or None, its saved diagnostic)``, both then removed.
 
     One read-only SSH command reads what the mosh wrapper left (:func:`ai_cli.main._mosh_remote_command`):
-    the ``.status`` file a nonzero exit writes, and the last 50 lines of the diagnostic file.
+    the ``.status`` file a nonzero exit writes, and the last 50 lines of its stderr.
     """
     diagnostic_command = (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
@@ -735,14 +735,6 @@ def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_fi
         value = lines.pop(0)[len(_REMOTE_STATUS_PREFIX) :].strip()
         status = int(value) if value.isdigit() else None
     return status, "\n".join(lines).strip()
-
-
-def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> str:
-    """Print and remove the diagnostic the failed mosh command saved; return it ("" when none)."""
-    _status, diagnostic = _read_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-    if diagnostic:
-        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
-    return diagnostic
 
 
 def _remote_failure_line(diagnostic: str) -> str:
@@ -881,23 +873,38 @@ async def _run_transport_loop(
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True)
                     continue
 
+                # Read the command's result before classifying a fast mosh exit as a link failure
+                # or detach. The read consumes the record, so all branches share this result.
+                diagnostic = ""
+                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                    remote_status, diagnostic = await asyncio.to_thread(
+                        _read_remote_diagnostic, diagnostic_ssh_args, remote_diagnostic_file
+                    )
+                    if diagnostic:
+                        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
+                    if remote_status:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            f"\nThe remote launch exited {remote_status} after {elapsed:.1f}s.",
+                            err=True,
+                        )
+                        exit_code = remote_status
+                        break
+
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
                 # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
                 # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
                 if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                        if failure := _remote_failure_line(diagnostic):
-                            # The remote command ran and failed: the host is reachable, and an
-                            # SSH fallback would only run the same failing command again.
-                            _out.emit(
-                                Tag.TRANSPORT,
-                                "reconnect",
-                                f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
-                                err=True,
-                            )
-                            exit_code = 1
-                            break
+                    if failure := _remote_failure_line(diagnostic):
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "reconnect",
+                            f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                            err=True,
+                        )
+                        exit_code = 1
+                        break
                     if await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval):
                         _out.emit(
                             Tag.TRANSPORT,
@@ -974,9 +981,6 @@ async def _run_transport_loop(
                     break
 
                 if elapsed < 3:
-                    diagnostic = ""
-                    if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
-                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     if failure := _remote_failure_line(diagnostic):
                         # Last, so the cause is what the user reads, not a generic timing line.
                         _out.emit(
@@ -995,29 +999,6 @@ async def _run_transport_loop(
                     exit_code = 1
                     break
 
-                # Mosh carries no exit status back and clears what the remote command printed,
-                # so a launch the remote side refused after a while (a migration guard that
-                # re-planned for minutes) used to end here silently with exit 0. The mosh
-                # wrapper records a nonzero status and the launch's own log lines; read them.
-                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
-                    remote_status, remote_diagnostic = await asyncio.to_thread(
-                        _read_remote_diagnostic, diagnostic_ssh_args, remote_diagnostic_file
-                    )
-                    if remote_status:
-                        if remote_diagnostic:
-                            _out.emit(
-                                Tag.TRANSPORT, "connect", f"\nRemote command error:\n{remote_diagnostic}", err=True
-                            )
-                        _out.emit(
-                            Tag.TRANSPORT,
-                            "connect",
-                            f"\nThe remote launch exited {remote_status} after {elapsed:.1f}s; "
-                            "its reason is above. Fix that, then re-run the same command.",
-                            err=True,
-                        )
-                        exit_code = remote_status
-                        break
-
                 # A mosh session that ends quickly with a "successful" exit code is
                 # ambiguous: mosh propagates whatever the remote command exited with,
                 # so a fast, clean exit can be a real user detach OR the remote-side
@@ -1027,8 +1008,6 @@ async def _run_transport_loop(
                 # catches a non-zero return code, so this case previously fell straight
                 # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
                 if transport_type == "mosh" and elapsed < 15:
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     _out.emit(
                         Tag.TRANSPORT,
                         "reconnect",
@@ -1044,8 +1023,6 @@ async def _run_transport_loop(
                 # above. Preserve its exact values so a transient recurrence is
                 # actionable.
                 elif transport_type == "mosh" and proc.returncode not in (0, None):
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     _out.emit(
                         Tag.TRANSPORT,
                         "reconnect",

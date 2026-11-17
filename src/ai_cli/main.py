@@ -3359,21 +3359,21 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     """The shell command mosh runs on the remote host for ``remote_cmd``.
 
     Mosh restores the terminal after the remote command exits, which erases what it printed,
-    and it carries no exit status back. So the remote ``ai`` copies its launch log lines into
-    ``$HOME/<remote_diagnostic_file>`` (``AI_CLI_REMOTE_DIAGNOSTIC_FILE``), and a nonzero exit
-    also writes its status beside it, as ``<file>.status``, for the local loop to read with a
-    read-only SSH command once mosh ends. stderr itself stays on the terminal, so the remote
-    side's progress lines are seen while it works. A clean exit removes both files.
+    and it carries no exit status back. Copy stderr to a file while also showing it live.
+    This captures errors even before the remote launch log is initialized. Keep stdout on
+    the terminal and record a failed command's own status separately from the pipe's status.
     """
     return (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'mkdir -p "$(dirname "$diagnostic_file")"; '
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
-        f'export {REMOTE_DIAGNOSTIC_ENV}="$diagnostic_file"; '
-        f"{remote_cmd}; "
+        "exec 3>&1; "
+        f"{{ ( {remote_cmd} ) 3>&-; "
         "status=$?; "
-        'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
-        'else printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        'if [ "$status" -ne 0 ]; then printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        '} 2>&1 1>&3 | ( umask 077; tee "$diagnostic_file" >&2 ); '
+        'status=0; if [ -f "$diagnostic_file.status" ]; then IFS= read -r status < "$diagnostic_file.status"; '
+        'else rm -f "$diagnostic_file"; fi; '
         'exit "$status"'
     )
 
@@ -3612,8 +3612,9 @@ def _finish_recorded_migrations(
     pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
     and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
     with no ``finished`` row is finished here, since the launch is the one moment the new
-    session is known not to be running, and that finish's own re-plan is the verdict. A pair
-    whose ``finished`` row carries no ``verified`` is re-planned read-only. A finish that
+    session may have stopped, and that finish's own re-plan is the verdict. An unverified
+    ``finished`` pair is also finished if its slot exists and the launch is starting NEW.
+    Otherwise that pair is checked read-only. A finish that
     refuses, raises or leaves any part refuses the launch with the parts left and the
     ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
     given: the session then starts and the parts left go into the launch log.
@@ -3662,7 +3663,7 @@ def _finish_recorded_migrations(
             continue
         if live is None:
             live = attaching_live()
-        if old not in pending:
+        if old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir()):
             progress(f"{pair}: re-planning read-only (not verified)")
             left, _live, _planned = judge_pair(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
@@ -4094,7 +4095,7 @@ def _resolve_session_identity(
     """``(tmux session, ai_name)`` for this launch.
 
     With human names resolved off (and no ``--name``), or for an explicit index slot,
-    this is :func:`ai_cli.session.build_session_name` exactly as before. Otherwise the
+    use the index resolver and honor migration records for that repository. Otherwise the
     title is composed by AC-DT-1 and its token is reserved in the name registry before
     anything else exists; a dry run plans the same title and reserves nothing.
     """
@@ -4102,9 +4103,58 @@ def _resolve_session_identity(
     from . import name_registry as _names
 
     def index_names() -> tuple[str, str]:
-        return _session.build_session_name(
-            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=use_tmux, legacy_prefix=legacy_prefix
+        from .session_migrate import recorded_migrations
+        from .session_migrate_status import moved_on, recorded_pairs
+
+        clean = _session._slot_name(name, naming_prefix)
+        explicit = _session._is_explicit_slot(clean)
+        allocated = is_remote and name.startswith(f"{engine}-")
+        repo_root = _config._find_project_dir(repo).resolve()
+        if not is_remote and not repo_root.is_dir():
+            with contextlib.suppress(RuntimeError):
+                if root := _session.detect_repo_root():
+                    repo_root = Path(root).resolve()
+        state = _config.get_xdg_state_home()
+        retired_names = {old for old, _, recorded_repo in recorded_migrations(state) if recorded_repo == repo_root}
+        target = _session.build_session_name(
+            engine,
+            naming_prefix,
+            name,
+            config,
+            is_remote=is_remote,
+            use_tmux=use_tmux,
+            legacy_prefix=legacy_prefix,
+            retired_names=retired_names,
         )
+        if explicit:
+            typed_title = _session._session_slot_name(engine, name) if name.startswith(f"{engine}-") else name
+            old = typed_title if typed_title in retired_names else target[1]
+            onward = moved_on(old, repo_root, state) if old in retired_names else None
+            if onward is not None:
+                title = onward[0]
+                reporter.phase("session").outcome(f"{old} migrated to {title}")
+                prefix, _, slot = title.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                return existing or (_session_id(engine, title, is_remote), title)
+            if old in retired_names and not (repo_root / ".worktrees" / old).is_dir():
+                prefix, _, slot = old.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                if existing:
+                    return existing
+                _naming_exit(
+                    reporter,
+                    f"{old} has a migration record but no existing destination slot. "
+                    f"Check it with `ai migrate-session -s -a {old}` before launching.",
+                    1,
+                )
+        elif allocated:
+            # The remote allocator can return the migrated title even in index naming mode.
+            title = _session._session_slot_name(engine, name)
+            if (repo_root / ".worktrees" / title).is_dir() and any(
+                recorded_repo == repo_root for _, recorded_repo in recorded_pairs(title, state)
+            ):
+                return name, title
+        return target
 
     try:
         flag = naming.label_flag
@@ -7250,7 +7300,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
         "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
-        "re-checks it), and one recorded finished without verification is re-planned. If any is "
+        "re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is "
         "still partial, the launch is refused: it starts nothing, prints the parts left and the "
         "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
         "When the session is already running, nothing can be finished, so attaching to it warns "
