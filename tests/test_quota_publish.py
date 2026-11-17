@@ -5,8 +5,13 @@ client that records every publish and KV write.
 """
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -199,3 +204,94 @@ def test_given_retired_scrape_command_when_invoked_then_cli_rejects_it(no_proces
 
     assert code != 0
     assert "No such command 'scrape'" in err
+
+
+# -- the real producer -------------------------------------------------------------------------
+
+_STATUSLINE = Path(__file__).parent.parent / "src/ai_cli/data/statusline-command.sh"
+
+
+def _statusline_writes(tmp_path: Path, rate_limits: dict) -> Path:
+    """Run the shipped statusline on one Claude Code payload; return the state file it wrote."""
+    home, tmp, bin_dir = tmp_path / "home", tmp_path / "tmp", tmp_path / "bin"
+    for directory in (home, tmp, bin_dir):
+        directory.mkdir(exist_ok=True)
+    fake_ai = bin_dir / "ai"
+    fake_ai.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_ai.chmod(0o755)
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "context_window": {"used_percentage": 10, "total_input_tokens": 100, "total_output_tokens": 10},
+        "workspace": {"project_dir": str(tmp_path)},
+        "rate_limits": rate_limits,
+    }
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMPDIR": str(tmp),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "TMUX": "",
+        "COLUMNS": "200",
+        "GIT_BRANCH_CACHE": "main",
+        "CC_BILLING_MODE": "subscription",
+    }
+    done = subprocess.run(
+        ["bash", str(_STATUSLINE)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return home / ".claude" / "state" / "quota.json"
+
+
+_needs_posix_statusline = pytest.mark.skipif(
+    shutil.which("jq") is None or sys.platform == "win32",
+    reason="statusline-command.sh needs bash and jq",
+)
+
+
+@_needs_posix_statusline
+def test_given_the_real_statusline_wrote_a_fresh_reading_when_publish_then_it_reaches_all_three_targets(tmp_path, nats):
+    now = time.time()
+    state_file = _statusline_writes(
+        tmp_path,
+        {
+            "seven_day": {"used_percentage": 42, "resets_at": int(now + 3 * 86400)},
+            "five_hour": {"used_percentage": 12, "resets_at": int(now + 3600)},
+        },
+    )
+
+    code, out, _ = _publish(state_file)
+
+    assert code == 0, out
+    assert nats.subjects == ["quota.snapshot", "hw.events.usage.claude.snapshot"]
+    assert nats.published[0][1]["usage_percent"] == 42.0
+    assert nats.published[0][1]["session_pct"] == 12.0
+    assert nats.kv["quota.claude.current.myhost"]["usage_percent"] == 42.0
+
+
+@_needs_posix_statusline
+def test_given_a_payload_without_the_five_hour_window_when_the_statusline_writes_then_that_window_keeps_its_own_time(
+    tmp_path,
+):
+    now = time.time()
+    first = {
+        "seven_day": {"used_percentage": 40, "resets_at": int(now + 3 * 86400)},
+        "five_hour": {"used_percentage": 10, "resets_at": int(now + 3600)},
+    }
+    state_file = _statusline_writes(tmp_path, first)
+    old = json.loads(state_file.read_text())
+    old["five_hour_updated_at"] = "2000-01-01T00:00:00Z"
+    state_file.write_text(json.dumps(old))
+
+    _statusline_writes(tmp_path, {"seven_day": {"used_percentage": 41, "resets_at": int(now + 3 * 86400)}})
+    state = json.loads(state_file.read_text())
+
+    assert state["seven_day_pct"] == 41
+    assert state["seven_day_updated_at"] != "2000-01-01T00:00:00Z"
+    assert state["five_hour_pct"] == 10, "an absent window keeps its last reading"
+    assert state["five_hour_updated_at"] == "2000-01-01T00:00:00Z", "and is not relabelled fresh"
