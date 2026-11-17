@@ -278,7 +278,7 @@ def _settled_cmdline(process, family: str | None) -> list[str]:
         time.sleep(0.05)
 
 
-def record_agent(name: str, pid: int, generation: str | None = None) -> str | None:
+def record_agent(name: str, pid: int, generation: str | None = None, *, cmdline: list[str] | None = None) -> str | None:
     """Record the interactive agent process the launcher started on its session row.
 
     ``agent_identity`` holds:
@@ -293,8 +293,13 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> str | No
       ``kern.bootsessionuuid``); null on Windows, which exposes no boot id to read.
     * ``interactive``: true, the process is an interactive client in a session pane.
     * ``engine_binding``: ``exclusive`` or ``shared-daemon`` (:func:`engine_binding`), read
-      from the process's own command line. Only an ``exclusive`` agent proves ancestry.
+      from the process's own command line, or from ``cmdline`` when given. Only an
+      ``exclusive`` agent proves ancestry.
     * ``generation``: the run generation the row held when the agent started.
+
+    ``cmdline`` is the command ``pid`` is about to exec, for a caller recording its own
+    process before it execs the agent: its current command line is still the launcher's,
+    and it cannot change while the caller is blocked here.
 
     Returns None once written, else why nothing was written: the row is missing, belongs to
     another generation, or another session's row holds a live attestation of the same process.
@@ -306,7 +311,8 @@ def record_agent(name: str, pid: int, generation: str | None = None) -> str | No
     process = psutil.Process(pid)
     started_at = process.create_time()
     family = family_for(name)
-    cmdline = _settled_cmdline(process, family)
+    if cmdline is None:
+        cmdline = _settled_cmdline(process, family)
     marker = probe_for().capture_identity(pid)
     boot_id = registry.current_boot_id()
     refusal: list[str] = []

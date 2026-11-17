@@ -6068,17 +6068,23 @@ def _do_session_launch(
                 with contextlib.suppress(Exception):
                     _run_state.record_agent(session_id, pid)
 
-            if not on_pty and sys.platform != "win32":
+            def _record_then_exec(file: str, args: list[str]) -> NoReturn:
                 # The exec (and direnv's own exec) keeps this pid and its start time for the
-                # agent. Windows has no exec: execvp starts a new process, so nothing is recorded.
-                _record_agent(os.getpid())
-            _exec_with_direnv(
-                target_root,
-                command,
-                handoff=_session_launch_state.handoff(
-                    session_id, _pty_handoff(session_id, _record_agent) if on_pty else _exec_handoff
-                ),
-            )
+                # agent. It is recorded here, inside the handoff, so the row's generation has
+                # begun; and from the argv about to run, because this process's own command
+                # line is still the launcher's and cannot change while this call blocks.
+                with contextlib.suppress(Exception):
+                    _run_state.record_agent(session_id, os.getpid(), cmdline=list(args))
+                _exec_handoff(file, args)
+
+            if on_pty:
+                delegate = _pty_handoff(session_id, _record_agent)
+            elif sys.platform != "win32":
+                delegate = _record_then_exec
+            else:
+                # Windows has no exec: execvp starts a new process, so nothing is recorded.
+                delegate = _exec_handoff
+            _exec_with_direnv(target_root, command, handoff=_session_launch_state.handoff(session_id, delegate))
 
     # tmux panes inherit their session environment from the long-lived server,
     # not the process that runs `tmux new-session`. Carry the launch context so
