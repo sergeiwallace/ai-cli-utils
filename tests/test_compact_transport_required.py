@@ -211,6 +211,8 @@ def test_given_a_platform_with_no_pty_api_when_ai_c_launches_verbose_then_it_say
     A default launch keeps it out of the terminal, because no launch-time action
     clears it; `ai doctor` reports it too (test_windows_launch_quiet.py).
     """
+    # install.sh sets AI_HOST; without it, config registration prints its own warning.
+    monkeypatch.setenv("AI_HOST", "test-host")
     with patch("ai_cli.compact_transport.probe_pty", return_value=_NO_PTY_PLATFORM):
         _run_launch(real_repo, tmp_path, monkeypatch, reporter=LaunchReporter(verbose=True))
     output = capsys.readouterr().err

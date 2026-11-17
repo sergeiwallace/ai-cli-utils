@@ -44,6 +44,8 @@ def _plain_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "state"))
     monkeypatch.setenv("NO_COLOR", "1")
+    # install.sh sets AI_HOST; without it, config registration prints its own warning.
+    monkeypatch.setenv("AI_HOST", "test-host")
 
 
 def _windows_without_tmux(stack: ExitStack) -> None:
