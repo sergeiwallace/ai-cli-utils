@@ -340,6 +340,42 @@ def test_given_bare_exec_launch_of_ai_cx_when_it_hands_off_then_the_row_records_
     assert row["agent_identity"]["started_at"] == psutil.Process().create_time()
 
 
+@posix_only
+@pytest.mark.parametrize(("own_flags", "binding"), [(["--no-daemon"], "exclusive"), ([], "shared-daemon")])
+def test_given_bare_exec_launch_of_ai_cx_when_it_hands_off_then_the_row_binds_the_engine_codex_will_run(
+    tmp_path, monkeypatch, own_flags, binding
+):
+    """The row is written before the exec, so it must read the command about to run.
+
+    The launcher's own command line at that moment is ``python ... ai cx``: it carries no
+    ``--no-daemon`` even when the Codex it is about to become does, and polling it cannot
+    see the exec it is blocking. An exclusive Codex recorded as shared-daemon is refused by
+    an implicit ``ai exit-session`` from inside that very session.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from test_session_launch_locality import _launch_in, _make_repo
+
+    from ai_cli import session_exit
+
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    no_pty = SimpleNamespace(kind="tmux", must_refuse=False, platform_limited=False, detail="no pty in this test")
+    with (
+        patch("ai_cli.compact_transport.resolve", return_value=no_pty),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/codex"),
+        patch("ai_cli.main._name_new_codex_session"),
+        patch("ai_cli.codex_session.exclusive_process_flags", return_value=own_flags),
+    ):
+        _launch_in(monkeypatch, tmp_path, engine="cx")
+
+    row = next(r for r in registry.load_registry()["sessions"] if r.get("name", "").startswith("cx-"))
+    assert row["agent_identity"]["engine_binding"] == binding
+    # The implicit exit-session resolver accepts only an exclusive agent as ancestry proof.
+    assert (session_exit._verified_agent(row) is not None) is (binding == "exclusive")
+
+
 # --- one owner per attested agent ------------------------------------------------------
 
 
