@@ -1120,6 +1120,22 @@ def _engine_display_name(engine: str) -> str:
     return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
 
 
+def _launch_mode_label(*, remote: bool, bare: bool) -> str:
+    """The ``(local, tmux)`` part of the first launch line, before tmux is resolved.
+
+    The line is printed before the tmux preflight runs, so it can only predict. It
+    predicts from what is already settled without starting tmux: an explicit bare
+    request, and Windows with no tmux on PATH, which ``_do_session_launch`` turns into
+    a bare launch without a further notice. Saying ``tmux`` there was the only mode
+    statement such a launch made, and it was wrong. Where the preflight degrades to
+    bare later on another platform, it says so in its own warning.
+    """
+    where = "remote" if remote else "local"
+    if not bare and not remote and sys.platform == "win32" and not _tmux_setup.tmux_present():
+        bare = True
+    return f"{where}, {'bare' if bare else 'tmux'}"
+
+
 def _find_aicli_project_path(config: dict) -> "Path | None":
     """Locate the ai-cli-utils source tree regardless of cwd.
 
@@ -4990,8 +5006,11 @@ def _do_session_launch(
         if compact_transport.must_refuse:
             reporter.error("compact", _compact_transport.refusal_message(compact_transport))
             sys.exit(1)
+        # A platform-limited launch is a detail, not a warning: nothing the operator
+        # can do at launch clears it, so repeating it on every launch is noise. It
+        # stays discoverable in `ai doctor`, in `-v` launches and in the launch log.
         if compact_transport.platform_limited:
-            reporter.warning("compact", _compact_transport.advisory_message(compact_transport))
+            reporter.detail("compact", _compact_transport.advisory_message(compact_transport))
         else:
             reporter.detail("compact", compact_transport.detail)
 
@@ -6308,7 +6327,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote or is_remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,
@@ -7403,10 +7422,29 @@ def cmd_doctor(dry_run):
     else:
         zsh_note = f"could not be provisioned: {_zsh.detail or 'no reason reported'}"
 
+    # Harness-driven compaction is the one capability a Windows launch loses without
+    # saying so at launch (the launch reports it only under -v), so this is where an
+    # operator finds out. Resolved exactly as a bare launch would resolve it.
+    tmux_hosts = tmux_ok and not _tmux_setup.config_opts_out(config)
+    if tmux_hosts:
+        tmux_detail = "tmux runs here"
+    elif sys.platform == "win32":
+        tmux_detail = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+    else:
+        tmux_detail = "tmux does not host sessions here"
+    compact = _compact_transport.resolve(tmux_usable=tmux_hosts, tmux_detail=tmux_detail, config=config)
+    if compact.platform_limited:
+        compact_note = _compact_transport.advisory_message(compact)
+    elif compact.must_refuse:
+        compact_note = f"launches without tmux are refused: {compact.pty_detail}"
+    else:
+        compact_note = f"harness-driven via {compact.detail}"
+
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
         ("tmux", tmux_ok, tmux_note),
         ("zsh", _zsh.installed, zsh_note),
+        ("compact", compact.usable, compact_note),
     ):
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 

@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from ai_cli import compact_transport
+from ai_cli.launch_reporter import LaunchReporter
 from ai_cli.main import _do_session_launch
 
 _NO_PTY_PLATFORM = compact_transport.PtyProbe(
@@ -202,15 +203,20 @@ def test_given_a_platform_with_no_pty_api_when_ai_c_launches_bare_then_it_procee
     assert len(execs) == 1, "the launch must still reach the engine"
 
 
-def test_given_a_platform_with_no_pty_api_when_ai_c_launches_then_it_says_so_once(
+def test_given_a_platform_with_no_pty_api_when_ai_c_launches_verbose_then_it_says_so_once(
     real_repo, tmp_path, monkeypatch, capsys
 ):
-    """Degraded, not silent: silent degradation is the shape being eliminated."""
+    """Degraded, not silent: a verbose launch names the lost capability.
+
+    A default launch keeps it out of the terminal, because no launch-time action
+    clears it; `ai doctor` reports it too (test_windows_launch_quiet.py).
+    """
     with patch("ai_cli.compact_transport.probe_pty", return_value=_NO_PTY_PLATFORM):
-        _run_launch(real_repo, tmp_path, monkeypatch)
+        _run_launch(real_repo, tmp_path, monkeypatch, reporter=LaunchReporter(verbose=True))
     output = capsys.readouterr().err
 
-    assert "harness cannot drive compaction" in output
+    assert output.count("harness cannot drive compaction") == 1
+    assert "Warning" not in output
     assert "auto-compact still applies" in output, "must not claim the session is uncompactable"
     assert "Install tmux" in output, "must name the upgrade path"
 
