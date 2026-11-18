@@ -757,7 +757,7 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ### Copier update environments
 
-In an isolated update, a root Python project with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev` before committing. A root JavaScript project with a supported lockfile receives its corresponding frozen install. Projects with other layouts must provide the tools required by their hooks separately.
+In an isolated update, Git submodules are initialized recursively before dependencies are installed. Python projects at the root or one directory below with `pyproject.toml` and `uv.lock` are prepared with `uv sync --frozen --all-extras --dev`. When there is exactly one nested Python project and no root Python project, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. Projects with other layouts or additional tool requirements must provide those separately.
 
 ### Removed ai gemini command
 
