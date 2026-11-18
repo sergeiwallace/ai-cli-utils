@@ -952,7 +952,7 @@ def _find_moved_cc_session(title: str, candidates: list[Path]) -> "Path | None":
     return next((path for path in candidates if path.stem in moved), None)
 
 
-def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None":
+def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag | None) -> "Path | None":
     """The transcript a resume of ``title`` in ``cwd`` should take, noting on stderr when several qualify.
 
     In order: the transcript a recorded migration moved (:func:`_find_moved_cc_session`), the one
@@ -962,9 +962,71 @@ def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None"
     candidates = _find_cc_session_candidates_by_title(cwd, title)
     moved = _find_moved_cc_session(title, candidates)
     reverted = None if moved else _find_migrated_cc_session(cwd, title, candidates)
-    if len(candidates) > 1:
+    if tag is not None and len(candidates) > 1:
         _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved, reverted), err=True)
     return moved or reverted or (candidates[0] if candidates else None)
+
+
+class _ClaudeRestartTranscriptError(RuntimeError):
+    """The evidence is insufficient to restart a Claude Code conversation safely."""
+
+
+def _cc_restart_records(project: Path, cwd: Path, title: str) -> tuple[Path, Path, float] | None:
+    """Read the optional SessionEnd identity and the path shown by the launch-resume hook.
+
+    The periodic stamp must belong to the same run as the end record. Its path
+    was picked by project mtime, while SessionEnd received the UUID from Claude Code.
+    """
+    from .session_migrate import utc_instant
+
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", title) or ".." in title:
+        return None
+    root = Path.home() / ".claude" / "resume"
+    end = _background_attach._read_json(root / "launch" / f"{title}.end.json")
+    stamp = _background_attach._read_json(root / "boot-stamps" / f"{title}.json")
+    if not isinstance(end, dict) or not isinstance(stamp, dict) or stamp.get("cwd") != str(cwd):
+        return None
+    if end.get("key") != title or any(
+        not end.get(key) or end[key] != stamp.get(key) for key in ("key", "pid", "pane_id", "boot_id", "ended_at")
+    ):
+        return None
+    ended = utc_instant(end["ended_at"])
+    session_id, stamped = end.get("session_id"), stamp.get("transcript_path")
+    if ended is None or not isinstance(session_id, str) or not isinstance(stamped, str):
+        return None
+    try:
+        own = project / f"{uuid_module.UUID(session_id)}.jsonl"
+        expected = Path(stamped)
+        if expected.parent != project or expected.suffix != ".jsonl":
+            return None
+        _cc_session_id(expected)
+    except (ValueError, RuntimeError):
+        return None
+    return own, expected, ended.timestamp()
+
+
+def _pick_cc_restart_transcript(cwd: Path, title: str) -> Path | None:
+    """Require the restart's identity evidence to agree before handing off a transcript."""
+    project = _cc_project_dir(cwd)
+    try:
+        newest = max(((path.stat().st_mtime, path) for path in project.glob("*.jsonl")), default=None)
+    except OSError as exc:
+        raise _ClaudeRestartTranscriptError(f"Cannot restart '{title}': could not read transcript timestamps.") from exc
+    recorded = _cc_restart_records(project, cwd, title)
+    if recorded is not None:
+        own, expected, ended = recorded
+        if own == expected and newest is not None and newest[0] > ended:
+            expected = newest[1]
+        if own == expected and not own.is_file():
+            raise _ClaudeRestartTranscriptError(f"Cannot restart '{title}': recorded transcript {own.stem} is missing.")
+    else:
+        own = _pick_cc_resume_transcript(cwd, title, None)
+        expected = newest[1] if newest is not None else None
+    if own is not None and expected is not None and own != expected:
+        raise _ClaudeRestartTranscriptError(
+            f"Cannot restart '{title}': transcript {own.stem} disagrees with {expected.stem}."
+        )
+    return own
 
 
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
@@ -2136,7 +2198,8 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N] [--hold-attempt=N] [--relaunch-started-at=SECONDS]",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] "
+                "[--prompted] [--session-id=UUID] [--held-seconds=N] [--hold-attempt=N] [--relaunch-started-at=SECONDS]",
                 err=True,
             )
             sys.exit(1)
@@ -2165,6 +2228,7 @@ def _handle_internal(argv: list[str]) -> None:
             held_seconds=held_seconds,
             hold_attempt=hold_attempt,
             relaunch_started_at=relaunch_started_at,
+            session_id=next((arg.partition("=")[2] for arg in argv[3:] if arg.startswith("--session-id=")), ""),
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
@@ -2196,18 +2260,37 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(1 if failure else 0)
     elif action == "resolve-continue-target":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal resolve-continue-target <cwd> <ai_name> [--restart]",
+                err=True,
+            )
             sys.exit(1)
-        matched = _pick_cc_resume_transcript(Path(argv[1]), argv[2], Tag.INTERNAL)
+        cwd, title = Path(argv[1]), argv[2]
+        restarting = "--restart" in argv[3:]
+        try:
+            matched = (
+                _pick_cc_restart_transcript(cwd, title)
+                if restarting
+                else _pick_cc_resume_transcript(cwd, title, Tag.INTERNAL)
+            )
+        except _ClaudeRestartTranscriptError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(1)
         if matched is None:
-            lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
-            if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
+            lone = _find_lone_mismatched_cc_session(cwd, title)
+            if lone is not None and _confirm_mismatched_title_resume(title, lone):
                 matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
-                _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(argv[2], pid), err=True)
+                if restarting:
+                    _out.raw(Untagged.INTERNAL_REPLY, str(matched))
+                    _out.emit(Tag.INTERNAL, "resume", f"Transcript {matched.stem} is still running.", err=True)
+                else:
+                    _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(title, pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)

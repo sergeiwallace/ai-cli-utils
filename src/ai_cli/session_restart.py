@@ -976,6 +976,15 @@ def _compatible(source: str, expected: str) -> bool:
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
         return True
+    # Reconstruct the previous resolver in our trusted template. Replacing this
+    # block in the running source would hide changes to its transcript safeguards.
+    previous_resolver = re.sub(
+        r"(?ms)^    # BEGIN RESTART TRANSCRIPT\n.*?^    # END RESTART TRANSCRIPT\n",
+        '        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")\n        resolve_status=$?\n',
+        expected,
+    )
+    if previous_resolver != expected and _compatible(source, previous_resolver):
+        return True
     # Like the earlier wrapper below, the retired block is added to our trusted
     # template, never ignored in the running source.
     if _RETIRED_QUOTA_WATCH_START not in expected and _RETIRED_QUOTA_WATCH_ANCHOR in expected:
