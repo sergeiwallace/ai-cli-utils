@@ -421,9 +421,10 @@ def pytest_configure(config):
     fights pytest's own security check.
     """
     _refuse_temp_root_inside_a_checkout(config)
-    # tmpdir imported the name and pathlib calls its own global, so both are replaced.
+    # Patch both references. tmpdir imports the helper as a private module attribute.
     _pytest.pathlib.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
-    _pytest.tmpdir.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
+    tmpdir_namespace = cast("dict[str, object]", vars(_pytest.tmpdir))
+    tmpdir_namespace["cleanup_dead_symlinks"] = _cleanup_dead_symlinks_beside_a_concurrent_run
     if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return
     root = suite_temproot(tempfile.gettempdir())
