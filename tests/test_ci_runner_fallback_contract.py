@@ -611,7 +611,7 @@ def test_given_a_summary_job_when_read_then_it_runs_always_and_passes_only_when_
     final_run = jobs[summary]["steps"][-1]["run"]
 
     assert matrix == list(range(1, count + 1))
-    assert jobs[summary]["if"] == "always()"
+    assert jobs[summary].get("if") == "always()"
     assert jobs[summary]["needs"] == shards
     assert final_run == f'test "${{{{ needs.{shards}.result }}}}" = "success"'
 
@@ -762,7 +762,7 @@ def test_given_a_self_hosted_runner_when_any_job_runs_then_home_and_dolt_root_ar
         first_work = next(
             (index for index, step in enumerate(steps) if "run" in step and "GITHUB_ENV" not in step["run"]), len(steps)
         )
-        env_step = next(index for index, step in enumerate(steps) if "GITHUB_ENV" in step.get("run", ""))
+        env_step = next((index for index, step in enumerate(steps) if "GITHUB_ENV" in step.get("run", "")), len(steps))
 
         assert writes.get("HOME", "").startswith("$RUNNER_TEMP/"), f"{workflow}:{job}: {writes}"
         assert writes.get("DOLT_ROOT_PATH", "").startswith("$RUNNER_TEMP/"), f"{workflow}:{job}: {writes}"
