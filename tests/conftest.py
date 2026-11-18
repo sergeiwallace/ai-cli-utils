@@ -109,9 +109,32 @@ def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
     return home, temporary, root
 
 
+def _loaded_bootstrap() -> types.ModuleType | None:
+    """Return the other module object that already ran this file's bootstrap, if any.
+
+    A test that runs ``from tests.conftest import ...`` loads this file a second time
+    under another module name (``tests`` is a namespace package). That copy must reuse
+    the session's private tree: bootstrapping again would see ``ai_cli`` already imported.
+    """
+    for module in list(sys.modules.values()):
+        if (
+            module is not None
+            and getattr(module, "__file__", None) == __file__
+            and hasattr(module, "_SESSION_STATE_ROOT")
+        ):
+            return module
+    return None
+
+
 # Conftest and collection import modules with home-derived constants. Install the
 # session environment before those imports, then check it again before fixture setup.
-_REAL_HOME, _SESSION_STATE_DIRECTORY, _SESSION_STATE_ROOT = _bootstrap_user_state()
+_PRIOR_BOOTSTRAP = _loaded_bootstrap()
+if _PRIOR_BOOTSTRAP is None:
+    _REAL_HOME, _SESSION_STATE_DIRECTORY, _SESSION_STATE_ROOT = _bootstrap_user_state()
+else:
+    _REAL_HOME = _PRIOR_BOOTSTRAP._REAL_HOME
+    _SESSION_STATE_DIRECTORY = _PRIOR_BOOTSTRAP._SESSION_STATE_DIRECTORY
+    _SESSION_STATE_ROOT = _PRIOR_BOOTSTRAP._SESSION_STATE_ROOT
 
 import ai_cli.config as _config_module  # noqa: E402
 import ai_cli.session as _session_module  # noqa: E402

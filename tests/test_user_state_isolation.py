@@ -122,3 +122,17 @@ def test_given_a_safe_startup_home_when_pytest_collects_then_imports_already_use
     assert diagnostic in result.stdout + result.stderr
     if escape:
         assert "1 passed" not in result.stdout
+
+
+def test_given_the_conftest_is_imported_a_second_time_when_it_loads_then_it_reuses_the_session_tree() -> None:
+    import importlib.util
+
+    from tests import conftest as session_conftest
+
+    spec = importlib.util.spec_from_file_location("second_copy_of_conftest", Path(session_conftest.__file__))
+    assert spec is not None and spec.loader is not None
+    second = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(second)
+
+    assert second._SESSION_STATE_ROOT == session_conftest._SESSION_STATE_ROOT
+    assert second._SESSION_STATE_DIRECTORY is session_conftest._SESSION_STATE_DIRECTORY
