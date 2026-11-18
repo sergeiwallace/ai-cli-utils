@@ -200,7 +200,11 @@ def test_given_a_failing_extension_under_warn_when_launching_then_it_warns_logs_
 def test_given_an_extension_that_prints_a_status_line_when_launching_then_the_terminal_line_carries_its_last_line(
     tmp_path, projects
 ):
-    _script(projects / "myextensions", "status.py", 'print("checking")\nprint("watcher disabled for this host")\n')
+    _script(
+        projects / "myextensions",
+        "status.py",
+        'print("probing the watcher")\nprint("watcher disabled for this host")\n',
+    )
     config = _config(projects, {"status": {"path": "myextensions", "command": [sys.executable, "status.py"]}})
 
     code, stderr, session_launch = _launch(config)
@@ -210,8 +214,8 @@ def test_given_an_extension_that_prints_a_status_line_when_launching_then_the_te
     line = [entry for entry in stderr.splitlines() if "status: exited with status 0" in entry]
     assert line, stderr
     assert line[0].endswith(": watcher disabled for this host"), line[0]
-    assert "checking" not in stderr
-    assert "checking" in _log_text(tmp_path)
+    assert "probing the watcher" not in stderr
+    assert "probing the watcher" in _log_text(tmp_path)
 
 
 def test_given_a_failing_extension_under_warn_when_launching_then_the_warning_carries_its_last_output_line(

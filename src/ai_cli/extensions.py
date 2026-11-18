@@ -31,7 +31,6 @@ from .launch_reporter import LaunchReporter
 
 ON_ERROR_POLICIES = ("warn", "fail")
 EXTENSIONS_DEFAULTS = {"on_error": "fail", "timeout_seconds": 30}
-_OP = "extension"
 
 
 class ExtensionRefusal(SystemExit):
@@ -127,7 +126,7 @@ def _run(extension: Extension, reporter: LaunchReporter) -> None:
         raise _ExtensionError(f"path not found: {extension.directory}")
     argv = [_executable(extension), *extension.command[1:]]
     reporter.detail(
-        _OP,
+        "extension",
         f"{extension.name}: running {' '.join(argv)} in {extension.directory} "
         f"(timeout {extension.timeout_seconds:g}s, on_error {extension.on_error})",
     )
@@ -158,14 +157,14 @@ def _run(extension: Extension, reporter: LaunchReporter) -> None:
         output = captured.read().decode("utf-8", errors="replace")
     lines = output.splitlines()
     for line in lines:
-        reporter.detail(_OP, f"{extension.name} output: {line}")
+        reporter.detail("extension", f"{extension.name} output: {line}")
     # The last line an extension printed is its own one-line status (started, already running,
     # disabled here), so it reaches the terminal as well as the log.
     said = next((line.strip() for line in reversed(lines) if line.strip()), "")
     summary = f"{outcome} in {elapsed:.1f}s" + (f": {said}" if said else "")
     if returncode != 0:
         raise _ExtensionError(summary)
-    reporter.phase(_OP).outcome(f"{extension.name}: {summary}")
+    reporter.phase("extension").outcome(f"{extension.name}: {summary}")
 
 
 def run_launch_extensions(config: dict, reporter: LaunchReporter, log_path: Path | None = None) -> None:
@@ -180,7 +179,7 @@ def run_launch_extensions(config: dict, reporter: LaunchReporter, log_path: Path
         extensions = read_extensions(config)
     except ValueError as exc:
         reason = f"{exc}; launch stopped"
-        reporter.error(_OP, reason)
+        reporter.error("extension", reason)
         raise ExtensionRefusal(reason) from exc
     where = f"; output in {log_path}" if log_path is not None else ""
     for extension in extensions:
@@ -188,8 +187,8 @@ def run_launch_extensions(config: dict, reporter: LaunchReporter, log_path: Path
             _run(extension, reporter)
         except _ExtensionError as exc:
             if extension.on_error == "warn":
-                reporter.warning(_OP, f'{extension.name}: {exc}{where}; continuing launch (on_error = "warn")')
+                reporter.warning("extension", f'{extension.name}: {exc}{where}; continuing launch (on_error = "warn")')
                 continue
             reason = f'{extension.name}: {exc}{where}; launch stopped (on_error = "fail")'
-            reporter.error(_OP, reason)
+            reporter.error("extension", reason)
             raise ExtensionRefusal(reason) from exc
