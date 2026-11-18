@@ -774,14 +774,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
@@ -910,11 +910,13 @@ group_by = "host"
 sort_by = ["status", "name"]
 ## false lists running sessions only; true adds exited and unknown ones (-a/--all).
 show_all = false
-## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
-## host that publishes its sessions to [session_relaunch.publish] repo).
-scope = "pair"
-## The paired host's id; empty means the default [remote.machines] alias.
-pair_host = ""
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
+## Deprecated alias of group_host, still read: pair_host. Use group_host.
+# pair_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
@@ -935,6 +937,8 @@ stale_after_seconds = 600
 #[remote.machines.server]
 ## Remote server for AI sessions
 # host = "1.2.3.4"
+## Publication host ID when the SSH alias and the snapshot ref use different names.
+# host_id = "host-b"
 # user = "ubuntu"
 # port = 22
 # identity_file = ""
@@ -1050,6 +1054,13 @@ nats_servers = ["nats://localhost:4222"]
 ## OS type for this machine. Auto-detected from sys.platform on first run.
 ## Values: "windows", "macos", "linux"
 # os_type = ""
+## "personal" permits group listing by default. "work", "client", and unset are host only.
+# profile_class = "personal"
+## Personal profiles can restrict listing to "host" or explicitly permit "fleet".
+# sessions_list_scope = "group"
+## Set the same publication host IDs on each machine in the host group, including
+## machines with no outbound SSH target. A configured SSH alias can use host_id above.
+# session_group_members = ["host-a", "host-b"]
 
 [sidecar]
 ## Start the optional wake sidecar during a local session launch.

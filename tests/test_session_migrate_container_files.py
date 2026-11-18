@@ -1,6 +1,7 @@
 """Loose agent prompts migrate without overwriting another session's files."""
 
 import sys
+from pathlib import Path
 
 import pytest
 import test_session_migrate
@@ -136,3 +137,88 @@ def test_given_prompts_beside_an_empty_reaped_directory_when_previewed_then_plan
         assert f"agent container file: {source / 'prompt.txt'} -> {target / 'prompt.txt'}" in out
     assert not source.exists()
     assert (target / "prompt.txt").read_bytes() == b"saved prompt\n"
+
+
+@pytest.fixture
+def left_prompts(slot, prompts):
+    """Prompts a migration kept because this process held one open; the finish carries them."""
+    source, target = prompts
+    with (source / "prompt.txt").open("rb"):
+        code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 1, out + err
+    return source, target
+
+
+@pytest.fixture
+def windows(monkeypatch):
+    """Run the container-file step as on Windows, recording every process-wide open-file scan."""
+    import psutil
+
+    import ai_cli.session_migrate as session_migrate
+
+    scans: list[int] = []
+
+    def slow_scan(*args, **kwargs):
+        scans.append(1)
+        return iter(())
+
+    monkeypatch.setattr(session_migrate, "_ON_WINDOWS", True, raising=False)
+    monkeypatch.setattr(psutil, "process_iter", slow_scan)
+    return session_migrate, scans
+
+
+def test_given_a_slow_open_file_scan_on_windows_when_finished_then_prompts_move_without_scanning(
+    slot, left_prompts, windows, monkeypatch
+):
+    source, target = left_prompts
+    session_migrate, scans = windows
+    monkeypatch.setattr(session_migrate, "_refuses_delete_access", lambda path: False, raising=False)
+    for flags in [("-n",), ("-y",)]:
+        code, out, err = _finish(slot["repo"], *flags)
+        assert code == 0, out + err
+        assert f"agent container file: {source / 'prompt.txt'} -> {target / 'prompt.txt'}" in out
+    assert scans == []
+    assert not source.exists()
+    assert (target / "prompt.txt").read_bytes() == b"saved prompt\n"
+
+
+def test_given_a_prompt_another_process_holds_open_on_windows_when_finished_then_it_stays_without_a_copy(
+    slot, left_prompts, windows, monkeypatch
+):
+    source, target = left_prompts
+    session_migrate, scans = windows
+    held = source / "prompt.txt"
+    monkeypatch.setattr(session_migrate, "_refuses_delete_access", lambda path: path == held, raising=False)
+    for flags in [("-n",), ("-y",)]:
+        code, out, err = _finish(slot["repo"], *flags)
+        assert "agent container file:" not in out, out + err
+    assert scans == []
+    assert held.read_bytes() == b"saved prompt\n"
+    assert not (target / "prompt.txt").exists()
+
+
+def test_given_a_prompt_opened_after_the_check_on_windows_when_finished_then_the_refused_move_leaves_no_copy(
+    slot, left_prompts, windows, monkeypatch
+):
+    source, target = left_prompts
+    session_migrate, _ = windows
+    held = source / "prompt.txt"
+    monkeypatch.setattr(session_migrate, "_refuses_delete_access", lambda path: False, raising=False)
+    real_rename, real_unlink = session_migrate.os.rename, session_migrate.Path.unlink
+
+    def refuse_held(src, dst, *args, **kwargs):
+        if Path(src) == held:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real_rename(src, dst, *args, **kwargs)
+
+    def refuse_held_unlink(self, *args, **kwargs):
+        if self == held:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(session_migrate.os, "rename", refuse_held)
+    monkeypatch.setattr(session_migrate.Path, "unlink", refuse_held_unlink)
+    code, out, err = _finish(slot["repo"], "-y")
+    assert f"agent container file: {held} (kept: move failed:" in out, out + err
+    assert held.read_bytes() == b"saved prompt\n"
+    assert not (target / "prompt.txt").exists()

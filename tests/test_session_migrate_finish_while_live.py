@@ -81,6 +81,26 @@ def _warnings(err: str) -> list[str]:
     return [line for line in err.splitlines() if "Warning:" in line and f"{OLD} -> {NEW}" in line]
 
 
+def test_given_new_has_a_stale_record_with_a_reused_pid_when_launched_then_no_parts_are_deferred(pending, tmp_path):
+    from ai_cli.process_probe import ProcfsProbe
+
+    _live_record(pending)
+    record = pending["claude"] / "sessions" / f"{os.getpid()}.json"
+    stale = {**json.loads(record.read_text(encoding="utf-8")), "procStart": "100"}
+    record.write_text(json.dumps(stale), encoding="utf-8")
+    proc = tmp_path / "proc" / str(os.getpid())
+    proc.mkdir(parents=True)
+    (proc / "stat").write_text(f"{os.getpid()} (worker) S" + " 0" * 18 + " 200\n", encoding="utf-8")
+
+    with patch("ai_cli.process_probe.probe_for", return_value=ProcfsProbe(proc.parent)):
+        code, out, err, launched = _launch(pending)
+
+    assert code == 0, out + err
+    assert launched[0]["ledger"][-1].get("verified") is True
+    assert not _deferred_rows(pending)
+    assert record.is_file(), "the read-only probe leaves Claude Code's record intact"
+
+
 def test_given_new_is_live_when_finish_writes_then_safe_steps_run_and_its_open_files_are_deferred(pending):
     _live_record(pending)
 

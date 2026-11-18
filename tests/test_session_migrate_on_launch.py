@@ -418,22 +418,22 @@ def test_given_a_verified_finish_and_a_host_a_re_plan_would_call_partial_when_ne
     assert "refusing" not in err
 
 
-def test_given_an_unverified_finished_row_and_a_part_left_when_new_is_launched_then_it_is_re_planned_and_refused(
+def test_given_an_unverified_finished_row_and_a_blocking_hook_when_new_is_launched_then_it_is_refused(
     migrated,
+    hooks,
 ):
-    ledger = migrated["state"] / "session-migrations.jsonl"
-    legacy = {"old": OLD, "new": NEW, "repo": str(migrated["repo"]), "finished": True}
-    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+    _legacy_finished_row(migrated)
+    hooks("10-notes", "notes", fail="plan")
     rows = _ledger(migrated)
 
     code, out, err, launched = _launch(migrated)
 
     assert code == 1, out + err
-    assert launched == [], "a finished row without verified: true is re-planned, and a part left refuses"
-    assert migrated["seeded"]["bare"].is_file(), "the re-plan writes nothing"
+    assert launched == []
     assert _ledger(migrated) == rows
     assert f"`{FINISH} {migrated['repo']}`" in _refusal(err)
-    assert f"migration {OLD} -> {NEW}: re-planning" in err
+    assert f"migration {OLD} -> {NEW}: finishing" in err
+    assert "hook notes" in _refusal(err)
 
 
 _TIMED = re.compile(r"\(\d+\.\ds\)$")
@@ -534,6 +534,25 @@ def _legacy_finished_row(slot) -> None:
     ledger = slot["state"] / "session-migrations.jsonl"
     legacy = {"old": OLD, "new": NEW, "repo": str(slot["repo"]), "finished": True}
     ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+
+
+def test_given_an_unverified_finish_when_new_launches_twice_then_it_finishes_once_and_skips_the_next_plan(migrated):
+    _legacy_finished_row(migrated)
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 0, out + err
+    assert launched[0]["old_logs"] == []
+    assert launched[0]["ledger"][-1]["verified"] is True
+    _assert_logs_and_evidence_follow_new(migrated, migrated["seeded"])
+    rows = _ledger(migrated)
+
+    code, out, err, launched = _launch(migrated)
+
+    assert code == 0, out + err
+    assert len(launched) == 1
+    assert "verified finished earlier, not re-planned" in err
+    assert _ledger(migrated) == rows
 
 
 def test_given_new_running_and_an_unverified_part_left_when_new_is_launched_then_it_attaches_with_one_warning(

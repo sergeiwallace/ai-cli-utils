@@ -182,6 +182,22 @@ because the remedy refuses the same live session, only locks the user out.
 
 <!-- doc:region name="fix_log" kind="append_only" -->
 
+### Finishing older ledger entries during a start
+
+A legacy `finished` row without `verified` took the read-only branch even when
+starting a stopped slot. The launcher reported each repairable part and then
+refused. Even an empty re-plan left the legacy row in place, so the next launch
+repeated the scan. The guard now uses the normal finish for an existing slot it
+is starting. That finish records proof only after successful verification.
+Attaching to a live session still checks these older entries read-only.
+
+The CLI test
+`test_given_an_unverified_finish_when_new_launches_twice_then_it_finishes_once_and_skips_the_next_plan`
+failed on the original code with exit 1 and passed after the change. It checks
+that the first launch carries the artifacts and records proof, and that the
+second leaves the ledger untouched. The refusal test keeps a blocking hook so
+it still checks for the manual finish command when repair fails.
+
 <!-- /doc:region name="fix_log" -->
 
 <!-- doc:region name="appendix_evidence" kind="immutable" -->

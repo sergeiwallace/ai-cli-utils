@@ -40,7 +40,7 @@ def _record(name, status, *, changed="2026-01-02T03:04:05Z", cause="", relaunch=
 @pytest.fixture
 def host(state_home, monkeypatch):
     """This host's registry and config.toml, with tmux reporting every session alive."""
-    cfg = {"machine": {"host_id": LOCAL}}
+    cfg = {"machine": {"host_id": LOCAL, "profile_class": "personal"}}
     monkeypatch.setattr("ai_cli.config.load_config", lambda **_kwargs: cfg)
     monkeypatch.setattr(registry, "_local_session_alive", lambda _name: True)
 
@@ -64,34 +64,39 @@ def _git(cwd, *args):
 
 @pytest.fixture
 def published(host, tmp_path):
-    """A publication repo whose remote holds snapshots from host-b and host-c."""
+    """A bare publication remote preloaded with snapshots, plus a fresh reader checkout."""
     cfg, _ = host
     remote, repo = tmp_path / "remote.git", tmp_path / "repo"
     remote.mkdir()
     repo.mkdir()
     _git(remote, "init", "--bare")
     _git(repo, "init")
-    _git(repo, "config", "user.name", "Example User")
-    _git(repo, "config", "user.email", "user@example.com")
+    _git(remote, "config", "user.name", "Example User")
+    _git(remote, "config", "user.email", "user@example.com")
     _git(repo, "remote", "add", "origin", str(remote))
     for other, sessions in {
+        LOCAL: {"c-myproject-bob": "running"},
         "host-b": {"c-webapp-kim": "running", "c-webapp-lou": "exited"},
         "host-c": {"c-myapp-max": "running"},
+        "host-d": {},
     }.items():
         lines = [f'host = "{other}"', 'boot_id = ""', 'published_at = "2026-01-04T00:00:00Z"']
         for name, run_state in sessions.items():
             lines += ["", f'[sessions."{name}"]', f'run_state = "{run_state}"', 'cause = ""']
             lines += ['changed_at = "2026-01-04T00:00:00Z"', 'relaunch = "auto"']
-        publisher_cfg = {
-            "repo": str(repo),
-            "remote": "origin",
-            "ref_prefix": "refs/heads/fleet-sessions/",
-            "host": other,
-            "debounce_seconds": 600,
-        }
-        publish.Publisher(publisher_cfg).push("\n".join(lines) + "\n")
-    _git(repo, "update-ref", "-d", "refs/session-state/host-b")
-    _git(repo, "update-ref", "-d", "refs/session-state/host-c")
+        publisher = publish.Publisher(
+            {
+                "repo": str(remote),
+                "remote": "origin",
+                "ref_prefix": "refs/heads/fleet-sessions/",
+                "host": other,
+                "debounce_seconds": 600,
+            }
+        )
+        blob = publisher.git("hash-object", "-w", "--stdin", stdin="\n".join(lines) + "\n")
+        tree = publisher.tree({f"sessions/{other}.toml": blob})
+        commit = publisher.git("commit-tree", tree, "-m", "Publish test snapshot")
+        publisher.git("update-ref", publisher.ref, commit)
     cfg["session_relaunch"] = {"publish": {"repo": str(repo)}}
     return cfg
 
@@ -245,24 +250,95 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
     assert refused.exit_code == 2
 
 
-def test_given_a_published_pair_host_when_listed_with_pair_scope_then_its_running_rows_follow_this_hosts(published):
-    published["sessions_list"] = {"pair_host": "host-b"}
+def test_given_legacy_group_settings_when_listed_then_the_members_running_rows_follow_this_hosts(published):
+    published["sessions_list"] = {"scope": "pair", "pair_host": "host-b"}
     out = _run("sessions", "list", "-S", "pair")
     _, body = _table(out)
 
     assert [row["HOST"] for row in body if row["HOST"]] == [LOCAL, "host-b"]
     assert "c-webapp-kim" in out and "c-webapp-lou" not in out and "c-myapp-max" not in out
     assert "host-b: published snapshot from 2026-01-04T00:00:00Z" in out
+    assert _run("sessions", "list") == out
 
 
-def test_given_a_default_remote_machine_when_bare_ai_sessions_runs_then_the_pair_is_that_alias(published):
+def test_given_a_legacy_remote_alias_equal_to_the_host_id_when_listed_then_its_rows_appear(published):
     published["remote"] = {"default": "host-b", "machines": {"host-b": {"host": "192.0.2.10"}}}
     out = _run("sessions")
 
     assert "c-webapp-kim" in out and "c-myapp-max" not in out
 
 
+def test_given_a_remote_alias_distinct_from_the_host_id_when_listed_then_the_id_selects_the_snapshot(published):
+    published["remote"] = {"default": "server", "machines": {"server": {"host": "192.0.2.10", "host_id": "host-b"}}}
+
+    assert "c-webapp-kim" in _run("sessions", "list")
+
+
+def test_given_a_remote_group_member_without_an_outbound_target_when_listed_then_the_other_member_appears(published):
+    published["machine"].update(host_id="host-b", session_group_members=[LOCAL, "host-b"])
+
+    out = _run("sessions", "list")
+
+    assert f"{LOCAL}: published snapshot from 2026-01-04T00:00:00Z" in out
+    assert "no pair host" not in out
+
+
+def test_given_a_group_member_without_a_snapshot_when_listed_then_available_rows_and_a_publish_hint_appear(published):
+    published["machine"]["session_group_members"] = [LOCAL, "host-b", "host-d", "host-e", "server"]
+    published["remote"] = {"machines": {"server": {"host": "192.0.2.10"}}}
+
+    out = _run("sessions", "list")
+
+    assert "c-webapp-kim" in out
+    assert "host-d: published snapshot from" in out
+    assert "host-e: no readable session snapshot was published. Run `ai sessions publish` on host-e" in out
+    assert "server: no snapshot matches this remote alias. Set [remote.machines.<alias>] host_id" in out
+
+
+@pytest.mark.parametrize("profile_class", ["work", "client", ""])
+def test_given_a_host_only_profile_when_fleet_is_requested_then_only_local_rows_appear(published, profile_class):
+    published["machine"].update(profile_class=profile_class, session_group_members=[LOCAL, "host-b"])
+    published["sessions_list"] = {"scope": "fleet"}
+    if profile_class:
+        published["machine"]["sessions_list_scope"] = "fleet"
+
+    for args in ([], ["-S", "fleet"]):
+        out = _run("sessions", "list", *args)
+        assert "c-myproject-ada" in out
+        assert "c-webapp-kim" not in out and "c-myapp-max" not in out
+    repo = published["session_relaunch"]["publish"]["repo"]
+    assert not _git(repo, "for-each-ref", "refs/session-state/")
+
+
+def test_given_two_personal_group_members_when_each_lists_then_both_see_only_their_group(published, host):
+    published["machine"]["session_group_members"] = [LOCAL, "host-b"]
+
+    first = _run("sessions", "list", "-S", "group")
+    published["machine"]["host_id"] = "host-b"
+    _, write = host
+    write(_record("c-webapp-kim", "running") | {"owning_host": "host-b"})
+    second = _run("sessions", "list", "-S", "group")
+
+    assert "c-myproject-bob" in first and "c-webapp-kim" in first
+    assert "c-myproject-bob" in second and "c-webapp-kim" in second
+    assert "c-myapp-max" not in first and "c-myapp-max" not in second
+    assert "host-b: published snapshot from" in first and f"{LOCAL}: published snapshot from" in second
+
+
+def test_given_a_personal_profile_when_its_scope_is_restricted_then_the_next_listing_applies_it(published):
+    published["machine"]["session_group_members"] = [LOCAL, "host-b"]
+    published["sessions_list"] = {"scope": "fleet", "group_host": "host-c"}
+
+    default = _run("sessions", "list")
+    assert "c-webapp-kim" in default and "c-myapp-max" not in default
+
+    published["machine"]["sessions_list_scope"] = "host"
+    restricted = _run("sessions", "list", "-S", "fleet")
+    assert "c-myproject-ada" in restricted and "c-webapp-kim" not in restricted
+
+
 def test_given_published_hosts_when_listed_with_fleet_scope_then_every_host_is_a_group(published):
+    published["machine"]["sessions_list_scope"] = "fleet"
     out = _run("sessions", "list", "-S", "fleet", "-a")
     _, body = _table(out)
 
@@ -271,17 +347,19 @@ def test_given_published_hosts_when_listed_with_fleet_scope_then_every_host_is_a
 
 
 def test_given_no_publication_repo_when_listed_with_fleet_scope_then_this_host_shows_and_the_reason_prints(host):
+    cfg, _ = host
+    cfg["machine"]["sessions_list_scope"] = "fleet"
     out = _run("sessions", "list", "-S", "fleet")
 
     assert "c-myproject-ada" in out
     assert "no publication repo is configured" in out
 
 
-def test_given_no_pair_configured_when_bare_ai_sessions_runs_then_this_host_shows_and_says_there_is_no_pair(host):
+def test_given_no_group_configured_when_bare_ai_sessions_runs_then_this_host_shows_with_config_guidance(host):
     out = _run("sessions")
 
     assert "c-myproject-ada" in out
-    assert "no pair host" in out
+    assert "Set [machine] session_group_members on each group host" in out
 
 
 def test_given_no_running_sessions_when_listed_then_it_says_so_and_points_at_all(host):

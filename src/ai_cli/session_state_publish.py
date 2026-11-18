@@ -16,6 +16,7 @@ from . import session_registry as registry
 from . import session_run_state as state
 
 LOGGER = logging.getLogger(__name__)
+HOST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,7 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
         cfg = state.settings()["publish"]
         if not cfg["repo"]:
             return _result(False, "publishing disabled: no repo configured")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", cfg["host"]):
+        if not HOST_ID.fullmatch(cfg["host"]):
             return _result(False, "publication requires a valid host")
         if float(cfg["debounce_seconds"]) <= 0:
             return _result(False, "debounce_seconds must be positive")
@@ -174,7 +175,6 @@ def publish(*, now: bool = False, tick: bool = False) -> PublishResult:
 
 #: Bound on the one fetch ``ai sessions list`` makes for other hosts' snapshots.
 SNAPSHOT_FETCH_TIMEOUT_SECONDS = 15
-_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ def read_snapshots() -> Snapshots:
     try:
         listed = git("for-each-ref", "--format=%(refname:strip=2)", "refs/session-state/")
         for host in listed.stdout.split() if listed.returncode == 0 else []:
-            if not _HOST.fullmatch(host):
+            if not HOST_ID.fullmatch(host):
                 continue
             shown = git("show", f"refs/session-state/{host}:sessions/{host}.toml")
             if shown.returncode:
@@ -235,7 +235,7 @@ def read_snapshots() -> Snapshots:
                 doc = tomllib.loads(shown.stdout)
             except tomllib.TOMLDecodeError:
                 continue
-            if isinstance(doc.get("sessions"), dict):
+            if doc.get("host") == host and isinstance(doc.setdefault("sessions", {}), dict):
                 hosts[host] = doc
     except (OSError, subprocess.TimeoutExpired) as exc:
         problem = f"published snapshots cannot be read ({type(exc).__name__})"

@@ -28,7 +28,6 @@ there, not here.
   - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
   - [ai memory watch](#ai-memory-watch)
-  - [ai quota watch](#ai-quota-watch)
   - [ai telemetry writer](#ai-telemetry-writer)
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
@@ -65,7 +64,7 @@ started.
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
 | `ai cos -r` | Resume this machine's chief-of-staff session |
-| `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
+| `ai sessions` | List running sessions within the machine profile's visibility limit. Use `ai sessions list -a` to include other session states |
 <!-- start-resume-attach:end -->
 
 ## Command index
@@ -127,16 +126,11 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai ps cron`](../reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](../reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](../reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](../reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](../reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](../reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](../reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](../reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](../reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](../reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](../reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](../reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](../reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](../reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](../reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](../reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -155,7 +149,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai sessions boot-unit status`](../reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](../reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](../reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](../reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](../reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](../reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -212,7 +206,7 @@ ai -V          # same, short form
 - **Linux / macOS**: full feature set.
 - **Windows (MSYS2 / Git Bash)**: experimental. The Windows-specific session-launch paths exist, but real tmux-server integration is unverified and its integration suite is skipped after a Windows CI hang. Requires tmux installed via MSYS2 (`pacman -S tmux`). Remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), and iTerm2 color slot management are unavailable. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
-Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
@@ -519,6 +513,8 @@ built-in default, and a launch that needs one that is unset exits 1 and names it
 - `-H`/`--fm-home DIR` — an explicit chief home.
 - `-R` — run the chief on the remote machine; the dispatching machine reads only `project` and
   `session_name`, and the remote `ai` resolves and registers everything else.
+- `-N`/`--name NAME` — the chief named NAME (`<session_name>-NAME`), carried to the remote
+  machine with `-R`; a different running chief is refused, never attached to.
 
 Both `-k` and `-H` are refused without `-F`/`--chief` or `ai cos`. The full behaviour (attach,
 resume, create, one chief per machine) is in the README's "Chief-of-staff session" section.
@@ -550,7 +546,7 @@ Exits with error if no session named `<session-name>` exists.
 ### ai sessions
 
 ```bash
-ai sessions [list] [-a] [-S host|pair|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
+ai sessions [list] [-a] [-S host|group|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
 ```
 
 Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
@@ -563,29 +559,36 @@ migration preflight uses, and a row whose liveness cannot be proved still shows 
 session's last run-state change; a policy change does not move it. `RELAUNCH` is the boot relaunch
 policy (`auto`, `always` or `never`).
 
-- `-S/--scope`: `host` is this host; `pair` (the default) adds the paired host; `fleet` adds every
-  host that publishes. This host's rows come from its live registry; other hosts' rows come from
-  the snapshots each host pushes with `ai sessions publish` to `[session_relaunch.publish] repo`,
-  fetched with a 15-second bound. A host that does not publish is not shown, and each snapshot's
-  time is printed under the table.
+- `-S/--scope` requests `host`, `group`, or `fleet`, within the profile's visibility limit.
+  Local rows come from the live registry. Other hosts' rows come from snapshots, timestamped
+  copies of their session records. Each host writes its snapshot with `ai sessions publish` to
+  `[session_relaunch.publish] repo`. The reader fetches with a 15-second bound and prints each
+  snapshot's time under the table. A missing group snapshot produces a hint to publish it.
 - `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
   keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
 - `-j/--json` prints this host's registry records, each with `earlier_boot_gone` (`true` for a
   row the table shows as `stale`, whose `run_state` stays `running`); it ignores the other options
-  and refuses `-S pair` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
+  and refuses `-S group` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
   registry file itself ([fields](../iterm2-persistence.md)).
 
-The defaults live in the `[sessions_list]` table of `config.toml`, read on every call, with a flag
-overriding each:
+The defaults live in `[sessions_list]` in `config.toml`. A flag overrides the corresponding
+default within the machine profile's limit.
 
 ```toml
 [sessions_list]
 group_by = "host"
 sort_by = ["status", "name"]
 show_all = false
-scope = "pair"
-pair_host = ""  # empty: the default [remote.machines] alias
+scope = "group"
+group_host = ""  # fallback member ID or alias, otherwise the default remote machine
 ```
+
+Set `[machine] profile_class = "personal"` and set `session_group_members = ["host-a", "host-b"]`
+on both hosts to list the group in both directions. These are publication host IDs. If a group
+entry or the default remote machine uses an SSH alias, set its `[remote.machines.<alias>] host_id`
+to the ID used to publish its snapshot. Personal profiles default to `group` and can restrict the
+scope to `host` or explicitly permit `fleet` with `[machine] sessions_list_scope`. Work, client,
+and unclassified profiles always use `host`.
 
 [docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
 each key.
@@ -647,17 +650,6 @@ ai memory watch
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
 Acquires PID file `memory-watch` — only one instance runs at a time.
-
-### ai quota watch
-
-```bash
-ai quota watch start    # register with Circus and start the daemon
-ai quota watch stop     # remove from Circus
-ai quota watch status   # show Circus status
-ai quota watch run      # run the daemon directly (Circus entry point)
-```
-
-Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
 
 ### ai telemetry writer
 
