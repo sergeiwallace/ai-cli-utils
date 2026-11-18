@@ -923,11 +923,13 @@ group_by = "host"
 sort_by = ["status", "name"]
 ## false lists running sessions only; true adds exited and unknown ones (-a/--all).
 show_all = false
-## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
-## host that publishes its sessions to [session_relaunch.publish] repo).
-scope = "pair"
-## The paired host's id; empty means the default [remote.machines] alias.
-pair_host = ""
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
+## Deprecated alias of group_host, still read: pair_host. Use group_host.
+# pair_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
@@ -948,6 +950,8 @@ stale_after_seconds = 600
 #[remote.machines.server]
 ## Remote server for AI sessions
 # host = "1.2.3.4"
+## Publication host ID when the SSH alias and the snapshot ref use different names.
+# host_id = "host-b"
 # user = "ubuntu"
 # port = 22
 # identity_file = ""
@@ -1063,6 +1067,13 @@ nats_servers = ["nats://localhost:4222"]
 ## OS type for this machine. Auto-detected from sys.platform on first run.
 ## Values: "windows", "macos", "linux"
 # os_type = ""
+## "personal" permits group listing by default. "work", "client", and unset are host only.
+# profile_class = "personal"
+## Personal profiles can restrict listing to "host" or explicitly permit "fleet".
+# sessions_list_scope = "group"
+## Set the same publication host IDs on each machine in the host group, including
+## machines with no outbound SSH target. A configured SSH alias can use host_id above.
+# session_group_members = ["host-a", "host-b"]
 
 [sidecar]
 ## Start the optional wake sidecar during a local session launch.

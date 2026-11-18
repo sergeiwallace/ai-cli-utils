@@ -64,7 +64,7 @@ started.
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
 | `ai cos -r` | Resume this machine's chief-of-staff session |
-| `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
+| `ai sessions` | List running sessions within the machine profile's visibility limit. Use `ai sessions list -a` to include other session states |
 <!-- start-resume-attach:end -->
 
 ## Command index
@@ -149,7 +149,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai sessions boot-unit status`](../reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](../reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](../reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](../reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](../reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](../reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -559,7 +559,7 @@ Exits with error if no session named `<session-name>` exists.
 ### ai sessions
 
 ```bash
-ai sessions [list] [-a] [-S host|pair|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
+ai sessions [list] [-a] [-S host|group|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
 ```
 
 Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
@@ -572,29 +572,36 @@ migration preflight uses, and a row whose liveness cannot be proved still shows 
 session's last run-state change; a policy change does not move it. `RELAUNCH` is the boot relaunch
 policy (`auto`, `always` or `never`).
 
-- `-S/--scope`: `host` is this host; `pair` (the default) adds the paired host; `fleet` adds every
-  host that publishes. This host's rows come from its live registry; other hosts' rows come from
-  the snapshots each host pushes with `ai sessions publish` to `[session_relaunch.publish] repo`,
-  fetched with a 15-second bound. A host that does not publish is not shown, and each snapshot's
-  time is printed under the table.
+- `-S/--scope` requests `host`, `group`, or `fleet`, within the profile's visibility limit.
+  Local rows come from the live registry. Other hosts' rows come from snapshots, timestamped
+  copies of their session records. Each host writes its snapshot with `ai sessions publish` to
+  `[session_relaunch.publish] repo`. The reader fetches with a 15-second bound and prints each
+  snapshot's time under the table. A missing group snapshot produces a hint to publish it.
 - `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
   keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
 - `-j/--json` prints this host's registry records, each with `earlier_boot_gone` (`true` for a
   row the table shows as `stale`, whose `run_state` stays `running`); it ignores the other options
-  and refuses `-S pair` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
+  and refuses `-S group` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
   registry file itself ([fields](../iterm2-persistence.md)).
 
-The defaults live in the `[sessions_list]` table of `config.toml`, read on every call, with a flag
-overriding each:
+The defaults live in `[sessions_list]` in `config.toml`. A flag overrides the corresponding
+default within the machine profile's limit.
 
 ```toml
 [sessions_list]
 group_by = "host"
 sort_by = ["status", "name"]
 show_all = false
-scope = "pair"
-pair_host = ""  # empty: the default [remote.machines] alias
+scope = "group"
+group_host = ""  # fallback member ID or alias, otherwise the default remote machine
 ```
+
+Set `[machine] profile_class = "personal"` and set `session_group_members = ["host-a", "host-b"]`
+on both hosts to list the group in both directions. These are publication host IDs. If a group
+entry or the default remote machine uses an SSH alias, set its `[remote.machines.<alias>] host_id`
+to the ID used to publish its snapshot. Personal profiles default to `group` and can restrict the
+scope to `host` or explicitly permit `fleet` with `[machine] sessions_list_scope`. Work, client,
+and unclassified profiles always use `host`.
 
 [docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
 each key.

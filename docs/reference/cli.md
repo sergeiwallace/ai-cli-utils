@@ -84,7 +84,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions boot-unit status`](#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -1315,7 +1315,7 @@ Stop the stale-session reaper
 ai sessions [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, grouped by host, active first
+List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults and the machine profile's visibility limits
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1398,13 +1398,13 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
+List sessions as a table grouped by host, active sessions first. Personal profiles include their machine host group by default. Work, client and unclassified profiles show this host only. -a/--all adds exited, stale and unknown rows. -S/--scope requests host, group or fleet within the machine profile's limit. -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print this host's registry records as JSON |
 | `-a` | `--all` |  | Include exited, stale and unknown sessions |
-| `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
+| `-S` | `--scope` | `[host\|group\|fleet]` | Request this host, its machine host group, or all publishing hosts within the profile's limit |
 | `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
 | `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |
 | `-h` | `--help` |  | Show this message and exit. |

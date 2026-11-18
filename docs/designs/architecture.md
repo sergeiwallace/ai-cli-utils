@@ -25,6 +25,7 @@ template_version: "design-1.0.0"
 - [Overview](#overview)
 - [Module Map](#module-map)
 - [Command Groups](#command-groups)
+- [Session Listing and Publication](#session-listing-and-publication)
 - [Key Data Types](#key-data-types)
 - [External Integrations](#external-integrations)
 - [Key Design Decisions](#key-design-decisions)
@@ -150,6 +151,49 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai internal publish SUBJECT PAYLOAD` — raw NATS publish (used by hooks)
 
 ---
+
+## Session Listing and Publication
+
+`ai sessions list` shows this host's live registry. A published snapshot is a
+timestamped TOML copy of a host's session records. `ai sessions publish` writes
+`sessions/<host-id>.toml` to the publication ref named for that host. The reader
+fetches snapshot refs over Git and reports each displayed snapshot's age by
+printing its publication timestamp. If a fetch fails, the reader reports the
+failure and uses any previously fetched snapshots.
+
+The machine profile lives in `[machine]` in the machine-local `config.toml`.
+Provisioners that render `[profiles.<profile>.machine]` from a fleet config
+can put the same keys there. The listing reads the machine-local values on
+every invocation. `profile_class = "personal"`
+permits `group` by default. Work, client, and unclassified profiles are limited
+to `host`. A personal profile can set `sessions_list_scope = "host"` to restrict
+listing or explicitly set `"fleet"` to permit a fleet listing. The CLI flag takes
+precedence over `[sessions_list] scope`, and the machine profile bounds both.
+
+For a symmetric view, set `[machine] session_group_members` to the same list
+of host IDs on every group member. The current host is always included, even
+when it has no outbound remote configured. Where no membership list is set,
+the reader uses `[sessions_list] group_host` or the configured default remote
+machine. An entry that names a configured SSH alias resolves through that
+machine's `host_id`. A `host_id` must match the publication ID, including any
+`[session_relaunch.publish] host` override.
+
+### Session Listing Acceptance Criteria
+
+- When a personal group member runs the list, the command shall show its live
+  rows and the published rows of each available group member, including when
+  the caller has no outbound SSH target.
+- When an SSH alias differs from the publication ID, the command shall use the
+  configured host ID to find the snapshot.
+- If a group member cannot be resolved or read, then the command shall name
+  the problem and the corrective action, show available rows, and exit zero.
+- While the effective scope is `host`, the command shall show only records from
+  the local registry and skip fetching snapshots, even when a flag requests a
+  wider scope on a work or client profile.
+- The command shall preserve table ordering, active-state filtering, snapshot
+  timestamps, cached reads on fetch failure, and local-only JSON. Existing
+  wider listings require a personal profile. Fleet access requires explicit
+  profile permission so an unclassified host defaults to the local registry.
 
 ## Key Data Types
 

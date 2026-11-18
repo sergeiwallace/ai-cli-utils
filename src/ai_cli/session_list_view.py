@@ -13,12 +13,12 @@ DEFAULTS = {
     "group_by": "host",
     "sort_by": ["status", "name"],
     "show_all": False,
-    "scope": "pair",
-    "pair_host": "",
+    "scope": "group",
+    "group_host": "",
 }
 GROUP_KEYS = ("host", "status", "relaunch", "none")
 SORT_KEYS = ("status", "name", "changed", "host", "relaunch")
-SCOPES = ("host", "pair", "fleet")
+SCOPES = ("host", "group", "fleet")
 #: The status and cause a row shows for a running record from an earlier boot of this host that
 #: tmux and the process table both prove gone; the record itself still says running.
 STALE = "stale"
@@ -60,24 +60,40 @@ def parse_sort(value: str | Sequence[str], source: str) -> list[str]:
     return keys
 
 
-def settings() -> dict:
-    """``[sessions_list]`` over the built-in defaults, read from config.toml on every call."""
-    table = config.load_config(read_only=True).get("sessions_list", {})
+def normalize_scope(value):
+    return "group" if value == "pair" else value
+
+
+def effective_scope(machine: dict, requested: str) -> str:
+    """Apply the machine profile's visibility limit to the requested table scope."""
+    if machine.get("profile_class") != "personal":
+        return "host"
+    limit = normalize_scope(machine.get("sessions_list_scope", "group"))
+    if limit not in SCOPES:
+        raise ViewError(f"[machine] sessions_list_scope must be one of {', '.join(SCOPES)}")
+    return min(requested, limit, key=SCOPES.index)
+
+
+def settings(cfg: dict) -> dict:
+    """``[sessions_list]`` over the built-in defaults for this invocation."""
+    table = cfg.get("sessions_list", {})
     where = f"[sessions_list] in {config.config_file_text()}"
     if not isinstance(table, dict):
         raise ViewError(f"{where} must be a table")
-    unknown = sorted(set(table) - set(DEFAULTS))
+    unknown = sorted(set(table) - set(DEFAULTS) - {"pair_host"})
     if unknown:
         raise ViewError(f"{where}: unknown key {', '.join(unknown)}; known keys: {', '.join(DEFAULTS)}")
     result = DEFAULTS | table
+    result["scope"] = normalize_scope(result["scope"])
+    result["group_host"] = table.get("group_host", table.get("pair_host", ""))
     choices = {"group_by": GROUP_KEYS, "scope": SCOPES}
     for key, allowed in choices.items():
         if result[key] not in allowed:
             raise ViewError(f"{where}: {key} must be one of {', '.join(allowed)}; got {result[key]!r}")
     if not isinstance(result["show_all"], bool):
         raise ViewError(f"{where}: show_all must be true or false")
-    if not isinstance(result["pair_host"], str):
-        raise ViewError(f"{where}: pair_host must be a string")
+    if not isinstance(result["group_host"], str):
+        raise ViewError(f"{where}: group_host must be a string")
     result["sort_by"] = parse_sort(result["sort_by"], f"{where}: sort_by")
     return result
 

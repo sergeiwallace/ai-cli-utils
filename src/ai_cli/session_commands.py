@@ -18,6 +18,7 @@ import click
 import psutil
 
 from . import (
+    config,
     output,
     session_boot_unit,
     session_list_view,
@@ -40,8 +41,7 @@ from .session_enrol import enrol, heal_live_sessions
     cls=HelpGroup,
     invoke_without_command=True,
     help="List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs "
-    "`ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, "
-    "grouped by host, active first",
+    "`ai sessions list` with the [sessions_list] defaults and the machine profile's visibility limits",
 )
 @click.pass_context
 def sessions(ctx):
@@ -252,21 +252,57 @@ def publish(now, tick):
     output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
-def _local_host(doc: dict) -> str:
-    return state.config.load_config(read_only=True).get("machine", {}).get("host_id") or doc["machine"]
+def _local_host(doc: dict, cfg: dict | None = None) -> str:
+    if cfg is None:
+        cfg = config.load_config(read_only=True)
+    return cfg.get("machine", {}).get("host_id") or doc["machine"]
 
 
-def _pair_host(view: dict) -> tuple[str, str]:
-    """The paired host id and, when there is none, why."""
-    if view["pair_host"]:
-        return view["pair_host"], ""
-    try:
-        alias = state.config.resolve_remote_machine_alias(state.config.load_config(read_only=True))
-    except state.config.RemoteMachineError as exc:
-        return "", f"no pair host: {exc}"
-    if not alias:
-        return "", "no pair host: set [sessions_list] pair_host or a [remote.machines] default"
-    return alias, ""
+def _group_hosts(cfg: dict, group_host: str, local: str, published_local: str) -> tuple[dict[str, bool], list[str]]:
+    """Resolve remote group members to publication IDs and flag legacy aliases with no ID mapping."""
+    members = cfg.get("machine", {}).get("session_group_members")
+    if members is None:
+        if not group_host:
+            with contextlib.suppress(config.RemoteMachineError):
+                group_host = config.resolve_remote_machine_alias(cfg) or config.get_remote_machine(cfg).get(
+                    "host_id", ""
+                )
+        if not group_host:
+            return {}, [
+                "No other machine host group members are configured. "
+                "Set [machine] session_group_members on each group host."
+            ]
+        members = [group_host]
+    if not isinstance(members, list):
+        return {}, ["Set [machine] session_group_members to a list of publication host IDs."]
+
+    remote = cfg.get("remote", {})
+    machines = remote.get("machines", {}) if isinstance(remote, dict) else {}
+    hosts = {}
+    notes = []
+    for index, member in enumerate(members, start=1):
+        if member in (local, published_local):
+            continue
+        alias = isinstance(member, str) and isinstance(machines, dict) and member in machines
+        try:
+            machine = config.get_remote_machine(cfg, member) if alias else {}
+        except config.RemoteMachineError:
+            machine = {"host_id": None}
+        host = machine.get("host_id", member)
+        if not isinstance(host, str) or not session_state_publish.HOST_ID.fullmatch(host):
+            name = member if isinstance(member, str) and session_state_publish.HOST_ID.fullmatch(member) else index
+            notes.append(
+                f"Group member {name}: its publication host ID could not be resolved. "
+                "Set the host ID in [machine] session_group_members or [remote.machines.<alias>] host_id."
+            )
+        elif host not in (local, published_local):
+            hosts[host] = hosts.get(host, True) and alias and "host_id" not in machine
+    return hosts, notes
+
+
+class _ScopeChoice(click.Choice):
+    def convert(self, value, param, ctx):
+        return super().convert(session_list_view.normalize_scope(value), param, ctx)
 
 
 def _earlier_boot_gone(record: dict, boot: str | None) -> bool:
@@ -299,9 +335,10 @@ def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
 
 @sessions.command(
     "list",
-    help="List sessions as a table grouped by host, active sessions first: this host's running sessions and, "
-    "with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; "
-    "-S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] "
+    help="List sessions as a table grouped by host, active sessions first. Personal profiles include their "
+    "machine host group by default. Work, client and unclassified profiles show this host only. "
+    "-a/--all adds exited, stale and unknown rows. -S/--scope requests host, group or fleet within the machine "
+    "profile's limit. -g/--group-by and -s/--sort-by override the [sessions_list] "
     "defaults in config.toml. A running record from an earlier boot of this host that tmux and the process "
     "table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone",
 )
@@ -310,8 +347,8 @@ def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
 @click.option(
     "-S",
     "--scope",
-    type=click.Choice(session_list_view.SCOPES),
-    help="Hosts to list: this host, this host and its pair, or every host that publishes its sessions",
+    type=_ScopeChoice(session_list_view.SCOPES),
+    help="Request this host, its machine host group, or all publishing hosts within the profile's limit",
 )
 @click.option("-g", "--group-by", type=click.Choice(session_list_view.GROUP_KEYS), help="Column to group rows by")
 @click.option(
@@ -321,10 +358,13 @@ def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
     help=f"Comma-separated sort keys, first key first: {', '.join(session_list_view.SORT_KEYS)}",
 )
 def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_by=None):
-    if as_json and scope in ("pair", "fleet"):
+    if as_json and scope in ("group", "fleet"):
         raise click.UsageError("-j/--json prints this host's registry only; drop -S/--scope or -j")
     try:
-        view = session_list_view.settings()
+        cfg = config.load_config(read_only=True)
+        view = session_list_view.settings(cfg)
+        if not as_json:
+            scope = session_list_view.effective_scope(cfg.get("machine", {}), scope or view["scope"])
         if sort_by is not None:
             view["sort_by"] = session_list_view.parse_sort(sort_by, "-s/--sort-by")
     except session_list_view.ViewError as exc:
@@ -347,7 +387,7 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
     if as_json:
         output.raw(Untagged.JSON, json.dumps(records))
         return
-    local = _local_host(doc)
+    local = _local_host(doc, cfg)
     rows = [
         session_list_view.Row(
             host=local,
@@ -360,20 +400,35 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
         for r in records
     ]
     notes = []
-    scope = scope or view["scope"]
     if scope != "host":
-        wanted, why = _pair_host(view) if scope == "pair" else (None, "")
-        if why:
-            notes.append(why)
-        if wanted != "":
+        published_local = cfg.get("session_relaunch", {}).get("publish", {}).get("host") or local
+        # None means fleet scope. An empty group needs no snapshot fetch.
+        wanted, notes = (
+            _group_hosts(cfg, view["group_host"], local, published_local) if scope == "group" else (None, [])
+        )
+        if wanted is None or wanted:
             snapshots = session_state_publish.read_snapshots()
             if snapshots.problem:
                 notes.append(snapshots.problem)
-            hosts = sorted(h for h in snapshots.hosts if h != local and (wanted is None or h == wanted))
-            if wanted is not None and wanted != local and wanted not in snapshots.hosts and not snapshots.problem:
-                notes.append(f"{wanted}: no published snapshot")
-            for host in hosts:
-                published = snapshots.hosts[host]
+            hosts = snapshots.hosts if wanted is None else wanted
+            for host in sorted(hosts):
+                if host in (local, published_local):
+                    continue
+                published = snapshots.hosts.get(host)
+                if published is None:
+                    if snapshots.problem:
+                        continue
+                    if wanted and wanted[host]:
+                        notes.append(
+                            f"{host}: no snapshot matches this remote alias. "
+                            "Set [remote.machines.<alias>] host_id to its publication host ID "
+                            "and run `ai sessions publish` on that host."
+                        )
+                    else:
+                        notes.append(
+                            f"{host}: no readable session snapshot was published. Run `ai sessions publish` on {host}."
+                        )
+                    continue
                 rows += _snapshot_rows(host, published)
                 notes.append(f"{host}: published snapshot from {published.get('published_at') or 'an unknown time'}")
     group = group_by or view["group_by"]
