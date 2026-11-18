@@ -156,11 +156,16 @@ def _run(extension: Extension, reporter: LaunchReporter) -> None:
         elapsed = time.monotonic() - started
         captured.seek(0)
         output = captured.read().decode("utf-8", errors="replace")
-    for line in output.splitlines():
+    lines = output.splitlines()
+    for line in lines:
         reporter.detail(_OP, f"{extension.name} output: {line}")
+    # The last line an extension printed is its own one-line status (started, already running,
+    # disabled here), so it reaches the terminal as well as the log.
+    said = next((line.strip() for line in reversed(lines) if line.strip()), "")
+    summary = f"{outcome} in {elapsed:.1f}s" + (f": {said}" if said else "")
     if returncode != 0:
-        raise _ExtensionError(f"{outcome} in {elapsed:.1f}s")
-    reporter.phase(_OP).outcome(f"{extension.name}: {outcome} in {elapsed:.1f}s")
+        raise _ExtensionError(summary)
+    reporter.phase(_OP).outcome(f"{extension.name}: {summary}")
 
 
 def run_launch_extensions(config: dict, reporter: LaunchReporter, log_path: Path | None = None) -> None:

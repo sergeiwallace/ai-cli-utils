@@ -74,7 +74,7 @@ Each extension runs once per `ai c` launch, after the launcher's own update chec
 
 An extension runs to completion: the launch waits until it exits or its `timeout_seconds` passes, and a command still running at the timeout is stopped and counts as failed. An extension that needs something to keep running after the launch, such as a watcher or a local server, must start that process detached (in the background, with its own output redirected) and then exit. The launcher does not track or stop processes an extension leaves behind.
 
-Its standard input is empty, and its standard output and error are captured into the launch log rather than shown on the terminal, so it cannot prompt for input.
+Its standard input is empty, so it cannot prompt for input. Its standard output and error are captured into the launch log, and the last non-empty line it printed is also shown on the terminal, so an extension can report its own one-line status there (for example "started" or "disabled on this machine").
 
 ## Errors: warn or fail
 
@@ -109,7 +109,7 @@ Every launch writes a timestamped log under the launcher's state directory, in `
 - the outcome: its exit status and how long it ran, or why it could not run;
 - the warning or error, if it failed.
 
-On the terminal you see one line per extension: its exit status when it succeeds, or the warning or error when it fails. Run `ai c` with `-v/--verbose` to see the start and output lines there too.
+On the terminal you see one line per extension: its exit status when it succeeds, or the warning or error when it fails, followed by the last line the extension printed. Run `ai c` with `-v/--verbose` to see the start line and every output line there too.
 
 ## Example: a heartbeat file
 

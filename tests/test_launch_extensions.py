@@ -197,6 +197,40 @@ def test_given_a_failing_extension_under_warn_when_launching_then_it_warns_logs_
     assert "greeting extension could not reach its greeting" in log
 
 
+def test_given_an_extension_that_prints_a_status_line_when_launching_then_the_terminal_line_carries_its_last_line(
+    tmp_path, projects
+):
+    _script(projects / "myextensions", "status.py", 'print("checking")\nprint("watcher disabled for this host")\n')
+    config = _config(projects, {"status": {"path": "myextensions", "command": [sys.executable, "status.py"]}})
+
+    code, stderr, session_launch = _launch(config)
+
+    assert code == 0
+    session_launch.assert_called_once()
+    line = [entry for entry in stderr.splitlines() if "status: exited with status 0" in entry]
+    assert line, stderr
+    assert line[0].endswith(": watcher disabled for this host"), line[0]
+    assert "checking" not in stderr
+    assert "checking" in _log_text(tmp_path)
+
+
+def test_given_a_failing_extension_under_warn_when_launching_then_the_warning_carries_its_last_output_line(
+    tmp_path, projects
+):
+    _script(projects / "myextensions", "fail.py", FAIL)
+    config = _config(
+        projects, {"greeting": {"path": "myextensions", "command": [sys.executable, "fail.py"]}}, on_error="warn"
+    )
+
+    code, stderr, session_launch = _launch(config)
+
+    assert code == 0
+    session_launch.assert_called_once()
+    warning = [line for line in stderr.splitlines() if "Warning:" in line and "greeting" in line]
+    assert warning, stderr
+    assert "greeting extension could not reach its greeting" in warning[0]
+
+
 def test_given_a_failing_extension_under_fail_when_launching_then_it_logs_an_error_exits_nonzero_and_does_not_launch(
     tmp_path, projects
 ):
