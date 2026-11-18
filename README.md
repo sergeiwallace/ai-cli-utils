@@ -978,6 +978,25 @@ ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
 ai ssh [alias]                     # Open an interactive shell on that machine
 ```
 
+#### Codex clipboard from a remote shell (Linux)
+
+Codex copies to the native clipboard through the graphical display. A shell reached over
+SSH has no `DISPLAY` or `XAUTHORITY`, so a copy from a Codex session started there fails,
+even while you are signed in to the same machine's desktop (for example over remote
+desktop). When neither variable is set, each Codex start in a supervised `ai cx` session,
+fresh or resumed, looks for your desktop session and gives Codex its display. It uses
+the pair only when all of these hold:
+
+- logind (`loginctl`) has exactly one session of your user that is `State=active`,
+  `Remote=no` and of `Type` `x11` or `wayland`;
+- your systemd user manager (`systemctl --user show-environment`) holds a `DISPLAY` and
+  `XAUTHORITY`, and an X11 session that names its display names the same one;
+- the `XAUTHORITY` file exists, is owned by you and is not older than the session.
+
+Otherwise Codex starts without them and the launch log says why. A `DISPLAY` or
+`XAUTHORITY` you set yourself is kept as it is, and only the Codex process gets the pair:
+your shell and the tmux environment are untouched. macOS and Windows are unchanged.
+
 ### Session boot relaunch
 
 On macOS and Linux, a boot or login job can run `ai sessions relaunch -b/--boot`
