@@ -818,26 +818,27 @@ def test_given_the_runner_wrapper_variable_when_the_test_step_runs_then_pytest_r
         assert (calls[0] if len(calls) > 1 else None) == expected_first, (name, calls)
 
 
-def test_given_a_self_hosted_macos_runner_with_tmux_when_the_shard_runs_then_brew_install_tmux_is_skipped(
-    tmp_path: Path,
-) -> None:
+def test_given_a_self_hosted_macos_runner_with_tmux_when_the_shard_runs_then_brew_install_tmux_is_skipped() -> None:
+    """Checked on the step text, not by running it.
+
+    The suite refuses any shell command string that names tmux, stub or not, so the
+    step is not executed here. Every self-hosted line that installs tmux must sit
+    behind a `command -v tmux ||` test on that same line.
+    """
     job = load_workflows()["ci-macos.yml"]["jobs"]["test-macos-shard"]
     self_hosted = steps_that_run(job, "self-hosted")
-    installs = [step["run"] for step in self_hosted if "brew install tmux" in step.get("run", "")]
+    install_lines = [
+        line
+        for step in self_hosted
+        for line in step.get("run", "").splitlines()
+        if re.search(r"\bbrew\s+install\s+tmux\b", line)
+    ]
 
-    assert all(re.search(r"command -v tmux\b[^\n]*\|\|\s*brew install tmux", run) for run in installs), installs
+    assert install_lines, "no self-hosted step provides tmux"
+    assert all(
+        re.fullmatch(r"\s*command -v tmux >/dev/null \|\| brew install tmux\s*", line) for line in install_lines
+    ), install_lines
     assert any(step.get("run", "").strip() == "brew install tmux" for step in steps_that_run(job, "github-hosted"))
-    if sys.platform != "win32" and shutil.which("sh") is not None:
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        log = tmp_path / "calls.log"
-        _write_stub(bin_dir, "tmux", f'echo "tmux $*" >> "{log}"')
-        _write_stub(bin_dir, "brew", f'echo "brew $*" >> "{log}"')
-        for run in installs:
-            subprocess.run(
-                ["sh", "-c", run], env={"PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin"}, check=True
-            )
-        assert not any(line.startswith("brew") for line in log.read_text(encoding="utf-8").splitlines())
 
 
 def test_given_the_publish_job_when_routed_then_hosted_uses_the_pypi_action_and_self_hosted_uses_uv_publish() -> None:
