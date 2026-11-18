@@ -54,6 +54,7 @@ import yaml
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
+from .config import get_canonical_source_repo
 from .copier_recovery import (
     _anchor_failed_update,
     _check_recovery_target,
@@ -67,8 +68,6 @@ from .output import Tag
 EX_CONFIG = 78
 EX_TEMPFAIL = 75
 EX_PARTIAL_MUTATION = 3
-
-_CANONICAL_SOURCE_REPO = "ai-harness"
 
 
 @dataclass(frozen=True)
@@ -532,7 +531,8 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
 
 def _load_mirror_excludes(projects_dir: Path) -> dict[str, tuple[str, ...]]:
     """Map the canonical source repository to the paths Copier would render back to it."""
-    config_path = projects_dir / _CANONICAL_SOURCE_REPO / "config" / "canonical-readme-sync.toml"
+    source_repo = get_canonical_source_repo()
+    config_path = projects_dir / source_repo / "config" / "canonical-readme-sync.toml"
     try:
         with config_path.open("rb") as file:
             rows = tomllib.load(file).get("readme", [])
@@ -548,7 +548,7 @@ def _load_mirror_excludes(projects_dir: Path) -> dict[str, tuple[str, ...]]:
             consumer_path = row.get("consumer_path")
             if isinstance(consumer_path, str) and (path := _rendered_template_path(consumer_path, "template")):
                 paths.add(path)
-    return {_CANONICAL_SOURCE_REPO: tuple(sorted(paths))}
+    return {source_repo: tuple(sorted(paths))}
 
 
 def _mirror_skip_note(paths: tuple[str, ...]) -> str:
@@ -933,7 +933,7 @@ def _run_copier_update(
 _WT_NAME = "copier-update"
 _WT_BRANCH = "copier-update-tmp"
 _COMMIT_MSG = "chore: copier update from project-template"
-# A repo that enforces delegation provenance (ai-harness) rejects a commit without this terminal block.
+# A repository that enforces delegation provenance requires this terminal block.
 _COMMIT_TRAILER = "Delegated-to: none"
 
 

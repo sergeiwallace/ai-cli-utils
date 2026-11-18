@@ -1028,11 +1028,13 @@ Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/
 
 ### ai copier-update
 
-Each run reads `ai-harness/config/canonical-readme-sync.toml` under the configured projects
-directory. When updating the source repository, both isolated and direct updates skip the files
-that the template mirrors from that repository. The per-project line lists the skipped paths and
-the reason. Other projects still receive the template copies. If the command cannot read the mirror
-mapping, `ai copier-update` prints one warning and continues without mirror exclusions.
+Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
+under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
+`config.toml` to override the packaged default. When updating the source repository, both isolated
+and direct updates skip the files that the template mirrors from that repository. The per-project
+line lists the skipped paths and the reason. Other projects still receive the template copies. If
+the command cannot read the mapping, `ai copier-update` prints one warning and continues without
+mirror exclusions.
 
 ### ai update
 

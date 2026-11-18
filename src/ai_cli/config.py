@@ -1819,6 +1819,26 @@ def get_environment_repo() -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def get_canonical_source_repo() -> str:
+    """Read ``[copier_update] canonical_source_repo`` with the shipped default as fallback."""
+    try:
+        section = load_config(read_only=True).get("copier_update")
+    except (AttributeError, ValueError):
+        section = None
+    value = section.get("canonical_source_repo") if isinstance(section, dict) else None
+    name = value.strip() if isinstance(value, str) else ""
+    if name not in {".", ".."} and re.fullmatch(r"[^/\\:\x00]+", name):
+        return name
+
+    module_path = Path(__file__).resolve()
+    defaults_path = module_path.parent / "data" / "copier-update.toml"
+    if not defaults_path.is_file():
+        # Editable installations read the same defaults from the source checkout.
+        defaults_path = module_path.parents[2] / "config" / "copier-update.toml"
+    with defaults_path.open("rb") as defaults:
+        return tomllib.load(defaults)["copier_update"]["canonical_source_repo"]
+
+
 def _find_project_dir(name: str, _home: Path | None = None) -> Path:
     """Find a project directory under the configured projects_dir (default: ~/projects)."""
     if _home is not None:

@@ -13,6 +13,7 @@ import pytest
 import yaml
 from conftest import run_cli
 
+from ai_cli.config import get_canonical_source_repo
 from ai_cli.copier_update import (
     EX_CONFIG,
     EX_PARTIAL_MUTATION,
@@ -26,6 +27,7 @@ from ai_cli.copier_update import (
     _do_update_in_worktree,
     _excluded_on_update,
     _find_copier_projects,
+    _load_mirror_excludes,
     _reachable_source,
     _repo_root,
     _resolve_copier_source,
@@ -1541,7 +1543,7 @@ def _cli_update(projects: Path) -> tuple[int, str]:
 @pytest.fixture
 def mirror_projects(tmp_path):
     repos = _copier_project_from(tmp_path, _FEATURE_QUESTIONS, {})
-    source = repos["projects"] / "ai-harness"
+    source = repos["projects"] / get_canonical_source_repo()
     shutil.copytree(repos["project"], source)
 
     template = repos["author"] / "template"
@@ -1563,6 +1565,25 @@ def _add_mirror_row(source: Path, canonical: str, consumer_path: str) -> None:
         )
     _git_output(source, "add", "--", config.relative_to(source).as_posix())
     _git_output(source, "commit", "-m", "Register mirror")
+
+
+def test_given_a_changed_canonical_source_setting_when_loading_mirrors_then_reads_the_new_repo(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr("ai_cli.config.config_file_text", lambda: str(config_path))
+    projects = tmp_path / "projects"
+    for name, filename in (("old-source", "first.txt"), ("new-source", "second.txt")):
+        mirror_path = projects / name / "config" / "canonical-readme-sync.toml"
+        mirror_path.parent.mkdir(parents=True)
+        mirror_path.write_text(
+            f'[[readme]]\nconsumer_repo = "project-template"\nconsumer_path = "template/{filename}"\n',
+            encoding="utf-8",
+        )
+
+    config_path.write_text('[copier_update]\ncanonical_source_repo = "old-source"\n', encoding="utf-8")
+    assert _load_mirror_excludes(projects) == {"old-source": ("first.txt",)}
+
+    config_path.write_text('[copier_update]\ncanonical_source_repo = "new-source"\n', encoding="utf-8")
+    assert _load_mirror_excludes(projects) == {"new-source": ("second.txt",)}
 
 
 @pytest.mark.parametrize("isolate", [False, True], ids=["direct", "isolated"])
@@ -2334,7 +2355,7 @@ def test_given_template_envops_delimiters_when_updating_then_exclude_entries_ren
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
 def test_given_an_update_commit_when_it_is_made_then_it_ends_with_the_delegation_declaration(tmp_path):
-    """A repo enforcing delegation provenance (ai-harness) rejects a commit without this terminal block."""
+    """A repository that enforces delegation provenance requires this terminal block."""
     status, detail, project, _ = _uv_consumer_update(tmp_path)
     assert (status, detail) == ("ok", "")
     message = subprocess.run(
