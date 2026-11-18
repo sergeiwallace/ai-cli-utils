@@ -671,6 +671,7 @@ def test_do_update_conflict(tmp_path):
 
 def test_do_update_ok_push(tmp_path):
     """Clean changes + push → ok; pushes HEAD:main and rebases the main tree."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -686,6 +687,7 @@ def test_do_update_ok_push(tmp_path):
 
 def test_do_update_ok_no_push(tmp_path):
     """push=False commits but never pushes or rebases."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -1273,6 +1275,76 @@ def test_given_pyproject_without_uv_lock_when_committing_update_then_nothing_is_
     assert "ModuleNotFoundError" in detail
 
 
+def test_given_submodule_when_preparing_dependencies_then_it_is_initialized_before_sync(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    (tmp_path / ".gitmodules").write_text('[submodule "lib"]\n')
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "uv.lock").touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", return_value="/fake/uv"),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    assert calls[0] == ["git", "-C", str(tmp_path), "submodule", "update", "--init", "--recursive"]
+    assert calls[1][0] == "/fake/uv"
+
+
+def test_given_submodule_failure_when_preparing_dependencies_then_it_reports_step(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    (tmp_path / ".gitmodules").write_text('[submodule "lib"]\n')
+    with patch("ai_cli.copier_update.subprocess.run", return_value=MagicMock(returncode=1, stderr="failed", stdout="")):
+        error = _prepare_dependencies(tmp_path)
+    assert error is not None and "dependency install" in error and "submodule" in error
+
+
+def test_given_nested_projects_when_preparing_dependencies_then_it_installs_in_gate_locations(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").touch()
+    (backend / "uv.lock").touch()
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").touch()
+    (web / "package-lock.json").touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=lambda name: "/fake/" + name),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    uv_call = next(kwargs for command, kwargs in calls if command[0] == "/fake/uv")
+    assert uv_call["cwd"] == backend
+    assert uv_call["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
+    assert any(command[0] == "/fake/npm" and kwargs["cwd"] == web for command, kwargs in calls)
+
+
+def test_given_nested_install_failure_when_preparing_dependencies_then_it_names_directory(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").touch()
+    (web / "package-lock.json").touch()
+    with patch("ai_cli.copier_update.shutil.which", return_value=None):
+        error = _prepare_dependencies(tmp_path)
+    assert error is not None and "web" in error and "npm" in error
+
+
 def _probe_runner(ssh_reachable: bool):
     calls: list[list[str]] = []
 
@@ -1682,6 +1754,7 @@ def test_given_file_project_still_has_when_copier_leaves_it_unchanged_then_parit
 
 def test_do_update_pushfail(tmp_path):
     """Push rejected → pushfail with git stderr, worktree/commit preserved by caller."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n", push_rc=1)
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -1697,6 +1770,7 @@ def test_do_update_pushfail(tmp_path):
 
 def test_given_a_failing_pre_push_hook_when_push_fails_then_its_stdout_reaches_the_detail(tmp_path):
     """The repo's test gate prints on stdout; stderr alone hides why the push was refused."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n", push_rc=1, push_stdout="test gate (mise-aware)....Failed")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
