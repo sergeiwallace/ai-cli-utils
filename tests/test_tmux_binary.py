@@ -240,6 +240,18 @@ def test_given_a_global_tmux_binary_when_attaching_then_the_check_and_the_exec_u
     assert args[1:] == ["attach-session", "-t", "myproject-1"]
 
 
+@pytest.fixture(params=sorted({sys.platform, "win32"}))
+def launch_platform(request, monkeypatch) -> str:
+    """This host's own platform, and Windows (the psmux machine) faked on any other host.
+
+    Faked for the whole case, not around the launch alone: ``config.toml``'s location
+    depends on ``sys.platform``, so a platform faked only around the launch reads a
+    different file from the one the case wrote.
+    """
+    monkeypatch.setattr(sys, "platform", request.param)
+    return request.param
+
+
 @contextlib.contextmanager
 def _dry_run_launch(tmp_path: Path, monkeypatch):
     """``ai c 7 --dry-run`` through the real entry point, with the repo and name resolution faked."""
@@ -248,7 +260,6 @@ def _dry_run_launch(tmp_path: Path, monkeypatch):
     with contextlib.ExitStack() as stack:
         for patcher in (
             patch("sys.argv", ["ai", "c", "7", "--dry-run", "--no-direnv"]),
-            patch("ai_cli.main.sys.platform", "linux"),
             patch("ai_cli.tmux_setup.install_tmux", side_effect=AssertionError("a dry run installed tmux")),
             patch("ai_cli.session.detect_repo_root", return_value=str(tmp_path)),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -267,6 +278,8 @@ def test_given_a_global_tmux_binary_when_launching_then_the_tmux_preflight_runs_
 ) -> None:
     # A real executable that exists on every platform, so a tmux call outside the
     # faked probe seam fails harmlessly instead of reaching a real multiplexer.
+    # Runs on the host's own platform only: under a faked win32, ``shutil.which``
+    # wants a PATHEXT suffix the interpreter of a POSIX host does not have.
     _write_config(f"[tmux]\nbinary = {_toml_path(Path(sys.executable))}\n")
 
     with _dry_run_launch(tmp_path, monkeypatch), pytest.raises(SystemExit) as exc_info:
@@ -280,7 +293,7 @@ def test_given_a_global_tmux_binary_when_launching_then_the_tmux_preflight_runs_
 
 
 def test_given_a_missing_configured_binary_when_launching_then_the_launch_is_refused_by_name(
-    tmp_path, monkeypatch, probes, capsys
+    tmp_path, monkeypatch, launch_platform, probes, capsys
 ) -> None:
     missing = tmp_path / "no-such-psmux.exe"
     config_path = _write_config(f"[tmux]\nbinary = {_toml_path(missing)}\n")
