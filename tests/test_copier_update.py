@@ -1544,7 +1544,9 @@ def _cli_update(projects: Path) -> tuple[int, str]:
 def mirror_projects(tmp_path):
     repos = _copier_project_from(tmp_path, _FEATURE_QUESTIONS, {})
     source = repos["projects"] / get_canonical_source_repo()
-    shutil.copytree(repos["project"], source)
+    # git's background maintenance can create and remove .git/objects/maintenance.lock while the
+    # copy runs, which makes copytree fail on a file that vanished: leave lock files out.
+    shutil.copytree(repos["project"], source, ignore=shutil.ignore_patterns("*.lock"))
 
     template = repos["author"] / "template"
     (template / "feature.txt").write_text("redacted update\n")
