@@ -76,8 +76,10 @@ def _describe(processes):
     return lines
 
 
-@pytest.mark.parametrize("outcome", ["pass", "fail", "kill", "worker-kill"])
+@pytest.mark.parametrize("outcome", ["pass", "fail", "kill", "worker-kill", "watcher-kill", "long-lifetime"])
 def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_process_survives(tmp_path, outcome):
+    lifetime_test = outcome in {"watcher-kill", "long-lifetime"}
+    lifetime = process_wait_seconds(8)
     ready = tmp_path / "ready.json"
     proceed = tmp_path / "proceed"
     inner = tmp_path / "test_inner.py"
@@ -90,21 +92,32 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
         from test_restart_supervisor import supervisor_fixture
 
         @pytest.mark.real_tmux
+        @pytest.mark.parametrize("supervisor_fixture", [{("current" if lifetime_test else None)!r}], indirect=True)
         def test_inner(supervisor_fixture):
             root, script, supervisor = supervisor_fixture
             launches = root / "launches"
-            while not launches.exists():
+            while not launches.exists() or not launches.read_text(encoding="utf-8").endswith("\\n"):
                 assert supervisor.poll() is None, "the fixture wrapper exited before its agent started"
                 time.sleep(0.05)
+            agent = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])["pid"]
             members = []
             for process in psutil.process_iter():
                 try:
                     if os.getsid(process.pid) == supervisor.pid:
+                        assert os.getpgid(process.pid) == supervisor.pid, "a fixture process left the group"
                         members.append([process.pid, process.create_time()])
                 except (OSError, psutil.Error):
                     pass
+            assert {{supervisor.pid, agent}} <= {{pid for pid, _ in members}}
+            watchers = []
+            if {lifetime_test!r}:
+                for child in psutil.Process().children():
+                    if child.cmdline()[2:] == ["--session", str(supervisor.pid)]:
+                        watchers.append(child.pid)
+                assert len(watchers) == 1
             staged = Path({str(ready)!r} + ".tmp")
-            staged.write_text(json.dumps({{"worker": os.getpid(), "root": str(root), "members": members}}))
+            staged.write_text(json.dumps({{"worker": os.getpid(), "root": str(root), "members": members,
+                                          "supervisor": supervisor.pid, "watchers": watchers}}))
             os.replace(staged, {str(ready)!r})
             while not Path({str(proceed)!r}).exists():
                 time.sleep(0.01)
@@ -117,6 +130,8 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
     )
     tests_dir = Path(__file__).resolve().parent
     env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(tests_dir), str(tests_dir.parent / "src")))}
+    if lifetime_test:
+        env["RESTART_FIXTURE_LIFETIME_SECONDS"] = str(lifetime if outcome == "watcher-kill" else 3 * lifetime + 10)
     command = [
         sys.executable,
         "-m",
@@ -137,6 +152,7 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
     if outcome.startswith("worker-"):
         command.extend(["-n", "1", "--max-worker-restart=0"])
     members = []
+    supervisor_pid = None
     root = None
     with (tmp_path / "output").open("w+") as output:
         runner = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
@@ -147,23 +163,46 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
             assert ready.exists(), Path(output.name).read_text(encoding="utf-8")
             record = json.loads(ready.read_text(encoding="utf-8"))
             root = record["root"]
+            supervisor_pid = record["supervisor"]
             members = _identified(record["members"])
-            assert members, "the inner test saw no process in the wrapper's session"
+            assert len(members) >= 2, "the inner test did not see the wrapper and its child"
+            if lifetime_test:
+                watcher = psutil.Process(record["watchers"][0])
+                watcher.send_signal(signal.SIGKILL)
+                assert _wait(lambda: not _alive(watcher))
+                assert any(_alive(p) for p in members), "killing the watcher also ended its payload"
             proceed.touch()
-            if outcome.endswith("kill"):
+            if outcome.endswith("kill") or lifetime_test:
                 target = psutil.Process(record["worker"] if outcome.startswith("worker-") else runner.pid)
                 target.send_signal(signal.SIGKILL)
             result = runner.wait(timeout=_WAIT)
             assert result == 0 if outcome == "pass" else result != 0
-            assert _wait(lambda: not any(_alive(p) for p in members) and not _carrying(root)), (
-                "the supervisor fixture left its wrapper running",
-                _describe([*members, *_carrying(root)]),
-            )
+            if lifetime_test:
+                assert result == -signal.SIGKILL
+
+            def assert_gone():
+                assert _wait(
+                    lambda: not any(_alive(p) for p in members) and not _carrying(root),
+                    lifetime + 2 if lifetime_test else _WAIT,
+                ), (
+                    "the supervisor fixture left its wrapper running",
+                    _describe([*members, *_carrying(root)]),
+                )
+
+            if outcome == "long-lifetime":
+                with pytest.raises(AssertionError, match="the supervisor fixture left its wrapper running"):
+                    assert_gone()
+            else:
+                assert_gone()
         finally:
             if runner.poll() is None:
                 runner.kill()
                 runner.wait(timeout=_WAIT)
-            # Bound a red run: only identities the inner test captured from the wrapper's session.
+            # The fixture has no terminal or reaper heartbeat, so its entire payload
+            # stays in the supervisor's group, including children launched after ready.
+            if any(_alive(p) for p in members):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(supervisor_pid, signal.SIGKILL)
             for process in members:
                 with contextlib.suppress(psutil.Error):
                     if _alive(process):
