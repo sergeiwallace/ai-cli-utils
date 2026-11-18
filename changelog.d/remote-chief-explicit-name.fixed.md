@@ -1,0 +1,1 @@
+- `ai <engine> -F -N NAME -R` now carries NAME to the remote machine, which attaches to or launches the chief named NAME only and refuses while a different chief is running; before, the name was dropped and the remote host's running chief was attached to instead.

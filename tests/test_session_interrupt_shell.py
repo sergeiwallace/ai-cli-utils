@@ -226,7 +226,18 @@ def pane_session(request, tmp_path, monkeypatch):
             def prompt_count():
                 return len(prompts.read_text().splitlines()) if prompts.exists() else 0
 
+            def caller_screen():
+                return tmux("capture-pane", "-p", "-t", "=caller:").stdout
+
+            def at_drawn_prompt():
+                lines = [line.rstrip() for line in caller_screen().splitlines() if line.strip()]
+                return bool(lines) and lines[-1] == "test-shell>"
+
             assert _wait(lambda: prompt_count() >= 2)
+            # The prompt hook runs before the line editor has taken over the terminal. A Ctrl+C
+            # sent in that gap drew no new prompt under bash 5 on a Linux CI runner. The editor
+            # draws the prompt itself once it is reading, so wait for that before the press.
+            assert _wait(at_drawn_prompt), caller_screen()
             before_interrupt = prompt_count()
             assert tmux("send-keys", "-t", "=caller:", "C-c").returncode == 0
             # An interrupt can discard queued terminal input. Wait for the

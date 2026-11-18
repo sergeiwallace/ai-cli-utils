@@ -1,0 +1,68 @@
+# psmux compatibility with the session launcher
+
+Status: research, 2026-11-17. Sources were read at psmux commit `290d347` (2026-11-17).
+
+## What psmux is
+
+psmux is a native Windows terminal multiplexer written in Rust. It runs on ConPTY and
+needs no WSL, Cygwin or MSYS2. Installed by winget, scoop, cargo or chocolatey, it puts
+`tmux.exe`, `pmux.exe` and `psmux.exe` on `PATH`, so on such a machine `tmux` is psmux.
+Project: <https://github.com/psmux/psmux>. Docs index:
+<https://github.com/psmux/psmux/blob/master/docs/README.md>.
+
+## How it reports its version
+
+- `tmux -V` prints two lines (`src/cli.rs`, `print_version`):
+
+  ```text
+  tmux 3.4.0
+  psmux 3.4.0 (a1b2c3d 2026-10-13)
+  ```
+
+  The first line keeps tmux's contract for tools that parse it. The second line is build
+  provenance for people.
+- A running server answers `display-message -p '#{version}'` with the bare crate version,
+  `3.4.0` (`src/format.rs`, the `"version"` format variable).
+
+So a psmux client and its own server report the same version, `3.4.0`. The launcher read
+the last token of the whole `-V` output, `2026-10-13)`, as the client version and refused
+the launch as a client/server mismatch. The version pattern also did not accept a
+three-part version. Both are fixed: only the first line is read, `3.4.0` is a valid
+version, and a second line starting `psmux ` marks the kind as psmux.
+
+## Commands the launcher uses
+
+From the compatibility matrix
+(<https://github.com/psmux/psmux/blob/master/docs/compatibility.md>):
+
+| Launcher use | psmux |
+| --- | --- |
+| `-L <name>` socket namespaces | Supported, each namespace isolated |
+| `-S <path>` | Parsed (`src/socket_path.rs`); not in the compatibility matrix |
+| `new-session -e VAR=val` | Supported |
+| `attach-session`, `has-session`, `list-sessions -F` | Supported; `-F` returned byte for byte |
+| `display-message -p` | Supported, encoded as tmux does |
+| `set-environment` / `show-environment` (`-g`, `-u`, `-r`) | Supported |
+| `send-keys` (incl. `-H`) | Supported |
+| `set-option -g` / `-w`, `show-options` | Supported; `show-options -v` prints an inherited value where tmux prints nothing |
+| `kill-session`, `kill-server` | Supported; bare `kill-server` leaves `-L` namespaces running |
+| `allow-passthrough on` | Partial: wrapped sequences are not forwarded yet |
+
+Not confirmed by any psmux doc: `new-session -c/-x/-y/-P/-F`, `set-option -s/-q`,
+`#{client_termname}`, `extended-keys`. The launch output names psmux, so a launch that
+fails on one of these is attributable from the transcript.
+
+## One server per multiplexer
+
+psmux keeps its servers in its own directory and namespaces. An MSYS2 tmux uses its own
+socket under the MSYS2 `/tmp`. A psmux client therefore never talks to an MSYS2 tmux
+server, and the reverse. The client/server refusal still applies within one kind: it
+compares versions, and the message names the kind and the client binary's path.
+
+## Git Bash
+
+psmux runs Git Bash panes and runs tmux plugin scripts with Git Bash
+(<https://github.com/psmux/psmux/blob/master/docs/plugins.md>). Its diagnostics doc
+measures cursor shapes in eight terminals, mintty among them
+(<https://github.com/psmux/psmux/blob/master/docs/diagnostics.md>). No psmux doc confirms
+attaching a session from Git Bash's mintty window; that is unconfirmed until measured.

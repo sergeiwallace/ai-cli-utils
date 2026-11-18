@@ -446,7 +446,9 @@ def restore(
     def commit_sweep() -> None:
         for record in swept:
             exit_ = record["exit"]
-            _session_registry.record_exit(record["id"], cause=exit_["cause"], evidence=exit_["evidence"], at=now)
+            _session_registry.record_exit(
+                record["id"], cause=exit_["cause"], evidence=exit_["evidence"], at=now, proved_dead=True
+            )
 
     if not previewing:
         commit_sweep()

@@ -126,6 +126,17 @@ def test_given_stale_local_alias_when_selecting_projects_then_fleet_wins_and_war
     assert 'task_prefix = "ws"' in registry.read_text(encoding="utf-8")
 
 
+def test_given_stale_local_alias_when_warning_then_it_says_to_pull_before_editing(alias_registries, capsys):
+    _, local = alias_registries
+    _write_projects_registry(local, {"myworkspace": "AP"})
+
+    registered_project_names()
+
+    warning = capsys.readouterr().err
+    assert "pull" in warning
+    assert warning.index("pull") < warning.index("edit")
+
+
 @pytest.mark.parametrize("entries", [{}, {"myworkspace": "WS"}])
 def test_given_no_stale_local_alias_when_selecting_projects_then_no_warning_is_emitted(
     alias_registries, capsys, entries

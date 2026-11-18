@@ -98,6 +98,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Container
 from dataclasses import dataclass, field
@@ -195,7 +196,11 @@ class MigrationResult:
     parts: dict[str, str] = field(default_factory=dict)
     task_intent: dict = field(default_factory=dict, repr=False)
     #: Under ``dry_run``, the refusal a writing run would raise because a session is live, else empty.
+    #: When only NEW is live, a ``--finish`` sets it on a writing run too, beside :attr:`deferred`.
     live: str = ""
+    #: The NEW session a ``--finish`` found running, so it left each step that writes the live
+    #: session's own files (:data:`LIVE_SESSION_KINDS`) as :data:`DEFERRED`; empty when none was.
+    deferred: str = ""
     #: Whether the references step ran (:mod:`ai_cli.session_migrate_references`), after a completed run.
     references_checked: bool = False
     #: What the references step did, one line each.
@@ -210,7 +215,7 @@ class MigrationResult:
             bool(self.kept)
             or any("FAILED" in w or "NOT " in w for w in self.warnings)
             or any(
-                move.action == "conflict" or move.action.startswith(("left alone", "left in place", "kept"))
+                move.action in ("conflict", DEFERRED) or move.action.startswith(("left alone", "left in place", "kept"))
                 for move in self.moves
             )
         )
@@ -270,15 +275,53 @@ ALREADY_MIGRATED = "session already migrated"
 LIVE_SESSION = "live session"
 
 
-def _live_note(result: MigrationResult, refusal: LiveSessionError) -> None:
-    """Record on a dry-run ``result`` that a writing run refuses while the session is live."""
+#: The action of a ``--finish`` step left for later because it writes the files of the live NEW session.
+DEFERRED = "deferred while live"
+
+#: The parts a ``--finish`` defers while NEW runs: the live session's Claude Code project directory
+#: and transcripts, its sub-agent and background-job records, and its task namespace. Each is a
+#: file the running session holds open or writes. Every other part runs while NEW is live.
+LIVE_SESSION_KINDS = frozenset(
+    {"project dir", "transcript title", "job name", "sub-agent record", "job record", "task namespace"}
+)
+
+
+def _live_note(result: MigrationResult, refusal: LiveSessionError, *, deferring: bool = False) -> None:
+    """Record on ``result`` that a session is live: a writing run refuses or, when ``deferring``, defers."""
     result.live = str(refusal)
-    result.moves.insert(
-        0,
-        PlannedMove(
-            LIVE_SESSION, f"{_one_line(str(refusal))}; a writing run refuses until it is stopped", "", "report"
-        ),
+    then = (
+        f"a writing run does every other step and defers {', '.join(sorted(LIVE_SESSION_KINDS))} until it is stopped"
+        if deferring
+        else "a writing run refuses until it is stopped"
     )
+    result.moves.insert(0, PlannedMove(LIVE_SESSION, f"{_one_line(str(refusal))}; {then}", "", "report"))
+
+
+def deferred_parts(result: MigrationResult) -> list[str]:
+    """The parts ``result`` deferred because NEW was running, sorted."""
+    kinds = {move.kind for move in result.moves if move.action == DEFERRED}
+    if result.deferred and result.task_moves:
+        kinds.add("task namespace")
+    return sorted(kinds)
+
+
+def noted_deferral(old: str, new: str, state_dir: Path | None = None) -> list[str] | None:
+    """The parts this host's ledger last recorded deferred for the pair, or ``None``.
+
+    Only a ``deferred_recorded`` row with no later migration or ``finished`` row of the pair
+    counts: a new migration or a finish starts the pair afresh.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    noted: list[str] | None = None
+    for row in _ledger_rows(state):
+        if (row.get("old"), row.get("new")) != (old, new):
+            continue
+        if row.get("deferred_recorded") is True:
+            parts = row.get("deferred")
+            noted = [part for part in parts if isinstance(part, str)] if isinstance(parts, list) else []
+        elif not bookkeeping_row(row):
+            noted = None
+    return noted
 
 
 def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
@@ -880,6 +923,36 @@ def _archive_entries(
     return moves, archived
 
 
+_ON_WINDOWS = sys.platform == "win32"
+
+
+def _refuses_delete_access(path: Path) -> bool:
+    """Whether Windows refuses delete access to ``path``, as it does while another handle lacks delete sharing."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, share_all, open_existing = 0x00010000, 0x7, 3
+    handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        return True
+    kernel32.CloseHandle(handle)
+    return False
+
+
 def _move_container_files(container: Path, new: str, dry_run: bool, moving: Container[Path]) -> list[PlannedMove]:
     """Carry loose regular files only, refusing occupied names and detectable open files."""
     import psutil
@@ -908,9 +981,16 @@ def _move_container_files(container: Path, new: str, dry_run: bool, moving: Cont
 
     if is_open(psutil.Process()):
         return []
-    with contextlib.suppress(psutil.Error, OSError):
-        if any(is_open(process) for process in psutil.process_iter()):
+    if _ON_WINDOWS:
+        # psutil bounds each Windows handle query with a 100 ms thread, so scanning every
+        # process takes minutes on a busy host. Asking for delete access to each file is the
+        # exact condition the rename below needs, and costs one open per file.
+        if any(_refuses_delete_access(child) for child in files):
             return []
+    else:
+        with contextlib.suppress(psutil.Error, OSError):
+            if any(is_open(process) for process in psutil.process_iter()):
+                return []
     target = container.with_name(f"{new}-agents")
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         return [
@@ -923,13 +1003,18 @@ def _move_container_files(container: Path, new: str, dry_run: bool, moving: Cont
         if action == "move" and not dry_run:
             try:
                 target.mkdir(parents=True, exist_ok=True)
-                # Link then unlink gives a same-filesystem move that cannot overwrite a
-                # destination created after the preview, unlike rename on POSIX.
-                os.link(child, dest, follow_symlinks=False)
-                if child.is_file() and not child.is_symlink() and child.samefile(dest):
-                    child.unlink()
+                if _ON_WINDOWS:
+                    # Windows rename never replaces an existing name, and a file opened since the
+                    # check refuses it whole, where a link would succeed and its unlink fail.
+                    child.rename(dest)
                 else:
-                    action = "kept: source changed"
+                    # Link then unlink gives a same-filesystem move that cannot overwrite a
+                    # destination created after the preview, unlike rename on POSIX.
+                    os.link(child, dest, follow_symlinks=False)
+                    if child.is_file() and not child.is_symlink() and child.samefile(dest):
+                        child.unlink()
+                    else:
+                        action = "kept: source changed"
             except FileExistsError:
                 action = "conflict"
             except OSError as exc:
@@ -1382,11 +1467,14 @@ def _record_archived(state: Path, old: str, new: str, repo_root: Path, archived:
 
 
 def bookkeeping_row(row: dict) -> bool:
-    """Whether a ledger row only notes a delivered context, the transcripts a run recorded or what it archived.
+    """Whether a ledger row only notes a delivered context, recorded transcripts, archived files or deferred parts.
 
     None of them is a migration, so none makes a pair pending or recorded.
     """
-    return any(row.get(key) is True for key in ("context_announced", "transcripts_recorded", "archive_recorded"))
+    return any(
+        row.get(key) is True
+        for key in ("context_announced", "transcripts_recorded", "archive_recorded", "deferred_recorded")
+    )
 
 
 def _record_migration(
@@ -2168,12 +2256,16 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, st
     result.resume_moves = [m for m in result.resume_moves if m.action != "conflict"]
 
 
-def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path, repo_root: Path) -> None:
+def _apply_task_rekey(
+    old: str, new: str, home: Path, result: MigrationResult, state: Path, repo_root: Path, *, tasks: bool = True
+) -> None:
+    """Re-key the resume tree and, unless ``tasks`` is false, merge OLD's task namespace into NEW's."""
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
     from .session_migrate_tasks import apply
 
-    apply(result.task_moves, result.task_intent, state)
+    if tasks:
+        apply(result.task_moves, result.task_intent, state)
     _tasks, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[], resume_keys=[old], claude_home=home, dry_run=False
     )
@@ -2188,6 +2280,8 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
     result.moves = [m for m in result.moves if m.action != ARCHIVE_PLANNED]
     result.moves += [PlannedMove("resume", row["source"], row["archive"], ARCHIVE_DONE) for row in archived]
     _record_archived(state, old, new, repo_root, archived)
+    if not tasks:
+        return
     if result.task_moves or hwm:
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
         new_ns.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2252,9 +2346,16 @@ def finish_session(
     launcher's state, maps and locks; held-output and memory files in the repo's and the
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
-    record of the migration. Neither session may be running for a writing run, which raises
-    :class:`LiveSessionError` before writing anything; a ``dry_run`` plans anyway and names the
-    live session on its first line and in ``result.live``. Raises :class:`MigrationError` before writing anything.
+    record of the migration. A live OLD session refuses a writing run, which raises
+    :class:`LiveSessionError` before writing anything. A live NEW session (a process named NEW
+    or inside NEW's slot, or a tmux session hosting NEW) does not: the run does every step
+    except those of :data:`LIVE_SESSION_KINDS`, which write the files the running session holds
+    open, and marks each of those :data:`DEFERRED`. On this host's record of the migration it
+    then appends a ``deferred_recorded`` row naming the deferred parts, unless the latest such
+    row already names exactly them, so a later launch reports
+    them once (:func:`noted_deferral`), and the run fails so that a finish after NEW stops does
+    the rest. A ``dry_run`` plans the same way and names the live session on its first line and
+    in ``result.live``. Raises :class:`MigrationError` before writing anything.
     A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
     as pending, the rest still runs, and the run fails so that a re-run retries it. On this
     host's record of the migration, each transcript it retitles, or that began before the pair's
@@ -2299,17 +2400,20 @@ def finish_session(
     if new_wt is None:
         raise MigrationError(f"{repo_root / '.worktrees' / new} is not a registered slot -- nothing to finish")
     refusal: LiveSessionError | None = None
+    deferring = False
     try:
-        _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
-        hosting = sorted(set(tmux) & set(_session_variants(new)))
-        if hosting:
-            raise LiveSessionError(
-                f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing (`ai sessions stop {new}`)"
-            )
+        # A live OLD refuses the whole finish; a live NEW defers only the parts that write its own files.
+        resolved_old = old_wt.resolve(strict=False)
+        _refuse_live(old, old, resolved_old, resolved_old, home, proc_dir, tmux, verb="finished")
     except LiveSessionError as exc:
         if not dry_run:
             raise
         refusal = exc
+    if refusal is None:
+        try:
+            _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
+        except LiveSessionError as exc:
+            refusal, deferring = exc, True
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     with timed(progress, "other repos", f"looking for slots and agent worktrees named {old}"):
         leftovers = _plan_leftovers(
@@ -2328,7 +2432,9 @@ def finish_session(
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
     if refusal is not None:
-        _live_note(result, refusal)
+        _live_note(result, refusal, deferring=deferring)
+    if deferring:
+        result.deferred = new
     moves = result.moves
     from .session_migrate_resume import apply_home, plan_home
 
@@ -2364,6 +2470,10 @@ def finish_session(
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
     _plan_task_rekey(old, new, home, result, state)
+    if deferring:
+        for move in moves:
+            if move.kind in LIVE_SESSION_KINDS and move.action not in ("report", "already done"):
+                move.action = DEFERRED
     hooks = _plan_hooks(old, new, repo_root, moves, pending=result, progress=progress)
     evidence = _migration_evidence(old, new, state)
     if evidence:
@@ -2382,8 +2492,9 @@ def finish_session(
         source = Path(item.source)
         source.rename(source.with_name(Path(item.dest).name))
     _apply_memory(memory_moves, index_moves, result)
-    apply_home(home_plan, result)
-    _apply_record_rewrites(records, old_pd, new_pd, result)
+    apply_home(home_plan, result, skip=LIVE_SESSION_KINDS if deferring else frozenset())
+    if not deferring:
+        _apply_record_rewrites(records, old_pd, new_pd, result)
     for key, _value in markers:
         _git(
             repo_root,
@@ -2392,7 +2503,7 @@ def finish_session(
             str(new_wt),
         )
     _remove_stale_locks(lock_moves)
-    _apply_task_rekey(old, new, home, result, state, repo_root)
+    _apply_task_rekey(old, new, home, result, state, repo_root, tasks=not deferring)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -2404,9 +2515,18 @@ def finish_session(
     _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
         _apply_beads(old, new, beads, result, progress)
-        retitled = [Path(move.source).stem for move in home_plan.moves if move.kind == "transcript title"]
+        retitled = [
+            Path(move.source).stem
+            for move in home_plan.moves
+            if move.kind == "transcript title" and move.action != DEFERRED
+        ]
         carried = _started_before_migration(new_pd, old, new, state)
         _record_moved_transcripts(state, old, new, repo_root, retitled + carried)
+        deferred = deferred_parts(result)
+        if deferred and noted_deferral(old, new, state) != deferred:
+            _append_ledger(
+                state, old, new, repo_root, deferred=deferred, live=_one_line(result.live), deferred_recorded=True
+            )
     if record_finish:
         from .session_migrate_status import verify
 

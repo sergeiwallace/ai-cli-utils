@@ -1,0 +1,1 @@
+- A Ctrl+C pressed while a session's agent is still starting now stops the session even on a loaded host, instead of being missed and leaving the pane waiting out its promotion budget.

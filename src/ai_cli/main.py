@@ -117,9 +117,6 @@ from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
 from .process_manager import (  # noqa: F401
-    _cmd_quota_watch_start,
-    _cmd_quota_watch_status,
-    _cmd_quota_watch_stop,
     _ensure_circusd,
 )
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
@@ -2431,7 +2428,9 @@ def _handle_internal(argv: list[str]) -> None:
         def forwarded_value(flag: str) -> str:
             return forwarded[forwarded.index(flag) + 1] if flag in forwarded[:-1] else ""
 
-        session_id = _running_chief_session(forwarded_value("--machine-key"), forwarded_value("--fm-home"))
+        session_id = _running_chief_session(
+            forwarded_value("--machine-key"), forwarded_value("--fm-home"), forwarded_value("--name")
+        )
         if not session_id:
             sys.exit(1)
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id}))
@@ -3474,21 +3473,21 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     """The shell command mosh runs on the remote host for ``remote_cmd``.
 
     Mosh restores the terminal after the remote command exits, which erases what it printed,
-    and it carries no exit status back. So the remote ``ai`` copies its launch log lines into
-    ``$HOME/<remote_diagnostic_file>`` (``AI_CLI_REMOTE_DIAGNOSTIC_FILE``), and a nonzero exit
-    also writes its status beside it, as ``<file>.status``, for the local loop to read with a
-    read-only SSH command once mosh ends. stderr itself stays on the terminal, so the remote
-    side's progress lines are seen while it works. A clean exit removes both files.
+    and it carries no exit status back. Copy stderr to a file while also showing it live.
+    This captures errors even before the remote launch log is initialized. Keep stdout on
+    the terminal and record a failed command's own status separately from the pipe's status.
     """
     return (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'mkdir -p "$(dirname "$diagnostic_file")"; '
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
-        f'export {REMOTE_DIAGNOSTIC_ENV}="$diagnostic_file"; '
-        f"{remote_cmd}; "
+        "exec 3>&1; "
+        f"{{ ( {remote_cmd} ) 3>&-; "
         "status=$?; "
-        'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
-        'else printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        'if [ "$status" -ne 0 ]; then printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        '} 2>&1 1>&3 | ( umask 077; tee "$diagnostic_file" >&2 ); '
+        'status=0; if [ -f "$diagnostic_file.status" ]; then IFS= read -r status < "$diagnostic_file.status"; '
+        'else rm -f "$diagnostic_file"; fi; '
         'exit "$status"'
     )
 
@@ -3764,22 +3763,27 @@ def _finish_recorded_migrations(
     pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
     and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
     with no ``finished`` row is finished here, since the launch is the one moment the new
-    session is known not to be running, and that finish's own re-plan is the verdict. A pair
-    whose ``finished`` row carries no ``verified`` is re-planned read-only. A finish that
+    session may have stopped, and that finish's own re-plan is the verdict. An unverified
+    ``finished`` pair is also finished if its slot exists and the launch is starting NEW.
+    Otherwise that pair is checked read-only. A finish that
     refuses, raises or leaves any part refuses the launch with the parts left and the
     ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
     given: the session then starts and the parts left go into the launch log.
 
-    When ``attaching_live()`` says the launch attaches to an ``ai_name`` already running
-    (asked once, and only for a pair not verified), no writing finish can run: each pair not
-    verified is re-planned read-only, and a part left is one warning naming the ``--finish``
-    command to run once the session exits, never a refusal. A ledger row in a format newer
+    A pending pair's finish still runs when ``ai_name`` is already live: it does every step
+    except the ones that write the running session's own files, which it defers. A pair whose
+    only parts left are those deferred ones never refuses the launch; it warns the first time
+    and prints a progress line after that (:func:`_report_deferral`). When ``attaching_live()``
+    says the launch attaches to an ``ai_name`` already running (asked once, and only for a pair
+    not verified), any other part left is one warning naming the ``--finish`` command to run
+    once the session exits, never a refusal. A ledger row in a format newer
     than this build reads refuses the launch, override or not. Every refusal raises
     :class:`PartialMigrationRefusal`. Each pair, and each slow step of its finish or
     re-plan, prints a line as it starts and ends.
     """
-    from .session_migrate import MIGRATION_FORMAT, finish_session, pending_finishes
+    from .session_migrate import MIGRATION_FORMAT, finish_session, noted_deferral, pending_finishes
     from .session_migrate_status import (
+        deferred_only,
         finish_command,
         finish_state,
         judge_pair,
@@ -3810,14 +3814,14 @@ def _finish_recorded_migrations(
             continue
         if live is None:
             live = attaching_live()
-        if old not in pending or live:
-            why = f"{ai_name} is running, so it cannot be finished now" if live else "not verified"
-            progress(f"{pair}: re-planning read-only ({why})")
+        if old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir()):
+            progress(f"{pair}: re-planning read-only (not verified)")
             left, _live, _planned = judge_pair(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
             )
         else:
             progress(f"{pair}: finishing")
+            noted = noted_deferral(old, ai_name, state)
             try:
                 result = finish_session(
                     repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
@@ -3830,6 +3834,10 @@ def _finish_recorded_migrations(
                 left = left_after(result)
                 if not left:
                     reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+                elif deferred_only(left):
+                    # Only the parts writing the running NEW's own files are left: they wait for it to stop.
+                    _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+                    left = {}
                 for straggler in result.references_left:
                     reporter.warning("migrate", f"migration {old} -> {ai_name}: reference left: {straggler}")
         if left:
@@ -3864,6 +3872,19 @@ def _finish_recorded_migrations(
         )
 
 
+def _report_deferral(
+    reporter: LaunchReporter, old: str, ai_name: str, repo: Path, parts: list[str], noted: list[str] | None
+) -> None:
+    """Warn once that a finish deferred ``parts`` while ``ai_name`` runs; later, only a progress line."""
+    from .session_migrate_status import deferral_report
+
+    first, line = deferral_report(old, ai_name, repo, parts, noted)
+    if first:
+        reporter.warning("migrate", line)
+    else:
+        reporter.phase("migrate").outcome(line)
+
+
 def _in_own_tmux_session(tmux_session: str) -> bool:
     """Whether this process runs in a pane of ``tmux_session``, as tmux itself reports for ``$TMUX_PANE``."""
     pane = os.environ.get("TMUX_PANE", "")
@@ -3889,14 +3910,17 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
     restart's equivalent of the launch-time finish in :func:`_finish_recorded_migrations`. No
     agent of this session runs then, but its own tmux session still hosts ``ai_name``, so that
     one tmux session, and only once tmux confirms this process runs inside it, is left out of
-    the finish's live check. Every other check stands: a live agent named ``ai_name`` or inside
-    either slot, or any other tmux session hosting either name, refuses the finish. A finish
-    that refuses, raises or leaves a part never stops the restart: each such pair is one
-    warning naming the ``--finish`` command. Only a pair with no ``finished`` row is tried, so
-    a restart with nothing pending costs one ledger read.
+    the finish's live check. Every other check stands: a live agent named OLD or inside OLD's
+    slot, or any tmux session hosting OLD, refuses the finish, and a live agent named
+    ``ai_name`` or inside its slot, or another tmux session hosting it, makes the finish defer
+    the parts that write that session's files and do the rest. A finish that refuses, raises
+    or leaves a part never stops the restart: each such pair is one warning naming the
+    ``--finish`` command, except a pair left with deferred parts only, which warns only the
+    first time (:func:`_report_deferral`). Only a pair with no ``finished`` row is tried, so a
+    restart with nothing pending costs one ledger read.
     """
-    from .session_migrate import _session_variants, _tmux_names, finish_session, pending_finishes
-    from .session_migrate_status import finish_command, left_after
+    from .session_migrate import _session_variants, _tmux_names, finish_session, noted_deferral, pending_finishes
+    from .session_migrate_status import deferred_only, finish_command, left_after
 
     pending = pending_finishes(ai_name, _config.get_xdg_state_home())
     if not pending:
@@ -3913,6 +3937,7 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
         pair = f"migration {old} -> {ai_name}"
         command = finish_command(old, ai_name, repo)
         progress(f"{pair}: finishing before the agent restarts")
+        noted = noted_deferral(old, ai_name)
         try:
             result = finish_session(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, tmux_names=others, progress=progress
@@ -3924,7 +3949,9 @@ def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: Lau
         for move in result.moves:
             reporter.detail("migrate", move.describe())
         left = left_after(result)
-        if left:
+        if deferred_only(left):
+            _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+        elif left:
             named = "; ".join(f"{part} ({status})" for part, status in left.items())
             reporter.warning("migrate", f"{pair} partial; parts left: {named}; restarting the agent; run `{command}`")
         else:
@@ -4219,7 +4246,7 @@ def _resolve_session_identity(
     """``(tmux session, ai_name)`` for this launch.
 
     With human names resolved off (and no ``--name``), or for an explicit index slot,
-    this is :func:`ai_cli.session.build_session_name` exactly as before. Otherwise the
+    use the index resolver and honor migration records for that repository. Otherwise the
     title is composed by AC-DT-1 and its token is reserved in the name registry before
     anything else exists; a dry run plans the same title and reserves nothing.
     """
@@ -4227,9 +4254,58 @@ def _resolve_session_identity(
     from . import name_registry as _names
 
     def index_names() -> tuple[str, str]:
-        return _session.build_session_name(
-            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=use_tmux, legacy_prefix=legacy_prefix
+        from .session_migrate import recorded_migrations
+        from .session_migrate_status import moved_on, recorded_pairs
+
+        clean = _session._slot_name(name, naming_prefix)
+        explicit = _session._is_explicit_slot(clean)
+        allocated = is_remote and name.startswith(f"{engine}-")
+        repo_root = _config._find_project_dir(repo).resolve()
+        if not is_remote and not repo_root.is_dir():
+            with contextlib.suppress(RuntimeError):
+                if root := _session.detect_repo_root():
+                    repo_root = Path(root).resolve()
+        state = _config.get_xdg_state_home()
+        retired_names = {old for old, _, recorded_repo in recorded_migrations(state) if recorded_repo == repo_root}
+        target = _session.build_session_name(
+            engine,
+            naming_prefix,
+            name,
+            config,
+            is_remote=is_remote,
+            use_tmux=use_tmux,
+            legacy_prefix=legacy_prefix,
+            retired_names=retired_names,
         )
+        if explicit:
+            typed_title = _session._session_slot_name(engine, name) if name.startswith(f"{engine}-") else name
+            old = typed_title if typed_title in retired_names else target[1]
+            onward = moved_on(old, repo_root, state) if old in retired_names else None
+            if onward is not None:
+                title = onward[0]
+                reporter.phase("session").outcome(f"{old} migrated to {title}")
+                prefix, _, slot = title.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                return existing or (_session_id(engine, title, is_remote), title)
+            if old in retired_names and not (repo_root / ".worktrees" / old).is_dir():
+                prefix, _, slot = old.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                if existing:
+                    return existing
+                _naming_exit(
+                    reporter,
+                    f"{old} has a migration record but no existing destination slot. "
+                    f"Check it with `ai migrate-session -s -a {old}` before launching.",
+                    1,
+                )
+        elif allocated:
+            # The remote allocator can return the migrated title even in index naming mode.
+            title = _session._session_slot_name(engine, name)
+            if (repo_root / ".worktrees" / title).is_dir() and any(
+                recorded_repo == repo_root for _, recorded_repo in recorded_pairs(title, state)
+            ):
+                return name, title
+        return target
 
     try:
         flag = naming.label_flag
@@ -5061,9 +5137,11 @@ def _do_session_launch(
         if _tmux_report.versions_disagree:
             reporter.error(
                 "tmux",
-                "tmux client is "
-                f"{_tmux_report.client_version} but the running server is "
+                f"{_tmux_report.kind} client is "
+                f"{_tmux_report.client_version} ({_tmux_report.path}) but the running server is "
                 f"{_tmux_report.server_version}.\n"
+                "  With more than one tmux installed, the server may belong to the other one: stop it\n"
+                "  with that tmux's own `tmux kill-server`, and keep one tmux first on PATH.\n"
                 "  A session created now would be unattachable: the server "
                 "accepts new-session, then the\n"
                 "  attach fails with 'open terminal failed: not a terminal', "
@@ -5296,13 +5374,15 @@ def _do_session_launch(
         # An unnumbered chief request (`ai cos -R`, `ai c chief -R`) means whichever
         # chief the remote host has, which only that host's registration can say: a slot
         # allocated here would be the next free index, a second chief the remote refuses.
-        chief_unnumbered = "--chief" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
-            _chief_of_staff.chief_slot(name)
+        # A -N/--name chief is left to the remote host too, which checks its running chief
+        # before it reserves the name; the name rides in remote_args.
+        remote_picks_chief = "--chief" in (remote_args or []) and (
+            bool(naming and naming.custom) or not _chief_of_staff.is_numbered_slot(_chief_of_staff.chief_slot(name))
         )
         # The tmux session the pane is titled after. For an unnumbered chief only the remote
         # host knows it, so it is asked; the placeholder below stands in when it cannot say.
         remote_pane_session = ""
-        if chief_unnumbered:
+        if remote_picks_chief:
             remote_pane_session = _request_remote_chief_session(preflight_ssh_args, remote_shell, remote_args or [])
             reporter.phase("session").outcome(f"{remote_pane_session or name} (the remote host selects its chief)")
         else:
@@ -5743,8 +5823,8 @@ def _do_session_launch(
     # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
     # migration raises here, before the worktree, tmux or engine is touched. A launch that
     # will attach to NEW's live tmux session (the same test the worktree sync makes below)
-    # cannot finish anything, so a part left only warns: refusing it would leave the running
-    # session unreachable while `--finish` refuses it for being live.
+    # finishes only what is safe while NEW runs, so a part left only warns: refusing it would
+    # leave the running session unreachable until it is stopped.
     _finish_recorded_migrations(
         ai_name,
         reporter,
@@ -7037,14 +7117,20 @@ def _running_chief(registration: dict | None, naming_prefix: str, session_name: 
     return (*found[0], False) if found else None
 
 
-def _running_chief_session(machine_key: str, fm_home: str) -> str:
+def _requested_chief_slot(session_name: str, naming: "_NamingRequest") -> str:
+    """The chief slot a launch asks for; ``-N NAME`` makes it ``<session name>-NAME``, as its title is."""
+    return _chief_of_staff.chief_slot(f"{session_name}-{naming.custom}" if naming.custom else session_name)
+
+
+def _running_chief_session(machine_key: str, fm_home: str, custom: str = "") -> str:
     """The tmux session of the chief running on this machine, or ``""``; nothing is written.
 
-    A dispatching machine asks for this when it launches an unnumbered chief here, so
-    its terminal title, colour lease and cleanup command name the session that exists
-    (``ai internal resolve-chief-session``). A live registration answers on its own; only
-    the fallback search of tmux session names needs this host's naming prefix, and with
-    none it finds nothing.
+    A dispatching machine asks for this when it launches an unnumbered or ``-N``-named
+    chief here, so its terminal title, colour lease and cleanup command name the session
+    that exists (``ai internal resolve-chief-session``). With ``custom`` only the chief of
+    that name answers: the launch refuses any other. A live registration answers on its
+    own; only the fallback search of tmux session names needs this host's naming prefix,
+    and with none it finds nothing.
     """
     try:
         chief_project = _chief_of_staff.required_setting("project")
@@ -7060,7 +7146,13 @@ def _running_chief_session(machine_key: str, fm_home: str) -> str:
     except (_config.ProjectPrefixError, _session_naming.HostAliasError, _session_naming.NamingConventionError):
         pass
     running = _running_chief(existing, naming_prefix, chief_name)
-    return running[1] if running is not None else ""
+    if running is None:
+        return ""
+    if custom and _chief_of_staff.chief_slot(running[0]) != _requested_chief_slot(
+        chief_name, _NamingRequest(custom=custom)
+    ):
+        return ""
+    return running[1]
 
 
 def _prepare_chief_launch(
@@ -7117,12 +7209,15 @@ def _prepare_chief_launch(
             f"{chief_project}: pass `-p {alias}` (or drop -p)"
         )
     options["project"] = chief_project
+    naming = naming or _NamingRequest()
     if options.get("remote"):
         options["name"] = session_name
+        # -N/--name picks the chief, so the remote host must see it to check its running chief.
         return [
             "--chief",
             *(["--machine-key", machine_key] if machine_key else []),
             *(["--fm-home", fm_home] if fm_home else []),
+            *(["--name", naming.custom] if naming.custom else []),
         ]
     try:
         instance_key_prefix = _chief_of_staff.required_setting("instance_key_prefix")
@@ -7164,7 +7259,13 @@ def _prepare_chief_launch(
         )
         _out.emit(Tag.COS, "register", f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
 
-    requested_slot = _chief_of_staff.chief_slot(session_name)
+    requested_slot = _requested_chief_slot(session_name, naming)
+    named = bool(naming.custom)
+
+    def asked_for(slot: str) -> bool:
+        # A -N/--name request is for that chief only; an unnumbered one means any of its name.
+        return slot == requested_slot if named else _chief_of_staff.same_chief(requested_slot, slot)
+
     running = _running_chief(existing, naming_prefix, chief_name)
     resuming = False
     # The session name the chief being resumed was recorded under.
@@ -7172,7 +7273,7 @@ def _prepare_chief_launch(
     if running is not None:
         agent, target, registered = running
         running_slot = _chief_of_staff.chief_slot(agent)
-        if not _chief_of_staff.same_chief(requested_slot, running_slot):
+        if not asked_for(running_slot):
             _out.error(
                 Tag.COS,
                 "start",
@@ -7221,7 +7322,7 @@ def _prepare_chief_launch(
         options["resume"] = False
     elif existing is not None and existing.get("native_agent_name"):
         registered_slot = _chief_of_staff.chief_slot(str(existing.get("native_agent_name")))
-        if _chief_of_staff.same_chief(requested_slot, registered_slot):
+        if asked_for(registered_slot):
             _out.emit(
                 Tag.COS,
                 "start",
@@ -7236,6 +7337,9 @@ def _prepare_chief_launch(
                 # In tmux mode -r means "attach to the running session", and there is none:
                 # the relaunch under the same name is what resumes the conversation.
                 options["resume"] = False
+    if resuming and named:
+        # The chief already holds its name: reattach to that title rather than reserve it again.
+        naming = replace(naming, custom=None, session_names=True)
 
     try:
         tmux_target, ai_name = _resolve_session_identity(
@@ -7246,7 +7350,7 @@ def _prepare_chief_launch(
             is_remote=is_remote,
             use_tmux=not bare,
             legacy_prefix=launch_naming.legacy_prefix,
-            naming=naming or _NamingRequest(),
+            naming=naming,
             repo=chief_project,
             repo_alias=prefix,
             host_alias=launch_naming.host_alias,
@@ -7423,7 +7527,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
         "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
-        "re-checks it), and one recorded finished without verification is re-planned. If any is "
+        "re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is "
         "still partial, the launch is refused: it starts nothing, prints the parts left and the "
         "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
         "When the session is already running, nothing can be finished, so attaching to it warns "
@@ -7660,44 +7764,6 @@ def cmd_quota_group():
     pass
 
 
-@cmd_quota_group.group("watch", help="Quota-watch Circus daemon management")
-def cmd_quota_watch_group():
-    pass
-
-
-@cmd_quota_watch_group.command("start", help="Register quota-watch with Circus and start it")
-@click.option(
-    "--auto",
-    is_flag=True,
-    default=False,
-    hidden=True,
-    help="Per-session auto-start path — gated on [quota_watch] auto_start in config.toml.",
-)
-def cmd_quota_watch_start(auto):
-    _process_manager._cmd_quota_watch_start(auto=auto)
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("stop", help="Stop quota-watch")
-def cmd_quota_watch_stop():
-    _process_manager._cmd_quota_watch_stop()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("status", help="Show quota-watch Circus status")
-def cmd_quota_watch_status():
-    _process_manager._cmd_quota_watch_status()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("run", help="Run quota-watch daemon (Circus entry point)")
-@click.option("-i", "--interval", "poll_interval", default=300, show_default=True, help="Poll interval in seconds")
-def cmd_quota_watch_run(poll_interval):
-    from .quota import quota_watch
-
-    sys.exit(quota_watch(poll_interval))
-
-
 @_cli_group.group("session-reaper", help="Independently managed stale-session reaper")
 def cmd_session_reaper_group():
     pass
@@ -7739,11 +7805,11 @@ def cmd_quota_history():
     sys.exit(quota_history())
 
 
-@cmd_quota_group.command("scrape", help="Scrape /usage from a fresh CC session")
-def cmd_quota_scrape():
-    from .quota import quota_scrape
+@cmd_quota_group.command("publish", help="Publish the statusline's current native quota reading to NATS")
+def cmd_quota_publish():
+    from .quota import quota_publish
 
-    sys.exit(quota_scrape())
+    sys.exit(quota_publish())
 
 
 @cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")
@@ -9327,7 +9393,9 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
     is_flag=True,
     help=(
         "The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; "
-        "with -n/--dry-run it plans even while a session is live and names it"
+        "with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every "
+        "step except those writing NEW's open transcript and task files, which it defers and names; a "
+        "running OLD refuses it"
     ),
 )
 @click.option(
@@ -9451,7 +9519,9 @@ def cmd_migrate_session(
     try:
         result = _run(True)
         if not dry_run:
-            if not yes and not result.live:
+            # A live session refuses the writing run, so there is nothing to confirm, unless the
+            # finish defers only NEW's own files and writes the rest.
+            if not yes and (not result.live or result.deferred):
                 _print_migration(result)
                 if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {new}?"):
                     _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)

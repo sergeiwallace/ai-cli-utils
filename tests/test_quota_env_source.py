@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import ai_cli.quota_db as qdb
-from ai_cli.quota import _get_claude_usage_snapshot, quota_statusline_part
+from ai_cli.quota import quota_statusline_part
 
 
 def _count_snapshots() -> int:
@@ -92,7 +92,6 @@ def test_env_reset_routed_to_record_quota_snapshot(monkeypatch, capsys):
     the reset_at kwarg IS the env epoch converted to ISO (the weak version passed even when the
     epoch was never routed, because record_quota_snapshot always writes a derived reset_at)."""
     from datetime import datetime
-    from unittest.mock import patch
 
     epoch = _set_env(monkeypatch, seven_day_pct="20")
     expected_iso = datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -118,16 +117,3 @@ def test_no_env_var_leaves_existing_behavior(monkeypatch, capsys):
     assert result == 0
     assert "55%" in capsys.readouterr().out
     assert _count_snapshots() == 1
-
-
-def test_get_claude_usage_snapshot_retires_print_mode():
-    """Print mode (dead on CC 2.1.207) is retired from the capture fallback — the scrape is
-    the sole fallback path now (T-02 parity: dropped intentionally)."""
-    with (
-        patch("ai_cli.quota._scrape_usage_hidden_pane", return_value="SCRAPED") as scrape,
-        patch("ai_cli.quota._get_usage_via_print_mode") as print_mode,
-    ):
-        result = _get_claude_usage_snapshot()
-    assert result == "SCRAPED"
-    scrape.assert_called_once()
-    print_mode.assert_not_called()
