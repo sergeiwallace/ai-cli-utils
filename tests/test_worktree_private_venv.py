@@ -56,7 +56,10 @@ def repo(tmp_path):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
-    (seed / "pyproject.toml").write_text('[project]\nname = "myproject"\nversion = "0.1.0"\n')
+    (seed / "pyproject.toml").write_text(
+        '[project]\nname = "myproject"\nversion = "0.1.0"\n\n[tool.ai-cli]\ntask_prefix = "myproject"\n',
+        encoding="utf-8",
+    )
     (seed / "uv.lock").write_text("version = 1\n")
     (seed / ".gitignore").write_text(".venv/\n")
     _git("add", "-A", cwd=seed)
@@ -105,7 +108,7 @@ def _write_config(text: str) -> None:
 
 
 def test_given_a_uv_locked_project_when_a_session_worktree_is_created_then_it_gets_its_own_venv(repo, fake_uv):
-    slot = create_worktree("session-1", repo_root=repo)
+    slot = create_worktree("myproject-tst-1", repo_root=repo)
 
     assert slot is not None
     venv = slot / ".venv"
@@ -123,8 +126,8 @@ def test_given_a_uv_locked_project_when_a_session_worktree_is_created_then_it_ge
 
 
 def test_given_two_session_worktrees_when_one_environment_changes_then_the_other_and_main_do_not(repo, fake_uv):
-    first = create_worktree("session-1", repo_root=repo)
-    second = create_worktree("session-2", repo_root=repo)
+    first = create_worktree("myproject-tst-1", repo_root=repo)
+    second = create_worktree("myproject-tst-2", repo_root=repo)
     assert first is not None and second is not None
 
     (first / ".venv" / "marker.txt").write_text("written in session-1\n")
@@ -134,7 +137,7 @@ def test_given_two_session_worktrees_when_one_environment_changes_then_the_other
 
 
 def test_given_the_shared_links_when_a_session_worktree_is_created_then_they_still_point_at_main(repo, fake_uv):
-    slot = create_worktree("session-1", repo_root=repo)
+    slot = create_worktree("myproject-tst-1", repo_root=repo)
 
     assert slot is not None
     assert (slot / ".claude").resolve() == (repo / ".claude").resolve()
@@ -144,7 +147,7 @@ def test_given_uv_sync_fails_when_a_session_worktree_is_created_then_the_launch_
     monkeypatch.setenv("FAKE_UV_FAIL", "1")
 
     with pytest.raises(RuntimeError) as raised:
-        create_worktree("session-1", repo_root=repo)
+        create_worktree("myproject-tst-1", repo_root=repo)
 
     message = str(raised.value)
     assert "uv sync --frozen" in message
@@ -156,7 +159,7 @@ def test_given_no_uv_on_path_when_a_session_worktree_is_created_then_the_launch_
     monkeypatch.setenv("PATH", os.pathsep.join(_git_dirs()))
 
     with pytest.raises(RuntimeError) as raised:
-        create_worktree("session-1", repo_root=repo)
+        create_worktree("myproject-tst-1", repo_root=repo)
 
     assert "`uv` is not on PATH" in str(raised.value)
     assert '[worktree] venv = "link"' in str(raised.value)
@@ -175,7 +178,7 @@ def _git_dirs() -> list[str]:
 def test_given_venv_link_configured_when_a_session_worktree_is_created_then_it_shares_main(repo, fake_uv):
     _write_config('[worktree]\nvenv = "link"\n')
 
-    slot = create_worktree("session-1", repo_root=repo)
+    slot = create_worktree("myproject-tst-1", repo_root=repo)
 
     assert slot is not None
     assert (slot / ".venv").resolve() == (repo / ".venv").resolve()
@@ -183,11 +186,11 @@ def test_given_venv_link_configured_when_a_session_worktree_is_created_then_it_s
 
 
 def test_given_a_reused_worktree_with_its_own_venv_when_relaunched_then_it_is_left_alone(repo, fake_uv):
-    slot = create_worktree("session-1", repo_root=repo)
+    slot = create_worktree("myproject-tst-1", repo_root=repo)
     assert slot is not None
     (slot / ".venv" / "kept.txt").write_text("installed by the session\n")
 
-    again = create_worktree("session-1", repo_root=repo)
+    again = create_worktree("myproject-tst-1", repo_root=repo)
 
     assert again == slot
     assert (slot / ".venv" / "kept.txt").exists()
@@ -199,10 +202,10 @@ def test_given_a_sync_that_failed_after_creating_the_venv_when_relaunched_then_i
 ):
     monkeypatch.setenv("FAKE_UV_FAIL_AFTER_CREATE", "1")
     with pytest.raises(RuntimeError):
-        create_worktree("session-1", repo_root=repo)
+        create_worktree("myproject-tst-1", repo_root=repo)
     monkeypatch.delenv("FAKE_UV_FAIL_AFTER_CREATE")
 
-    slot = create_worktree("session-1", repo_root=repo)
+    slot = create_worktree("myproject-tst-1", repo_root=repo)
 
     assert slot is not None
     assert (slot / ".venv" / "pyvenv.cfg").is_file()

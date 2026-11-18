@@ -272,6 +272,7 @@ def repo(tmp_path, monkeypatch):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / "README.md").write_text("seed\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -296,25 +297,25 @@ def _stale_registration(repo: Path, leaf: str, branch: str) -> Path:
 
 
 def test_given_another_slots_stale_registration_when_ai_c_launches_then_it_survives(repo):
-    other = _stale_registration(repo, "session-9", "wt-session-9")
+    other = _stale_registration(repo, "myrepo-tst-9", "wt-myrepo-tst-9")
     assert "prunable" in _registered(repo), "precondition: the other slot is prunable"
 
-    slot = create_worktree("session-1")
+    slot = create_worktree("myrepo-tst-1")
 
     assert slot is not None
-    assert slot == repo / ".worktrees" / "session-1"
+    assert slot == repo / ".worktrees" / "myrepo-tst-1"
     assert _is_registered(repo, other), "another slot's registration must not be pruned"
 
 
 def test_given_this_slots_stale_registration_when_ai_c_launches_then_only_it_is_cleared(repo):
     """Negative control for AC-2: this slot's own stale entry is still cleared."""
-    _stale_registration(repo, "session-1", "wt-session-1")
-    other = _stale_registration(repo, "session-9", "wt-session-9")
+    _stale_registration(repo, "myrepo-tst-1", "wt-myrepo-tst-1")
+    other = _stale_registration(repo, "myrepo-tst-9", "wt-myrepo-tst-9")
 
-    slot = create_worktree("session-1")
+    slot = create_worktree("myrepo-tst-1")
 
     assert slot is not None
-    assert slot == repo / ".worktrees" / "session-1"
+    assert slot == repo / ".worktrees" / "myrepo-tst-1"
     assert slot.is_dir()
     assert _is_registered(repo, slot)
     assert _is_registered(repo, other)
@@ -322,20 +323,20 @@ def test_given_this_slots_stale_registration_when_ai_c_launches_then_only_it_is_
 
 def test_given_this_slots_branch_held_by_stale_registration_elsewhere_when_ai_c_launches_then_it_is_cleared(repo):
     """The old prune also freed this slot's own branch from a vanished checkout."""
-    stale = _stale_registration(repo, "session-1r", "wt-session-1")
-    other = _stale_registration(repo, "session-9", "wt-session-9")
+    stale = _stale_registration(repo, "myrepo-tst-1r", "wt-myrepo-tst-1")
+    other = _stale_registration(repo, "myrepo-tst-9", "wt-myrepo-tst-9")
 
-    slot = create_worktree("session-1")
+    slot = create_worktree("myrepo-tst-1")
 
     assert slot is not None
-    assert slot == repo / ".worktrees" / "session-1"
+    assert slot == repo / ".worktrees" / "myrepo-tst-1"
     assert not _is_registered(repo, stale)
     assert _is_registered(repo, other)
 
 
 def test_given_worktree_listing_fails_when_ai_c_launches_then_no_registration_is_removed(repo):
     """AC-3: when the registrations cannot be read, nothing is pruned or removed."""
-    _stale_registration(repo, "session-1", "wt-session-1")
+    _stale_registration(repo, "myrepo-tst-1", "wt-myrepo-tst-1")
     real_run = subprocess.run
     removals = []
 
@@ -348,7 +349,7 @@ def test_given_worktree_listing_fails_when_ai_c_launches_then_no_registration_is
 
     with patch("subprocess.run", side_effect=run):
         with pytest.raises(RuntimeError):
-            create_worktree("session-1")
+            create_worktree("myrepo-tst-1")
 
     assert removals == []
-    assert _is_registered(repo, repo / ".worktrees" / "session-1")
+    assert _is_registered(repo, repo / ".worktrees" / "myrepo-tst-1")

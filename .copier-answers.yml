@@ -1,6 +1,7 @@
-_commit: v1.18.0-221-g6a6c0ed
+_commit: v1.18.0-240-ga2fbf6a
 _src_path: git@github.com:sergeiwallace/project-template.git
 dev_branch: main
+github_org_features: false
 include_ci: true
 include_python_tests: true
 include_session_config: true

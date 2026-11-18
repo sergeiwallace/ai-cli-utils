@@ -27,7 +27,7 @@ from conftest import make_subprocess_result, run_cli
 from name_fleet import REPO, build_fleet, git
 from test_cli import tmux_available  # noqa: F401
 
-from ai_cli import iterm2_restore, session_naming
+from ai_cli import iterm2_restore, session, session_naming
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path
@@ -60,10 +60,11 @@ class Env:
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch, interactive_terminal, tmux_available):  # noqa: F811
+def env(tmp_path, monkeypatch, interactive_terminal, tmux_available, register_repo):  # noqa: F811
     own_host_id = session_naming.host_id
     fleet = build_fleet(tmp_path, monkeypatch)
     monkeypatch.setattr(session_naming, "host_id", own_host_id)
+    monkeypatch.setenv("AI_HOST", "test-host")
     monkeypatch.setenv("AI_CLI_SESSION_NAMES", "1")
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
@@ -71,8 +72,9 @@ def env(tmp_path, monkeypatch, interactive_terminal, tmux_available):  # noqa: F
     git(repo.parent, "init", "-q", "-b", "main", str(repo))
     git(repo, "config", "user.email", "test@example.com")
     git(repo, "config", "user.name", "Test")
+    register_repo(repo, REPO)
     (repo / "README.md").write_text("myrepo\n", encoding="utf-8")
-    git(repo, "add", "README.md")
+    git(repo, "add", "README.md", "pyproject.toml")
     git(repo, "commit", "-q", "-m", "initial")
     git(repo, "remote", "add", "origin", str(origin))
     git(repo, "push", "-q", "origin", "main")
@@ -290,6 +292,16 @@ def test_given_a_probe_launch_when_dry_run_then_the_plan_names_the_probe_and_wri
     assert env.canonical_paths() == [] and env.session_rows() == []
 
 
+@pytest.mark.parametrize("flags", [[], ["-t"]], ids=["ordinary", "probe"])
+def test_given_a_user_supplied_probe_segment_when_launched_then_it_is_refused(env, flags):
+    code, _out, err = run_cli([*LAUNCH, *flags, "probe-1"])
+
+    assert code == 1, err
+    assert "noncanonical rule refused 'probe-1'" in err
+    assert env.started == []
+    assert env.canonical_paths() == [] and env.session_rows() == []
+
+
 # --- Review fixes ------------------------------------------------------------------------------
 
 
@@ -311,30 +323,47 @@ def test_given_a_running_bare_probe_when_a_second_bare_probe_launches_then_it_ta
 def test_given_a_canonical_session_with_the_probe_title_when_a_probe_launches_then_it_refuses_and_keeps_the_row(
     env,
 ):
-    code, _out, err = run_cli([*LAUNCH, "probe", "-I"])
-    assert code == 0, err
-    assert [row["name"] for row in env.session_rows()] == [f"c-{STEM}-probe-1"]
+    # An older release could give an ordinary launch this title.
+    name = f"c-{STEM}-probe-1"
+    run_state.register(
+        name,
+        recipe={
+            "session_name": name,
+            "owning_host": "test-host",
+            "engine": "c",
+            "cwd": str(env.repo),
+            "project": REPO,
+            "options": {},
+            "extra_args": [],
+            "argv": ["ai", "c", name],
+        },
+        host="test-host",
+        new_start=True,
+    )
+    before = env.session_rows()
 
     code, _out, err = run_cli([*LAUNCH, "-t"])
 
     assert code == 1, err
     assert f"c-{STEM}-probe-1" in err and "-t/--probe" in err
-    assert len(env.started) == 1
+    assert env.started == []
+    assert env.session_rows() == before
     [row] = env.session_rows()
     assert not row.get("probe") and row["relaunch"] == "auto"
-    assert _boot_relaunchable([row]) == [f"c-{STEM}-probe-1"]
+    assert _boot_relaunchable([row]) == [name]
 
 
 def test_given_a_probe_row_when_an_ordinary_launch_takes_its_title_then_the_row_is_canonical_again(env):
-    code, _out, err = run_cli([*LAUNCH, "-t"])
-    assert code == 0, err
+    # Seed a diagnostic row with a title the ordinary launcher can still use.
+    name = f"c-{STEM}-1"
+    run_state.register(name, recipe={"argv": ["ai", "c", name], "cwd": str(env.repo)}, host="test-host", probe=True)
 
-    code, _out, err = run_cli([*LAUNCH, "probe-1", "-I"])
+    code, _out, err = run_cli([*LAUNCH, "1", "-I"], config={"machine": {"host_id": "test-host"}})
 
     assert code == 0, err
     [row] = env.session_rows()
     assert not row.get("probe") and row["relaunch"] == "auto"
-    assert _boot_relaunchable([row]) == [f"c-{STEM}-probe-1"]
+    assert _boot_relaunchable([row]) == [name]
 
 
 def test_given_a_state_directory_inside_the_repository_when_a_probe_launches_then_it_refuses_creating_nothing(
@@ -379,16 +408,15 @@ def test_given_a_running_tmux_probe_when_its_slot_is_launched_again_then_it_atta
 
 def test_given_a_canonical_worktree_with_the_probe_title_and_no_record_when_a_probe_launches_then_it_stays_put(env):
     """A session's checkout under .worktrees/ is never moved into the probe directory."""
-    code, _out, err = run_cli([*LAUNCH, "probe", "-I"])
-    assert code == 0, err
-    canonical = env.started[0][0]
-    registry.registry_path().unlink()
+    title = f"{STEM}-probe-1"
+    canonical = env.repo / ".worktrees" / title
+    git(env.repo, "worktree", "add", "-q", "-b", f"wt-{title}", str(canonical), "origin/main")
 
     code, _out, err = run_cli([*LAUNCH, "-t"])
 
     assert code == 1, err
     assert "-t/--probe" in err
-    assert len(env.started) == 1
+    assert env.started == []
     assert (canonical / "README.md").is_file()
     assert canonical.resolve().as_posix() in git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
 
@@ -400,16 +428,17 @@ def test_given_a_probe_worktree_when_an_ordinary_launch_takes_its_title_then_nei
     ``.worktrees/``: Linux allowed it (moving a directory a process stands in), and
     Windows refused it with "Permission denied", failing the launch.
     """
-    code, _out, err = run_cli([*LAUNCH, "-t"])
-    assert code == 0, err
-    probe = env.started[0][0]
+    # Seed a scratch checkout with a title the ordinary launcher can still use.
+    title = f"{STEM}-1"
+    probe = session.probe_worktree_base(env.repo) / title
+    git(env.repo, "worktree", "add", "-q", "-b", f"probe-{title}", str(probe), "origin/main")
 
-    code, _out, err = run_cli([*LAUNCH, "probe-1", "-I"])
+    code, _out, err = run_cli([*LAUNCH, "1", "-I"])
 
     assert code == 0, err
-    session = env.started[1][0]
-    assert session.parent == env.repo / ".worktrees"
+    canonical = env.started[0][0]
+    assert canonical == env.repo / ".worktrees" / title
     assert (probe / "README.md").is_file()
     listed = git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
     assert f"worktree {probe.resolve().as_posix()}" in listed
-    assert git(probe, "branch", "--show-current") != git(session, "branch", "--show-current")
+    assert git(probe, "branch", "--show-current") != git(canonical, "branch", "--show-current")

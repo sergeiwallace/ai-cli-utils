@@ -11,7 +11,7 @@ def require_isolated_session_state(request, tmp_path_factory):
     message = "Session tests require isolated HOME and XDG directories. Run pytest with tests/conftest.py enabled."
     try:
         request.getfixturevalue("_redirect_home_away_from_the_operator")
-        request.getfixturevalue("_isolate_xdg_state_home")
+        request.getfixturevalue("_verify_user_state_isolation")
         request.getfixturevalue("_redirect_canonical_worktree_registry")
     except pytest.FixtureLookupError:
         pytest.fail(message, pytrace=False)

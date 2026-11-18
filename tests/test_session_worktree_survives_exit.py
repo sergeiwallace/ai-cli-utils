@@ -58,7 +58,7 @@ def _repo_with_session_worktree(tmp_path: Path, ai_name: str, *, with_remote: bo
     _git("config", "commit.gpgsign", "false", cwd=repo)
     (repo / "a.txt").write_text("hi\n", encoding="utf-8")
     _git("add", "a.txt", cwd=repo)
-    _git("commit", "-q", "--no-verify", "-m", "init", cwd=repo)
+    _git("commit", "-q", "-m", "init", cwd=repo)
 
     if with_remote:
         origin = tmp_path / "origin.git"
@@ -170,7 +170,7 @@ class TestSessionWorktreeSurvivesExit:
         repo, worktree = _repo_with_session_worktree(tmp_path, "session-8", with_remote=True)
         (worktree / "unpushed.txt").write_text("work that is on no remote\n", encoding="utf-8")
         _git("add", "unpushed.txt", cwd=worktree)
-        _git("commit", "-q", "--no-verify", "-m", "unpushed work", cwd=worktree)
+        _git("commit", "-q", "-m", "unpushed work", cwd=worktree)
 
         assert not _git("status", "--porcelain", cwd=worktree).stdout.strip()
         assert "unpushed work" in _commits_on_no_remote(worktree), (
