@@ -32,7 +32,7 @@ project-template so that a host without automation framework still loads it.
   `docs/held/held-review/<session>@<host>-held-review.md`, written only by `held_cli.py compile` (run by `/to-review`);
   items live under `docs/held/<host>/<session>/<YYYY>/<MM>/<DD>/` (`docs/held/README.md` § Layout).
   A session is in exactly one mode, `goal`, `to-review` or `idle`
-  (`~/projects/ai-harness/docs/procedures/to-review-mode.md`). Holding a `decision` or `blocker`
+  (the fleet's `docs/procedures/to-review-mode.md`). Holding a `decision` or `blocker`
   for an in-progress issue you own runs `bd-block` on it in that same turn.
 - Hold with `held_cli.py add` from the kind's template in `config/held_kinds.toml`, then compile
   and ship, and merge or land the landing pad by its store's `land` mode. Reap a proved-stale
