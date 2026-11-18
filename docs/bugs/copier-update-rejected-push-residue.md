@@ -96,7 +96,10 @@ Rejected pushes now follow the verified recovery path:
    refused the update normally refuses the anchor too. The verified local ref is the durable copy,
    as on the conflict path.
 3. File or refresh the repository recovery issue with the anchor, where it lives (local only, or
-   local and origin), the template range, and the original push diagnostics.
+   local and origin), the template range, and the push diagnostics. Pass the UTF-8 body from a
+   temporary file using `bd-new --body-file` or `bd comments add --file`. The body is capped at
+   20 KiB. If the diagnostics exceed the available space, keep the tail so the final test verdict
+   remains visible and report how many bytes were cut. Short bodies retain their original text.
 4. Confirm the linked worktree and saved `HEAD`, then remove only the temporary worktree and branch.
 5. Include the anchor ref in the project's push-failure summary.
 
@@ -117,6 +120,9 @@ If local anchor creation or verification fails, cleanup is not attempted and the
 - [x] The anchor-push regressions prove a refused anchor push (alone, or together with the main
   push) still removes the temporary state behind the verified local anchor and files an issue
   saying the anchor is local only.
+- [x] The recovery body regression reproduced `Errno 7` for a 600 KiB diagnostic on both tracker
+  paths before the fix. It now verifies both file-based calls, the byte cap and count, the final
+  verdict, the anchor and template range, and exact preservation of short bodies.
 - [x] `uv run ruff check .` and `uv run ruff format --check .` — clean.
 - [ ] `uv run pytest -q -n 8` cannot complete in the implementation sandbox. The suite's shared
   loopback-server fixture fails before test execution because creating an IPv4 stream socket raises
@@ -139,5 +145,6 @@ path needs direct coverage so a future simplification cannot trade residue reduc
 | 2026-10-17 | Added real-Git rejected-main-push and failed-anchor-push regressions. | RED on the retained-worktree behavior. |
 | 2026-10-17 | Routed rejected pushes through verified local/remote anchors, issue filing, and guarded cleanup. | Focused and nearby suites pass; full gate is permission-blocked as documented above. |
 | 2026-10-17 | Made the remote anchor push best effort; a verified local anchor permits cleanup. | Review found the pre-push gate refuses the anchor in every gate-refused project. |
+| 2026-11-18 | Capped recovery bodies and passed them by file for issue creation and comments. | The 600 KiB regression passes on both paths. |
 
 <!-- /doc:region name="summary" -->

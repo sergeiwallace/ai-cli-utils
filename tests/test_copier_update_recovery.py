@@ -4,7 +4,9 @@ The public entry point and Git repositories/worktrees are real. Only the Copier
 process and issue tracker are substituted; no service or user repository is used.
 """
 
+import re
 import subprocess
+import sys
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +15,7 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from ai_cli import copier_update
+from ai_cli import copier_recovery, copier_update, session_migrate
 from ai_cli.git_repair import _git_env
 
 
@@ -344,7 +346,6 @@ def test_given_anchor_push_fails_when_entry_runs_then_local_anchor_is_kept_and_t
 
 def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented(recovery_project, monkeypatch):
     project, previous, current = recovery_project
-    from ai_cli import session_migrate
 
     existing = []
     tracker_calls = []
@@ -357,7 +358,9 @@ def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented
 
             return subprocess.CompletedProcess(args, 0, json.dumps(existing), "")
         assert args[:3] == ("comments", "add", "issue-1")
-        assert previous in args[3] and current in args[3] and "message.txt" in args[3]
+        assert args[3] == "--file"
+        body = Path(args[4]).read_text(encoding="utf-8")
+        assert previous in body and current in body and "message.txt" in body
         return subprocess.CompletedProcess(args, 0, "", "")
 
     def create(command, observed):
@@ -366,7 +369,7 @@ def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented
         tracker_calls.append(command)
         assert command[command.index("--repo") + 1] == str(project)
         title = command[command.index("--title") + 1]
-        body = command[command.index("--description") + 1]
+        body = Path(command[command.index("--body-file") + 1]).read_text(encoding="utf-8")
         assert "copier-update" in title and project.name in title
         assert "refs/backup/" in body and "message.txt" in body
         assert f"{previous}..{current}" in body
@@ -388,6 +391,73 @@ def test_given_repeat_conflicts_when_entry_runs_then_existing_issue_is_commented
     assert len([call for call in tracker_calls if call[:2] == ("comments", "add")]) == 1
 
 
+@pytest.mark.parametrize("existing_issue", [False, True], ids=["create", "comment"])
+@pytest.mark.parametrize("long_output", [False, True], ids=["short", "oversized"])
+def test_given_push_output_when_recovery_issue_is_written_then_body_keeps_the_diagnostic_tail(
+    tmp_path, monkeypatch, existing_issue, long_output
+):
+    project = tmp_path / "myproject"
+    project.mkdir()
+    anchor = "refs/backup/2026-01-01/copier-update/myproject-abcdef1"
+    template_range = "1234567..abcdef1"
+    location = "Backup anchor location: local only (push to origin was refused)"
+    verdict = "Test gate verdict: failed"
+    diagnostics = f"First diagnostic\n{'é' * (300 * 1024)}\n{verdict}" if long_output else verdict
+    failure_output = f"{location}\n{diagnostics}"
+    issues = '[{"id":"issue-1","title":"[copier-update:myproject] Recover","status":"open"}]'
+    tracker = f"""
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args[:2] == ["--sandbox", "list"]:
+    print({issues if existing_issue else "[]"!r})
+else:
+    if {existing_issue!r}:
+        assert args[:4] == ["--sandbox", "comments", "add", "issue-1"]
+        flag = "--file"
+    else:
+        assert args[:3] == ["--repo", str(Path.cwd()), "--title"]
+        flag = "--body-file"
+    body_path = Path(args[args.index(flag) + 1])
+    assert body_path.is_absolute()
+    Path("stored-body.txt").write_bytes(body_path.read_bytes())
+    Path("source-path.txt").write_text(str(body_path), encoding="utf-8")
+    print("issue-1")
+"""
+    real_run = subprocess.run
+
+    def run_tracker(command, **kwargs):
+        # Substitute only the tracker executable. The OS still receives the real arguments.
+        assert Path(command[0]).name in {"bd", "bd-new"}
+        return real_run([sys.executable, "-c", tracker, *command[1:]], **kwargs)
+
+    monkeypatch.setattr(copier_recovery.subprocess, "run", run_tracker)
+
+    assert copier_recovery._file_recovery_issue(project, anchor, [], template_range, failure_output) == "issue-1"
+
+    body_bytes = (project / "stored-body.txt").read_bytes()
+    body = body_bytes.decode("utf-8")
+    body_path = Path((project / "source-path.txt").read_text(encoding="utf-8"))
+    assert not body_path.parent.exists()
+    prefix = f"Backup anchor: {anchor}\nPush failure output:\n{location}\n"
+    suffix = (
+        f"\nTemplate commit range: {template_range}\n"
+        "Restore the backup in a separate worktree to resolve and validate the template update."
+    )
+    if long_output:
+        assert len(body_bytes) <= 20 * 1024
+        assert body.startswith(prefix) and body.endswith(suffix)
+        marker, _, tail = body[len(prefix) : -len(suffix)].partition("\n")
+        cut = re.fullmatch(r"\[(\d+) bytes cut from the beginning\]", marker)
+        assert cut is not None
+        assert tail.endswith(verdict) and diagnostics.endswith(tail)
+        removed_bytes = len(diagnostics.encode("utf-8")) - len(tail.encode("utf-8"))
+        assert int(cut[1]) == removed_bytes > 0
+    else:
+        assert body == f"{prefix}{diagnostics}{suffix}"
+
+
 def test_given_issue_filing_failure_when_entry_runs_then_anchor_and_clean_checkout_are_reported(
     recovery_project, capsys
 ):
@@ -405,7 +475,6 @@ def test_given_issue_search_fails_when_entry_runs_then_output_names_the_trackers
     recovery_project, monkeypatch, capsys
 ):
     project, _, current = recovery_project
-    from ai_cli import session_migrate
 
     def bd(store, *args):
         return subprocess.CompletedProcess(args, 7, "", "no beads database found in myproject\n")

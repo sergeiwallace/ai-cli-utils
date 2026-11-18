@@ -53,6 +53,8 @@ Depends only on the standard library and the shipped adoption module.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -471,3 +473,329 @@ def adopt_ready(
         except AdoptionError as exc:
             outcomes.append((record, exc))
     return outcomes, skipped
+
+
+@dataclass(frozen=True)
+class NamingViolation:
+    """One read-only observation; no cleanup or adoption is implied."""
+
+    rule: str
+    name: str
+    artifact: str
+    detail: str
+
+
+def audit_naming(
+    *,
+    repos: list[Path] | None = None,
+    snapshot=None,
+    state: Path | None = None,
+    claude_home: Path | None = None,
+    tmux_names: list[str] | None = None,
+) -> list[NamingViolation]:
+    """Cross-check independent artifact inventories, including transcript-free slots.
+
+    Reads the local registry tip only. Missing/unreadable sources are observations,
+    never evidence that something is safe to remove. No locks or directories are
+    created, and no registry fetch, seed, adoption or repair runs.
+    """
+    from . import config
+
+    with config.inspection_only():
+        return _audit_naming(
+            repos=repos, snapshot=snapshot, state=state, claude_home=claude_home, tmux_names=tmux_names
+        )
+
+
+def _audit_naming(*, repos, snapshot, state, claude_home, tmux_names):
+    import subprocess
+
+    from . import canonical_worktrees
+    from . import config as config
+    from . import session_naming as naming
+    from .cc_migrate import transcript_title
+    from .name_registry import RegistryError
+    from .session import _tmux_session_names
+
+    findings: list[NamingViolation] = []
+
+    def add(rule, name, artifact, detail):
+        findings.append(NamingViolation(rule, name, str(artifact), detail))
+
+    state = state if state is not None else config.get_xdg_state_home()
+    home = claude_home if claude_home is not None else Path.home() / ".claude"
+    machine = naming.host_id()
+    try:
+        host = naming._resolve_from(machine, naming.alias_sources())
+    except naming.HostAliasError as exc:
+        host = ""
+        add("host-alias", machine, "host registry", str(exc))
+    if snapshot is None:
+        try:
+            snapshot = naming.naming_snapshot()
+        except (RegistryError, naming.HostAliasError, OSError) as exc:
+            add("registry-unavailable", "registry", "name registry", str(exc))
+    rows = list(snapshot.rows.values()) if snapshot is not None else []
+    names = (snapshot.available if snapshot is not None else frozenset()) | {
+        str(row["name"]) for row in rows if row.get("name")
+    }
+    local_rows = [row for row in rows if row.get("machine") == machine]
+    canonical_path = canonical_worktrees.get_canonical_worktree_registry_path()
+    try:
+        canonical_rows = canonical_worktrees._load_registry(canonical_path)["worktrees"]
+    except canonical_worktrees.CanonicalWorktreeRegistryError as exc:
+        canonical_rows = []
+        add("registry-unavailable", "canonical worktrees", canonical_path, str(exc))
+    canonical_paths = {Path(row["path"]).resolve(): row for row in canonical_rows}
+    canonical_titles = {path.name for path in canonical_paths if path.parent.name == WORKTREES}
+    if repos is None:
+        repos = []
+        for root in naming._projects_roots():
+            if root.is_dir():
+                repos.extend(repo for repo in root.iterdir() if (repo / WORKTREES).is_dir())
+        repos.extend(Path(root) for root in config._registry_entries())
+    repos = sorted({repo.resolve() for repo in repos})
+    slots: dict[str, Path] = {}
+    native_names: set[str] = set()
+
+    def check(title, repo, artifact, *, label_only=False, machine_id=None):
+        try:
+            alias = naming.registered_repo_alias(repo)
+            owner_host = host if machine_id is None else naming._resolve_from(machine_id, naming.alias_sources())
+            parsed = naming.validate_session_name(
+                title, repo_alias=alias, host_alias=owner_host, names=names, label_only=label_only
+            )
+            if not parsed.canonical:
+                add("noncanonical", title, artifact, "diagnostic or label title; excluded from canonical homes")
+            return parsed
+        except (naming.HostAliasError, config.ProjectPrefixError, OSError) as exc:
+            rule = (
+                str(exc).split(" rule refused", 1)[0].replace(" ", "-") if " rule refused" in str(exc) else "host-alias"
+            )
+            add(rule, title, artifact, str(exc))
+
+    for repo in repos:
+        base = repo / WORKTREES
+        if not base.is_dir():
+            continue
+        try:
+            entries = sorted(base.iterdir())
+        except OSError as exc:
+            add("inventory-unavailable", repo.name, base, str(exc))
+            continue
+        for path in entries:
+            title = path.name
+            if not path.is_dir() or title.startswith("."):
+                continue
+            container = title.endswith("-agents")
+            if container:
+                # A cross-repo agent container is owned by its session's repo,
+                # not necessarily by the repository containing this copy.
+                owner_title = title.removesuffix("-agents")
+                try:
+                    owner_machine, owner_title = naming.split_host_qualified(owner_title)
+                except naming.HostAliasError as exc:
+                    add("host-alias", owner_title, path, str(exc))
+                    continue
+                owner_row = next(
+                    (
+                        r
+                        for r in rows
+                        if r.get("title") == owner_title
+                        and (owner_machine is None or r.get("machine") == owner_machine)
+                    ),
+                    None,
+                )
+                if owner_row is None and not (owner_machine in (None, machine) and owner_title in canonical_titles):
+                    add(
+                        "unregistered-container",
+                        owner_title,
+                        path,
+                        "agent container has no owning session registry row",
+                    )
+                continue
+            slots[title] = path
+            matching = [row for row in local_rows if row.get("title") == title and row.get("repo") == repo.name]
+            canonical_row = canonical_paths.get(path.resolve())
+            label_only = any(row.get("kind") == "label" for row in matching)
+            parsed = check(title, repo, path, label_only=label_only)
+            diagnostic = parsed is not None and not parsed.canonical
+            if not matching and canonical_row is None and not diagnostic and not label_only:
+                add("missing-registry-row", title, path, "slot exists without a session row on this machine")
+            if canonical_row is not None:
+                engine = canonical_row.get("engine", "")
+                session = canonical_row.get("session_name", "")
+                try:
+                    # Session-start enrolment records a custom title, not a tmux
+                    # name. Other producers record the derived engine identity.
+                    if not (engine == "claude-session-start" and session == title):
+                        naming.validate_artifact_agreement(
+                            title,
+                            engine=engine,
+                            session=session,
+                            remote=session.startswith(f"{engine}-r-"),
+                            worktree=path,
+                        )
+                except naming.HostAliasError as exc:
+                    add("tmux-agreement", title, canonical_path, str(exc))
+            # Inspect the branch without any repair-capable worktree helpers.
+            result = subprocess.run(
+                ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            branch = result.stdout.strip()
+            if result.returncode == 0 and branch != f"wt-{title}" and not branch.startswith(f"wt/{title}/"):
+                add("branch-agreement", title, path, f"branch is {branch!r}; expected wt-{title} or wt/{title}/...")
+            elif result.returncode and (path / ".git").exists():
+                add("branch-unavailable", title, path, "cannot read attached branch (detached or unreadable checkout)")
+        for lock in base.glob(".*.lock"):
+            title = lock.name[1:-5]
+            if not (base / title).exists():
+                add("orphan-lock", title, lock, "no corresponding slot; lock ownership was not tested")
+
+    for project in sorted((home / "projects").glob("*")):
+        if not project.is_dir():
+            continue
+        for transcript in sorted(project.glob("*.jsonl")):
+            from .session_adopt import task_namespace_candidates
+
+            native_names.update(task_namespace_candidates(transcript.stem))
+            title = transcript_title(transcript)
+            if not title:
+                continue
+            cwd = _session_cwd(transcript, project, home)
+            repo, _location = owning_repo(Path(cwd)) if cwd else (None, UNKNOWN)
+            if repo is None or repo.resolve() not in repos:
+                continue
+            label_only = any(row.get("title") == title and row.get("kind") == "label" for row in rows)
+            check(title, repo, transcript, label_only=label_only)
+            if WORKTREES in Path(cwd).parts:
+                parts = Path(cwd).parts
+                offset = parts.index(WORKTREES) + 1
+                if len(parts) > offset and parts[offset] != title and not parts[offset].endswith("-agents"):
+                    add("title-agreement", title, transcript, f"recorded slot is {parts[offset]!r}")
+
+    for row in rows:
+        title = row.get("title")
+        if not title:
+            continue
+        repo = next((repo for repo in repos if repo.name == row.get("repo")), None)
+        if repo is None:
+            continue
+        check(title, repo, "name registry", label_only=row.get("kind") == "label", machine_id=row.get("machine"))
+        try:
+            alias = naming.registered_repo_alias(repo)
+        except naming.HostAliasError:
+            continue
+        if row.get("repo_alias") != alias:
+            add(
+                "repo-alias",
+                title,
+                "name registry",
+                f"row alias {row.get('repo_alias')!r} differs from current {alias!r}",
+            )
+        try:
+            expected_host = naming._resolve_from(str(row.get("machine")), naming.alias_sources())
+            if row.get("host_alias") != expected_host:
+                add("host-alias", title, "name registry", f"row host alias differs from {expected_host!r}")
+        except naming.HostAliasError as exc:
+            add("host-alias", title, "name registry", str(exc))
+        if row.get("worktree") and row["worktree"] != f".worktrees/{title}":
+            add("worktree-agreement", title, "name registry", f"row worktree is {row['worktree']!r}")
+    for index, row in enumerate(rows):
+        for other in rows[index + 1 :]:
+            if (
+                row.get("name")
+                and other.get("name")
+                and row.get("machine") == other.get("machine")
+                and naming.one_edit_apart(row["name"], other["name"])
+            ):
+                add(
+                    "name-distance",
+                    str(row.get("title") or row["name"]),
+                    "name registry",
+                    f"within one edit of {other['name']!r} on {row.get('machine')!r}",
+                )
+
+    scripts = state / "sessions"
+    for script in sorted(scripts.glob("*.sh")):
+        tmux = script.stem
+        title = tmux.removeprefix("cx-") if tmux.startswith("cx-") else tmux[2:]
+        title = title.removeprefix("r-")
+        if title not in slots and not any(row.get("title") == title for row in local_rows):
+            add("orphan-script", title, script, "no slot or local registry row")
+        try:
+            for line in script.read_text(encoding="utf-8").splitlines():
+                assignment = re.match(r"\s*(ai_name|tmux_session)=([^;]+)$", line)
+                if not assignment:
+                    continue
+                key, raw = assignment.groups()
+                values = shlex.split(raw)
+                if len(values) != 1 or "$" in values[0]:
+                    continue
+                expected = title if key == "ai_name" else tmux
+                if values[0] != expected:
+                    add("script-agreement", title, script, f"{key} is {values[0]!r}; expected {expected!r}")
+        except (OSError, UnicodeError, ValueError) as exc:
+            add("script-unreadable", title, script, str(exc))
+    for lock in state.glob("ai-watcher-lock-*"):
+        tmux = lock.name.removeprefix("ai-watcher-lock-")
+        title = re.sub(r"^(?:cx|c|g|p)(?:-r)?-", "", tmux)
+        if title not in slots and not any(row.get("title") == title for row in local_rows):
+            add("orphan-lock", title, lock, "no slot or local registry row; lock ownership was not tested")
+    for meta_path in sorted(state.glob("session-meta-*.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError("metadata is not an object")
+            title = meta["ai_name"]
+            worktree = Path(meta["worktree_dir"]) if meta.get("worktree_dir") else None
+            if worktree:
+                owner_repo, _location = owning_repo(worktree)
+                if owner_repo is not None and owner_repo in repos:
+                    check(title, owner_repo, meta_path)
+            naming.validate_artifact_agreement(
+                title,
+                engine=meta["engine"],
+                session=meta["session"],
+                remote=meta.get("is_remote", False),
+                worktree=worktree if worktree and WORKTREES in worktree.parts else None,
+            )
+            if meta_path.name != f"session-meta-{meta['session']}.json":
+                add("script-agreement", title, meta_path, "metadata filename differs from its tmux identity")
+            if worktree and title in slots and worktree != slots[title]:
+                add("worktree-agreement", title, meta_path, "launcher worktree differs from the discovered slot")
+        except naming.NamingConventionError as exc:
+            add(
+                str(exc).split(" rule refused", 1)[0].replace(" ", "-"),
+                str(meta.get("ai_name", "unknown")),
+                meta_path,
+                str(exc),
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            add("metadata-unreadable", meta_path.name, meta_path, str(exc))
+    try:
+        live_names = _tmux_session_names() if tmux_names is None else tmux_names
+    except OSError as exc:
+        live_names = []
+        add("tmux-unavailable", "tmux", "tmux", str(exc))
+    for tmux in live_names:
+        parts = tmux.split("-", 1)
+        if len(parts) != 2 or parts[0] not in ("c", "g", "p", "cx"):
+            continue
+        title = parts[1].removeprefix("r-")
+        if title not in slots and not any(row.get("title") == title for row in local_rows):
+            add("orphan-tmux", title, tmux, "no slot or local registry row")
+    for namespace in sorted((home / "tasks").glob("*")):
+        # UUID namespaces belong to sessions started outside this launcher.
+        if (
+            namespace.is_dir()
+            and namespace.name not in slots
+            and not any(row.get("title") == namespace.name for row in local_rows)
+            and namespace.name not in native_names
+            and not re.fullmatch(r"[0-9a-f-]{36}", namespace.name)
+        ):
+            add("orphan-task-namespace", namespace.name, namespace, "no slot or local registry row")
+    return sorted(set(findings), key=lambda item: (item.rule, item.name, item.artifact))

@@ -34,8 +34,9 @@ _STEPS = (
 
 
 @pytest.fixture
-def launch(tmp_path, monkeypatch):
+def launch(tmp_path, monkeypatch, register_repo):
     fleet = build_fleet(tmp_path, monkeypatch)
+    register_repo(fleet.repo, REPO)
     monkeypatch.chdir(fleet.repo)
     alias_file = tmp_path / session_naming.ALIAS_FILENAME
     alias_file.write_text(f'[aliases]\n{HOST} = "{HOST_ALIAS}"\n', encoding="utf-8")

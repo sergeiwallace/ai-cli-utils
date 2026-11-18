@@ -16,15 +16,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 import test_session_migrate
 import test_session_migrate_on_launch
-from process_ownership import reap_tree, spawn_owned_sleeper, watch_session
+from process_ownership import bounded_supervisor, owned_sleeper, watch_session
+from test_restart_transcript_resolution import LATEST_ID, _record_exit
 from test_session_migrate import NEW, OLD
 
 from ai_cli import main, session_run_state
@@ -63,7 +64,7 @@ def _preamble() -> str:
 
 
 @pytest.fixture
-def wrapper(migrated, tmp_path, monkeypatch):
+def wrapper(migrated, tmp_path, monkeypatch, request):
     """Start the generated wrapper of NEW; yield ``(root, process, log)`` and reap it afterwards."""
     root = tmp_path / "wrapper"
     binaries = root / "bin"
@@ -115,6 +116,8 @@ if args[:2] == ['internal', 'get-version']: print('unknown')
 elif args[:2] == ['internal', 'acquire-generation-lease']: sys.exit(1)
 elif args[:2] == ['internal', 'resolve-background-target']: sys.exit(0)
 elif args[:2] == ['internal', 'finish-migrations'] or (
+    args[:2] == ['internal', 'resolve-continue-target'] and (root / 'resolve-transcript').is_file()
+) or (
     args[:1] == ['sessions'] and args[1:2] and args[1] in ('_begin', '_sequence', 'mark')
 ):
     os.execv(sys.executable, [sys.executable, '-m', 'ai_cli.main', *args])
@@ -129,6 +132,7 @@ rows = [json.loads(line) for line in ledger.read_text(encoding='utf-8').splitlin
 launches = root / 'launches'
 seen = sum(1 for _ in launches.open(encoding='utf-8')) if launches.exists() else 0
 record = {{
+    'pid': os.getpid(),
     'argv': sys.argv[1:],
     'old_logs': sorted(p.name for p in (state / 'launch-logs').glob({OLD!r} + '-*')),
     'finished': [[r['old'], r['new']] for r in rows if r.get('finished')],
@@ -153,6 +157,18 @@ while True:
         encoding="utf-8",
     )
     new_wt = migrated["repo"] / ".worktrees" / NEW
+    restart_case = getattr(request, "param", None)
+    if restart_case:
+        (root / "resolve-transcript").touch()
+        project = main._cc_project_dir(new_wt)
+        latest = project / f"{LATEST_ID}.jsonl"
+        latest.write_text(json.dumps({"customTitle": NEW, "type": "custom-title"}) + "\n", encoding="utf-8")
+        os.utime(latest, (2_000_000_000, 2_000_000_000))
+        sessions = Path.home() / ".claude" / "sessions"
+        sessions.mkdir(exist_ok=True)
+        (sessions / "9001.json").write_text(json.dumps({"sessionId": LATEST_ID, "kind": "bg"}), encoding="utf-8")
+        if restart_case == "recorded":
+            _record_exit(new_wt, latest, stamped=latest, title=NEW)
     session_run_state.register(
         SESSION,
         recipe={
@@ -193,20 +209,12 @@ while True:
     }
     env.pop("BASH_ENV", None)
     log = root / "wrapper.log"
-    with log.open("w", encoding="utf-8") as diagnostics:
-        process = subprocess.Popen(
-            ["bash", str(script)],
-            stdin=subprocess.DEVNULL,
-            stdout=diagnostics,
-            stderr=diagnostics,
-            env=env,
-            start_new_session=True,
-        )
-        try:
-            with watch_session(process):
-                yield root, process, log
-        finally:
-            reap_tree(process)
+    with (
+        log.open("w", encoding="utf-8") as diagnostics,
+        # Leave a minute for teardown after the suite's 300-second test timeout.
+        bounded_supervisor(script, diagnostics, default_lifetime=360, env=env) as process,
+    ):
+        yield root, process, log
 
 
 def _replacement(wrapper) -> tuple[list[dict], str]:
@@ -235,24 +243,39 @@ def test_given_new_is_live_elsewhere_when_the_supervisor_restarts_then_the_finis
     """None of the seeded leftovers is a file of the live NEW, so the finish completes beside it."""
     root, _process, _log = wrapper
     new_wt = migrated["repo"] / ".worktrees" / NEW
-    sleeper = None
-    if live == "agent-in-slot":
-        sleeper = spawn_owned_sleeper(120)
-        sessions = Path.home() / ".claude" / "sessions"
-        sessions.mkdir(parents=True, exist_ok=True)
-        (sessions / f"{sleeper.pid}.json").write_text(
-            json.dumps({"pid": sleeper.pid, "name": "helper", "cwd": str(new_wt / "sub")}), encoding="utf-8"
-        )
-    else:
-        (root / "other-tmux-sessions").write_text(f"c-r-{NEW}\n", encoding="utf-8")
-    try:
+    with ExitStack() as ownership:
+        if live == "agent-in-slot":
+            sleeper = ownership.enter_context(owned_sleeper(120))
+            ownership.enter_context(watch_session(sleeper))
+            sessions = Path.home() / ".claude" / "sessions"
+            sessions.mkdir(parents=True, exist_ok=True)
+            (sessions / f"{sleeper.pid}.json").write_text(
+                json.dumps({"pid": sleeper.pid, "name": "helper", "cwd": str(new_wt / "sub")}), encoding="utf-8"
+            )
+        else:
+            (root / "other-tmux-sessions").write_text(f"c-r-{NEW}\n", encoding="utf-8")
         launches, output = _replacement(wrapper)
-    finally:
-        if sleeper is not None:
-            reap_tree(sleeper)
 
     first, replacement = launches[0], launches[1]
     assert first["old_logs"], "the first agent started with the migration unfinished"
     assert replacement["old_logs"] == [], f"the restart did not carry the launch logs:\n{output}"
     assert replacement["finished"] == [[OLD, NEW]]
     assert f"migration {OLD} -> {NEW}" in output, output
+
+
+@pytest.mark.parametrize("wrapper", ["recorded"], indirect=True)
+def test_given_a_recorded_bg_transcript_when_the_supervisor_restarts_then_passes_its_uuid(wrapper):
+    launches, _ = _replacement(wrapper)
+
+    assert LATEST_ID not in launches[0]["argv"]
+    assert launches[1]["argv"][-4:] == ["--resume", LATEST_ID, "--name", NEW]
+
+
+@pytest.mark.parametrize("wrapper", ["unrecorded"], indirect=True)
+def test_given_a_transcript_conflict_when_the_supervisor_restarts_then_stops_before_launching(wrapper):
+    root, process, log = wrapper
+    assert process.wait(timeout=90) == 0
+
+    assert len(_records(root / "launches")) == 1
+    output = log.read_text(encoding="utf-8") + (root / "launch.log").read_text(encoding="utf-8")
+    assert LATEST_ID in output and "disagrees with" in output
