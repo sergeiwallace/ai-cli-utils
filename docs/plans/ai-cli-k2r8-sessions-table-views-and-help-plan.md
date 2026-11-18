@@ -1,5 +1,5 @@
 ---
-title: "ai sessions prints a grouped table with pair and fleet views, and ai -h shows the whole command tree"
+title: "ai sessions prints a grouped table with group and fleet views, and ai -h shows the whole command tree"
 category: plan
 tags: [plan, sessions, help, docs, output]
 status: active
@@ -22,7 +22,7 @@ names and the pasted terminal output are left out; each removal is marked `[...]
 ```text
 how do i show sessions for `ai sessions` command for ai-cli-utils?
 
-it's not clear how this works from `ai -h`. `ai sessions` ust show all running sessions on the machine host and ideally even the machine host pair if available (possibly even all cc sessions on all machine hosts, if that info is git-tracked and retrievable).
+it's not clear how this works from `ai -h`. `ai sessions` ust show all running sessions on the machine host and ideally even the machine host group if available (possibly even all cc sessions on all machine hosts, if that info is git-tracked and retrievable).
 
 any command groups and specific commands for command groups need to be outlined clearly how to use in both the canonical user cli usage documentation in the repo and the root readme.md and also in the `ai -h` help message. i need to know exactly what all i can do with it from the `ai -h` command. its not all what i can do. also, we need to show how to clearly launch a ai session and also resume / continue / attach to an existing cc session (it will default attach to an ai session if its already running, right? we don't need to explicitly pass in or use `attach` command, right?). the help message needs to more clearly outline how all this works, and it also should include a github url link to the canonical cli usage documentation btw for complete reference in the `ai -h` help message.
 
@@ -36,7 +36,7 @@ i need it to be grouped by machine profile and also sorted by cc sessions that a
 | Ask entry | Where covered |
 |-----------|---------------|
 | "`ai sessions` [must] show all running sessions on the machine host" | T-02: bare `ai sessions` runs the list, running sessions only by default |
-| "ideally even the machine host pair if available" | T-02: the default scope is `pair`, which adds the paired host when one is configured and published |
+| "ideally even the machine host group if available" | T-02: the default scope is `group`, which adds the other group host when one is configured and published |
 | "possibly even all cc sessions on all machine hosts, if that info is git-tracked" | T-02: `-S fleet` reads every host's published snapshot |
 | "outlined clearly ... in the canonical user cli usage documentation ..., the root readme.md and ... `ai -h`" | T-03: one generated command tree in all three, checked by a test |
 | "show how to clearly launch ... resume / continue / attach" and the two questions about `attach` | T-03: the "Start, resume, attach" section; answer below |
@@ -87,8 +87,8 @@ sorts newest first; the others sort A to Z. Host groups put this host first, the
 status groups follow the status order. `-g` and `-s` are free on `ai sessions list` (only `-j` is taken).
 
 **D-5. Config defaults, read at call time.** A `[sessions_list]` table in `config.toml`:
-`group_by = "host"`, `sort_by = ["status", "name"]`, `show_all = false`, `scope = "pair"`,
-`pair_host = ""`. Built-in defaults equal these values, so an absent table behaves the same. CLI flags
+`group_by = "host"`, `sort_by = ["status", "name"]`, `show_all = false`, `scope = "group"`,
+`group_host = ""`. Built-in defaults equal these values, so an absent table behaves the same. CLI flags
 override config. An invalid value is refused naming the key and the file. Documented in
 `docs/reference/sessions-list-defaults.toml` and in the template `config.toml` that `ai` writes on
 first use; a test holds all three equal.
@@ -99,22 +99,22 @@ or `relaunched`; an `unknown` row is not proved running, so it is hidden by defa
 **D-7. Bare `ai sessions` runs `ai sessions list` with the config defaults.** The group takes no list
 options of its own, so `ai sessions -h` still prints the group's help; options go on `ai sessions list`.
 
-**D-8. Scope: `-S/--scope host|pair|fleet`.** This host's rows always come from the live registry.
+**D-8. Scope: `-S/--scope host|group|fleet`.** This host's rows always come from the live registry.
 Other hosts' rows come from the snapshots `ai sessions publish` already writes: each host pushes
 `sessions/<host>.toml` to `<ref_prefix><host>` on the publication remote. The list fetches
 `<ref_prefix>*` into the publication repo's `refs/session-state/*` (bounded at 15 s); if the fetch
-fails it reads the refs already fetched and says so. `pair` is this host plus `pair_host`, or, when
+fails it reads the refs already fetched and says so. `group` is this host plus `group_host`, or, when
 that is empty, the default `[remote]` machine's alias. `fleet` is every published host. Each other
 host's snapshot time is printed under the table.
 
 Limits, stated rather than hidden: a host that does not publish (no `session_relaunch.publish.repo`)
-is absent from `pair` and `fleet`; a snapshot is only as new as that host's last publish; with no
-publication repo on this host, `pair` and `fleet` show this host alone and say why. `pair` is the
-default scope because the ask names the pair "ideally ... if available": with no pair or no
+is absent from `group` and `fleet`; a snapshot is only as new as that host's last publish; with no
+publication repo on this host, `group` and `fleet` show this host alone and say why. `group` is the
+default scope because the ask names the machine host group "ideally ... if available": with no group or no
 publication it is the same as `host`.
 
 **D-9. `--json` is unchanged.** `ai sessions list -j` prints this host's registry, every row, in
-registry order, with the same five keys, whatever `[sessions_list]` says. `-j` with `-S pair` or
+registry order, with the same five keys, whatever `[sessions_list]` says. `-j` with `-S group` or
 `-S fleet` is a usage error rather than a new JSON shape.
 
 **D-10. `ai -h` prints the whole command tree, one line per command.** Today the root list prints
@@ -158,7 +158,7 @@ a real bare Git remote for snapshots. Each is red on 81b73854 and green on the b
 - `-g` and `-s` override `[sessions_list]`; `[sessions_list]` overrides the built-in defaults; a bad
   value is refused.
 - Bare `ai sessions` prints the same table as `ai sessions list`; exited rows appear only with `-a`.
-- `-S pair` adds the paired host's published rows; `-S fleet` adds every published host; with no
+- `-S group` adds the other group host's published rows; `-S fleet` adds every published host; with no
   publication repo the list says so and shows this host.
 - `-j` output is byte-for-byte the same as before for a fixed registry.
 - Every visible command has a non-empty summary; `ai -h` lists every command path, the section and

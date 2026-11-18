@@ -61,6 +61,24 @@ HOLD_TIMEOUT_EXIT_STATUS = 76
 STOPPED_FOREIGN_EXIT_STATUS = 73
 _STOP_TIMEOUT_SECONDS = 30
 _TASK_LIST_VARIABLE = "CLAUDE_CODE_TASK_LIST_ID"
+# A shared daemon can outlive the client that started it. Keep these pins
+# and session-scoped addresses out of its inherited environment.
+DAEMON_IDENTITY_ENV = (
+    _TASK_LIST_VARIABLE,
+    "BEADS_ACTOR",
+    "BD_ACTOR",
+    "AI_HARNESS_SESSION_ID",
+    "AI_TMUX_SESSION",
+    "CC_TMUX_SESSION",
+    "AI_HOST",
+    "AI_SESSION_ROLE",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_NAME",
+    "CLAUDE_CODE_TMUX_SESSION",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+)
 DEFAULT_HOLD_TIMEOUT_SECONDS = 300.0
 DEFAULT_HOLD_MAX_ATTEMPTS = 12
 DEFAULT_EXIT_COPY_WINDOW_SECONDS = 30.0
@@ -119,6 +137,11 @@ def _claude_config_dir() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".claude"
 
 
+def daemon_client_environment() -> dict[str, str]:
+    """Keep configuration and authentication for a daemon-capable Claude client."""
+    return {key: value for key, value in os.environ.items() if key not in DAEMON_IDENTITY_ENV}
+
+
 def _pid_alive(pid: object) -> bool:
     return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and psutil.pid_exists(pid)
 
@@ -169,6 +192,7 @@ def list_live_background_sessions() -> list[dict] | None:
     try:
         completed = subprocess.run(
             ["claude", "agents", "--json"],
+            env=daemon_client_environment(),
             capture_output=True,
             text=True,
             timeout=_AGENTS_LIST_TIMEOUT_SECONDS,
@@ -494,6 +518,7 @@ def stop_background_session(background_id: str) -> bool:
     try:
         completed = subprocess.run(
             ["claude", "stop", background_id],
+            env=daemon_client_environment(),
             capture_output=True,
             text=True,
             timeout=_STOP_TIMEOUT_SECONDS,

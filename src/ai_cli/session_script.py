@@ -10,6 +10,7 @@ import shutil
 import sys
 
 from . import config as _config
+from .background_attach import DAEMON_IDENTITY_ENV
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
@@ -1125,6 +1126,13 @@ def get_engine_script(
         fi
       fi
     # END PLUGIN REFRESH
+    # BEGIN BACKGROUND ATTACH client-environment
+      # Scrub after direnv has loaded. The viewer can start the shared daemon,
+      # and the target worker already has its own environment.
+      if [[ "$1" == claude && "${{2:-}}" == attach ]]; then
+        set -- env {" ".join(f"-u {key}" for key in DAEMON_IDENTITY_ENV)} "$@"
+      fi
+    # END BACKGROUND ATTACH
     # BEGIN PINNED RESTART exec
       if ${{_restart_event_completion:-false}}; then
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
