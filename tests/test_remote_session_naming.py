@@ -48,7 +48,10 @@ def test_given_remote_origin_when_cli_reports_start_then_it_is_remote(monkeypatc
     assert "Starting Claude Code session (remote, tmux)" in output
 
 
-def test_given_remote_origin_when_launch_reports_host_then_it_does_not_claim_local(tmp_path, monkeypatch, capsys):
+def test_given_remote_origin_when_launch_reports_host_then_it_does_not_claim_local(
+    tmp_path, monkeypatch, capsys, register_repo
+):
+    register_repo(tmp_path, "myrepo")
     monkeypatch.setattr(session, "detect_repo_root", lambda: tmp_path)
     monkeypatch.setattr(main._config, "_find_project_dir", lambda name: tmp_path)
     main._do_session_launch(

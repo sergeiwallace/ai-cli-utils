@@ -21,11 +21,11 @@ existing_worktree = test_session_adopt.existing_worktree
 cli_world = test_session_adopt.cli_world
 hooks = test_session_migrate_hooks.hooks
 
-RETITLE = ["ai", "adopt-session", "myproject-2", "-c", "retitle", "-I", "4"]
+RETITLE = ["ai", "adopt-session", "myrepo-tst-2", "-c", "retitle", "-I", "4"]
 
 
 def _retitle_target(cli_world):
-    return _add_worktree(cli_world["repo"], "myproject-4")
+    return _add_worktree(cli_world["repo"], "myrepo-tst-4")
 
 
 def test_given_a_retitling_adoption_when_dry_run_then_every_hook_plans_old_to_new_and_nothing_moves(cli_world, hooks):
@@ -37,8 +37,8 @@ def test_given_a_retitling_adoption_when_dry_run_then_every_hook_plans_old_to_ne
     code, out, err = run_cli([*RETITLE, "-n"])
 
     assert code == 0, err
-    assert "hook notes: would move notes/myproject-2" in out
-    assert [c["args"] for c in hooks.calls()] == [["--old", "myproject-2", "--new", "myproject-4", "--dry-run"]]
+    assert "hook notes: would move notes/myrepo-tst-2" in out
+    assert [c["args"] for c in hooks.calls()] == [["--old", "myrepo-tst-2", "--new", "myrepo-tst-4", "--dry-run"]]
     assert source.read_bytes() == before
     assert not cc_project_dir(target, cli_world["home"]).exists()
 
@@ -51,9 +51,9 @@ def test_given_a_retitling_adoption_when_applied_then_the_hook_runs_live_once_af
 
     assert code == 0, err
     calls = [c["args"] for c in hooks.calls()]
-    assert calls[-1] == ["--old", "myproject-2", "--new", "myproject-4"]
+    assert calls[-1] == ["--old", "myrepo-tst-2", "--new", "myrepo-tst-4"]
     assert all("--dry-run" in args for args in calls[:-1]) and calls[:-1]
-    assert "hook notes: moved notes/myproject-2" in out
+    assert "hook notes: moved notes/myrepo-tst-2" in out
     assert not (cli_world["src_dir"] / f"{UUID}.jsonl").exists(), "the core move ran before the live hook"
 
 
@@ -83,13 +83,13 @@ def test_given_a_hook_that_fails_live_when_adopting_then_it_warns_failed_and_exi
 
     assert code == 1
     assert "hook notes" in err and "FAILED (exit 3): notes store is locked" in err
-    assert "hook board: moved notes/myproject-2" in out, "the remaining hooks still run"
+    assert "hook board: moved notes/myrepo-tst-2" in out, "the remaining hooks still run"
 
 
 def test_given_an_adoption_that_keeps_the_name_when_applied_then_no_hook_runs(cli_world, hooks):
     hooks("10-notes", "notes")
 
-    code, out, err = run_cli(["ai", "adopt-session", "myproject-2", "-y"])
+    code, out, err = run_cli(["ai", "adopt-session", "myrepo-tst-2", "-y"])
 
     assert code == 0, err
     assert hooks.calls() == []

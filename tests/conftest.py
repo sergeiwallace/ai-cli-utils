@@ -1503,6 +1503,21 @@ def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registr
 TEST_HOST_ALIAS = "tst"
 
 
+@pytest.fixture
+def register_repo():
+    """Give a fixture repository real, locally discoverable naming metadata.
+
+    Opt in at repository creation, before cloning when the metadata must reach
+    worktrees or child processes. Never bypass the production naming checks.
+    """
+
+    def register(repo: Path, prefix: str) -> None:
+        with (repo / "pyproject.toml").open("x", encoding="utf-8") as handle:
+            handle.write(f'[tool.ai-cli]\ntask_prefix = "{prefix}"\n')
+
+    return register
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_host_alias(monkeypatch, tmp_path_factory):
     """Resolve the host alias from a temp file, never this machine's identity or config.
@@ -2171,3 +2186,19 @@ def pytest_collection_modifyitems(config, items):
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = kept
+
+
+@pytest.fixture(autouse=True)
+def _launch_reporter_isolated():
+    """Give every test the reporter state it started with, whatever a test installs.
+
+    The host id refresh prints a launch phase only while a launch reporter is
+    installed. One left installed by an earlier test on the same worker made later
+    commands print that phase on stderr, and tests that assert an empty stderr
+    failed depending on how the run was split across workers.
+    """
+    from ai_cli import launch_reporter
+
+    active, fallback = launch_reporter._active, launch_reporter._fallback
+    yield
+    launch_reporter._active, launch_reporter._fallback = active, fallback
