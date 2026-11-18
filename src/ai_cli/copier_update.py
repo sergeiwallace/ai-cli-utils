@@ -24,6 +24,10 @@ Two modes:
   commit+push. Fast, but races any active session in that repo. Use only when you
   know no session is working in the target(s).
 
+Both modes read the canonical-readme-sync mapping at call time. Copier excludes
+the mapped mirrors only when updating their source repository. If the mapping
+cannot be read, the update warns once and continues without mirror exclusions.
+
 For an isolated, no-push update, Python callers can pass ``inspect=True`` to
 ``run_copier_update()``. It returns a ``CopierUpdateInspection`` containing each
 temporary commit hash and a copy of its changed files' final bytes. The temporary
@@ -42,9 +46,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 import jinja2
@@ -52,6 +57,7 @@ import yaml
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
+from .config import get_canonical_source_repo
 from .copier_recovery import (
     _anchor_failed_update,
     _check_recovery_target,
@@ -526,6 +532,34 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
     return path.removesuffix(".jinja")
 
 
+def _load_mirror_excludes(projects_dir: Path) -> dict[str, tuple[str, ...]]:
+    """Map the canonical source repository to the paths Copier would render back to it."""
+    source_repo = get_canonical_source_repo()
+    config_path = projects_dir / source_repo / "config" / "canonical-readme-sync.toml"
+    try:
+        with config_path.open("rb") as file:
+            rows = tomllib.load(file).get("readme", [])
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        _out.warning(Tag.COPIER, "update", f"Could not read {config_path}. Continuing without mirror exclusions.")
+        return {}
+
+    paths = set()
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict) or row.get("consumer_repo") != "project-template":
+                continue
+            consumer_path = row.get("consumer_path")
+            if isinstance(consumer_path, str) and (path := _rendered_template_path(consumer_path, "template")):
+                paths.add(path)
+    return {source_repo: tuple(sorted(paths))}
+
+
+def _mirror_skip_note(paths: tuple[str, ...]) -> str:
+    if not paths:
+        return ""
+    return f" (skipped canonical-readme-sync mirrors from this repository: {', '.join(paths)})"
+
+
 def _question_defaults(config: dict[str, object]) -> dict[str, object]:
     """Literal defaults of the template's questions, so an answer the project never stored still renders."""
     defaults: dict[str, object] = {}
@@ -814,7 +848,11 @@ def _hide_answers_change(project_dir: Path, answers_file: Path, hide: bool = Tru
 
 
 def _run_copier_update(
-    project_dir: Path, copier_bin: str, resolved_source: str | None = None
+    project_dir: Path,
+    copier_bin: str,
+    resolved_source: str | None = None,
+    *,
+    mirror_excludes: tuple[str, ...] = (),
 ) -> tuple[str | None, dict[str, object] | None, TemplateChanges | None]:
     """Run Copier with stored answers and return any safety failure."""
     answers_file = project_dir / ".copier-answers.yml"
@@ -830,6 +868,16 @@ def _run_copier_update(
     template_changes = _template_diff(source, previous_commit, answers_before)
     if template_changes is None:
         return "could not inspect template diff for parity verification", None, None
+    if mirror_excludes:
+        template_changes = replace(
+            template_changes, excluded_on_update=template_changes.excluded_on_update.union(mirror_excludes)
+        )
+
+    exclude_args = []
+    for path in mirror_excludes:
+        # Copier uses gitignore patterns. Anchor them to the destination root and match literal paths.
+        pattern = re.sub(r"([\\*?\[\] ])", r"\\\1", path)
+        exclude_args.extend(("--exclude", f"/{pattern}"))
 
     original_source = original_answers["_src_path"]
     update_answers = original_answers.copy()
@@ -854,6 +902,7 @@ def _run_copier_update(
                 "--trust",
                 "--vcs-ref",
                 "HEAD",
+                *exclude_args,
             ],
             cwd=project_dir,
             capture_output=True,
@@ -887,6 +936,8 @@ def _run_copier_update(
 _WT_NAME = "copier-update"
 _WT_BRANCH = "copier-update-tmp"
 _COMMIT_MSG = "chore: copier update from project-template"
+# A repository that enforces delegation provenance requires this terminal block.
+_COMMIT_TRAILER = "Delegated-to: none"
 
 
 def _repo_root(path: Path) -> Path | None:
@@ -1260,6 +1311,8 @@ def _do_update_in_worktree(
     push: bool,
     resolved_source: str | None = None,
     inspect: bool = False,
+    *,
+    mirror_excludes: tuple[str, ...] = (),
 ) -> tuple[str, str | list[str] | DeliveredUpdate]:
     """Run copier + commit/push inside an already-created worktree.
 
@@ -1272,7 +1325,9 @@ def _do_update_in_worktree(
       pushfail  — committed but push rejected — detail = str (git stderr)
       failed    — copier or commit failed — detail = str (message)
     """
-    update_error, original_answers, template_changes = _run_copier_update(wt_dir, copier_bin, resolved_source)
+    update_error, original_answers, template_changes = _run_copier_update(
+        wt_dir, copier_bin, resolved_source, mirror_excludes=mirror_excludes
+    )
     if update_error is not None:
         if _is_semantic_update_failure(update_error):
             return "parityfail", update_error
@@ -1331,7 +1386,7 @@ def _do_update_in_worktree(
         if inspect and changed_files is None:
             return "failed", "could not capture delivered content"
         commit = subprocess.run(
-            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG, "-m", _COMMIT_TRAILER],
             capture_output=True,
             text=True,
             env=_git_env(),
@@ -1382,6 +1437,8 @@ def _update_one_isolated(
     push: bool = True,
     inspect: bool = False,
     resolved_source: str | None = None,
+    *,
+    mirror_excludes: tuple[str, ...] = (),
 ) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
@@ -1449,10 +1506,9 @@ def _update_one_isolated(
         # The required isolated worktree cannot be created, so retrying without repair will not help.
         return "failed", f"worktree add failed: {add.stderr.strip()}"
 
-    if inspect:
-        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source, inspect=True)
-    else:
-        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source)
+    status, detail = _do_update_in_worktree(
+        wt_dir, root, copier_bin, push, resolved_source, inspect=inspect, mirror_excludes=mirror_excludes
+    )
 
     if inspect and status == "ok":
         assert isinstance(detail, DeliveredUpdate)
@@ -1586,27 +1642,31 @@ def run_copier_update(
             _out.error(Tag.COPIER, "update", f"project '{project_filter}' not found or not copier-managed.")
             return EX_CONFIG
 
+    mirror_excludes = _load_mirror_excludes(projects_dir)
     if dry_run:
         mode = "isolated worktree → main" if isolate else "direct (main tree)"
         _out.emit(Tag.COPIER, "update", f"Would update {len(projects)} project(s) [{mode}]:")
         for p in projects:
-            _out.emit(Tag.COPIER, "update", f"  {p.name}")
+            _out.emit(Tag.COPIER, "update", f"  {p.name}{_mirror_skip_note(mirror_excludes.get(p.name, ()))}")
         _out.emit(Tag.COPIER, "update", "\n(dry-run: no changes made)")
         return 0
 
     if isolate:
-        if inspect:
-            return _run_isolated(projects, copier_bin, push, inspect=True)
-        return _run_isolated(projects, copier_bin, push)
-    return _run_direct(projects, copier_bin)
+        return _run_isolated(projects, copier_bin, push, inspect, mirror_excludes=mirror_excludes)
+    return _run_direct(projects, copier_bin, mirror_excludes)
 
 
 def _run_isolated(
-    projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
+    projects: list[Path],
+    copier_bin: str,
+    push: bool,
+    inspect: bool = False,
+    *,
+    mirror_excludes: dict[str, tuple[str, ...]] | None = None,
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
     with _prepared_copier_sources(projects) as prepared_sources:
-        return _run_isolated_prepared(projects, copier_bin, push, inspect, prepared_sources)
+        return _run_isolated_prepared(projects, copier_bin, push, inspect, prepared_sources, mirror_excludes or {})
 
 
 def _run_isolated_prepared(
@@ -1615,6 +1675,7 @@ def _run_isolated_prepared(
     push: bool,
     inspect: bool,
     prepared_sources: dict[Path, PreparedCopierSource],
+    mirror_excludes: dict[str, tuple[str, ...]],
 ) -> int | CopierUpdateInspection:
     """Run isolated updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
@@ -1625,25 +1686,21 @@ def _run_isolated_prepared(
     has_transient_failure = False
     delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
-        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
+        excludes = mirror_excludes.get(project_dir.name, ())
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}...{_mirror_skip_note(excludes)} ", nl=False)
         prepared = prepared_sources.get(project_dir)
         note = _template_commit_note(prepared)
         if prepared is not None and prepared.failure is not None:
             status, detail = "failed", prepared.failure
-        elif inspect:
-            if prepared is None:
-                status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
-            else:
-                status, detail = _update_one_isolated(
-                    project_dir, copier_bin, push=push, inspect=True, resolved_source=prepared.source
-                )
         else:
-            if prepared is None:
-                status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
-            else:
-                status, detail = _update_one_isolated(
-                    project_dir, copier_bin, push=push, resolved_source=prepared.source
-                )
+            status, detail = _update_one_isolated(
+                project_dir,
+                copier_bin,
+                push=push,
+                inspect=inspect,
+                resolved_source=prepared.source if prepared is not None else None,
+                mirror_excludes=excludes,
+            )
         if status == "ok":
             result = "✓ updated + pushed" if push else "✓ updated (committed, not pushed)"
             _out.cont(Tag.COPIER, "update", result + note)
@@ -1728,14 +1785,17 @@ def _run_isolated_prepared(
     return exit_code
 
 
-def _run_direct(projects: list[Path], copier_bin: str) -> int:
+def _run_direct(projects: list[Path], copier_bin: str, mirror_excludes: dict[str, tuple[str, ...]]) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
     with _prepared_copier_sources(projects) as prepared_sources:
-        return _run_direct_prepared(projects, copier_bin, prepared_sources)
+        return _run_direct_prepared(projects, copier_bin, prepared_sources, mirror_excludes)
 
 
 def _run_direct_prepared(
-    projects: list[Path], copier_bin: str, prepared_sources: dict[Path, PreparedCopierSource]
+    projects: list[Path],
+    copier_bin: str,
+    prepared_sources: dict[Path, PreparedCopierSource],
+    mirror_excludes: dict[str, tuple[str, ...]],
 ) -> int:
     """Run direct updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [direct — main tree]:\n")
@@ -1743,14 +1803,15 @@ def _run_direct_prepared(
     has_partial_mutation = False
     has_transient_failure = False
     for project_dir in projects:
-        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
+        excludes = mirror_excludes.get(project_dir.name, ())
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}...{_mirror_skip_note(excludes)} ", nl=False)
         prepared = prepared_sources.get(project_dir)
         note = _template_commit_note(prepared)
         if prepared is not None and prepared.failure is not None:
             update_error, template_changes = prepared.failure, None
         else:
             update_error, _, template_changes = _run_copier_update(
-                project_dir, copier_bin, prepared.source if prepared is not None else None
+                project_dir, copier_bin, prepared.source if prepared is not None else None, mirror_excludes=excludes
             )
         if update_error is not None:
             semantic_failure = _is_semantic_update_failure(update_error)

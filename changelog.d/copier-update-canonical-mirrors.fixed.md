@@ -1,0 +1,1 @@
+- `ai copier-update` skips template copies of files maintained by the target repository, avoiding conflicts with its canonical versions.

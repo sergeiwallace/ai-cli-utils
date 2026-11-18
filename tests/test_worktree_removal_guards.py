@@ -75,7 +75,7 @@ def _run_update(repo: Path):
     """Run the real copier-update entry; the per-worktree copier step is stubbed."""
     calls = []
 
-    def fake_update(wt_dir, root, copier_bin, push, resolved_source=None, inspect=False):
+    def fake_update(wt_dir, root, copier_bin, push, resolved_source=None, inspect=False, *, mirror_excludes=()):
         calls.append(Path(wt_dir))
         return "nochange", ""
 

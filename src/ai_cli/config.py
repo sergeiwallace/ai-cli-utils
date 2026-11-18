@@ -1131,6 +1131,13 @@ boot = false
 ## Read fresh on every launch, so editing this takes effect immediately: no CC
 ## session or agent needs to restart, unlike an environment-variable override.
 # script_path = "~/projects/myenv/scripts/dolt_server.py"
+
+[copier_update]
+## Name of the repository under projects_dir that holds the canonical readme-sync
+## configuration (config/canonical-readme-sync.toml). 'ai copier-update' skips the
+## template files that configuration mirrors from that repository. The shipped default
+## is read from the package's copier-update.toml; set this to override it for one machine.
+# canonical_source_repo = "my-source-repo"
 """
 
 
@@ -1835,6 +1842,26 @@ def get_environment_repo() -> str:
     except Exception:
         return ""
     return value.strip() if isinstance(value, str) else ""
+
+
+def get_canonical_source_repo() -> str:
+    """Read ``[copier_update] canonical_source_repo`` with the shipped default as fallback."""
+    try:
+        section = load_config(read_only=True).get("copier_update")
+    except (AttributeError, ValueError):
+        section = None
+    value = section.get("canonical_source_repo") if isinstance(section, dict) else None
+    name = value.strip() if isinstance(value, str) else ""
+    if name not in {".", ".."} and re.fullmatch(r"[^/\\:\x00]+", name):
+        return name
+
+    module_path = Path(__file__).resolve()
+    defaults_path = module_path.parent / "data" / "copier-update.toml"
+    if not defaults_path.is_file():
+        # Editable installations read the same defaults from the source checkout.
+        defaults_path = module_path.parents[2] / "config" / "copier-update.toml"
+    with defaults_path.open("rb") as defaults:
+        return tomllib.load(defaults)["copier_update"]["canonical_source_repo"]
 
 
 def _find_project_dir(name: str, _home: Path | None = None) -> Path:

@@ -465,3 +465,10 @@ boot = false
 ## Read fresh on every launch, so editing this takes effect immediately: no CC
 ## session or agent needs to restart, unlike an environment-variable override.
 # script_path = "~/projects/myenv/scripts/dolt_server.py"
+
+[copier_update]
+## Name of the repository under projects_dir that holds the canonical readme-sync
+## configuration (config/canonical-readme-sync.toml). 'ai copier-update' skips the
+## template files that configuration mirrors from that repository. The shipped default
+## is read from the package's copier-update.toml; set this to override it for one machine.
+# canonical_source_repo = "my-source-repo"
