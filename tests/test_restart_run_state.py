@@ -67,6 +67,16 @@ def test_given_program_launched_before_plugin_refresh_when_compared_then_it_is_c
     assert session_restart._compatible(current, before_feature)
 
 
+def test_given_program_launched_before_codex_display_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN CODEX DISPLAY[^\n]*\n.*?^    # END CODEX DISPLAY\n"
+    before_feature = re.sub(bracket, "", current)
+    assert before_feature != current
+    assert "resolve-codex-display" in current and "resolve-codex-display" not in before_feature
+    assert session_restart._compatible(before_feature, current)
+    assert session_restart._compatible(current, before_feature)
+
+
 @pytest.mark.parametrize("program", ["legacy", "current"])
 def test_given_outside_insertion_edit_when_ac_i_2_compared_then_program_is_rejected(programs, program):
     legacy, current = programs
