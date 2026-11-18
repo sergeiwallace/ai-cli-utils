@@ -80,15 +80,8 @@ def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
         home = home.resolve()
         effective_home = Path.home()
         incoming_home = Path(os.environ.get("HOME") or effective_home)
-        for key, path in (("HOME", incoming_home), ("XDG_STATE_HOME", Path(os.environ.get("XDG_STATE_HOME", "")))):
-            if path.is_absolute() and path.resolve().is_relative_to(home):
-                raise pytest.UsageError(f"{_ISOLATION_ERROR} {key} points inside the real home.")
-        if (
-            not incoming_home.is_absolute()
-            or not effective_home.is_absolute()
-            or effective_home.resolve().is_relative_to(home)
-        ):
-            raise pytest.UsageError(f"{_ISOLATION_ERROR} Path.home() points inside the real home or is relative.")
+        if not incoming_home.is_absolute() or not effective_home.is_absolute():
+            raise pytest.UsageError(f"{_ISOLATION_ERROR} Path.home() is relative.")
 
         # Keep the short, drive-level pytest temp root on Windows, where the default temp
         # directory is normally inside the real user profile.
@@ -105,6 +98,7 @@ def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
             raise pytest.UsageError(f"{_ISOLATION_ERROR} An ai_cli module was imported before conftest.")
         temporary = tempfile.TemporaryDirectory(prefix="ai-state-", dir=parent)
         root = Path(temporary.name).resolve()
+        # Replace startup paths even when pytest was launched with the real account home.
         os.environ.update(_state_environment(root))
         for key in ("HOMEDRIVE", "HOMEPATH", "AI_CLI_CANONICAL_WORKTREE_REGISTRY"):
             os.environ.pop(key, None)
