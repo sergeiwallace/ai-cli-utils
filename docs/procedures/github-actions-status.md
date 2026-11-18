@@ -3,15 +3,94 @@
 > GitHub Actions CI is **active** on this repository and its results are a real verification
 > signal. It is not billing-blocked.
 >
-> Last updated: 2026-11-09
+> Last updated: 2026-11-18
 
 ## Current state
 
-`ci.yml` triggers on `push` to `main`, on `pull_request`, and manually via `workflow_dispatch`. It
-runs on GitHub-hosted standard runners.
+CI is three workflows, one per operating system, and all three trigger on `push` to `main`, on
+`pull_request`, and manually via `workflow_dispatch`:
+
+| Workflow | Jobs |
+|---|---|
+| `ci.yml` | `lint`, `test` |
+| `ci-windows.yml` | `test-windows (shard 1/12)` to `(shard 12/12)`, `test-windows` |
+| `ci-macos.yml` | `test-macos (shard 1/2)` and `(shard 2/2)`, `test-macos` |
+
+Every job's first attempt runs on a GitHub-hosted standard runner. A later attempt can run on a
+self-hosted runner when the maintainers' runner fleet authorizes it, as described in
+[Hosted first, with a self-hosted fallback](#hosted-first-with-a-self-hosted-fallback). With that
+authorization absent, every job runs where it always ran.
 
 A red CI check means the code or the workflow is broken. Read it. Do not dismiss it as
 infrastructure.
+
+## Hosted first, with a self-hosted fallback
+
+Hosted runners for this repository share a concurrent-job cap, and when many runs arrive together
+jobs can wait for hours. The workflows let an external watchdog move a starved run onto a
+self-hosted runner without changing any check name. The watchdog lives outside this repository;
+what this repository carries is the contract below, and
+`tests/test_ci_runner_fallback_contract.py` checks it on every job of every workflow.
+
+The repository variable `CI_FALLBACK_RUNS_ON` holds a JSON object. Each key is
+`<run_id>-<run_attempt>-<os>` and each value is the label array of a self-hosted runner pool. An
+entry authorizes one attempt of one run for one OS key, and nothing else. Unset or `{}` means no
+fallback anywhere. This repository never names a self-hosted label; they arrive only through the
+variable.
+
+The OS key is fixed per workflow:
+
+| Workflow | OS key |
+|---|---|
+| `ci.yml` | `linux` |
+| `ci-windows.yml` | `windows` |
+| `ci-macos.yml` | `macos` |
+| `publish.yml`, `wiki.yml` | `release` |
+
+Each job's `runs-on`, for OS key `<os>` and hosted label `<hosted>`, is exactly:
+
+```text
+${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-<os>', github.run_id, github.run_attempt)] || '<hosted>' }}
+```
+
+So attempt 1 of every job asks for its hosted label whatever the variable holds. A later attempt
+asks for the pool labels only when the run is a push, a manual dispatch or a pull request whose
+head branch is in this repository, and the variable has the exact entry for this run, attempt and
+OS key. A pull request from a fork always runs on hosted runners. A re-run started by hand has no
+entry, so it tries hosted runners too.
+
+The summary jobs `test-windows` and `test-macos` use their own workflow's OS key with the hosted
+label `ubuntu-latest`. On a re-routed attempt they run on the same self-hosted runner after their
+shards, instead of waiting for a hosted Linux runner again.
+
+Steps that cannot run on a self-hosted runner have variants chosen by `runner.environment`
+(`github-hosted` or `self-hosted`). On a hosted runner each job runs the steps it always ran. On a
+self-hosted runner:
+
+- every job first points `HOME` and `DOLT_ROOT_PATH` at directories under `$RUNNER_TEMP`, because
+  the runner's account may have no writable home;
+- Linux jobs install uv with uv's installer script instead of `astral-sh/setup-uv`, and every
+  `uv sync` still carries `--locked`;
+- the `test` job's NATS service image is the empty string, so no service container starts, and the
+  host must provide tmux, since no step there may use `sudo` or a package manager;
+- the macOS shards run `brew install tmux` only when tmux is missing;
+- the publish job publishes with `uv publish --trusted-publishing always`, because
+  `pypa/gh-action-pypi-publish` needs Docker; it keeps `id-token: write`;
+- the wiki publish job needs `git` and `rsync` on the host.
+
+A self-hosted runner may export `CI_TEST_WRAPPER`, a command prefix that the `test` job and the
+macOS shards put before `uv run pytest`. Hosted runners leave it unset, and the step then runs
+`uv run pytest` directly.
+
+Windows has no self-hosted pool, so `ci-windows.yml` carries the routing expression but no step
+variants.
+
+### Superseded pull request runs are cancelled
+
+Each CI workflow has a `concurrency` group per pull request with `cancel-in-progress` for
+`pull_request` events, so a newer push to a pull request cancels that pull request's older run of
+the same workflow. A push to `main` or a manual dispatch gets a group of its own, keyed by its run
+id, so it never cancels or waits on another run.
 
 ## The retirement this replaces was based on a false premise
 
@@ -39,7 +118,8 @@ a GitHub-hosted runner rather than a self-hosted one.
 **Why that is the expected state.** GitHub Actions is free and unmetered for **public**
 repositories on standard GitHub-hosted runners, on every plan including Free. Minute allowances and
 spending limits apply to private repositories and to larger or specialised runners. This repository
-is public and `ci.yml` targets only `ubuntu-latest`, `windows-latest` and `macos-latest`.
+is public and its CI workflows ask hosted runners only for `ubuntu-latest`, `windows-latest` and
+`macos-latest`.
 
 **What most likely happened.** CI was red because tests were failing. That was read as a billing
 block, and an account-level billing condition affecting private repositories was generalised to a
@@ -218,7 +298,7 @@ under `always()`. The 45-minute cap stays and applies to each shard.
 1. Treat CI results as meaningful. A failure is a code or workflow problem.
 2. The local gate (`ruff check`, `ruff format --check`, `pytest`) remains the fast pre-push signal;
    CI is the cross-platform one, and it covers Windows, which no local run on Linux or macOS does.
-3. Do not restrict `ci.yml` to `workflow_dispatch` again without evidence that hosted jobs cannot
+3. Do not restrict the CI workflows to `workflow_dispatch` again without evidence that hosted jobs cannot
    execute — and "the checks are red" is not that evidence.
 
 ## A note on dispatching manually
