@@ -1,0 +1,1 @@
+- `ai copier-update` no longer syncs Python projects in subdirectories when the repository root is itself a locked Python project, so a template tree such as `export-docs/` with a path dependency that does not exist yet can no longer fail the whole project.
