@@ -1764,16 +1764,21 @@ def save_session_map(d, engine="c"):
 WORKTREE_DIR = ".worktrees"
 
 
+def projects_dir_from(config: dict) -> Path:
+    """``[project] projects_dir`` of an already loaded ``config``; ``~/projects`` when unset."""
+    section = config.get("project", {})
+    custom = section.get("projects_dir") if isinstance(section, dict) else None
+    if custom:
+        return Path(custom).expanduser()
+    return Path.home() / "projects"
+
+
 def _get_projects_dir() -> Path:
     """Return the base directory for all projects. Configurable via [project] projects_dir."""
     try:
-        cfg = load_config().get("project", {})
-        custom = cfg.get("projects_dir")
-        if custom:
-            return Path(custom).expanduser()
+        return projects_dir_from(load_config())
     except Exception:
-        pass
-    return Path.home() / "projects"
+        return Path.home() / "projects"
 
 
 def get_worktree_marker_prefix() -> str:
