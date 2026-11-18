@@ -225,14 +225,14 @@ def test_given_the_misplaced_checkout_holds_compiled_modules_when_relocated_then
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     monkeypatch.setattr(sys, "pycache_prefix", None)
     monkeypatch.chdir(repo)
-    wrong = _misplaced_session_worktree(repo, "session-5", "session-5r")
+    wrong = _misplaced_session_worktree(repo, "myrepo-tst-5", "myrepo-tst-5r")
     for package in (wrong / "pkg", wrong / ".venv" / "lib" / "dep"):
         package.mkdir(parents=True)
         source = package / "mod.py"
         source.write_text("x = 1\n")
         py_compile.compile(str(source), cfile=importlib.util.cache_from_source(str(source)), doraise=True)
 
-    slot = create_worktree("session-5")
+    slot = create_worktree("myrepo-tst-5")
 
     assert not (slot / "pkg" / "__pycache__").exists()
     assert list((slot / ".venv" / "lib" / "dep" / "__pycache__").glob("*.pyc")), "a venv's caches are kept"

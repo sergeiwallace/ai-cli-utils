@@ -1517,7 +1517,9 @@ def create_worktree(
     from .session_naming import validate_artifact_name
 
     # Existing legacy homes remain reachable during the configured migration window.
-    validate_artifact_name(ai_name, repo_root, allow_legacy=(repo_root / WORKTREE_DIR / ai_name).is_dir())
+    validate_artifact_name(
+        ai_name, repo_root, allow_legacy=not probe and (repo_root / WORKTREE_DIR / ai_name).is_dir(), probe=probe
+    )
 
     # Deterministic repair backstop (AI-CLI-99): repo_root is a normal working
     # tree and must never be core.bare=true / carry a stale core.worktree.

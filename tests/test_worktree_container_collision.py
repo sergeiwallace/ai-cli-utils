@@ -407,23 +407,22 @@ def test_given_a_session_slot_whose_git_registration_is_gone_when_created_then_i
     branch in the repository, and its uncommitted files move with it.
     """
     monkeypatch.chdir(repo)
-    slot = create_worktree("session-dead")
+    name = "myrepo-tst-dead-1"
+    slot = create_worktree(name)
     assert slot is not None
     (slot / "draft.md").write_text("uncommitted work\n")
-    admin = (
-        Path(_git("rev-parse", "--git-common-dir", cwd=repo).stdout.strip()).resolve() / "worktrees" / "session-dead"
-    )
+    admin = Path(_git("rev-parse", "--git-common-dir", cwd=repo).stdout.strip()).resolve() / "worktrees" / name
     assert admin.is_dir()
     for entry in sorted(admin.rglob("*"), reverse=True):
         entry.unlink() if entry.is_file() else entry.rmdir()
     admin.rmdir()
     assert _git("worktree", "repair", str(slot), cwd=repo, check=False).returncode != 0
 
-    created = create_worktree("session-dead")
+    created = create_worktree(name)
 
-    recovered = next(slot.parent.glob("session-dead-orphaned-*"))
+    recovered = next(slot.parent.glob(f"{name}-orphaned-*"))
     assert created == slot
     assert slot in registered_worktrees(repo), "the slot must end up a real registered worktree"
     assert (slot / "README.md").read_text() == "base\n"
-    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-dead"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == f"wt-{name}"
     assert (recovered / "draft.md").read_text() == "uncommitted work\n", "uncommitted files move, never vanish"

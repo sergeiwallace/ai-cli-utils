@@ -5546,8 +5546,9 @@ def _do_session_launch(
             legacy_repo = Path(_session.detect_repo_root() or _config._project_root(Path.cwd()))
             if (legacy_repo / ".worktrees" / requested_title).is_dir():
                 legacy_titles.append(requested_title)
+        # Probe dispatch prepends its own marker to the user's slot or label.
         _session_naming.validate_launch_input(
-            name,
+            name.partition("-")[2] if probe else name,
             repo_alias=project_prefix.lower(),
             host_alias=_session_naming.resolve_host_alias() if replay_recipe is not None else launch_naming.host_alias,
             legacy_titles=legacy_titles,
@@ -5745,6 +5746,7 @@ def _do_session_launch(
 
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
+    probe_repo = None
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -5798,6 +5800,7 @@ def _do_session_launch(
         if probe:
             # A probe's worktree is scratch: recording it would tell every deletion guard
             # it is a session home that must never be reaped.
+            probe_repo = _repair_root
             reporter.detail("worktree", "probe worktree: not recorded as a canonical session worktree")
         else:
             try:
@@ -6166,7 +6169,8 @@ def _do_session_launch(
             "session": session_id,
             "worktree_dir": str(worktree_path) if worktree_path else None,
             "is_remote": script_is_remote,
-        }
+        },
+        probe_repo=probe_repo,
     )
     script = _session_script.get_engine_script(
         engine,

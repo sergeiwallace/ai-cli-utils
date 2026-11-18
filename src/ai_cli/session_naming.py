@@ -607,6 +607,7 @@ def validate_artifact_name(
     machine: str | None = None,
     allow_legacy: bool = False,
     reserved_name: bool = False,
+    probe: bool = False,
 ) -> SessionName:
     """Check the owning repo/host at a filesystem boundary without initializing config."""
     from . import name_registry as registry
@@ -618,6 +619,13 @@ def validate_artifact_name(
         if not allow_legacy:
             raise
         host = ""
+    if probe:
+        parsed = validate_session_name(title, repo_alias=alias, host_alias=host)
+        marker, _, label = (parsed.label or "").partition("-")
+        if marker != "probe":
+            raise naming_refusal("probe name", title, "use the probe label before the numeric slot")
+        _refuse_diagnostic(label, title)
+        return parsed
     try:
         snapshot = naming_snapshot()
     except registry.RegistryError as exc:
@@ -657,17 +665,27 @@ def validate_artifact_agreement(
         raise naming_refusal("worktree agreement", str(worktree), f"use <repo>/.worktrees/{title}")
 
 
-def validate_script_metadata(meta: dict, *, expected_session: str | None = None) -> None:
+def validate_script_metadata(
+    meta: dict, *, expected_session: str | None = None, probe_repo: Path | None = None
+) -> None:
     """Check the identity at launcher creation/regeneration, before rendering or writing."""
     title = meta["ai_name"]
     if expected_session is not None and meta["session"] != expected_session:
         raise naming_refusal("script agreement", meta["session"], f"use metadata for {expected_session!r}")
     validate_session_text(title)
     worktree = Path(meta["worktree_dir"]) if meta.get("worktree_dir") not in (None, "", ".") else None
-    home = worktree if worktree is not None and ".worktrees" in worktree.parts else None
+    home = worktree if probe_repo is None and worktree is not None and ".worktrees" in worktree.parts else None
     validate_artifact_agreement(
         title, engine=meta["engine"], session=meta["session"], remote=meta.get("is_remote", False), worktree=home
     )
+    if probe_repo is not None:
+        from .session import _require_probe_base_outside
+
+        expected = _require_probe_base_outside(probe_repo) / title
+        if worktree is None or worktree.resolve() != expected.resolve():
+            raise naming_refusal("worktree agreement", str(worktree), f"use the probe worktree {expected}")
+        validate_artifact_name(title, probe_repo, probe=True)
+        return
     if worktree is not None:
         owner = _config._project_root(worktree)
         if home is None and owner != worktree.resolve():
