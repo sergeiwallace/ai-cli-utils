@@ -933,6 +933,8 @@ def _run_copier_update(
 _WT_NAME = "copier-update"
 _WT_BRANCH = "copier-update-tmp"
 _COMMIT_MSG = "chore: copier update from project-template"
+# A repo that enforces delegation provenance (ai-harness) rejects a commit without this terminal block.
+_COMMIT_TRAILER = "Delegated-to: none"
 
 
 def _repo_root(path: Path) -> Path | None:
@@ -1345,7 +1347,7 @@ def _do_update_in_worktree(
         if inspect and changed_files is None:
             return "failed", "could not capture delivered content"
         commit = subprocess.run(
-            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG, "-m", _COMMIT_TRAILER],
             capture_output=True,
             text=True,
             env=_git_env(),

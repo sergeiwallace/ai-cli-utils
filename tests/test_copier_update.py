@@ -2330,3 +2330,14 @@ def test_given_template_envops_delimiters_when_updating_then_exclude_entries_ren
     assert "parity failed" not in capsys.readouterr().out
     assert result == 0
     assert not (projects / "myproject" / "guard.py").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_an_update_commit_when_it_is_made_then_it_ends_with_the_delegation_declaration(tmp_path):
+    """A repo enforcing delegation provenance (ai-harness) rejects a commit without this terminal block."""
+    status, detail, project, _ = _uv_consumer_update(tmp_path)
+    assert (status, detail) == ("ok", "")
+    message = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout.rstrip("\n")
+    assert message.endswith("\n\nDelegated-to: none")
