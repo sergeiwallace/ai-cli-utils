@@ -66,16 +66,10 @@ next_step "Dependencies"
 if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
     if command -v uv &>/dev/null; then
         info "Python project detected. Setting up with uv..."
-        uv venv 2>/dev/null || true
-        source .venv/bin/activate 2>/dev/null || true
-        uv pip install -e . 2>/dev/null && ok "Python deps installed (uv)." || warn "Python install failed — run manually."
-    elif command -v pip &>/dev/null; then
-        info "Python project detected. Setting up with pip..."
-        python -m venv .venv 2>/dev/null || true
-        source .venv/bin/activate 2>/dev/null || true
-        pip install -e . 2>/dev/null && ok "Python deps installed (pip)." || warn "Python install failed — run manually."
+        # --inexact keeps compatible installed packages, such as extras, on reruns.
+        uv sync --inexact 2>/dev/null && ok "Python deps installed (uv)." || warn "Python install failed; run manually."
     else
-        warn "Python project detected but no uv or pip found."
+        warn "Python project detected but uv is required. Install: https://docs.astral.sh/uv/"
     fi
 fi
 

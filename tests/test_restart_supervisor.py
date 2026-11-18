@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from conftest import run_cli
-from process_ownership import reap_tree, watch_session
+from process_ownership import bounded_supervisor
 from process_wait import process_wait_seconds
 
 from ai_cli import config, main, session_restart, session_run_state
@@ -39,7 +39,8 @@ _PROCESS_WAIT_SECONDS = process_wait_seconds()
 # The suite's default 300 s bound (pyproject) is for a test that waits on nothing. These tests
 # chain several real-process waits of up to _PROCESS_WAIT_SECONDS each, which reaches 240 s on a
 # loaded runner, so their bound is derived from the same load scale.
-pytestmark = pytest.mark.timeout(300 + 4 * _PROCESS_WAIT_SECONDS)
+_TEST_TIMEOUT = 300 + 4 * _PROCESS_WAIT_SECONDS
+pytestmark = pytest.mark.timeout(_TEST_TIMEOUT)
 
 
 class _ModuleView:
@@ -89,13 +90,14 @@ def _wait_for(check, process):
 
 
 @pytest.fixture
-def supervisor_fixture(tmp_path_factory, monkeypatch, request):
+def supervisor_fixture(tmp_path_factory, monkeypatch, request, register_repo):
     root = tmp_path_factory.mktemp("restart")
     home = root / "home"
     cwd = root / "myproject"
     binaries = root / "bin"
     for directory in (home / ".claude", cwd / ".claude", binaries):
         directory.mkdir(parents=True)
+    register_repo(cwd, "myproject")
     # Expose only checked OS utilities and the fixture service programs below.
     # Optional host tools such as direnv must not change the child environment.
     for name in (
@@ -340,25 +342,16 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
     # Freeze the old child's shell selection independently of the current preference.
     # The fixture uses bash, so the refreshed program must use the same shell here.
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
-    diagnostics = (root / "supervisor.log").open("w", encoding="utf-8")
-    process = subprocess.Popen(
-        ["bash", str(script)],
-        stdin=subprocess.DEVNULL,
-        stdout=diagnostics,
-        stderr=diagnostics,
-        start_new_session=True,
-    )
-    (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
-    try:
-        # The wrapper respawns its children for good, so it must end with this test even
-        # when the test process is killed and this finally never runs.
-        with watch_session(process):
-            # This shared-module patch must unwind before the conftest spawn guard.
-            with patch.object(session_restart.subprocess, "run", fixture_run):
-                yield root, script, process
-    finally:
-        reap_tree(process)
-        diagnostics.close()
+    # Without a terminal or a reaper lease, the supervisor and all its
+    # descendants stay in the group the launcher creates.
+    with (
+        (root / "supervisor.log").open("w", encoding="utf-8") as diagnostics,
+        bounded_supervisor(script, diagnostics, default_lifetime=_TEST_TIMEOUT + 60) as process,
+    ):
+        (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
+        # This shared-module patch must unwind before the conftest spawn guard.
+        with patch.object(session_restart.subprocess, "run", fixture_run):
+            yield root, script, process
 
 
 @pytest.fixture

@@ -1666,13 +1666,14 @@ def _pkg_version_string() -> str:
         return "unknown"
 
 
-def _engine_script_from_meta(meta: dict) -> str:
+def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None) -> str:
     """Regenerate a session's launch script from its persisted metadata.
 
     ``session-meta-<tmux_session>.json`` (written by the wrapper at start) carries
     every parameter ``get_engine_script`` needs, so regeneration is faithful — no
     fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
     """
+    _session_naming.validate_script_metadata(meta, expected_session=expected_session)
     # Resolve through the session_script module (not the name imported into main) so
     # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
     return _session_script.get_engine_script(
@@ -1816,7 +1817,7 @@ def _sync_stable_session_script(tmux_session: str) -> "bool | None":
         return None
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        script = _engine_script_from_meta(meta)
+        script = _engine_script_from_meta(meta, expected_session=tmux_session)
     except Exception as exc:
         _out.emit(Tag.UPDATE, "refresh", f"  (warning: could not regenerate {tmux_session}: {exc})", err=True)
         return None
@@ -2355,7 +2356,28 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
+            _session_naming.validate_session_text(name, partial=True)
+            owner = (
+                _config._find_project_dir(_config.get_project_aliases().get(project, project))
+                if project
+                else _session.detect_repo_root()
+            )
+            if owner is None:
+                raise _session_naming.naming_refusal(
+                    "repo registration", project, "select a registered owning repository"
+                )
+            registered_alias = _session_naming.registered_repo_alias(Path(owner))
+            if project_prefix.lower() != registered_alias:
+                raise _session_naming.naming_refusal("repo alias", project_prefix, f"use {registered_alias!r}")
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
+            _session_naming.validate_launch_input(
+                name,
+                repo_alias=registered_alias,
+                host_alias=launch_naming.host_alias,
+                legacy_repo=Path(owner) if launch_naming.legacy_prefix else None,
+            )
+            if naming.custom:
+                _session_naming.validate_session_text(naming.custom)
         except _session_naming.HostAliasError as exc:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
@@ -2443,7 +2465,7 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            script = _engine_script_from_meta(meta)
+            script = _engine_script_from_meta(meta, expected_session=tmux_session)
         except Exception as exc:
             _out.emit(Tag.INTERNAL, "refresh", f"Failed to read session metadata: {exc}", err=True)
             sys.exit(1)
@@ -4904,10 +4926,16 @@ def _do_session_launch(
     ):
         sys.exit(1)
 
+    try:
+        _session_naming.validate_session_text(name, partial=True)
+    except _session_naming.NamingConventionError as exc:
+        reporter.error("request", str(exc))
+        sys.exit(1)
+
     if project_prefix_override:
         try:
             project_prefix = _config.validate_task_prefix(project_prefix_override)
-        except _config.ProjectPrefixError as exc:
+        except (_config.ProjectPrefixError, _session_naming.NamingConventionError) as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
     elif project:
@@ -5581,6 +5609,40 @@ def _do_session_launch(
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
+    try:
+        if project_prefix_override:
+            owner = _session.detect_repo_root()
+            if owner and Path(owner).is_dir():
+                registered_alias = _session_naming.registered_repo_alias(Path(owner))
+                if project_prefix.lower() != registered_alias:
+                    raise _session_naming.naming_refusal(
+                        "repo alias", project_prefix, f"use {registered_alias!r} for the owning repository"
+                    )
+        legacy_titles = []
+        legacy_repo = None
+        requested_title = _session_naming.launch_title(name)
+        if requested_title.startswith(f"{project_prefix.lower()}-") and launch_naming.legacy_prefix:
+            legacy_titles = (
+                [_session._session_slot_name(engine, item) for item in _session._tmux_session_names()]
+                if not bare
+                else []
+            )
+            legacy_repo = Path(_session.detect_repo_root() or _config._project_root(Path.cwd()))
+            if (legacy_repo / ".worktrees" / requested_title).is_dir():
+                legacy_titles.append(requested_title)
+        # Probe dispatch prepends its own marker to the user's slot or label.
+        _session_naming.validate_launch_input(
+            name.partition("-")[2] if probe else name,
+            repo_alias=project_prefix.lower(),
+            host_alias=_session_naming.resolve_host_alias() if replay_recipe is not None else launch_naming.host_alias,
+            legacy_titles=legacy_titles,
+            legacy_repo=legacy_repo,
+        )
+        if naming and naming.custom:
+            _session_naming.validate_session_text(naming.custom)
+    except _session_naming.HostAliasError as exc:
+        reporter.error("session", str(exc))
+        sys.exit(1)
     naming_prefix = launch_naming.prefix
 
     worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
@@ -5768,6 +5830,7 @@ def _do_session_launch(
 
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
+    probe_repo = None
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -5821,6 +5884,7 @@ def _do_session_launch(
         if probe:
             # A probe's worktree is scratch: recording it would tell every deletion guard
             # it is a session home that must never be reaped.
+            probe_repo = _repair_root
             reporter.detail("worktree", "probe worktree: not recorded as a canonical session worktree")
         else:
             try:
@@ -6181,6 +6245,16 @@ def _do_session_launch(
     # A legacy-named session reattached in the migration window keeps the prefix it was named with.
     script_prefix = (
         naming_prefix if session_id.casefold().startswith(f"{script_family}{naming_prefix}-") else project_prefix
+    )
+    _session_naming.validate_script_metadata(
+        {
+            "engine": engine,
+            "ai_name": ai_name,
+            "session": session_id,
+            "worktree_dir": str(worktree_path) if worktree_path else None,
+            "is_remote": script_is_remote,
+        },
+        probe_repo=probe_repo,
     )
     script = _session_script.get_engine_script(
         engine,
@@ -8741,7 +8815,7 @@ def _migrate_one_to_name(
             )
             _print_migration(result)
             return 1 if result.references_left else 0
-        words = _names.common_words(snapshot.policy) if name else frozenset()
+        words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
             if verdict not in ("ok", "spare"):
@@ -8750,7 +8824,9 @@ def _migrate_one_to_name(
                 raise AdoptionError(reason)
             planned = name
         else:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, session=old)
+            request, _warnings = _names.pick_request(
+                registry, snapshot, slot, max_length=max_length, words=words, session=old
+            )
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
             repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True
@@ -9560,7 +9636,14 @@ def _print_audit(report, ready, skipped, out=None) -> None:
 @click.option("-a", "--adopt", "run_adopt", is_flag=True, help="Adopt every session that is safe to adopt")
 @click.option("-n", "--dry-run", is_flag=True, help="With -a: show what would be adopted without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
-def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes):
+@click.option(
+    "-N",
+    "--naming",
+    "naming_audit",
+    is_flag=True,
+    help="Read-only naming census across slots, registry and launch artifacts",
+)
+def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes, naming_audit=False):
     """Survey every titled CC session, then optionally drive their adoption.
 
     The survey scans outward from ``~/.claude/projects/`` rather than inward from
@@ -9569,6 +9652,19 @@ def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes):
     supplying its path. Adoption itself is delegated to ``ai adopt-session``'s
     module, so the duplicate-title and live-session gates apply unchanged.
     """
+    if naming_audit:
+        if run_adopt:
+            raise click.UsageError("--naming is read-only and cannot be combined with --adopt")
+        from .session_audit import audit_naming
+
+        findings = audit_naming(repos=[repo.resolve()] if repo else None)
+        if title:
+            findings = [finding for finding in findings if finding.name == title]
+        for finding in findings:
+            _out.emit(Tag.AUDIT, "audit", f"{finding.rule}: {finding.name}: {finding.artifact}: {finding.detail}")
+        _out.emit(Tag.AUDIT, "audit", f"Naming audit: {len(findings)} violation(s); read-only local snapshot.")
+        sys.exit(1 if findings else 0)
+
     from .session_adopt import AdoptionError, TitleCollision
     from .session_audit import adopt_ready, survey, triage
 

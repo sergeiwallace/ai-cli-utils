@@ -41,6 +41,7 @@ there, not here.
   - [ai iterm2 restore](#ai-iterm2-restore)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
+  - [ai copier-update](#ai-copier-update)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
   - [ai ps](#ai-ps)
@@ -757,7 +758,7 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ### Copier update environments
 
-In an isolated update, a root Python project with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev` before committing. A root JavaScript project with a supported lockfile receives its corresponding frozen install. Projects with other layouts must provide the tools required by their hooks separately.
+In an isolated update, Git submodules are initialized recursively before dependencies are installed. Python projects at the root or one directory below with `pyproject.toml` and `uv.lock` are prepared with `uv sync --frozen --all-extras --dev`. When there is exactly one nested Python project and no root Python project, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. Projects with other layouts or additional tool requirements must provide those separately.
 
 ### Removed ai gemini command
 
@@ -1024,6 +1025,16 @@ Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on net
 - `status` — lists alive/dead tunnels, cleans stale PID files.
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
+
+### ai copier-update
+
+Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
+under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
+`config.toml` to override the packaged default. When updating the source repository, both isolated
+and direct updates skip the files that the template mirrors from that repository. The per-project
+line lists the skipped paths and the reason. Other projects still receive the template copies. If
+the command cannot read the mapping, `ai copier-update` prints one warning and continues without
+mirror exclusions.
 
 ### ai update
 

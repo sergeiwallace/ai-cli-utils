@@ -85,6 +85,9 @@ build-backend = "hatchling.build"
 packages = ["src/ai_cli"]
 artifacts = ["src/ai_cli/data/**"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"config/copier-update.toml" = "ai_cli/data/copier-update.toml"
+
 [tool.hatch.build.targets.sdist]
 exclude = [".direnv", ".venv", ".worktrees"]
 

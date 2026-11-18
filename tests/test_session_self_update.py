@@ -16,8 +16,16 @@ import json
 import shlex
 from pathlib import Path
 
+import pytest
+from session_state_isolation import require_isolated_session_state
+
 from ai_cli.main import _write_launch_script_if_changed, _write_stable_session_script
 from ai_cli.session_script import get_engine_script
+
+
+@pytest.fixture(autouse=True)
+def _require_isolated_state(request, tmp_path_factory):
+    require_isolated_session_state(request, tmp_path_factory)
 
 
 def _script(engine="c", **kw):
@@ -72,13 +80,16 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     state = tmp_path / "ai-cli-utils"
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     state.mkdir(parents=True)
+    owner = tmp_path / "myproject"
+    owner.mkdir()
+    (owner / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "job"\n')
     meta = {
         "engine": "c",
         "ai_name": "job-1",
         "session": "c-job-1",
         "prefix": "c-job-",
         "project_prefix": "job",
-        "worktree_dir": "/tmp/wt",
+        "worktree_dir": str(owner),
         "project_name": "myproject",
     }
     (state / "session-meta-c-job-1.json").write_text(json.dumps(meta))
