@@ -80,8 +80,16 @@ def test_given_live_state_and_no_session_fixture_when_pytest_starts_then_collect
     assert sorted(account_home.rglob("*")) == ([] if variable == "HOME" else [unsafe_path.parent, unsafe_path])
 
 
+@pytest.mark.parametrize(
+    ("escape", "diagnostic"),
+    [
+        ("", "1 passed"),
+        ("home", "Path.home() resolved outside the isolation directory."),
+        ("state", "get_xdg_state_home() resolved outside the isolation directory."),
+    ],
+)
 def test_given_a_safe_startup_home_when_pytest_collects_then_imports_already_use_private_state(
-    tmp_path, child_environment
+    tmp_path, child_environment, escape, diagnostic
 ):
     probe = tmp_path / "test_collection_probe.py"
     probe.write_text(
@@ -95,11 +103,18 @@ def test_given_a_safe_startup_home_when_pytest_collects_then_imports_already_use
         "assert cc_usage._CLAUDE_PROJECTS_DIR.is_relative_to(home)\n"
         "assert cc_usage._STATE_DIR.is_relative_to(home.parent)\n"
         "assert Path(os.environ['CLAUDE_CONFIG_DIR']).is_relative_to(home.parent)\n"
+        "assert Path(os.environ['XDG_DATA_HOME']).is_relative_to(home.parent)\n"
+        "outside = Path(os.environ['STARTUP_HOME'])\n"
+        "if os.environ['ISOLATION_PROBE_ESCAPE'] == 'home':\n"
+        "    Path.home = classmethod(lambda cls: outside)\n"
+        "elif os.environ['ISOLATION_PROBE_ESCAPE'] == 'state':\n"
+        "    config.get_xdg_state_home = lambda: outside\n"
         "def test_probe():\n"
         "    assert Path.home().is_dir()\n",
         encoding="utf-8",
     )
     child_environment["STARTUP_HOME"] = child_environment["HOME"]
+    child_environment["ISOLATION_PROBE_ESCAPE"] = escape
     child_environment["PYTHONPATH"] = str(TESTS)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-n", "0", "-p", "conftest", "-q", str(probe)],
@@ -111,5 +126,8 @@ def test_given_a_safe_startup_home_when_pytest_collects_then_imports_already_use
         check=False,
     )
 
-    assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
-    assert "1 passed" in result.stdout
+    expected = pytest.ExitCode.USAGE_ERROR if escape else pytest.ExitCode.OK
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert diagnostic in result.stdout + result.stderr
+    if escape:
+        assert "1 passed" not in result.stdout

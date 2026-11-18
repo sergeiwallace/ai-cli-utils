@@ -24,13 +24,124 @@ import psutil
 import pytest
 from process_ownership import watch_tmux_directory
 
-import ai_cli.config as _config_module
-import ai_cli.session as _session_module
-import ai_cli.session_naming as _session_naming_module
-import ai_cli.trust as _trust_module
-from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path
-from ai_cli.git_repair import _GIT_TARGETING_VARS
-from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
+SUITE_TEMPROOT_NAME = "aipt"
+_STATE_SUBDIRECTORIES = {
+    "HOME": "home",
+    "USERPROFILE": "home",
+    "XDG_STATE_HOME": "state",
+    "XDG_CONFIG_HOME": "config",
+    "XDG_DATA_HOME": "data",
+    "XDG_CACHE_HOME": "cache",
+    "CLAUDE_CONFIG_DIR": "home/.claude",
+    "LOCALAPPDATA": "localappdata",
+    "APPDATA": "appdata",
+}
+_ISOLATION_ERROR = "Cannot isolate pytest user state. Start pytest with a temporary HOME and XDG_STATE_HOME."
+
+
+def _account_home() -> Path:
+    """Get the OS account's home independently of the incoming environment."""
+    if sys.platform == "win32":
+        import ctypes
+
+        # CSIDL_PROFILE resolves the actual Windows profile even if USERPROFILE was overridden.
+        profile = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x28, None, 0, profile):
+            raise OSError("could not resolve the Windows user profile")
+        return Path(profile.value)
+
+    import pwd
+
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+def _state_environment(root: Path) -> dict[str, str]:
+    paths = {key: root / child for key, child in _STATE_SUBDIRECTORIES.items()}
+    for directory in set(paths.values()):
+        directory.mkdir(parents=True, exist_ok=True)
+    return {key: str(directory) for key, directory in paths.items()}
+
+
+def _user_state_breach(root: Path) -> str:
+    if not Path.home().resolve().is_relative_to(root):
+        return "Path.home() resolved outside the isolation directory."
+    for key in _STATE_SUBDIRECTORIES:
+        path = Path(os.environ.get(key, ""))
+        if not path.is_absolute() or not path.resolve().is_relative_to(root):
+            return f"{key} resolved outside the isolation directory."
+    return ""
+
+
+def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
+    try:
+        home = _account_home()
+        if not home.is_absolute():
+            raise OSError("could not determine the account home")
+        home = home.resolve()
+        effective_home = Path.home()
+        incoming_home = Path(os.environ.get("HOME") or effective_home)
+        for key, path in (("HOME", incoming_home), ("XDG_STATE_HOME", Path(os.environ.get("XDG_STATE_HOME", "")))):
+            if path.is_absolute() and path.resolve().is_relative_to(home):
+                raise pytest.UsageError(f"{_ISOLATION_ERROR} {key} points inside the real home.")
+        if (
+            not incoming_home.is_absolute()
+            or not effective_home.is_absolute()
+            or effective_home.resolve().is_relative_to(home)
+        ):
+            raise pytest.UsageError(f"{_ISOLATION_ERROR} Path.home() points inside the real home or is relative.")
+
+        # Keep the short, drive-level pytest temp root on Windows, where the default temp
+        # directory is normally inside the real user profile.
+        if sys.platform == "win32":
+            parent = Path(home.anchor) / SUITE_TEMPROOT_NAME
+        else:
+            parent = Path(os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp")
+        parent = parent.resolve()
+        if parent.is_relative_to(home):
+            raise pytest.UsageError(f"{_ISOLATION_ERROR} The system temp directory is inside the real home.")
+        if sys.platform == "win32":
+            parent.mkdir(exist_ok=True)
+        if any(name.startswith("ai_cli.") for name in sys.modules):
+            raise pytest.UsageError(f"{_ISOLATION_ERROR} An ai_cli module was imported before conftest.")
+        temporary = tempfile.TemporaryDirectory(prefix="ai-state-", dir=parent)
+        root = Path(temporary.name).resolve()
+        os.environ.update(_state_environment(root))
+        for key in ("HOMEDRIVE", "HOMEPATH", "AI_CLI_CANONICAL_WORKTREE_REGISTRY"):
+            os.environ.pop(key, None)
+        if breach := _user_state_breach(root):
+            raise pytest.UsageError(f"{_ISOLATION_ERROR} {breach}")
+    except (KeyError, OSError, RuntimeError) as exc:
+        raise pytest.UsageError(_ISOLATION_ERROR) from exc
+    return home, temporary, root
+
+
+# Conftest and collection import modules with home-derived constants. Install the
+# session environment before those imports, then check it again before fixture setup.
+_REAL_HOME, _SESSION_STATE_DIRECTORY, _SESSION_STATE_ROOT = _bootstrap_user_state()
+
+import ai_cli.config as _config_module  # noqa: E402
+import ai_cli.session as _session_module  # noqa: E402
+import ai_cli.session_naming as _session_naming_module  # noqa: E402
+import ai_cli.trust as _trust_module  # noqa: E402
+from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path  # noqa: E402
+from ai_cli.git_repair import _GIT_TARGETING_VARS  # noqa: E402
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _verify_user_state_isolation():
+    try:
+        # Validate the environment first: the production resolver can migrate a legacy directory.
+        if breach := _user_state_breach(_SESSION_STATE_ROOT):
+            pytest.exit(breach, returncode=pytest.ExitCode.USAGE_ERROR)
+        if not _config_module.get_xdg_state_home().resolve().is_relative_to(_SESSION_STATE_ROOT):
+            pytest.exit(
+                "get_xdg_state_home() resolved outside the isolation directory.",
+                returncode=pytest.ExitCode.USAGE_ERROR,
+            )
+    except (OSError, RuntimeError):
+        pytest.exit(_ISOLATION_ERROR, returncode=pytest.ExitCode.USAGE_ERROR)
+
 
 # Several launch tests patch sys.platform for the whole process. Read the interpreter's
 # build config first, so a stdlib module first imported under a patched platform (zoneinfo,
@@ -160,26 +271,15 @@ _WINDOWS_ENVIRONMENT_SUBKEYS = frozenset(
 # notification was visible on screen and invisible in the run.
 _desktop_escape_attempts: list[str] = []
 
-# Resolved at IMPORT time, before any fixture has redirected HOME, so the guard below
-# always names the operator's own directory rather than a redirected one. Re-reading
-# ``Path.home()`` from inside a fixture would return the redirect and guard nothing.
-_REAL_HOME = Path.home()
-
 # iTerm2 is macOS-only, but ``icon_generator._dynamic_profile_dir`` and
 # ``layout._dynamic_profile_dir`` both build this path from ``Path.home()`` with no
 # platform branch, so an unredirected test creates a stray ``~/Library/...`` tree on
 # Windows and Linux too. Guarding it everywhere is therefore correct rather than a
 # macOS special case.
-_REAL_ITERM2_PROFILE_DIR = _REAL_HOME / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
-
-# Likewise resolved at IMPORT time, through the production resolver and before any fixture
-# has redirected HOME or the registry override, so it names the file the operator's own
-# launches write rather than a redirected one (AI-CLI-u2ox).
-_REAL_CANONICAL_WORKTREE_REGISTRY = get_canonical_worktree_registry_path()
-
-# Short directory name of this suite's own temp root -- see suite_temproot for why the
-# root is relocated at all, and why its length is the point on Windows.
-SUITE_TEMPROOT_NAME = "aipt"
+_ITERM2_PROFILE_PATH = Path("Library", "Application Support", "iTerm2", "DynamicProfiles")
+_REAL_ITERM2_PROFILE_DIR = _REAL_HOME / _ITERM2_PROFILE_PATH
+_COLLECTION_ITERM2_PROFILE_DIR = Path.home() / _ITERM2_PROFILE_PATH
+_COLLECTION_CANONICAL_WORKTREE_REGISTRY = get_canonical_worktree_registry_path()
 
 
 def suite_temproot(tempdir: str) -> Path:
@@ -272,6 +372,13 @@ def _refuse_temp_root_inside_a_checkout(config) -> None:
         path, source = Path(os.environ["PYTEST_DEBUG_TEMPROOT"]), "PYTEST_DEBUG_TEMPROOT"
     else:
         path, source = Path(tempfile.gettempdir()), "the system temp dir (TMPDIR/TEMP/TMP)"
+    resolved = path.expanduser().resolve()
+    if (basetemp or os.environ.get("PYTEST_DEBUG_TEMPROOT")) and (
+        resolved.is_relative_to(_REAL_HOME) or (basetemp and _REAL_HOME.is_relative_to(resolved))
+    ):
+        raise pytest.UsageError(f"{source} overlaps the real home. Point it at a temporary directory.")
+    if basetemp and _SESSION_STATE_ROOT.is_relative_to(resolved):
+        raise pytest.UsageError(f"{source} contains the isolated user state directory. Choose a separate directory.")
     checkout = temp_root_checkout(path)
     if checkout is not None:
         raise pytest.UsageError(
@@ -1191,37 +1298,10 @@ def describe_tree_change(
 
 @pytest.fixture(autouse=True)
 def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
-    """Point ``Path.home()`` at a per-test temp dir so no test can write the real home.
-
-    Installed at the PROCESS BOUNDARY rather than per call site, because per-call
-    discipline demonstrably failed here (AI-CLI-tevy). ``test_icon_generator.py``
-    patches ``_dynamic_profile_dir`` at every one of its ~30 call sites and is not the
-    leak; the profiles that reached the operator's real
-    ``~/Library/Application Support/iTerm2/DynamicProfiles/`` came from session-launch
-    tests that drive ``iterm2.py``'s generator indirectly and had no reason to know a
-    profile write was involved. Patching one function could not have covered them all
-    either: there are three independent real-directory paths --
-    ``icon_generator._dynamic_profile_dir`` (writes a profile),
-    ``layout._dynamic_profile_dir`` (a SECOND, separately-defined copy that writes
-    layout profiles), and ``session._sweep_stale_iterm2_profiles`` (which ``unlink()``s every
-    ``ai-cli-session-*.json`` whose tmux session is not currently live, so a test with a
-    mocked-empty session list deletes the operator's LIVE profiles). All three derive
-    from ``Path.home()``, which is the one lever that covers them by construction.
-
-    A newly written test inherits this without opting in -- the property step 1 of the
-    task asked for -- and iTerm2 hot-reloads that directory on any filesystem event, so
-    a stray write there re-parses and re-enumerates the live terminal's profile set.
-
-    ``HOME`` alone is not portable: ``ntpath.expanduser`` consults ``USERPROFILE``
-    first and never reads ``HOME``, so Windows needs it set too, and the
-    ``HOMEDRIVE``/``HOMEPATH`` pair is cleared so it cannot serve as a third route.
-    """
-    fake_home = tmp_path_factory.mktemp("home")
-    monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("USERPROFILE", str(fake_home))
-    monkeypatch.delenv("HOMEDRIVE", raising=False)
-    monkeypatch.delenv("HOMEPATH", raising=False)
-    return fake_home
+    """Give each test fresh user state, including the base dirs Windows uses instead of XDG."""
+    root = tmp_path_factory.mktemp("user_state")
+    for key, value in _state_environment(root).items():
+        monkeypatch.setenv(key, value)
 
 
 def home_redirect_breach() -> str:
@@ -1285,32 +1365,8 @@ def _pathlib_home() -> str | None:
 
 @pytest.fixture(autouse=True)
 def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
-    """Fail any test that can reach the operator's real iTerm2 Dynamic Profiles dir.
-
-    The redirect above is the prevention; this is the proof that it held.
-
-    Depending on that fixture is what orders the TEARDOWNS: pytest finalises a fixture
-    before the ones it depends on, so this check runs while the redirect is still in
-    place. Dropping the argument as unused made every test fail here, because
-    monkeypatch had already restored the real ``HOME`` by the time the check ran.
-
-    The ENFORCED check is that the real home is unreachable at teardown, because that is
-    a property of this process alone and so is deterministic. Watching the real directory
-    for changes and failing on any of them was tried first and rejected: that directory
-    has other legitimate writers -- a concurrent ``ai c`` launch, or another checkout of
-    this repo running its own suite -- and a watch cannot tell their writes from a test's.
-    Measured, it charged 53 innocent tests with strays that peer runs of this suite had
-    created, and since the operator launches sessions while tests run, it would have
-    stayed flaky permanently rather than only until peers picked up the fix. A guard that
-    cries wolf gets deleted, so it enforces the attributable half and reports the rest.
-
-    A change to the real directory is therefore still surfaced, as a warning naming the
-    likely external writer. With the real home unreachable a home-derived write is
-    impossible by construction, so such a change is provably not this test's doing; the
-    one route that would bypass it is a hardcoded absolute path, and static checking
-    closes that deterministically instead (see ``test_iterm2_profile_isolation.py``).
-    """
-    before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
+    """Check the redirect before monkeypatch restores the session environment."""
+    before = snapshot_tree(_COLLECTION_ITERM2_PROFILE_DIR)
     yield
     breach = home_redirect_breach()
     assert not breach, (
@@ -1319,17 +1375,12 @@ def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
         "re-enumerates every entry on any filesystem event, so a write there mutates the "
         "operator's live terminal, and session._sweep_stale_iterm2_profiles deletes from "
         "it. Re-pointing HOME at a tmp_path of your own is fine; pointing it back at the "
-        "real home is not, and neither is a bare monkeypatch.undo(), which reverts this "
-        "fixture's redirect along with the test's own patches."
+        "real home is not."
     )
-    change = describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR))
+    change = describe_tree_change(before, snapshot_tree(_COLLECTION_ITERM2_PROFILE_DIR))
     if change:
         warnings.warn(
-            f"the real iTerm2 Dynamic Profiles directory {_REAL_ITERM2_PROFILE_DIR} "
-            f"changed while this test ran: {change}. The HOME redirect was intact, so "
-            "this test cannot have caused it via Path.home() -- the likely writer is a "
-            "concurrent `ai` session launch or another checkout of this repo running "
-            "its suite without this redirect.",
+            f"the collection-time iTerm2 profile directory changed while this test ran: {change}",
             stacklevel=1,
         )
 
@@ -1363,7 +1414,7 @@ def canonical_registry_breach() -> str:
         resolved = str(get_canonical_worktree_registry_path())
     except Exception:
         return ""
-    real_registry = str(_REAL_CANONICAL_WORKTREE_REGISTRY)
+    collection_registry = str(_COLLECTION_CANONICAL_WORKTREE_REGISTRY)
 
     def comparable(path: str) -> str:
         # normcase as well as normpath, because Windows paths compare case-insensitively and
@@ -1371,8 +1422,8 @@ def canonical_registry_breach() -> str:
         # it, and the import-time constant as pathlib built it.
         return os.path.normcase(os.path.normpath(path))
 
-    if comparable(resolved) == comparable(real_registry):
-        return f"the registry resolved to the operator's real {real_registry}"
+    if comparable(resolved) == comparable(collection_registry):
+        return f"the registry resolved to the collection-time file {collection_registry}"
     # Compared in string space, and under the real HOME rather than only against the one
     # POSIX path, because the resolver is platform-branched: on Windows it reads
     # LOCALAPPDATA, which the HOME redirect does not clear, so a Windows run resolves a
@@ -1412,18 +1463,8 @@ def _redirect_canonical_worktree_registry(monkeypatch, tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registry):
-    """Fail any test that could still reach the operator's real registry (AI-CLI-u2ox).
-
-    The redirect above is the prevention; this is the proof that it held. Depending on that
-    fixture is what orders the teardowns -- pytest finalises a fixture before the ones it
-    depends on, so this runs while the redirect is still in force rather than after
-    ``monkeypatch`` has restored the operator's own environment.
-
-    A change to the real file is reported as a warning rather than a failure, because with
-    the resolution redirected this test provably did not cause it and the likely writer is a
-    concurrent ``ai`` launch or another checkout running its own suite.
-    """
-    before = _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY)
+    """Check the registry redirect before monkeypatch restores the session environment."""
+    before = _file_fingerprint(_COLLECTION_CANONICAL_WORKTREE_REGISTRY)
     yield
     breach = canonical_registry_breach()
     assert not breach, (
@@ -1433,12 +1474,9 @@ def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registr
         "were pytest temp paths). Point AI_CLI_CANONICAL_WORKTREE_REGISTRY at a tmp_path of your "
         "own if this test needs its own registry; do not point it back at the real one."
     )
-    if _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY) != before:
+    if _file_fingerprint(_COLLECTION_CANONICAL_WORKTREE_REGISTRY) != before:
         warnings.warn(
-            f"the operator's real canonical-worktree registry {_REAL_CANONICAL_WORKTREE_REGISTRY} "
-            "changed while this test ran. The redirect was intact, so this test cannot have "
-            "written it -- the likely writer is a concurrent `ai` session launch or another "
-            "checkout of this repo running its suite without the redirect.",
+            "the collection-time canonical-worktree registry changed while this test ran",
             stacklevel=1,
         )
 
@@ -1464,44 +1502,6 @@ def _hermetic_host_alias(monkeypatch, tmp_path_factory):
     monkeypatch.setattr("ai_cli.host_env.refresh_host_env", lambda config: None)
     monkeypatch.setattr(_session_naming_module, "host_id", lambda: "test-host")
     monkeypatch.setattr(_session_naming_module, "alias_sources", lambda: [alias_file])
-
-
-@pytest.fixture(autouse=True)
-def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
-    """Hermetic XDG state and cache dirs, on every platform (AI-CLI-121, AI-CLI-6al2).
-
-    `config.get_xdg_state_home()`/`process_hygiene._get_state_dir()` both fall back to the
-    real ``~/.local/state`` when unset. Several git tests create ephemeral temp git
-    repos and expect a clean, uncontended state directory; without isolation they race against
-    whatever else (other test runs, live `ai` CLI processes) is concurrently reading/writing the
-    real one, producing exactly the `git commit`/`git init` failures this task fixed by proving
-    the isolation empirically (`XDG_STATE_HOME=$(mktemp -d)` made the full suite deterministic).
-
-    ``LOCALAPPDATA`` is redirected too, and that is the AI-CLI-6al2 half rather than
-    belt-and-braces: setting ``XDG_STATE_HOME`` alone made this fixture a **no-op on
-    Windows**. ``config.get_xdg_state_home`` and ``get_xdg_cache_home`` branch on
-    ``sys.platform == "win32"`` to ``resolve_base_dir("LOCALAPPDATA", ...)`` and never consult
-    the XDG variable there (``config.py:191-205``), so a Windows run reached the operator's
-    real state and cache directories while this fixture reported success. Same shape as
-    AI-CLI-u2ox, which was the canonical registry escaping the same way.
-
-    Setting it on POSIX is harmless, because the resolvers only read it on Windows -- so the
-    fixture stays one branch-free statement instead of acquiring a platform test that only one
-    CI job could ever exercise.
-
-    ``XDG_CACHE_HOME`` is included because ``get_xdg_cache_home`` has the same POSIX fallback
-    into the real home, and nothing else was isolating it.
-
-    Tests that exercise base-directory RESOLUTION set or delete these variables themselves
-    (``tests/test_xdg_base_resolution.py``), and their inner ``monkeypatch`` still wins, so
-    redirecting here does not weaken them. Verified rather than assumed: that file passes with
-    this fixture in force.
-    """
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg_state_home")))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg_cache_home")))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg_config_home")))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))
-    monkeypatch.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
 
 
 @pytest.fixture(autouse=True)
