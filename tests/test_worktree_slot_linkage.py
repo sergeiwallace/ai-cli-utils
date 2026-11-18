@@ -96,21 +96,21 @@ def test_given_both_linkage_records_name_another_spelling_when_relaunched_then_t
     assert (slot / "in-progress.md").read_text() == "uncommitted session work\n"
 
 
-def test_given_the_slot_lost_its_registration_when_relaunched_then_the_refusal_names_the_slot_not_a_nested_move(
-    repo, tmp_path
-):
+def test_given_the_slot_lost_its_registration_when_relaunched_then_it_is_moved_aside_never_into_agents(repo, tmp_path):
+    """No git record refers to the slot, so the launcher moves it aside itself and relaunches.
+
+    It used to refuse and print the ``mv`` for the user to run; that stopped every launch on a
+    host where this state recurs, for a move the launcher can make with nothing to lose.
+    """
     slot = _session_with_uncommitted_work(repo, "session-3")
     admin = _admin_dir(slot)
     aside = tmp_path / "admin-aside"
     admin.rename(aside)
 
-    with pytest.raises(RuntimeError) as caught:
-        create_worktree("session-3", repo_root=repo)
+    created = create_worktree("session-3", repo_root=repo)
 
-    message = str(caught.value)
-    assert f"{slot}-agents" not in message, "no command may send the session's own checkout into -agents/"
-    assert "git worktree move" not in message
-    assert "own checkout" in message
-    assert str(slot) in message
-    assert "wt-session-3" in message
-    assert (slot / "in-progress.md").read_text() == "uncommitted session work\n"
+    assert created is not None and created.resolve() == slot.resolve()
+    assert not (slot.parent / "session-3-agents").exists(), "the session's own checkout never goes into -agents/"
+    recovered = next(slot.parent.glob("session-3-orphaned-*"))
+    assert (recovered / "in-progress.md").read_text() == "uncommitted session work\n"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-3"

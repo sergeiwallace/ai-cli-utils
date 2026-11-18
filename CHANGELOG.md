@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Session list configuration and scope use machine host group terminology; the old scope and host key are no longer accepted.
+
 ## [0.9.0] - 2026-11-16
 
 ### Added
