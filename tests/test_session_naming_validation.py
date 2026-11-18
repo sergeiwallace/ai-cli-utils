@@ -1,6 +1,7 @@
 """Names are refused before filesystem or launcher state can be created."""
 
 import json
+import shlex
 
 import pytest
 from conftest import run_cli
@@ -130,7 +131,8 @@ def test_given_registered_repo_root_when_rewriting_no_worktree_launcher_then_roo
             "worktree_dir": str(repo),
         }
     )
-    assert f"cd -- {repo}" in script
+    # The launcher shell-quotes the path, so a Windows drive path is single-quoted.
+    assert f"cd -- {shlex.quote(str(repo))}" in script
 
 
 @pytest.mark.parametrize("title", ["myrepo-tst-1", "myrepo-tst-review-2", "myrepo-tst-cleo"])

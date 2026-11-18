@@ -2168,3 +2168,19 @@ def pytest_collection_modifyitems(config, items):
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = kept
+
+
+@pytest.fixture(autouse=True)
+def _launch_reporter_isolated():
+    """Give every test the reporter state it started with, whatever a test installs.
+
+    The host id refresh prints a launch phase only while a launch reporter is
+    installed. One left installed by an earlier test on the same worker made later
+    commands print that phase on stderr, and tests that assert an empty stderr
+    failed depending on how the run was split across workers.
+    """
+    from ai_cli import launch_reporter
+
+    active, fallback = launch_reporter._active, launch_reporter._fallback
+    yield
+    launch_reporter._active, launch_reporter._fallback = active, fallback

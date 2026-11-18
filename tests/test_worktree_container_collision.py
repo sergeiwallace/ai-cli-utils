@@ -29,6 +29,7 @@ import pytest
 
 from ai_cli.config import resolve_project_prefix
 from ai_cli.session import build_session_name, create_worktree, registered_worktrees
+from ai_cli.session_naming import naming_prefix, resolve_host_alias
 
 
 def _git(*args, cwd, check=True):
@@ -301,17 +302,17 @@ def test_given_an_uppercase_repo_prefix_and_lowercase_registered_worktree_when_c
     (AI-CLI-bug-tests-skip-capability-probe-bfqy).
     """
     monkeypatch.chdir(repo)
-    lower = create_worktree("app-1")
+    lower = create_worktree("app-tst-1")
     assert lower is not None
-    requested = lower.parent / "APP-1"
+    requested = lower.parent / "APP-TST-1"
     assert requested.exists(), (
         "the fixture established this filesystem aliases case, so the uppercase "
         "spelling of a created worktree must resolve to it"
     )
 
-    prefix = resolve_project_prefix(repo)
+    prefix = naming_prefix(resolve_project_prefix(repo), resolve_host_alias())
     _session_id, ai_name = build_session_name("c", prefix, "1", use_tmux=False)
-    assert ai_name == "app-1"
+    assert ai_name == "app-tst-1"
 
     reused = create_worktree(ai_name)
 

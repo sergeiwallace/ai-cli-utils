@@ -1,6 +1,7 @@
 """The naming census finds slots that have neither transcripts nor registry rows."""
 
 import json
+import sys
 
 import pytest
 from conftest import run_cli
@@ -141,11 +142,13 @@ def test_given_legacy_state_when_naming_census_runs_then_configuration_and_state
 
 
 def test_given_legacy_state_with_launcher_when_audited_then_legacy_files_are_still_inspected(tmp_path, monkeypatch):
-    legacy = tmp_path / "state" / "ai-cli"
+    # Windows keeps launcher state under LOCALAPPDATA and has no older ``ai-cli``
+    # directory to migrate from, so the old-named directory is a POSIX layout.
+    legacy = tmp_path / "state" / ("ai-cli-utils" if sys.platform == "win32" else "ai-cli")
     scripts = legacy / "sessions"
     scripts.mkdir(parents=True)
     (scripts / "c-myrepo-tst-1.sh").write_text("# orphan\n")
-    monkeypatch.setenv("XDG_STATE_HOME", str(legacy.parent))
+    monkeypatch.setenv("LOCALAPPDATA" if sys.platform == "win32" else "XDG_STATE_HOME", str(legacy.parent))
     findings = session_audit.audit_naming(
         repos=[], snapshot=name_registry.Snapshot(tip=None), tmux_names=[], claude_home=tmp_path / "claude"
     )
