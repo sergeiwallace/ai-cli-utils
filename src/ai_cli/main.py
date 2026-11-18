@@ -24,8 +24,10 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import agy_session as _agy_session
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
+from . import codex_session as _codex_session
 from . import compact_transport as _compact_transport
 from . import config as _config
 from . import direnv_setup as _direnv_setup
@@ -355,7 +357,7 @@ def _refresh_claude_plugins() -> None:
     refresh_plugins(emit)
 
 
-def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
+def _pty_handoff(session: str, on_start: Callable[[int], None] | None = None) -> Callable[[str, list[str]], NoReturn]:
     """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
 
     Used on the bare paths when the compact transport resolved to the pty, so the
@@ -367,7 +369,7 @@ def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
         from . import pty_host
 
         try:
-            sys.exit(pty_host.host(file, args, session=session))
+            sys.exit(pty_host.host(file, args, session=session, on_start=on_start))
         except FileNotFoundError:
             raise
         except OSError as exc:
@@ -1131,25 +1133,28 @@ def _bare_engine_command(
         return command + extra_args
 
     if engine == "p":
-        # Pi scopes its saved sessions to the current worktree.  Continuing here
-        # therefore resumes this session's prior conversation without needing a
-        # provider-specific UUID registry.
+        # Pi scopes its saved sessions to the current worktree, and --continue starts a
+        # fresh session when the worktree holds none, so every launch continues.
         # AI-CLI-1rk1: pi's own default provider (google) is silently unready on
         # a fresh/typical setup, so an explicit --provider is required on every
         # launch -- omitting it makes pi fail (near-)silently on every attempt.
-        command = ["pi"]
-        if resume:
-            command.append("--continue")
-        return [*command, "--provider", pi_provider, "--name", ai_name, *extra_args]
+        return ["pi", "--continue", "--provider", pi_provider, "--name", ai_name, *extra_args]
+
+    if engine == "agy":
+        # A fresh interactive session each launch: agy's resume flags are not used here.
+        return _agy_session.launch_command(extra_args)
 
     if engine == "cx":
-        # Codex does not offer a launch-time session-name option. Its resume
-        # command scopes --last to the current working directory by default,
-        # which is this session's isolated worktree.
-        command = ["codex"]
+        # Codex has no launch-time name option: resume the thread this session's name
+        # already carries, by id (Codex's own by-name lookup skips a thread with no turn).
+        # A launch that resumes nothing is named afterwards by _name_new_codex_session.
+        own = _codex_session.exclusive_process_flags()
+        thread = _codex_session.find_thread(ai_name)
+        if thread:
+            return ["codex", "resume", *own, thread, *extra_args]
         if resume:
-            command += ["resume", "--last"]
-        return [*command, *extra_args]
+            return ["codex", "resume", *own, "--last", *extra_args]
+        return ["codex", *own, *extra_args]
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
@@ -1157,6 +1162,31 @@ def _bare_engine_command(
     else:
         command += ["-i", f"/resume load {ai_name}"]
     return command + extra_args
+
+
+def _name_new_codex_session(
+    command: list[str], ai_name: str, reporter: LaunchReporter, *, tmux_target: str | None, fifo: Path | None
+) -> None:
+    """Have a detached helper type ``/rename <ai_name>`` into a Codex that resumes no named thread.
+
+    ``tmux_target`` is the pane the session runs in, ``fifo`` the bare pty's submission
+    FIFO. With neither (a native Windows bare launch), nothing can type into the session,
+    so the operator is told once how to name it; later launches then resume it by name.
+    """
+    if command[:2] == ["codex", "resume"] and "--last" not in command:
+        return
+    if tmux_target is None and fifo is None:
+        reporter.warning(
+            "session", f"this terminal cannot be typed into; type /rename {ai_name} once in Codex to name it"
+        )
+        return
+    where = ["-f", str(fifo)] if fifo is not None else [str(tmux_target)]
+    try:
+        _iterm2._spawn_detached(
+            [sys.executable, "-m", "ai_cli.main", "internal", "name-codex-session", *where, ai_name]
+        )
+    except OSError as exc:
+        reporter.warning("session", f"could not start the Codex namer ({exc}); type /rename {ai_name} once in Codex")
 
 
 def _is_root() -> bool:
@@ -1176,7 +1206,7 @@ def _is_root() -> bool:
 
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
-    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex", "agy": "Antigravity"}[engine]
 
 
 def _launch_mode_label(*, remote: bool, bare: bool) -> str:
@@ -2311,6 +2341,90 @@ def _handle_internal(argv: list[str]) -> None:
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)
+    elif action == "codex-exclusive-flags":
+        flags = _codex_session.exclusive_process_flags()
+        if flags:
+            _out.raw(Untagged.INTERNAL_REPLY, " ".join(flags))
+        sys.exit(0)
+    elif action == "resolve-codex-session":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-codex-session <ai_name>", err=True)
+            sys.exit(1)
+        thread = _codex_session.find_thread(argv[1])
+        if thread:
+            _out.raw(Untagged.INTERNAL_REPLY, thread)
+        sys.exit(0)
+    elif action == "bind-codex-pane":
+        if len(argv) != 3:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal bind-codex-pane <pane> <ai_name>", err=True)
+            sys.exit(1)
+        failure = _codex_session.bind_pane(argv[2], argv[1])
+        if failure:
+            _out.emit(Tag.INTERNAL, "session", f"{argv[2]}: Codex pane not recorded: {failure}", err=True)
+        sys.exit(1 if failure else 0)
+    elif action == "record-agent-identity":
+        if len(argv) not in (3, 4) or not argv[2].isdigit():
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal record-agent-identity <tmux_session> <pid> [generation]",
+                err=True,
+            )
+            sys.exit(1)
+        from . import session_run_state as _run_state
+
+        try:
+            refusal = _run_state.record_agent(argv[1], int(argv[2]), argv[3] if len(argv) == 4 else None)
+        except Exception as exc:
+            refusal = type(exc).__name__
+        if refusal:
+            _out.emit(Tag.INTERNAL, "session", f"{argv[1]}: agent identity not recorded: {refusal}", err=True)
+        sys.exit(1 if refusal else 0)
+    elif action == "name-codex-session":
+        usage = (
+            "Usage: ai internal name-codex-session <tmux_session> <ai_name> [-p|--prompt-file FILE]\n"
+            "       ai internal name-codex-session -f|--fifo FIFO <ai_name>"
+        )
+        fifo_arg: str | None = None
+        prompt_arg: str | None = None
+        positional: list[str] = []
+        rest = iter(argv[1:])
+        for arg in rest:
+            if arg in ("-f", "--fifo"):
+                fifo_arg = next(rest, None)
+            elif arg in ("-p", "--prompt-file"):
+                prompt_arg = next(rest, None)
+            else:
+                positional.append(arg)
+        if len(positional) != (1 if fifo_arg else 2):
+            _out.emit(Tag.INTERNAL, "usage", usage, err=True)
+            sys.exit(1)
+        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+        launch_log = open_launch_log(log_path) if log_path else None
+        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
+        codex_name = positional[-1]
+        try:
+            failure = _codex_session.name_session(
+                codex_name,
+                tmux_target=None if fifo_arg else positional[0],
+                fifo=Path(fifo_arg) if fifo_arg else None,
+                prompt_file=Path(prompt_arg) if prompt_arg else None,
+            )
+            if failure:
+                _out.emit(
+                    Tag.INTERNAL,
+                    "session",
+                    f"{codex_name}: Codex session not named: {failure}; type /rename {codex_name} once in Codex",
+                    err=True,
+                )
+        finally:
+            _out.flush_sinks()
+            _out.attach_file_sink(previous_sink)
+            if launch_log is not None:
+                launch_log.close()
+        sys.exit(1 if failure else 0)
     elif action == "update-session-map":
         if len(argv) < 4:
             _out.emit(
@@ -3345,7 +3459,7 @@ def _do_ls(show_all: bool) -> None:
         """Extract project prefix from a provider session name."""
         parts = name.split("-")
         # Format: {c|g|p|cx}[-r]-{project}-{index}
-        if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx"):
+        if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx", "agy"):
             start = 2 if parts[1] == "r" else 1
             # project is everything between start and last segment
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
@@ -3698,18 +3812,55 @@ def _tmux_session_has_live_pane(session_name: str) -> bool:
     return result.returncode == 0 and "0" in (result.stdout or "").split()
 
 
-def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None:
-    """Report success only after tmux confirms a live pane, without attaching."""
+def _report_detached_launch(session_name: str, reporter: LaunchReporter, split: bool = False) -> None:
+    """Report success only after tmux confirms a live pane; with ``split``, attach it in an iTerm2 split."""
     if not _tmux_session_has_live_pane(session_name):
         reporter.error("tmux", f"session '{session_name}' has no live pane after launch")
         sys.exit(1)
     reporter.phase("session").outcome(f"{session_name} running detached")
+    if split:
+        _split_attach(session_name, reporter)
+
+
+def _caller_terminal_tty() -> str:
+    """The tty of the terminal pane this launch was typed in, or "".
+
+    Inside tmux the process's own tty is a tmux pane, so the tmux client's tty (the
+    terminal pane showing it) is the one the terminal knows.
+    """
+    if os.environ.get("TMUX"):
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{client_tty}"], capture_output=True, text=True, check=False
+        )
+        return (result.stdout or "").strip() if result.returncode == 0 else ""
+    return _iterm2._current_pane_tty()
+
+
+def _split_attach(session_name: str, reporter: LaunchReporter) -> None:
+    """Attach ``session_name`` in a vertical iTerm2 split of the launching pane, keeping its focus.
+
+    Every failure only warns: the session is already running detached and stays so.
+    """
+    attach_hint = f"attach with `ai attach {session_name}`"
+    # iTerm2 exists only on macOS; anywhere else the split is reported, never attempted.
+    if sys.platform != "darwin" or not _iterm2._is_iterm2():
+        reporter.warning("terminal", f"split needs iTerm2 on macOS; the session was started detached: {attach_hint}")
+        return
+    tmux = shlex.quote(shutil.which("tmux") or "tmux")
+    failure = _iterm2.split_attach_by_tty(_caller_terminal_tty(), f"{tmux} attach-session -t ={session_name}")
+    if failure:
+        reporter.warning(
+            "terminal", f"iTerm2 split failed ({failure}); the session keeps running detached: {attach_hint}"
+        )
+        return
+    reporter.phase("session").outcome(f"{session_name} attached in an iTerm2 split pane")
 
 
 #: The launch override for a partial migration. Per invocation only: never read from
 #: config or the environment, and never written into a boot recipe.
 ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
 PROBE_OPTS = ("-t", "--probe")
+SPLIT_OPTS = ("-A", "--split")
 
 
 class PartialMigrationRefusal(SystemExit):
@@ -3953,7 +4104,7 @@ def _migration_target_is_occupied(repo_root: Path, name: str) -> bool:
 
 
 def _session_migrate_variants(name: str) -> set[str]:
-    return {f"{engine}{remote}-{name}" for engine in ("c", "g", "p", "cx") for remote in ("", "-r")}
+    return {f"{engine}{remote}-{name}" for engine in ("c", "g", "p", "cx", "agy") for remote in ("", "-r")}
 
 
 def _manual_migration(old: str, new: str, repo_root: Path) -> str:
@@ -4825,6 +4976,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    split: bool = False,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -5057,6 +5209,15 @@ def _do_session_launch(
             "cannot be established (a server restart does not change this)"
         )
 
+    # -A/--split refuses -b and -R at parse time, but config or a missing tmux can still
+    # turn the launch bare here, and a bare launch has no tmux session to split to.
+    if split and bare:
+        reporter.warning(
+            "terminal",
+            f"{SPLIT_OPTS[1]} needs a tmux session, and this launch runs bare"
+            f"{f' ({tmux_reason})' if tmux_reason else ''}, so nothing is split",
+        )
+
     # One block per launch: presence, path, client version, the running server's
     # version, the resolved mode and its reason. stderr so it never contaminates
     # anything parsing stdout. Client and server are separate lines on purpose --
@@ -5187,6 +5348,16 @@ def _do_session_launch(
     if engine == "cx" and not shutil.which("codex"):
         reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
+    if engine == "agy" and not remote:
+        # A remote launch is checked by `ai agy` on the machine that runs it.
+        if not shutil.which("agy"):
+            reporter.error("request", "agy executable not found on PATH. Install Antigravity, then retry.")
+            sys.exit(1)
+        refusal = _agy_session.subscription_refusal()
+        if refusal:
+            reporter.error("request", refusal)
+            sys.exit(1)
+        _agy_session.strip_api_keys(os.environ)
 
     if not name and extra_args:
         name = extra_args[0]
@@ -5474,7 +5645,9 @@ def _do_session_launch(
                     auth_fault_patterns=remote_cfg.get(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
-                    on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    # The id is bound as a default: inside this long function pyright no longer
+                    # narrows a captured `_record_id` to str.
+                    on_clean_exit=(lambda rid=_record_id: _mark_session_ended(reporter, rid)) if _record_id else None,
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
@@ -5760,7 +5933,7 @@ def _do_session_launch(
         reporter.handoff(engine=_engine_display_name(engine), session=session)
         _resume_suspended_panes(session)
         if not attach:
-            _report_detached_launch(session, reporter)
+            _report_detached_launch(session, reporter, split=split)
             return
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
@@ -6084,9 +6257,11 @@ def _do_session_launch(
         except OSError as exc:
             reporter.error("session", f"cannot enter session directory {target_root}: {exc}")
             sys.exit(1)
-        if engine == "c":
-            # Pin the task-list namespace to ai_name, matching the tmux session
-            # script, so the CC task panel survives process restarts.
+        # Pin the identity the tmux session script exports: the canonical name for every
+        # agent, and the task-list namespace for Claude Code and Codex, so the CC task
+        # panel survives process restarts and a Codex session resolves its caller.
+        os.environ["AI_SESSION_NAME"] = ai_name
+        if engine in ("c", "cx", "agy"):
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
         try:
             command = _bare_engine_command(
@@ -6125,15 +6300,37 @@ def _do_session_launch(
             _register_run_state(new_start=True)
             if engine == "c":
                 _refresh_claude_plugins()
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
-            _exec_with_direnv(
-                target_root,
-                command,
-                handoff=_session_launch_state.handoff(
-                    session_id, _pty_handoff(session_id) if on_pty else _exec_handoff
-                ),
-            )
+            if engine == "cx":
+                from .pty_host import submit_fifo_path
+
+                _name_new_codex_session(
+                    command, ai_name, reporter, tmux_target=None, fifo=submit_fifo_path(session_id) if on_pty else None
+                )
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            from . import session_run_state as _run_state
+
+            def _record_agent(pid: int) -> None:
+                with contextlib.suppress(Exception):
+                    _run_state.record_agent(session_id, pid)
+
+            def _record_then_exec(file: str, args: list[str]) -> NoReturn:
+                # The exec (and direnv's own exec) keeps this pid and its start time for the
+                # agent. It is recorded here, inside the handoff, so the row's generation has
+                # begun; and from the argv about to run, because this process's own command
+                # line is still the launcher's and cannot change while this call blocks.
+                with contextlib.suppress(Exception):
+                    _run_state.record_agent(session_id, os.getpid(), cmdline=list(args))
+                _exec_handoff(file, args)
+
+            if on_pty:
+                delegate = _pty_handoff(session_id, _record_agent)
+            elif sys.platform != "win32":
+                delegate = _record_then_exec
+            else:
+                # Windows has no exec: execvp starts a new process, so nothing is recorded.
+                delegate = _exec_handoff
+            _exec_with_direnv(target_root, command, handoff=_session_launch_state.handoff(session_id, delegate))
 
     # tmux panes inherit their session environment from the long-lived server,
     # not the process that runs `tmux new-session`. Carry the launch context so
@@ -6182,16 +6379,22 @@ def _do_session_launch(
                 command += ["-r", uuid]
             else:
                 command += ["-i", f"/resume load {ai_name}"]
-        elif engine == "p":
-            command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
-            command = ["codex"]
+            command = _bare_engine_command(
+                engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, [], pi_provider=pi_provider
+            )
+            if engine == "cx":
+                _name_new_codex_session(command, ai_name, reporter, tmux_target=session_id, fifo=None)
+        _identity_flags = ["-e", f"AI_SESSION_NAME={ai_name}"]
+        if engine in ("c", "cx", "agy"):
+            _identity_flags += ["-e", f"CLAUDE_CODE_TASK_LIST_ID={ai_name}"]
         once_argv = [
             "tmux",
             "new-session",
             "-s",
             session_id,
             *_tmux_env_flags,
+            *_identity_flags,
             "--",
             _session_shell,
             "-c",
@@ -6226,7 +6429,7 @@ def _do_session_launch(
             sys.exit(1)
         _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-t", f"={session_id}"])
@@ -6351,7 +6554,7 @@ def _do_session_launch(
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
@@ -6480,7 +6683,7 @@ def _do_session_launch(
         if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if not attach:
-            _report_detached_launch(session_id, reporter)
+            _report_detached_launch(session_id, reporter, split=split)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _exec_handoff("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
@@ -6521,6 +6724,7 @@ def _session_command(engine: str):
         naming=None,
         allow_partial_migration=False,
         probe=False,
+        split=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -6600,10 +6804,12 @@ def _session_command(engine: str):
                 launch_log_path=str(launch_log.path) if launch_log.path is not None else None,
                 dry_run=dry_run,
                 remote_args=list(remote_args),
-                attach=sys.stdin.isatty(),
+                # A split attaches in a new pane, so this one launches detached.
+                attach=sys.stdin.isatty() and not split,
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                split=split,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -6999,6 +7205,15 @@ def _session_options(func):
     func = click.option("-S", "--session-names", is_flag=True, help="Use a first name for this launch")(func)
     func = click.option("-I", "--no-session-names", is_flag=True, help="Use an index for this launch")(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
+    func = click.option(
+        *SPLIT_OPTS,
+        "split",
+        is_flag=True,
+        help=(
+            "Start the session detached and attach it in a vertical iTerm2 split of this pane, "
+            "keeping the focus here (macOS iTerm2; elsewhere the session is only started detached)"
+        ),
+    )(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
         "-p",
@@ -7262,6 +7477,9 @@ def _prepare_chief_launch(
                 sys.exit(0)
             if not registered:
                 register(agent, target)
+            if options.get("split"):
+                _split_attach(target, _launch_reporter.active())
+                sys.exit(0)
             _out.emit(
                 Tag.COS, "attach", f"attaching to the running chief-of-staff {agent} (tmux session {target})", err=True
             )
@@ -7425,6 +7643,13 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"NAME {name!r} contains whitespace, and no session name does. If it holds options, "
             f"pass each as its own argument: `ai {engine} {' '.join(name.split())}`"
         )
+    if options.get("split") and (options.get("remote") or options.get("bare")):
+        # A remote launch attaches through its ssh/mosh connection in this pane, with no
+        # detached local session to split to, and a bare launch has no tmux session at all.
+        conflict = "-R/--remote" if options.get("remote") else "-b/--bare"
+        raise click.UsageError(
+            f"{SPLIT_OPTS[1]} attaches a local tmux session in an iTerm2 split and cannot be combined with {conflict}"
+        )
     chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
@@ -7536,6 +7761,13 @@ def cmd_cx(ctx, **options):
     # through eight places, and missing one is silent -- click accepts the
     # option, the wrapper drops it.
     _dispatch_session("cx", ctx, options)
+
+
+@_cli_group.command("agy", context_settings=SESSION_CONTEXT, help="Launch an Antigravity (agy) session")
+@_session_options
+def cmd_agy(ctx, **options):
+    # Pure delegation, as for the other engines.
+    _dispatch_session("agy", ctx, options)
 
 
 @_cli_group.command(

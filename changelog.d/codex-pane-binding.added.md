@@ -1,0 +1,1 @@
+`ai cx` records which tmux pane runs each Codex thread (`$CODEX_HOME/pane-bindings/<thread id>.json`) on every launch and relaunch, so a tool running inside Codex can find its own pane even when the app-server it runs under inherited a pane that has since closed.

@@ -25,7 +25,7 @@ from pathlib import Path
 from . import name_registry as reg
 from . import session_clients
 
-ENGINES = ("c", "g", "p", "cx")
+ENGINES = ("c", "g", "p", "cx", "agy")
 LIVENESS_TOOL = "fleet-liveness"
 TRANSPORTS_TOOL = "message-transports"
 TOOL_TIMEOUT_S = 20

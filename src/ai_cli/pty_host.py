@@ -45,6 +45,7 @@ import termios
 import threading
 import time
 import tty
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -193,7 +194,7 @@ def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subpr
         os.close(wake_w)
 
 
-def host(file: str, args: list[str], *, session: str) -> int:
+def host(file: str, args: list[str], *, session: str, on_start: Callable[[int], None] | None = None) -> int:
     """Run ``args`` on a launcher-owned pty and return its exit status.
 
     Raises ``FileNotFoundError`` before touching the terminal when *file* cannot be
@@ -226,6 +227,10 @@ def host(file: str, args: list[str], *, session: str) -> int:
                 )
             finally:
                 os.close(slave)
+            if on_start is not None:
+                # Bookkeeping only: a failure to record the agent must not stop the session.
+                with contextlib.suppress(Exception):
+                    on_start(proc.pid)
             # The keeper write end means the reader never sees EOF between submitters.
             fifo_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
             fds.append(fifo_fd)

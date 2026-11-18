@@ -34,18 +34,26 @@ def _script(engine="c", **kw):
     return get_engine_script(engine, "job-1", "c-job-1", "c-job-", "job", **kw)
 
 
-def test_task_list_namespace_pin_is_guarded_to_claude_engine():
-    """The CLAUDE_CODE_TASK_LIST_ID export is runtime-guarded to CC (`engine == c`)
-    so it pins the task namespace for Claude sessions but never for Gemini ones.
-    The literal is present in both templates; the guard is what makes it CC-only."""
-    guarded = '[[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"'
+def test_task_list_namespace_pin_is_guarded_to_claude_code_codex_and_antigravity_engines():
+    """CLAUDE_CODE_TASK_LIST_ID pins the task namespace for Claude Code, Codex and
+    Antigravity sessions, never Gemini ones. The literal is present in every template; each
+    export is runtime-guarded by `engine`, which is what keeps it off a Gemini session."""
+    guards = (
+        '[[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"',
+        'if [[ "$engine" == "cx" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name"; fi',
+        'if [[ "$engine" == "agy" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name" ITERM2_SESSION_TYPE="agy"; fi',
+    )
     cc = _script("c")
     gg = get_engine_script("g", "job-1", "g-job-1", "g-job-", "job", worktree_dir="/tmp/wt")
-    assert guarded in cc and f"engine={shlex.quote('c')}" in cc
-    # Same guarded line in the Gemini template, but engine="g" makes it a no-op at runtime.
-    assert guarded in gg and f"engine={shlex.quote('g')}" in gg
+    assert all(guard in cc for guard in guards) and f"engine={shlex.quote('c')}" in cc
+    # The same guarded lines in the Gemini template, but engine="g" makes each a no-op at runtime.
+    assert all(guard in gg for guard in guards) and f"engine={shlex.quote('g')}" in gg
     # The export must never appear unguarded (which would set it for Gemini too).
-    assert "export CLAUDE_CODE_TASK_LIST_ID" not in gg.replace(guarded, "")
+    unguarded = gg
+    for guard in guards:
+        unguarded = unguarded.replace(guard, "")
+    assert "export CLAUDE_CODE_TASK_LIST_ID" not in unguarded
+    assert "CLAUDE_CODE_TASK_LIST_ID=" not in unguarded
 
 
 def test_template_bakes_update_commit_for_monotonic_self_update():

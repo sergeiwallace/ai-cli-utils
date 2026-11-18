@@ -25,7 +25,7 @@ from . import name_list, session_clients
 from . import name_registry as reg
 from .session_migrate import MigrationError, MigrationResult, PartialMigrationError, migrate_session
 
-ENGINES = ("c", "g", "p", "cx")
+ENGINES = ("c", "g", "p", "cx", "agy")
 
 
 @dataclass(frozen=True)

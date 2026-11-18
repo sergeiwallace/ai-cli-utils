@@ -31,7 +31,7 @@ ENV_ENABLED = "AI_CLI_SESSION_NAMES"
 ENV_WITH_LABEL = "AI_CLI_SESSION_NAME_WITH_LABEL"
 WITH_LABEL_VALUES = ("keep", "drop")
 BUILT_IN = {"enabled": False, "name_with_label": "keep"}
-CLIENTS = {"c": "claude-code", "g": "gemini", "p": "pi", "cx": "codex"}
+CLIENTS = {"c": "claude-code", "g": "gemini", "p": "pi", "cx": "codex", "agy": "antigravity"}
 
 
 class TitleError(ValueError):

@@ -733,7 +733,9 @@ def list_names_command(as_json: bool, pool: bool) -> None:
         if row.get("machine") != host or not row.get("title"):
             return None
         return any(
-            f"{engine}{remote}-{row['title']}" in live for engine in ("c", "g", "p", "cx") for remote in ("", "-r")
+            f"{engine}{remote}-{row['title']}" in live
+            for engine in ("c", "g", "p", "cx", "agy")
+            for remote in ("", "-r")
         )
 
     if as_json:

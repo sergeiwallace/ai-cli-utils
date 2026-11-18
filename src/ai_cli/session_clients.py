@@ -14,6 +14,11 @@ pi         ``~/.pi/agent/sessions/--<cwd>--/*.jsonl``            first record ``
 gemini     ``~/.gemini/tmp/<project id>/chats/*``                ``~/.gemini/projects.json`` maps path to id
 ========== ===================================================== ===================================
 
+Antigravity (``agy``) is a supported client with no adapter yet: its conversations carry
+no measured map to a working directory or a title, so its transcript cannot be proved
+absent. It is listed in ``UNMEASURED_CLIENTS``, and a row with no adapter probes
+``unknown``, which keeps its name held until its store is measured.
+
 ``probe_transcript`` answers ``present``, ``absent`` or ``unknown``. ``absent`` is
 only ever an answer from an accessible, recognised store root and a valid mapping
 from the session to where its record would be. A missing or unreadable root, or a
@@ -486,6 +491,11 @@ ADAPTERS: dict[str, type[Adapter]] = {
     "pi": Pi,
     "gemini": Gemini,
 }
+
+
+#: Supported clients whose session store is not measured yet: no adapter, so their
+#: rows probe ``unknown`` and their names are never released automatically.
+UNMEASURED_CLIENTS: frozenset[str] = frozenset({"antigravity"})
 
 
 def adapter(client: str, home: Path | None = None) -> Adapter:

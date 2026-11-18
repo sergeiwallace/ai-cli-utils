@@ -12,6 +12,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 |---|---|
 | [`ai add-name`](#ai-add-name) | Session names: add a name to the name database without a prompt |
 | [`ai adopt-session`](#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai agy`](#ai-agy) | Launch an Antigravity (agy) session |
 | [`ai attach`](#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -189,6 +190,46 @@ Arguments:
 | `-m` | `--name` | `TEXT` | Adopt into a slot named with this first name, reserved first |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai agy
+
+```text
+ai agy [OPTIONS] [NAME]
+```
+
+Launch an Antigravity (agy) session
+
+Arguments:
+
+- `[NAME]`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
+| `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
+| `-R` | `--remote` |  | Run session on the default remote machine |
+| `-I` | `--no-session-names` |  | Use an index for this launch |
+| `-S` | `--session-names` |  | Use a first name for this launch |
+| `-u` | `--no-name` |  | With a label, drop the first name |
+| `-w` | `--with-name` |  | With a label, keep a first name after it |
+| `-N` | `--name` | `TEXT` | Use this first name for the new session |
+| `-H` | `--fm-home` | `TEXT` | With -F: chief home directory (default: &lt;[chief_of_staff] homes_dir>/&lt;machine-key>) |
+| `-k` | `--machine-key` | `TEXT` | With -F: machine key naming the chief home (default: $AI_MACHINE_ID) |
+| `-F` | `--chief` |  | Launch as the chief-of-staff session (one per machine; with -R, on the remote machine) |
+| `-P` | `--allow-partial-migration` |  | Start the session even though a recorded migration to its name is partial; the parts left are written into the launch log |
+| `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
+| `-v` | `--verbose` |  | Show additional launch progress details |
+| `-q` | `--quiet` |  | Suppress launch progress output |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-W` | `--no-worktree` |  | Disable git worktree isolation |
+| `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
+| `-n` | `--notify` |  | Fire system notifications on task completion |
+| `-b` | `--bare` |  | Run bare tool without tmux at all |
+| `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
+| `-o` | `--once` |  | Run once without tmux auto-resume loop |
+| `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai attach
 
 ```text
@@ -256,6 +297,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -453,6 +495,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -492,6 +535,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -597,6 +641,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |
@@ -962,6 +1007,7 @@ Arguments:
 |---|---|---|---|
 | `-p` | `--project` | `TEXT` | Project to open on remote server (directory name, e.g. 'myproject', 'webapp') |
 | `-m` | `--remote-machine` | `TEXT` | Remote-machine alias to use with -R/--remote |
+| `-A` | `--split` |  | Start the session detached and attach it in a vertical iTerm2 split of this pane, keeping the focus here (macOS iTerm2; elsewhere the session is only started detached) |
 | `-R` | `--remote` |  | Run session on the default remote machine |
 | `-I` | `--no-session-names` |  | Use an index for this launch |
 | `-S` | `--session-names` |  | Use a first name for this launch |

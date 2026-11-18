@@ -236,7 +236,7 @@ def _prefix_from_session_name(session_name: str) -> str:
     Returns empty string if the format is not recognised.
     """
     parts = session_name.split("-")
-    if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx"):
+    if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx", "agy"):
         start = 2 if parts[1] == "r" else 1
         end = len(parts) - 1
         if end > start:

@@ -173,10 +173,24 @@ def test_given_no_claude_code_store_when_reconciled_then_the_row_stays_as_unknow
     assert "transcript unknown" in summary["held"]["cleo"]
 
 
-def test_given_every_supported_client_when_listed_then_each_has_a_transcript_probe():
+def test_given_every_supported_client_when_listed_then_each_has_a_transcript_probe_or_is_held_as_unmeasured():
     from ai_cli import session_title
 
-    assert set(session_title.CLIENTS.values()) == set(session_clients.ADAPTERS)
+    clients = set(session_title.CLIENTS.values())
+    assert clients == set(session_clients.ADAPTERS) | session_clients.UNMEASURED_CLIENTS
+    assert not set(session_clients.ADAPTERS) & session_clients.UNMEASURED_CLIENTS
+
+
+def test_given_a_gone_antigravity_session_when_probed_then_its_name_is_held_as_unknown(tmp_path):
+    """Antigravity's store has no measured map from a session to its working directory,
+    so its transcript can never be proved absent: the name stays held, never released."""
+    from ai_cli.name_registry import probe_absence
+
+    row = {"client": "antigravity", "title": "myproject-box-session-1"}
+
+    absence = probe_absence(row, tmp_path, {name: cls(tmp_path) for name, cls in session_clients.ADAPTERS.items()})
+
+    assert absence.transcript == "unknown"
 
 
 def test_given_a_title_when_reconciled_then_only_that_row_is_considered(fleet):

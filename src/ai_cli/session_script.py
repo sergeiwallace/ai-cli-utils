@@ -231,7 +231,7 @@ def get_engine_script(
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
-    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
+    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX", "agy": "AGY"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
@@ -1161,6 +1161,11 @@ def get_engine_script(
         "$@" <&0 &
       fi
       active_agent_pid=$!
+    # BEGIN AGENT NAMING agent-identity
+      # Record the agent's own pid and start time on the session's registry row, so the
+      # session can be proved from the process table (`ai exit-session` from inside it).
+      (ai internal record-agent-identity "$tmux_session" "$active_agent_pid" "${{AI_CLI_RUN_GENERATION:-}}" >/dev/null 2>&1 || true) &
+    # END AGENT NAMING
     # BEGIN SHELL RETURN agent-wait
       # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
       # its actual exit before resetting the terminal or replacing the body.
@@ -1415,6 +1420,13 @@ def get_engine_script(
     # CC creates ~/.claude/tasks/$ai_name/ as a permanent, human-readable namespace.
     # (anthropics/claude-code#20664 — CLAUDE_CODE_TASK_LIST_ID env var override)
     [[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"
+    # BEGIN AGENT NAMING identity
+    # Every agent sees its canonical session name, and a Codex session also gets the
+    # task-list id per-session tools read, so it resolves as a Claude Code session does.
+    export AI_SESSION_NAME="$ai_name"
+    if [[ "$engine" == "cx" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name"; fi
+    if [[ "$engine" == "agy" ]]; then export CLAUDE_CODE_TASK_LIST_ID="$ai_name" ITERM2_SESSION_TYPE="agy"; fi
+    # END AGENT NAMING
 
     # Only the persistent supervisor owns final cleanup.  A child may be replaced
     # many times, so its EXIT trap can stop only its per-child monitor.
@@ -1672,6 +1684,43 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN AGENT NAMING codex-launch
+      # Antigravity (agy): an interactive session on the Google sign-in. The API-key
+      # variables are removed from its environment so it can never bill an API key;
+      # the launcher refused the launch earlier if the sign-in was missing.
+      _ai_run_agy() {{
+        run_agent env -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GENAI_USE_VERTEXAI agy "$@"
+      }}
+      # Codex: resume the thread that carries this session's name, by id, because
+      # Codex's own by-name lookup skips a thread that has had no turn. With none,
+      # start Codex and type `/rename $ai_name` into it once; a waiting resume prompt
+      # is handed to the namer so it lands after the name. The pre-naming launch
+      # lines below stay, unreachable, so a running older supervisor still certifies
+      # (session_restart._compatible). docs/designs/codex-session-naming.md.
+      _ai_run_codex() {{
+        local _cx_thread _cx_own=()
+        # Its own Codex process, not the host's shared app-server daemon, when this Codex
+        # offers --no-daemon, so tool processes descend from the attested agent.
+        if [[ "$(ai internal codex-exclusive-flags 2>/dev/null)" == "--no-daemon" ]]; then _cx_own=(--no-daemon); fi
+        _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
+        # Record this pane for the thread, so a tool inside Codex finds its own pane even
+        # when the app-server it runs under inherited a pane that has since closed.
+        (ai internal bind-codex-pane "${{TMUX_PANE:-}}" "$ai_name" >/dev/null 2>&1 || true) &
+        if [[ -n "$_cx_thread" ]]; then
+          run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
+          return
+        fi
+        local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
+        if [[ $# -gt 0 ]]; then
+          printf '%s' "$1" > "$prompt_file.codex"
+          _cx_namer+=(--prompt-file "$prompt_file.codex")
+        fi
+        ({LAUNCH_LOG_ENV}="$_ai_launch_log" "${{_cx_namer[@]}}" >/dev/null 2>&1 || true) &
+        if $first_run; then run_agent codex "${{_cx_own[@]}}"
+        else run_agent codex resume "${{_cx_own[@]}}" --last
+        fi
+      }}
+    # END AGENT NAMING
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1697,14 +1746,27 @@ with open(path, 'w') as f:
           fi
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
+    # BEGIN AGENT NAMING pi
+          if [[ "$engine" == "p" ]]; then run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"; else
+    # END AGENT NAMING
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
+    # BEGIN AGENT NAMING pi-end
+          fi
+    # END AGENT NAMING
         else
+    # BEGIN AGENT NAMING codex-prompted
+          if [[ "$engine" == "agy" ]]; then (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) & _ai_run_agy
+          elif [[ "$engine" == "cx" ]]; then _ai_run_codex "$resume_msg"; else
+    # END AGENT NAMING
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent codex
           else run_agent codex resume --last
           fi
+    # BEGIN AGENT NAMING codex-prompted-end
+          fi
+    # END AGENT NAMING
         fi
       else
         if [[ "$engine" == "c" ]]; then
@@ -1725,13 +1787,26 @@ with open(path, 'w') as f:
       else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
+    # BEGIN AGENT NAMING pi
+          if [[ "$engine" == "p" ]]; then run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"; else
+    # END AGENT NAMING
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
+    # BEGIN AGENT NAMING pi-end
+          fi
+    # END AGENT NAMING
         else
+    # BEGIN AGENT NAMING codex
+          if [[ "$engine" == "agy" ]]; then _ai_run_agy
+          elif [[ "$engine" == "cx" ]]; then _ai_run_codex; else
+    # END AGENT NAMING
           if $first_run; then run_agent codex
           else run_agent codex resume --last
           fi
+    # BEGIN AGENT NAMING codex-end
+          fi
+    # END AGENT NAMING
         fi
       fi
     # BEGIN BACKGROUND ATTACH prompted-end

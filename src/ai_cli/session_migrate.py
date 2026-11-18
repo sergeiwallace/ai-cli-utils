@@ -133,7 +133,7 @@ from .session_migrate_progress import Progress, timed
 from .venv_relocate import relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
-ENGINES = ("c", "g", "p", "cx")
+ENGINES = ("c", "g", "p", "cx", "agy")
 
 #: State files named ``<stem><tmux session>``, each a record of that session.
 _STATE_FILE_STEMS = (

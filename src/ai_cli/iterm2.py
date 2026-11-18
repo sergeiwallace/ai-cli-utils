@@ -443,6 +443,8 @@ def _iterm2_session_type(engine: str) -> str:
         if engine == "p"
         else "codex"
         if engine == "cx"
+        else "agy"
+        if engine == "agy"
         else "shell"
     )
 
@@ -550,6 +552,68 @@ def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
         )
         return False
     return "ok" in (result.stdout or "")
+
+
+#: Deadline for the split-pane Apple Event. Longer than the rename's because a launch
+#: waits on this one to report whether the split happened, and a loaded host's slow tail
+#: runs past 10 s; the session is already running detached, so waiting costs no state.
+_SPLIT_TIMEOUT_SECONDS = 15
+
+
+def _split_attach_script(tty: str, command: str) -> str:
+    """AppleScript that splits the iTerm2 session on ``tty`` vertically to run ``command``.
+
+    The caller's session is selected again after the split, so the new pane opens beside
+    it without taking the keyboard focus. Prints ok, or miss when no session has ``tty``.
+    """
+    safe_tty = tty.replace("\\", "\\\\").replace('"', '\\"')
+    safe_command = command.replace("\\", "\\\\").replace('"', '\\"')
+    return f"""tell application "iTerm2"
+    set caller to missing value
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                try
+                    if tty of s is "{safe_tty}" then set caller to s
+                end try
+            end repeat
+        end repeat
+    end repeat
+    if caller is missing value then return "miss"
+    tell caller to split vertically with same profile command "{safe_command}"
+    select caller
+    return "ok"
+end tell"""
+
+
+def split_attach_by_tty(tty: str, command: str) -> str:
+    """Open ``command`` in a vertical split of the iTerm2 pane on ``tty``, keeping its focus (macOS only).
+
+    Returns "" on success, else the reason the split did not happen. Never raises for
+    an osascript failure: the caller's session is already running and must stay so.
+    """
+    if sys.platform != "darwin":
+        return "iTerm2 is macOS-only"
+    if not tty:
+        return "the launching terminal has no tty"
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _split_attach_script(tty, command)],
+            capture_output=True,
+            timeout=_SPLIT_TIMEOUT_SECONDS,
+            text=True,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"osascript did not answer within {_SPLIT_TIMEOUT_SECONDS}s"
+    except OSError as exc:
+        return f"osascript could not be run ({exc})"
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        return f"osascript exited {result.returncode}{f': {detail[-1]}' if detail else ''}"
+    if "ok" not in (result.stdout or ""):
+        return f"no iTerm2 pane has tty {tty}"
+    return ""
 
 
 class Iterm2PaneLookupError(RuntimeError):

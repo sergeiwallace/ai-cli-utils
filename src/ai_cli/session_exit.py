@@ -229,6 +229,61 @@ def exit_session(
         return ExitResult(committed, False, (str(exc),))
 
 
+def _verified_agent(row: dict) -> ProcessIdentity | None:
+    """The row's recorded agent, when its pid still names that process and generation."""
+    identity = row.get("agent_identity") or {}
+    if identity.get("engine_binding") != "exclusive":
+        # A shared-daemon agent's tools descend from the daemon, never from this pid.
+        return None
+    pid, started_at = identity.get("pid"), identity.get("started_at")
+    if (
+        type(pid) is not int
+        or not isinstance(started_at, (int, float))
+        or identity.get("generation") != row.get("generation")
+    ):
+        return None
+    try:
+        if abs(psutil.Process(pid).create_time() - started_at) > 0.01:
+            return None
+    except psutil.Error:
+        return None
+    return ProcessIdentity(pid, float(started_at))
+
+
+def _shared_daemon_session(doc: dict, host: str) -> str | None:
+    """The canonical name of the caller's session when its agent is daemon-backed.
+
+    The caller is named by ``AI_SESSION_NAME``, which the launcher exports into the agent.
+    That variable is only a name, never ownership evidence: it selects the refusal message.
+    """
+    caller = os.environ.get("AI_SESSION_NAME", "")
+    for row in doc["sessions"]:
+        if (
+            row.get("kind") == "local"
+            and row.get("owning_host") == host
+            and row.get("canonical_name") == caller
+            and (row.get("agent_identity") or {}).get("engine_binding") == "shared-daemon"
+        ):
+            return caller
+    return None
+
+
+def _registry_name(doc: dict, name: str, host: str) -> str:
+    """The registry key for NAME: the key itself, or the one row whose canonical name it is.
+
+    Rows are keyed by tmux session name (``cx-r-<canonical>``); an operator names the
+    session by the canonical name every client shows.
+    """
+    local = [r for r in doc["sessions"] if r.get("kind") == "local"]
+    if any(r.get("name") == name for r in local):
+        return name
+    aliases = {f"{engine}{remote}-{name}" for engine in state.FAMILIES for remote in ("", "-r")}
+    matches = [r["name"] for r in local if r.get("name") in aliases and r.get("owning_host") == host]
+    if len(matches) > 1:
+        raise ValueError(f"session {name!r} names several registered sessions ({', '.join(sorted(matches))})")
+    return matches[0] if matches else name
+
+
 def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
     """Resolve only recorded process identities; ancestry proves an implicit name.
 
@@ -260,24 +315,46 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
         verified.append((session, target))
     if name is None:
         current = [(s, target) for s, target in verified if s.pid in ancestors]
-        if len(current) != 1:
-            raise ValueError(
-                "cannot verify current session: expected one ancestor with a matching session record and process start time"
-            )
-        session, _target = current[0]
-        names = {session.name, f"c-{session.name}", f"c-r-{session.name}"}
-        matches = [
-            r
-            for r in doc["sessions"]
-            if r.get("kind") == "local" and r.get("name") in names and r.get("owning_host") == host
-        ]
+        if current:
+            if len(current) != 1:
+                raise ValueError(
+                    "cannot verify current session: expected one ancestor with a matching session record and process start time"
+                )
+            session, _target = current[0]
+            names = {session.name, f"c-{session.name}", f"c-r-{session.name}"}
+            matches = [
+                r
+                for r in doc["sessions"]
+                if r.get("kind") == "local" and r.get("name") in names and r.get("owning_host") == host
+            ]
+        else:
+            # An agent with no Claude Code session record (Codex, Gemini, Pi) is proved by
+            # the agent identity its session script recorded on its row.
+            matches = [
+                r
+                for r in doc["sessions"]
+                if r.get("kind") == "local"
+                and r.get("owning_host") == host
+                and (agent := _verified_agent(r)) is not None
+                and agent.pid in ancestors
+            ]
+            if not matches:
+                shared = _shared_daemon_session(doc, host)
+                if shared:
+                    raise ValueError(
+                        f"cannot verify current session: {shared} runs on Codex's shared app-server daemon, so no "
+                        f"process ancestry proves it from inside; pass the name: ai exit-session {shared}"
+                    )
+                raise ValueError(
+                    "cannot verify current session: expected one ancestor with a matching session record and process start time"
+                )
         if len(matches) != 1:
             raise ValueError(
                 "cannot verify current session: session record does not identify one owning-host registry row"
             )
         resolved_name = matches[0]["name"]
     else:
-        resolved_name = name
+        resolved_name = _registry_name(doc, name, host)
     row = state._find(doc, resolved_name)
     if row.get("owning_host") != host or not row.get("generation"):
         raise ValueError("session host or generation cannot be verified")
@@ -293,7 +370,7 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
         agents = [(s, t) for s, t in verified if row["name"] in (s.name, f"c-{s.name}", f"c-r-{s.name}")]
         if len(agents) > 1:
             raise ValueError("multiple agent records claim this session; refusing teardown")
-        agent = agents[0][1] if agents else None
+        agent = agents[0][1] if agents else _verified_agent(row)
         if agent and target.pid not in {p.pid for p in psutil.Process(agent.pid).parents()} | {agent.pid}:
             raise ValueError("agent record is not descended from the recorded supervisor")
         targets = {
