@@ -1328,11 +1328,11 @@ class TestCliDispatchExtended:
                 cli()
             assert exc.value.code == 0
 
-    def test_when_quota_scrape_subcommand_then_dispatches(self):
+    def test_when_quota_publish_subcommand_then_dispatches(self):
         with (
-            patch("sys.argv", ["ai", "quota", "scrape"]),
+            patch("sys.argv", ["ai", "quota", "publish"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.quota.quota_scrape", return_value=0),
+            patch("ai_cli.quota.quota_publish", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1649,6 +1649,9 @@ class TestDoSessionLaunchTmuxGuard:
             "project_prefix_override": "test",
             "extra_args": [],
             "config": {},
+            # The direnv preflight runs first and, on a host without direnv, would reach the
+            # patched subprocess.run before the tmux guard these tests exercise.
+            "no_direnv": True,
         }
 
     def test_when_win32_and_tmux_not_found_then_falls_back_to_bare_mode(self, capsys):

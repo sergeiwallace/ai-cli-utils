@@ -1631,3 +1631,113 @@ class TestRemoteChiefPaneName:
         assert code == 1
         assert out.strip() == ""
         assert not cos.registration_path(seeded_home).exists()
+
+
+class TestExplicitChiefName:
+    """`-N/--name NAME` with `-F` asks for the chief named NAME, on whichever machine it runs.
+
+    The dispatching machine forwards the name to the remote `ai`, which attaches to the
+    chief of that name, or refuses when a different chief is running, rather than
+    attaching to whichever chief the machine has. Without a name the unnumbered request
+    still means the machine's chief (TestAttach).
+    """
+
+    def test_given_an_explicit_name_when_remote_chief_dispatched_then_the_name_reaches_the_remote_ai(
+        self, monkeypatch, tmp_path
+    ):
+        import shlex
+
+        from conftest import _run_cli_with_args
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        real_which = shutil.which
+        with (
+            patch("ai_cli.main.sys.platform", "linux"),
+            patch("ai_cli.chief_of_staff.write_registration", side_effect=_explode),
+            patch("ai_cli.main._request_remote_chief_session", return_value="") as asked,
+            # The cx engine refuses to start without codex on PATH, which a CI runner lacks.
+            patch(
+                "shutil.which",
+                side_effect=lambda cmd, *a, **k: "/usr/bin/codex" if cmd == "codex" else real_which(cmd, *a, **k),
+            ),
+        ):
+            runner = _run_cli_with_args(
+                ["ai", "cx", "--name", "alice", "-R", "-m", "fw", "-F"], REMOTE_CONFIG, capture_ssh_runner=True
+            )
+        runner.assert_called_once()
+        tokens = shlex.split(shlex.split(runner.call_args[0][0][-1])[-1])
+        assert tokens[tokens.index("--chief") :] == ["--chief", "--name", "alice", "chief"]
+        assert "allocate-session-name" not in tokens
+        assert asked.call_args[0][2] == ["--chief", "--name", "alice"]
+
+    @pytest.mark.parametrize("remote_side", [True, False])
+    def test_given_a_different_running_chief_when_an_explicit_name_is_launched_then_it_refuses_without_attaching(
+        self, remote_side, seeded_home, fw_alias
+    ):
+        registration = _register(seeded_home, target="c-r-hub-fw-chief-1")
+        argv = [*REMOTE_SIDE, "--name", "alice", "chief"] if remote_side else ["c", "-F", "-N", "alice"]
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            code, _out, err = run_cli(["ai", *argv])
+            launch.attach.assert_not_called()
+            launch.assert_not_called()
+        assert code == (REMOTE_LAUNCH_REFUSED_EXIT if remote_side else 1)
+        assert "already running" in err
+        assert "hub-fw-chief-1" in err
+        assert "chief-alice" in err
+        assert json.loads(cos.registration_path(seeded_home).read_text()) == registration
+
+    def test_given_the_named_chief_running_when_an_explicit_name_is_launched_then_it_attaches_to_it(
+        self, seeded_home, fw_alias
+    ):
+        _register(seeded_home, agent="hub-fw-chief-alice", target="c-r-hub-fw-chief-alice")
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=True, real_names=True)
+            code, _out, err = run_cli(["ai", *REMOTE_SIDE, "--name", "alice", "chief"])
+            launch.attach.assert_called_once_with("c-r-hub-fw-chief-alice")
+        assert code == 0, err
+
+    def test_given_a_named_chief_launched_then_stopped_when_launched_again_by_name_then_it_resumes_that_chief(
+        self, seeded_home, tmp_path, monkeypatch
+    ):
+        """The relaunch reattaches the title the first launch reserved; it never reserves a second one."""
+        from name_fleet import build_fleet
+
+        from ai_cli import session_naming
+
+        own_host_id = session_naming.host_id
+        (tmp_path / "fleet").mkdir()
+        fleet = build_fleet(tmp_path / "fleet", monkeypatch)
+        monkeypatch.setattr(session_naming, "host_id", own_host_id)
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "-F", "-N", "ada"])
+            assert code == 0, err
+            title = launch.call_args.kwargs["name"]
+        assert title == "hub-tst-chief-ada"
+        rows = fleet.rows()
+
+        with ExitStack() as stack:
+            launch = _launch_patches(stack, live=False, real_names=True)
+            code, _out, err = run_cli(["ai", "c", "-F", "-N", "ada"])
+            assert code == 0, err
+            launch.attach.assert_not_called()
+            assert launch.call_args.kwargs["name"] == title
+        assert "resuming it as chief-ada" in err
+        assert fleet.rows() == rows
+        assert json.loads(cos.registration_path(seeded_home).read_text())["native_agent_name"] == title
+
+    @pytest.mark.parametrize(("name", "answers"), [("alice", False), ("bob", True)])
+    def test_given_a_running_chief_when_the_remote_side_resolves_a_named_request_then_only_that_chief_answers(
+        self, name, answers, seeded_home
+    ):
+        """The dispatcher titles its pane and keys its cleanup after the answer, so another chief is no answer."""
+        _register(seeded_home, agent="hub-fw-chief-bob", target="c-r-hub-fw-chief-bob")
+        with patch("ai_cli.chief_of_staff.tmux_has_session", return_value=True):
+            code, out, _err = run_cli(["ai", "internal", "resolve-chief-session", "--chief", "--name", name])
+
+        assert code == (0 if answers else 1)
+        if answers:
+            assert json.loads(out) == {"session_id": "c-r-hub-fw-chief-bob"}
+        else:
+            assert out.strip() == ""
