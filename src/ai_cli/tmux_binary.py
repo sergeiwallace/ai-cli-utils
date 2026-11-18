@@ -29,6 +29,7 @@ import shutil
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 from . import config as _config
@@ -48,15 +49,25 @@ class TmuxBinaryMissing(FileNotFoundError):
 
 @dataclass(frozen=True)
 class Resolution:
-    """Which multiplexer executable this machine's tmux calls run, and why."""
+    """Which multiplexer executable this machine's tmux calls run, and why.
+
+    The executable is looked up only when something needs its location: with nothing
+    configured, building an argv makes no PATH lookup at all, exactly as the literal
+    ``"tmux"`` it replaced made none.
+    """
 
     #: The raw configured value; None when nothing is configured.
     configured: str | None
     #: Where the value came from, e.g. ``.../config.toml [tmux] binary``; empty when unset.
     setting: str
-    #: The executable's location: the configured binary resolved, or PATH's ``tmux``.
-    #: None when it is not found.
-    path: str | None
+
+    @cached_property
+    def path(self) -> str | None:
+        """The executable's location: the configured binary resolved, or PATH's ``tmux``; None when not found."""
+        if self.configured is None:
+            return shutil.which(DEFAULT)
+        # A bare name ("psmux") is looked up on PATH as named; a path is checked as given.
+        return shutil.which(str(Path(self.configured).expanduser()))
 
     @property
     def missing(self) -> bool:
@@ -127,13 +138,8 @@ def _configured(config: dict) -> tuple[str | None, str]:
 
 def resolve(config: dict | None = None) -> Resolution:
     """Resolve this machine's multiplexer executable. ``config`` defaults to config.toml, read now."""
-    cfg = _read_config() if config is None else config
-    configured, setting = _configured(cfg)
-    if configured is None:
-        return Resolution(configured=None, setting="", path=shutil.which(DEFAULT))
-    # A bare name ("psmux") is looked up on PATH as named; a path is checked as given.
-    found = shutil.which(str(Path(configured).expanduser()))
-    return Resolution(configured=configured, setting=setting, path=found)
+    configured, setting = _configured(_read_config() if config is None else config)
+    return Resolution(configured=configured, setting=setting)
 
 
 def executable(config: dict | None = None) -> str:
@@ -172,7 +178,8 @@ def shell_prelude(config: dict | None = None) -> str:
 def server_process_names(config: dict | None = None) -> frozenset[str]:
     """Process names a multiplexer server can run under: tmux's, plus the configured binary's."""
     names = {"tmux", "tmux.exe"}
-    path = resolve(config).path
+    resolution = resolve(config)
+    path = resolution.path if resolution.configured is not None else None
     if path:
         name = Path(path).name
         names |= {name, Path(name).stem}
