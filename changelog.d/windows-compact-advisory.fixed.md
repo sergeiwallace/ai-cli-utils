@@ -1,0 +1,1 @@
+- A launch on a platform with no pty API and no tmux (native Windows) no longer prints a compaction warning every time. Nothing at launch can clear it, so the line now shows only under `-v` and in the launch log, and `ai doctor` reports it as a `compact` row that says the engine's own auto-compact still runs and how to get harness-driven compaction (install tmux).
