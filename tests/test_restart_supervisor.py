@@ -7,6 +7,7 @@ agent client, registry or messaging service outside this test is used.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -22,7 +23,7 @@ import psutil
 import pytest
 from conftest import run_cli
 from process_ownership import reap_tree, watch_session
-from process_wait import process_wait_seconds
+from process_wait import process_wait_seconds, scaled
 
 from ai_cli import config, main, session_restart, session_run_state
 
@@ -39,7 +40,60 @@ _PROCESS_WAIT_SECONDS = process_wait_seconds()
 # The suite's default 300 s bound (pyproject) is for a test that waits on nothing. These tests
 # chain several real-process waits of up to _PROCESS_WAIT_SECONDS each, which reaches 240 s on a
 # loaded runner, so their bound is derived from the same load scale.
-pytestmark = pytest.mark.timeout(300 + 4 * _PROCESS_WAIT_SECONDS)
+_TEST_TIMEOUT = 300 + 4 * _PROCESS_WAIT_SECONDS
+pytestmark = pytest.mark.timeout(_TEST_TIMEOUT)
+
+# The launcher reports its own group before exec. Only the payload inherits the
+# pipe's writer, so the timer can exit early on EOF after ordinary cleanup.
+# Keep the writer above the shell template's reserved descriptors (3, 8 and 9).
+_REPORT_GROUP_AND_EXEC = """\
+import fcntl, os, sys
+pipe_fd = int(sys.argv[1])
+fd = fcntl.fcntl(pipe_fd, fcntl.F_DUPFD, 10)
+os.close(pipe_fd)
+os.set_inheritable(fd, True)
+os.write(fd, f"{os.getpgrp()}\\n".encode())
+os.execvp(sys.argv[2], sys.argv[2:])
+"""
+_LIMIT_GROUP_LIFETIME = """\
+import contextlib, os, select, signal, sys
+group = sys.stdin.buffer.readline()
+if group and not select.select([sys.stdin], [], [], float(sys.argv[1]))[0]:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(int(group), signal.SIGKILL)
+"""
+
+
+@contextlib.contextmanager
+def _bounded_supervisor(script, diagnostics):
+    """Launch a terminal-free POSIX payload with an independent group deadline."""
+    lifetime = float(os.environ.get("RESTART_FIXTURE_LIFETIME_SECONDS", _TEST_TIMEOUT + 60))
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb") as writer:
+        timer = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _LIMIT_GROUP_LIFETIME, str(lifetime)],
+            stdin=reader,
+            stdout=diagnostics,
+            stderr=diagnostics,
+            start_new_session=True,
+        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-S", "-c", _REPORT_GROUP_AND_EXEC, str(write_fd), "bash", str(script)],
+                stdin=subprocess.DEVNULL,
+                stdout=diagnostics,
+                stderr=diagnostics,
+                start_new_session=True,
+                pass_fds=(write_fd,),
+            )
+            writer.close()
+            try:
+                yield process
+            finally:
+                reap_tree(process)
+        finally:
+            writer.close()
+            assert timer.wait(timeout=scaled(5)) == 0, "supervisor lifetime timer failed"
 
 
 class _ModuleView:
@@ -340,25 +394,17 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
     # Freeze the old child's shell selection independently of the current preference.
     # The fixture uses bash, so the refreshed program must use the same shell here.
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
-    diagnostics = (root / "supervisor.log").open("w", encoding="utf-8")
-    process = subprocess.Popen(
-        ["bash", str(script)],
-        stdin=subprocess.DEVNULL,
-        stdout=diagnostics,
-        stderr=diagnostics,
-        start_new_session=True,
-    )
-    (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
-    try:
-        # The wrapper respawns its children for good, so it must end with this test even
-        # when the test process is killed and this finally never runs.
+    # Without a terminal or a reaper lease, the supervisor and all its
+    # descendants stay in the group the launcher creates.
+    with (
+        (root / "supervisor.log").open("w", encoding="utf-8") as diagnostics,
+        _bounded_supervisor(script, diagnostics) as process,
+    ):
+        (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
         with watch_session(process):
             # This shared-module patch must unwind before the conftest spawn guard.
             with patch.object(session_restart.subprocess, "run", fixture_run):
                 yield root, script, process
-    finally:
-        reap_tree(process)
-        diagnostics.close()
 
 
 @pytest.fixture
