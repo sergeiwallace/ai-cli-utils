@@ -39,7 +39,7 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 |---------|-------------|
 | `ai sync watch` | Listens for sync events (`sync.push`, `sync.pull`) to trigger automatic sync |
 | `ai memory watch` | Publishes `dream.started`/`dream.completed` events to coordinate sync pausing |
-| `ai quota watch` | Subscribes to `quota.*` events to track Claude token usage across sessions |
+| `ai quota publish` | Publishes the statusline's native seven-day quota to `quota.snapshot`, `hw.events.usage.claude.snapshot` and the `hw_state` key `quota.claude.current.<host>` |
 | Session heartbeats | Workers publish `heartbeat.{session}` so the dashboard knows which sessions are alive |
 | Session events | `ai internal publish-session-event` notifies other sessions of starts and stops |
 

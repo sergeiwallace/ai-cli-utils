@@ -2,7 +2,7 @@
 
 Stores usage records, quota snapshots, and weekly state in
 ~/.local/state/ai-cli/quota.db. This is the storage layer for the
-quota tracking subsystem; quota.py owns the scraping and watching logic.
+quota tracking subsystem; quota.py owns rendering and publishing.
 """
 
 from __future__ import annotations
@@ -12,16 +12,15 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-# Default weekly quota reset anchor (fallback only — overridden by scraped value).
+# Default weekly quota reset anchor (fallback only).
 # Override via [quota] reset_anchor_utc in ~/.config/ai-cli-utils/config.toml,
-# or automatically by record_quota_snapshot() when the /usage dialog includes a
-# reset datetime.
+# or automatically by record_quota_snapshot() when a reading carries its reset time.
 _DEFAULT_RESET_ANCHOR = "2026-04-04T06:00:00Z"
 _WEEK_SECONDS = 7 * 24 * 3600
 
 
 def _get_reset_anchor_path() -> Path:
-    """Path to the file that caches the reset anchor observed from /usage scrapes."""
+    """Path to the file that caches the reset anchor observed in quota readings."""
     state_dir = Path.home() / ".local" / "state" / "ai-cli"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir / "quota-reset-anchor.txt"

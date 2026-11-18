@@ -25,6 +25,7 @@ template_version: "design-1.0.0"
 - [Overview](#overview)
 - [Module Map](#module-map)
 - [Command Groups](#command-groups)
+- [Session Listing and Publication](#session-listing-and-publication)
 - [Key Data Types](#key-data-types)
 - [External Integrations](#external-integrations)
 - [Key Design Decisions](#key-design-decisions)
@@ -62,10 +63,10 @@ The tool installs as a single `ai` command. There is no server component — all
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
-| `process_manager.py` | Circus daemon bootstrap and quota-watch lifecycle |
+| `process_manager.py` | Circus daemon bootstrap and the stale-session reaper's lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
 | `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals; its Ctrl+Z watchdog (`SUSPEND_WATCHDOG_SNIPPET`) continues a stopped pane foreground group, since the pane has no job-control shell to run `fg` |
-| `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
+| `quota.py` | Claude quota statusline and publisher; the statusline renders Claude Code's native `rate_limits` values and never starts a process; `ai quota publish` sends the native seven-day reading from the statusline's state file to `quota.snapshot`, `hw.events.usage.claude.snapshot` and NATS KV; nothing scrapes `/usage` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
@@ -111,9 +112,7 @@ The tool installs as a single `ai` command. There is no server component — all
 > **Removed in v0.7.0:** `ai gemini` and the `gemini.py` and `research.py` modules were removed. The historical `ai spend gemini` command remains only to report logs created before that removal.
 
 ### Quota Tracking
-- `ai quota watch start|stop|status` — manage quota-watch Circus daemon lifecycle
-- `ai quota watch run [-i/--interval]` — raw daemon entry point (Circus uses this)
-- `ai quota scrape` — one-shot quota scrape, store, and publish
+- `ai quota publish` — publish the statusline's current native seven-day reading; exits 0 and publishes nothing when the reading is missing or stale
 - `ai quota status` — read current quota from SQLite (with KV sync if stale)
 
 ### Notifications
@@ -153,6 +152,49 @@ The tool installs as a single `ai` command. There is no server component — all
 
 ---
 
+## Session Listing and Publication
+
+`ai sessions list` shows this host's live registry. A published snapshot is a
+timestamped TOML copy of a host's session records. `ai sessions publish` writes
+`sessions/<host-id>.toml` to the publication ref named for that host. The reader
+fetches snapshot refs over Git and reports each displayed snapshot's age by
+printing its publication timestamp. If a fetch fails, the reader reports the
+failure and uses any previously fetched snapshots.
+
+The machine profile lives in `[machine]` in the machine-local `config.toml`.
+Provisioners that render `[profiles.<profile>.machine]` from a fleet config
+can put the same keys there. The listing reads the machine-local values on
+every invocation. `profile_class = "personal"`
+permits `group` by default. Work, client, and unclassified profiles are limited
+to `host`. A personal profile can set `sessions_list_scope = "host"` to restrict
+listing or explicitly set `"fleet"` to permit a fleet listing. The CLI flag takes
+precedence over `[sessions_list] scope`, and the machine profile bounds both.
+
+For a symmetric view, set `[machine] session_group_members` to the same list
+of host IDs on every group member. The current host is always included, even
+when it has no outbound remote configured. Where no membership list is set,
+the reader uses `[sessions_list] group_host` or the configured default remote
+machine. An entry that names a configured SSH alias resolves through that
+machine's `host_id`. A `host_id` must match the publication ID, including any
+`[session_relaunch.publish] host` override.
+
+### Session Listing Acceptance Criteria
+
+- When a personal group member runs the list, the command shall show its live
+  rows and the published rows of each available group member, including when
+  the caller has no outbound SSH target.
+- When an SSH alias differs from the publication ID, the command shall use the
+  configured host ID to find the snapshot.
+- If a group member cannot be resolved or read, then the command shall name
+  the problem and the corrective action, show available rows, and exit zero.
+- While the effective scope is `host`, the command shall show only records from
+  the local registry and skip fetching snapshots, even when a flag requests a
+  wider scope on a work or client profile.
+- The command shall preserve table ordering, active-state filtering, snapshot
+  timestamps, cached reads on fetch failure, and local-only JSON. Existing
+  wider listings require a personal profile. Fleet access requires explicit
+  profile permission so an unclassified host defaults to the local registry.
+
 ## Key Data Types
 
 | Type | Module | Key Fields |
@@ -188,8 +230,8 @@ The tool installs as a single `ai` command. There is no server component — all
 - `~/.ai-cli/telemetry.db` — telemetry events with subject/machine/session index
 
 ### External Processes / Services
-- **tmux** (via `libtmux`) — session creation, attachment, hidden quota-scrape windows
-- **Circus** — process supervisor for the quota-watch and VPN-watch daemons
+- **tmux** (via `libtmux`) — session creation and attachment
+- **Circus** — process supervisor for the VPN-watch and stale-session reaper daemons
 - **SSH/mosh** — remote session launch; SSH tunnels for NATS access on Mac
 - **Gemini CLI** (`gemini` binary) — launches Gemini tmux sessions through `ai g`
 - **GCP BigQuery** (optional) — historical billing data for `ai spend gemini`
@@ -208,7 +250,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Removed Gemini API wrapper** — v0.7.0 removed `ai gemini`, `gemini.py`, and `research.py`. `ai g` still launches an installed Gemini CLI in a tmux session; `ai spend gemini` only reports pre-removal local logs.
 
-**Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
+**Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without every machine reading its own quota.
 
 **Git worktree isolation** — each `ai c N` session runs in `.worktrees/session-N/` on branch `wt-session-N`, **created at, and tracking, the repository's integration branch**. That branch resolves from the `[worktree_upstream]` config table if the repository declares one, otherwise from the branch the repository's own main checkout is on — so a repository on `main` is created at and tracks `origin/main`, unchanged. Created and destroyed by `main.py`.
 

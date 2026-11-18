@@ -2,13 +2,15 @@
 title: quota_watch NATS Listener — Implementation Plan
 category: plan
 tags: [quota, nats, quota-watch, ai-cli-57]
-status: implemented
+status: superseded
 source: claude-sonnet-4-6
 ---
 
+> **Superseded 2026-11-16 (AI-CLI-pyaz):** the `/usage` scrape this plan built is retired. Quota now comes from Claude Code's native statusline `rate_limits`, published by `ai quota publish`; see [claude-usage-telemetry.md](../designs/claude-usage-telemetry.md) and [cc-statusline.md](../designs/cc-statusline.md). This plan is kept as history.
+
 # quota_watch NATS Listener — Implementation Plan
 
-**Status:** IMPLEMENTED
+**Status:** SUPERSEDED 2026-11-16 (was: IMPLEMENTED)
 
 **Created:** 2026-04-29
 

@@ -13,7 +13,8 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 from name_fleet import HOST, build_fleet, git
-from test_session_migrate import OLD, run_cli, slot  # noqa: F401  (slot is a fixture)
+from test_session_auto_migrate import _launch
+from test_session_migrate import NEW, OLD, run_cli, slot  # noqa: F401  (slot is a fixture)
 
 from ai_cli import main
 from ai_cli import name_registry as reg
@@ -70,6 +71,65 @@ def test_given_no_name_when_migrated_then_the_shortest_free_name_is_picked(fleet
     assert code == 0, out + err
     [token] = [t for t, row in fleet.rows().items() if row.get("source") == "migrated"]
     assert len(token) == 3
+
+
+def test_given_a_migrated_integer_slot_when_requested_again_then_it_launches_the_renamed_slot(fleet):
+    code, out, err = migrate(fleet, OLD, NEW)
+    assert code == 0, out + err
+    code, out, err = migrate(fleet, NEW, "--to-name")
+    assert code == 0, out + err
+    title = json.loads(fleet.file(f"migrations/{NEW}.json"))["new_title"]
+    previous_slot = fleet.slot["repo"] / ".worktrees" / NEW
+    assert not previous_slot.exists()
+
+    code, out, err, launched = _launch(fleet.slot, NEW)
+
+    assert code == 0, out + err
+    assert [item["ai_name"] for item in launched] == [title]
+    assert not previous_slot.exists()
+
+    code, out, err, launched = _launch(fleet.slot, OLD)
+
+    assert code == 0, out + err
+    assert [item["ai_name"] for item in launched] == [title]
+
+    with patch("ai_cli.config._get_projects_dir", return_value=fleet.slot["repo"].parent):
+        code, out, err = run_cli(
+            [
+                "ai",
+                "internal",
+                "allocate-session-name",
+                "c",
+                "myrepo",
+                NEW,
+                "--project",
+                "myrepo",
+                "--no-session-names",
+            ]
+        )
+    assert code == 0, out + err
+    allocated = json.loads(out)
+    assert allocated == {"session_id": f"c-r-{title}", "ai_name": title}
+
+    code, out, err, launched = _launch(fleet.slot, allocated["session_id"], "-I", remote=True)
+
+    assert code == 0, out + err
+    assert [item["ai_name"] for item in launched] == [title]
+    assert not previous_slot.exists()
+
+
+def test_given_slot_one_has_migrated_when_allocating_an_index_then_it_is_skipped(fleet):
+    retired = f"{STEM}-1"
+    code, out, err = migrate(fleet, OLD, retired)
+    assert code == 0, out + err
+    code, out, err = migrate(fleet, retired, "--to-name")
+    assert code == 0, out + err
+
+    code, out, err, launched = _launch(fleet.slot, "", "-I")
+
+    assert code == 0, out + err
+    assert [item["ai_name"] for item in launched] == [f"{STEM}-2"]
+    assert not (fleet.slot["repo"] / ".worktrees" / retired).exists()
 
 
 @pytest.mark.parametrize("bound", ["2", "5"])
