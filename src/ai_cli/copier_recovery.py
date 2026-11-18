@@ -12,6 +12,8 @@ from pathlib import Path
 
 from .git_repair import _git_env
 
+_RECOVERY_BODY_MAX_BYTES = 20 * 1024
+
 
 def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
@@ -141,7 +143,10 @@ def _file_recovery_issue(
     template_range: str,
     failure_output: str | None = None,
 ) -> str:
-    """Create once per repo/job, then comment on the matching non-closed issue."""
+    """Create an issue or comment on the matching open issue using a body file.
+
+    Cap the UTF-8 body at 20 KiB, retaining the diagnostic tail and reporting bytes cut.
+    """
     # Reuse the existing local-store helper: it strips store overrides and uses
     # sandbox mode, leaving store publication to the caller.
     import json
@@ -150,17 +155,33 @@ def _file_recovery_issue(
 
     marker = f"[copier-update:{root.name}]"
     title = f"{marker} Resolve failed template update"
-    failure_details = (
-        f"Push failure output:\n{failure_output}\n"
-        if failure_output
-        else f"Conflicted paths: {', '.join(conflicts) or '(semantic failure; inspect snapshot)'}\n"
-    )
-    body = (
-        f"Backup anchor: {ref}\n"
-        f"{failure_details}"
-        f"Template commit range: {template_range}\n"
+    header = f"Backup anchor: {ref}\n"
+    if failure_output:
+        header += "Push failure output:\n"
+        details = failure_output
+        if details.startswith("Backup anchor location: "):
+            location, newline, diagnostics = details.partition("\n")
+            if newline:
+                header += location + newline
+                details = diagnostics
+    else:
+        header += "Conflicted paths: "
+        details = ", ".join(conflicts) or "(semantic failure; inspect snapshot)"
+
+    prefix = header.encode("utf-8")
+    suffix = (
+        f"\nTemplate commit range: {template_range}\n"
         "Restore the backup in a separate worktree to resolve and validate the template update."
-    )
+    ).encode()
+    payload = details.encode("utf-8")
+    available = _RECOVERY_BODY_MAX_BYTES - len(prefix) - len(suffix)
+    if len(payload) > available:
+        notice = "[{} bytes cut from the beginning]\n"
+        # Reserve space for the largest possible byte count and drop any partial UTF-8 character.
+        start = len(payload) - available + len(notice.format(len(payload)))
+        tail = payload[start:].decode("utf-8", errors="ignore").encode("utf-8")
+        payload = notice.format(len(payload) - len(tail)).encode("utf-8") + tail
+
     listed = _bd(root, "list", "--all", "--json", "--limit", "0")
     if listed.returncode != 0:
         raise RuntimeError(_tracker_failure("could not search the repository issue store", listed))
@@ -170,37 +191,44 @@ def _file_recovery_issue(
         raise RuntimeError("repository issue search returned invalid JSON") from exc
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise RuntimeError("repository issue search returned no issue list")
-    for row in rows:
-        if marker in str(row.get("title", "")) and row.get("status") not in ("closed", "tombstone") and row.get("id"):
-            issue = str(row["id"])
-            commented = _bd(root, "comments", "add", issue, body)
-            if commented.returncode != 0:
-                raise RuntimeError(_tracker_failure("could not comment on the existing recovery issue", commented))
-            return issue
-    # The supported creator is user-installed; pathlib keeps its location portable.
-    command = Path.home() / ".claude" / "bin" / "bd-new"
-    env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
-    created = subprocess.run(
-        [
-            str(command),
-            "--repo",
-            str(root),
-            "--title",
-            title,
-            "--description",
-            body,
-            "--type",
-            "bug",
-            "--priority",
-            "1",
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="ai-copier-recovery-") as directory:
+        body_path = Path(directory).absolute() / "body.txt"
+        body_path.write_bytes(prefix + payload + suffix)
+        for row in rows:
+            if (
+                marker in str(row.get("title", ""))
+                and row.get("status") not in ("closed", "tombstone")
+                and row.get("id")
+            ):
+                issue = str(row["id"])
+                commented = _bd(root, "comments", "add", issue, "--file", str(body_path))
+                if commented.returncode != 0:
+                    raise RuntimeError(_tracker_failure("could not comment on the existing recovery issue", commented))
+                return issue
+        # The supported creator is user-installed; pathlib keeps its location portable.
+        command = Path.home() / ".claude" / "bin" / "bd-new"
+        env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+        created = subprocess.run(
+            [
+                str(command),
+                "--repo",
+                str(root),
+                "--title",
+                title,
+                "--body-file",
+                str(body_path),
+                "--type",
+                "bug",
+                "--priority",
+                "1",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+            check=False,
+        )
     if created.returncode != 0:
         raise RuntimeError(_tracker_failure("could not create the repository recovery issue with bd-new", created))
     return created.stdout.strip()
