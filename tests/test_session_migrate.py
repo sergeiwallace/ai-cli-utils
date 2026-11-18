@@ -19,10 +19,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import run_cli as _run_cli
-from conftest import snapshot_tree, with_environment_config
 from process_ownership import exited_pid
 from process_wait import scaled
+from session_state_isolation import require_isolated_session_state
 
 from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
@@ -37,7 +36,9 @@ CONFIRMED_KEYED = f"{OLD}-{'ab' * 16}.md"
 
 def run_cli(argv, config=None, env=None):
     """``conftest.run_cli`` with the environment's marker prefix and chief homes configured."""
-    return _run_cli(argv, config=with_environment_config(config), env=env)
+    import conftest
+
+    return conftest.run_cli(argv, config=conftest.with_environment_config(config), env=env)
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -55,8 +56,9 @@ def _dead_pid() -> int:
 
 
 @pytest.fixture
-def slot(tmp_path):
+def slot(tmp_path, request, tmp_path_factory):
     """A repo whose slot ``.worktrees/myrepo-3`` carries every artifact a migration moves."""
+    require_isolated_session_state(request, tmp_path_factory)
     home = Path.home()
     claude = home / ".claude"
     state = get_xdg_state_home()
@@ -180,6 +182,8 @@ def _without_registry_cache(tree: dict | None, root: Path) -> dict | None:
 
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
+    from conftest import snapshot_tree
+
     trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
     trees["state"] = _without_registry_cache(trees["state"], slot["state"])
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
@@ -293,6 +297,8 @@ def vanished_run(slot, monkeypatch):
 
 @pytest.mark.parametrize("list_first", [False, True])
 def test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled(slot, vanished_run, list_first):
+    from conftest import with_environment_config
+
     config = {"machine": {"host_id": "m"}}
     if list_first:
         code, out, err = run_cli(["ai", "sessions", "list", "-j"], config=config)

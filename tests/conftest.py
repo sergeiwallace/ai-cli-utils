@@ -1500,6 +1500,7 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg_state_home")))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg_cache_home")))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg_config_home")))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg_data_home")))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))
     monkeypatch.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
 
