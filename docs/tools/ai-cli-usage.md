@@ -768,6 +768,10 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
+### Copier update environments
+
+In an isolated update, a root Python project with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev` before committing. A root JavaScript project with a supported lockfile receives its corresponding frozen install. Projects with other layouts must provide the tools required by their hooks separately.
+
 ### Removed ai gemini command
 
 `ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
