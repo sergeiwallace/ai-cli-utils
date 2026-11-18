@@ -101,6 +101,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Container
 from dataclasses import dataclass, field
@@ -926,6 +927,36 @@ def _archive_entries(
     return moves, archived
 
 
+_ON_WINDOWS = sys.platform == "win32"
+
+
+def _refuses_delete_access(path: Path) -> bool:
+    """Whether Windows refuses delete access to ``path``, as it does while another handle lacks delete sharing."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, share_all, open_existing = 0x00010000, 0x7, 3
+    handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        return True
+    kernel32.CloseHandle(handle)
+    return False
+
+
 def _move_container_files(container: Path, new: str, dry_run: bool, moving: Container[Path]) -> list[PlannedMove]:
     """Carry loose regular files only, refusing occupied names and detectable open files."""
     import psutil
@@ -954,9 +985,16 @@ def _move_container_files(container: Path, new: str, dry_run: bool, moving: Cont
 
     if is_open(psutil.Process()):
         return []
-    with contextlib.suppress(psutil.Error, OSError):
-        if any(is_open(process) for process in psutil.process_iter()):
+    if _ON_WINDOWS:
+        # psutil bounds each Windows handle query with a 100 ms thread, so scanning every
+        # process takes minutes on a busy host. Asking for delete access to each file is the
+        # exact condition the rename below needs, and costs one open per file.
+        if any(_refuses_delete_access(child) for child in files):
             return []
+    else:
+        with contextlib.suppress(psutil.Error, OSError):
+            if any(is_open(process) for process in psutil.process_iter()):
+                return []
     target = container.with_name(f"{new}-agents")
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         return [
@@ -969,13 +1007,18 @@ def _move_container_files(container: Path, new: str, dry_run: bool, moving: Cont
         if action == "move" and not dry_run:
             try:
                 target.mkdir(parents=True, exist_ok=True)
-                # Link then unlink gives a same-filesystem move that cannot overwrite a
-                # destination created after the preview, unlike rename on POSIX.
-                os.link(child, dest, follow_symlinks=False)
-                if child.is_file() and not child.is_symlink() and child.samefile(dest):
-                    child.unlink()
+                if _ON_WINDOWS:
+                    # Windows rename never replaces an existing name, and a file opened since the
+                    # check refuses it whole, where a link would succeed and its unlink fail.
+                    child.rename(dest)
                 else:
-                    action = "kept: source changed"
+                    # Link then unlink gives a same-filesystem move that cannot overwrite a
+                    # destination created after the preview, unlike rename on POSIX.
+                    os.link(child, dest, follow_symlinks=False)
+                    if child.is_file() and not child.is_symlink() and child.samefile(dest):
+                        child.unlink()
+                    else:
+                        action = "kept: source changed"
             except FileExistsError:
                 action = "conflict"
             except OSError as exc:

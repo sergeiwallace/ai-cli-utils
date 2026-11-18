@@ -69,6 +69,30 @@ earlier boot, fake tmux and an empty process table, and calls the preflight.
 
 ## Root Cause Analysis
 
+### Claude Code process records
+
+The separate Claude Code process scan could also defer a finish without a live tmux
+session. It checked whether the recorded PID existed, so a new process reusing the
+PID kept the old Claude Code session looking live. The scan now uses the same
+procfs birth-marker check as the launcher's stale-record sweep. On Linux, Claude
+Code writes `procStart` as a decimal string containing field 22 of `/proc/<pid>/stat`,
+a count of clock ticks since boot. Two usable ticks that differ prove reuse. Missing,
+unreadable or invalid ticks preserve the live-session guard, including for bare
+sessions. The scan leaves the Claude Code record in place.
+
+The first version treated `"0"` as a valid tick. That hid a managed agent from
+`ai sessions stop` when its record could not prove the PID, so the stop timeout
+omitted the still-running agent. The check now requires positive ticks on both
+sides. Four Linux adoption and scan tests also supplied the same sample `procStart`
+for every child process. Their fixtures now read field 22 from the actual child,
+so the records identify the processes the tests expect to find.
+
+The CLI regression
+`test_given_new_has_a_stale_record_with_a_reused_pid_when_launched_then_no_parts_are_deferred`
+failed on the original code because the launch recorded a deferral instead of a
+verified finish. It checks that the launch finishes without deferring and leaves
+the process record intact.
+
 The migration preflight (`_plan_iterm2`) refuses any restore record whose `run_state` is
 `running`, after giving `session_reconcile.reconcile()` a chance to settle it. Reconcile
 settles only records from the current boot. It leaves a record from an earlier boot unchanged
@@ -110,6 +134,11 @@ New regression tests in `tests/test_session_reconcile.py`:
   fix, because the message did not name the reason).
 
 The existing same-boot preflight and reconcile tests pass unchanged.
+
+`tests/test_session_adopt.py` exercises the procfs parser using Linux-shaped records
+and stat files. Before the correction, the zero, negative, and invalid procfs tick
+cases failed. The corrected check keeps those live records and still excludes a
+record whose valid tick proves reuse.
 
 ## Lessons Learned
 

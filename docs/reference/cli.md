@@ -84,7 +84,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions boot-unit status`](#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -241,7 +241,7 @@ Register Claude Code workspace trust for every repo under a root (fixes 'workspa
 ai c [OPTIONS] [NAME]
 ```
 
-Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is re-planned. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
+Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
@@ -1317,7 +1317,7 @@ Stop the stale-session reaper
 ai sessions [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, grouped by host, active first
+List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults and the machine profile's visibility limits
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1400,13 +1400,13 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
+List sessions as a table grouped by host, active sessions first. Personal profiles include their machine host group by default. Work, client and unclassified profiles show this host only. -a/--all adds exited, stale and unknown rows. -S/--scope requests host, group or fleet within the machine profile's limit. -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print this host's registry records as JSON |
 | `-a` | `--all` |  | Include exited, stale and unknown sessions |
-| `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
+| `-S` | `--scope` | `[host\|group\|fleet]` | Request this host, its machine host group, or all publishing hosts within the profile's limit |
 | `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
 | `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |
 | `-h` | `--help` |  | Show this message and exit. |
