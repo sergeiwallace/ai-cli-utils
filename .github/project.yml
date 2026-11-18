@@ -1,6 +1,6 @@
 # The GitHub Project and repository setup for this repository: its issue forms, labels, Project, fields, views and
-# the click steps GitHub has no API for. ai-harness's scripts/github_project_setup.py applies it; its procedure is
-# ai-harness docs/procedures/github-project-setup.md.
+# the click steps GitHub has no API for. The fleet's github_project_setup script applies it; its procedure is the
+# fleet's github-project-setup procedure doc.
 #
 # `{repo}` is replaced with OWNER/NAME when the setup runs. Nothing here is ever deleted from GitHub by the setup:
 # a live option or iteration this file does not list stops that field's update, and labels this file does not list
