@@ -14,6 +14,12 @@ tasks, memory and resume hand-off:
 * the Claude Code project directory (transcripts, sidecars, worktree-slug
   memory), with each transcript's recorded cwd repointed, its ``customTitle`` and
   ``agentName`` renamed and its stale worktree binding cleared;
+* each moved transcript's Claude Code job record (``jobs/<short id>/state.json``),
+  whose ``name`` Claude Code restores on resume, renamed; and every job record of the
+  session, or with its cwd in a moved worktree, with ``cwd`` and ``linkScanPath`` repointed;
+* each Agent-tool sub-agent record under the session's transcripts
+  (``<session id>/subagents/agent-<id>.meta.json`` and ``.jsonl``) naming a moved worktree,
+  repointed at it, so a sub-agent launched before the migration resumes from the new name;
 * the ``memory/.held-output-<old>-NN-<slug>.md`` replay files in the main tree's
   and the slot's project directories (filename prefix only), and the memory files
   named for the session there (``active-work-<old>.md``, ``.resume-<old>-N.md``) with
@@ -23,7 +29,8 @@ tasks, memory and resume hand-off:
 * the task namespace and the resume tree, through
   :func:`ai_cli.session_adopt.rekey_name_artifacts`, the executor ``adopt-session``
   uses for the same two; the old namespace directory is removed once only its
-  bookkeeping remains;
+  bookkeeping remains. A resume artifact NEW already holds its own copy of keeps NEW's
+  copy: OLD's moves into the dated archive (:func:`archive_dir`), recorded in the ledger;
 * the launcher's own state: session metadata, the wrapper script (regenerated, so
   ``CLAUDE_CODE_TASK_LIST_ID`` and ``--name`` follow), the resume prompt, the
   session maps, the iTerm2 restore registry and the ``launch-logs/`` files of a launch
@@ -31,9 +38,12 @@ tasks, memory and resume hand-off:
 * the chief-of-staff registration ``ai cos`` wrote, when it names the old session
   (``state/chief-session.json`` and ``registry.json``'s chief fields), unless its tmux
   target is live;
-* the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` and its
-  ``wt/<old>/*`` branches in every repo under ``projects_dir``
-  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in;
+* the session's agent worktrees under ``<repo>/.worktrees/<old>-agents/`` or
+  ``<host>--<old>-agents/``, their Claude Code project directories (a reaped worktree's
+  included) and its ``wt/<old>/*`` branches in every repo under ``projects_dir``
+  (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in; an
+  entry of an ``<old>-agents`` container no registered worktree accounts for is archived
+  by rename into :data:`MIGRATION_ARCHIVE`, unless some process works in it;
 * every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
   that proves it clean and landed, and kept and named, failing the run, otherwise; and
@@ -44,11 +54,19 @@ tasks, memory and resume hand-off:
   each changed store is named as needing its publish step, and a store bd cannot read is
   named and fails the run. Each completed migration is appended to
   :data:`MIGRATION_LEDGER`, the record a later ``--finish`` needs before it re-keys;
-  a ``--finish`` that completes appends a ``finished`` row for the pair, and ``ai c
-  <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`);
+  every writing run then re-plans the pair read-only, and only one whose re-plan finds
+  nothing left appends a ``finished`` row (``verified: true``) for it
+  (:mod:`ai_cli.session_migrate_status`); otherwise it names each part left and fails.
+  ``ai c <new>`` runs the finish of any recorded pair without one (:func:`pending_finishes`).
+  The ledger also names the transcripts each migration moved (:func:`moved_transcripts`),
+  so a resume of ``<new>`` takes the moved one over a later transcript a relaunch started
+  under ``<new>``;
 * whatever the external hooks in ``migrate-session.d/`` declare
   (:mod:`ai_cli.session_migrate_hooks`), each planned with ``--dry-run`` before
-  the first write and run after the core moves.
+  the first write and run after the core moves;
+* once a writing run's re-plan finds nothing left, the references step
+  (:mod:`ai_cli.session_migrate_references`): the configured references command, then a scan of
+  the repository's tracked files that names every reference to the old name still there.
 
 Every refusal is checked before the first write, in ``--dry-run`` too: the slot
 must be a registered worktree, nothing may already exist at the new slot or its
@@ -62,7 +80,9 @@ directory, and another repo holds the registered ``.worktrees/<new>``. That run,
 or without ``--finish``, touches only the old-name slots and empty ``<old>-agents``
 containers in every repo (:func:`clean_leftovers`), so it proceeds while ``<new>`` is
 live elsewhere. It still refuses while a process named ``<old>`` runs or any process
-works inside the slot.
+works inside the slot. A ``--finish`` dry run, of either kind, never refuses a live
+session: it plans as usual and names the live session, so a running session can be
+checked read-only; only its writing run refuses.
 
 Nothing is overwritten. A destination that already exists is reported and left
 alone, and a lock is never carried to the new name (the session is not running,
@@ -73,10 +93,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import mmap
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Container
 from dataclasses import dataclass, field
@@ -87,6 +109,7 @@ from . import config as _config
 from . import session_migrate_agents as _agents
 from . import session_migrate_hooks as _hooks
 from . import session_registry as _session_registry
+from .background_attach import is_copy_title
 from .branch_rename import rename_branch_anchored
 from .canonical_worktrees import (
     CanonicalWorktreeRegistryError,
@@ -106,7 +129,8 @@ from .session_adopt import (
     rekey_name_artifacts,
     retitle_transcript,
 )
-from .venv_relocate import relocate_venv
+from .session_migrate_progress import Progress, timed
+from .venv_relocate import relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
 ENGINES = ("c", "g", "p", "cx")
@@ -166,6 +190,18 @@ class MigrationResult:
     kept: list[str] = field(default_factory=list)
     parts: dict[str, str] = field(default_factory=dict)
     task_intent: dict = field(default_factory=dict, repr=False)
+    #: Under ``dry_run``, the refusal a writing run would raise because a session is live, else empty.
+    #: When only NEW is live, a ``--finish`` sets it on a writing run too, beside :attr:`deferred`.
+    live: str = ""
+    #: The NEW session a ``--finish`` found running, so it left each step that writes the live
+    #: session's own files (:data:`LIVE_SESSION_KINDS`) as :data:`DEFERRED`; empty when none was.
+    deferred: str = ""
+    #: Whether the references step ran (:mod:`ai_cli.session_migrate_references`), after a completed run.
+    references_checked: bool = False
+    #: What the references step did, one line each.
+    reference_notes: list[str] = field(default_factory=list)
+    #: Each reference to the old name that step left; any makes the run "finished with leftovers".
+    references_left: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -174,7 +210,7 @@ class MigrationResult:
             bool(self.kept)
             or any("FAILED" in w or "NOT " in w for w in self.warnings)
             or any(
-                move.action == "conflict" or move.action.startswith(("left alone", "left in place", "kept"))
+                move.action in ("conflict", DEFERRED) or move.action.startswith(("left alone", "left in place", "kept"))
                 for move in self.moves
             )
         )
@@ -215,15 +251,72 @@ def _refuse_live(
         if session.name in {old, new} or inside:
             raise LiveSessionError(
                 f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
-                f"running in the slot being {verb} -- its transcript and task files are open. Exit it first."
+                f"running in the slot being {verb} -- its transcript and task files are open. Stop it first "
+                f"with `ai sessions stop {session.name or old}`."
             )
     hosting = sorted(set(tmux) & set(_session_variants(old) + _session_variants(new)))
     if hosting:
-        hosted = ", ".join(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
+        hosted = list(dict.fromkeys(name for name in (old, new) if set(hosting) & set(_session_variants(name))))
         raise LiveSessionError(
-            f"tmux session {', '.join(hosting)} still hosts {hosted}, and its wrapper restarts the agent on "
-            f"exit. Exit the session and end the tmux session (`tmux kill-session -t {hosting[0]}`) first."
+            f"tmux session {', '.join(hosting)} still hosts {', '.join(hosted)}, and its wrapper restarts the "
+            f"agent on exit. Stop it first with `ai sessions stop {hosted[0]}`."
         )
+
+
+#: The report line of a run that only cleans up a leftover of a session migrated to another repo.
+ALREADY_MIGRATED = "session already migrated"
+
+#: The report line a dry run adds, in place of the refusal, when a session it plans for is live.
+LIVE_SESSION = "live session"
+
+
+#: The action of a ``--finish`` step left for later because it writes the files of the live NEW session.
+DEFERRED = "deferred while live"
+
+#: The parts a ``--finish`` defers while NEW runs: the live session's Claude Code project directory
+#: and transcripts, its sub-agent and background-job records, and its task namespace. Each is a
+#: file the running session holds open or writes. Every other part runs while NEW is live.
+LIVE_SESSION_KINDS = frozenset(
+    {"project dir", "transcript title", "job name", "sub-agent record", "job record", "task namespace"}
+)
+
+
+def _live_note(result: MigrationResult, refusal: LiveSessionError, *, deferring: bool = False) -> None:
+    """Record on ``result`` that a session is live: a writing run refuses or, when ``deferring``, defers."""
+    result.live = str(refusal)
+    then = (
+        f"a writing run does every other step and defers {', '.join(sorted(LIVE_SESSION_KINDS))} until it is stopped"
+        if deferring
+        else "a writing run refuses until it is stopped"
+    )
+    result.moves.insert(0, PlannedMove(LIVE_SESSION, f"{_one_line(str(refusal))}; {then}", "", "report"))
+
+
+def deferred_parts(result: MigrationResult) -> list[str]:
+    """The parts ``result`` deferred because NEW was running, sorted."""
+    kinds = {move.kind for move in result.moves if move.action == DEFERRED}
+    if result.deferred and result.task_moves:
+        kinds.add("task namespace")
+    return sorted(kinds)
+
+
+def noted_deferral(old: str, new: str, state_dir: Path | None = None) -> list[str] | None:
+    """The parts this host's ledger last recorded deferred for the pair, or ``None``.
+
+    Only a ``deferred_recorded`` row with no later migration or ``finished`` row of the pair
+    counts: a new migration or a finish starts the pair afresh.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    noted: list[str] | None = None
+    for row in _ledger_rows(state):
+        if (row.get("old"), row.get("new")) != (old, new):
+            continue
+        if row.get("deferred_recorded") is True:
+            parts = row.get("deferred")
+            noted = [part for part in parts if isinstance(part, str)] if isinstance(parts, list) else []
+        elif not bookkeeping_row(row):
+            noted = None
+    return noted
 
 
 def _session_home_markers(repo: Path, old_wt: Path) -> list[tuple[str, str]]:
@@ -496,20 +589,57 @@ def _remove_stale_locks(moves: list[PlannedMove]) -> None:
 _NAMESPACE_BOOKKEEPING = (".highwatermark", ".lock")
 
 
-def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
-    """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
-    return sorted(p.name for p in ns.iterdir() if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving)
+#: The per-task watcher lock Claude Code leaves in a namespace: ``.<task id>.shadow-watcher.lock``.
+_TASK_WATCHER_LOCK = re.compile(r"\.\d+\.shadow-watcher\.lock")
 
 
-def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] | None) -> list[_hooks.Hook]:
-    """Run every external hook with ``--dry-run``; any refusal refuses the migration.
+def _idle_task_watcher_lock(path: Path) -> bool:
+    """Whether ``path`` is one of Claude Code's task watcher locks that nothing holds.
 
-    The hooks' planned lines are appended to ``report`` when one is given.
+    The file is empty and carries no state, so it means nothing once the tasks have moved. It is
+    treated as bookkeeping only while it is empty and a non-blocking lock on it succeeds; a held
+    or non-empty one stays a leftover and keeps the namespace in place.
     """
     try:
-        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root)
+        if not _TASK_WATCHER_LOCK.fullmatch(path.name) or not path.is_file() or path.stat().st_size:
+            return False
+        return _slot_lock_free(path)
+    except OSError:
+        return False
+
+
+def _namespace_leftovers(ns: Path, moving: set[str]) -> list[str]:
+    """Entries of ``ns`` that are neither bookkeeping nor among the task files in ``moving``."""
+    return sorted(
+        p.name
+        for p in ns.iterdir()
+        if p.name not in _NAMESPACE_BOOKKEEPING and p.name not in moving and not _idle_task_watcher_lock(p)
+    )
+
+
+def _plan_hooks(
+    old: str,
+    new: str,
+    repo_root: Path,
+    report: list[PlannedMove] | None,
+    pending: MigrationResult | None = None,
+    progress: Progress | None = None,
+) -> list[_hooks.Hook]:
+    """Run every external hook with ``--dry-run``; any refusal refuses the migration.
+
+    The hooks' planned lines are appended to ``report`` when one is given. With
+    ``pending``, a hook that refuses is left out of the plan and recorded on it as pending
+    work instead, for a run whose slot has already moved.
+    """
+    refused: list[_hooks.HookRun] | None = [] if pending is not None else None
+    try:
+        hooks, runs = _hooks.plan_hooks(old, new, cwd=repo_root, refused=refused, progress=progress)
     except _hooks.HookRefusal as exc:
         raise MigrationError(str(exc)) from exc
+    if pending is not None:
+        for run in refused or []:
+            pending.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "skipped: preflight refused"))
+            pending.warnings.append(_hooks.refusal_warning(run))
     if report is not None:
         report += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for run in runs for line in run.lines]
         report += [
@@ -539,13 +669,23 @@ def _plan_hooks(old: str, new: str, repo_root: Path, report: list[PlannedMove] |
     return hooks
 
 
-def _plan_iterm2(old: str) -> list[PlannedMove]:
+def _plan_iterm2(old: str, new: str, old_wt: Path) -> list[PlannedMove]:
+    from .session_reconcile import reconcile
+    from .session_run_state import run_state
+
+    names = set(_session_variants(old))
+    reconcile(names=names)
     try:
         doc = _session_registry.load_registry()
     except _session_registry.RegistryError:
         return []
-    names = set(_session_variants(old))
-    hits = [r for r in doc["sessions"] if _names_old_session(r, names)]
+    hits = [r for r in doc["sessions"] if _restore_record_needs_rename(r, old, new, old_wt)]
+    for record in hits:
+        if run_state(record) == "running":
+            from .session_reconcile import liveness_blocker
+
+            if (blocker := liveness_blocker(record)) is not None:
+                raise MigrationError(f"session run state is still running: {blocker}")
     if not hits:
         return []
     return [PlannedMove("iTerm2 restore record", f"{_session_registry.registry_path()} ({len(hits)})", "", "rewrite")]
@@ -683,21 +823,238 @@ def _containers(old: str, repos: list[Path]) -> list[Path]:
     return [c for c in ((r / ".worktrees" / f"{old}-agents").resolve() for r in repos) if c.is_dir()]
 
 
-def _holds_a_file(path: Path) -> bool:
+def _holds_a_file(path: Path, moving: Container[Path] = ()) -> bool:
+    if path in moving:
+        return False
     if path.is_symlink() or not path.is_dir():
         return True
-    return any(_holds_a_file(child) for child in path.iterdir())
+    return any(_holds_a_file(child, moving) for child in path.iterdir())
 
 
-def _sweep_containers(containers: list[Path], live_cwds: list[tuple[int, Path]], *, dry_run: bool) -> list[PlannedMove]:
+#: The part an entry of an old agent container that no registered worktree accounts for is archived under.
+CONTAINER_ENTRY = "agent container entry"
+
+
+def _unregistered_entries(container: Path, moving: Container[Path]) -> list[Path]:
+    """Each directory in ``container`` holding a file that is not, and holds no, registered worktree.
+
+    Its registration was pruned (a ``.git`` file naming a ``.git/worktrees/<name>`` that is gone)
+    or never made. Empty when the repo's ``git worktree list`` cannot be read, so a listing failure
+    never makes a live worktree look unregistered.
+    """
+    listed = _git(container.parent.parent, "worktree", "list", "--porcelain")
+    if listed.returncode != 0:
+        return []
+    registered = [
+        Path(line[len("worktree ") :]).resolve() for line in listed.stdout.splitlines() if line.startswith("worktree ")
+    ]
+    return [
+        child
+        for child in sorted(container.iterdir())
+        if child.is_dir()
+        and not child.is_symlink()
+        and child not in moving
+        and not any(path == child or child in path.parents for path in registered)
+        and _holds_a_file(child, moving)
+    ]
+
+
+def _process_cwds() -> list[tuple[int, Path]]:
+    """``(pid, cwd)`` of every process whose cwd this user may read, whatever program it runs."""
+    import psutil
+
+    found: list[tuple[int, Path]] = []
+    for process in psutil.process_iter(["pid", "cwd"]):
+        cwd = process.info.get("cwd")
+        if cwd:
+            found.append((process.info["pid"], Path(cwd)))
+    return found
+
+
+def _same_filesystem(path: Path, target: Path) -> bool:
+    """Whether ``target``, or its nearest existing ancestor, is on ``path``'s filesystem."""
+    probe = target
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return path.stat().st_dev == probe.stat().st_dev
+    except OSError:
+        return False
+
+
+def _entry_archive(container: Path, state: Path, old: str, new: str) -> Path:
+    """Where an unregistered entry of ``container`` is archived, always by a rename on its own filesystem.
+
+    The session-migration archive (:func:`archive_dir`) when it shares the container's
+    filesystem; otherwise the same layout under ``<repo>/.worktrees/<archive>``, since a move
+    across filesystems would copy the entry and delete the original.
+    """
+    archive = archive_dir(state, old, new) / "agent-container"
+    if _same_filesystem(container, archive):
+        return archive
+    return container.parent / MIGRATION_ARCHIVE / archive.relative_to(state / MIGRATION_ARCHIVE)
+
+
+def _archive_entries(
+    container: Path, entries: list[Path], *, dry_run: bool, state: Path, old: str, new: str
+) -> tuple[list[PlannedMove], list[dict]]:
+    """Archive each unregistered ``entries`` of ``container`` by rename; a failed rename keeps it, named."""
+    directory = _entry_archive(container, state, old, new)
+    moves: list[PlannedMove] = []
+    archived: list[dict] = []
+    for entry in entries:
+        target = _archive_target(directory, entry.name)
+        if dry_run:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archive"))
+            continue
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            entry.rename(target)
+        except OSError as exc:
+            moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), f"archive failed: {_one_line(str(exc))}", "kept"))
+            continue
+        moves.append(PlannedMove(CONTAINER_ENTRY, str(entry), str(target), "archived"))
+        archived.append({"part": CONTAINER_ENTRY, "source": str(entry), "archive": str(target)})
+    return moves, archived
+
+
+_ON_WINDOWS = sys.platform == "win32"
+
+
+def _refuses_delete_access(path: Path) -> bool:
+    """Whether Windows refuses delete access to ``path``, as it does while another handle lacks delete sharing."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, share_all, open_existing = 0x00010000, 0x7, 3
+    handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        return True
+    kernel32.CloseHandle(handle)
+    return False
+
+
+def _move_container_files(container: Path, new: str, dry_run: bool, moving: Container[Path]) -> list[PlannedMove]:
+    """Carry loose regular files only, refusing occupied names and detectable open files."""
+    import psutil
+
+    # The existing agent cleanup removes empty directories and worktrees in ``moving``
+    # before a writing sweep; the preview must inspect the same remaining entries.
+    files = [
+        child
+        for child in sorted(container.iterdir())
+        if child not in moving and (child.is_symlink() or not child.is_dir() or _holds_a_file(child, moving))
+    ]
+    if (
+        container.is_symlink()
+        or (container / ".git").exists()
+        or not files
+        or any(child.is_symlink() or not child.is_file() for child in files)
+    ):
+        return []
+
+    # Best effort: some platforms or process permissions do not expose open descriptors.
+    def is_open(process: psutil.Process) -> bool:
+        try:
+            return any(Path(item.path) in files for item in process.open_files())
+        except (psutil.Error, OSError):
+            return False
+
+    if is_open(psutil.Process()):
+        return []
+    if _ON_WINDOWS:
+        # psutil bounds each Windows handle query with a 100 ms thread, so scanning every
+        # process takes minutes on a busy host. Asking for delete access to each file is the
+        # exact condition the rename below needs, and costs one open per file.
+        if any(_refuses_delete_access(child) for child in files):
+            return []
+    else:
+        with contextlib.suppress(psutil.Error, OSError):
+            if any(is_open(process) for process in psutil.process_iter()):
+                return []
+    target = container.with_name(f"{new}-agents")
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        return [
+            PlannedMove("agent container file", str(child), str(target / child.name), "conflict") for child in files
+        ]
+    moves: list[PlannedMove] = []
+    for child in files:
+        dest = target / child.name
+        action = "conflict" if os.path.lexists(dest) else "move"
+        if action == "move" and not dry_run:
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                if _ON_WINDOWS:
+                    # Windows rename never replaces an existing name, and a file opened since the
+                    # check refuses it whole, where a link would succeed and its unlink fail.
+                    child.rename(dest)
+                else:
+                    # Link then unlink gives a same-filesystem move that cannot overwrite a
+                    # destination created after the preview, unlike rename on POSIX.
+                    os.link(child, dest, follow_symlinks=False)
+                    if child.is_file() and not child.is_symlink() and child.samefile(dest):
+                        child.unlink()
+                    else:
+                        action = "kept: source changed"
+            except FileExistsError:
+                action = "conflict"
+            except OSError as exc:
+                action = f"kept: move failed: {_one_line(str(exc))}"
+        moves.append(PlannedMove("agent container file", str(child), str(dest), action))
+    return moves
+
+
+def _sweep_containers(
+    containers: list[Path],
+    live_cwds: list[tuple[int, Path]],
+    *,
+    dry_run: bool,
+    state: Path,
+    old: str,
+    new: str,
+    repo_root: Path,
+    moving: Container[Path] = (),
+) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
-    A container already gone is not listed: the agent plan's own line covers it.
+    Each entry no registered worktree accounts for is archived first (:func:`_archive_entries`),
+    unless some process works in one: then the container is kept, naming it. A container
+    already gone is not listed: the agent plan's own line covers it. A preview passes the agent
+    worktrees the run ``moving`` out, so it names the fate the run reaches.
     """
     moves: list[PlannedMove] = []
+    archived: list[dict] = []
     for container in [c for c in containers if c.is_dir()]:
         holder = _agents._holder(container, live_cwds)
-        held = sorted(child.name for child in container.iterdir() if _holds_a_file(child))
+        file_moves = [] if holder is not None else _move_container_files(container, new, dry_run, moving)
+        moves += file_moves
+        entries = [] if holder is not None else _unregistered_entries(container, moving)
+        cwds = _process_cwds() if entries else []
+        busy = [(pid, entry.name) for entry in entries if (pid := _agents._holder(entry, cwds)) is not None]
+        if busy:
+            works = "; ".join(f"pid {pid} works in {name}" for pid, name in busy)
+            moves.append(PlannedMove("agent container", str(container), works, "kept"))
+            continue
+        entry_moves, done = _archive_entries(container, entries, dry_run=dry_run, state=state, old=old, new=new)
+        moves += entry_moves
+        archived += done
+        gone = {Path(move.source) for move in entry_moves if move.action in ("archive", "archived")}
+        gone.update(Path(move.source) for move in file_moves if move.action == "move")
+        held = sorted(child.name for child in container.iterdir() if child not in gone and _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
         elif held:
@@ -707,6 +1064,7 @@ def _sweep_containers(containers: list[Path], live_cwds: list[tuple[int, Path]],
         else:
             _agents._remove_if_empty(container)
             moves.append(PlannedMove("agent container", str(container), "empty", "removed"))
+    _record_archived(state, old, new, repo_root, archived)
     return moves
 
 
@@ -723,6 +1081,7 @@ def clean_leftovers(
     proc_dir: Path | None,
     tmux: list[str],
     projects_dir: Path,
+    progress: Progress | None = None,
 ) -> MigrationResult:
     """Clean up after a session already migrated to ``home_slot``: ``old_wt`` is one of its leftovers.
 
@@ -730,47 +1089,85 @@ def clean_leftovers(
     proved landed (retired, tips anchored) and every empty ``<old>-agents`` container. A live
     process named ``old`` or working in ``old_wt`` refuses the run, as for a full migration.
     """
-    _refuse_live(old, old, old_wt, old_wt, home, proc_dir, tmux, verb="cleaned up")
+    refusal: LiveSessionError | None = None
+    try:
+        _refuse_live(old, old, old_wt, old_wt, home, proc_dir, tmux, verb="cleaned up")
+    except LiveSessionError as exc:
+        if not dry_run:
+            raise
+        refusal = exc
     repos = _agents._repos(projects_dir, repo_root)
-    leftovers = _plan_leftovers(old, new, repos, home=home, state=state, proc_dir=proc_dir, tmux=tmux, strict=old_wt)
+    strict = None if dry_run else old_wt
+    leftovers = _plan_leftovers(old, new, repos, home=home, state=state, proc_dir=proc_dir, tmux=tmux, strict=strict)
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=home_slot, dry_run=dry_run)
-    result.moves.append(PlannedMove("session already migrated", str(home_slot), "", "report"))
-    beads = _plan_beads(old, new, _stores(projects_dir, repo_root), state)
+    result.moves.append(PlannedMove(ALREADY_MIGRATED, str(home_slot), "", "report"))
+    if refusal is not None:
+        _live_note(result, refusal)
+    beads = _plan_beads(old, new, _stores(projects_dir, repo_root), state, progress)
     _describe_beads(old, new, beads, result)
     if not dry_run:
         result.warnings += _apply_leftovers(old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, dry_run)
-    result.moves += _sweep_containers(_containers(old, repos), live_cwds, dry_run=dry_run)
+    result.moves += _sweep_containers(
+        _containers(old, repos), live_cwds, dry_run=dry_run, state=state, old=old, new=new, repo_root=repo_root
+    )
     _record_kept(leftovers, result)
     if not dry_run:
-        _apply_beads(old, new, beads, result)
+        _apply_beads(old, new, beads, result, progress)
     return result
 
 
 def _clean_other_repos(
     result: MigrationResult,
     leftovers: list[_Leftover],
-    containers: list[Path],
+    agent_plan: _agents.AgentPlan,
     live_cwds: list[tuple[int, Path]],
     *,
     home: Path,
     state: Path,
     proc_dir: Path | None,
     tmux: list[str],
+    repo_root: Path,
 ) -> None:
     """After a home migration: retire the other repos' old-name slots and report every container's fate."""
     if not result.dry_run:
         result.warnings += _apply_leftovers(result.old, leftovers, home=home, state=state, proc_dir=proc_dir, tmux=tmux)
     result.moves += _describe_leftovers(leftovers, result.dry_run)
-    if not result.dry_run:
-        result.moves += _sweep_containers(containers, live_cwds, dry_run=False)
+    moving = {e.worktree for e in agent_plan.entries if e.worktree and e.moves} if result.dry_run else set()
+    result.moves += _sweep_containers(
+        agent_plan.containers,
+        live_cwds,
+        dry_run=result.dry_run,
+        state=state,
+        old=result.old,
+        new=result.new,
+        repo_root=repo_root,
+        moving=moving,
+    )
     _record_kept(leftovers, result)
 
 
 #: Every completed migration on this host, one ``{"old", "new", ...}`` line each, beside
 #: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
 MIGRATION_LEDGER = "session-migrations.jsonl"
+
+#: The migration record format this build writes, stamped as ``format`` on every
+#: :data:`MIGRATION_LEDGER` row. A build reporting a lower number (``ai internal
+#: get-migration-format``; a build from before that probe answers none, read as 0) predates a
+#: step the migrated session's relaunch depends on: format 1 is the boot-recipe rename. Raise it
+#: whenever what a migration writes needs a newer installed ``ai`` to read it. A launch meeting a
+#: row whose ``format`` is higher than this build's is running a build too old for that record.
+MIGRATION_FORMAT = 1
+
+#: Where a migration files OLD's copy of an artifact NEW already holds its own copy of, under
+#: the state directory: ``<archive>/<UTC date>/<old>-to-<new>/<part>/...``. NEW's copy is
+#: authoritative, as the live session's; OLD's is neither merged into it nor deleted.
+MIGRATION_ARCHIVE = "session-migration-archive"
+
+#: The action of a planned archive, and of one done; the second is the part's evidence.
+ARCHIVE_PLANNED = "archive OLD, keep NEW"
+ARCHIVE_DONE = "archived OLD, NEW kept"
 
 #: Seconds one ``bd`` call may take before its store counts as unreadable.
 _BD_TIMEOUT = 120
@@ -807,6 +1204,8 @@ class _Store:
     comments: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
     state: Path | None = None
+    #: Re-keyed by an earlier run of this pair that no publish has confirmed since.
+    unpublished: bool = False
 
 
 def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
@@ -819,40 +1218,48 @@ def _stores(projects_dir: Path, repo_root: Path) -> list[Path]:
     return found
 
 
-def _plan_beads(old: str, new: str, stores: list[Path], state: Path) -> list[_Store]:
-    """Read each store's issues held by ``old``: exactly that name, any status but closed."""
-    from .session_migrate_issues import inspect_comments, intents
+def _held_by(path: Path, old: str) -> tuple[list[str], str | None]:
+    """The store's non-closed issues assigned to exactly ``old``, or why they could not be read."""
+    try:
+        listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], _one_line(str(exc))
+    if listed.returncode != 0:
+        return [], _one_line(listed.stderr or f"bd exited {listed.returncode}")
+    try:
+        rows = json.loads(listed.stdout or "null")
+    except json.JSONDecodeError as exc:
+        return [], f"bd list printed no JSON ({exc})"
+    if not isinstance(rows, list):
+        return [], "bd list printed no issue list"
+    return [
+        str(row["id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
+    ], None
+
+
+def _plan_beads(old: str, new: str, stores: list[Path], state: Path, progress: Progress | None = None) -> list[_Store]:
+    """Read each store's issues held by ``old``: exactly that name, any status but closed.
+
+    Each store's read is reported through ``progress`` as it starts and ends.
+    """
+    from .session_migrate_issues import inspect_comments, intents, unpublished
 
     recorded = intents(state, old, new)
+    waiting = unpublished(state, old, new)
     planned: list[_Store] = []
     for path in dict.fromkeys([*stores, *recorded]):
-        store = _Store(path, state=state)
+        store = _Store(path, state=state, unpublished=path in waiting)
         planned.append(store)
-        try:
-            listed = _bd(path, "list", "--assignee", old, "--all", "--brief", "--json", "--limit", "0")
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            store.error = _one_line(str(exc))
-            continue
-        if listed.returncode != 0:
-            store.error = _one_line(listed.stderr or f"bd exited {listed.returncode}")
-            continue
-        try:
-            rows = json.loads(listed.stdout or "null")
-        except json.JSONDecodeError as exc:
-            store.error = f"bd list printed no JSON ({exc})"
-            continue
-        if not isinstance(rows, list):
-            store.error = "bd list printed no issue list"
-            continue
-        store.issues = [
-            str(row["id"])
-            for row in rows
-            if isinstance(row, dict) and row.get("id") and row.get("assignee") == old and row.get("status") != "closed"
-        ]
-        try:
-            inspect_comments(store, old, new, recorded.get(path, set()))
-        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-            store.error = _one_line(str(exc))
+        with timed(progress, f"beads store {path}", f"reading issues on {old}") as step:
+            store.issues, store.error = _held_by(path, old)
+            if store.error is None:
+                try:
+                    inspect_comments(store, old, new, recorded.get(path, set()))
+                except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                    store.error = _one_line(str(exc))
+            step.outcome = f"read, {len(store.issues)} on {old}" if store.error is None else "unreadable"
     return planned
 
 
@@ -876,66 +1283,271 @@ def _describe_beads(old: str, new: str, stores: list[_Store], result: MigrationR
         result.warnings.append(f"beads issues on {old} were NOT re-keyed to {new}: {held}")
 
 
-def _apply_beads(old: str, new: str, stores: list[_Store], result: MigrationResult) -> None:
+def _rekey_store(old: str, new: str, store: _Store, result: MigrationResult) -> tuple[int, list[str]]:
+    """Re-key ``store``'s issues on ``old`` and comment each; ``(issues re-keyed, issues commented)``."""
+    from .session_migrate_issues import note
+
+    changed = 0
+    comments = list(store.comments)
+    for issue in store.issues:
+        where = f"beads issue {issue} in {store.path}"
+        try:
+            done = _bd(store.path, "--actor", old, "update", issue, "--assignee", new, "--if-assignee", old)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            result.warnings.append(f"{where} FAILED to re-key: {_one_line(str(exc))}")
+            continue
+        if done.returncode == 13:
+            result.warnings.append(f"{where} was left alone: its assignee is no longer {old}")
+            continue
+        if done.returncode != 0:
+            result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
+            continue
+        changed += 1
+        comments.append(issue)
+    for issue in comments:
+        where = f"beads issue {issue} in {store.path}"
+        try:
+            noted = _bd(store.path, "comments", "add", issue, note(old, new))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            noted = subprocess.CompletedProcess([], 1, "", str(exc))
+        if noted.returncode != 0:
+            result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
+    return changed, comments
+
+
+def _apply_beads(
+    old: str, new: str, stores: list[_Store], result: MigrationResult, progress: Progress | None = None
+) -> None:
     """Re-key each planned issue through ``bd update``, guarded on its assignee still being ``old``.
 
     bd runs as ``--actor <old>``: the holder hands its own claim over, so an in-progress issue
     moves without ``--force`` (which bd refuses beside ``--if-assignee`` anyway), and
     ``--if-assignee`` keeps it from touching an issue anyone else picked up meanwhile.
     """
-    from .session_migrate_issues import note, remember
+    from .session_migrate_issues import remember
 
-    for store in [s for s in stores if s.error is None and (s.issues or s.comments)]:
+    try:
+        publish: _hooks.BeadsPublish | Exception | None = _hooks.load_beads_publish()
+    except _hooks.HookConfigError as exc:
+        publish = exc
+    for store in [s for s in stores if s.error is None and (s.issues or s.comments or (s.unpublished and publish))]:
         if store.state is None:
             raise MigrationError(f"missing issue migration intent directory for {store.path}")
         remember(store.state, store.path, old, new, store.issues)
-        changed = 0
-        comments = list(store.comments)
-        for issue in store.issues:
-            where = f"beads issue {issue} in {store.path}"
-            try:
-                done = _bd(store.path, "--actor", old, "update", issue, "--assignee", new, "--if-assignee", old)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                result.warnings.append(f"{where} FAILED to re-key: {_one_line(str(exc))}")
-                continue
-            if done.returncode == 13:
-                result.warnings.append(f"{where} was left alone: its assignee is no longer {old}")
-                continue
-            if done.returncode != 0:
-                result.warnings.append(f"{where} FAILED to re-key: {_one_line(done.stderr or str(done.returncode))}")
-                continue
-            changed += 1
-            comments.append(issue)
-        for issue in comments:
-            where = f"beads issue {issue} in {store.path}"
-            try:
-                noted = _bd(store.path, "comments", "add", issue, note(old, new))
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                noted = subprocess.CompletedProcess([], 1, "", str(exc))
-            if noted.returncode != 0:
-                result.warnings.append(f"{where} was re-keyed but its comment FAILED: {_one_line(noted.stderr)}")
-        if changed or comments:
-            result.moves.append(
-                PlannedMove(
-                    "beads store",
-                    str(store.path),
-                    f"{changed} re-keyed, local until the store is published",
-                    "publish needed",
+        with timed(progress, f"beads store {store.path}", f"re-keying {len(store.issues)} issue(s) to {new}") as step:
+            changed, comments = _rekey_store(old, new, store, result)
+            step.outcome = f"re-keyed {changed}"
+        if publish is None:
+            if changed or comments:
+                result.moves.append(
+                    PlannedMove(
+                        "beads store",
+                        str(store.path),
+                        f"{changed} re-keyed, local until the store is published",
+                        "publish needed",
+                    )
                 )
+            continue
+        with timed(progress, f"beads store {store.path}", "publishing") as published:
+            published.outcome = (
+                "published" if _publish_store(publish, old, new, store, changed, result) else "publish failed"
             )
+
+
+def _publish_store(
+    publish: _hooks.BeadsPublish | Exception, old: str, new: str, store: _Store, changed: int, result: MigrationResult
+) -> bool:
+    """Run the configured publish command once for ``store``, then re-read it for issues still on ``old``.
+
+    A refused, failed or timed-out publish, or an issue still on ``old`` after it, is a
+    ``FAILED`` or ``NOT`` warning, so the run exits 1 and records no
+    ``finished`` row; the next run of the same pair publishes the store again. A timeout
+    stops only the command itself: a process it started may still be publishing, and is left
+    to finish, because the next run's publish is safe to repeat. Returns whether the publish
+    command succeeded.
+    """
+    from .session_migrate_issues import remember_published
+
+    where = f"beads store {store.path}"
+    if isinstance(publish, Exception):
+        result.moves.append(PlannedMove("beads store", str(store.path), _one_line(str(publish)), "publish failed"))
+        result.warnings.append(f"{where} publish FAILED: {_one_line(str(publish))}")
+        return False
+    env = {k: v for k, v in os.environ.items() if k not in ("BEADS_DIR", "BEADS_DB")}
+    command = _hooks.publish_command(publish.argv, store.path)
+    seconds = f"{publish.timeout_s:g} s"
+    try:
+        ran = subprocess.run(
+            command,
+            cwd=store.path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=publish.timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        result.moves.append(PlannedMove("beads store", str(store.path), f"timed out after {seconds}", "publish failed"))
+        result.warnings.append(
+            f"{where} publish FAILED (timed out after {seconds}): {_one_line(' '.join(command))} -- a push it started may still"
+            " be running; re-run the same migrate-session command once it ends, or raise timeout_s in the publish file"
+        )
+        return False
+    except OSError as exc:
+        result.moves.append(PlannedMove("beads store", str(store.path), "could not start", "publish failed"))
+        result.warnings.append(f"{where} publish FAILED: could not start {command[0]}: {_one_line(str(exc))}")
+        return False
+    if ran.returncode != 0:
+        why = _one_line(ran.stderr or ran.stdout or "(no output)")
+        result.moves.append(PlannedMove("beads store", str(store.path), f"exit {ran.returncode}", "publish failed"))
+        result.warnings.append(
+            f"{where} publish FAILED (exit {ran.returncode}): {why} -- re-run the same migrate-session command"
+        )
+        return False
+    if store.state is not None:
+        remember_published(store.state, store.path, old, new)
+    left, error = _held_by(store.path, old)
+    if error is not None:
+        result.warnings.append(f"{where} was published but FAILED to re-read: {error}")
+    elif left:
+        result.warnings.append(f"{where} was published but still holds {', '.join(left)} on {old}: NOT converged")
+    result.moves.append(PlannedMove("beads store", str(store.path), f"{changed} re-keyed", "published"))
+    return True
 
 
 def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: object) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"time": datetime.now(UTC).isoformat(), "old": old, "new": new, "repo": str(repo_root), **fields}
+    row = {
+        "time": datetime.now(UTC).isoformat(),
+        "old": old,
+        "new": new,
+        "repo": str(repo_root),
+        "format": MIGRATION_FORMAT,
+        **fields,
+    }
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
         ledger.write(json.dumps(row, sort_keys=True) + "\n")
         ledger.flush()
         os.fsync(ledger.fileno())
 
 
-def _record_migration(state: Path, old: str, new: str, repo_root: Path, new_wt: Path) -> None:
-    _append_ledger(state, old, new, repo_root, worktree=str(new_wt))
+def archive_dir(state: Path, old: str, new: str) -> Path:
+    """Today's archive directory for the pair: see :data:`MIGRATION_ARCHIVE`."""
+    return state / MIGRATION_ARCHIVE / datetime.now(UTC).strftime("%Y-%m-%d") / f"{old}-to-{new}"
+
+
+def _archive_target(directory: Path, name: str) -> Path:
+    """``directory / name``, or the first ``name.N`` free there: an archived file is never replaced."""
+    target = directory / name
+    index = 1
+    while os.path.lexists(target):
+        target = directory / f"{name}.{index}"
+        index += 1
+    return target
+
+
+def _archive_file(source: Path, directory: Path) -> Path:
+    """Move ``source`` into ``directory`` under a free name; returns where it now is."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = _archive_target(directory, source.name)
+    shutil.move(str(source), str(target))
+    return target
+
+
+def _record_archived(state: Path, old: str, new: str, repo_root: Path, archived: list[dict]) -> None:
+    """One bookkeeping row naming each file this run archived: ``{part, source, archive, kept}``."""
+    if archived:
+        _append_ledger(state, old, new, repo_root, archived=archived, archive_recorded=True)
+
+
+def bookkeeping_row(row: dict) -> bool:
+    """Whether a ledger row only notes a delivered context, recorded transcripts, archived files or deferred parts.
+
+    None of them is a migration, so none makes a pair pending or recorded.
+    """
+    return any(
+        row.get(key) is True
+        for key in ("context_announced", "transcripts_recorded", "archive_recorded", "deferred_recorded")
+    )
+
+
+def _record_migration(
+    state: Path, old: str, new: str, repo_root: Path, new_wt: Path, transcripts: list[str] | None = None
+) -> None:
+    _append_ledger(state, old, new, repo_root, worktree=str(new_wt), transcripts=transcripts or [])
+
+
+def moved_transcripts(new: str, state_dir: Path | None = None, *, old: str | None = None) -> set[str]:
+    """Session ids of the transcripts this host's ledger records as moved by a migration to ``new``.
+
+    The migration's own row lists the transcripts it carried, and a ``--finish`` appends a
+    ``transcripts_recorded`` row for each it retitles that no row names yet, so a pair migrated
+    before the ledger named transcripts gains the record on its next finish.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    moved: set[str] = set()
+    for row in _ledger_rows(state):
+        if row.get("new") != new or (old is not None and row.get("old") != old):
+            continue
+        ids = row.get("transcripts")
+        if isinstance(ids, list):
+            moved.update(item for item in ids if isinstance(item, str))
+    return moved
+
+
+def utc_instant(value: object) -> datetime | None:
+    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def transcript_started(path: Path) -> datetime | None:
+    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                    return utc_instant(record["timestamp"])
+    except OSError:
+        pass
+    return None
+
+
+def _started_before_migration(project: Path, old: str, new: str, state: Path) -> list[str]:
+    """Session ids of the transcripts in ``project`` that began before the pair's first migration row.
+
+    A migration refuses while NEW's project directory exists, so a transcript there that began
+    before the migration was carried from OLD's, and one a relaunch under NEW started began after
+    it. Unlike an old title or path, the start survives a completed retitle. A row written by hand
+    names no ``worktree`` and is not used; a transcript whose start cannot be read is not counted.
+    """
+    times = [
+        utc_instant(row.get("time"))
+        for row in _ledger_rows(state)
+        if (row.get("old"), row.get("new")) == (old, new) and isinstance(row.get("worktree"), str)
+    ]
+    known = [at for at in times if at is not None]
+    if not known or not project.is_dir():
+        return []
+    migrated_at = min(known)
+    started = {path.stem: transcript_started(path) for path in sorted(project.glob("*.jsonl"))}
+    return [stem for stem, at in started.items() if at is not None and at < migrated_at]
+
+
+def _record_moved_transcripts(state: Path, old: str, new: str, repo_root: Path, transcripts: list[str]) -> None:
+    unrecorded = sorted(set(transcripts) - moved_transcripts(new, state, old=old))
+    if unrecorded:
+        _append_ledger(state, old, new, repo_root, transcripts=unrecorded, transcripts_recorded=True)
 
 
 def _ledger_rows(state: Path) -> list[dict]:
@@ -953,8 +1565,23 @@ def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> boo
     """Whether this host already records a migration from ``old`` to ``new``."""
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
     return any(
-        row.get("old") == old and row.get("new") == new and not row.get("finished") for row in _ledger_rows(state)
+        row.get("old") == old and row.get("new") == new and not row.get("finished") and not bookkeeping_row(row)
+        for row in _ledger_rows(state)
     )
+
+
+def recorded_migrations(state_dir: Path | None = None) -> list[tuple[str, str, Path]]:
+    """``(old, new, repo)`` for each pair this host's ledger records, with the pair's latest repo.
+
+    A row without a string ``old``, ``new`` and ``repo`` names no slot and is skipped.
+    """
+    state = state_dir if state_dir is not None else _config.get_xdg_state_home()
+    pairs: dict[tuple[str, str], Path] = {}
+    for row in _ledger_rows(state):
+        old, new, repo = row.get("old"), row.get("new"), row.get("repo")
+        if isinstance(old, str) and isinstance(new, str) and isinstance(repo, str):
+            pairs[(old, new)] = Path(repo)
+    return [(old, new, repo) for (old, new), repo in pairs.items()]
 
 
 def _pending_context_rows(new: str, state: Path) -> list[dict]:
@@ -1039,7 +1666,7 @@ def pending_finishes(new: str, state_dir: Path | None = None) -> list[tuple[str,
         old, repo = row.get("old"), row.get("repo")
         if row.get("new") != new or not isinstance(old, str) or not isinstance(repo, str):
             continue
-        if row.get("context_announced") is True:
+        if bookkeeping_row(row):
             continue
         if row.get("finished") is True:
             pending.pop(old, None)
@@ -1070,6 +1697,7 @@ def rekey_beads(
     dry_run: bool = False,
     state_dir: Path | None = None,
     projects_dir: Path | None = None,
+    progress: Progress | None = None,
 ) -> MigrationResult:
     """Re-key only the Beads issues still on ``old``, for a migration this host records.
 
@@ -1091,12 +1719,237 @@ def rekey_beads(
     evidence = _migration_evidence(old, new, state)
     if evidence:
         result.moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state, progress)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
     if evidence and not dry_run:
-        _apply_beads(old, new, beads, result)
+        _apply_beads(old, new, beads, result, progress)
     return result
+
+
+def _job_record(path: Path) -> dict | None:
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return job if isinstance(job, dict) else None
+
+
+def plan_job_names(project: Path, old: str, new: str, home: Path) -> list[PlannedMove]:
+    """Claude Code's job record of each transcript in ``project`` still naming ``old``.
+
+    Claude Code keeps ``<home>/jobs/<first 8 characters of the session id>/state.json`` for a
+    session it ran in the background, and renames a resumed session to that record's
+    user-set name whatever ``--name`` the launch passed. A record left naming ``old`` therefore
+    sends the migrated session back to ``old``. A record that names another session id is left
+    alone, since two sessions can share the short id.
+    """
+    moves = []
+    for path in sorted(project.glob("*.jsonl")) if project.is_dir() else []:
+        record = home / "jobs" / path.stem[:8] / "state.json"
+        job = _job_record(record)
+        if job is None or path.stem not in (job.get("sessionId"), job.get("resumeSessionId")):
+            continue
+        name = job.get("name")
+        if is_copy_title(name, old):
+            moves.append(PlannedMove("job name", str(record), f"{name} -> {new}{name[len(old) :]}", "rewrite"))
+    return moves
+
+
+def apply_job_name(record: Path, old: str, new: str) -> str | None:
+    """Rename the job record at ``record`` from ``old`` to ``new``; a warning when it is NOT renamed."""
+    try:
+        before = record.read_bytes()
+        job = json.loads(before)
+        name = job.get("name")
+        if not is_copy_title(name, old):
+            return None
+        job["name"] = f"{new}{name[len(old) :]}"
+        _write_migration_file(record, json.dumps(job, indent=2, ensure_ascii=False).encode(), expected=before)
+    except (OSError, ValueError, AttributeError, MigrationError) as exc:
+        return f"job name {record} was NOT renamed to {new}: {_one_line(str(exc))}"
+    return None
+
+
+#: The part each Agent-tool sub-agent record repointed at a moved worktree is reported under.
+SUBAGENT_RECORD = "sub-agent record"
+#: The part each Claude Code background-job record repointed at a moved worktree is reported under.
+JOB_RECORD = "job record"
+#: The fields of ``<session id>/subagents/agent-<id>.meta.json`` naming the sub-agent's worktree.
+_SUBAGENT_PATH_KEYS = ("worktreePath", "inheritedWorktreePath")
+
+
+def _under(value: str, root: str) -> bool:
+    return value == root or (value.startswith(root) and value[len(root)] in ("/", "\\"))
+
+
+@dataclass
+class _MovedPaths:
+    """Where each path this migration moves, or an earlier one moved, now lives.
+
+    ``pairs`` are exact moves: the slot and each agent worktree this run moves. ``containers``
+    pair each repo's ``<old>-agents`` with ``<new>-agents``: a path under a leaf the first no
+    longer holds and the second does was moved by an earlier run. Anything else did not move.
+    """
+
+    pairs: list[tuple[str, str]]
+    containers: list[tuple[Path, Path]]
+
+    def root(self, value: object) -> tuple[str, str] | None:
+        """``(old root, new root)`` of the move ``value`` lies under, or None when it did not move."""
+        if not isinstance(value, str):
+            return None
+        for source, dest in self.pairs:
+            if _under(value, source):
+                return source, dest
+        path = Path(value)
+        for source, dest in self.containers:
+            if source in path.parents:
+                leaf = path.relative_to(source).parts[0]
+                if (dest / leaf).is_dir() and not os.path.lexists(source / leaf):
+                    return str(source / leaf), str(dest / leaf)
+        return None
+
+    def needles(self) -> list[bytes]:
+        """Every moved root as a JSON file spells it, raw and escaped, for a byte search before any parse."""
+        roots = [source for source, _dest in self.pairs] + [str(source) for source, _dest in self.containers]
+        return list(dict.fromkeys(form.encode() for root in roots for form in (root, json.dumps(root)[1:-1])))
+
+    def __call__(self, value: object) -> str | None:
+        found = self.root(value)
+        return found[1] + value[len(found[0]) :] if found and isinstance(value, str) else None
+
+
+def _moved_paths(
+    old: str, new: str, old_wt: Path, new_wt: Path, agent_plan: _agents.AgentPlan, repos: list[Path]
+) -> _MovedPaths:
+    pairs = [(str(e.worktree), str(e.dest)) for e in agent_plan.entries if e.worktree and e.dest and e.moves]
+    containers = [(repo / ".worktrees" / f"{old}-agents", repo / ".worktrees" / f"{new}-agents") for repo in repos]
+    return _MovedPaths([*pairs, (str(old_wt), str(new_wt))], containers)
+
+
+@dataclass
+class _RecordRewrite:
+    """One Claude Code record still naming a moved path, and what it is rewritten to."""
+
+    kind: str
+    path: Path
+    #: JSON fields set on a record file, ``{field: new value}``.
+    fields: dict[str, str] = field(default_factory=dict)
+    #: ``(old root, new root)`` of each cwd a transcript's lines record.
+    roots: list[tuple[str, str]] = field(default_factory=list)
+    indent: int | None = None
+
+    def planned(self) -> PlannedMove:
+        changes = [f"{key} = {value}" for key, value in self.fields.items()]
+        changes += [f"cwd {source} -> {dest}" for source, dest in self.roots]
+        return PlannedMove(self.kind, str(self.path), "; ".join(changes), "rewrite")
+
+
+def _names_any(path: Path, needles: list[bytes]) -> bool:
+    """Whether ``path``'s bytes hold any of ``needles``; a sub-agent transcript can run to hundreds of MB."""
+    try:
+        with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return any(data.find(needle) != -1 for needle in needles)
+    except (OSError, ValueError):  # ValueError: an empty file cannot be mapped
+        return False
+
+
+def _transcript_roots(path: Path, moved: _MovedPaths) -> list[tuple[str, str]]:
+    """The moves of every cwd ``path``'s lines record, in first-seen order."""
+    needles = moved.needles()
+    if not _names_any(path, needles):
+        return []
+    texts = [needle.decode() for needle in needles]
+    found: dict[tuple[str, str], None] = {}
+    with contextlib.suppress(OSError, UnicodeDecodeError), path.open(encoding="utf-8") as stream:
+        for raw in stream:
+            if not any(text in raw for text in texts):
+                continue
+            with contextlib.suppress(ValueError):
+                record = json.loads(raw)
+                if isinstance(record, dict):
+                    for key in ("cwd", "originalCwd"):
+                        root = moved.root(record.get(key))
+                        if root:
+                            found[root] = None
+    return list(found)
+
+
+def _plan_subagent_records(project: Path, moved: _MovedPaths) -> list[_RecordRewrite]:
+    """Each Agent-tool sub-agent record under ``project``'s transcripts that names a moved path.
+
+    Claude Code keeps ``<session id>/subagents/agent-<id>.meta.json``, whose ``worktreePath``
+    or ``inheritedWorktreePath`` is the worktree a resume starts the sub-agent in, beside the
+    sub-agent's transcript ``agent-<id>.jsonl``, whose lines record its cwd. A record naming a
+    worktree that did not move is left alone.
+    """
+    if not project.is_dir():
+        return []
+    found: list[_RecordRewrite] = []
+    for record in sorted(project.glob("*/subagents/agent-*.meta.json")):
+        meta = _job_record(record)
+        if meta is None:
+            continue
+        fields = {key: dest for key in _SUBAGENT_PATH_KEYS if (dest := moved(meta.get(key)))}
+        if fields:
+            found.append(_RecordRewrite(SUBAGENT_RECORD, record, fields=fields))
+    for transcript in sorted(project.glob("*/subagents/agent-*.jsonl")):
+        roots = _transcript_roots(transcript, moved)
+        if roots:
+            found.append(_RecordRewrite(SUBAGENT_RECORD, transcript, roots=roots))
+    return found
+
+
+def _plan_job_records(
+    project: Path, old_pd: Path, new_pd: Path, moved: _MovedPaths, home: Path
+) -> list[_RecordRewrite]:
+    """Each Claude Code background-job record of the session still naming a moved path.
+
+    A record ``jobs/<short id>/state.json`` is the session's when its ``sessionId`` or
+    ``resumeSessionId`` is a transcript in ``project`` or its ``cwd`` lies in a moved worktree.
+    Its ``cwd`` follows the move, and its ``linkScanPath``, the transcript Claude Code scans,
+    follows the project directory the move renamed: OLD's own, or the one of the job's cwd.
+    """
+    sessions = {path.stem for path in project.glob("*.jsonl")} if project.is_dir() else set()
+    found: list[_RecordRewrite] = []
+    for record in sorted((home / "jobs").glob("*/state.json")):
+        job = _job_record(record)
+        if job is None:
+            continue
+        cwd = moved(job.get("cwd"))
+        if cwd is None and not sessions & {job.get("sessionId"), job.get("resumeSessionId")}:
+            continue
+        fields = {"cwd": cwd} if cwd else {}
+        link = job.get("linkScanPath")
+        if isinstance(link, str):
+            if _under(link, str(old_pd)):
+                fields["linkScanPath"] = str(new_pd) + link[len(str(old_pd)) :]
+            elif cwd and Path(link).parent == cc_project_dir(Path(job["cwd"]), home):
+                fields["linkScanPath"] = str(cc_project_dir(Path(cwd), home) / Path(link).name)
+        if fields:
+            found.append(_RecordRewrite(JOB_RECORD, record, fields=fields, indent=2))
+    return found
+
+
+def _apply_record_rewrites(rewrites: list[_RecordRewrite], old_pd: Path, new_pd: Path, result: MigrationResult) -> None:
+    """Rewrite each planned record, found under ``new_pd`` once OLD's project directory moved there."""
+    for item in rewrites:
+        path = item.path
+        if not path.exists() and old_pd in path.parents:
+            path = new_pd / path.relative_to(old_pd)
+        try:
+            for source, dest in item.roots:
+                _rewrite_transcript_cwd(path, source, dest)
+            if item.fields:
+                before = path.read_bytes()
+                record = json.loads(before)
+                record.update(item.fields)
+                separators = (",", ":") if item.indent is None else None
+                data = json.dumps(record, indent=item.indent, ensure_ascii=False, separators=separators)
+                _write_migration_file(path, data.encode(), expected=before)
+        except (OSError, ValueError, AttributeError, MigrationError) as exc:
+            result.warnings.append(f"{item.kind} {path} was NOT rewritten: {_one_line(str(exc))}")
 
 
 def _start_session(
@@ -1112,6 +1965,7 @@ def _start_session(
     regenerate_script: Callable[[dict], str] | None = None,
     projects_dir: Path | None = None,
     new_is_reserved: bool = False,
+    progress: Progress | None = None,
 ) -> MigrationResult:
     """Move the session in slot ``old`` to slot ``new``; see the module docstring.
 
@@ -1177,18 +2031,20 @@ def _start_session(
         )
     _refuse_live(old, new, old_wt, new_wt, home, proc_dir, tmux)
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
-    leftovers = _plan_leftovers(
-        old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
-    )
-    agent_plan = _agents.plan_agents(
-        old,
-        new,
-        projects_dir=projects,
-        slot_repo=repo_root,
-        old_wt=old_wt,
-        new_wt=new_wt,
-        live_cwds=live_cwds,
-    )
+    with timed(progress, "other repos", f"looking for slots and agent worktrees named {old}"):
+        leftovers = _plan_leftovers(
+            old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
+        )
+        agent_plan = _agents.plan_agents(
+            old,
+            new,
+            projects_dir=projects,
+            slot_repo=repo_root,
+            old_wt=old_wt,
+            new_wt=new_wt,
+            live_cwds=live_cwds,
+            claude_home=home,
+        )
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     if new_pd.exists():
         raise MigrationError(f"Claude Code project directory {new_pd} already exists -- refusing to merge into it")
@@ -1199,6 +2055,9 @@ def _start_session(
     has_venv = (old_wt / ".venv").is_dir()
     if has_venv:
         moves.append(PlannedMove("virtual environment", str(old_wt / ".venv"), str(new_wt / ".venv"), "rewrite"))
+    slot_record = stale_checkout_record(old_wt / ".venv", old_wt)
+    if slot_record is not None:
+        moves.append(PlannedMove("venv back-pointer", str(slot_record), str(new_wt), "rewrite"))
 
     # The canonical branch is renamed whether the slot has it checked out or parks it
     # while a topic branch is checked out: either way it still names the old session.
@@ -1249,12 +2108,17 @@ def _start_session(
             moves.append(PlannedMove("transcript title", path.name, f"{old} -> {new}", "rewrite"))
     else:
         result.warnings.append(f"no Claude Code project directory at {old_pd}; there is no transcript to carry")
+    job_moves = plan_job_names(old_pd, old, new, home)
+    moves += job_moves
+    moved = _moved_paths(old, new, old_wt, new_wt, agent_plan, _agents._repos(projects, repo_root))
+    records = _plan_subagent_records(old_pd, moved) + _plan_job_records(old_pd, old_pd, new_pd, moved, home)
+    moves += [record.planned() for record in records]
 
     state_moves = _plan_state(old, new, state)
     moves += state_moves
     map_moves = _plan_session_maps(old, new, home, state)
     moves += map_moves
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     moves += iterm2_moves
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += launcher_moves
@@ -1268,12 +2132,12 @@ def _start_session(
     moves += lock_moves
 
     _plan_task_rekey(old, new, home, result, state)
-    hooks = _plan_hooks(old, new, repo_root, moves)
-    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
+    hooks = _plan_hooks(old, new, repo_root, moves, progress=progress)
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state, progress)
     _describe_beads(old, new, beads, result)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     # Record intent before Git can move a topic-branch checkout. Its branch alone
@@ -1281,7 +2145,7 @@ def _start_session(
     from .session_migrate_tasks import remember
 
     remember(result.task_intent, state)
-    _record_migration(state, old, new, repo_root, new_wt)
+    _record_migration(state, old, new, repo_root, new_wt, [path.stem for path in named])
     moved, why = move_worktree(repo_root, old_wt, new_wt)
     if not moved:
         if not new_wt.exists():
@@ -1298,6 +2162,11 @@ def _start_session(
                 f"virtual environment FAILED: {new_wt / '.venv'} still names the old path ({_one_line(str(exc))}); recreate it "
                 f"with `uv sync --reinstall`"
             )
+    if slot_record is not None:
+        try:
+            repoint_checkout_record(slot_record, old_wt, new_wt)
+        except (OSError, UnicodeDecodeError) as exc:
+            result.warnings.append(f"venv back-pointer {slot_record} FAILED to name {new_wt}: {_one_line(str(exc))}")
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:
@@ -1328,8 +2197,13 @@ def _start_session(
             if path.name in {t.name for t in named}:
                 retitle_transcript(path, old, new)
             neutralise_worktree_state(path, new_wt)
+    for item in job_moves:
+        warning = apply_job_name(Path(item.source), old, new)
+        if warning:
+            result.warnings.append(warning)
+    _apply_record_rewrites(records, old_pd, new_pd, result)
 
-    _apply_task_rekey(old, new, home, result, state)
+    _apply_task_rekey(old, new, home, result, state, repo_root)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1337,9 +2211,9 @@ def _start_session(
         _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
-    _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
-    _apply_beads(old, new, beads, result)
+    _run_live_hooks(hooks, old, new, repo_root, result, state, progress)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
+    _apply_beads(old, new, beads, result, progress)
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)
@@ -1351,7 +2225,11 @@ def _start_session(
 
 
 def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
-    """Plan the task-namespace and resume-tree rekey, and turn every planned conflict into a warning."""
+    """Plan the task-namespace and resume-tree rekey.
+
+    A namespace conflict is a warning. A resume artifact NEW already holds its own copy of is
+    planned as an archive of OLD's copy (:data:`ARCHIVE_PLANNED`), never a re-key over NEW's.
+    """
     old_ns = home / "tasks" / old
     result.task_moves, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[old], resume_keys=[old], claude_home=home, dry_run=True
@@ -1370,19 +2248,39 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, st
     for item in result.moves:
         if item.action == "conflict":
             result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
+    archive = archive_dir(state, old, new) / "resume"
     for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
-        result.warnings.append(f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists")
+        target = _archive_target(archive / conflict.source.parent.name, conflict.source.name)
+        result.moves.append(PlannedMove("resume", str(conflict.source), str(target), ARCHIVE_PLANNED))
+    result.resume_moves = [m for m in result.resume_moves if m.action != "conflict"]
 
 
-def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
+def _apply_task_rekey(
+    old: str, new: str, home: Path, result: MigrationResult, state: Path, repo_root: Path, *, tasks: bool = True
+) -> None:
+    """Re-key the resume tree and, unless ``tasks`` is false, merge OLD's task namespace into NEW's."""
     old_ns, new_ns = home / "tasks" / old, home / "tasks" / new
     hwm = _highwatermark(old_ns)
     from .session_migrate_tasks import apply
 
-    apply(result.task_moves, result.task_intent, state)
+    if tasks:
+        apply(result.task_moves, result.task_intent, state)
     _tasks, result.resume_moves = rekey_name_artifacts(
         new, task_namespaces=[], resume_keys=[old], claude_home=home, dry_run=False
     )
+    archive = archive_dir(state, old, new) / "resume"
+    archived = []
+    for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
+        target = _archive_file(conflict.source, archive / conflict.source.parent.name)
+        archived.append(
+            {"part": "resume", "source": str(conflict.source), "archive": str(target), "kept": str(conflict.dest)}
+        )
+    result.resume_moves = [m for m in result.resume_moves if m.action != "conflict"]
+    result.moves = [m for m in result.moves if m.action != ARCHIVE_PLANNED]
+    result.moves += [PlannedMove("resume", row["source"], row["archive"], ARCHIVE_DONE) for row in archived]
+    _record_archived(state, old, new, repo_root, archived)
+    if not tasks:
+        return
     if result.task_moves or hwm:
         top = max([hwm, _highwatermark(new_ns), *(int(m.dest.stem) for m in result.task_moves)])
         new_ns.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1394,18 +2292,34 @@ def _apply_task_rekey(old: str, new: str, home: Path, result: MigrationResult, s
         else:
             for name in _NAMESPACE_BOOKKEEPING:
                 (old_ns / name).unlink(missing_ok=True)
+            for lock in [p for p in old_ns.iterdir() if _idle_task_watcher_lock(p)]:
+                lock.unlink(missing_ok=True)
             old_ns.rmdir()
 
 
-def _run_live_hooks(hooks: list[_hooks.Hook], old: str, new: str, repo_root: Path, result: MigrationResult) -> None:
+def _run_live_hooks(
+    hooks: list[_hooks.Hook],
+    old: str,
+    new: str,
+    repo_root: Path,
+    result: MigrationResult,
+    state: Path,
+    progress: Progress | None = None,
+) -> None:
     result.moves += [
         PlannedMove(f"hook {hook.name}", "", "", "already done") for hook in hooks if hook.status == "done"
     ]
-    for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root):
-        result.moves.append(PlannedMove(f"hook {run.hook.name}", "", "", "apply"))
-        result.moves += [PlannedMove(f"hook {run.hook.name}", line, "", "report") for line in run.lines]
+    archived = []
+    for run in _hooks.run_hooks(hooks, old, new, cwd=repo_root, progress=progress):
+        kind = f"hook {run.hook.name}"
+        result.moves.append(PlannedMove(kind, "", "", "apply"))
+        paths = _hooks.archived_paths(run)
+        result.moves += [PlannedMove(kind, line, "", "report") for line in run.lines if line not in paths.values()]
+        result.moves += [PlannedMove(kind, path, "", ARCHIVE_DONE) for path in paths]
+        archived += [{"part": kind, "archive": path} for path in paths]
         if not run.ok:
             result.warnings.append(_hooks.failure_warning(run))
+    _record_archived(state, old, new, repo_root, archived)
 
 
 def finish_session(
@@ -1421,6 +2335,7 @@ def finish_session(
     projects_dir: Path | None = None,
     regenerate_script: Callable[[dict], str] | None = None,
     record_finish: bool = True,
+    progress: Progress | None = None,
 ) -> MigrationResult:
     """Finish a migration whose slot already moved to ``new``: every leftover still named ``old``.
 
@@ -1430,8 +2345,27 @@ def finish_session(
     launcher's state, maps and locks; held-output and memory files in the repo's and the
     slot's project directories; the task namespace and resume tree; every external hook; and
     the Beads issues still on ``old``, only when :func:`_migration_evidence` finds this host's
-    record of the migration. Neither session may be running. Raises :class:`MigrationError` before writing anything.
-    A run that re-keyed on that record and left nothing undone appends the pair's ``finished`` row.
+    record of the migration. A live OLD session refuses a writing run, which raises
+    :class:`LiveSessionError` before writing anything. A live NEW session (a process named NEW
+    or inside NEW's slot, or a tmux session hosting NEW) does not: the run does every step
+    except those of :data:`LIVE_SESSION_KINDS`, which write the files the running session holds
+    open, and marks each of those :data:`DEFERRED`. On this host's record of the migration it
+    then appends a ``deferred_recorded`` row naming the deferred parts, unless the latest such
+    row already names exactly them, so a later launch reports
+    them once (:func:`noted_deferral`), and the run fails so that a finish after NEW stops does
+    the rest. A ``dry_run`` plans the same way and names the live session on its first line and
+    in ``result.live``. Raises :class:`MigrationError` before writing anything.
+    A hook that refuses its ``--dry-run`` does not refuse the finish: it is skipped and reported
+    as pending, the rest still runs, and the run fails so that a re-run retries it. On this
+    host's record of the migration, each transcript it retitles, or that began before the pair's
+    migration row (:func:`_started_before_migration`), and that no ledger row names yet is
+    recorded in a ``transcripts_recorded`` row, a finished pair included, so the resume prefers
+    it. A writing run with ``record_finish`` then re-plans the pair
+    (:func:`ai_cli.session_migrate_status.verify`): only an empty re-plan appends the pair's
+    ``finished`` row, with ``verified: true``; anything left is named in a ``NOT finished``
+    warning and the run fails. Each slow step (every hook's dry run and live run, every Beads
+    store's read, re-key and publish, the scan of other repos and the verify re-plan) is
+    reported through ``progress`` as it starts and ends.
     """
     from .session import _registered_worktree_at, registered_worktrees
 
@@ -1459,29 +2393,47 @@ def finish_session(
             proc_dir=proc_dir,
             tmux=tmux,
             projects_dir=projects,
+            progress=progress,
         )
     new_wt = _registered_worktree_at(repo_root / ".worktrees" / new, registered)
     if new_wt is None:
         raise MigrationError(f"{repo_root / '.worktrees' / new} is not a registered slot -- nothing to finish")
-    _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
-    hosting = sorted(set(tmux) & set(_session_variants(new)))
-    if hosting:
-        raise LiveSessionError(f"tmux session {', '.join(hosting)} hosts {new}; exit it before finishing")
+    refusal: LiveSessionError | None = None
+    deferring = False
+    try:
+        # A live OLD refuses the whole finish; a live NEW defers only the parts that write its own files.
+        resolved_old = old_wt.resolve(strict=False)
+        _refuse_live(old, old, resolved_old, resolved_old, home, proc_dir, tmux, verb="finished")
+    except LiveSessionError as exc:
+        if not dry_run:
+            raise
+        refusal = exc
+    if refusal is None:
+        try:
+            _refuse_live(old, new, old_wt.resolve(strict=False), new_wt, home, proc_dir, tmux, verb="finished")
+        except LiveSessionError as exc:
+            refusal, deferring = exc, True
     live_cwds = [(s.pid, Path(s.cwd).resolve(strict=False)) for s in live_sessions(home, proc_dir) if s.cwd]
-    leftovers = _plan_leftovers(
-        old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
-    )
-    agent_plan = _agents.plan_agents(
-        old,
-        new,
-        projects_dir=projects,
-        slot_repo=repo_root,
-        old_wt=old_wt.resolve(strict=False),
-        new_wt=new_wt,
-        live_cwds=live_cwds,
-    )
+    with timed(progress, "other repos", f"looking for slots and agent worktrees named {old}"):
+        leftovers = _plan_leftovers(
+            old, new, _agents._repos(projects, repo_root)[1:], home=home, state=state, proc_dir=proc_dir, tmux=tmux
+        )
+        agent_plan = _agents.plan_agents(
+            old,
+            new,
+            projects_dir=projects,
+            slot_repo=repo_root,
+            old_wt=old_wt.resolve(strict=False),
+            new_wt=new_wt,
+            live_cwds=live_cwds,
+            claude_home=home,
+        )
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
+    if refusal is not None:
+        _live_note(result, refusal, deferring=deferring)
+    if deferring:
+        result.deferred = new
     moves = result.moves
     from .session_migrate_resume import apply_home, plan_home
 
@@ -1498,6 +2450,13 @@ def finish_session(
     state_moves = _plan_state(old, new, state)
     map_moves = _plan_session_maps(old, new, home, state)
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
+    moved = _moved_paths(
+        old, new, old_wt.resolve(strict=False), new_wt, agent_plan, _agents._repos(projects, repo_root)
+    )
+    record_project = old_pd if old_pd.is_dir() else new_pd
+    records = _plan_subagent_records(record_project, moved)
+    records += _plan_job_records(record_project, old_pd, new_pd, moved, home)
+    moves += [record.planned() for record in records]
     project_dirs: list[tuple[Path, Path | None]] = [
         (cc_project_dir(repo_root, home), None),
         (old_pd, new_pd) if old_pd.is_dir() else (new_pd, None),
@@ -1505,21 +2464,25 @@ def finish_session(
     held_moves = _plan_held_output(old, new, project_dirs)
     memory_moves, index_moves = _plan_memory(old, new, project_dirs, _session_names(home, repo_root, old, new))
     lock_moves = _plan_slot_lock(repo_root, old)
-    iterm2_moves = _plan_iterm2(old)
+    iterm2_moves = _plan_iterm2(old, new, old_wt)
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
     _plan_task_rekey(old, new, home, result, state)
-    hooks = _plan_hooks(old, new, repo_root, moves)
+    if deferring:
+        for move in moves:
+            if move.kind in LIVE_SESSION_KINDS and move.action not in ("report", "already done"):
+                move.action = DEFERRED
+    hooks = _plan_hooks(old, new, repo_root, moves, pending=result, progress=progress)
     evidence = _migration_evidence(old, new, state)
     if evidence:
         moves.append(PlannedMove("migration record", evidence, "", "report"))
-    beads = _plan_beads(old, new, _stores(projects, repo_root), state)
+    beads = _plan_beads(old, new, _stores(projects, repo_root), state, progress)
     held = "" if evidence else f"this host holds no record that {old} was migrated to {new} here"
     _describe_beads(old, new, beads, result, held=held)
-    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux}
+    others = {"home": home, "state": state, "proc_dir": proc_dir, "tmux": tmux, "repo_root": repo_root}
     if dry_run:
-        _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+        _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
@@ -1528,7 +2491,9 @@ def finish_session(
         source = Path(item.source)
         source.rename(source.with_name(Path(item.dest).name))
     _apply_memory(memory_moves, index_moves, result)
-    apply_home(home_plan, result)
+    apply_home(home_plan, result, skip=LIVE_SESSION_KINDS if deferring else frozenset())
+    if not deferring:
+        _apply_record_rewrites(records, old_pd, new_pd, result)
     for key, _value in markers:
         _git(
             repo_root,
@@ -1537,7 +2502,7 @@ def finish_session(
             str(new_wt),
         )
     _remove_stale_locks(lock_moves)
-    _apply_task_rekey(old, new, home, result, state)
+    _apply_task_rekey(old, new, home, result, state, repo_root, tasks=not deferring)
     _apply_state(state_moves, old, new, old_wt, new_wt, regenerate_script, result)
     _remove_stale_locks(state_moves)
     _apply_session_maps(map_moves, old, new, home, state)
@@ -1545,12 +2510,36 @@ def finish_session(
         _apply_iterm2(old, new, old_wt, new_wt)
     _apply_launch_logs(launcher_moves, result)
     _apply_chief(launcher_moves, old, new)
-    _run_live_hooks(hooks, old, new, repo_root, result)
-    _clean_other_repos(result, leftovers, agent_plan.containers, live_cwds, **others)
+    _run_live_hooks(hooks, old, new, repo_root, result, state, progress)
+    _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     if evidence:
-        _apply_beads(old, new, beads, result)
-        if record_finish and not result.failed and (old, repo_root) in pending_finishes(new, state):
-            _append_ledger(state, old, new, repo_root, finished=True)
+        _apply_beads(old, new, beads, result, progress)
+        retitled = [
+            Path(move.source).stem
+            for move in home_plan.moves
+            if move.kind == "transcript title" and move.action != DEFERRED
+        ]
+        carried = _started_before_migration(new_pd, old, new, state)
+        _record_moved_transcripts(state, old, new, repo_root, retitled + carried)
+        deferred = deferred_parts(result)
+        if deferred and noted_deferral(old, new, state) != deferred:
+            _append_ledger(
+                state, old, new, repo_root, deferred=deferred, live=_one_line(result.live), deferred_recorded=True
+            )
+    if record_finish:
+        from .session_migrate_status import verify
+
+        verify(
+            result,
+            repo_root,
+            state,
+            claude_home=home,
+            proc_dir=proc_dir,
+            tmux_names=lambda: tmux,
+            projects_dir=projects,
+            regenerate_script=regenerate_script,
+            progress=progress,
+        )
     return result
 
 
@@ -1642,21 +2631,61 @@ def _apply_iterm2(old: str, new: str, old_wt: Path, new_wt: Path) -> None:
     def change(doc: dict) -> bool:
         changed = False
         for record in doc["sessions"]:
-            if not _names_old_session(record, renames):
+            if not _restore_record_needs_rename(record, old, new, old_wt):
                 continue
             if record.get("name") in renames:
                 record["name"] = renames[record["name"]]
-                argv = record.get("relaunch_argv")
-                if isinstance(argv, list) and argv:
-                    # The relaunch line ends with the session's slot or full name, and a full
-                    # name maps back to its own slot, so naming the new session is exact.
-                    argv[-1] = new
+            argv = record.get("relaunch_argv")
+            if isinstance(argv, list) and argv:
+                record["relaunch_argv"] = _rename_relaunch_argv(argv, new, renames)
+            if record.get("cwd") == str(old_wt):
+                record["cwd"] = str(new_wt)
             # A record renamed before AI-CLI-uzur still carries the old recipe; --finish repairs it.
             _rename_boot_recipe(record.get("boot_recipe"), renames, old_wt, new_wt)
             changed = True
         return changed
 
     _session_registry._mutate(change)
+
+
+def _rename_relaunch_argv(argv: list[str], new: str, renames: dict[str, str]) -> list[str]:
+    """Replace the declared session argument, preserving options on either side of it."""
+    from .main import _cli_group
+
+    command = _cli_group.commands.get(argv[1]) if len(argv) >= 2 else None
+    if command is None:
+        return argv
+    with command.make_context(argv[1], argv[2:], resilient_parsing=True) as context:
+        name = context.params.get("name")
+    if not name or name == new or name in renames.values():
+        return argv
+    for index in range(2, len(argv)):
+        if argv[index] != name:
+            continue
+        probe = [*argv]
+        probe[index] = "migration-session-argument"
+        with command.make_context(argv[1], probe[2:], resilient_parsing=True) as context:
+            if context.params.get("name") == probe[index]:
+                probe[index] = renames.get(name, new)
+                return probe
+    return argv
+
+
+def _restore_record_needs_rename(record: dict, old: str, new: str, old_wt: Path) -> bool:
+    """Include partially repaired records whose name moved but whose launch fields did not."""
+    old_names = set(_session_variants(old))
+    if _names_old_session(record, old_names):
+        return True
+    if not _names_old_session(record, set(_session_variants(new))):
+        return False
+    argv = record.get("relaunch_argv") or []
+    recipe = record.get("boot_recipe") or {}
+    renames = dict(zip(_session_variants(old), _session_variants(new), strict=True))
+    return (
+        record.get("cwd") == str(old_wt)
+        or recipe.get("cwd") == str(old_wt)
+        or _rename_relaunch_argv(argv, new, renames) != argv
+    )
 
 
 def _names_old_session(record: object, names: Container[str]) -> bool:
@@ -1669,7 +2698,7 @@ def _names_old_session(record: object, names: Container[str]) -> bool:
 
 
 def _rename_boot_recipe(recipe: object, renames: dict[str, str], old_wt: Path, new_wt: Path) -> None:
-    """Point a record's boot recipe at the new name and worktree (AI-CLI-uzur).
+    """Point a record's boot recipe at the new name and worktree.
 
     ``ai sessions relaunch`` refuses a recipe whose ``session_name`` differs from its record's
     name, so a recipe left naming the old session made every migrated session unrelaunchable.
@@ -1792,8 +2821,13 @@ def _apply_chief(moves: list[PlannedMove], old: str, new: str) -> None:
 def migrate_session(repo_root: Path, old: str, new: str, **kwargs) -> MigrationResult:
     """Start or resume the same migration; current artifacts decide which parts remain."""
     from .session_migrate_resume import run
+    from .session_migrate_status import verify
 
     try:
-        return run(repo_root, old, new, **kwargs)
+        result = run(repo_root, old, new, **kwargs)
     except (OSError, ValueError) as exc:
         raise MigrationError(f"cannot inspect migration artifacts: {type(exc).__name__}: {exc}") from exc
+    if not result.dry_run:
+        state = kwargs.get("state_dir") or _config.get_xdg_state_home()
+        verify(result, repo_root.resolve(), state, **kwargs)
+    return result

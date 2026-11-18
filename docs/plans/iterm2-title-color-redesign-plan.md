@@ -262,7 +262,7 @@ The doc must include a ## Table of Contents. Required sections:
 - Open questions and constraints — anything that needs a decision or has an
   unresolved technical dependency
 - Approval Log — empty table with headers (Date / Round / Decisions)
-```text
+```
 
 ---
 

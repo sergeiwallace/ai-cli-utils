@@ -6,8 +6,8 @@ status: approved
 source: myproject
 ---
 
-> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> **Migrated from `myproject` (historical-task, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the historical-task repo-ownership
 > migration. `myproject/docs/designs/event-driven-platform.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
@@ -192,7 +192,7 @@ graph LR
         MacNode["Mac"] -->|"ai sync push → git staging repo"| HetznerNode["Hetzner"]
         HetznerNode -->|"ai sync watch pulls on event"| HetznerNode
     end
-```text
+```
 
 ### Component Roles
 
@@ -224,7 +224,7 @@ graph LR
 
 | Subject | Publisher | Subscriber | Description |
 |---------|-----------|------------|-------------|
-| `fleet.worker.{id}.heartbeat` | engine script (every 30s) | fleet dashboard (SW-501) | Worker liveness + CPU/mem |
+| `fleet.worker.{id}.heartbeat` | engine script (every 30s) | fleet dashboard (historical-task) | Worker liveness + CPU/mem |
 | `fleet.worker.{id}.event` | engine script | fleet dashboard, notification manager | START, STOP, SIGNAL, FAILED |
 | `sync.pull.requested` | `ai sync push` | `ai sync watch` | Trigger cross-machine pull |
 
@@ -242,16 +242,16 @@ graph LR
 |---------|-----------|------------|-------------|
 | `memory.dream.started` | auto-dream hook (when available) | `ai sync push` guard | Dream write in progress — block sync push |
 | `memory.dream.completed` | auto-dream hook | `ai sync push` | Resume sync push |
-| `memory.learning.stored` | core-cli MCP `store_learning` | other CC sessions (optional refresh) | New learning available (SW-618) |
+| `memory.learning.stored` | core-cli MCP `store_learning` | other CC sessions (optional refresh) | New learning available (historical-task) |
 
 ### Phase 4 — Telemetry & Quota
 
 | Subject | Publisher | Subscriber | Description |
 |---------|-----------|------------|-------------|
-| `quota.threshold.50` | quota tracker (SW-613) | notification manager | Usage at 50% |
+| `quota.threshold.50` | quota tracker (historical-task) | notification manager | Usage at 50% |
 | `quota.threshold.75` | quota tracker | notification manager | Usage at 75% |
 | `quota.threshold.90` | quota tracker | notification manager | Usage at 90% — slow down |
-| `telemetry.action.{type}` | web UI / CLI | SQLite telemetry writer (SW-16) | User behavior event |
+| `telemetry.action.{type}` | web UI / CLI | SQLite telemetry writer (historical-task) | User behavior event |
 
 ### Phase 5 — Cross-Project / companion
 
@@ -259,7 +259,7 @@ graph LR
 |---------|-----------|------------|-------------|
 | `companion.run.started` | companion CLI | digest, telemetry | Research run begun |
 | `companion.run.completed` | companion CLI | digest, telemetry | Research run done (cost, summary) |
-| `task.updated` | core-cli MCP write tools | curation engine (SW-13) | Re-run curation on task change |
+| `task.updated` | core-cli MCP write tools | curation engine (historical-task) | Re-run curation on task change |
 | `health.check.completed` | health cron | digest | Test suite result available |
 
 ---
@@ -270,20 +270,20 @@ The table below assesses every current and planned platform system against the e
 
 | # | System | Current Pattern | Adopt Event-Driven? | What Changes | Phase | SW | Built? | JetStream? |
 |---|--------|----------------|---------------------|--------------|-------|----|--------|------------|
-| 1 | `ai sync pull` trigger | Manual / cron | **Yes** | `ai sync push` publishes `sync.pull.requested`; `ai sync watch` subscribes | ✅ Done | SW-614 | ✅ Built | No — manual pull is fallback; loss acceptable |
-| 2 | Fleet heartbeats | Designed, not wired | **Yes** | Wire existing engine script → `fleet.worker.{id}.heartbeat` on NATS | 2 | SW-501 | 🔶 Partial (designed, not wired) | No — ephemeral by nature; next heartbeat arrives in 30s |
-| 3 | Fleet worker events | Designed, not wired | **Yes** | Engine script publishes START/STOP/SIGNAL; dashboard subscribes | 2 | SW-501 | 🔶 Partial (designed, not wired) | Maybe — START/STOP could be valuable to persist; SQLite can cover this instead |
-| 4 | Session lifecycle | Implicit (no signal) | **Yes** | CC Start/Stop hooks publish `session.{id}.started/stopped` | 2 | SW-642 | ❌ Not built | No — git log is source of truth for session history |
-| 5 | auto-dream sync safety | No guard exists | **Yes** | `memory.dream.started/completed` gates `ai sync push` (SW-644) | 3 | SW-644 | ❌ Not built | **Yes** — safety-critical; missed event = sync proceeds unsafely during dream write |
-| 6 | Shared memory notifications | Not built yet | **Yes (notification layer only)** | `memory.learning.stored` nudges other sessions to refresh; SQLite is still the store | 5 | SW-618 | ✅ Built | No — ephemeral nudge; SQLite is the durable store |
-| 7 | Claude quota tracking | Not built yet | **Yes** | Quota poller writes thresholds as NATS events → notification manager | 4 | SW-613 | ❌ Not built | **Yes** — quota threshold alerts shouldn't be missed; late subscriber needs to catch up |
-| 8 | User behavior telemetry | Not built yet | **Yes (write path only)** | UI/CLI publishes `telemetry.action.*`; background thread batches to SQLite | 4 | SW-16 | ❌ Not built | No — SQLite batch writer handles durability; Core is fine for the fan-out |
-| 9 | companion run visibility | JSONL only | **Yes (bridge)** | companion CLI publishes `companion.run.started/completed` on NATS; digest/telemetry subscribe | 5 | SW-647 | ✅ Built | No — JSONL already persists run history; NATS is observability only |
-| 10 | Task update → curation | Cron-only (staleness) | **Yes (additive)** | core-cli MCP write tools publish `task.updated`; curation engine reacts immediately | 5 | SW-13 | ✅ Built | Maybe — if curation engine is offline, missed events fall back to cron scan anyway |
-| 11 | Health check results | Cron | **Yes (output only)** | Cron remains as trigger; publishes `health.check.completed` on finish for digest | 5 | SW-539 | ✅ Built | No — output event is nice-to-have; digest can poll SQLite results instead |
-| 12 | Fleet mobile notifications | Not built | **Yes** | Downstream subscriber to fleet events; push via Termius | P3 | SW-609 | ❌ Not built | **Yes** — Termius may not be connected; durable delivery ensures notification isn't dropped |
-| 13 | Session teleportation | Not built | **Yes** | `session.teleport.requested` event initiates handoff protocol | P3 | SW-610 | ❌ Not built | **Yes** — handoff protocol requires reliable delivery; fire-and-forget is unsafe here |
-| 14 | Fleet Web UI | Not built | **Yes** | Browser subscribes to NATS WebSocket gateway for live updates | P3 | SW-611 | ❌ Not built | No — browser reconnects on page load; live updates are ephemeral by nature |
+| 1 | `ai sync pull` trigger | Manual / cron | **Yes** | `ai sync push` publishes `sync.pull.requested`; `ai sync watch` subscribes | ✅ Done | historical-task | ✅ Built | No — manual pull is fallback; loss acceptable |
+| 2 | Fleet heartbeats | Designed, not wired | **Yes** | Wire existing engine script → `fleet.worker.{id}.heartbeat` on NATS | 2 | historical-task | 🔶 Partial (designed, not wired) | No — ephemeral by nature; next heartbeat arrives in 30s |
+| 3 | Fleet worker events | Designed, not wired | **Yes** | Engine script publishes START/STOP/SIGNAL; dashboard subscribes | 2 | historical-task | 🔶 Partial (designed, not wired) | Maybe — START/STOP could be valuable to persist; SQLite can cover this instead |
+| 4 | Session lifecycle | Implicit (no signal) | **Yes** | CC Start/Stop hooks publish `session.{id}.started/stopped` | 2 | historical-task | ❌ Not built | No — git log is source of truth for session history |
+| 5 | auto-dream sync safety | No guard exists | **Yes** | `memory.dream.started/completed` gates `ai sync push` (historical-task) | 3 | historical-task | ❌ Not built | **Yes** — safety-critical; missed event = sync proceeds unsafely during dream write |
+| 6 | Shared memory notifications | Not built yet | **Yes (notification layer only)** | `memory.learning.stored` nudges other sessions to refresh; SQLite is still the store | 5 | historical-task | ✅ Built | No — ephemeral nudge; SQLite is the durable store |
+| 7 | Claude quota tracking | Not built yet | **Yes** | Quota poller writes thresholds as NATS events → notification manager | 4 | historical-task | ❌ Not built | **Yes** — quota threshold alerts shouldn't be missed; late subscriber needs to catch up |
+| 8 | User behavior telemetry | Not built yet | **Yes (write path only)** | UI/CLI publishes `telemetry.action.*`; background thread batches to SQLite | 4 | historical-task | ❌ Not built | No — SQLite batch writer handles durability; Core is fine for the fan-out |
+| 9 | companion run visibility | JSONL only | **Yes (bridge)** | companion CLI publishes `companion.run.started/completed` on NATS; digest/telemetry subscribe | 5 | historical-task | ✅ Built | No — JSONL already persists run history; NATS is observability only |
+| 10 | Task update → curation | Cron-only (staleness) | **Yes (additive)** | core-cli MCP write tools publish `task.updated`; curation engine reacts immediately | 5 | historical-task | ✅ Built | Maybe — if curation engine is offline, missed events fall back to cron scan anyway |
+| 11 | Health check results | Cron | **Yes (output only)** | Cron remains as trigger; publishes `health.check.completed` on finish for digest | 5 | historical-task | ✅ Built | No — output event is nice-to-have; digest can poll SQLite results instead |
+| 12 | Fleet mobile notifications | Not built | **Yes** | Downstream subscriber to fleet events; push via Termius | P3 | historical-task | ❌ Not built | **Yes** — Termius may not be connected; durable delivery ensures notification isn't dropped |
+| 13 | Session teleportation | Not built | **Yes** | `session.teleport.requested` event initiates handoff protocol | P3 | historical-task | ❌ Not built | **Yes** — handoff protocol requires reliable delivery; fire-and-forget is unsafe here |
+| 14 | Fleet Web UI | Not built | **Yes** | Browser subscribes to NATS WebSocket gateway for live updates | P3 | historical-task | ❌ Not built | No — browser reconnects on page load; live updates are ephemeral by nature |
 
 ---
 
@@ -291,12 +291,12 @@ The table below assesses every current and planned platform system against the e
 
 | # | System | Current Pattern | Recommendation | Reasoning |
 |---|--------|----------------|----------------|-----------|
-| 1 | **Daily digest compilation** (SW-31) | `cron` | **Keep cron** | Digest is time-triggered by definition ("daily at session start"). The cron *trigger* is correct. Individual inputs (curation, guidance) may fire events, but the aggregation step should remain scheduled. **Pros of event-driven:** compile immediately when tasks change. **Cons:** digest becomes noisy and over-frequent; loses the "daily summary" value. Verdict: keep cron; let upstream events update the underlying data stores that digest reads from. |
-| 2 | **Config reload detection** (SW-630) | `UserPromptSubmit` hook + mtime polling | **Keep as-is** | The hook already solves this cleanly with zero added infrastructure. Adding NATS `config.changed` would add a publisher (inotify → NATS) and subscriber (session reload) for a problem that is fully solved by a 10-line shell hook. **Pros of event-driven:** push-based, no per-prompt check. **Cons:** requires inotify daemon, NATS up at all times, more moving parts than a shell script. Verdict: the mtime hook is the right tool; don't over-engineer it. |
-| 3 | **Project health check cron** (SW-539) | Not built | **Keep cron as trigger, add event output** | Health checks are time-triggered (daily), not reactive. Running them "on every push" via NATS events would be expensive and noisy for 13 projects. The cron trigger is correct. The only event-driven improvement is publishing `health.check.completed` so the digest can surface regressions immediately (already in §Candidates, Phase 5). |
+| 1 | **Daily digest compilation** (historical-task) | `cron` | **Keep cron** | Digest is time-triggered by definition ("daily at session start"). The cron *trigger* is correct. Individual inputs (curation, guidance) may fire events, but the aggregation step should remain scheduled. **Pros of event-driven:** compile immediately when tasks change. **Cons:** digest becomes noisy and over-frequent; loses the "daily summary" value. Verdict: keep cron; let upstream events update the underlying data stores that digest reads from. |
+| 2 | **Config reload detection** (historical-task) | `UserPromptSubmit` hook + mtime polling | **Keep as-is** | The hook already solves this cleanly with zero added infrastructure. Adding NATS `config.changed` would add a publisher (inotify → NATS) and subscriber (session reload) for a problem that is fully solved by a 10-line shell hook. **Pros of event-driven:** push-based, no per-prompt check. **Cons:** requires inotify daemon, NATS up at all times, more moving parts than a shell script. Verdict: the mtime hook is the right tool; don't over-engineer it. |
+| 3 | **Project health check cron** (historical-task) | Not built | **Keep cron as trigger, add event output** | Health checks are time-triggered (daily), not reactive. Running them "on every push" via NATS events would be expensive and noisy for 13 projects. The cron trigger is correct. The only event-driven improvement is publishing `health.check.completed` so the digest can surface regressions immediately (already in §Candidates, Phase 5). |
 | 4 | **MCP read operations** (core-cli MCP) | Request/response | **Keep request/response** | `query_tasks`, `get_priority_guidance`, etc. are request/response reads from SQLite. Pub/sub adds no value to reads — there's no "subscriber" for a query result. Event-driven applies to the *write side* (task.updated) not the read side. |
 | 5 | **companion research queue** (companion) | Pull (manual dequeue) | **Keep pull for queue, add events for observability** | The research queue is a sequential pipeline with manual gates — converting it to event-driven would remove intentional human pacing. Only the *visibility* layer (companion.run.started/completed) should use events; queue management stays pull-based. |
-| 6 | **Backlog staleness detection** (SW-13) | Cron | **Keep cron as primary, add event trigger as supplement** | Staleness is inherently time-based ("task not touched in 7 days"). A cron is the correct primary trigger. `task.updated` events can *reset* the staleness clock in real time, but can't replace the cron scan for tasks that are stale precisely *because* nothing happened. |
+| 6 | **Backlog staleness detection** (historical-task) | Cron | **Keep cron as primary, add event trigger as supplement** | Staleness is inherently time-based ("task not touched in 7 days"). A cron is the correct primary trigger. `task.updated` events can *reset* the staleness clock in real time, but can't replace the cron scan for tasks that are stale precisely *because* nothing happened. |
 
 ---
 
@@ -313,7 +313,7 @@ class NATSClient:
     async def publish(subject: str, data: dict) -> bool
     async def subscribe(subject: str, callback: Callable) -> None  # blocking
     async def close() -> None
-```text
+```
 
 ### Event Envelope (convention, not enforced by schema)
 
@@ -324,16 +324,16 @@ class NATSClient:
   "ts": 1742832000,
   "data": { ... subject-specific payload ... }
 }
-```text
+```
 
 ### NATS Config Section (`~/.config/ai-cli/config.toml`)
 
 ```toml
 [messaging]
 nats_servers = ["nats://localhost:4222"]
-```text
+```
 
-### Telemetry SQLite Schema (Phase 4, SW-16)
+### Telemetry SQLite Schema (Phase 4, historical-task)
 
 ```sql
 CREATE TABLE events (
@@ -345,7 +345,7 @@ CREATE TABLE events (
     data      TEXT NOT NULL            -- JSON blob
 );
 CREATE INDEX idx_events_subject_ts ON events(subject, ts);
-```text
+```
 
 ---
 
@@ -354,9 +354,9 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 | System | Design Doc | Relationship |
 |--------|-----------|--------------|
 | Fleet Management | `docs/designs/fleet-management.md` | This doc extends the NATS Nervous System defined there. `fleet.worker.*` subjects are unchanged. |
-| CC Sync Phase 2 | `docs/designs/cc-sync-phase2.md` | `sync.pull.requested` is the first cross-machine event trigger. `memory.dream.*` subjects extend the sync safety model (SW-644). |
-| Shared Memory (SW-618) | `docs/research/shared-memory-cc-fleet.md` | NATS `memory.learning.stored` provides the push notification layer; SQLite + core-cli MCP is the store. |
-| Fleet Management Plan | `docs/plans/fleet-management-plan.md` | Implementation sequencing for SW-501 aligns with Phase 2 here. |
+| CC Sync Phase 2 | `docs/designs/cc-sync-phase2.md` | `sync.pull.requested` is the first cross-machine event trigger. `memory.dream.*` subjects extend the sync safety model (historical-task). |
+| Shared Memory (historical-task) | `docs/research/shared-memory-cc-fleet.md` | NATS `memory.learning.stored` provides the push notification layer; SQLite + core-cli MCP is the store. |
+| Fleet Management Plan | `docs/plans/fleet-management-plan.md` | Implementation sequencing for historical-task aligns with Phase 2 here. |
 | Telemetry Research | `docs/research/telemetry-event-design-early-stage-apps.md` | SQLite WAL + background writer pattern for telemetry write path (Phase 4). |
 
 ---
@@ -367,7 +367,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 **Goal:** Prove NATS infrastructure end-to-end with one real cross-machine use case.
 
-- [x] `NATSClient` with bounded retry, `_publish()` guard, `subscribe()` (SW-614)
+- [x] `NATSClient` with bounded retry, `_publish()` guard, `subscribe()` (historical-task)
 - [x] `ai sync push` publishes `sync.pull.requested`
 - [x] `ai sync watch` subscribes and auto-pulls
 - [x] Heartbeat JSON quoting fix in engine script
@@ -375,7 +375,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 ### Phase 2 — Session Lifecycle + Fleet Wiring ✅ Complete (2026-03-25)
 
-**Goal:** Fleet dashboard (SW-501) has live data; session start/stop events flow.
+**Goal:** Fleet dashboard (historical-task) has live data; session start/stop events flow.
 
 - [x] NATSClient upgraded to JetStream: `js.publish()` for durable subjects, stream auto-creation, fallback to core NATS
 - [x] `subscribe_durable()` for JetStream durable consumers with ACK
@@ -383,7 +383,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 - [x] Add `session.{id}.started` publish to engine script session loop via `ai internal publish-session-event`
 - [x] Add `session.{id}.stopped` publish to engine script session loop via `ai internal publish-session-event`
 - [x] `ai sync watch` auto-starts in engine session loop with PID file guard + JetStream durable consumer
-- [ ] Fleet dashboard subscriber (SW-501) reads from `fleet.worker.*` — deferred to SW-501
+- [ ] Fleet dashboard subscriber (historical-task) reads from `fleet.worker.*` — deferred to historical-task
 
 **Gate:** Human review — verify heartbeat + session events appear in fleet dashboard before Phase 3.
 
@@ -391,9 +391,9 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 **Goal:** `ai sync push` is safe around auto-dream; cross-session memory notifications work.
 
-- [x] SW-644: `ai memory watch` daemon — inotify watcher (via watchdog) on `~/.claude/projects/*/memory/MEMORY.md`; publishes `memory.dream.started` on write event, `memory.dream.completed` with 2s debounce after last write. Auto-starts alongside `ai sync watch` in session loop. Linux/Hetzner-only; Mac follow-up tracked as SW-655.
+- [x] historical-task: `ai memory watch` daemon — inotify watcher (via watchdog) on `~/.claude/projects/*/memory/MEMORY.md`; publishes `memory.dream.started` on write event, `memory.dream.completed` with 2s debounce after last write. Auto-starts alongside `ai sync watch` in session loop. Linux/Hetzner-only; Mac follow-up tracked as historical-task.
 - [x] Guard in `ai sync push`: checks for active dream (recent MEMORY.md mtime + memory-watch PID), waits up to 30s for `memory.dream.completed`, proceeds regardless. Non-fatal if NATS unavailable.
-- [ ] SW-618: `memory.learning.stored` — blocked: `store_learning` MCP tool does not exist yet
+- [ ] historical-task: `memory.learning.stored` — blocked: `store_learning` MCP tool does not exist yet
 
 **Gate:** Human review — sync push safety verified with simulated dream scenario.
 
@@ -401,9 +401,9 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 **Goal:** Claude usage is tracked and alerted; user behavior telemetry collects data.
 
-- [x] SW-613: `ai quota watch` daemon polls Claude usage file/CLI; publishes `quota.threshold.{50,75,90}` with per-day deduplication; fires OS notifications via `notify-send`
+- [x] historical-task: `ai quota watch` daemon polls Claude usage file/CLI; publishes `quota.threshold.{50,75,90}` with per-day deduplication; fires OS notifications via `notify-send`
 - [x] Notification manager integrated into quota watcher (notify-send on Linux)
-- [x] SW-16: `record_event()` writes to SQLite WAL + publishes `telemetry.action.*` to JetStream; `ai telemetry writer` background consumer
+- [x] historical-task: `record_event()` writes to SQLite WAL + publishes `telemetry.action.*` to JetStream; `ai telemetry writer` background consumer
 - [x] Telemetry consent gate — opt-out via `[telemetry] enabled = false` in config.toml (default: enabled)
 
 **Gate:** Human review — quota alert fires at 50% threshold in dry-run before live.
@@ -412,11 +412,11 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 **Goal:** All polling-reducible patterns replaced; platform-wide observability.
 
-- [x] companion publishes `companion.run.started/completed` with cost summary via `ai internal publish` subprocess (SW-647)
+- [x] companion publishes `companion.run.started/completed` with cost summary via `ai internal publish` subprocess (historical-task)
 - [x] `task.updated` event from core-cli MCP write tools (update_task, toggle_task, add_task_relationship) → immediate curation trigger (additive to cron)
 - [x] `health.check.completed` published by `save_health_run()` after each health check with pass/fail summary
-- [x] `store_learning` MCP tool publishes `memory.learning.stored` to NATS (SW-618)
-- [ ] SW-609/610/611: mobile push, teleportation protocol, fleet web UI — all downstream of Phase 2 events (P3)
+- [x] `store_learning` MCP tool publishes `memory.learning.stored` to NATS (historical-task)
+- [ ] historical-task/610/611: mobile push, teleportation protocol, fleet web UI — all downstream of Phase 2 events (P3)
 
 **Gate:** Human review after companion bridge lands.
 
@@ -429,10 +429,10 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 ---
 
 > **Feedback Round 2:** Any changes to phasing or sequencing after implementation begins?
-> - Phase 3 inotify watcher (Option B) approved. Incorporate into Phase 3 directly — no mtime pre-check intermediate step. inotify is Linux-only (Hetzner). Mac follow-up task added as SW-655.
+> - Phase 3 inotify watcher (Option B) approved. Incorporate into Phase 3 directly — no mtime pre-check intermediate step. inotify is Linux-only (Hetzner). Mac follow-up task added as historical-task.
 
 > **AI Response Round 2:**
-> Phase 3 updated: `ai memory watch` inotify daemon is the Phase 3 implementation directly (no mtime pre-check step). SW-655 follow-up task created for Mac watchdog/FSEvents support. Risk 2 updated to reflect the daemon approach resolves the "no CC hook" constraint.
+> Phase 3 updated: `ai memory watch` inotify daemon is the Phase 3 implementation directly (no mtime pre-check step). historical-task follow-up task created for Mac watchdog/FSEvents support. Risk 2 updated to reflect the daemon approach resolves the "no CC hook" constraint.
 
 ---
 
@@ -458,7 +458,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 | # | Risk | Impact | Mitigation |
 |---|------|--------|------------|
 | 1 | NATS not running on machine | All event-driven features silently no-op | `NATSClient` already returns `False` on publish failure without crashing. `ai sync watch` exits 1 and logs. Sync still works manually. Provide `ai nats status` health check command. |
-| 2 | auto-dream hook not available (Anthropic API) | No CC-native event for dream start/stop | Resolved: inotify watcher daemon (`ai memory watch`) watches `MEMORY.md` directly — no CC hook needed. Mac sessions tracked as SW-655 (watchdog/FSEvents). |
+| 2 | auto-dream hook not available (Anthropic API) | No CC-native event for dream start/stop | Resolved: inotify watcher daemon (`ai memory watch`) watches `MEMORY.md` directly — no CC hook needed. Mac sessions tracked as historical-task (watchdog/FSEvents). |
 | 3 | Cross-machine NATS delivery gap | Server doesn't receive events published from Mac | By design — staging repo is the cross-machine transport. `ai sync watch` on server triggers pull after receiving the event via the git mechanism. No NATS message crosses machine boundary. |
 | 4 | Message loss | Heartbeat or event missed | Heartbeats: acceptable (next arrives in 30s). JetStream durable consumers + ACKs used for all non-ephemeral subjects from Phase 2 onward. Ephemeral subjects (heartbeats) use fire-and-forget on JetStream without ACKs. |
 | 5 | Subject proliferation / naming drift | Subjects become inconsistent, hard to subscribe with wildcards | Canonical subject registry in this doc (§Subject Hierarchy). All new subjects must be added here before implementation. |
@@ -471,7 +471,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 2. **`ai sync watch` startup**: Should `ai sync watch` be started automatically by the CC Start hook, or manually in a tmux pane? Auto-start is more reliable but risks multiple subscribers if the hook fires multiple times.
 
-3. ~~**Cross-machine NATS (future)**~~ **Resolved**: Scoped to Hetzner-only for all Phase 2–5 work. Follow-up task `[SW-913]` tracks evaluation of shared NATS cluster / Tailscale tunnel when staging repo becomes a bottleneck or P3 features require real-time cross-machine delivery.
+3. ~~**Cross-machine NATS (future)**~~ **Resolved**: Scoped to Hetzner-only for all Phase 2–5 work. Follow-up task `[historical-task]` tracks evaluation of shared NATS cluster / Tailscale tunnel when staging repo becomes a bottleneck or P3 features require real-time cross-machine delivery.
 
 4. **Telemetry consent model**: What's the right default — opt-in or opt-out? The platform is personal (single user), so consent is less critical, but the pattern matters if this becomes multi-user.
 
@@ -519,7 +519,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 > - All open questions resolved. Doc approved. Implement phases 1–5 now. Human gate at end for review.
 
 > **AI Response Round 2:**
-> All resolutions confirmed. SW-655 created for Mac watchdog/FSEvents support (linked to SW-913). Phase 3 updated to implement inotify daemon directly. Doc status set to APPROVED. Implementation of Phases 2–5 begins now.
+> All resolutions confirmed. historical-task created for Mac watchdog/FSEvents support (linked to historical-task). Phase 3 updated to implement inotify daemon directly. Doc status set to APPROVED. Implementation of Phases 2–5 begins now.
 
 ---
 
@@ -544,5 +544,5 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 | Date | Round | Decisions / Approvals |
 |------|-------|----------------------|
-| 2026-03-25 | Round 1 | Decisions 1–5 approved. JetStream from day 1 confirmed. Cross-machine scoped to Hetzner-only; SW-913 follow-up created. auto-dream: mtime pre-check short-term, inotify watcher medium-term. Sync watch: auto-start with PID file + JetStream durable consumer guard. Telemetry consent: opt-out. All 5 phases in one batch. |
-| 2026-03-25 | Round 2 | **APPROVED.** Decision 4 revised: JetStream removed as storage option (it's the transport); SQLite WAL vs external pipeline only. Phase 3 updated: inotify daemon (`ai memory watch`) is the direct implementation — no mtime pre-check step. SW-655 created for Mac watchdog/FSEvents follow-up. All open questions resolved. Implementation begins. |
+| 2026-03-25 | Round 1 | Decisions 1–5 approved. JetStream from day 1 confirmed. Cross-machine scoped to Hetzner-only; historical-task follow-up created. auto-dream: mtime pre-check short-term, inotify watcher medium-term. Sync watch: auto-start with PID file + JetStream durable consumer guard. Telemetry consent: opt-out. All 5 phases in one batch. |
+| 2026-03-25 | Round 2 | **APPROVED.** Decision 4 revised: JetStream removed as storage option (it's the transport); SQLite WAL vs external pipeline only. Phase 3 updated: inotify daemon (`ai memory watch`) is the direct implementation — no mtime pre-check step. historical-task created for Mac watchdog/FSEvents follow-up. All open questions resolved. Implementation begins. |

@@ -1,0 +1,256 @@
+"""Whether a recorded migration is finished: a read-only re-plan of the pair finds nothing left.
+
+The planner that does the work also judges it. :func:`replan` runs ``--finish`` as a dry run
+for the pair and :func:`parts_left` reads its parts table, so a writing run, ``ai
+migrate-session --status``, the ``--finish --all`` sweep and the launch guard all ask the same
+question of the disk.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from . import session_migrate as m
+from .session_migrate_progress import timed
+from .session_migrate_resume import summarize
+
+#: Every status a part of a re-plan may read and still count as done: finished earlier, or a
+#: skip that says there is nothing of that kind to carry. A hook that reports
+#: ``migrate-status: done`` reads ``done earlier``. Anything else, an unreadable store or a
+#: hook with no status line included, is work left.
+DONE_STATUSES = frozenset(
+    {
+        "done earlier",
+        "skipped: no matching artifact",
+        "skipped: informational",
+        "skipped: unconfigured",
+        "skipped: missing",
+        "skipped: direct rename",
+    }
+)
+
+#: The part a re-plan that could not run is reported under.
+UNPLANNED = "migration"
+
+_REPLAN_KWARGS = frozenset(
+    {"claude_home", "state_dir", "proc_dir", "tmux_names", "projects_dir", "regenerate_script", "progress"}
+)
+
+
+def parts_left(result: m.MigrationResult) -> dict[str, str]:
+    """``{part: status}`` for each part of the dry-run ``result`` that is not done."""
+    if not result.parts:
+        summarize(result, resumed=True)
+    return {part: status for part, status in result.parts.items() if status.strip() not in DONE_STATUSES}
+
+
+def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]:
+    """The parts a read-only ``--finish`` plan of ``old -> new`` in ``repo_root`` still finds.
+
+    A plan that refuses or raises is one part left, :data:`UNPLANNED`, carrying the reason:
+    a migration is never called finished on a part nobody could read.
+    """
+    return replan_live(repo_root, old, new, **kwargs)[0]
+
+
+def moved_on(new: str, repo_root: Path, state: Path) -> tuple[str, Path] | None:
+    """``(name, slot)`` NEW's slot moved on to, when the ledger records NEW's own later migration.
+
+    Followed through each later migration this host records in ``repo_root``, to a slot that
+    exists. ``None`` when NEW's slot is there, no row records NEW migrated on, or the chain
+    ends at a slot that does not exist: a missing slot is then reported, never assumed moved.
+    """
+    if (repo_root / ".worktrees" / new).is_dir():
+        return None
+    onward = {
+        row["old"]: (row["new"], Path(row["worktree"]))
+        for row in m._ledger_rows(state)
+        if not m.bookkeeping_row(row)
+        and row.get("repo") == str(repo_root)
+        and all(isinstance(row.get(key), str) for key in ("old", "new", "worktree"))
+    }
+    name, seen = new, {new}
+    while name in onward:
+        name, slot = onward[name]
+        if name in seen:
+            return None
+        seen.add(name)
+        if slot.is_dir():
+            return name, slot
+    return None
+
+
+def replan_live(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str]:
+    """:func:`replan`, and the live-session refusal a writing run would raise, or ``""``.
+
+    A pair whose NEW slot :func:`moved_on` has nothing left to plan in that slot. A
+    ``progress`` keyword reports the re-plan, and each slow step inside it, as it starts and ends.
+    """
+    state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
+    if moved_on(new, repo_root, state) is not None:
+        return {}, ""
+    passed = {key: value for key, value in kwargs.items() if key in _REPLAN_KWARGS}
+    with timed(passed.get("progress"), f"re-plan {old} -> {new}", "checking nothing is left") as step:
+        try:
+            plan = m.finish_session(repo_root, old, new, dry_run=True, record_finish=False, **passed)
+        except Exception as exc:  # any failure to plan leaves the pair unverified
+            step.outcome = "could not re-plan"
+            return {UNPLANNED: f"failed: could not re-plan: {m._one_line(str(exc)) or type(exc).__name__}"}, ""
+        left = parts_left(plan)
+        step.outcome = f"{len(left)} part(s) left" if left else "nothing left"
+    return left, plan.live
+
+
+def judge_pair(repo_root: Path, old: str, new: str, **kwargs: Any) -> tuple[dict[str, str], str, bool]:
+    """``(parts left, live refusal or "", whether a plan ran)`` for one recorded pair, read-only.
+
+    The one judgement ``ai migrate-session --status`` and the launch guard of ``ai c NEW`` both
+    use, so they cannot disagree about a pair. A NEW slot that is gone is judged by the ledger: a
+    slot that moved on to a later migration (:func:`moved_on`) leaves nothing to plan here, and one
+    that is simply missing is a part left. Otherwise the pair is re-planned (:func:`replan_live`).
+    """
+    state = kwargs.get("state_dir") or m._config.get_xdg_state_home()
+    slot = repo_root / ".worktrees" / new
+    if not slot.is_dir():
+        if moved_on(new, repo_root, state) is not None:
+            return {}, "", True
+        return {"slot": f"missing: {slot} does not exist"}, "", False
+    left, live = replan_live(repo_root, old, new, **kwargs)
+    return left, live, UNPLANNED not in left
+
+
+def _bookkeeping(row: dict) -> bool:
+    """Whether a ledger row only notes a delivered context, recorded transcripts or archived files.
+
+    None is a migration, so none makes a pair pending, as
+    :func:`ai_cli.session_migrate.pending_finishes` also reads them.
+    """
+    return m.bookkeeping_row(row)
+
+
+def finish_state(old: str, new: str, state: Path) -> str | None:
+    """The ledger's word on the pair: ``verified``, ``unverified``, ``pending``, or ``None`` if unrecorded.
+
+    The latest row decides: a migration row makes the pair ``pending`` again, and a
+    ``finished`` row is ``verified`` only when it carries ``verified: true``, which rows
+    written before the re-plan rule never do.
+    """
+    found: str | None = None
+    for row in m._ledger_rows(state):
+        if (row.get("old"), row.get("new")) != (old, new) or _bookkeeping(row):
+            continue
+        if row.get("finished") is True:
+            found = "verified" if row.get("verified") is True else "unverified"
+        else:
+            found = "pending"
+    return found
+
+
+def recorded_pairs(new: str, state: Path) -> list[tuple[str, Path]]:
+    """``(old, repo)`` for every migration to ``new`` the ledger records, whatever its latest row says.
+
+    The repo is the latest one a row of the pair names. A row without a ``repo`` names no
+    slot to judge and is skipped, as :func:`ai_cli.session_migrate.pending_finishes` skips it.
+    """
+    pairs: dict[str, Path] = {}
+    for row in m._ledger_rows(state):
+        old, repo = row.get("old"), row.get("repo")
+        if row.get("new") != new or _bookkeeping(row):
+            continue
+        if isinstance(old, str) and isinstance(repo, str):
+            pairs[old] = Path(repo)
+    return list(pairs.items())
+
+
+def newest_format(new: str, state: Path) -> int:
+    """The highest migration record format any ledger row naming ``new`` carries; 0 when none does."""
+    found = 0
+    for row in m._ledger_rows(state):
+        value = row.get("format")
+        if new in (row.get("old"), row.get("new")) and isinstance(value, int) and not isinstance(value, bool):
+            found = max(found, value)
+    return found
+
+
+def left_after(result: m.MigrationResult) -> dict[str, str]:
+    """``{part: status}`` for each part a writing run left undone; empty when it did not fail."""
+    if not result.failed:
+        return {}
+    if not result.parts:
+        summarize(result, resumed=True)
+    left = {part: status for part, status in result.parts.items() if status.startswith("failed:")}
+    return left or {UNPLANNED: f"failed: {m._one_line('; '.join([*result.kept, *result.warnings])) or 'not finished'}"}
+
+
+def finish_command(old: str, new: str, repo: Path) -> str:
+    return f"ai migrate-session {old} {new} --finish -r {repo}"
+
+
+def deferred_only(left: dict[str, str]) -> bool:
+    """Whether every part in ``left`` was deferred because NEW was running, and nothing else is left."""
+    return bool(left) and all("deferred:" in status for status in left.values())
+
+
+def deferral_report(old: str, new: str, repo: Path, parts: list[str], noted: list[str] | None) -> tuple[bool, str]:
+    """``(first time, line)`` reporting the parts a finish deferred while ``new`` runs.
+
+    ``noted`` is what the ledger recorded deferred before this finish ran
+    (:func:`ai_cli.session_migrate.noted_deferral`). The first report names each part left
+    and the manual step; once the ledger already holds those parts, the line only says they
+    are still waiting, so a caller can print it as progress rather than as a warning again.
+    """
+    pair, named = f"migration {old} -> {new}", ", ".join(parts)
+    command = finish_command(old, new, repo)
+    if noted is not None and set(parts) <= set(noted):
+        return (
+            False,
+            f"{pair}: {named} still deferred while {new} runs, as reported before; once it stops, run `{command}`",
+        )
+    return True, (
+        f"{pair}: every step is done except {named}, deferred while {new} runs because they write files "
+        f"it has open; stop it with `ai sessions stop {new}`, then run `{command}` "
+        f"(an `ai c {new}` launch or a restart once it has stopped also finishes it)"
+    )
+
+
+def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: Any) -> None:
+    """After a writing run: re-plan the pair, and record it finished only when nothing is left.
+
+    Nothing left and a ledger row naming the pair: append ``finished`` with ``verified: true``,
+    unless the latest row already says so. Anything left: mark each such part failed and add a
+    ``NOT finished`` warning naming them, so ``result.failed`` holds and nothing is recorded. A
+    leftover cleanup in another repo is not judged here. A run with nothing left then runs the
+    references step (:func:`ai_cli.session_migrate_references.sweep`), whose leftovers are
+    reported beside the finished pair rather than holding its ``finished`` row back.
+    """
+    if any(move.kind == m.ALREADY_MIGRATED for move in result.moves):
+        return  # a leftover cleanup: the pair's home is in another repo, and its own finish judges it
+    kwargs = {key: value for key, value in kwargs.items() if key != "state_dir"}
+    left = replan(repo_root, result.old, result.new, state_dir=state, **kwargs)
+    if not result.parts:
+        summarize(result, resumed=True)
+    if left:
+        for part, status in left.items():
+            if status.startswith("failed:"):
+                result.parts[part] = status
+            elif not result.parts.get(part, "").startswith("failed:"):
+                result.parts[part] = f"failed: still left after this run ({status})"
+        named = "; ".join(f"{part} ({status})" for part, status in left.items())
+        result.warnings.append(
+            f"migration {result.old} -> {result.new} NOT finished: a re-plan still finds {named}; "
+            f"run `{finish_command(result.old, result.new, repo_root)}` once they are resolved"
+        )
+        return
+    if any(status.startswith("failed:") for status in result.parts.values()):
+        # A part this run failed that a re-plan cannot see, such as a Beads store re-keyed
+        # locally whose publish failed, still leaves the pair unfinished.
+        return
+    if m._migration_evidence(result.old, result.new, state) and finish_state(result.old, result.new, state) != (
+        "verified"
+    ):
+        m._append_ledger(state, result.old, result.new, repo_root, finished=True, verified=True)
+    if not result.failed:
+        from .session_migrate_references import sweep
+
+        sweep(result, repo_root)

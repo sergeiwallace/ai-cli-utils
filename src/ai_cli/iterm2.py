@@ -164,7 +164,8 @@ ssh        = "Default"
 
 # [iterm2.persistence.restore.relaunch.scenarios]
 ## Relaunch a session whose previous run ended this way; false = list it as skipped with its cause.
-## A cause the restore could not decide ("unknown") follows terminal_quit_or_crash.
+## A cause the restore could not decide ("unknown") follows terminal_quit_or_crash;
+## a maintenance wind-down follows host_reboot.
 # host_reboot = true
 # terminal_quit_or_crash = true
 ## A session exited by hand is not resurrected by the terminal reopening

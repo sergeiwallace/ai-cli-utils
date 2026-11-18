@@ -8,9 +8,12 @@ agent worktree under ``.worktrees/<old>-agents/`` on ``wt/<old>/leaf-a``, a park
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import py_compile
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +22,7 @@ from conftest import run_cli as _run_cli
 from conftest import snapshot_tree, with_environment_config
 
 from ai_cli.branch_rename import anchor_ref
+from ai_cli.venv_relocate import relocate_venv
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 
@@ -246,6 +250,74 @@ def test_given_git_refuses_one_agent_worktree_when_migrated_then_it_warns_contin
     assert "locked" in out + err
     assert fleet["leaf_a"].is_dir()
     assert _branches(fleet["other"]) == [f"wt/{OLD}/leaf-a", f"wt/{NEW}/leaf-b"]
+
+
+def _symlinks_available(directory: Path) -> bool:
+    """Whether this platform lets the test create a directory symlink; probed before any fixture is built."""
+    probe = directory / "symlink-probe"
+    try:
+        probe.symlink_to(directory, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _venv_in_root(root: Path, name: str, worktree: Path) -> Path:
+    """A venv kept outside its worktree, carrying an editable install of it and a deep package tree."""
+    venv = root / name
+    site = venv / "lib" / "python3.12" / "site-packages"
+    (site / "pkg-1.0.dist-info").mkdir(parents=True)
+    (site / "__editable__.pkg.pth").write_text(f"{worktree}/src\n", encoding="utf-8")
+    (site / "pkg-1.0.dist-info" / "direct_url.json").write_text(
+        json.dumps({"url": worktree.as_uri(), "dir_info": {"editable": True}}), encoding="utf-8"
+    )
+    deep = site / "heavypkg" / "driver" / "package" / "lib"
+    for i in range(3):
+        (deep / f"mod{i}").mkdir(parents=True)
+        (deep / f"mod{i}" / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    return venv
+
+
+def test_given_agent_venvs_in_a_shared_venv_root_when_migrated_then_only_the_sessions_install_records_are_read(
+    fleet, tmp_path
+):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    venvs = tmp_path / "local-io" / "venvs"
+    own = _venv_in_root(venvs, "otherrepo--leaf-a", fleet["leaf_a"])
+    unrelated = _venv_in_root(venvs, "otherrepo--unrelated-1", fleet["other"] / ".worktrees" / "unrelated-1")
+    (fleet["leaf_a"] / ".venv").symlink_to(own, target_is_directory=True)
+    listed: list[Path] = []
+    real_scandir, real_listdir = os.scandir, os.listdir
+
+    def _record(path):
+        if isinstance(path, (str, os.PathLike)):
+            listed.append(Path(os.fspath(path)).resolve())
+
+    def scandir(path="."):
+        _record(path)
+        return real_scandir(path)
+
+    def listdir(path="."):
+        _record(path)
+        return real_listdir(path)
+
+    with patch("os.scandir", scandir), patch("os.listdir", listdir):
+        code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_a = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    site = own / "lib" / "python3.12" / "site-packages"
+    assert (site / "__editable__.pkg.pth").read_text(encoding="utf-8") == f"{new_a}/src\n"
+    assert json.loads((site / "pkg-1.0.dist-info" / "direct_url.json").read_text(encoding="utf-8"))["url"] == (
+        new_a.as_uri()
+    )
+    heavy = (site / "heavypkg").resolve()
+    assert [p for p in listed if p == heavy or heavy in p.parents] == []
+    assert [p for p in listed if p == unrelated.resolve() or unrelated.resolve() in p.parents] == []
 
 
 def test_given_a_destination_branch_exists_when_migrated_then_that_entry_is_skipped_and_left(fleet):
@@ -480,7 +552,7 @@ def test_given_an_old_slot_holding_unlanded_work_when_migrated_then_it_is_kept_n
     assert ("untracked: wip.txt" if kind == "uncommitted" else "not in") in out + err
 
 
-def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_go_and_full_ones_are_named(leftover):
+def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_go_and_files_are_carried(leftover):
     empty = leftover["home"] / ".worktrees" / f"{OLD}-agents"
     (empty / "nested").mkdir(parents=True)
     full = leftover["second"] / ".worktrees" / f"{OLD}-agents"
@@ -490,11 +562,12 @@ def test_given_old_agent_containers_when_a_leftover_is_cleaned_then_empty_ones_g
 
     code, out, err = _run_in(leftover, leftover["second"], "-y")
 
-    assert code == 1, out + err
+    assert code == 0, out + err
     assert not empty.exists()
     assert f"agent container: {empty} (removed: empty)" in out
-    assert (full / "notes.txt").read_text() == "keep me\n"
-    assert f"agent container: {full} (kept: holds notes.txt)" in out
+    assert not full.exists()
+    assert (full.with_name(f"{NEW}-agents") / "notes.txt").read_text() == "keep me\n"
+    assert f"agent container: {full} (removed: empty)" in out
 
 
 def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_then_it_refuses(leftover):
@@ -506,3 +579,382 @@ def test_given_the_live_new_session_works_in_the_old_slot_when_migrated_there_th
     assert code == 2
     assert "still running" in out + err
     assert snapshot_tree(leftover["second"]) == before
+
+
+# Every path that embeds the old session's agents container moves with it: a container named
+# ``<host>--<old>-agents`` as well as ``<old>-agents``, and the Claude Code project directory of
+# an agent whose worktree was reaped before the migration.
+
+HOST_CONTAINER = f"myhost--{OLD}-agents"
+NEW_HOST_CONTAINER = f"myhost--{NEW}-agents"
+
+
+def _slug(path: Path) -> str:
+    return "".join(c if c.isascii() and c.isalnum() else "-" for c in str(path))
+
+
+def _project_dir(cwd: Path, sid: str = "abc123") -> Path:
+    project = Path.home() / ".claude" / "projects" / _slug(cwd)
+    project.mkdir(parents=True)
+    (project / f"{sid}.jsonl").write_text(json.dumps({"type": "user", "cwd": str(cwd)}) + "\n", encoding="utf-8")
+    return project
+
+
+@pytest.fixture
+def host_fleet(fleet):
+    leaf = fleet["other"] / ".worktrees" / HOST_CONTAINER / "leaf-h"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf-h", cwd=fleet["other"])
+    fleet["leaf_h"] = leaf
+    return fleet
+
+
+def test_given_a_host_prefixed_agent_worktree_when_dry_run_then_its_move_is_listed_and_nothing_changes(host_fleet):
+    before = snapshot_tree(host_fleet["projects"])
+
+    code, out, err = _migrate(host_fleet, "-n")
+
+    assert code == 0, out + err
+    new_h = host_fleet["other"] / ".worktrees" / NEW_HOST_CONTAINER / "leaf-h"
+    assert f"agent worktree: {host_fleet['leaf_h']} -> {new_h}" in out
+    assert snapshot_tree(host_fleet["projects"]) == before
+
+
+def test_given_a_host_prefixed_agent_worktree_when_migrated_then_directory_and_branch_follow_the_new_name(host_fleet):
+    code, out, err = _migrate(host_fleet, "-y")
+
+    assert code == 0, out + err
+    other = host_fleet["other"]
+    new_h = other / ".worktrees" / NEW_HOST_CONTAINER / "leaf-h"
+    assert f"worktree {new_h.as_posix()}\n" in _registered(other)
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_h).strip() == f"wt/{NEW}/leaf-h"
+    assert not (other / ".worktrees" / HOST_CONTAINER).exists()
+
+
+def test_given_a_host_prefixed_worktree_whose_branch_was_already_renamed_when_finished_then_it_moves(fleet):
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    other = fleet["other"]
+    stranded = other / ".worktrees" / HOST_CONTAINER / "leaf-x"
+    _git("worktree", "add", "-q", str(stranded), "-b", f"wt/{NEW}/leaf-x", cwd=other)
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    new_x = other / ".worktrees" / NEW_HOST_CONTAINER / "leaf-x"
+    assert f"worktree {new_x.as_posix()}\n" in _registered(other)
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=new_x).strip() == f"wt/{NEW}/leaf-x"
+    assert not stranded.exists()
+
+
+def test_given_a_host_prefixed_container_holding_another_sessions_worktree_when_migrated_then_it_is_left(fleet):
+    other = fleet["other"]
+    foreign = other / ".worktrees" / HOST_CONTAINER / "leaf-f"
+    _git("worktree", "add", "-q", str(foreign), "-b", "wt/session-1/leaf-f", cwd=other)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert f"worktree {foreign.as_posix()}\n" in _registered(other)
+    assert f"agent worktree: {foreign}" not in out
+
+
+@pytest.mark.parametrize("container", [f"{OLD}-agents", HOST_CONTAINER])
+def test_given_a_reaped_agents_project_dir_when_dry_run_then_its_move_is_listed_and_nothing_changes(fleet, container):
+    gone = fleet["other"] / ".worktrees" / container / "gone-leaf"
+    project = _project_dir(gone)
+    before = snapshot_tree(project.parent)
+
+    code, out, err = _migrate(fleet, "-n")
+
+    assert code == 0, out + err
+    dest = project.parent / _slug(gone.parent.with_name(container.replace(OLD, NEW)) / "gone-leaf")
+    assert f"agent project dir: {project} -> {dest}" in out
+    assert snapshot_tree(project.parent) == before
+
+
+@pytest.mark.parametrize("container", [f"{OLD}-agents", HOST_CONTAINER])
+def test_given_a_reaped_agents_project_dir_when_migrated_then_it_moves_to_the_new_slug(fleet, container):
+    gone = fleet["other"] / ".worktrees" / container / "gone-leaf"
+    project = _project_dir(gone)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_gone = gone.parent.with_name(container.replace(OLD, NEW)) / "gone-leaf"
+    dest = project.parent / _slug(new_gone)
+    assert not project.exists()
+    record = json.loads((dest / "abc123.jsonl").read_text(encoding="utf-8"))
+    assert record["cwd"] == str(new_gone)
+
+
+def test_given_a_reaped_agents_project_dir_when_finished_then_it_moves_to_the_new_slug(fleet):
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    gone = fleet["other"] / ".worktrees" / HOST_CONTAINER / "gone-leaf"
+    project = _project_dir(gone)
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    assert not project.exists()
+    assert (project.parent / _slug(gone.parent.with_name(NEW_HOST_CONTAINER) / "gone-leaf")).is_dir()
+
+
+def test_given_the_new_agents_project_dir_exists_when_migrated_then_the_collision_is_reported_and_both_kept(fleet):
+    gone = fleet["other"] / ".worktrees" / f"{OLD}-agents" / "gone-leaf"
+    project = _project_dir(gone)
+    taken = _project_dir(fleet["other"] / ".worktrees" / f"{NEW}-agents" / "gone-leaf", sid="def456")
+    before = (snapshot_tree(project), snapshot_tree(taken))
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 1, out + err
+    assert f"agent project dir: {project} -> {taken} SKIPPED (target exists)" in out
+    assert (snapshot_tree(project), snapshot_tree(taken)) == before
+
+
+def test_given_a_project_dir_whose_transcript_records_another_cwd_when_migrated_then_it_is_left(fleet):
+    # ``<old>-agents-extra-agents`` slugs to a name that starts with ``<old>-agents``'s own slug.
+    elsewhere = fleet["other"] / ".worktrees" / f"{OLD}-agents-extra-agents" / "leaf-z"
+    project = _project_dir(elsewhere)
+    before = snapshot_tree(project)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert snapshot_tree(project) == before
+    assert str(project) not in out
+
+
+def test_given_editable_finder_and_egg_link_records_when_migrated_then_both_name_the_new_worktree(fleet, tmp_path):
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    venvs = tmp_path / "local-io" / "venvs"
+    own = _venv_in_root(venvs, "otherrepo--leaf-a", fleet["leaf_a"])
+    site = own / "lib" / "python3.12" / "site-packages"
+    old = fleet["leaf_a"]
+    (site / "__editable___pkg_1_0_finder.py").write_text(
+        f"MAPPING = {{'pkg': '{old}/src/pkg'}}\nNAMESPACES = {{}}\n", encoding="utf-8"
+    )
+    (site / "legacypkg.egg-link").write_text(f"{old}\n.\n", encoding="utf-8")
+    (old / ".venv").symlink_to(own, target_is_directory=True)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    new_a = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a"
+    assert (site / "__editable___pkg_1_0_finder.py").read_text(encoding="utf-8") == (
+        f"MAPPING = {{'pkg': '{new_a}/src/pkg'}}\nNAMESPACES = {{}}\n"
+    )
+    assert (site / "legacypkg.egg-link").read_text(encoding="utf-8") == f"{new_a}\n.\n"
+
+
+def test_given_a_direct_url_in_file_uri_form_when_relocated_then_the_uri_names_the_new_root(tmp_path):
+    # pip writes ``direct_url.json`` as ``Path.as_uri()``: forward slashes and a drive on Windows,
+    # percent-encoded on every platform. A migration cannot produce that form on a POSIX runner, so
+    # this calls the relocation directly with a root the URI encodes (a space), the form a native
+    # path spelling never matches.
+    old = tmp_path / "my repo" / "leaf-a"
+    new = tmp_path / "my repo" / "leaf-b"
+    site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    (site / "pkg-1.0.dist-info").mkdir(parents=True)
+    record = site / "pkg-1.0.dist-info" / "direct_url.json"
+    record.write_text(json.dumps({"url": old.as_uri(), "dir_info": {"editable": True}}), encoding="utf-8")
+    (site / "__editable__.pkg.pth").write_text(f"{old}/src\n", encoding="utf-8")
+
+    changed = relocate_venv(tmp_path / "venv", old, new)
+
+    assert json.loads(record.read_text(encoding="utf-8"))["url"] == new.as_uri()
+    assert (site / "__editable__.pkg.pth").read_text(encoding="utf-8") == f"{new}/src\n"
+    assert sorted(changed) == sorted([record, site / "__editable__.pkg.pth"])
+    assert relocate_venv(tmp_path / "venv", old, new) == []
+
+
+def _store_venv(root: Path, name: str, owner: Path) -> tuple[Path, Path]:
+    """A venv in a shared store with the back-pointer record naming ``owner``: ``(venv, record)``."""
+    venv = _venv_in_root(root, name, owner)
+    record = venv / ".hub-checkout"
+    record.write_bytes(f"{owner}\n".encode())
+    return venv, record
+
+
+@pytest.fixture
+def store(fleet, tmp_path):
+    """A venv store whose records name the slot, its agent worktree and two checkouts the migration never moves."""
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform cannot create directory symlinks")
+    root = tmp_path / "local-io" / "venvs"
+    agent_venv, agent_record = _store_venv(root, "otherrepo--leaf-a", fleet["leaf_a"])
+    slot_venv, slot_record = _store_venv(root, f"myrepo--{OLD}", fleet["slot"])
+    unrelated = [
+        _store_venv(root, "otherrepo--unrelated-1", fleet["other"] / ".worktrees" / "unrelated-1")[1],
+        # A sibling whose path extends the moved worktree's: a prefix match would wrongly take it.
+        _store_venv(root, "otherrepo--leaf-a-2", fleet["leaf_a"].with_name("leaf-a-2"))[1],
+    ]
+    return {
+        "agent": (agent_venv, agent_record),
+        "slot": (slot_venv, slot_record),
+        "unrelated": {record: record.read_bytes() for record in unrelated},
+        "new_a": fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-a",
+        "new_slot": fleet["repo"] / ".worktrees" / NEW,
+    }
+
+
+def test_given_venv_back_pointers_naming_moved_checkouts_when_migrated_then_they_name_the_new_paths(fleet, store):
+    (fleet["leaf_a"] / ".venv").symlink_to(store["agent"][0], target_is_directory=True)
+    (fleet["slot"] / ".venv").symlink_to(store["slot"][0], target_is_directory=True)
+
+    code, out, err = _migrate(fleet, "-y")
+
+    assert code == 0, out + err
+    assert store["agent"][1].read_bytes() == f"{store['new_a']}\n".encode()
+    assert store["slot"][1].read_bytes() == f"{store['new_slot']}\n".encode()
+    assert {record: record.read_bytes() for record in store["unrelated"]} == store["unrelated"]
+
+
+def test_given_a_verified_pair_whose_venv_back_pointers_name_old_paths_when_finished_then_they_are_repointed(
+    fleet, store
+):
+    from ai_cli.config import get_xdg_state_home
+    from ai_cli.session_migrate_status import finish_state
+
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+    assert finish_state(OLD, NEW, get_xdg_state_home()) == "verified"
+    # What a migration that never carried the back-pointers left: the checkouts moved, their records did not.
+    (store["new_a"] / ".venv").symlink_to(store["agent"][0], target_is_directory=True)
+    (store["new_slot"] / ".venv").symlink_to(store["slot"][0], target_is_directory=True)
+    stale = {store["agent"][1]: store["agent"][1].read_bytes(), store["slot"][1]: store["slot"][1].read_bytes()}
+
+    code, out, err = _migrate(fleet, "--finish", "-n")
+
+    assert code == 0, out + err
+    assert "venv back-pointer" in out
+    assert {record: record.read_bytes() for record in stale} == stale
+
+    code, out, err = _migrate(fleet, "--finish", "-y")
+
+    assert code == 0, out + err
+    assert store["agent"][1].read_bytes() == f"{store['new_a']}\n".encode()
+    assert store["slot"][1].read_bytes() == f"{store['new_slot']}\n".encode()
+    assert {record: record.read_bytes() for record in store["unrelated"]} == store["unrelated"]
+
+
+# A moved checkout keeps its ``__pycache__/*.pyc`` files, and each one's ``co_filename`` still
+# names the old, now missing, directory: anything reading source through a code object then
+# finds nothing. The migration removes those caches (Python rebuilds them on the next import),
+# but never inside a virtual environment, never a file git tracks and never through a symlink.
+
+
+def _compiled(directory: Path, name: str = "mod") -> Path:
+    """A module under ``directory`` with its bytecode compiled beside it; returns the ``.pyc``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    source = directory / f"{name}.py"
+    source.write_text("def f():\n    return 1\n", encoding="utf-8")
+    return Path(py_compile.compile(str(source), cfile=importlib.util.cache_from_source(str(source)), doraise=True))
+
+
+def _caches(root: Path) -> list[str]:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("__pycache__"))
+
+
+@pytest.fixture
+def compiled_fleet(fleet, tmp_path, monkeypatch):
+    # With a cache prefix set, bytecode is written elsewhere and no __pycache__ exists to check.
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    slot, leaf_c = fleet["slot"], fleet["leaf_c"]
+    _compiled(slot / "pkg")
+    _compiled(slot / "pkg" / "sub")
+    _compiled(leaf_c / "src")
+    _compiled(slot / ".venv" / "lib" / "site-packages" / "dep")
+    _compiled(slot / "tools" / "env" / "lib" / "dep")
+    (slot / "tools" / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    # A tracked file under a __pycache__ path, committed on the agent branch, with an untracked
+    # compiled sibling in the same directory.
+    tracked = leaf_c / "fixtures" / "__pycache__" / "kept.pyc"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_bytes(b"tracked fixture\n")
+    _git("add", "-f", str(tracked), cwd=leaf_c)
+    _git("commit", "-qm", "tracked cache fixture", cwd=leaf_c)
+    (tracked.parent / "untracked.pyc").write_bytes(b"stale\n")
+    fleet["tracked"] = tracked.relative_to(leaf_c)
+    return fleet
+
+
+def test_given_moved_checkouts_with_compiled_modules_when_migrated_then_no_cache_is_left_outside_a_venv(
+    compiled_fleet,
+):
+    code, out, err = _migrate(compiled_fleet, "-y")
+    assert code == 0, out + err
+
+    new_slot = compiled_fleet["repo"] / ".worktrees" / NEW
+    new_c = compiled_fleet["repo"] / ".worktrees" / f"{NEW}-agents" / "leaf-c"
+    assert _caches(new_slot) == [
+        ".venv/lib/site-packages/dep/__pycache__",
+        "tools/env/lib/dep/__pycache__",
+    ]
+    assert list((new_slot / ".venv" / "lib" / "site-packages" / "dep" / "__pycache__").glob("*.pyc"))
+    assert list((new_slot / "tools" / "env" / "lib" / "dep" / "__pycache__").glob("*.pyc"))
+    assert (new_slot / "pkg" / "mod.py").is_file()
+    assert _caches(new_c) == ["fixtures/__pycache__"]
+    tracked = new_c / compiled_fleet["tracked"]
+    assert tracked.read_bytes() == b"tracked fixture\n"
+    assert sorted(p.name for p in tracked.parent.iterdir()) == ["kept.pyc"]
+    assert _git("status", "--porcelain", "--untracked-files=all", cwd=new_c) == "?? src/mod.py\n"
+
+
+def test_given_a_symlink_to_an_outside_cache_when_migrated_then_the_outside_cache_survives(
+    fleet, tmp_path, monkeypatch
+):
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    if not _symlinks_available(tmp_path):
+        pytest.skip("this platform does not let the test create a directory symlink")
+    outside = tmp_path / "shared"
+    pyc = _compiled(outside / "lib")
+    (fleet["slot"] / "linked").symlink_to(outside, target_is_directory=True)
+    (fleet["slot"] / "linkedcache").symlink_to(pyc.parent, target_is_directory=True)
+
+    code, out, err = _migrate(fleet, "-y")
+    assert code == 0, out + err
+
+    assert pyc.is_file()
+    new_slot = fleet["repo"] / ".worktrees" / NEW
+    assert (new_slot / "linked").is_symlink()
+    assert (new_slot / "linkedcache").is_symlink()
+
+
+def test_given_more_agent_worktrees_when_dry_run_then_planning_makes_no_more_git_calls(fleet):
+    """Planning a session's agent worktrees costs a fixed number of git calls per repo.
+
+    One call per agent worktree took most of an hour on a host with dozens of agent worktrees
+    and a slow git, and printed nothing meanwhile, so a caller's timeout ended the run.
+    """
+    from ai_cli import session_migrate_agents as agents
+
+    real = agents._git
+
+    def count_dry_run() -> tuple[list[tuple[str, ...]], str]:
+        calls: list[tuple[str, ...]] = []
+
+        def counting(repo, *args):
+            calls.append(args)
+            return real(repo, *args)
+
+        with patch.object(agents, "_git", counting):
+            code, out, err = _migrate(fleet, "-n")
+        assert code == 0, out + err
+        return calls, out
+
+    before, _ = count_dry_run()
+    for n in range(6):
+        leaf = fleet["other"] / ".worktrees" / f"{OLD}-agents" / f"leaf-x{n}"
+        _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf-x{n}", cwd=fleet["other"])
+        _git("config", f"branch.wt/{OLD}/leaf-x{n}.hub-agent-worktree", str(leaf), cwd=fleet["other"])
+
+    after, out = count_dry_run()
+
+    new_leaf = fleet["other"] / ".worktrees" / f"{NEW}-agents" / "leaf-x5"
+    assert f"agent worktree: {fleet['other'] / '.worktrees' / f'{OLD}-agents' / 'leaf-x5'} -> {new_leaf}" in out
+    assert len(after) == len(before), sorted(set(map(tuple, after)) - set(map(tuple, before)))

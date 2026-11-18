@@ -16,6 +16,7 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 - **All options must have both short and long forms** — for example `-f`/`--force`, `-d`/`--dry-run`. Do not add long-only flags, except hidden internal `SUPPRESS` flags passed machine-to-machine.
 - When adding a new CLI option, add both forms simultaneously. Do not ship long-only flags.
+- A command's help in its Click declaration is the only source of its usage text. After changing a command or its help, run `uv run python scripts/generate_docs.py` to regenerate `docs/reference/cli.md` and the README command index. Never edit either by hand; `pytest` and the pre-commit hook fail when they are stale.
 - Name every command {verb}-{noun} (`migrate-session`, not `session-migrate`). A command group is a noun and its subcommands are verbs. A new command that does not fit this form is raised with the maintainer for review before it ships.
 
 ## Test Requirements

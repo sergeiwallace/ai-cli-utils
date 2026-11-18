@@ -100,7 +100,7 @@ Cons: wastes one API call per new restricted model; adds latency on first detect
   ```toml
   [gemini.geo_restricted_models]
   models = ["deep-research", "deep-research-pro-preview-12-2025"]
-  ```text
+  ```
 
 Pros: config-fast for known models; automatically self-updating for new ones.
 Cons: slightly more complex; requires writing config on runtime detection.
@@ -119,7 +119,7 @@ relay_host = "192.0.2.20"
 relay_user = "user"
 socks_port = 19050
 relay_pproxy_cmd = "pproxy -l socks5://:19050"
-```yaml
+```
 Pros: simple; minimal config.
 Cons: no fallback if primary relay is unreachable.
 
@@ -138,7 +138,7 @@ pproxy = true             # start pproxy on demand
 host = "my-us-vps.example.com"  # always-on VPS (fallback)
 user = "user"
 pproxy = false            # persistent proxy already running
-```yaml
+```
 Pros: supports fallback; each relay can be pproxy-on-demand or always-on; extensible.
 Cons: more config to set up; requires provisioning a fallback relay.
 
@@ -165,7 +165,7 @@ Cons: atexit doesn't fire on SIGKILL; teardown not guaranteed on exception mid-c
 ```python
 with GeoProxyContext(config):
     result = call_api(...)
-```text
+```
 Combined with atexit as belt-and-suspenders.
 
 Pros: Pythonic; exception-safe teardown; atexit provides backup cleanup.

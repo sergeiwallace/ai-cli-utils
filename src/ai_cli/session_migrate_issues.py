@@ -9,8 +9,9 @@ from pathlib import Path
 JOURNAL = "session-migration-issues.jsonl"
 
 
-def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
-    found: dict[Path, set[str]] = {}
+def _rows(state: Path, old: str, new: str) -> list[dict]:
+    """The pair's journal rows that name a store, in the order they were written."""
+    rows: list[dict] = []
     path = state / JOURNAL
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -18,23 +19,51 @@ def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(row, dict) or row.get("old") != old or row.get("new") != new:
-                continue
-            if isinstance(row.get("store"), str) and isinstance(row.get("issues"), list):
-                found.setdefault(Path(row["store"]), set()).update(i for i in row["issues"] if isinstance(i, str))
+            if (
+                isinstance(row, dict)
+                and row.get("old") == old
+                and row.get("new") == new
+                and isinstance(row.get("store"), str)
+            ):
+                rows.append(row)
+    return rows
+
+
+def intents(state: Path, old: str, new: str) -> dict[Path, set[str]]:
+    found: dict[Path, set[str]] = {}
+    for row in _rows(state, old, new):
+        if isinstance(row.get("issues"), list):
+            found.setdefault(Path(row["store"]), set()).update(i for i in row["issues"] if isinstance(i, str))
     return found
 
 
-def remember(state: Path, store: Path, old: str, new: str, issues: list[str]) -> None:
-    missing = set(issues) - intents(state, old, new).get(store, set())
-    if not missing:
-        return
+def unpublished(state: Path, old: str, new: str) -> set[Path]:
+    """Each store whose last re-key intent has no later ``published`` row."""
+    pending: dict[Path, bool] = {}
+    for row in _rows(state, old, new):
+        if isinstance(row.get("issues"), list):
+            pending[Path(row["store"])] = True
+        elif row.get("published") is True:
+            pending[Path(row["store"])] = False
+    return {store for store, waiting in pending.items() if waiting}
+
+
+def _append(state: Path, row: dict) -> None:
     state.mkdir(parents=True, exist_ok=True)
-    row = {"old": old, "new": new, "store": str(store), "issues": sorted(missing)}
     with (state / JOURNAL).open("a", encoding="utf-8") as out:
         out.write(json.dumps(row) + "\n")
         out.flush()
         os.fsync(out.fileno())
+
+
+def remember(state: Path, store: Path, old: str, new: str, issues: list[str]) -> None:
+    missing = set(issues) - intents(state, old, new).get(store, set())
+    if missing:
+        _append(state, {"old": old, "new": new, "store": str(store), "issues": sorted(missing)})
+
+
+def remember_published(state: Path, store: Path, old: str, new: str) -> None:
+    _append(state, {"old": old, "new": new, "store": str(store), "published": True})
 
 
 def note(old: str, new: str) -> str:
@@ -42,7 +71,10 @@ def note(old: str, new: str) -> str:
 
 
 def inspect_comments(store, old: str, new: str, intended: set[str]) -> None:
-    """Only a recorded issue still held by NEW may have its missing comment finished."""
+    """Only a recorded issue still held by NEW may have its missing comment finished.
+
+    A recorded issue held by neither OLD nor NEW was handed on to another session and is done.
+    """
     from .session_migrate import _bd
 
     missing = intended - set(store.issues)
@@ -57,7 +89,10 @@ def inspect_comments(store, old: str, new: str, intended: set[str]) -> None:
     held = {str(row["id"]) for row in rows if isinstance(row, dict) and row.get("assignee") == new and row.get("id")}
     for issue in sorted(missing):
         if issue not in held:
-            raise ValueError(f"recorded issue {issue} is no longer assigned to {old} or {new}; completion unverified")
+            # Neither OLD (``store.issues``) nor NEW holds it: it was handed on to another
+            # session, before or after this migration re-keyed it, so nothing is left to re-key.
+            store.completed.append(issue)
+            continue
         comments = _bd(store.path, "comments", issue, "--json")
         if comments.returncode:
             raise ValueError(comments.stderr or f"cannot verify comments for {issue}")

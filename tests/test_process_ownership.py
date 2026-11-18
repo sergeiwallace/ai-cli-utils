@@ -120,6 +120,38 @@ def test_given_a_child_with_a_grandchild_when_reaped_then_the_whole_tree_is_gone
     assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its group"
 
 
+# A leader that starts a grandchild which ignores SIGTERM, reports its pid, then exits at
+# once. The grandchild bounds its own life so a failing reap cannot leave it behind for
+# longer than that.
+_LEADER_THAT_EXITS_BEFORE_A_STUBBORN_GRANDCHILD = (
+    "import subprocess, sys\n"
+    "kid = subprocess.Popen([sys.executable, '-c', "
+    "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)'])\n"
+    "print(kid.pid, flush=True)\n"
+)
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgrp"), reason="process groups are POSIX-only")
+def test_given_a_leader_that_exited_before_a_sigterm_ignoring_grandchild_when_reaped_then_the_grandchild_is_gone():
+    """A reap must not end at the leader: the group outlives it (AI-CLI-h8r2).
+
+    The leader exits first, so a loop that stops when the direct child is gone never
+    signals the group, and a grandchild that ignores SIGTERM is never escalated to SIGKILL.
+    """
+    proc = spawn_owned(
+        [sys.executable, "-c", _LEADER_THAT_EXITS_BEFORE_A_STUBBORN_GRANDCHILD], stdout=subprocess.PIPE, text=True
+    )
+    assert proc.stdout is not None
+    grandchild = int(proc.stdout.readline().strip())
+    proc.stdout.close()
+    assert proc.wait(timeout=10) == 0, "the leader did not exit, so this proves nothing"
+    assert psutil.pid_exists(grandchild), "the grandchild never started, so this proves nothing"
+
+    reap(proc)
+
+    assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its group"
+
+
 @pytest.mark.skipif(not hasattr(os, "getpgrp"), reason="process groups are POSIX-only")
 def test_given_a_grandchild_in_a_group_of_its_own_when_the_tree_is_reaped_then_it_is_gone_too():
     """A descendant that left its parent's group must not outlive the reap (AI-CLI-ozid).
@@ -193,3 +225,24 @@ def test_given_an_owned_process_context_when_the_body_returns_then_the_process_i
         assert proc.poll() is None
 
     assert _gone(pid)
+
+
+class _GoneProcess:
+    """A process that exited between listing and inspection, as macOS psutil reports it.
+
+    On macOS psutil can raise a bare ``ProcessLookupError`` from ``sysctl(kinfo_proc)`` for a
+    process that already exited, instead of ``psutil.NoSuchProcess``.
+    """
+
+    def __getattr__(self, name):
+        def gone(*_args, **_kwargs):
+            raise ProcessLookupError(3, "no such process (originated from sysctl(kinfo_proc), len == 0)")
+
+        return gone
+
+
+def test_given_owned_process_gone_with_bare_lookup_error_when_ending_owned_then_cleanup_completes(monkeypatch):
+    from tests import process_ownership
+
+    monkeypatch.setattr(process_ownership, "_session_members", lambda sessions, born_after: set())
+    process_ownership._end_owned({_GoneProcess()}, set(), 0.0, "owned process survived cleanup")

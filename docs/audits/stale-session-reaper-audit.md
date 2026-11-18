@@ -107,7 +107,7 @@ Circus-managed stale-tmux-session reaper. Triggered by AI-CLI-tdm6, a follow-up 
   evaluation/reap protocol, Heartbeat recording), Data Model (Configuration, Heartbeat ledger),
   Integration, Implementation Phases 1-2 with their EARS ACs, Risks and Mitigations, all 6 Design
   Decisions (D-1 through D-6) and their `decision-record` provenance comments, Open Questions.
-- Conformance against `~/projects/ai-harness/docs/designs/TEMPLATE.md` (structure, region markers,
+- Conformance against `~/projects/automation framework/docs/designs/TEMPLATE.md` (structure, region markers,
   decision-record fixed-key format, feedback-blockquote placeholders).
 - Conformance against the 5 hard design requirements recorded in AI-CLI-tdm6's bd description
   (out-of-band, dual-signal corroboration, fail-closed, observe-first rollout, regression coverage).
@@ -1884,12 +1884,12 @@ needs a portable rule for process restart and host reboot.
 
 **Audit format and authoritative standards:**
 
-- `~/projects/ai-harness/docs/audits/TEMPLATE.md` — full canonical audit structure and AD skeleton. The repo-local and invocation-designated project-template fallback paths did not exist.
-- `~/projects/ai-harness/docs/audits/STUB.md` — full finding taxonomy, matrix mandate, and anti-pattern instructions.
-- `~/projects/ai-harness/docs/designs/TEMPLATE.md` — full design/decision/approval structure.
-- `~/projects/ai-harness/docs/procedures/task-authoring-standards.md` — full EARS, failure-path-per-public-function, parity, and test-strength rules.
-- `~/projects/ai-harness/docs/procedures/reasoning-checkpoints.md` — full verification/negative-control standard.
-- `~/projects/ai-harness/docs/procedures/design-doc-workflow.md` — full design status, feedback, validation, and approval workflow.
+- `~/projects/automation framework/docs/audits/TEMPLATE.md` — full canonical audit structure and AD skeleton. The repo-local and invocation-designated project-template fallback paths did not exist.
+- `~/projects/automation framework/docs/audits/STUB.md` — full finding taxonomy, matrix mandate, and anti-pattern instructions.
+- `~/projects/automation framework/docs/designs/TEMPLATE.md` — full design/decision/approval structure.
+- `~/projects/automation framework/docs/procedures/task-authoring-standards.md` — full EARS, failure-path-per-public-function, parity, and test-strength rules.
+- `~/projects/automation framework/docs/procedures/reasoning-checkpoints.md` — full verification/negative-control standard.
+- `~/projects/automation framework/docs/procedures/design-doc-workflow.md` — full design status, feedback, validation, and approval workflow.
 - `AGENTS.md`, `CLAUDE.md` — full repository role, public-package, CLI, portability, and test rules.
 
 **Existing source and configuration:**
@@ -2286,7 +2286,7 @@ Record every file you read in `## Appendix: Files Read`, grouped by category.
 
 2. This audit doc's own "Scope" section above — the 5 hard requirements are quoted verbatim there
    and in "Your Task" above; do not re-derive them from a different source.
-3. `~/projects/ai-harness/docs/designs/TEMPLATE.md` — structural/decision-record conformance.
+3. `~/projects/automation framework/docs/designs/TEMPLATE.md` — structural/decision-record conformance.
 
 ### Prior incident context (why this design exists)
 

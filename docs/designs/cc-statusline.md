@@ -105,10 +105,10 @@ Branch lookup (`git branch --show-current`) costs ~100ms. Cached in `$TMPDIR/.ai
 
 Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()` in `src/ai_cli/quota.py`).
 
-> **AIH-164 update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
+> **historical-task update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
 > now come from CC's official `rate_limits` object on the statusLine **stdin** (`five_hour` +
 > `seven_day`, each `used_percentage` + `resets_at`) — deterministic, \$0/zero-token. The
-> ai-harness `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
+> automation framework `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
 > (read by the new `quota-pct` ad-hoc tool, a `ctx-pct` sibling), and exports `AI_CLI_QUOTA_*`
 > env vars that `quota_statusline_part()` consumes as the authoritative source (recording a
 > *throttled* snapshot so the acceleration arrow keeps its cadence). The old `claude -p /usage`
@@ -123,7 +123,7 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 > The Fable parser, `weekly_sonnet_pct` and `weekly_model_name` database columns, and
 > Fable-specific backoff state remain in the codebase as retained dead code pending a separate
 > removal decision. They are not called from the statusline render path. See plan
-> `ai-harness/docs/plans/aih-164-*` + research
+> `automation framework/docs/plans/app-164-*` + research
 > `docs/research/claude-quota-statusline-rate-limits-2026.md`.
 
 ### Output Format
@@ -138,12 +138,6 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 
 ```
 📊 Week 12% →+3% 🌱 [⏱]
-```
-
-**When scrape format changed** (DB mismatch counter raised):
-
-```
-⚠ quota scrape format changed
 ```
 
 ### Label Width Adaptation
@@ -234,7 +228,7 @@ No user-facing configuration for the statusline itself. Related config:
 |------|---------|
 | `src/ai_cli/data/statusline-command.sh` | Shell script: JSON parse, segment assembly, caching, telemetry |
 | `src/ai_cli/quota.py` → `quota_statusline_part()` | Python: quota DB read, format output with ANSI codes |
-| `~/.claude/statusline-command.sh` (ai-harness) | Copy installed by `ai setup`; must stay in sync with source |
+| `~/.claude/statusline-command.sh` (automation framework) | Copy installed by `ai setup`; must stay in sync with source |
 
 The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup` and referenced in `.claude/settings.json` as the `hooks.statusLine` command.
 
@@ -242,13 +236,13 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 
 - **`quota_statusline_part()`** in `quota.py` reads from `quota.db` (SQLite, `quota_snapshots` table) and the `quota_meta` table for format-change detection.
 - **`ai quota record`** writes to `quota_snapshots` via `QuotaDB.record()`.
-- **`ai quota scrape`** populates `quota_snapshots` via `_scrape_usage_hidden_pane()`. Format-change detection writes to `quota_meta`.
-- The retained Fable parser, `weekly_sonnet_pct` and `weekly_model_name` columns, and Fable backoff state are dead code: the statusline render path no longer schedules a Fable scrape or renders stored Fable values.
+- **The statusline never starts a scrape** (2026-11-15). With no seven-day value from any source, `quota_statusline_part()` prints nothing. `ai quota publish` sends the native reading to NATS from the state file the statusline writes.
+- **No `/usage` scrape remains.** The per-model weekly (Fable) columns in `quota_snapshots` keep their last stored values and get no new ones: Claude Code's statusline payload has no Fable window, and `/usage` stopped showing a per-model line in July 2026. The scrape-format `quota_meta` keys and the broken-scraper prefix went with the scrape.
 - **CC statusLine hook** — configured in `.claude/settings.json`: `{"hooks": {"statusLine": [{"type": "command", "command": "~/.claude/statusline-command.sh"}]}}`.
 
 ## Open Questions
 
-1. Should the statusline design doc live in `ai-cli-utils/docs/designs/` (current) or migrate to a future `ai-harness` repo? The script has a copy in `ai-harness/.claude/` already.
+1. Should the statusline design doc live in `ai-cli-utils/docs/designs/` (current) or migrate to a future `automation framework` repo? The script has a copy in `automation framework/.claude/` already.
 2. Should the branch cache TTL (5s) be configurable via env var?
 
 > **Feedback Round 1:** Your thoughts on the open questions:
@@ -262,6 +256,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 |------|----------|-------|
 | 2026-04-29 | Initial doc created | Documents current implementation as of AI-CLI-64 + AI-CLI-68 |
 | 2026-07-29 | Retired the `ccF` Fable segment | Upstream `/usage` stopped exposing Fable data; after the rollover mislabeling fix and explicit unavailable state, the permanently unavailable segment was removed. Retained scraper, database, and backoff machinery awaits a separate removal decision. |
+| 2026-11-16 | Removed the scrape-format alert | The `/usage` scrape is retired, so no format-change counter or alert exists; the statusline renders only Claude Code's native `rate_limits`. |
 
 <!-- /doc:region name="overview" -->
 

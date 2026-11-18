@@ -116,7 +116,6 @@ class Tag(StrEnum):
     PLAN = "plan"
     PS = "ps"
     QUOTA = "quota"
-    QUOTA_WATCH = "quota-watch"
     REGISTER = "register"
     REMOTE = "remote"
     RESTORE = "restore"
@@ -149,6 +148,7 @@ class Untagged(StrEnum):
     HELP = "Click-rendered help text, the CLI's reference documentation"
     SERVICE_UNIT = "exact service-unit text and installation plan for inspection"
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
+    TABLE = "an aligned table a person reads; a tag on each row would break its columns"
 
 
 class Level(StrEnum):
@@ -531,8 +531,30 @@ def _shown_op(record: Record, settings: OutputSettings) -> str | None:
     return record.op if record.op is not None else (operation.default if operation.required else None)
 
 
+#: The host this process's records come from when another machine shows them, "" when local.
+_origin = ""
+
+
+def set_origin(host: str) -> str:
+    """Mark every record this process renders as coming from ``host``; give back the previous value.
+
+    The remote side of ``ai c -R`` runs its own launcher, and its lines reach the launching
+    machine's terminal beside the local launcher's, header for header. ``[remote <host>]`` before
+    the tag tells the two apart. An empty ``host`` turns the mark off.
+    """
+    global _origin
+    with _lock:
+        previous, _origin = _origin, host
+    return previous
+
+
 def _elements(record: Record, settings: OutputSettings) -> list[tuple[str, str]]:
-    return [part for name in settings.order for part in _element(name, record, settings)]
+    parts: list[tuple[str, str]] = []
+    for name in settings.order:
+        if name == "tag" and _origin:
+            parts.append((f"[remote {_origin}]", settings.elements.tag.style))
+        parts += _element(name, record, settings)
+    return parts
 
 
 def _settings() -> OutputSettings:
@@ -850,8 +872,26 @@ def error(tag: Tag, op: str, message: object, *, file: TextIO | None = None) -> 
 
 
 def confirm(tag: Tag, op: str, question: str, *, default: bool = False) -> bool:
-    """A yes/no prompt whose prompt line carries ``[tag] op:``."""
-    return click.confirm(render(tag, op, question.strip(), stream=sys.stdout), default=default)
+    """A yes/no prompt whose prompt line carries ``[tag] op:``.
+
+    A closed stdin (a script or another program running the command) answers the default and
+    says so. click raises ``Abort`` for it, and callers that catch ``RuntimeError`` (which
+    ``Abort`` subclasses) used to report an unanswered prompt as an empty-reason failure. Ctrl+C
+    still raises.
+    """
+    try:
+        return click.confirm(render(tag, op, question.strip(), stream=sys.stdout), default=default)
+    except click.Abort as exc:
+        if not isinstance(exc.__context__, EOFError):
+            raise
+        answer = "yes" if default else "no"
+        emit(
+            tag,
+            op,
+            f"no answer (stdin is closed), so {answer}; answer from a terminal, or pass -y where the command takes it",
+            err=True,
+        )
+        return default
 
 
 def ask(tag: Tag, op: str, prompt: str, *, err: bool = False) -> str:
@@ -898,6 +938,42 @@ def raw(reason: Untagged, text: str, *, err: bool = False, file: TextIO | None =
         _close_open_lines()
         stream.write(f"{text}\n" if nl else text)
         stream.flush()
+
+
+#: Width a table renders at when it is not written to a terminal, so a piped row never wraps.
+_UNBOUNDED_TABLE_WIDTH = 100_000
+
+
+def table(headers: Sequence[str], groups: Sequence[Sequence[Sequence[str]]], *, file: TextIO | None = None) -> None:
+    """Print ``groups`` of rows as one ``rich.table`` with a header row and a rule between groups.
+
+    Written untagged and without colour. On a terminal the table fits its width; on a pipe
+    it is as wide as its longest row, so each row stays one line for ``grep``.
+    """
+    import shutil
+
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
+
+    stream = _stream(False, file)
+    width = shutil.get_terminal_size().columns if _is_tty(stream) else _UNBOUNDED_TABLE_WIDTH
+    console = Console(
+        file=stream, width=width, color_system=None, markup=False, highlight=False, emoji=False, legacy_windows=False
+    )
+    grid = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False)
+    for header in headers:
+        grid.add_column(Text(header), overflow="fold")
+    for group in groups:
+        for index, row in enumerate(group):
+            grid.add_row(*(Text(cell) for cell in row), end_section=index == len(group) - 1)
+    with console.capture() as captured:
+        console.print(grid)
+    lines = [line.rstrip() for line in captured.get().splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    raw(Untagged.TABLE, "\n".join(lines), file=stream)
 
 
 def _parse_record(line: str) -> Record | None:

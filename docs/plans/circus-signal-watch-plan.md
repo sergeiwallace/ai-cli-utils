@@ -37,7 +37,7 @@ source: session-2026-04-01
 ```bash
 ai internal signal-watch "$project_name" "$tmux_session" &>/dev/null &
 signal_watch_pid=$!
-```text
+```
 
 ## Problem
 
@@ -68,7 +68,7 @@ endpoint        = ipc:///home/user/.local/state/ai-cli/circus.endpoint
 pubsub_endpoint = ipc:///home/user/.local/state/ai-cli/circus.pubsub
 logoutput       = /home/user/.local/state/ai-cli/circus.log
 umask           = 0o022
-```text
+```
 
 - IPC (not TCP) — no port collision, no network exposure
 - No `[watcher:*]` sections — all watchers added dynamically via API
@@ -79,7 +79,7 @@ umask           = 0o022
 ```python
 def _ensure_circusd() -> str:
     """Start circusd if not already running. Returns the endpoint URI."""
-```text
+```
 
 1. Compute `state_dir = get_xdg_state_home()`, ensure it exists
 2. Compute `endpoint = f"ipc://{state_dir}/circus.endpoint"`
@@ -96,7 +96,7 @@ def _ensure_circusd() -> str:
 
 ```python
 def _cmd_signal_watch_start(project: str, session: str) -> None:
-```text
+```
 
 > The watcher-name prefix below abbreviates **signal-watch**. It collides
 > letter-for-letter with a session-name prefix the public-hygiene guard forbids,
@@ -119,7 +119,7 @@ Options:
 
 ```python
 def _cmd_signal_watch_stop(session: str) -> None:
-```text
+```
 
 Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this unconditionally; circusd may not be running. <!-- public-hygiene: allow -->
 
@@ -127,7 +127,7 @@ Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this un
 
 ```python
 def _cmd_signal_watch_status() -> None:
-```text
+```
 
 Calls `circusd status`, filters to `sw-*` watchers, prints `{session}: {status}`. <!-- public-hygiene: allow -->
 
@@ -143,7 +143,7 @@ signal_watch_pid=$!
 # NEW:
 ai signal-watch start "$project_name" "$tmux_session" &>/dev/null
 signal_watch_pid=""
-```text
+```
 
 **EXIT trap — replace `kill "$signal_watch_pid"`:**
 
@@ -153,7 +153,7 @@ kill "$signal_watch_pid" 2>/dev/null
 
 # NEW:
 ai signal-watch stop "$tmux_session" &>/dev/null
-```text
+```
 
 ### 7. Tests
 
@@ -165,9 +165,9 @@ New `TestSignalWatchCircus` class in `tests/test_main.py`:
 | `test_ensure_circusd_when_not_running_then_starts_daemon_and_writes_ini` | Writes ini + starts daemon |
 | `test_cmd_signal_watch_start_registers_watcher_with_copy_env` | `add` called with `copy_env=True, start=True` |
 | `test_cmd_signal_watch_start_idempotent_on_second_call` | `rm` exception swallowed |
-| `test_cmd_signal_watch_stop_when_circusd_running` | `rm` sent with `name="sw-c-session-1"` | <!-- public-hygiene: allow -->
+| `test_cmd_signal_watch_stop_when_circusd_running` | `rm` sent with `name="sw-c-session-1"` <!-- public-hygiene: allow --> |
 | `test_cmd_signal_watch_stop_when_circusd_not_running_then_silent` | ZMQError swallowed, exits 0 |
-| `test_cmd_signal_watch_status_filters_sw_prefix` | Only `sw-*` watchers printed | <!-- public-hygiene: allow -->
+| `test_cmd_signal_watch_status_filters_sw_prefix` | Only `sw-*` watchers printed <!-- public-hygiene: allow --> |
 | `test_cli_signal_watch_start_dispatches` | CLI routes to `_cmd_signal_watch_start` |
 | `test_cli_signal_watch_stop_dispatches` | CLI routes to `_cmd_signal_watch_stop` |
 | `test_cli_signal_watch_missing_args_exits_1` | Missing args → exit 1 |

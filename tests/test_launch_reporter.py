@@ -398,6 +398,23 @@ def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applie
     assert launch_reporter.active() is default
 
 
+def test_given_no_launch_when_installed_is_asked_then_none_even_after_active_made_its_default(monkeypatch):
+    monkeypatch.setattr(launch_reporter, "_active", None)
+    monkeypatch.setattr(launch_reporter, "_fallback", None)
+    assert launch_reporter.installed() is None
+
+    default = launch_reporter.active()
+    assert launch_reporter.installed() is None
+
+    launched = LaunchReporter(quiet=True)
+    previous = launched.activate()
+    assert launch_reporter.installed() is launched
+
+    assert previous is default
+    previous.activate()
+    assert launch_reporter.installed() is None
+
+
 # --- the launch path uses one reporter ---------------------------------------------
 
 
@@ -494,6 +511,7 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
         patch("ai_cli.trust.ensure_workspace_trusted"),
         patch("ai_cli.session.resolve_session", return_value=None),
         patch("ai_cli.session.detect_repo_root", return_value=None),
+        patch("ai_cli.session._tmux_session_names", return_value=[]),
     ):
         with pytest.raises(SystemExit) as exc_info:
             _do_session_launch(
@@ -517,10 +535,8 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert (
-        "[launch] resume: Error: no running session to resume: 'c-myproject-tst-7' is not a tmux session"
-        in captured.err
-    )
+    assert "[launch] session: Error: no session named myproject-tst-7 exists on" in captured.err
+    assert "Nothing was reserved or created." in captured.err
 
 
 def test_given_quiet_session_command_when_it_starts_then_the_active_reporter_carries_the_policy(monkeypatch):

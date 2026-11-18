@@ -188,12 +188,18 @@ def _registry_payload(pid: int, name: str, cwd: Path, session_id: str) -> dict:
     record rather than only parsing a minimal one hand-built to suit it.
     """
     now_ms = int(time.time() * 1000)
+    proc_start = "142302"
+    if sys.platform.startswith("linux"):
+        stat = Path("/proc") / str(pid) / "stat"
+        if stat.is_file():
+            # Claude Code stores the raw field 22 token as a decimal string.
+            proc_start = stat.read_text(encoding="utf-8").rpartition(")")[2].split()[19]
     return {
         "pid": pid,
         "sessionId": session_id,
         "cwd": str(cwd),
         "startedAt": now_ms - 60_000,
-        "procStart": "142302",
+        "procStart": proc_start,
         "version": "2.1.223",
         "peerProtocol": 1,
         "kind": "interactive",
@@ -390,6 +396,38 @@ def test_next_free_index_given_a_gap_below_the_top_when_computed_then_the_gap_is
 
 
 # ---- live-session refusal ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("recorded_start", "actual_start", "expected_pids"),
+    [
+        pytest.param("142302", "142302", [4242], id="matching-ticks"),
+        pytest.param("142302", "243201", [], id="reused-pid"),
+        pytest.param("0", "142302", [4242], id="zero-marker"),
+        pytest.param(-1, "142302", [4242], id="negative-marker"),
+        pytest.param(None, "142302", [4242], id="missing-marker"),
+        pytest.param(142302.5, "142302", [4242], id="unknown-units"),
+        pytest.param("142302", None, [4242], id="unreadable-stat"),
+        pytest.param("142302", "0", [4242], id="invalid-procfs-marker"),
+    ],
+)
+def test_live_sessions_given_a_procfs_pid_when_scanned_then_only_comparable_ticks_prove_reuse(
+    tmp_path, recorded_start, actual_start, expected_pids
+):
+    proc_pid = tmp_path / "proc" / "4242"
+    proc_pid.mkdir(parents=True)
+    if actual_start is not None:
+        # Field 22 of /proc/<pid>/stat is a count of clock ticks since boot.
+        (proc_pid / "stat").write_text("4242 (worker (test)) S" + " 0" * 18 + f" {actual_start}\n", encoding="utf-8")
+    home = tmp_path / "claude-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    record = {"pid": 4242, "name": "session-1"}
+    if recorded_start is not None:
+        record["procStart"] = recorded_start
+    (sessions / "4242.json").write_text(json.dumps(record), encoding="utf-8")
+
+    assert [session.pid for session in live_sessions(home, proc_pid.parent)] == expected_pids
 
 
 def test_live_sessions_given_a_record_whose_pid_is_gone_when_scanned_then_not_reported(world):
@@ -2174,3 +2212,26 @@ def test_adopt_given_two_earlier_names_sharing_a_filename_when_dry_run_then_the_
     actions = Counter(m.action for m in result.resume_moves)
     assert actions["move"] == 4, actions
     assert actions["conflict"] == 4, actions
+
+
+def test_adopt_given_two_earlier_names_each_with_a_notified_marker_when_adopted_then_the_latest_epoch_is_kept(
+    world, adopt
+):
+    """Poller markers under every key merge onto the target, and the preview predicts each merge."""
+    first, second, current = "myrepo-tst-7", "myrepo-tst-8", "myrepo-tst-2"
+    _give_transcript_a_naming_history(world, first, second)
+    pollers = world["home"] / "resume" / "pollers"
+    pollers.mkdir(parents=True)
+    marker = f"__{ATTEMPT}.notified"
+    for key, epoch in ((first, 1700200000), (second, 1700000000), (current, 1700100000)):
+        (pollers / f"{key}{marker}").write_text(f"{epoch}\n", encoding="utf-8")
+
+    preview = adopt(dry_run=True)
+    result = adopt()
+
+    plan = [(m.source.name, m.action, m.kept) for m in preview.resume_moves]
+    assert plan == [(f"{first}{marker}", "merge", 1700200000), (f"{second}{marker}", "merge", 1700200000)]
+    assert [(m.source.name, m.action, m.kept) for m in result.resume_moves] == plan
+    assert sorted(p.name for p in pollers.iterdir()) == [f"{current}{marker}"]
+    assert (pollers / f"{current}{marker}").read_text(encoding="utf-8") == "1700200000\n"
+    assert not any("NOT re-keyed" in w for w in result.warnings)

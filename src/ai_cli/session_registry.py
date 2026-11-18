@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -40,7 +41,8 @@ SCHEMA_VERSION = 2
 _READABLE_SCHEMAS = (1, 2)
 REGISTRY_FILENAME = "iterm2-sessions.json"
 #: Why a session's previous run ended.
-EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "unknown")
+#: ``maintenance_wind_down`` is a clean exit a scheduled maintenance job asked for; it relaunches.
+EXIT_CAUSES = ("manual_exit", "terminal_quit_or_crash", "host_reboot", "maintenance_wind_down", "unknown")
 LINUX_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 #: Bound on the one read-only ``sysctl`` call that reads the macOS boot identity.
 BOOT_ID_TIMEOUT_SECONDS = 5
@@ -256,6 +258,9 @@ def _new_record(
 
 DURABLE_FIELDS = (
     "relaunch",
+    "relaunch_set_by",
+    "relaunch_changed_at",
+    "probe",
     "relaunched_boot_id",
     "boot_decision",
     "relaunch_decision",
@@ -265,6 +270,7 @@ DURABLE_FIELDS = (
     "transition_seq",
     "boot_recipe",
     "supervisor_exit",
+    "supervisor_identity",
     "owning_host",
     "ended_at",
     "exit",
@@ -336,12 +342,24 @@ def mark_ended(record_id: str) -> None:
 
 
 def record_exit(
-    name_or_id: str, *, cause: str, evidence: dict, at: str | None = None, _document: dict | None = None
+    name_or_id: str,
+    *,
+    cause: str,
+    evidence: dict,
+    at: str | None = None,
+    proved_dead: bool = False,
+    _document: dict | None = None,
 ) -> list[dict]:
     """Set the ``exit`` of every record whose id or name is ``name_or_id``; return those records.
 
     Also sets ``ended_at`` when it is unset. An empty list means nothing matched and
     nothing was written.
+
+    ``proved_dead`` (the restore sweep, which found the tmux session gone) also moves the run
+    state to ``exited``: ``session_run_state.run_state`` reads ``run_state`` before ``exit``, so
+    a record the sweep proved dead kept reading running for every reader (AI-CLI-coiz). Without
+    it the exit is evidence only, as a hook's ``-x`` report is: a hook never overrides the
+    supervisor's run state or its transition sequence.
     """
     if cause not in EXIT_CAUSES:
         raise ValueError(f"cause must be one of {', '.join(EXIT_CAUSES)}, got {cause!r}")
@@ -356,6 +374,15 @@ def record_exit(
                 record["exit"] = {"cause": cause, "at": stamp, "evidence": dict(evidence)}
                 if not record.get("ended_at"):
                     record["ended_at"] = stamp
+                if proved_dead and record.get("run_state") != "exited":
+                    # Ordered after the stored transition, as an unsequenced manual one is: the
+                    # supervisor that would have written it died with its tmux session.
+                    record.update(
+                        run_state="exited",
+                        changed_at=stamp,
+                        supervisor_exit=dict(record["exit"]),
+                        transition_seq=max(time.monotonic_ns(), record.get("transition_seq", 0) + 1),
+                    )
                 marked.append(record)
         return bool(marked)
 
@@ -429,15 +456,51 @@ def _defer_refresh(skip_id: str) -> str | None:
     return None
 
 
-def _local_session_alive(name: str) -> bool | None:
-    """True/False from ``tmux has-session`` (exact match), None when tmux could not be asked."""
+def _tmux_absent_without_binary() -> bool | None:
+    """Prove no user tmux server survived removal of its executable, or stay unknown."""
+    import psutil
+
+    try:
+        user = psutil.Process().username()
+        for process in psutil.process_iter(["name", "username", "status"]):
+            info = process.info
+            if info.get("status") in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                continue
+            if info.get("username") not in {user, None}:
+                continue
+            if not info.get("name") or not info.get("username"):
+                return None
+            if info["name"].split(":", 1)[0].removesuffix(".exe") == "tmux":
+                return None
+    except (psutil.Error, OSError):
+        return None
+    return False
+
+
+def _local_session_alive(name: str, *, missing_binary_is_absent: bool = True) -> bool | None:
+    """Probe exact tmux liveness, optionally proving absence after executable removal.
+
+    Prune requires a tmux reply and disables the process-table fallback.
+    """
     try:
         result = subprocess.run(
             ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False, timeout=PROBE_TIMEOUT_SECONDS
         )
+    except FileNotFoundError:
+        return _tmux_absent_without_binary() if missing_binary_is_absent else None
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True
+    if result.returncode != 1:
+        return None
+    error = result.stderr or b""
+    if isinstance(error, bytes):
+        error = error.decode("utf-8", errors="replace")
+    absent = any(reason in error for reason in ("can't find session", "no server running", "no sessions")) or (
+        "error connecting" in error and "No such file or directory" in error
+    )
+    return False if absent else None
 
 
 def _remote_session_alive(record: dict, config: dict) -> bool | None:
@@ -474,7 +537,7 @@ def _remote_session_alive(record: dict, config: dict) -> bool | None:
 
 def _death_reason(record: dict, probe_remote: bool, remote_config: dict) -> str | None:
     if record.get("kind") == "local":
-        alive = _local_session_alive(str(record.get("name", "")))
+        alive = _local_session_alive(str(record.get("name", "")), missing_binary_is_absent=False)
         return "tmux session no longer exists" if alive is False else None
     if record.get("ended_at"):
         return "remote session exited cleanly"
@@ -484,6 +547,21 @@ def _death_reason(record: dict, probe_remote: bool, remote_config: dict) -> str 
     return None
 
 
+def _bare_probe_running(record: dict) -> bool:
+    """A bare probe has no tmux session to ask, so its own process, in this boot, is the evidence."""
+    import psutil
+
+    recipe = record.get("boot_recipe") or {}
+    pid = record.get("launcher_pid")
+    return bool(
+        (recipe.get("options") or {}).get("bare")
+        and record.get("run_state") == "running"
+        and record.get("boot_id") == current_boot_id()
+        and isinstance(pid, int)
+        and psutil.pid_exists(pid)
+    )
+
+
 def prune(
     *, probe_remote: bool = False, remote_config: dict | None = None, dry_run: bool = False
 ) -> list[tuple[dict, str]]:
@@ -491,6 +569,7 @@ def prune(
 
     Local: ``tmux has-session`` fails (a detached session is alive). Remote: a clean exit
     was recorded, or ``probe_remote`` asked the remote tmux and it has no such session.
+    A record with a boot recipe is kept for boot relaunch, unless it is a probe session's.
     With ``dry_run`` the same verdicts are returned and the registry is not written.
     """
     if not registry_path().exists():
@@ -508,7 +587,8 @@ def prune(
     def drop(doc: dict) -> bool:
         kept = []
         for record in doc["sessions"]:
-            if record.get("id") in verdicts and not record.get("boot_recipe"):
+            prunable = not record.get("boot_recipe") or (record.get("probe") and not _bare_probe_running(record))
+            if record.get("id") in verdicts and prunable:
                 removed.append((record, verdicts[record.get("id")]))
             else:
                 kept.append(record)

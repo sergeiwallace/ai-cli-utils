@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import _pytest.pathlib
+import _pytest.tmpdir
 import psutil
 import pytest
 from process_ownership import watch_tmux_directory
@@ -278,6 +280,21 @@ def _refuse_temp_root_inside_a_checkout(config) -> None:
         )
 
 
+def _cleanup_dead_symlinks_beside_a_concurrent_run(root: Path) -> None:
+    """pytest's ``cleanup_dead_symlinks``, minus its race with another run sharing ``root``.
+
+    With ``tmp_path_retention_policy = "failed"`` every passing run deletes its own base dir, so
+    the root's ``pytest-current`` link is dead after each one. pytest checks that the link is
+    dead and then unlinks it. Two runs of this suite ending together in the shared
+    :func:`suite_temproot` both pass the check, the slower unlink raises
+    ``FileNotFoundError`` from ``pytest_sessionfinish``, and a run whose every test passed
+    exits 1. A link another run already removed is the outcome this cleanup wants.
+    """
+    for left_dir in root.iterdir():
+        if left_dir.is_symlink() and not left_dir.resolve().exists():
+            left_dir.unlink(missing_ok=True)
+
+
 def pytest_configure(config):
     """Relocate the temp root to :func:`suite_temproot` before pytest first resolves ``basetemp``.
 
@@ -297,6 +314,9 @@ def pytest_configure(config):
     fights pytest's own security check.
     """
     _refuse_temp_root_inside_a_checkout(config)
+    # tmpdir imported the name and pathlib calls its own global, so both are replaced.
+    _pytest.pathlib.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
+    _pytest.tmpdir.cleanup_dead_symlinks = _cleanup_dead_symlinks_beside_a_concurrent_run
     if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return
     root = suite_temproot(tempfile.gettempdir())
@@ -1037,6 +1057,18 @@ def _reject_real_agent_processes(request, monkeypatch):
     monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
 
 
+@pytest.fixture(autouse=True)
+def _installed_build_reads_this_migration_format(monkeypatch):
+    """Report the installed ``ai`` as current, so no migration test probes or updates the real tool.
+
+    A test of the probe or the update path replaces this with its own stub.
+    """
+    from ai_cli import main
+    from ai_cli.session_migrate import MIGRATION_FORMAT
+
+    monkeypatch.setattr(main, "_installed_migration_format", lambda: ("ai", MIGRATION_FORMAT))
+
+
 @pytest.fixture
 def expect_desktop_escape():
     """Opt out of the teardown check below, for tests that DRIVE the guard on purpose.
@@ -1762,7 +1794,7 @@ def _restore_process_working_directory():
 
 
 @pytest.fixture(autouse=True)
-def _no_real_session_reaper_spawn(request):
+def _no_real_session_reaper_spawn(request, monkeypatch):
     """Keep a test's local `ai c` launch from starting the real stale-session reaper.
 
     Every local Claude launch calls ``_start_stale_session_reaper_for_launch``, which
@@ -1772,49 +1804,36 @@ def _no_real_session_reaper_spawn(request):
     (measured: four "stale-session-reaper: failed to start" lines after
     tests/test_chief_of_staff.py passed). Tests that drive the scheduler itself opt out
     with the ``real_reaper_spawn`` marker and mock ``subprocess.Popen`` themselves.
+
+    The no-op goes on the test's own monkeypatch stack, not a ``patch`` context. Earlier
+    autouse fixtures already requested ``monkeypatch``, so its undo runs after this
+    fixture's teardown: a ``patch`` context restored the real function first, and then a
+    test's own ``monkeypatch.setattr`` of the same name put this no-op back, leaving it
+    installed for every later test on that worker.
     """
     if request.node.get_closest_marker("real_reaper_spawn"):
-        yield
         return
-    with patch("ai_cli.process_manager._start_stale_session_reaper_for_launch"):
-        yield
+    monkeypatch.setattr("ai_cli.process_manager._start_stale_session_reaper_for_launch", MagicMock())
 
 
 @pytest.fixture(autouse=True)
-def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
+def _isolate_quota_state(tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
-
-    Four independent breaches this closes:
 
     1. **Real quota DB.** ``_get_quota_db_path()`` falls back to the real
        ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
-       test reads/writes real quota history (which carries live ``Fable`` model data).
-       Redirect it to a per-test tmp file.
-    2. **Real background scrape subprocess.** ``quota_statusline_part()`` fires
-       ``_launch_background_scrape`` / ``_maybe_trigger_background_scrape``, which
-       ``subprocess.Popen(["ai","quota","scrape"], start_new_session=True)`` — a real
-       detached process that scrapes live usage and writes the real DB + NATS KV.
-       Under xdist these race across workers and inject real ``Fable`` data into a
-       test expecting isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake).
-       No-op both spawners.
-    3. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
+       test reads/writes real quota history. Redirect it to a per-test tmp file.
+    2. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
        redirected, so any test reaching ``record_quota_snapshot(reset_at=...)`` wrote the
        real ``~/.local/state/ai-cli/quota-reset-anchor.txt``. That file *defines* the quota
        week boundary, and ``_get_current_week_start()`` re-reads it on every call — so one
        xdist worker's write moved another worker's boundary mid-test. The row a test just
-       recorded then carried a different ``week_start`` than the one the statusline queried,
-       no rows came back, and the render fell through to its ``📊 -`` placeholder. Redirect
-       it to a per-test tmp path so the anchor resolves to the deterministic built-in default.
-    4. **Real scrape lock file.** ``_launch_background_scrape()`` skips spawning when
-       its process-global lock exists. Redirect it to a per-test path so a live
-       statusline or another xdist worker cannot make a test's launch assertion
-       depend on shared user state.
+       recorded then carried a different ``week_start`` than the one the statusline queried
+       and no rows came back. Redirect it to a per-test tmp path so the anchor resolves to
+       the deterministic built-in default.
 
-    Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
-    locally and assert the real functions' behavior) opt out of the no-op via the
-    ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path, and the
-    anchor-persistence tests patch ``_get_reset_anchor_path`` with their own path — an inner
-    patch that still wins over this one.
+    ``set_db_path`` tests re-set the path, and the anchor-persistence tests patch
+    ``_get_reset_anchor_path`` with their own path — an inner patch that still wins over this one.
     """
     import ai_cli.quota_db as _qdb
 
@@ -1822,28 +1841,10 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     _qdb.set_db_path(tmp_db)
     tmp_anchor = tmp_path_factory.mktemp("quota_anchor") / "quota-reset-anchor.txt"
     monkeypatch.setattr(_qdb, "_get_reset_anchor_path", lambda: tmp_anchor)
-    # AIH-164 T-06: redirect the Fable backoff-state file to a per-test tmp path so tests never
-    # read/write the real ~/.local/state/ai-cli/fable-scrape-backoff.json (which would leak
-    # scrape-scheduling state across tests / into the real user state).
-    import ai_cli.quota as _q
-
-    _orig_scrape_lock_path = _q._SCRAPE_LOCK_PATH
-    _q._SCRAPE_LOCK_PATH = tmp_path_factory.mktemp("scrape_lock") / "quota-scrape.lock"
-    _orig_fable_state = _q._FABLE_BACKOFF_STATE
-    _q._FABLE_BACKOFF_STATE = tmp_path_factory.mktemp("fable_state") / "fable-scrape-backoff.json"
     try:
-        if request.node.get_closest_marker("real_quota_scrape"):
-            yield  # test drives the real scrape functions (with its own Popen mock)
-        else:
-            with (
-                patch("ai_cli.quota._launch_background_scrape"),
-                patch("ai_cli.quota._maybe_trigger_background_scrape"),
-            ):
-                yield
+        yield
     finally:
         _qdb.set_db_path(None)
-        _q._SCRAPE_LOCK_PATH = _orig_scrape_lock_path
-        _q._FABLE_BACKOFF_STATE = _orig_fable_state
 
 
 @pytest.fixture(autouse=True)
@@ -1888,6 +1889,9 @@ def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
         tokens = shlex.split(remote_command)
         if "update" in tokens and "ai" in tokens:
             return make_subprocess_result(stdout="current")
+        if "resolve-chief-session" in tokens:
+            # A remote host with no chief running answers nothing, so the caller keeps its placeholder.
+            return make_subprocess_result(returncode=1)
         allocation_index = tokens.index("allocate-session-name")
         engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
         session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
@@ -2124,3 +2128,43 @@ def hold_file_lock(path: Path):
         yield release
     finally:
         release()
+
+
+@pytest.fixture(params=["git", "sqlite", "dolt"])
+def registry_backend(request, monkeypatch):
+    """Run a session-name test once per registry backend; see ``tests/name_fleet.py``.
+
+    A run without the ``dolt`` program reports the Dolt case as skipped, never as passed;
+    in CI, where the workflow installs it, a missing binary fails the test instead.
+    """
+    import name_fleet
+
+    if request.param == "dolt" and shutil.which("dolt") is None:
+        if os.environ.get("CI"):
+            pytest.fail("the dolt program is not installed, and CI must run every Dolt registry test")
+        pytest.skip("the dolt program is not installed: the Dolt registry case was not run")
+    monkeypatch.setattr(name_fleet, "BACKEND", request.param)
+    return request.param
+
+
+# The per-test bound for a case that runs the real `dolt` program. The suite-wide 300 s
+# bound is sized for Linux, where these cases take seconds. On a hosted Windows runner
+# each Dolt call costs seconds: these cases took 100-250 s there, and three were killed
+# at 300 s with the worker (CI run 43786033751), so they get their own, wider bound.
+DOLT_TEST_TIMEOUT_S = 900
+
+
+def pytest_collection_modifyitems(config, items):
+    """Collect a test marked ``registry_backends(...)`` only for the backends it names,
+    and give every real-Dolt case the Dolt time bound unless it sets its own."""
+    kept, dropped = [], []
+    for item in items:
+        marker = item.get_closest_marker("registry_backends")
+        backend = getattr(getattr(item, "callspec", None), "params", {}).get("registry_backend")
+        (dropped if marker and backend and backend not in marker.args else kept).append(item)
+        runs_dolt = backend == "dolt" or item.path.name == "test_name_dolt.py"
+        if runs_dolt and item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(DOLT_TEST_TIMEOUT_S))
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept

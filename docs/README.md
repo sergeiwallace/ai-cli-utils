@@ -46,7 +46,7 @@ Repeatable operational and development workflows, including detailed step-by-ste
 
 ### reference
 
-Reference material such as configuration examples and technical specifications used while working with the project.
+Reference material such as configuration examples and technical specifications used while working with the project. [reference/cli.md](reference/cli.md) is the generated CLI reference: every command and option, regenerated from the code by `scripts/generate_docs.py`.
 
 ### research
 

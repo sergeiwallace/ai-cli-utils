@@ -263,7 +263,7 @@ gh api repos/user/ai-cli-utils/rulesets -X POST --input - <<'JSON'
   ]
 }
 JSON
-```text
+```
 
 Or via GitHub UI: Settings > Rules > Rulesets > New ruleset:
 - Target: `main` branch
@@ -296,13 +296,13 @@ In Settings > Code security and analysis:
    cd ai-cli-utils
    uv tool install .
    ai --help
-   ```text
+   ```
 3. **Check Security tab** — verify no secret scanning alerts
 4. **Verify Codecov** — check that coverage data appears at codecov.io
 5. **Add Codecov badge to README** — only if coverage > 80%:
    ```markdown
    [![codecov](https://codecov.io/gh/user/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/user/ai-cli-utils)
-   ```text
+   ```
 
 ## Deferred Items
 
@@ -344,7 +344,7 @@ services:
     image: nats:latest
     ports:
       - 4222:4222
-```text
+```
 
 No code changes needed — tests already have `@pytest.mark.skipif` guards or mock NATS; with a real server available they'll hit the live paths.
 
@@ -365,14 +365,14 @@ If proceeding, **Decision:** Option D — separate CI job with `continue-on-erro
 On the Hetzner server:
 ```bash
 ssh-keygen -t ed25519 -C "ai-cli-utils CI" -f ~/.ssh/ci_integration -N ""
-```text
+```
 
 #### Step 2: Restrict the key on the server
 
 In `~/.ssh/authorized_keys` on Hetzner, add the public key with a `command=` restriction:
 ```text
 command="cd /home/user/projects/ai-cli-utils && bash",restrict ssh-ed25519 AAAA... ai-cli-utils CI
-```text
+```
 
 This means even if the key leaks, it can only run a constrained shell in the project directory.
 
@@ -430,7 +430,7 @@ jobs:
       - name: Skip (server unreachable)
         if: steps.ssh_check.outputs.reachable == 'false'
         run: echo "Hetzner server unreachable — skipping integration tests"
-```text
+```
 
 #### Step 5: Write the integration tests
 
@@ -443,7 +443,7 @@ Mark with `pytest.ini` or `pyproject.toml`:
 ```toml
 [tool.pytest.ini_options]
 markers = ["integration: requires Hetzner SSH access"]
-```text
+```
 
 #### Step 6: Session config update
 

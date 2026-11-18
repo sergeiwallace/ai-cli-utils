@@ -2,12 +2,14 @@
 title: "AI-CLI-68: Quota Scrape Format-Change Detection — Plan"
 category: plan
 tags: [quota, scrape, telemetry, statusline, db]
-status: active
+status: superseded
 source: claude-sonnet-4-6
 task_id: AI-CLI-68
 created: 2026-04-27
 template_version: "plan-1.0.0"
 ---
+
+> **Superseded 2026-11-16 (AI-CLI-pyaz):** the `/usage` scrape this plan built is retired. Quota now comes from Claude Code's native statusline `rate_limits`, published by `ai quota publish`; see [claude-usage-telemetry.md](../designs/claude-usage-telemetry.md) and [cc-statusline.md](../designs/cc-statusline.md). This plan is kept as history.
 <!-- doc:region name="overview" kind="replaceable" -->
 
 # AI-CLI-68: Quota Scrape Format-Change Detection
@@ -24,7 +26,7 @@ The format-change condition is precise: `"% used"` appears in the captured outpu
 
 ## Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -32,14 +34,14 @@ The format-change condition is precise: `"% used"` appears in the captured outpu
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options Considered | Status |
 | --- | --- | --- | --- |
 | D1 | Scraper detection approach | (A) DB flag + debug dump + statusline indicator, (B) log-only | `APPROVED: (A)` |
 | D2 | Broken statusline indicator style | (A) red bg banner, (B) bold red text, (C) red banner + hint, (D) emoji-only | `PENDING` |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder

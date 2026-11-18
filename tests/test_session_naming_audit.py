@@ -6,6 +6,7 @@ import pytest
 from conftest import run_cli
 
 from ai_cli import config, name_registry, session_audit, session_naming
+from ai_cli.name_sqlite import SqliteRegistry
 
 
 @pytest.fixture
@@ -105,9 +106,21 @@ def test_given_no_transcripts_when_cli_naming_audit_runs_then_slots_still_appear
 
 def test_given_uninitialized_local_registry_when_reading_census_then_no_files_are_created(tmp_path, monkeypatch):
     root = tmp_path / "registry"
-    monkeypatch.setattr(name_registry, "discover", lambda: name_registry.Discovery(name_registry.LocalRegistry(root)))
+    local = SqliteRegistry(root / "session-names.sqlite3")
+    monkeypatch.setattr(name_registry, "discover", lambda: name_registry.Discovery(local))
     assert session_naming.naming_snapshot().rows == {}
     assert not root.exists()
+
+
+def test_given_populated_local_registry_when_reading_census_then_rows_are_read_without_writes(tmp_path, monkeypatch):
+    local = SqliteRegistry(tmp_path / "session-names.sqlite3", seed=False)
+    slot = name_registry.Slot("myproject", "myrepo", "tst", None, "test-host", "c")
+    reserved = name_registry.reserve_label(local, slot, "review")
+    monkeypatch.setattr(name_registry, "discover", lambda: name_registry.Discovery(local))
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+
+    assert session_naming.naming_snapshot().rows == {reserved.name: reserved.row}
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
 def test_given_legacy_state_when_naming_census_runs_then_configuration_and_state_are_unchanged(tmp_path, monkeypatch):

@@ -11,7 +11,15 @@ after ``ai migrate-session`` renames its slot, so this module moves them too:
 * every local ``wt/<old>/<leaf>`` branch becomes ``wt/<new>/<leaf>`` through
   :func:`ai_cli.branch_rename.rename_branch_anchored`, so its tip is anchored first;
 * every ``branch.*.<prefix>-session-home`` marker naming the old slot or a moved
-  worktree is rewritten to the new path, under the branch's new name.
+  worktree is rewritten to the new path, under the branch's new name;
+* a moved worktree's ``.venv``, when it links into a shared store, has its
+  ``.<prefix>-checkout`` record rewritten to the new path when it names the old one;
+* a worktree on a ``wt/<old>/`` (or already renamed ``wt/<new>/``) branch under a
+  host-prefixed container ``<host>--<old>-agents/`` moves to ``<host>--<new>-agents/``;
+* every Claude Code project directory whose slug embeds an old-name agents container,
+  in either form, moves to the new slug with its transcripts' cwd repointed, its
+  worktree reaped or not. One whose transcript records a cwd outside such a container
+  is someone else's and stays; one whose new slug is taken is reported, never merged.
 
 ``<prefix>`` is ``[worktree] marker_prefix``, the namespace the environment's worktree
 tooling writes its markers and its ``<prefix>-provenance.json`` record under. Unset,
@@ -39,7 +47,7 @@ from pathlib import Path
 from . import config as _config
 from .branch_rename import anchor_ref, rename_branch_anchored
 from .git_repair import _git_env
-from .venv_relocate import needs_relocation, relocate_venv
+from .venv_relocate import needs_relocation, relocate_venv, repoint_checkout_record, stale_checkout_record
 from .worktree_move import move_worktree
 
 
@@ -61,6 +69,87 @@ def _provenance_file() -> str | None:
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=_git_env(), check=False)
+
+
+def _local_branches(repo: Path) -> dict[str, str] | None:
+    """Every local branch of ``repo`` and its tip, from one ``for-each-ref``; ``None`` if git cannot list them.
+
+    Planning asks, for each agent worktree, whether its renamed branch already exists and where its
+    branch points. One call per repo answers both for every worktree; two calls per worktree took
+    most of an hour on a host with dozens of agent worktrees and a slow git.
+    """
+    listed = _git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/")
+    if listed.returncode != 0:
+        return None
+    tips: dict[str, str] = {}
+    for line in listed.stdout.splitlines():
+        tip, _, ref = line.partition(" ")
+        if ref.startswith("refs/heads/"):
+            tips[ref[len("refs/heads/") :]] = tip
+    return tips
+
+
+def _agent_worktree_stamps(repo: Path) -> dict[str, str] | None:
+    """Every ``branch.<name>.<prefix>-agent-worktree`` value in ``repo`` from one call.
+
+    Keys come back as ``git config`` canonicalises them: the section and variable names
+    lowercased, the branch name as written. ``None`` means the read failed, so the caller asks
+    for each key on its own; an empty mapping means there are none.
+    """
+    prefix = _config.get_worktree_marker_prefix()
+    if not prefix:
+        return {}
+    name = re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", f"{prefix}-agent-worktree".lower())
+    read = _git(repo, "config", "-z", "--get-regexp", rf"^branch\..*\.{name}$")
+    if read.returncode == 1:
+        return {}
+    if read.returncode != 0:
+        return None
+    stamps: dict[str, str] = {}
+    for record in read.stdout.split("\0"):
+        key, _, value = record.partition("\n")
+        if key:
+            stamps[key] = value
+    return stamps
+
+
+def _canonical_key(key: str) -> str:
+    """``key`` as ``git config --get-regexp`` prints it: section and variable lowercased."""
+    section, _, rest = key.partition(".")
+    subsection, dot, variable = rest.rpartition(".")
+    return f"{section.lower()}.{subsection}{dot}{variable.lower()}" if dot else f"{section.lower()}.{rest.lower()}"
+
+
+def _git_dir(worktree: Path) -> Path | None:
+    """The worktree's own git directory, read from its ``.git`` without running git."""
+    dotgit = worktree / ".git"
+    if dotgit.is_dir():
+        return dotgit
+    try:
+        text = dotgit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    path = Path(text[len("gitdir:") :].strip())
+    path = path if path.is_absolute() else worktree / path
+    return path if path.is_dir() else None
+
+
+def _provenance_path(worktree: Path, provenance_file: str) -> Path | None:
+    """Where ``git rev-parse --git-path <provenance_file>`` points, without a git call when it can.
+
+    The provenance file is not one of git's shared paths, so it lives in the worktree's own git
+    directory, which its ``.git`` names. Only when that cannot be read does this ask git.
+    """
+    git_dir = _git_dir(worktree)
+    if git_dir is not None:
+        return git_dir / provenance_file
+    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
+    if located.returncode != 0 or not located.stdout.strip():
+        return None
+    path = Path(located.stdout.strip())
+    return path if path.is_absolute() else worktree / path
 
 
 def renamed_key(key: str, renames: dict[str, str]) -> str:
@@ -86,6 +175,9 @@ class AgentEntry:
     tip: str = ""
     ownership: WorktreeOwnership | None = None
     venv_old: Path | None = None
+    #: The venv's back-pointer record, when it still names the worktree's path before the move.
+    venv_record: Path | None = None
+    venv_record_old: Path | None = None
 
     @property
     def moves(self) -> bool:
@@ -115,10 +207,27 @@ class WorktreeOwnership:
 
 
 @dataclass
+class AgentProjectDir:
+    """One Claude Code project directory whose slug embeds an old-name agents container."""
+
+    source: Path
+    dest: Path
+    old_root: Path
+    new_root: Path
+
+    @property
+    def conflict(self) -> bool:
+        return os.path.lexists(self.dest)
+
+
+@dataclass
 class AgentPlan:
     entries: list[AgentEntry] = field(default_factory=list)
     markers: list[AgentMarker] = field(default_factory=list)
     containers: list[Path] = field(default_factory=list)
+    #: ``<host>--<old>-agents`` containers a planned worktree moves out of, removed once empty.
+    host_containers: list[Path] = field(default_factory=list)
+    project_dirs: list[AgentProjectDir] = field(default_factory=list)
 
     def renames(self, repo: Path) -> dict[str, str]:
         """The branch renames planned in ``repo``."""
@@ -151,12 +260,9 @@ def _provenance(worktree: Path) -> tuple[dict | None, str]:
     provenance_file = _provenance_file()
     if provenance_file is None:
         return None, "unconfigured"
-    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
-    if located.returncode != 0 or not located.stdout.strip():
+    path = _provenance_path(worktree, provenance_file)
+    if path is None:
         return None, "unreadable"
-    path = Path(located.stdout.strip())
-    if not path.is_absolute():
-        path = worktree / path
     try:
         value = json.loads(path.read_bytes())
     except FileNotFoundError:
@@ -176,14 +282,21 @@ def plan_worktree_ownership(
     new_owner: str,
     branch: str | None,
     new_branch: str | None,
+    stamps: dict[str, str] | None = None,
 ) -> WorktreeOwnership:
-    """Inspect the existing ownership records for one planned worktree move."""
+    """Inspect the existing ownership records for one planned worktree move.
+
+    ``stamps`` is :func:`_agent_worktree_stamps` for ``repo``, read once for every worktree a
+    plan inspects there; without it the one key is asked for.
+    """
     provenance, state = _provenance(worktree)
     if provenance is not None and provenance["owner_session"] != old_owner:
         state = "different-owner"
     stamp_value = None
     key = _agent_worktree_key(branch) if branch else None
-    if key:
+    if key and stamps is not None:
+        stamp_value = stamps.get(_canonical_key(key))
+    elif key:
         stamp = _git(repo, "config", "--get", key)
         if stamp.returncode == 0:
             stamp_value = stamp.stdout.rstrip("\n")
@@ -240,12 +353,9 @@ def _replace_provenance_owner(worktree: Path, old_owner: str, new_owner: str) ->
     provenance_file = _provenance_file()
     if provenance_file is None:
         return "no [worktree] marker_prefix is configured"
-    located = _git(worktree, "rev-parse", "--git-path", provenance_file)
-    if located.returncode != 0 or not located.stdout.strip():
+    path = _provenance_path(worktree, provenance_file)
+    if path is None:
         return "record path is unreadable"
-    path = Path(located.stdout.strip())
-    if not path.is_absolute():
-        path = worktree / path
     payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
     descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     temporary = Path(temporary_name)
@@ -290,6 +400,80 @@ def _repos(projects_dir: Path, slot_repo: Path) -> list[Path]:
     return found
 
 
+def _host_containers(slots: Path, old: str, new: str) -> list[tuple[Path, Path]]:
+    """``(<host>--<old>-agents, <host>--<new>-agents)`` for each host prefix either side has on disk."""
+    pattern = re.compile(rf"(?P<host>.+)--(?:{re.escape(old)}|{re.escape(new)})-agents")
+    hosts = sorted(
+        {match["host"] for child in slots.iterdir() if child.is_dir() and (match := pattern.fullmatch(child.name))}
+        if slots.is_dir()
+        else set()
+    )
+    return [(slots / f"{host}--{old}-agents", slots / f"{host}--{new}-agents") for host in hosts]
+
+
+#: Claude Code caps a project slug at this length and ends a longer one in a hash of the whole
+#: path, so a capped slug cannot be renamed by swapping its container's part.
+PROJECT_SLUG_CAP = 200
+
+
+def _slug(path: Path | str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(path))
+
+
+def _recorded_cwd(project: Path) -> Path | None:
+    """The first top-level ``cwd`` any transcript in ``project`` records; None when none does."""
+    for transcript in sorted(project.glob("*.jsonl")):
+        with contextlib.suppress(OSError, UnicodeDecodeError), transcript.open(encoding="utf-8") as stream:
+            for raw in stream:
+                with contextlib.suppress(ValueError):
+                    record = json.loads(raw)
+                    if isinstance(record, dict) and isinstance(record.get("cwd"), str):
+                        return Path(record["cwd"])
+    return None
+
+
+def _plan_project_dirs(slots: Path, old: str, new: str, claude_home: Path, keep: list[Path]) -> list[AgentProjectDir]:
+    """Each Claude Code project directory whose slug embeds an old-name agents container in ``slots``.
+
+    Its worktree may be gone: the directory is found by its name, and a transcript's recorded
+    cwd, when one has one, must lie in the container the name points at. ``keep`` are the
+    worktrees that stay where they are, whose directories stay with them.
+    """
+    projects = claude_home / "projects"
+    if not projects.is_dir():
+        return []
+    root = _slug(slots) + "-"
+    names = {f"{old}-agents": f"{new}-agents"}
+    names |= {o.name: n.name for o, n in _host_containers(slots, old, new)}
+    kept = {_slug(path) for path in keep}
+    found: list[AgentProjectDir] = []
+    for project in sorted(projects.iterdir()):
+        name = project.name
+        if not project.is_dir() or not name.startswith(root) or len(name) > PROJECT_SLUG_CAP:
+            continue
+        cwd = _recorded_cwd(project)
+        if cwd is not None:
+            parts = cwd.parts[len(slots.parts) :] if cwd.parts[: len(slots.parts)] == slots.parts else ()
+            container = parts[0] if parts else ""
+            if container != f"{old}-agents" and not container.endswith(f"--{old}-agents"):
+                continue
+            names.setdefault(container, container[: -len(f"{old}-agents")] + f"{new}-agents")
+            candidates = [container]
+        else:
+            candidates = list(names)
+        for container in candidates:
+            prefix = root + _slug(container)
+            if name != prefix and not name.startswith(prefix + "-"):
+                continue
+            if any(name == k or name.startswith(k + "-") for k in kept):
+                break
+            dest = projects / (root + _slug(names[container]) + name[len(prefix) :])
+            if len(dest.name) <= PROJECT_SLUG_CAP:
+                found.append(AgentProjectDir(project, dest, slots / container, slots / names[container]))
+            break
+    return found
+
+
 def plan_agents(
     old: str,
     new: str,
@@ -299,9 +483,11 @@ def plan_agents(
     old_wt: Path,
     new_wt: Path,
     live_cwds: list[tuple[int, Path]],
+    claude_home: Path | None = None,
 ) -> AgentPlan:
-    """Plan every agent worktree, branch and marker move; writes nothing."""
+    """Plan every agent worktree, branch, marker and agent project directory move; writes nothing."""
     plan = AgentPlan()
+    home = claude_home if claude_home is not None else Path.home() / ".claude"
     prefix, new_prefix = f"wt/{old}/", f"wt/{new}/"
     for repo in _repos(projects_dir, slot_repo):
         listed = _git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{prefix}")
@@ -312,18 +498,32 @@ def plan_agents(
         new_container = container.parent / f"{new}-agents"
         worktrees = _worktrees(repo)
         holding = {branch: path for path, branch in worktrees if branch}
+        local_branches = _local_branches(repo)
+        stamps = _agent_worktree_stamps(repo)
 
         def _new_branch(branch: str | None) -> str | None:
             return new_prefix + branch[len(prefix) :] if branch and branch.startswith(prefix) else None
 
-        def _branch_exists(branch: str | None, repo: Path = repo) -> bool:
-            return (
-                bool(branch) and _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
-            )
+        def _branch_exists(
+            branch: str | None, repo: Path = repo, known: dict[str, str] | None = local_branches
+        ) -> bool:
+            if not branch:
+                return False
+            if known is not None:
+                return branch in known
+            return _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0
 
         repo_entries: list[AgentEntry] = []
         recovered: dict[Path, Path] = {}
+        host_pairs = _host_containers(container.parent, old, new)
         for path, branch in worktrees:
+            # A host-prefixed container is matched by name alone, so only a worktree on one of
+            # this session's branches is taken from it.
+            ours = bool(branch) and branch.startswith((prefix, new_prefix))
+            source, target = next(
+                ((o, n) for o, n in host_pairs if ours and (o in path.parents or n in path.parents)),
+                (container, new_container),
+            )
             flat = (
                 path.parent == container.parent
                 and path.name.startswith(f"{old}-")
@@ -336,16 +536,18 @@ def plan_agents(
                 and branch
                 and branch.startswith((prefix, new_prefix))
             )
-            if container in path.parents:
-                dest = new_container / path.relative_to(container)
+            if source in path.parents:
+                dest = target / path.relative_to(source)
+                if source != container and source not in plan.host_containers:
+                    plan.host_containers.append(source)
             elif new_flat:
                 dest = path
                 recovered[path.with_name(old + path.name[len(new) :])] = path
             elif flat:
                 dest = path.with_name(new + path.name[len(old) :])
-            elif new_container in path.parents:
+            elif target in path.parents:
                 dest = path
-                recovered[container / path.relative_to(new_container)] = path
+                recovered[source / path.relative_to(target)] = path
             else:
                 continue
             entry = AgentEntry(repo, path, dest, branch, _new_branch(branch))
@@ -362,10 +564,13 @@ def plan_agents(
                     new,
                     branch,
                     entry.new_branch or branch,
+                    stamps,
                 )
                 original = next((source for source, target in recovered.items() if target == path), path)
                 if needs_relocation(path / ".venv", original):
                     entry.venv_old = original
+                entry.venv_record = stale_checkout_record(path / ".venv", original)
+                entry.venv_record_old = original if entry.venv_record else None
             if dest == path:
                 entry.worktree = None
                 if (
@@ -374,7 +579,12 @@ def plan_agents(
                     and entry.ownership.stamp_value in {None, str(dest)}
                 ):
                     entry.ownership = None
-                if entry.branch is None and entry.ownership is None and entry.venv_old is None:
+                if (
+                    entry.branch is None
+                    and entry.ownership is None
+                    and entry.venv_old is None
+                    and entry.venv_record is None
+                ):
                     continue
             repo_entries.append(entry)
         attached = {e.branch for e in repo_entries}
@@ -387,7 +597,9 @@ def plan_agents(
             entry.conflict = _branch_exists(entry.new_branch)
             repo_entries.append(entry)
         for entry in repo_entries:
-            if entry.branch:
+            if entry.branch and local_branches is not None:
+                entry.tip = local_branches.get(entry.branch, "")
+            elif entry.branch:
                 tip = _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{entry.branch}")
                 entry.tip = tip.stdout.strip()
         plan.entries += repo_entries
@@ -395,6 +607,8 @@ def plan_agents(
         # the migration, and nothing else removes a directory still named for the old session.
         if any(e.worktree for e in repo_entries) or container.is_dir():
             plan.containers.append(container)
+        staying = [e.worktree for e in repo_entries if e.worktree and not e.moves] + [cwd for _pid, cwd in live_cwds]
+        plan.project_dirs += _plan_project_dirs(container.parent, old, new, home, staying)
 
         moved = {e.worktree: e.dest for e in repo_entries if e.worktree and e.moves}
         pattern = session_home_pattern()
@@ -428,6 +642,8 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
             lines += describe_worktree_ownership(e.ownership)
         if e.venv_old is not None:
             lines.append(("virtual environment", str(e.venv_old / ".venv"), str(e.dest), "rewrite"))
+        if e.venv_record is not None:
+            lines.append(("venv back-pointer", str(e.venv_record), str(e.dest), "rewrite"))
         if e.branch:
             dest = "" if e.held_by is not None else str(e.new_branch)
             lines.append(("agent branch", f"{e.branch} ({e.repo})", dest, action))
@@ -436,7 +652,9 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
     for m in plan.markers:
         key = renamed_key(m.key, (renames or {}).get(m.repo, plan.renames(m.repo)))
         lines.append(("session-home marker", f"{m.key} ({m.repo})", f"{key} = {m.value}", "rewrite"))
-    for container in plan.containers:
+    for p in plan.project_dirs:
+        lines.append(("agent project dir", str(p.source), str(p.dest), "conflict" if p.conflict else "move"))
+    for container in plan.containers + plan.host_containers:
         lines.append(("agent container", str(container), "", "removed once empty"))
     return lines
 
@@ -471,6 +689,11 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
                 relocate_venv(e.dest / ".venv", e.venv_old, e.dest)
             except OSError as exc:
                 warnings.append(f"virtual environment {e.dest / '.venv'} FAILED to relocate: {exc}")
+        if e.venv_record is not None and e.venv_record_old is not None and e.dest is not None:
+            try:
+                repoint_checkout_record(e.venv_record, e.venv_record_old, e.dest)
+            except (OSError, UnicodeDecodeError) as exc:
+                warnings.append(f"venv back-pointer {e.venv_record} FAILED to name {e.dest}: {exc}")
         if e.branch and e.new_branch:
             renamed = rename_branch_anchored(e.repo, e.branch, e.new_branch)
             if renamed.ok:
@@ -485,6 +708,24 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
         res = _git(m.repo, "config", key, m.value)
         if res.returncode != 0:
             warnings.append(f"session-home marker {key} in {m.repo} FAILED to rewrite: {(res.stderr or '').strip()}")
-    for container in plan.containers:
+    warnings += _apply_project_dirs(plan.project_dirs)
+    for container in plan.containers + plan.host_containers:
         _remove_if_empty(container)
     return done, warnings
+
+
+def _apply_project_dirs(project_dirs: list[AgentProjectDir]) -> list[str]:
+    """Rename each planned project directory whose target is still free and repoint its transcripts' cwd."""
+    from .session_migrate import _rewrite_transcript_cwd
+
+    warnings: list[str] = []
+    for p in project_dirs:
+        if p.conflict:
+            continue
+        try:
+            p.source.rename(p.dest)
+            for transcript in sorted(p.dest.glob("*.jsonl")):
+                _rewrite_transcript_cwd(transcript, str(p.old_root), str(p.new_root))
+        except OSError as exc:
+            warnings.append(f"agent project dir {p.source} FAILED to move to {p.dest}: {exc}")
+    return warnings

@@ -97,6 +97,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tmux
           tmux -V
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/dolt.tar.gz" https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-linux-amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/dolt.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/dolt-linux-amd64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dolt-linux-amd64/bin/dolt" version
       - run: uv sync --locked --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
@@ -105,8 +115,11 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  # The Windows suite runs as two shards in parallel, and `test-windows` below is the
-  # one check that reports for both, so the required-check name did not change.
+  # The Windows suite runs as twelve shards in parallel (two until 2026-11-15, when the
+  # session-name registry's real-Dolt cases pushed both halves past the cap at 46-62%;
+  # then four, which still reached the cap at 84%; then eight, one of which still ran
+  # past the cap on a slow runner), and `test-windows` below is the
+  # one check that reports for every shard, so the required-check name did not change.
   #
   # Why shards: on 2 xdist workers the suite took 34-39 minutes on most runners
   # against the 40-minute cap, and one PR run was cancelled mid-suite. The work is
@@ -117,13 +130,13 @@ jobs:
   # runner however fast the runner is. Measurements:
   # docs/procedures/github-actions-status.md.
   test-windows-shard:
-    name: test-windows (shard ${{ matrix.shard }}/2)
+    name: test-windows (shard ${{ matrix.shard }}/12)
     runs-on: windows-latest
     strategy:
       # A failure in one shard should not cancel the other: both results are wanted.
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     # A real_tmux test spawning MSYS2's tmux for real hung an earlier run past
     # 30 minutes with no sign of progress (killed manually, PR #35) -- bound
     # the blast radius of any future hang instead of burning hours of CI time.
@@ -196,6 +209,18 @@ jobs:
       # for tmux's sake), and naming the interpreter is what keeps uv from
       # picking that one up. The version-sync check reads these flags too, so
       # they cannot drift away from `.python-version`.
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-windows-amd64.zip -OutFile "$env:RUNNER_TEMP\dolt.zip"
+          Expand-Archive "$env:RUNNER_TEMP\dolt.zip" -DestinationPath "$env:RUNNER_TEMP\dolt"
+          $bin = Get-ChildItem -Recurse -Filter dolt.exe "$env:RUNNER_TEMP\dolt" | Select-Object -First 1
+          $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & $bin.FullName version
       - shell: msys2 {0}
         run: uv sync --locked --dev --python 3.14
       # `pytest_ci_shard` picks this shard's tests by a hash of each node id, so the two
@@ -203,7 +228,7 @@ jobs:
       # xdist's "created: N/N workers" line, and `--durations` names the slowest tests
       # the next time this job nears its cap.
       - shell: msys2 {0}
-        run: uv run --python 3.14 pytest --tb=short -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
+        run: uv run --python 3.14 pytest --tb=short -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/12 --durations=15
 
   test-windows:
     # The required check. A matrix job's result is `success` only when every shard
@@ -217,8 +242,19 @@ jobs:
       - name: Every Windows shard passed
         run: test "${{ needs.test-windows-shard.result }}" = "success"
 
-  test-macos:
+  # The macOS suite runs as two shards in parallel, like Windows, and `test-macos`
+  # below is the one check that reports for both, so the required-check name did not
+  # change. Healthy single runs on main took 42 minutes by 2026-11-15 against the
+  # 45-minute cap, and the session-name registry's real-Dolt cases pushed a pull
+  # request run past it at 83% with no failing test.
+  test-macos-shard:
+    name: test-macos (shard ${{ matrix.shard }}/2)
     runs-on: macos-latest
+    strategy:
+      # A failure in one shard should not cancel the other: both results are wanted.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # A REQUIRED CHECK as of AI-CLI-66mk, alongside `lint`, `test` and
     # `test-windows`. It used to carry `continue-on-error: true` because it was
     # expected to be red when first added (AI-CLI-3cai) and a job permitted to fail
@@ -241,8 +277,11 @@ jobs:
     #
     # macOS runners are the slowest and the most expensive per minute, so bound a
     # hang rather than discovering it on the bill. Healthy runs reached 19 minutes by
-    # 2026-10, so the cap sits well above that.
-    timeout-minutes: 30
+    # 2026-10. By 2026-11 the suite had grown: healthy runs on main took 27 and 29
+    # minutes, and another main run and both attempts of a pull request were cancelled
+    # at the old 30-minute cap at 98-99% with no failing test. The cap is 45 so a
+    # healthy run clears it with room, and a real hang still stops well before an hour.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -266,5 +305,23 @@ jobs:
       # converse too: it fails a run that skips a tmux test while tmux IS usable,
       # so this install going missing can no longer pass as a smaller green run.
       - run: brew install tmux
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/dolt.tar.gz" https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-darwin-arm64.tar.gz
+          tar -xzf "$RUNNER_TEMP/dolt.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/dolt-darwin-arm64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dolt-darwin-arm64/bin/dolt" version
       - run: uv sync --locked --dev
-      - run: uv run pytest --tb=short -q
+      - run: uv run pytest --tb=short -q -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
+
+  test-macos:
+    if: always()
+    needs: test-macos-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every macOS shard passed
+        run: test "${{ needs.test-macos-shard.result }}" = "success"

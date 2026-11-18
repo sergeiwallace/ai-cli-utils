@@ -41,8 +41,9 @@ argv = ["python3", "~/bin/notes_rekey.py", "--store", "~/notes"]
 | `name` | non-empty string | label used in every output line and error |
 | `argv` | non-empty list of strings | the program and its leading arguments, never a shell string |
 
-A leading `~` in the program (the first element) is expanded to the home
-directory; later arguments are passed as written. A program whose name ends in
+A leading `~` in any element is expanded to the home directory, as a shell
+would, so `["python3", "~/bin/notes_rekey.py"]` finds its script; nothing
+else in an argument is expanded. A program whose name ends in
 `.py` is run with the Python interpreter that runs `ai`, so the same file works
 on Windows, where a `.py` file cannot be executed directly.
 
@@ -70,14 +71,17 @@ hook notes: moved notes/myrepo-3 -> notes/myrepo-box-3
 
 | Phase | Exit 0 | Non-zero |
 |---|---|---|
-| Planning (`--dry-run`) | the hook can do its part | the whole migration is refused before anything is written; the hook's stderr is quoted |
+| Planning (`--dry-run`) | the hook can do its part | the whole migration is refused before anything is written; the hook's stderr is quoted. Under `--finish`, or a re-run on a slot that already moved, only that hook is skipped: it is reported as pending with its stderr, the rest of the run goes ahead, and the command exits 1 |
 | Real run | done | a `FAILED` warning naming the hook and quoting its stderr; the remaining hooks still run and the command exits 1 |
 
 A program that cannot be started counts as a non-zero exit.
 
 Planning runs every hook before the first write, so a hook that cannot do its part
 stops the migration while nothing has moved, and a hook extends the refuse-if-live
-guard to its own state. The core moves are not rolled back after a real-run
+guard to its own state. Once the slot has moved, refusing the whole run would only
+leave the core parts undone as well, so `--finish` (including the one `ai c` runs at
+launch) skips a refusing hook, runs everything else, records no `finished` ledger
+row, and a later `--finish` plans that hook again. The core moves are not rolled back after a real-run
 failure: they are already durable. Hooks must therefore be idempotent, so that
 repeating the original `ai migrate-session` command completes the migration.
 
@@ -107,6 +111,24 @@ name has changed. `ai audit-sessions` adopts through the same code path.
 - Without `--dry-run`, perform the move and print what moved. A second run after
   success should find nothing to do and exit 0.
 - Never prompt: standard input is not connected to the operator.
+- When NEW already holds its own copy of something OLD still holds, keep NEW's and move
+  OLD's into an archive rather than refusing, merging or deleting it, and print one
+  `migrate-archived: <path>` line per file archived on the live run (see below).
+
+## Archived files
+
+A live run may print, once for each file it archived, a line naming where it now is:
+
+```text
+migrate-archived: /home/user/.local/state/notes/archive/2026-01-01/myrepo-3-to-myrepo-box-3/notes.db
+```
+
+`migrate-session` lists each one as `hook <name>: <path> (archived OLD, NEW kept)`
+instead of relaying the line, and appends one ledger row with `"archive_recorded":
+true` whose `archived` list names each file as `{"part": "hook <name>", "archive":
+<path>}`. The core archives its own displaced files the same way, under
+`session-migration-archive/` in its state directory. The hook's next `--dry-run` must
+find nothing of OLD's left and report `migrate-status: done`.
 
 Implementation: `src/ai_cli/session_migrate_hooks.py`, called from
 `src/ai_cli/session_migrate.py` and `src/ai_cli/session_adopt.py`; tests in
@@ -136,9 +158,99 @@ Repeat the original `ai migrate-session` command to finish the pipeline.
 
 Legacy hooks without a status line still receive `--dry-run`; a named warning
 says their completion cannot be checked separately, and their idempotent applying
-invocation runs again. This package ships no external hook configurations.
+invocation runs again. Every writing run ends with a read-only re-plan of the pair,
+and a migration is recorded finished only when that re-plan reads every part done:
+a hook counts as done only when its `--dry-run` prints `migrate-status: done`, so a
+hook without a status line keeps every migration it joins unfinished, and the run
+exits 1 naming it. This package ships no external hook configurations.
 Existing configurations remain compatible. Read-only preflights cannot guarantee
 that a lease, snapshot, lock or checkout stays usable until execution; the
 agent-mail snapshot warning calls out freshness checks explicitly. Hook authors
 must recheck those conditions when applying, return nonzero if incomplete, and
 never report `done` while a shipping step remains.
+
+## Publishing a re-keyed Beads store
+
+The Beads re-key runs `bd --sandbox`, so the issues it moves stay local to each
+store until the store is published. A host names the command that publishes a
+store in one file under the same config directory:
+
+| OS | File |
+|---|---|
+| Linux, macOS | `$XDG_CONFIG_HOME/ai-cli-utils/migrate-session-publish.d/beads.toml` |
+| Windows | `%APPDATA%\ai-cli-utils\migrate-session-publish.d\beads.toml` |
+
+```toml
+argv = ["python3", "~/bin/publish_store.py", "--repo", "{store}"]
+timeout_s = 600
+```
+
+`argv` is the program and its arguments, never a shell string. Every `{store}` is
+replaced by the store's directory (the directory holding `.beads/`), and the
+argv must name it at least once. A leading `~` in any element is expanded, and a
+`.py` program runs under the interpreter that runs `ai`, as for hooks.
+`timeout_s` is optional: the seconds one publish may run, a positive number, 600
+when it is absent. A large store pushed from a loaded host can need longer. The
+file is read when the command runs.
+
+After a run re-keys issues in a store, it runs the command once for that store,
+with the store as its working directory, then reads the store again:
+
+| Outcome | Store line | `beads store` part | Exit |
+|---|---|---|---|
+| Exit 0, no issue left on OLD | `(published: <n> re-keyed)` | `done now` | unchanged |
+| Exit 0, an issue still on OLD | `(published: <n> re-keyed)` plus a `NOT converged` warning | `failed: ...` | 1 |
+| Non-zero exit | `(publish failed: exit <code>)` plus a `FAILED` warning quoting stderr | `failed: ...` | 1 |
+| Ran past `timeout_s` | `(publish failed: timed out after <n> s)` plus a `FAILED (timed out after <n> s)` warning naming the command; a push the command started may still be running and is left to finish | `failed: ...` | 1 |
+| Program cannot be started | `(publish failed: could not start)` plus a `FAILED` warning naming the program | `failed: ...` | 1 |
+| Malformed file, no `{store}`, or a bad `timeout_s` | `(publish failed: ...)` naming the file and the field | `failed: ...` | 1 |
+| No file | `(publish needed: <n> re-keyed, local until the store is published)` | `skipped: publish needed, no publish command is configured` | unchanged |
+
+A run that exits 1 here writes no `finished` row. The run records each publish
+that succeeded in `session-migration-issues.jsonl`, so repeating the same
+`ai migrate-session` or `--finish` command publishes again every store an earlier
+run re-keyed and no publish has confirmed since, even when no issue is left to
+re-key. The command must therefore be safe to repeat.
+
+## References left after a migration
+
+A hook re-keys state a tool keeps by session name. Code and config that spell the
+old name out are a different kind of leftover, and a migration looks for them once
+it finishes: after a writing run whose re-plan finds nothing left, `ai
+migrate-session` (and `--finish`, and the finish `ai c NEW` runs) takes two steps.
+
+Both are set in the `[migrate_session]` table of `config.toml`, read when the step
+runs:
+
+```toml
+[migrate_session]
+references_command = ["python3", "~/bin/sweep_references.py"]
+references_allow = [".beads/**", "docs/renames.md"]
+```
+
+1. `references_command` runs once, as `argv + ["--old", OLD, "--new", NEW]`, with
+   the migrated repository as its working directory, stdin closed, for at most 600
+   seconds. `argv` follows the hook rules: a program and its arguments, `~`
+   expanded, a `.py` program run under the interpreter that runs `ai`. It may
+   rewrite references wherever it knows to. For each one it could not rewrite it
+   prints `migrate-reference-left: <where>` on stdout. Unset, the step is skipped
+   with one line saying so.
+2. A scan of the repository's tracked files (`git grep -w`) for OLD and each tmux
+   session name `ai` gives it (`c-OLD`, `c-r-OLD`, ...), as whole words, so
+   `myproject-session-1` does not match `myproject-session-10`. Each hit is a
+   leftover, printed as `file:line: text`, unless its path matches a
+   `references_allow` glob. The default list is `[".beads/**"]`, where the
+   migration's own re-key comments name the old session; setting the key replaces
+   the default. The scan never rewrites a file.
+
+| Outcome | Last line | Exit |
+|---|---|---|
+| No command or a clean exit, and no hit | `OLD -> NEW: finished` | unchanged |
+| A `migrate-reference-left:` line, a non-zero exit, a timeout or a program that cannot start | `OLD -> NEW: finished with leftovers (<n> left)` with each one listed | 1 |
+| A hit the allowlist does not cover | the same, with each `file:line` listed | 1 |
+| A malformed `[migrate_session]` value, or a scan git cannot run | the same, naming the problem | 1 |
+
+The migration itself is still recorded finished: leftovers are references for
+someone to rewrite, not migration state, so `ai c NEW` launches and lists them as
+warnings. Once they are rewritten, `ai migrate-session OLD NEW --finish -r REPO`
+runs both steps again and exits 0.

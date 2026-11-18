@@ -1,26 +1,33 @@
 ---
-title: ai CLI Design — Subcommands Reference
+title: ai CLI guide
 category: tools
 tags: [ai-cli, cli, tmux, session-management, reference]
 status: current
 source: internal
 ---
 
-# ai CLI Design — Subcommands Reference
+# ai CLI guide
+
+This guide explains how the main `ai` commands behave and how to configure them. Every command's
+usage line, description and options, each in both its short and long form, are in the generated
+[CLI reference](../reference/cli.md), which `ai <command> -h` matches exactly. Options are listed
+there, not here.
 
 ## Table of Contents
 
+- [Start, resume, attach](#start-resume-attach)
+- [Command index](#command-index)
 - [Overview](#overview)
 - [Session Management](#session-management)
   - [ai c](#ai-c)
   - [ai cos](#ai-cos)
   - [ai ls](#ai-ls)
   - [ai attach](#ai-attach)
+  - [ai sessions](#ai-sessions)
   - [ai reconnect](#ai-reconnect)
   - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
   - [ai memory watch](#ai-memory-watch)
-  - [ai quota watch](#ai-quota-watch)
   - [ai telemetry writer](#ai-telemetry-writer)
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
@@ -42,6 +49,149 @@ source: internal
 
 ---
 
+## Start, resume, attach
+
+`ai -h` prints the same rows. When a session's tmux session is already running, `ai c NAME`
+attaches to it (detaching any other client), so `ai attach` is not needed for a session `ai`
+started.
+
+<!-- start-resume-attach:begin -->
+| Command | What it does |
+|---|---|
+| `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
+| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
+| `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
+| `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
+| `ai cos -r` | Resume this machine's chief-of-staff session |
+| `ai sessions` | List running sessions within the machine profile's visibility limit. Use `ai sessions list -a` to include other session states |
+<!-- start-resume-attach:end -->
+
+## Command index
+
+Every command and subcommand with its one-line use, as `ai -h` lists them. Each links to its
+section of the [CLI reference](../reference/cli.md).
+
+<!-- cli-index:begin -->
+| Command | Summary |
+|---|---|
+| [`ai add-name`](../reference/cli.md#ai-add-name) | Session names: add a name to the name database without a prompt |
+| [`ai adopt-session`](../reference/cli.md#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai attach`](../reference/cli.md#ai-attach) | Attach to a tmux session by name |
+| [`ai audit-sessions`](../reference/cli.md#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
+| [`ai backfill-trust`](../reference/cli.md#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
+| [`ai c`](../reference/cli.md#ai-c) | Launch a Claude Code session. |
+| [`ai cc-usage`](../reference/cli.md#ai-cc-usage) | Claude Code CLI per-call token usage |
+| [`ai cc-usage push`](../reference/cli.md#ai-cc-usage-push) | Scan JSONL session files and push new events |
+| [`ai cc-usage status`](../reference/cli.md#ai-cc-usage-status) | Print cc-usage cursor summary |
+| [`ai cdp`](../reference/cli.md#ai-cdp) | Chrome DevTools Protocol browser management |
+| [`ai cdp start`](../reference/cli.md#ai-cdp-start) | Launch Chrome with a CDP port |
+| [`ai cdp status`](../reference/cli.md#ai-cdp-status) | Show CDP Chrome status |
+| [`ai cdp stop`](../reference/cli.md#ai-cdp-stop) | Stop a CDP-launched Chrome instance |
+| [`ai check-names`](../reference/cli.md#ai-check-names) | Session names: report every held name outside the length limits; exit 1 when one is too long |
+| [`ai clear-restart-request`](../reference/cli.md#ai-clear-restart-request) | Clear a fenced restart request after its recorded target has exited |
+| [`ai color`](../reference/cli.md#ai-color) | Reassign iTerm2 color for the current ai session |
+| [`ai copier-update`](../reference/cli.md#ai-copier-update) | Propagate project-template changes to downstream projects |
+| [`ai cos`](../reference/cli.md#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
+| [`ai cx`](../reference/cli.md#ai-cx) | Launch a Codex session |
+| [`ai deploy`](../reference/cli.md#ai-deploy) | Alias for update (historical) |
+| [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
+| [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](../reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
+| [`ai g`](../reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](../reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
+| [`ai iterm2`](../reference/cli.md#ai-iterm2) | iTerm2 session tracking |
+| [`ai iterm2 restore`](../reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
+| [`ai iterm2 sessions`](../reference/cli.md#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
+| [`ai layout`](../reference/cli.md#ai-layout) | Apply a tmux pane layout. |
+| [`ai layout list`](../reference/cli.md#ai-layout-list) | List the available layout files |
+| [`ai layout profiles`](../reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
+| [`ai layout validate`](../reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](../reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
+| [`ai list-name-candidates`](../reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
+| [`ai list-names`](../reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
+| [`ai locate-session`](../reference/cli.md#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
+| [`ai ls`](../reference/cli.md#ai-ls) | List tmux sessions (fzf picker when available) |
+| [`ai memory`](../reference/cli.md#ai-memory) | Memory-file watchers and helpers |
+| [`ai memory watch`](../reference/cli.md#ai-memory-watch) | Run the memory-file watcher daemon |
+| [`ai migrate-session`](../reference/cli.md#ai-migrate-session) | Rename a session already registered in an `ai` slot. |
+| [`ai migrate-transcript`](../reference/cli.md#ai-migrate-transcript) | Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree |
+| [`ai notifications`](../reference/cli.md#ai-notifications) | Notification delivery and history |
+| [`ai notifications list`](../reference/cli.md#ai-notifications-list) | List configured notification channels |
+| [`ai notifications log`](../reference/cli.md#ai-notifications-log) | Show notification history |
+| [`ai p`](../reference/cli.md#ai-p) | Launch a Pi session |
+| [`ai probe-transcripts`](../reference/cli.md#ai-probe-transcripts) | Session names: prove each installed client's transcript probe answers present, absent and unknown |
+| [`ai ps`](../reference/cli.md#ai-ps) | Process hygiene — show/kill stale ai-cli processes. |
+| [`ai ps clean`](../reference/cli.md#ai-ps-clean) | Kill orphaned processes after a confirmation prompt; suspect ones only with -f/--force |
+| [`ai ps cron`](../reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
+| [`ai quota`](../reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
+| [`ai quota history`](../reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](../reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
+| [`ai quota record`](../reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
+| [`ai quota status`](../reference/cli.md#ai-quota-status) | Print current quota snapshot |
+| [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
+| [`ai quota sync`](../reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
+| [`ai reassign-name`](../reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
+| [`ai reconcile-names`](../reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
+| [`ai reconnect`](../reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
+| [`ai register`](../reference/cli.md#ai-register) | Register a repository root and its task prefix |
+| [`ai release-name`](../reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
+| [`ai remove-name`](../reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
+| [`ai retire-session`](../reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](../reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
+| [`ai session-reaper`](../reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
+| [`ai session-reaper start`](../reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
+| [`ai session-reaper status`](../reference/cli.md#ai-session-reaper-status) | Show stale-session reaper status |
+| [`ai session-reaper stop`](../reference/cli.md#ai-session-reaper-stop) | Stop the stale-session reaper |
+| [`ai sessions`](../reference/cli.md#ai-sessions) | List sessions and manage their run state, relaunch and publication. |
+| [`ai sessions boot-unit`](../reference/cli.md#ai-sessions-boot-unit) | Manage the one-shot boot relaunch service (macOS and Linux) |
+| [`ai sessions boot-unit install`](../reference/cli.md#ai-sessions-boot-unit-install) | Write the boot relaunch service and enable it, or disable and remove it, as session_relaunch.on_boot (or -b/--on-boot) asks |
+| [`ai sessions boot-unit status`](../reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
+| [`ai sessions boot-unit uninstall`](../reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
+| [`ai sessions enrol`](../reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
+| [`ai sessions list`](../reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
+| [`ai sessions mark`](../reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
+| [`ai sessions policy`](../reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
+| [`ai sessions publish`](../reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
+| [`ai sessions publish-timer`](../reference/cli.md#ai-sessions-publish-timer) | Manage the background publication timer |
+| [`ai sessions publish-timer install`](../reference/cli.md#ai-sessions-publish-timer-install) | Install and enable the background timer that publishes session state; removes it instead when no publication repo is configured |
+| [`ai sessions publish-timer status`](../reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
+| [`ai sessions publish-timer uninstall`](../reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
+| [`ai sessions relaunch`](../reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions repair-policy`](../reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
+| [`ai sessions stop`](../reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
+| [`ai sessions wind-down`](../reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](../reference/cli.md#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](../reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
+| [`ai setup`](../reference/cli.md#ai-setup) | Run interactive setup wizard |
+| [`ai show-name-config`](../reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
+| [`ai spend`](../reference/cli.md#ai-spend) | Usage-cost reports |
+| [`ai spend gemini`](../reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
+| [`ai ssh`](../reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
+| [`ai sync`](../reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
+| [`ai sync cleanup`](../reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
+| [`ai sync conflicts`](../reference/cli.md#ai-sync-conflicts) | List unresolved conflict files and recent conflict log entries |
+| [`ai sync pull`](../reference/cli.md#ai-sync-pull) | Pull from the staging repo and apply it to the local CC projects dir. |
+| [`ai sync push`](../reference/cli.md#ai-sync-push) | Push local CC data to the staging repo and server. |
+| [`ai sync repair-worktree`](../reference/cli.md#ai-sync-repair-worktree) | Copy every conversation from a project's main CC dir into a worktree's CC dir, so the worktree session can resume them. |
+| [`ai sync resolve`](../reference/cli.md#ai-sync-resolve) | Resolve accumulated conflict files: delete transcript conflict backups and merge memory conflicts. |
+| [`ai sync watch`](../reference/cli.md#ai-sync-watch) | Listen for pull requests from other machines and run `ai sync pull --force` on each. |
+| [`ai sync-names`](../reference/cli.md#ai-sync-names) | Session names: regenerate and publish the available-name list when this checkout's naming policy is newer |
+| [`ai telemetry`](../reference/cli.md#ai-telemetry) | Telemetry writer daemon |
+| [`ai telemetry writer`](../reference/cli.md#ai-telemetry-writer) | Run the telemetry writer daemon |
+| [`ai tunnel`](../reference/cli.md#ai-tunnel) | autossh SSH tunnels to the remote server |
+| [`ai tunnel start`](../reference/cli.md#ai-tunnel-start) | Start an SSH tunnel |
+| [`ai tunnel status`](../reference/cli.md#ai-tunnel-status) | Show running SSH tunnels |
+| [`ai tunnel stop`](../reference/cli.md#ai-tunnel-stop) | Stop an SSH tunnel |
+| [`ai update`](../reference/cli.md#ai-update) | Update ai-cli-utils from the source tree (git pull + uv tool install) |
+| [`ai upgrade`](../reference/cli.md#ai-upgrade) | Upgrade ai-cli-utils via uv tool upgrade |
+| [`ai watch-vpn`](../reference/cli.md#ai-watch-vpn) | Run the VPN watch daemon |
+| [`ai ws`](../reference/cli.md#ai-ws) | Workspace-wide operations across all repos |
+| [`ai ws pull`](../reference/cli.md#ai-ws-pull) | Pull/rebase all repos and worktrees in a VS Code workspace file |
+<!-- cli-index:end -->
+
+---
+
 ## Overview
 
 `ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
@@ -49,14 +199,14 @@ source: internal
 ```bash
 ai --version   # print installed version
 ai -V          # same, short form
-```text
+```
 
 ### Platform support
 
 - **Linux / macOS**: full feature set.
 - **Windows (MSYS2 / Git Bash)**: experimental. The Windows-specific session-launch paths exist, but real tmux-server integration is unverified and its integration suite is skipped after a Windows CI hang. Requires tmux installed via MSYS2 (`pacman -S tmux`). Remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), and iTerm2 color slot management are unavailable. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
-Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
@@ -81,8 +231,9 @@ Behaviour is split across focused modules so `main.py` stays thin:
 ### ai c
 
 ```bash
-ai c [N|LABEL|NAME] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
-```text
+ai c [N|LABEL|NAME|TITLE] [-r] [-N NAME] [-w|-u] [-S|-I] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
+ai c -t [NAME] [-b] [-W] [-p PROJECT] [-d|--dry-run]
+```
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
@@ -91,6 +242,28 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
   names on, `myrepo-box-review-1` without.
 - `NAME` — a human name this repo already holds on this host reattaches to that session
   (`ai c ada`); a positional name never creates one.
+- `-r`/`--resume`: resume the existing session NAME or TITLE names, or refuse. TITLE is
+  the full title with either suffix style: a first name (`myrepo-box-ada`) or a legacy
+  index from before human names (`myrepo-box-2`, `myrepo-box-chief-1`). A running tmux
+  session is attached. A stopped one, with its worktree or Claude Code transcript still on
+  disk, is relaunched under the same title, which resumes its worktree, branch and
+  conversation. When nothing holds the name, the launch exits 1 before it reserves a name,
+  creates a worktree, branch or transcript, or asks a remote host to allocate one, and
+  lists the closest existing titles and the command that starts a new session. An
+  unreadable name registry refuses with its read error. With `-R`, the remote host answers
+  the same question for its own sessions (`ai c myrepo-box-ada -R -r`); the chief of staff
+  resumes with `ai cos -r` or `ai cos -R -r`. With `-d`, the plan is the attach, the
+  relaunch or the refusal; a remote dry run contacts no host, so the remote host decides
+  at launch. Design: [session-resume-by-name.md](../designs/session-resume-by-name.md).
+- `-t`/`--probe`: launch a throwaway probe or test session that nothing treats as a
+  session home. It is titled `myrepo-box-probe-1` (`myrepo-box-probe-NAME-1` with a NAME)
+  by index and reserves no first name. Its worktree is made under the per-user state
+  directory (`probe-worktrees/<repo>-<digest>/<title>`), outside the repository, and is not
+  recorded as a canonical session worktree. Its run record is never relaunched at boot,
+  the iTerm2 restore skips it, and `ai iterm2 sessions --prune` drops it once the session
+  is gone. Refused with `-r`, `-N`, `-w`, `-u`, `-S`, `-F` and `-R`. Remove the worktree
+  with `git worktree remove` once the probe has exited. Design:
+  [probe-sessions.md](../designs/probe-sessions.md).
 - `-N`/`--name NAME` — name the new session with this first name. It is checked like a picked
   one; a name not yet in the name database asks to be added. Never passed to the engine.
 - `-w`/`--with-name`, `-u`/`--no-name` — with a label, keep or drop the first name for this launch.
@@ -130,6 +303,9 @@ The name records which machine launched the session. `ai c <name> -R` attaches t
 session of that name on the remote host whichever way it was launched, so a session the
 remote host started itself (`c-<project>-<name>`) is attached, not duplicated as a
 `c-r-` session; only a slot with no live session is allocated as `c-r-`.
+Without `-r`, a positional word that is not an existing title labels a NEW session, and the
+launch prints `new session <title>` before it creates a worktree or a tmux session, so a
+mistyped resume (`ai c cos` meant as `ai c <title> -r`) is visible.
 
 Every alias lookup refreshes the local host identity before naming, including engine
 launches, `ai cos`, remote allocation, migration, audit labels and name commands.
@@ -303,7 +479,7 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 
 ```bash
 ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
-```text
+```
 
 Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 
@@ -316,7 +492,7 @@ Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
 ```bash
 ai cos [SUFFIX|N] [-k|--machine-key KEY] [-H|--fm-home DIR] [-R] [-m MACHINE] [-r] [-d|--dry-run]
 ai c -F|--chief [SUFFIX|N] ...     # the same launch on any engine: ai c, ai g, ai p, ai cx
-ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos
+ai mychief [SUFFIX|N] ...          # a configured command_aliases entry: the same as ai cos  # docs-example: skip
 ```
 
 Attach to, resume or launch this machine's one chief-of-staff session (with `-R`, the remote
@@ -337,6 +513,8 @@ built-in default, and a launch that needs one that is unset exits 1 and names it
 - `-H`/`--fm-home DIR` — an explicit chief home.
 - `-R` — run the chief on the remote machine; the dispatching machine reads only `project` and
   `session_name`, and the remote `ai` resolves and registers everything else.
+- `-N`/`--name NAME` — the chief named NAME (`<session_name>-NAME`), carried to the remote
+  machine with `-R`; a different running chief is refused, never attached to.
 
 Both `-k` and `-H` are refused without `-F`/`--chief` or `ai cos`. The full behaviour (attach,
 resume, create, one chief per machine) is in the README's "Chief-of-staff session" section.
@@ -345,7 +523,7 @@ resume, create, one chief per machine) is in the README's "Chief-of-staff sessio
 
 ```bash
 ai ls [--all]
-```text
+```
 
 Interactive tmux session picker using fzf. Shows `ai-cli` sessions by default (matching `_AI_SESSION_RE`). `--all` shows all tmux sessions.
 
@@ -359,17 +537,90 @@ Display columns: session name, age (e.g. `5m`, `2h`, `3d`). Sorted by most-recen
 
 ```bash
 ai attach <session-name>
-```text
+```
 
 Thin wrapper: validates the session exists, then replaces the current process with `tmux attach-session -t <name>` via `os.execvp`.
 
 Exits with error if no session named `<session-name>` exists.
 
+### ai sessions
+
+```bash
+ai sessions [list] [-a] [-S host|group|fleet] [-g host|status|relaunch|none] [-s KEYS] [-j]
+```
+
+Bare `ai sessions` runs `ai sessions list` with the `[sessions_list]` defaults. It prints one table
+with the columns `HOST`, `SESSION`, `STATUS`, `CAUSE`, `CHANGED` and `RELAUNCH`, grouped by host
+with this host first, and sorted by status (`running`, `relaunched`, `stale`, `unknown`, `exited`)
+and then by name. A record from an earlier boot of this host that still says `running`, but whose
+tmux session and processes are both gone, shows as `stale` with cause `host_reboot`; the record
+itself is not rewritten, so the boot relaunch keeps its evidence. The proof is the one the
+migration preflight uses, and a row whose liveness cannot be proved still shows `running`. Only running sessions are listed unless `-a/--all` is given. `CHANGED` is the time of the
+session's last run-state change; a policy change does not move it. `RELAUNCH` is the boot relaunch
+policy (`auto`, `always` or `never`).
+
+- `-S/--scope` requests `host`, `group`, or `fleet`, within the profile's visibility limit.
+  Local rows come from the live registry. Other hosts' rows come from snapshots, timestamped
+  copies of their session records. Each host writes its snapshot with `ai sessions publish` to
+  `[session_relaunch.publish] repo`. The reader fetches with a 15-second bound and prints each
+  snapshot's time under the table. A missing group snapshot produces a hint to publish it.
+- `-g/--group-by` and `-s/--sort-by` choose the grouping column and a comma-separated list of sort
+  keys (`status`, `name`, `changed` newest first, `host` this host first, `relaunch`).
+- `-j/--json` prints this host's registry records, each with `earlier_boot_gone` (`true` for a
+  row the table shows as `stale`, whose `run_state` stays `running`); it ignores the other options
+  and refuses `-S group` and `-S fleet`. `relaunch_set_by` and `relaunch_changed_at` are in the
+  registry file itself ([fields](../iterm2-persistence.md)).
+
+The defaults live in `[sessions_list]` in `config.toml`. A flag overrides the corresponding
+default within the machine profile's limit.
+
+```toml
+[sessions_list]
+group_by = "host"
+sort_by = ["status", "name"]
+show_all = false
+scope = "group"
+group_host = ""  # fallback member ID or alias, otherwise the default remote machine
+```
+
+Set `[machine] profile_class = "personal"` and set `session_group_members = ["host-a", "host-b"]`
+on both hosts to list the group in both directions. These are publication host IDs. If a group
+entry or the default remote machine uses an SSH alias, set its `[remote.machines.<alias>] host_id`
+to the ID used to publish its snapshot. Personal profiles default to `group` and can restrict the
+scope to `host` or explicitly permit `fleet` with `[machine] sessions_list_scope`. Work, client,
+and unclassified profiles always use `host`.
+
+[docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
+each key.
+
+### ai sessions policy
+
+```bash
+ai sessions policy <slug> <auto|never|always>
+ai sessions repair-policy [-d]
+```
+
+`ai sessions policy` sets a local session's boot relaunch policy as its owner's choice: it writes
+`relaunch`, `relaunch_set_by = "owner"` and `relaunch_changed_at`, and queues publication. It does
+not touch `changed_at`, so `ai sessions list` keeps showing the last run-state change under
+`CHANGED`. No launch, enrolment or recovery replaces an owner's policy. Without one, a session gets
+the default: `never` for a probe, `auto` for every other session, with
+`relaunch_set_by = "default"`. Exiting or stopping a session records its exit cause and never
+changes its policy; a `manual_exit` or `unknown` cause keeps it down at boot whatever the policy.
+
+`ai sessions repair-policy` is a one-time repair for records written by older releases, which gave
+every enrolled or recovered session `never` without recording who chose it. It sets each local,
+non-probe record of this host whose policy is `never` and has no `relaunch_set_by` to `auto` with
+`relaunch_set_by = "default"`, and prints one line per record. `-d/--dry-run` prints the same lines
+and writes nothing. A second run changes nothing. A `never` set by hand before the
+`relaunch_set_by` field existed looks the same as the old default and is repaired too; set it
+again with `ai sessions policy <slug> never`.
+
 ### ai reconnect
 
 ```bash
 ai reconnect [session_numbers...]
-```text
+```
 
 Lists remote tmux sessions (sessions starting with `c-r-`) on the configured remote host via SSH and prints the `ai c N -R` commands to reconnect to each.
 
@@ -382,7 +633,7 @@ Reads `[remote] host` and `[remote] user` from `~/.config/ai-cli/config.toml`.
 
 ```bash
 ai ssh [alias]
-```text
+```
 
 Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host. Without an alias, uses `[remote] default` (or the sole configured alias).
 
@@ -394,28 +645,17 @@ Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host.
 
 ```bash
 ai memory watch
-```text
+```
 
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
 Acquires PID file `memory-watch` — only one instance runs at a time.
 
-### ai quota watch
-
-```bash
-ai quota watch start    # register with Circus and start the daemon
-ai quota watch stop     # remove from Circus
-ai quota watch status   # show Circus status
-ai quota watch run      # run the daemon directly (Circus entry point)
-```text
-
-Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
-
 ### ai telemetry writer
 
 ```bash
 ai telemetry writer
-```text
+```
 
 Starts the telemetry writer daemon. Subscribes to NATS subject `telemetry.action.*` (durable consumer) and persists events to a local SQLite database at `~/.local/state/ai-cli/telemetry.db`.
 
@@ -426,7 +666,7 @@ Acquires PID file `telemetry-writer`.
 ```bash
 ai notifications list
 ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
-```text
+```
 
 `list` prints configured channels (Discord, ntfy, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
 
@@ -435,11 +675,14 @@ ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
 ## ai sync
 
 ```bash
-ai sync push [--memories-only] [--dry-run] [--verbose] [--force]
-ai sync pull [--memories-only] [--dry-run] [--verbose] [--force]
+ai sync push [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]
+ai sync pull [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force] [-p|--prefer-remote]
 ai sync conflicts
-ai sync watch [--verbose]
-```text
+ai sync resolve [-n|--dry-run] [-v|--verbose]
+ai sync watch [-a|--auto] [-v|--verbose]
+ai sync cleanup [-n|--dry-run] [-v|--verbose]
+ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]
+```
 
 Bidirectional sync of Claude Code session data between local and remote host.
 
@@ -454,9 +697,9 @@ This boundary exists because `ai sync` is for CC session migration (conversation
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
 - `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.
-- `watch` — continuous background sync loop (starts pull/push on file-change events)
+- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off.
 
-Reads remote host from `[remote] host` in config, overridable via `--remote-host`.
+Each action's options: [CLI reference](../reference/cli.md#ai-sync).
 
 ---
 
@@ -482,14 +725,7 @@ Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` 
 - Dirty worktrees → skipped (`↷`), never stashed — active sessions may have uncommitted work
 - Non-existent or non-git folders → silently skipped or warned
 
-**Flags:**
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--workspace PATH` | `-w` | Explicit path to `.code-workspace` file |
-| `--remote` | `-r` | Use `[workspace] remote_path` from config |
-| `--dry-run` | `-d` | Print what would be pulled, no git operations |
-| `--verbose` | `-v` | Show full git output per repo/worktree |
+Options: [`ai ws pull` in the CLI reference](../reference/cli.md#ai-ws-pull).
 
 **Config** (`~/.config/ai-cli-utils/config.toml`):
 
@@ -529,7 +765,7 @@ The historical implementation used API-key fallback, research-depth orchestratio
 
 ```bash
 ai spend gemini
-```text
+```
 
 Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
 
@@ -542,7 +778,7 @@ Print a cost summary from historical local Gemini run logs, optionally supplemen
 [gemini_billing]
 gcp_project_id = "your-gcp-project"
 billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
-```text
+```
 
 3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
 
@@ -556,7 +792,7 @@ When BigQuery is not configured, `ai spend gemini` reports the local historical 
 ```bash
 ai cc-usage push [-d/--dry-run]
 ai cc-usage status
-```text
+```
 
 Scan Claude Code session JSONL files and push per-call token usage events to a configured REST API backend.
 
@@ -570,7 +806,7 @@ Scan Claude Code session JSONL files and push per-call token usage events to a c
 [core-cli]
 api_url = "https://your-backend-host"
 api_key  = "hw-api-..."
-```text
+```
 
 Both `api_url` and `api_key` must be set for `push` to run.
 
@@ -585,7 +821,9 @@ ai layout list
 ai layout validate <name>
 ai layout profiles <name>
 ai layout <name>
-```text
+```
+
+`list`, `validate` and `profiles` are reserved; any other first argument is a layout name.
 
 YAML-driven iTerm2 window/tab/pane layout system. Layout files live at `~/.config/iterm2/layouts/<name>.yaml`.
 
@@ -600,7 +838,7 @@ Layout YAML schema supports nested pane splits (vertical/horizontal), per-tab ba
 
 ```bash
 ai color <palette-name|#hex>
-```text
+```
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
 
@@ -624,7 +862,7 @@ Re-attaches the recorded sessions after an iTerm2 restart (macOS). It opens the 
 
 ```bash
 ai watch-vpn
-```text
+```
 
 Internal entry point for the Circus-managed VPN state watcher. **Not intended for direct human invocation** — started and stopped automatically by `ai c -R` sessions.
 
@@ -718,7 +956,7 @@ Python cleanup survives it.
 ai cdp start [-p|--port N] [-I|--no-incognito] [-t|--tunnel] [-L|--forward]
 ai cdp stop  [-p|--port N] [-t|--tunnel]
 ai cdp status
-```text
+```
 
 Launches and manages a Chrome, Chromium or Microsoft Edge instance with the Chrome DevTools
 Protocol (CDP) remote debugging endpoint exposed. Useful for attaching Playwright,
@@ -742,12 +980,8 @@ downstream distinguishes them.
 - `status` — lists all registered CDP processes with port, PID, and alive/dead state.
   Cleans up stale PID files for dead processes.
 
-**Flags:**
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--port` | `-p` | `9222` | CDP port |
-| `--no-incognito` | `-I` | off | Disable `--incognito` flag |
+Options and defaults: [`ai cdp start`](../reference/cli.md#ai-cdp-start) and
+[`ai cdp stop`](../reference/cli.md#ai-cdp-stop) in the CLI reference.
 
 **Config (`[cdp]` section in `config.toml`):**
 
@@ -755,7 +989,7 @@ downstream distinguishes them.
 [cdp]
 # binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # port = 9222
-```text
+```
 
 Browser binary auto-detected in this order: `binary_path` config key → well-known
 macOS/Linux/Windows paths → `shutil.which` across common executable names. Within the
@@ -775,7 +1009,7 @@ binds loopback only, so reaching the endpoint already requires local access.
 ai tunnel start <local-port> [remote-port] [--forward]
 ai tunnel stop <port>
 ai tunnel status
-```text
+```
 
 Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on network drop or broken pipe.
 
@@ -791,7 +1025,7 @@ Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/
 
 ```bash
 ai update [--force]
-```text
+```
 
 Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timestamp}` so uv sees it as a new package, runs `uv tool install --force`, then restores `pyproject.toml`.
 
@@ -803,7 +1037,7 @@ Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timesta
 
 ```bash
 ai setup
-```text
+```
 
 Detects the runtime environment and configures the Claude Code session config (`CLAUDE.md`) accordingly.
 
@@ -815,25 +1049,24 @@ Run once after cloning or installing. Safe to re-run at any time.
 ### ai ps
 
 ```bash
-ai ps [--kill] [--threshold N] [--json]
-```text
+ai ps [-r|--refresh]
+ai ps clean [-f|--force]
+ai ps cron
+```
 
-Process hygiene inspector. Lists all ai-cli-related processes with health scores and flags stale or suspect ones.
+Process hygiene inspector. `ai ps` lists every ai-cli-related process on this machine and the configured remote host with an orphan score and a verdict, and only reads.
 
-**Scoring:** each process is assigned a score based on tmux session presence, PID file state, and age. Higher score = more suspect.
+**Scoring:** each process is assigned a score based on tmux session presence, PID file state, and age. Higher score = more suspect. A score of 80 or more is orphaned; 40 to 79 is suspect.
 
-**Flags:**
-- `--kill` / `-k` — terminate processes at or above the threshold
-- `--threshold N` / `-t N` — kill threshold (default from config, typically 50)
-- `--json` / `-j` — output as JSON (useful for scripting)
-
-Safe to run at any time; without `--kill` it only reads and reports.
+- `ai ps -r` re-checks the remote host over SSH instead of using the cached result.
+- `ai ps clean` kills orphaned processes after a confirmation prompt; `-f` also kills suspect ones and skips the prompt.
+- `ai ps cron` is the non-destructive maintenance a session launch runs: it removes stale transport files and refreshes the remote cache, and never kills a process.
 
 ### ai upgrade
 
 ```bash
 ai upgrade
-```text
+```
 
 Reinstalls the `ai` tool from the current source tree using `uv tool install . --force`.
 
@@ -842,8 +1075,8 @@ Reinstalls the `ai` tool from the current source tree using `uv tool install . -
 ## Internal Commands
 
 ```bash
-ai internal <action> [args...]
-```text
+ai internal <action> [args...]  # docs-example: skip
+```
 
 Used by hooks and scripts — not for direct human use.
 

@@ -235,17 +235,36 @@ def _resolve_from(host: str, sources: list[Path]) -> str:
     raise _not_configured(host, sources)
 
 
+def _host_refresh_phase():
+    """A timed ``session`` phase for the host id refresh, during a launch only.
+
+    The refresh is a login-shell probe that takes seconds on a loaded host. A launch
+    prints it as a phase through the reporter it installed; any other command that
+    resolves the alias installed none, so it gets a null context and prints nothing.
+    """
+    from . import launch_reporter
+
+    reporter = launch_reporter.installed()
+    if reporter is None:
+        return contextlib.nullcontext()
+    return reporter.phase("session", "refreshing this host's id")
+
+
 def resolve_host_alias() -> str:
     """Return this machine's host alias from the first source that names it.
 
     Raises :class:`HostAliasNotConfiguredError` naming every file checked, in order,
     when none does, and :class:`HostAliasError` for an invalid entry or a conflict.
+    During a launch the host id refresh prints as a timed ``session`` phase.
     """
     from .host_env import refresh_host_env
 
     inherited = os.environ.get("AI_HOST", "")
-    refresh_host_env(_config.load_config())
-    host = host_id()
+    with _host_refresh_phase() as phase:
+        refresh_host_env(_config.load_config())
+        host = host_id()
+        if phase is not None:
+            phase.outcome(f"host id {host}")
     try:
         return _resolve_from(host, alias_sources())
     except HostAliasNotConfiguredError as exc:
@@ -479,15 +498,36 @@ def validate_session_name(
     return SessionName(title, tail, head or None, canonical and not diagnostic and not label_only)
 
 
-def validate_launch_input(value: str, *, repo_alias: str, host_alias: str, legacy_titles: Iterable[str] = ()) -> None:
+def validate_launch_input(
+    value: str,
+    *,
+    repo_alias: str,
+    host_alias: str,
+    legacy_titles: Iterable[str] = (),
+    legacy_repo: Path | None = None,
+) -> None:
     """Recognize qualified requests before the slot parser can reinterpret them as labels."""
     validate_session_text(value, partial=True)
     bare = launch_title(value)
     _refuse_diagnostic(bare.removeprefix(f"{repo_alias}-{host_alias}-"), value)
     qualified = bare != value or bare.startswith(f"{repo_alias}-") or (host_alias and f"-{host_alias}-" in bare)
     if qualified:
+        allow_legacy = bare in legacy_titles
+        if (
+            not allow_legacy
+            and legacy_repo is not None
+            and bare.startswith(f"{repo_alias}-")
+            and not bare.startswith(f"{repo_alias}-{host_alias}-")
+            and bare.rsplit("-", 1)[-1].isdigit()
+        ):
+            from .session_migrate import recorded_migrations
+
+            # A recorded move can remove the old worktree that proved this title existed.
+            owner = legacy_repo.resolve()
+            with _config.inspection_only():
+                allow_legacy = any(old == bare and repo == owner for old, _, repo in recorded_migrations())
         validate_session_name(
-            bare, repo_alias=repo_alias, host_alias=host_alias, label_only=True, allow_legacy=bare in legacy_titles
+            bare, repo_alias=repo_alias, host_alias=host_alias, label_only=True, allow_legacy=allow_legacy
         )
 
 
@@ -545,12 +585,13 @@ def legacy_target_allowed(title: str, repo: Path) -> bool:
 
 
 def naming_snapshot():
-    """Read the last local registry tree without fetch, seed, lock creation or publish."""
+    """Read the last registry snapshot without fetching or initializing the local database."""
     from . import name_registry as registry
+    from .name_sqlite import SqliteRegistry
 
     discovered = registry.discover().registry
-    if isinstance(discovered, registry.LocalRegistry):
-        return discovered._read()
+    if isinstance(discovered, SqliteRegistry):
+        return discovered.inspect()
     if discovered is None:
         # Older registry checkouts explicitly disable human names. Numeric
         # identities still use the canonical-worktree registry.
@@ -651,7 +692,11 @@ class LaunchNaming:
 
 
 def resolve_launch_naming(
-    repo_alias: str, config: dict, *, prompt: bool = False, dry_run: bool = False
+    repo_alias: str,
+    config: dict,
+    *,
+    prompt: bool = False,
+    dry_run: bool = False,
 ) -> LaunchNaming:
     """Choose the naming convention for one launch from the ``[naming]`` section.
 
@@ -686,8 +731,15 @@ def resolve_launch_naming(
     if not alias_on:
         from .host_env import refresh_host_env
 
-        refresh_host_env(config)
+        with _host_refresh_phase() as phase:
+            refresh_host_env(config)
+            if phase is not None:
+                phase.outcome(f"host id {os.environ.get('AI_HOST') or 'unset'}")
     return LaunchNaming(repo_alias, None, "", True)
+
+
+NOT_APPROVED = "not approved (unreviewed or rejected)"
+REJECTED_HERE = "rejected for this repository, host or session"
 
 
 class NamePoolExhaustedError(RuntimeError):
@@ -713,6 +765,8 @@ class PickRequest:
     ``myrepo-box-review-``); ``stem`` is ``{repo-alias}-{host-alias}``. ``held`` is every
     token the registry and this machine's spool hold; ``held_titles`` their titles.
     ``manual`` is the names added by hand, a candidate only when ``passes_static`` says so.
+    ``approved`` is the names whose general status is approved; when set, no other name
+    is a candidate. ``rejected`` is the names a scoped verdict rejects for this launch.
     """
 
     generated: frozenset[str]
@@ -730,6 +784,8 @@ class PickRequest:
     manual: frozenset[str] = frozenset()
     passes_static: Callable[[str], bool] | None = None
     max_edit_distance: int = 1
+    approved: frozenset[str] | None = None
+    rejected: frozenset[str] = frozenset()
 
 
 def alias_letters(repo_alias: str) -> frozenset[str]:
@@ -778,6 +834,8 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
     """The free candidates for ``request``, and how many each filter removed."""
     removed = dict.fromkeys(
         (
+            NOT_APPROVED,
+            REJECTED_HERE,
             "outside the length limits",
             "denylisted",
             "added by hand and failing the static filters",
@@ -792,20 +850,24 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
     manual = {name for name in request.manual if name not in request.generated}
     candidates: list[str] = []
     for name in sorted(request.generated | manual):
-        if not _NAME_SEGMENT_RE.fullmatch(name) or not request.min_length <= len(name) <= request.max_length:
-            removed[keys[0]] += 1
-        elif name in request.denylist:
-            removed[keys[1]] += 1
-        elif name in manual and not (request.passes_static and request.passes_static(name)):
+        if request.approved is not None and name not in request.approved:
+            removed[NOT_APPROVED] += 1
+        elif name in request.rejected:
+            removed[REJECTED_HERE] += 1
+        elif not _NAME_SEGMENT_RE.fullmatch(name) or not request.min_length <= len(name) <= request.max_length:
             removed[keys[2]] += 1
-        elif name in request.held:
+        elif name in request.denylist:
             removed[keys[3]] += 1
-        elif request.max_edit_distance and any(one_edit_apart(name, held) for held in request.held):
+        elif name in manual and not (request.passes_static and request.passes_static(name)):
             removed[keys[4]] += 1
-        elif name in request.reserved_words:
+        elif name in request.held:
             removed[keys[5]] += 1
-        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+        elif request.max_edit_distance and any(one_edit_apart(name, held) for held in request.held):
             removed[keys[6]] += 1
+        elif name in request.reserved_words:
+            removed[keys[7]] += 1
+        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+            removed[keys[8]] += 1
         else:
             candidates.append(name)
     return candidates, removed
@@ -823,6 +885,17 @@ def pick_name(request: PickRequest, rng: random.Random | None = None) -> NamePic
     candidates, removed = name_candidates(request)
     if not candidates:
         considered = len(request.generated | request.manual)
+        if request.approved is not None:
+            approved = considered - removed[NOT_APPROVED]
+            reasons = "; ".join(
+                f"{reason}: {count}" for reason, count in removed.items() if count and reason != NOT_APPROVED
+            )
+            raise NamePoolExhaustedError(
+                f"no approved session name is free: {approved} of the {considered} names in the database are "
+                f"approved, and every one was filtered out ({reasons or 'none'}); the rest are unreviewed or "
+                "rejected. Approve more with `ai set-name-status -a ACTOR approved NAME...` "
+                "(`ai list-names --pool` lists each name's status)"
+            )
         reasons = "; ".join(f"{reason}: {count}" for reason, count in removed.items() if count)
         raise NamePoolExhaustedError(
             f"no free session name: all {considered} names in the database were filtered out ({reasons or 'none'})"

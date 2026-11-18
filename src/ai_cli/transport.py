@@ -250,6 +250,7 @@ def run_ssh_with_reconnect(
     auth_backoff_seconds: float = 30.0,
     max_auth_backoff_seconds: float = 900.0,
     auth_fault_patterns: Sequence[str] = DEFAULT_AUTH_FAULT_PATTERNS,
+    on_exit_receipt: Callable[[], bool] | None = None,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -343,6 +344,10 @@ def run_ssh_with_reconnect(
                         stderr_tail = tee.close()
                 # A signal forwarded to ssh ends the attempt; unwind rather than reconnect.
                 raise_if_terminated()
+                if on_exit_receipt is not None and on_exit_receipt():
+                    returncode = 0
+                    verdict = "clean_exit"
+                    break
                 if stderr_tail:
                     last_error = stderr_tail
                 if returncode in _SSH_OPERATOR_EXIT_CODES:
@@ -694,10 +699,21 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     return False
 
 
-def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> str:
-    """Print and remove stderr saved by the failed mosh command; return it ("" when none)."""
+#: The first line the diagnostic read prints when the remote command recorded a nonzero exit.
+_REMOTE_STATUS_PREFIX = "remote-exit-status: "
+
+
+def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> tuple[int | None, str]:
+    """``(the remote command's recorded exit status or None, its saved diagnostic)``, both then removed.
+
+    One read-only SSH command reads what the mosh wrapper left (:func:`ai_cli.main._mosh_remote_command`):
+    the ``.status`` file a nonzero exit writes, and the last 50 lines of its stderr.
+    """
     diagnostic_command = (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'if test -f "$diagnostic_file.status"; then '
+        f'printf "{_REMOTE_STATUS_PREFIX}%s\\n" "$(cat "$diagnostic_file.status")"; '
+        'rm -f "$diagnostic_file.status"; fi; '
         'if test -f "$diagnostic_file"; then '
         'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi'
     )
@@ -710,10 +726,15 @@ def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_f
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if diagnostic := result.stdout.strip():
-        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
-    return diagnostic
+        return None, ""
+    if not isinstance(result.stdout, str):
+        return None, ""
+    lines = result.stdout.strip().splitlines()
+    status: int | None = None
+    if lines and lines[0].startswith(_REMOTE_STATUS_PREFIX):
+        value = lines.pop(0)[len(_REMOTE_STATUS_PREFIX) :].strip()
+        status = int(value) if value.isdigit() else None
+    return status, "\n".join(lines).strip()
 
 
 def _remote_failure_line(diagnostic: str) -> str:
@@ -736,8 +757,13 @@ async def _run_transport_loop(
     tailscale_host: str = "",
     diagnostic_ssh_args: list[str] | None = None,
     remote_diagnostic_file: str = "",
-) -> None:
-    """Run the mosh/SSH transport loop with VPN-aware switching.
+    on_exit_receipt: Callable[[], bool] | None = None,
+) -> int:
+    """Run the mosh/SSH transport loop with VPN-aware switching; return the exit status to leave with.
+
+    0 for a session that ended normally; the remote command's own status when it recorded a
+    nonzero one (mosh carries none back, so the wrapper writes it, see
+    :func:`_read_remote_diagnostic`); 1 when the loop gave up.
 
     Subscribes to ``vpn.state.changed`` on NATS. When a message arrives the
     active transport child is terminated and the loop restarts with the correct
@@ -778,6 +804,7 @@ async def _run_transport_loop(
     # and mosh always fails again immediately, which retried unboundedly here
     # before this cap (AI-CLI-gg9s).
     tailscale_retries = 0
+    exit_code = 0
     with _terminate_after_child() as raise_if_terminated:
         try:
             while True:
@@ -840,26 +867,44 @@ async def _run_transport_loop(
                 raise_if_terminated()
                 transport_file.unlink(missing_ok=True)
 
+                if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
+                    return 0
                 if vpn_changed.is_set():
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True)
                     continue
+
+                # Read the command's result before classifying a fast mosh exit as a link failure
+                # or detach. The read consumes the record, so all branches share this result.
+                diagnostic = ""
+                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                    remote_status, diagnostic = await asyncio.to_thread(
+                        _read_remote_diagnostic, diagnostic_ssh_args, remote_diagnostic_file
+                    )
+                    if diagnostic:
+                        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
+                    if remote_status:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            f"\nThe remote launch exited {remote_status} after {elapsed:.1f}s.",
+                            err=True,
+                        )
+                        exit_code = remote_status
+                        break
 
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
                 # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
                 # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
                 if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
-                        if failure := _remote_failure_line(diagnostic):
-                            # The remote command ran and failed: the host is reachable, and an
-                            # SSH fallback would only run the same failing command again.
-                            _out.emit(
-                                Tag.TRANSPORT,
-                                "reconnect",
-                                f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
-                                err=True,
-                            )
-                            break
+                    if failure := _remote_failure_line(diagnostic):
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "reconnect",
+                            f"\nRemote launch failed after {elapsed:.1f}s, giving up: {failure}",
+                            err=True,
+                        )
+                        exit_code = 1
+                        break
                     if await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval):
                         _out.emit(
                             Tag.TRANSPORT,
@@ -920,8 +965,10 @@ async def _run_transport_loop(
                             proc2.wait()
                         transport_file.unlink(missing_ok=True)
                         raise_if_terminated()
+                        if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
+                            return 0
                         if proc2.returncode == 0:
-                            return  # SSH succeeded
+                            return 0  # SSH succeeded
                         if vpn_changed.is_set():
                             _out.emit(
                                 Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True
@@ -930,12 +977,10 @@ async def _run_transport_loop(
                     if vpn_changed.is_set():
                         continue
                     _out.emit(Tag.TRANSPORT, "reconnect", "\nSSH failed after retries — giving up.", err=True)
+                    exit_code = 1
                     break
 
                 if elapsed < 3:
-                    diagnostic = ""
-                    if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
-                        diagnostic = _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     if failure := _remote_failure_line(diagnostic):
                         # Last, so the cause is what the user reads, not a generic timing line.
                         _out.emit(
@@ -951,6 +996,7 @@ async def _run_transport_loop(
                             f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
                             err=True,
                         )
+                    exit_code = 1
                     break
 
                 # A mosh session that ends quickly with a "successful" exit code is
@@ -962,8 +1008,6 @@ async def _run_transport_loop(
                 # catches a non-zero return code, so this case previously fell straight
                 # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
                 if transport_type == "mosh" and elapsed < 15:
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     _out.emit(
                         Tag.TRANSPORT,
                         "reconnect",
@@ -979,8 +1023,6 @@ async def _run_transport_loop(
                 # above. Preserve its exact values so a transient recurrence is
                 # actionable.
                 elif transport_type == "mosh" and proc.returncode not in (0, None):
-                    if diagnostic_ssh_args and remote_diagnostic_file:
-                        _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                     _out.emit(
                         Tag.TRANSPORT,
                         "reconnect",
@@ -1005,3 +1047,4 @@ async def _run_transport_loop(
             with contextlib.suppress(Exception):
                 await nc.close()
             subprocess.run(cleanup_cmd, capture_output=True, check=False)
+    return exit_code

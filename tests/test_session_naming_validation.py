@@ -150,6 +150,23 @@ def test_given_remote_identity_when_validating_then_owning_host_is_used(register
         session_naming.validate_artifact_name("myrepo-two-1", repo)
 
 
+def test_given_retired_legacy_index_when_validating_launch_then_only_its_owning_repo_can_reach_it(
+    registered_repo, tmp_path, monkeypatch
+):
+    from ai_cli.session_migrate import MIGRATION_LEDGER
+
+    repo, _ = registered_repo
+    monkeypatch.setattr(config, "get_xdg_state_home", lambda: tmp_path)
+    (tmp_path / MIGRATION_LEDGER).write_text(
+        json.dumps({"old": "myrepo-1", "new": "myrepo-tst-cleo", "repo": str(repo)}), encoding="utf-8"
+    )
+    session_naming.validate_launch_input("myrepo-1", repo_alias="myrepo", host_alias="tst", legacy_repo=repo)
+    with pytest.raises(session_naming.HostAliasError, match="host alias"):
+        session_naming.validate_launch_input(
+            "myrepo-1", repo_alias="myrepo", host_alias="tst", legacy_repo=tmp_path / "other"
+        )
+
+
 def test_given_unregistered_repo_when_validating_then_no_registration_is_written(tmp_path):
     with pytest.raises(session_naming.HostAliasError, match="repo registration"):
         session_naming.validate_artifact_name("myrepo-tst-1", tmp_path)

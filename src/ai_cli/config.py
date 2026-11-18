@@ -313,6 +313,20 @@ def get_xdg_config_home() -> Path:
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
+def auto_restart_enabled(path: str | Path) -> bool:
+    """``[session] auto_restart`` in the config file at ``path``, read now; never raises.
+
+    Missing, true or anything but ``false`` means the supervisor restarts the agent on exit, so
+    an unreadable or malformed file never stops restarts. The supervisor calls this at every
+    exit rather than reading a launch-time copy, so an edit applies at the next exit.
+    """
+    try:
+        section = tomllib.loads(Path(path).read_text(encoding="utf-8")).get("session", {})
+    except Exception:  # any read or parse failure keeps restarts on
+        return True
+    return not (isinstance(section, dict) and section.get("auto_restart") is False)
+
+
 def config_file_text() -> str:
     """``config.toml``'s path as text, never migrating the old directory.
 
@@ -550,6 +564,11 @@ REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
 # A registry push's own budget, for the same reason: a push of one small commit to the
 # registry ref from such a checkout has been measured at 30 seconds.
 REGISTRY_PUSH_TIMEOUT_DEFAULT_S = 60
+# A host's first clone of a Dolt registry has its own budget. On Windows CI, with Dolt
+# 2.3.4, clones of a small test registry overran 60 seconds in 22 of 73 tests of one
+# shard, while every fetch and push of the same registries stayed inside its own 60.
+REGISTRY_CLONE_TIMEOUT_DEFAULT_S = 60
+REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S = 300
 
 
 def _read_registry_timeout(config: dict, key: str, default: float) -> float:
@@ -570,6 +589,12 @@ def read_registry_fetch_timeout(config: dict) -> float:
 def read_registry_push_timeout(config: dict) -> float:
     """``[session_names] registry_push_timeout_seconds``; every registry push reads it fresh."""
     return _read_registry_timeout(config, "registry_push_timeout_seconds", REGISTRY_PUSH_TIMEOUT_DEFAULT_S)
+
+
+def read_registry_clone_timeout(config: dict) -> float:
+    """``[session_names] registry_clone_timeout_seconds``; every registry clone reads it fresh."""
+    default = REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S if sys.platform == "win32" else REGISTRY_CLONE_TIMEOUT_DEFAULT_S
+    return _read_registry_timeout(config, "registry_clone_timeout_seconds", default)
 
 
 RELAUNCH_DEFAULTS = {
@@ -686,6 +711,19 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # legacy_convention = "full"
 # auto_migrate = true
 
+[migrate_session]
+## After `ai migrate-session` finishes, it looks for references to the old name left behind.
+## Read on every migration. references_command runs once per finished migration, as
+## `<argv> --old OLD --new NEW` in the migrated repository; it may rewrite references, and
+## prints `migrate-reference-left: <where>` for each it could not. A non-zero exit or any
+## such line makes the run report "finished with leftovers" and exit 1. Unset, the step is
+## skipped. The built-in scan of the repository's tracked files always runs and never
+## rewrites; a hit whose path matches a references_allow glob (a rename map, a naming
+## example) is not a leftover. The default allows .beads/**, where the migration's own
+## re-key comments name the old session.
+# references_command = ["python3", "~/bin/sweep_references.py"]
+# references_allow = [".beads/**", "docs/renames.md"]
+
 [relaunch]
 ## When a Claude Code session exits with "Move to background and exit", the
 ## conversation keeps running as a background session. On relaunch, ai attaches to
@@ -752,23 +790,30 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
-## its <prefix>-provenance.json file. `ai migrate-session` rewrites them; unset, it leaves
-## no such markers to rewrite.
+## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
+## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
+## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
@@ -812,6 +857,10 @@ stale_session_timeout = 15
 ## terminal stays the terminal, and the pty path gives you no detach/reattach and no
 ## scrollback (install tmux for those).
 # use_pty = true
+## Restart Claude Code when it exits inside a tmux session? Default true; missing also
+## means true. false lets the session end at the agent's next exit. The supervisor reads
+## this from this file at every exit, so a change applies at the next exit, no relaunch.
+# auto_restart = true
 
 [session_names]
 ## Every key here ships commented out. Unset, a key comes from the shared name
@@ -835,6 +884,9 @@ stale_session_timeout = 15
 ## registry's publish timeout.
 # registry_fetch_timeout_seconds = 60
 # registry_push_timeout_seconds = 60
+## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
+## 300 on Windows.
+# registry_clone_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false
@@ -842,12 +894,43 @@ causes = ["host_reboot", "terminal_quit_or_crash"]
 network_wait_seconds = 120
 network_probe = "api.anthropic.com:443"
 
+[session_relaunch.exit_persistence]
+## Bounds for final-exit persistence, captured before loading the project environment.
+deadline_seconds = 30.0
+command_timeout_seconds = 10.0
+backoff_seconds = 0.25
+max_backoff_seconds = 2.0
+
 [session_relaunch.publish]
 repo = ""
 remote = "origin"
 ref_prefix = "refs/heads/fleet-sessions/"
 debounce_seconds = 60
 host = ""
+
+[session_registry]
+## Hours a session row stays in `ai sessions list` once its session is proved gone
+## (no tmux session and no agent process; for a remote row, the host's tmux has no
+## such session). A row from an earlier boot counts from this boot's start. Read on
+## every call; 0 keeps every row.
+# stale_row_retention_hours = 72
+
+[sessions_list]
+## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on
+## every call; a flag on the command overrides each one. Reference:
+## docs/reference/sessions-list-defaults.toml.
+## Column the table groups rows by: "host", "status", "relaunch" or "none".
+group_by = "host"
+## Sort keys, first key first: "status" (running, relaunched, unknown, exited), "name",
+## "changed" (newest first), "host" (this host first) and "relaunch".
+sort_by = ["status", "name"]
+## false lists running sessions only; true adds exited and unknown ones (-a/--all).
+show_all = false
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
@@ -868,6 +951,8 @@ stale_after_seconds = 600
 #[remote.machines.server]
 ## Remote server for AI sessions
 # host = "1.2.3.4"
+## Publication host ID when the SSH alias and the snapshot ref use different names.
+# host_id = "host-b"
 # user = "ubuntu"
 # port = 22
 # identity_file = ""
@@ -965,6 +1050,9 @@ nats_servers = ["nats://localhost:4222"]
 ## machine when the local NATS port is unreachable. Read on every connect. Empty (the
 ## default) opens no tunnel on any machine.
 # tunnel_hosts = ["my-workstation"]
+## Local port of the NATS SSH tunnel, started on demand when this is set. Unset (the
+## default) starts no tunnel.
+# tunnel_port = 4223
 
 [machine]
 ## Identifier for this machine.
@@ -980,6 +1068,13 @@ nats_servers = ["nats://localhost:4222"]
 ## OS type for this machine. Auto-detected from sys.platform on first run.
 ## Values: "windows", "macos", "linux"
 # os_type = ""
+## "personal" permits group listing by default. "work", "client", and unset are host only.
+# profile_class = "personal"
+## Personal profiles can restrict listing to "host" or explicitly permit "fleet".
+# sessions_list_scope = "group"
+## Set the same publication host IDs on each machine in the host group, including
+## machines with no outbound SSH target. A configured SSH alias can use host_id above.
+# session_group_members = ["host-a", "host-b"]
 
 [sidecar]
 ## Start the optional wake sidecar during a local session launch.
@@ -1001,6 +1096,8 @@ boot = false
 ## Persistent Chrome profile directory for CDP sessions (survives restarts)
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
+## Port `ai cdp start` opens when -p/--port is not given.
+# port = 9222
 
 [gemini_billing]
 ## GCP project that holds the BigQuery billing export dataset.
@@ -1099,8 +1196,11 @@ def load_config(*, read_only: bool = False):
 
     cfg["sidecar"] = get_sidecar_config(cfg)
     causes = cfg.get("session_relaunch", {}).get("causes", ["host_reboot", "terminal_quit_or_crash"])
-    if not isinstance(causes, list) or any(c not in {"host_reboot", "terminal_quit_or_crash"} for c in causes):
-        raise ValueError("session_relaunch.causes permits only host_reboot and terminal_quit_or_crash")
+    relaunchable = {"host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"}
+    if not isinstance(causes, list) or any(c not in relaunchable for c in causes):
+        raise ValueError(
+            "session_relaunch.causes permits only host_reboot, terminal_quit_or_crash and maintenance_wind_down"
+        )
 
     return cfg
 
@@ -1414,7 +1514,8 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
         if prefix.lower() in prefixes_seen:
             raise ProjectPrefixError(
                 f"Duplicate task_prefix {prefix!r} in the project registry {path}: already used by "
-                f"{prefixes_seen[prefix.lower()]!r}."
+                f"{prefixes_seen[prefix.lower()]!r}, also registered by {name.strip()!r}. "
+                "Fix: assign unique task prefixes to these projects."
             )
         prefixes_seen[prefix.lower()] = name.strip()
         # ``name`` keeps the directory's own casing, which ``key`` has lowercased for
@@ -1700,6 +1801,33 @@ def get_worktree_marker_prefix() -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+#: ``[worktree] venv`` values: a private ``uv sync`` environment per worktree, or a link to main's.
+WORKTREE_VENV_MODES = ("private", "link")
+#: Seconds a new worktree's ``uv sync`` may take before the launch stops and says so.
+DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT = 900.0
+
+
+def get_worktree_venv_mode() -> str:
+    """``[worktree] venv``, read at call time: "private" (the default) or "link"."""
+    try:
+        value = load_config().get("worktree", {}).get("venv")
+    except Exception:
+        return "private"
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if value in WORKTREE_VENV_MODES else "private"
+
+
+def get_worktree_venv_sync_timeout() -> float:
+    """``[worktree] venv_sync_timeout_seconds``, read at call time; positive, else the default."""
+    try:
+        value = load_config().get("worktree", {}).get("venv_sync_timeout_seconds")
+    except Exception:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    return float(value)
+
+
 def get_environment_repo() -> str:
     """``[project] environment_repo``, read at call time; "" when unset."""
     try:
@@ -1779,9 +1907,12 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
 
     projects = data.get("projects", [])
 
-    # Schema validation: name and task_prefix required, both unique
+    fleet_path = get_fleet_registry_path()
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+
+    # Names are unique; only aliases not superseded by the fleet must be unique.
     names_seen: set[str] = set()
-    prefixes_seen: set[str] = set()
+    prefixes_seen: dict[str, str] = {}
     for p in projects:
         name = p.get("name", "")
         prefix = p.get("task_prefix", "")
@@ -1793,11 +1924,19 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         if name_lower in names_seen:
             _out.error(Tag.CONFIG, "load", f"duplicate project name in registry: {name}")
             sys.exit(1)
-        if prefix_lower in prefixes_seen:
-            _out.error(Tag.CONFIG, "load", f"duplicate task_prefix in registry: {prefix}")
-            sys.exit(1)
         names_seen.add(name_lower)
-        prefixes_seen.add(prefix_lower)
+        fleet_entry = fleet_entries.get(name_lower)
+        if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix_lower:
+            continue
+        if prefix_lower in prefixes_seen:
+            _out.error(
+                Tag.CONFIG,
+                "load",
+                f"duplicate task_prefix {prefix!r} in registry: {prefixes_seen[prefix_lower]!r} and {name!r}. "
+                "Fix: assign unique task prefixes to these projects.",
+            )
+            sys.exit(1)
+        prefixes_seen[prefix_lower] = name
 
     _registry_cache = projects
     return projects
@@ -1952,44 +2091,13 @@ def _get_project_prefix_by_name(project_name: str) -> str:
 
 
 def get_project_aliases() -> dict:
-    """Build project alias map: ``task_prefix.lower()`` -> project name.
+    """Build the prefix-to-project map, refusing conflicting registrations."""
+    return {prefix: name for prefix, name in registered_project_names().items() if prefix != name.lower()}
 
-    Both registries contribute and the fleet registry wins. It is tier 1 of
-    ``resolve_project_prefix_by_name``, so an alias that disagreed with it would resolve a
-    prefix to one repository while the prefix resolver named another — that mints a session
-    against the wrong project rather than failing.
 
-    This used to read only the legacy ``<main_project>/<main_project>.toml``, which
-    ``_get_project_registry_path`` returns as None unless ``[project] main_project`` is
-    configured *and* that file exists. That is not the normal state, so the map was usually
-    empty and every ``-p <prefix>`` call site degraded to ``aliases.get(raw, raw)`` — the
-    prefix passed through as if it were a directory name, failing with an error that named a
-    nonexistent local path (AI-CLI-dosx).
-    """
-    aliases: dict[str, str] = {}
-
-    def add(prefix: str, name: str) -> None:
-        # setdefault, not assignment: first writer wins, which is what makes fleet beat legacy.
-        # A project whose prefix equals its own name contributes no alias — there is nothing to
-        # translate, and storing it would shadow a real alias on a later source.
-        if prefix and name and prefix != name:
-            aliases.setdefault(prefix, name)
-
-    fleet_path = get_fleet_registry_path()
-    if fleet_path is not None and fleet_path.is_file():
-        try:
-            for entry in _projects_table_entries(fleet_path).values():
-                add(entry["prefix"].lower(), entry["name"])
-        except ProjectPrefixError:
-            # A malformed fleet registry must not make every launch unusable. The prefix
-            # resolvers read the same file and raise there, on the path that needs it, so the
-            # operator still gets the parse error rather than a silently wrong project.
-            pass
-
-    for p in load_project_registry():
-        add(p.get("task_prefix", "").lower(), p.get("name", ""))
-
-    return aliases
+_warned_stale_project_aliases: set[tuple[str, str, str, str]] = set()
+# Prefix clashes already reported this process, so a launch warns once, not once per lookup.
+_warned_absent_alias_conflicts: set[tuple[str, str, str]] = set()
 
 
 def registered_project_names() -> dict[str, str]:
@@ -1998,17 +2106,80 @@ def registered_project_names() -> dict[str, str]:
     Unlike :func:`get_project_aliases` this keeps a project whose prefix equals its name
     and includes the root-keyed ``[project_registry]`` table (keyed by the root's
     directory name, which is what ``resolve_project_prefix_by_name`` matches there).
-    Tier order matches that resolver: the first registry naming a prefix wins. Raises
+    Fleet entries supersede stale per-machine aliases for the same project, with
+    a warning once per process. Two other projects that share a prefix are refused only
+    when both have a checkout on this host; a registry shared across machines may name a
+    project that is not here, and that clash cannot mislead anything on this machine, so the
+    present project owns the prefix and a warning names the absent one. Raises
     :class:`ProjectPrefixError` when a registry cannot be read.
     """
     names: dict[str, str] = {}
+
+    def present(name: str) -> bool:
+        return _find_project_dir(name).is_dir()
+
+    def add(prefix: str, name: str) -> None:
+        key = prefix.lower()
+        previous = names.get(key)
+        if previous is None:
+            names[key] = name
+            return
+        if previous.casefold() == name.casefold():
+            return
+        if present(previous) and present(name):
+            raise ProjectPrefixError(
+                f"Conflicting project aliases for prefix {prefix!r}: {previous!r} and {name!r}. "
+                "Fix: assign unique task prefixes in the project registries on both machines."
+            )
+        winner, loser = (name, previous) if present(name) and not present(previous) else (previous, name)
+        names[key] = winner
+        warning_key = (key, winner.casefold(), loser.casefold())
+        if warning_key not in _warned_absent_alias_conflicts:
+            _warned_absent_alias_conflicts.add(warning_key)
+            _out.warning(
+                Tag.CONFIG,
+                "load",
+                f"Prefix {prefix!r} is registered for both {previous!r} and {name!r}, and not both are "
+                f"checked out on this host; using {winner!r}. Fix: assign unique task prefixes in the "
+                "shared registry.",
+            )
+
     fleet_path = get_fleet_registry_path()
-    if fleet_path is not None and fleet_path.is_file():
-        for entry in _projects_table_entries(fleet_path).values():
-            names.setdefault(entry["prefix"].lower(), entry["name"])
+    fleet_entries = _projects_table_entries(fleet_path) if fleet_path is not None and fleet_path.is_file() else {}
+    for entry in fleet_entries.values():
+        add(entry["prefix"], entry["name"])
     for p in load_project_registry():
         if p.get("task_prefix") and p.get("name"):
-            names.setdefault(str(p["task_prefix"]).lower(), str(p["name"]))
+            prefix, name = str(p["task_prefix"]), str(p["name"])
+            fleet_entry = fleet_entries.get(name.lower())
+            if fleet_entry is not None and fleet_entry["prefix"].lower() != prefix.lower():
+                source = str(_get_project_registry_path())
+                warning_key = (source, name.lower(), prefix.lower(), fleet_entry["prefix"])
+                if warning_key not in _warned_stale_project_aliases:
+                    _out.warning(
+                        Tag.CONFIG,
+                        "load",
+                        f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
+                        f"the fleet registry declares {fleet_entry['prefix']!r}. "
+                        f"If {source} is in a repository checkout, pull it first: the fix may already "
+                        "be upstream. Otherwise edit the project's task_prefix there to match the fleet registry.",
+                    )
+                    _warned_stale_project_aliases.add(warning_key)
+                continue
+            add(prefix, name)
     for root, entry in _registry_entries().items():
-        names.setdefault(entry["prefix"].lower(), Path(root).name)
+        add(entry["prefix"], Path(root).name)
     return names
+
+
+def validate_remote_project(project: str, prefix: str) -> None:
+    """Refuse a launcher's project/prefix pair that disagrees with this host's registry."""
+    names = registered_project_names()
+    expected = names.get(prefix.lower())
+    selected = names.get(project.lower(), project)
+    if expected is not None and expected.casefold() != selected.casefold():
+        raise ProjectPrefixError(
+            f"Conflicting project aliases for prefix {prefix!r}: launcher selected {project!r}, "
+            f"this host registers {expected!r}. Fix: assign unique task prefixes in the project "
+            "registries on both machines, then retry with the intended project's prefix."
+        )

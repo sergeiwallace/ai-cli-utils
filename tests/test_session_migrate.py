@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +27,7 @@ from process_wait import scaled
 from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
-from ai_cli.config import get_xdg_config_home, get_xdg_state_home
+from ai_cli.config import get_xdg_config_home, get_xdg_data_home, get_xdg_state_home
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
@@ -162,12 +163,152 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
         return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), *flags])
 
 
+def _without_registry_cache(tree: dict | None, root: Path) -> dict | None:
+    """``tree`` less the Dolt name registry's local clone, when it lives under ``root``.
+
+    The clone is a cache that every registry read, a preview's included, fetches into.
+    On Windows the data directory is the state directory, so the clone sits in the state
+    tree; elsewhere it has its own directory. Whether a preview wrote the registry is
+    checked against the remote tip instead.
+    """
+    if tree is None:
+        return None
+    try:
+        prefix = (get_xdg_data_home().relative_to(root) / "session-names.dolt").as_posix()
+    except ValueError:
+        return tree
+    return {path: entry for path, entry in tree.items() if not path.startswith(prefix)}
+
+
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
     trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees["state"] = _without_registry_cache(trees["state"], slot["state"])
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
     trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")
     return trees
+
+
+@pytest.mark.parametrize("finish", [False, True])
+@pytest.mark.parametrize("argument", [f"c-{OLD}", "3"])
+def test_given_saved_launch_directory_when_migrated_then_restore_uses_the_new_worktree(slot, finish, argument):
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    record = doc["sessions"][0]
+    record["cwd"] = str(slot["wt"])
+    record["relaunch_argv"] = ["ai", "c", argument, "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    if finish:
+        doc = json.loads(path.read_text())
+        doc["sessions"][0]["cwd"] = str(slot["wt"])
+        path.write_text(json.dumps(doc))
+        code, out, err = _migrate(slot["repo"], "--finish", "-y")
+        assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    new_wt = slot["repo"] / ".worktrees" / NEW
+    assert record["cwd"] == record["boot_recipe"]["cwd"] == str(new_wt)
+    assert record["relaunch_argv"] == [
+        "ai",
+        "c",
+        f"c-{NEW}" if argument.startswith("c-") else NEW,
+        "-p",
+        "myrepo",
+        "-D",
+    ]
+    assert _git("branch", "--show-current", cwd=new_wt).strip() == f"wt-{NEW}"
+    assert (slot["claude"] / "tasks" / NEW).is_dir()
+
+
+def test_given_remote_origin_slot_when_migrated_then_boot_and_wrapper_keep_remote_names(slot):
+    meta_path = slot["state"] / f"session-meta-c-{OLD}.json"
+    meta = json.loads(meta_path.read_text())
+    meta.update(session=f"c-r-{OLD}", is_remote=True, prefix="c-r-myrepo-")
+    remote_meta = slot["state"] / f"session-meta-c-r-{OLD}.json"
+    meta_path.rename(remote_meta)
+    remote_meta.write_text(json.dumps(meta))
+    registry_path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(registry_path.read_text())
+    record = doc["sessions"][0]
+    record["name"] = record["boot_recipe"]["session_name"] = f"c-r-{OLD}"
+    record["boot_recipe"]["options"]["is_remote"] = True
+    record["boot_recipe"]["argv"][2] = f"c-r-{OLD}"
+    record["boot_recipe"]["argv"].append("--is-remote")
+    registry_path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    meta = json.loads((slot["state"] / f"session-meta-c-r-{NEW}.json").read_text())
+    record = json.loads(registry_path.read_text())["sessions"][0]
+    assert meta["session"] == record["name"] == record["boot_recipe"]["session_name"] == f"c-r-{NEW}"
+    assert meta["is_remote"] is record["boot_recipe"]["options"]["is_remote"] is True
+
+
+def test_given_renamed_record_with_stale_numeric_resume_when_finished_then_launch_argument_is_repaired(slot):
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    path = slot["state"] / "iterm2-sessions.json"
+    doc = json.loads(path.read_text())
+    doc["sessions"][0]["relaunch_argv"] = ["ai", "c", "3", "-p", "myrepo", "-D"]
+    path.write_text(json.dumps(doc))
+    code, out, err = _migrate(slot["repo"], "--finish", "-y")
+    assert code == 0, out + err
+    record = json.loads(path.read_text())["sessions"][0]
+    assert record["relaunch_argv"] == ["ai", "c", NEW, "-p", "myrepo", "-D"]
+
+
+def test_given_running_restore_record_when_migrated_then_refused_before_any_artifact_moves(slot):
+    path = slot["state"] / "iterm2-sessions.json"
+    document = json.loads(path.read_text())
+    document["sessions"][0]["run_state"] = "running"
+    path.write_text(json.dumps(document))
+    before = _everything(slot)
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code != 0
+    assert "run state is still running" in out + err
+    assert _everything(slot) == before
+
+
+@pytest.fixture
+def vanished_run(slot, monkeypatch):
+    stamp = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    path = slot["state"] / "iterm2-sessions.json"
+    document = json.loads(path.read_text())
+    boot = session_registry.current_boot_id()
+    document["sessions"][0].update(
+        run_state="running",
+        launcher_pid=_dead_pid(),
+        launched_at=stamp,
+        changed_at=stamp,
+        refreshed_at=stamp,
+        ended_at=None,
+        relaunch="auto",
+        boot_id=boot,
+        relaunched_boot_id=boot,
+        boot_decision={"cause": "terminal_quit_or_crash", "reason": "already attempted in this boot"},
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(session_registry, "_local_session_alive", lambda _name: False)
+    monkeypatch.setattr("psutil.process_iter", lambda *a, **kw: iter(()))
+    return path
+
+
+@pytest.mark.parametrize("list_first", [False, True])
+def test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled(slot, vanished_run, list_first):
+    config = {"machine": {"host_id": "m"}}
+    if list_first:
+        code, out, err = run_cli(["ai", "sessions", "list", "-j"], config=config)
+        assert code == 0, out + err
+        assert json.loads(vanished_run.read_text())["sessions"][0]["run_state"] == "exited"
+    with patch("ai_cli.config.load_config", return_value=with_environment_config(config)):
+        code, out, err = _migrate(slot["repo"], "-n")
+    assert code == 0, out + err
+    record = json.loads(vanished_run.read_text())["sessions"][0]
+    assert record["run_state"] == "exited"
+    assert record["ended_at"]
+    assert record["boot_recipe"]["session_name"] == f"c-{OLD}"
+    assert slot["wt"].exists()
+    assert not (slot["repo"] / ".worktrees" / NEW).exists()
 
 
 def test_given_a_registered_slot_when_migrated_then_every_artifact_follows_the_new_name(slot):
@@ -302,6 +443,20 @@ def test_given_its_tmux_session_still_exists_when_migrating_then_it_is_refused(s
     assert code == 2
     assert f"tmux session c-{OLD} still hosts {OLD}" in err
     assert _everything(slot) == before
+
+
+def test_given_a_running_session_when_migrating_then_the_refusal_names_the_stop_verb(slot):
+    sessions = slot["claude"] / "sessions"
+    sessions.mkdir()
+    (sessions / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "name": OLD, "cwd": str(slot["wt"]), "sessionId": UUID})
+    )
+    _code, _out, err = _migrate(slot["repo"], "-y")
+    assert f"ai sessions stop {OLD}" in err
+    (sessions / f"{os.getpid()}.json").unlink()
+    code, _out, err = _migrate(slot["repo"], "-y", tmux=[f"c-{OLD}"])
+    assert code == 2
+    assert f"ai sessions stop {OLD}" in err
 
 
 def test_given_the_new_slot_exists_when_migrating_then_it_is_refused(slot):
@@ -479,6 +634,28 @@ def test_given_only_bookkeeping_is_left_in_the_old_task_namespace_when_migrated_
     assert sorted(p.name for p in new_ns.glob("*.json")) == ["1.json", "2.json"]
 
 
+def test_given_idle_task_watcher_locks_in_the_old_task_namespace_when_migrated_then_they_are_removed(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    for task_id in (735, 881):
+        (old_ns / f".{task_id}.shadow-watcher.lock").write_text("")
+    code, out, err = _migrate(slot["repo"], "--dry-run")
+    assert code == 0, out + err
+    assert f"task namespace: {old_ns} (removed after rekey)" in out
+
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 0, out + err
+    assert not old_ns.exists()
+
+
+def test_given_a_task_watcher_lock_with_content_when_migrated_then_it_stays_and_is_named(slot):
+    old_ns = slot["claude"] / "tasks" / OLD
+    (old_ns / ".735.shadow-watcher.lock").write_text("in use\n")
+    code, out, err = _migrate(slot["repo"], "-y")
+    assert code == 1, out + err
+    assert f"task namespace {old_ns} left in place: it still holds .735.shadow-watcher.lock" in err
+    assert (old_ns / ".735.shadow-watcher.lock").read_text(encoding="utf-8") == "in use\n"
+
+
 def test_given_another_entry_in_the_old_task_namespace_when_migrated_then_it_stays_and_is_named(slot):
     old_ns = slot["claude"] / "tasks" / OLD
     (old_ns / "notes.txt").write_text("keep me\n")
@@ -603,6 +780,44 @@ def test_given_old_name_leftovers_when_dry_run_then_each_is_planned_and_nothing_
         assert expected in out, f"{expected!r} missing from:\n{out}"
 
 
+def test_given_an_empty_old_agent_container_when_dry_run_then_its_removal_is_named_and_it_stays(slot):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    (container / "reaped-leaf").mkdir(parents=True)
+
+    code, out, err = _migrate(slot["repo"], "-n")
+
+    assert code == 0, out + err
+    assert f"agent container: {container} (would be removed: empty)" in out
+    assert (container / "reaped-leaf").is_dir()
+
+
+def test_given_an_old_agent_container_holding_a_moving_agent_worktree_when_dry_run_then_its_removal_is_named(slot):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    leaf = container / "leaf"
+    _git("worktree", "add", "-q", str(leaf), "-b", f"wt/{OLD}/leaf", cwd=slot["repo"])
+
+    code, out, err = _migrate(slot["repo"], "-n")
+
+    assert code == 0, out + err
+    assert f"agent container: {container} (would be removed: empty)" in out
+    assert (leaf / "README.md").is_file()
+
+
+@pytest.mark.parametrize("flags", [("-n",), ("-y",)])
+def test_given_an_old_agent_container_holding_a_file_when_migrated_or_dry_run_then_its_move_is_reported(slot, flags):
+    container = slot["repo"] / ".worktrees" / f"{OLD}-agents"
+    container.mkdir(parents=True)
+    (container / "notes.txt").write_text("keep me\n")
+
+    code, out, err = _migrate(slot["repo"], *flags)
+
+    assert code == 0, out + err
+    target = container.with_name(f"{NEW}-agents") / "notes.txt"
+    assert f"agent container file: {container / 'notes.txt'} -> {target}" in out
+    location = container / "notes.txt" if "-n" in flags else target
+    assert location.read_text(encoding="utf-8") == "keep me\n"
+
+
 def test_given_a_watcher_lock_naming_a_live_pid_when_migrated_then_it_is_left_alone(slot):
     lock = slot["state"] / f"ai-watcher-lock-c-{OLD}"
     lock.write_text(str(os.getpid()))
@@ -691,16 +906,17 @@ def test_given_the_old_slot_is_still_registered_when_finished_then_it_is_refused
     assert _everything(slot) == before
 
 
-def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slot):
+def test_given_the_new_session_runs_in_tmux_when_finished_then_its_leftovers_are_carried(slot):
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     left = _leftovers(slot)
 
-    code, _out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
+    code, out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
 
-    assert code == 2
-    assert f"hosts {NEW}" in err
-    assert left["slot_lock"].exists()
+    # None of these leftovers is a file the running NEW holds open, so nothing is deferred.
+    assert code == 0, out + err
+    assert f"hosts {NEW}" in out
+    assert not left["slot_lock"].exists()
 
 
 # A stand-in for ``bd``: it serves each store's issues from one JSON file and logs every call,
@@ -805,6 +1021,169 @@ def test_given_issues_assigned_to_old_when_migrated_then_new_holds_each_and_the_
     assert comments == [f"Re-keyed from {OLD} to {NEW} by `ai migrate-session`."]
     for store in (stores["repo"], stores["workspace"]):
         assert f"beads store: {store} (publish needed" in out, out
+
+
+# A stand-in for the configured publish command: it logs its argv, its cwd and the assignees the
+# fake bd store holds when it runs, then exits with the code ``exit`` names (``revert`` first
+# hands TST-1 back to the old name, as a pull of someone else's change would; ``sleep`` holds it
+# that many seconds first, as a slow push would).
+_FAKE_PUBLISH = """\
+import json, os, sys, time
+from pathlib import Path
+
+db = Path(os.environ["FAKE_BD_DB"])
+data = json.loads(db.read_text())
+control = json.loads(Path(os.environ["FAKE_PUBLISH_CONTROL"]).read_text())
+store = sys.argv[sys.argv.index("--repo") + 1]
+held = {i["id"]: i["assignee"] for i in data["stores"].get(store, [])}
+with open(os.environ["FAKE_PUBLISH_LOG"], "a") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "cwd": str(Path.cwd().resolve()), "held": held}) + "\\n")
+if control.get("revert"):
+    next(i for i in data["stores"][store] if i["id"] == "TST-1")["assignee"] = control["revert"]
+    db.write_text(json.dumps(data))
+if control.get("sleep"):
+    time.sleep(control["sleep"])
+if control["exit"]:
+    print(f"publish refused: exit {control['exit']}", file=sys.stderr)
+    sys.exit(control["exit"])
+"""
+
+
+@pytest.fixture
+def publish(stores, tmp_path, monkeypatch):
+    """A configured publish command for each store the run re-keys, logged outside the stores."""
+    root = tmp_path / "fakepublish"
+    root.mkdir()
+    program = root / "publish_store.py"
+    program.write_text(_FAKE_PUBLISH, encoding="utf-8")
+    control = root / "control.json"
+    control.write_text(json.dumps({"exit": 0}), encoding="utf-8")
+    monkeypatch.setenv("FAKE_PUBLISH_CONTROL", str(control))
+    monkeypatch.setenv("FAKE_PUBLISH_LOG", str(root / "calls.jsonl"))
+    config = get_xdg_config_home() / "migrate-session-publish.d"
+    config.mkdir(parents=True)
+    (config / "beads.toml").write_text(
+        f"argv = [{json.dumps(str(program))}, {json.dumps('--repo')}, {json.dumps('{store}')}]\n", encoding="utf-8"
+    )
+    return {"control": control, "log": root / "calls.jsonl", "config": config / "beads.toml"}
+
+
+def _publish_calls(publish) -> list[dict]:
+    if not publish["log"].exists():
+        return []
+    return [json.loads(line) for line in publish["log"].read_text(encoding="utf-8").splitlines()]
+
+
+def _part(out: str, part: str) -> str:
+    return next(line.split(" | ", 1)[1] for line in out.splitlines() if f": {part} | " in line)
+
+
+def _ledger_finished(slot) -> list[dict]:
+    ledger = slot["state"] / "session-migrations.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()] if ledger.exists() else []
+    return [row for row in rows if row.get("finished")]
+
+
+def test_given_a_publish_command_when_migrated_then_it_runs_once_per_changed_store_after_the_re_key(stores, publish):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    calls = _publish_calls(publish)
+    assert sorted(call["argv"][-1] for call in calls) == sorted([str(stores["repo"]), str(stores["workspace"])])
+    for call in calls:
+        assert call["argv"][-2:] == ["--repo", call["cwd"]]
+        assert NEW in call["held"].values() and OLD not in {
+            assignee for issue, assignee in call["held"].items() if issue in ("TST-1", "TST-2", "WS-1")
+        }
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store: {store} (published" in out, out
+    assert _part(out, "beads store") == "done now"
+
+
+def test_given_a_publish_that_exits_non_zero_when_finished_then_the_run_exits_1_with_no_finished_row(
+    stores, publish, slot
+):
+    publish["control"].write_text(json.dumps({"exit": 6}), encoding="utf-8")
+    code, out, err = _migrate(stores["repo"], "-y")
+    assert code == 1, out + err
+
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} publish FAILED (exit 6): publish refused: exit 6" in err
+    assert _part(out, "beads store").startswith("failed: ")
+    assert _ledger_finished(slot) == []
+    # The issues were already re-keyed: the second run publishes each store again on its own record.
+    assert len(_publish_calls(publish)) == 4
+
+    publish["control"].write_text(json.dumps({"exit": 0}), encoding="utf-8")
+    code, out, err = _finish(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    assert len(_publish_calls(publish)) == 6
+    assert _part(out, "beads store") == "done now"
+    assert len(_ledger_finished(slot)) == 1
+
+
+def test_given_a_publish_slower_than_its_configured_timeout_when_migrated_then_the_store_reads_timed_out(
+    stores, publish, slot
+):
+    publish["config"].write_text(publish["config"].read_text(encoding="utf-8") + "timeout_s = 1\n", encoding="utf-8")
+    publish["control"].write_text(json.dumps({"exit": 0, "sleep": 30}), encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} publish FAILED (timed out after 1 s)" in err
+    assert "exit 127" not in out + err
+    assert f"beads store: {stores['repo']} (publish failed: timed out after 1 s)" in out, out
+    assert _part(out, "beads store").startswith("failed: ")
+    assert _ledger_finished(slot) == []
+
+
+@pytest.mark.parametrize("value", ["0", "-5", '"600"', "true"])
+def test_given_a_publish_file_with_a_bad_timeout_when_migrated_then_the_store_reads_failed_naming_the_field(
+    stores, publish, value
+):
+    publish["config"].write_text(
+        publish["config"].read_text(encoding="utf-8") + f"timeout_s = {value}\n", encoding="utf-8"
+    )
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert "field 'timeout_s' must be a positive number of seconds" in err
+    assert _publish_calls(publish) == []
+
+
+def test_given_a_published_store_still_holding_an_issue_on_old_when_migrated_then_the_run_exits_1(stores, publish):
+    publish["control"].write_text(json.dumps({"exit": 0, "revert": OLD}), encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert f"beads store {stores['repo']} was published but still holds TST-1 on {OLD}: NOT converged" in err
+    assert _part(out, "beads store").startswith("failed: ")
+
+
+def test_given_a_publish_file_without_the_store_placeholder_when_migrated_then_the_store_reads_failed(stores, publish):
+    publish["config"].write_text('argv = ["publish"]\n', encoding="utf-8")
+
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 1, out + err
+    assert "must name the {store} placeholder" in err
+    assert _publish_calls(publish) == []
+    assert _assignees(stores)["TST-1"] == NEW
+
+
+def test_given_no_publish_command_when_migrated_then_each_store_reads_publish_needed_and_the_run_exits_0(stores):
+    code, out, err = _migrate(stores["repo"], "-y")
+
+    assert code == 0, out + err
+    for store in (stores["repo"], stores["workspace"]):
+        assert f"beads store: {store} (publish needed" in out, out
+    assert _part(out, "beads store") == "skipped: publish needed, no publish command is configured"
 
 
 def test_given_closed_and_similarly_named_issues_when_migrated_then_neither_is_rewritten(stores):
@@ -939,8 +1318,6 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
             {"pid": os.getpid(), "name": NEW, "cwd": str(stores["repo"] / ".worktrees" / NEW), "sessionId": UUID}
         )
     )
-    code, out, err = _finish(stores["repo"], "-y")
-    assert code == 2 and "still running" in err, out + err
 
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
         code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])

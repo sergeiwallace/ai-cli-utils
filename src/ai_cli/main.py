@@ -12,9 +12,9 @@ import sys
 import time
 import uuid as uuid_module
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import IO, Any, NoReturn, cast
+from typing import IO, Any, NoReturn, TypeVar, cast
 
 import click
 import portalocker
@@ -55,6 +55,7 @@ from .cc_migrate import (
     # `cc_migrate.transcript_title` for the measurements.
     transcript_title as _cc_transcript_current_title,
 )
+from .cli_help import HelpGroup, RootHelpGroup
 from .client_checkout import ClientCheck, ClientState, sync_client_checkout
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -109,14 +110,11 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .launch_logging import create_launch_log
+from .launch_logging import REMOTE_DIAGNOSTIC_ENV, create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
 from .process_manager import (  # noqa: F401
-    _cmd_quota_watch_start,
-    _cmd_quota_watch_status,
-    _cmd_quota_watch_stop,
     _ensure_circusd,
 )
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
@@ -161,8 +159,10 @@ from .tunnel import (  # noqa: F401
 )
 
 # MAINTENANCE: when editing ai-cli, also update:
-#   - docs/tools/ai-cli-usage.md (usage reference, session naming, transport, auto-resume)
-#   - README.md (if CLI interface changes)
+#   - docs/reference/cli.md and the README command index: regenerate them from the command
+#     declarations with `uv run python scripts/generate_docs.py`; never edit them by hand
+#   - docs/tools/ai-cli-usage.md (narrative guide: session naming, transport, auto-resume)
+#   - README.md prose (if CLI behaviour changes)
 #   - Code comments in this file (especially around session naming, resume logic, mosh/transport)
 #   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
 
@@ -893,35 +893,6 @@ def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
     return candidate
 
 
-def _utc_instant(value: object):
-    """``value`` as an aware UTC datetime when it is an ISO-8601 string, else ``None``."""
-    from datetime import UTC, datetime
-
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
-def _cc_transcript_started(path: Path):
-    """When ``path``'s first timestamped record was written, or ``None`` when none is readable."""
-    try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
-                    return _utc_instant(record["timestamp"])
-    except OSError:
-        pass
-    return None
-
-
 def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> "Path | None":
     """The transcript a recorded migration to ``title`` left under its old name, when it should be resumed.
 
@@ -936,11 +907,11 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
     started before it, or whose start cannot be read, is the session's own retitled history and
     keeps winning, so ``None`` is returned.
     """
-    from .session_migrate import _ledger_rows
+    from .session_migrate import _ledger_rows, transcript_started, utc_instant
 
     migrated_at: dict[str, Any] = {}
     for row in _ledger_rows(_config.get_xdg_state_home()):
-        old, at = row.get("old"), _utc_instant(row.get("time"))
+        old, at = row.get("old"), utc_instant(row.get("time"))
         # Only the migration's own row carries ``worktree``; finish and announce rows do not.
         if row.get("new") != title or not isinstance(old, str) or old == title or at is None:
             continue
@@ -959,11 +930,41 @@ def _find_migrated_cc_session(cwd: Path, title: str, candidates: list[Path]) -> 
         if old is None or _cc_registered_kind(path.stem) == "bg":
             continue
         for candidate in candidates:
-            started = _cc_transcript_started(candidate)
+            started = transcript_started(candidate)
             if started is None or started <= migrated_at[old]:
                 return None
         return path
     return None
+
+
+def _find_moved_cc_session(title: str, candidates: list[Path]) -> "Path | None":
+    """The newest of ``candidates`` this host's ledger records a migration to ``title`` as having moved.
+
+    A session relaunched under ``title`` before its migration finished starts a transcript titled
+    ``title`` from its first record. That stray can be more recently active than the transcript the
+    migration moved, so the recorded one is preferred over it. ``None`` when the ledger names none.
+    """
+    from .session_migrate import moved_transcripts
+
+    if not candidates:
+        return None
+    moved = moved_transcripts(title)
+    return next((path for path in candidates if path.stem in moved), None)
+
+
+def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None":
+    """The transcript a resume of ``title`` in ``cwd`` should take, noting on stderr when several qualify.
+
+    In order: the transcript a recorded migration moved (:func:`_find_moved_cc_session`), the one
+    a recorded migration left under its old title (:func:`_find_migrated_cc_session`), then the
+    most recently active transcript titled ``title``. ``None`` when none applies.
+    """
+    candidates = _find_cc_session_candidates_by_title(cwd, title)
+    moved = _find_moved_cc_session(title, candidates)
+    reverted = None if moved else _find_migrated_cc_session(cwd, title, candidates)
+    if len(candidates) > 1:
+        _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved, reverted), err=True)
+    return moved or reverted or (candidates[0] if candidates else None)
 
 
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
@@ -994,13 +995,18 @@ def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
+def _cc_multi_candidate_warning(
+    title: str, candidates: list[Path], moved: "Path | None" = None, reverted: "Path | None" = None
+) -> str:
     """Warn that more than one eligible transcript currently carries ``title``.
 
-    ``ai c`` always resolves to ``candidates[0]`` (the newest by mtime — see
-    :func:`_find_cc_session_candidates_by_title`), so this is informational,
-    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of
-    silently picking one of several same-titled transcripts.
+    Without ``moved``, ``ai c`` resolves to ``candidates[0]`` (the newest by mtime — see
+    :func:`_find_cc_session_candidates_by_title`). ``moved`` is the transcript a recorded
+    migration moved, which is resumed instead, and every candidate no migration moved is named
+    as skipped. ``reverted`` is the transcript a recorded migration left under its old title
+    (:func:`_find_migrated_cc_session`), resumed instead of every candidate. This is informational,
+    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of silently picking one of
+    several same-titled transcripts.
     """
     lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
     for path in candidates:
@@ -1008,7 +1014,18 @@ def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
         status = f"live (pid {pid})" if is_live else "not live"
         mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
         lines.append(f"  {path.stem}  last active {mtime}  {status}")
-    lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+    if moved is None and reverted is not None:
+        lines.append(f"Resuming {reverted.stem}, which the migration to '{title}' left under its old title")
+        return "\n".join(lines)
+    if moved is None:
+        lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+        return "\n".join(lines)
+    from .session_migrate import moved_transcripts
+
+    recorded = moved_transcripts(title)
+    strays = [path.stem for path in candidates if path.stem not in recorded]
+    skipped = f"; skipped {', '.join(strays)}, which the migration did not move" if strays else ""
+    lines.append(f"Resuming {moved.stem}, the transcript migrated to '{title}'{skipped}")
     return "\n".join(lines)
 
 
@@ -1037,10 +1054,7 @@ def _bare_engine_command(
         if not _is_root():
             command.append("--dangerously-skip-permissions")
         # Resume this session's own prior conversation by its exact transcript UUID.
-        candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
-        if len(candidates) > 1:
-            _out.emit(Tag.LAUNCH, "resume", _cc_multi_candidate_warning(ai_name, candidates), err=True)
-        matched = _find_migrated_cc_session(target_root, ai_name, candidates) or (candidates[0] if candidates else None)
+        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(target_root, ai_name)
             if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
@@ -1101,6 +1115,22 @@ def _is_root() -> bool:
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
     return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+
+
+def _launch_mode_label(*, remote: bool, bare: bool) -> str:
+    """The ``(local, tmux)`` part of the first launch line, before tmux is resolved.
+
+    The line is printed before the tmux preflight runs, so it can only predict. It
+    predicts from what is already settled without starting tmux: an explicit bare
+    request, and Windows with no tmux on PATH, which ``_do_session_launch`` turns into
+    a bare launch without a further notice. Saying ``tmux`` there was the only mode
+    statement such a launch made, and it was wrong. Where the preflight degrades to
+    bare later on another platform, it says so in its own warning.
+    """
+    where = "remote" if remote else "local"
+    if not bare and not remote and sys.platform == "win32" and not _tmux_setup.tmux_present():
+        bare = True
+    return f"{where}, {'bare' if bare else 'tmux'}"
 
 
 def _find_aicli_project_path(config: dict) -> "Path | None":
@@ -1893,6 +1923,38 @@ def _request_remote_session_allocation(
     return session_id, ai_name
 
 
+def _request_remote_chief_session(
+    ssh_args: list[str], remote_shell: str, remote_args: "list[str] | tuple[str, ...]" = ()
+) -> str:
+    """Return the tmux session of the chief the remote host is running, or ``""``.
+
+    An unnumbered chief request leaves the choice to the remote host, so this machine
+    cannot compose the session's name. The remote host answers from its own registration
+    and tmux sessions. Anything short of a clear answer (no chief running there, several
+    candidates, a remote ``ai`` that predates the command, an unreadable reply) returns
+    ``""`` and the caller keeps its own placeholder name.
+    """
+    remote_command = 'export PATH="$HOME/.local/bin:$PATH"; ai internal resolve-chief-session' + "".join(
+        f" {shlex.quote(arg)}" for arg in remote_args
+    )
+    try:
+        result = subprocess.run(
+            [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        session_id = json.loads(result.stdout)["session_id"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return ""
+    return session_id if isinstance(session_id, str) else ""
+
+
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
 _EMIT_LEVELS = {"info": _out.Level.INFO, "warning": _out.Level.WARNING, "error": _out.Level.ERROR}
@@ -2063,6 +2125,23 @@ def _handle_internal(argv: list[str]) -> None:
         if res:
             _out.raw(Untagged.INTERNAL_REPLY, str(res))
         sys.exit(0)
+    elif action == "finish-migrations":
+        if len(argv) != 3:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
+            sys.exit(1)
+        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+        launch_log = open_launch_log(log_path) if log_path else None
+        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
+        try:
+            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
+        finally:
+            _out.flush_sinks()
+            _out.attach_file_sink(previous_sink)
+            if launch_log is not None:
+                launch_log.close()
+        sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
 
@@ -2136,12 +2215,7 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
             sys.exit(1)
-        candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
-        if len(candidates) > 1:
-            _out.emit(Tag.INTERNAL, "resume", _cc_multi_candidate_warning(argv[2], candidates), err=True)
-        matched = _find_migrated_cc_session(Path(argv[1]), argv[2], candidates) or (
-            candidates[0] if candidates else None
-        )
+        matched = _pick_cc_resume_transcript(Path(argv[1]), argv[2], Tag.INTERNAL)
         if matched is None:
             lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
             if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
@@ -2184,12 +2258,18 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal allocate-session-name <engine> <project_prefix> <name>",
+                "Usage: ai internal allocate-session-name <engine> <project_prefix> <name> [--resume]",
                 err=True,
             )
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
         naming, project = _naming_from_internal_args(argv[4:])
+        try:
+            if project:
+                _config.validate_remote_project(project, project_prefix)
+        except _config.ProjectPrefixError as exc:
+            _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+            sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
             _session_naming.validate_session_text(name, partial=True)
@@ -2207,7 +2287,10 @@ def _handle_internal(argv: list[str]) -> None:
                 raise _session_naming.naming_refusal("repo alias", project_prefix, f"use {registered_alias!r}")
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
             _session_naming.validate_launch_input(
-                name, repo_alias=registered_alias, host_alias=launch_naming.host_alias
+                name,
+                repo_alias=registered_alias,
+                host_alias=launch_naming.host_alias,
+                legacy_repo=Path(owner) if launch_naming.legacy_prefix else None,
             )
             if naming.custom:
                 _session_naming.validate_session_text(naming.custom)
@@ -2215,6 +2298,32 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
         naming_prefix = launch_naming.prefix
+        if "--resume" in argv[4:]:
+            # A resume names an existing session on this host, or nothing: it never
+            # reserves a name, so a NAME no session holds is refused here rather than
+            # minted and then "resumed" by the launch that follows.
+            project_dir = _config._find_project_dir(project) if project else None
+            try:
+                repo_root = project_dir if project_dir and project_dir.is_dir() else _session.detect_repo_root()
+                target = _resolve_resume_target(
+                    engine,
+                    naming_prefix,
+                    project_prefix,
+                    name,
+                    is_remote=True,
+                    bare=not use_tmux,
+                    repo_root=Path(repo_root) if repo_root else None,
+                    reporter=_launch_reporter.active(),
+                )
+            except (RuntimeError, _session.SessionSlotAmbiguityError) as exc:
+                _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
+                sys.exit(1)
+            if target.session:
+                session_id, ai_name = target.session, _session._session_slot_name(engine, target.session)
+            else:
+                session_id, ai_name = _session_id(engine, target.title, True), target.title
+            _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
+            sys.exit(0)
         # The remote host names and reserves the session, so the row's machine is the
         # host that can see the worktree and release the name.
         session_id, ai_name = _resolve_session_identity(
@@ -2235,8 +2344,28 @@ def _handle_internal(argv: list[str]) -> None:
         )
         _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id, "ai_name": ai_name}))
         sys.exit(0)
+    elif action == "resolve-chief-session":
+        # Read-only: nothing is registered, named or reserved. Exit 1 with no reply when no
+        # chief is running here, so the dispatching machine keeps its own placeholder.
+        forwarded = argv[1:]
+
+        def forwarded_value(flag: str) -> str:
+            return forwarded[forwarded.index(flag) + 1] if flag in forwarded[:-1] else ""
+
+        session_id = _running_chief_session(
+            forwarded_value("--machine-key"), forwarded_value("--fm-home"), forwarded_value("--name")
+        )
+        if not session_id:
+            sys.exit(1)
+        _out.raw(Untagged.INTERNAL_REPLY, json.dumps({"session_id": session_id}))
+        sys.exit(0)
     elif action == "get-version":
         _out.raw(Untagged.INTERNAL_REPLY, _pkg_version_string())
+        sys.exit(0)
+    elif action == "get-migration-format":
+        from .session_migrate import MIGRATION_FORMAT
+
+        _out.raw(Untagged.INTERNAL_REPLY, str(MIGRATION_FORMAT))
         sys.exit(0)
     elif action == "refresh-template":
         if len(argv) < 2:
@@ -3235,17 +3364,21 @@ def _print_launch_plan(
     worktree path. Those are the answers a dry run is asked for, and none of them
     is visible from the command line alone.
     """
-    repo_root = _session.detect_repo_root()
-    worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
-    branch = f"wt-{ai_name}" if worktree else "n/a"
-    if worktree and repo_root:
-        # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
-        try:
-            reused = _session._registered_worktree_at(Path(worktree), _session.registered_worktrees(Path(repo_root)))
-        except (OSError, RuntimeError):
-            reused = None
-        if reused is not None:
-            branch = f"{_session._current_branch(reused) or 'detached HEAD'}   (reused worktree keeps its branch)"
+    # Each of these is a git call, seconds apiece on a loaded host, so the lookup is a timed phase.
+    with _launch_reporter.active().phase("worktree", "looking up the session worktree") as lookup:
+        repo_root = _session.detect_repo_root()
+        worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
+        branch = f"wt-{ai_name}" if worktree else "n/a"
+        reused = None
+        if worktree and repo_root:
+            # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
+            with contextlib.suppress(OSError, RuntimeError):
+                reused = _session._registered_worktree_at(
+                    Path(worktree), _session.registered_worktrees(Path(repo_root))
+                )
+            if reused is not None:
+                branch = f"{_session._current_branch(reused) or 'detached HEAD'}   (reused worktree keeps its branch)"
+        lookup.outcome("registered worktree found" if reused is not None else "no registered worktree")
     lines = [
         "dry run -- nothing was created, started, or reaped.",
         f"  engine     {_engine_display_name(engine)}",
@@ -3258,6 +3391,29 @@ def _print_launch_plan(
     if extra_args:
         lines.append(f"  engine args {' '.join(extra_args)}")
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
+
+
+def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
+    """The shell command mosh runs on the remote host for ``remote_cmd``.
+
+    Mosh restores the terminal after the remote command exits, which erases what it printed,
+    and it carries no exit status back. Copy stderr to a file while also showing it live.
+    This captures errors even before the remote launch log is initialized. Keep stdout on
+    the terminal and record a failed command's own status separately from the pipe's status.
+    """
+    return (
+        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'mkdir -p "$(dirname "$diagnostic_file")"; '
+        'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
+        "exec 3>&1; "
+        f"{{ ( {remote_cmd} ) 3>&-; "
+        "status=$?; "
+        'if [ "$status" -ne 0 ]; then printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        '} 2>&1 1>&3 | ( umask 077; tee "$diagnostic_file" >&2 ); '
+        'status=0; if [ -f "$diagnostic_file.status" ]; then IFS= read -r status < "$diagnostic_file.status"; '
+        'else rm -f "$diagnostic_file"; fi; '
+        'exit "$status"'
+    )
 
 
 def _print_remote_launch_plan(
@@ -3392,6 +3548,18 @@ def _relaunch_argv(name: str, session_name: str) -> list[str]:
     return [*argv, session_name]
 
 
+def _holds_canonical_record(session_name: str) -> bool:
+    """Whether this machine's session registry holds a non-probe record for ``session_name``."""
+    try:
+        sessions = _session_registry.load_registry()["sessions"]
+    except Exception:
+        return False
+    return any(
+        record.get("kind") == "local" and record.get("name") == session_name and not record.get("probe")
+        for record in sessions
+    )
+
+
 def _track_launch(
     reporter: LaunchReporter, *, kind: str, name: str, session_name: str, remote: dict | None = None
 ) -> str | None:
@@ -3420,11 +3588,12 @@ def _mark_session_ended(reporter: LaunchReporter, record_id: str) -> None:
         reporter.warning("terminal", f"iTerm2 session registry not updated after a clean exit ({exc})")
 
 
-def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str) -> str:
+def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote: bool = False) -> str:
     """Name the machine this launcher runs on and the one the session will run on (AI-CLI-x5vn)."""
     local = _config.detect_machine_profile()["host_id"]
     if remote_cfg is None:
-        return f"launcher on {local}; session on {local} (local)"
+        origin = "remote origin" if is_remote else "local"
+        return f"launcher on {local}; session on {local} ({origin})"
     host = str(remote_cfg.get("host") or "")
     if remote_alias and host and remote_alias != host:
         return f"launcher on {local}; session on {remote_alias} ({host}, remote)"
@@ -3454,32 +3623,228 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
     reporter.phase("session").outcome(f"{session_name} running detached")
 
 
-def _finish_recorded_migrations(ai_name: str, reporter: LaunchReporter) -> None:
-    """Run ``migrate-session --finish`` for each migration to ``ai_name`` this host recorded unfinished.
+#: The launch override for a partial migration. Per invocation only: never read from
+#: config or the environment, and never written into a boot recipe.
+ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
+PROBE_OPTS = ("-t", "--probe")
 
-    A migration made while its new session was live could never be finished: ``--finish``
-    refuses a running session, so its old-keyed leftovers stayed. The launch is the one
-    moment the new session is known not to be running. A finish that refuses or leaves work
-    undone is reported on one line with the command to retry, records nothing, and never
-    blocks the launch.
+
+class PartialMigrationRefusal(SystemExit):
+    """A launch refused before it started anything, because a recorded migration to its name is partial."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(1)
+        self.reason = reason
+
+
+def _finish_recorded_migrations(
+    ai_name: str,
+    reporter: LaunchReporter,
+    *,
+    allow_partial: bool = False,
+    attaching_live: Callable[[], bool] = lambda: False,
+) -> None:
+    """Refuse the launch of ``ai_name`` while any migration to it this host recorded is partial.
+
+    Each recorded pair whose NEW is ``ai_name`` is judged once, by its latest ledger row. A
+    pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
+    and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
+    with no ``finished`` row is finished here, since the launch is the one moment the new
+    session may have stopped, and that finish's own re-plan is the verdict. An unverified
+    ``finished`` pair is also finished if its slot exists and the launch is starting NEW.
+    Otherwise that pair is checked read-only. A finish that
+    refuses, raises or leaves any part refuses the launch with the parts left and the
+    ``--finish`` command, unless ``allow_partial`` (``-P/--allow-partial-migration``) is
+    given: the session then starts and the parts left go into the launch log.
+
+    A pending pair's finish still runs when ``ai_name`` is already live: it does every step
+    except the ones that write the running session's own files, which it defers. A pair whose
+    only parts left are those deferred ones never refuses the launch; it warns the first time
+    and prints a progress line after that (:func:`_report_deferral`). When ``attaching_live()``
+    says the launch attaches to an ``ai_name`` already running (asked once, and only for a pair
+    not verified), any other part left is one warning naming the ``--finish`` command to run
+    once the session exits, never a refusal. A ledger row in a format newer
+    than this build reads refuses the launch, override or not. Every refusal raises
+    :class:`PartialMigrationRefusal`. Each pair, and each slow step of its finish or
+    re-plan, prints a line as it starts and ends.
     """
-    from .session_migrate import finish_session, pending_finishes
+    from .session_migrate import MIGRATION_FORMAT, finish_session, noted_deferral, pending_finishes
+    from .session_migrate_status import (
+        deferred_only,
+        finish_command,
+        finish_state,
+        judge_pair,
+        left_after,
+        newest_format,
+        recorded_pairs,
+    )
 
-    for old, repo in pending_finishes(ai_name):
-        retry = f"`ai migrate-session {old} {ai_name} -r {repo} --finish -y`"
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
+
+    state = _config.get_xdg_state_home()
+    newest = newest_format(ai_name, state)
+    if newest > MIGRATION_FORMAT:
+        reason = (
+            f"the migration ledger records {ai_name} in format {newest}, newer than format "
+            f"{MIGRATION_FORMAT} this ai reads; run `ai update --force`, then launch again"
+        )
+        reporter.error("migrate", f"refusing to launch {ai_name}: {reason}")
+        raise PartialMigrationRefusal(reason)
+    pending = dict(pending_finishes(ai_name, state))
+    partial: list[tuple[str, Path, dict[str, str]]] = []
+    live: bool | None = None
+    for old, repo in recorded_pairs(ai_name, state):
+        pair = f"migration {old} -> {ai_name}"
+        if finish_state(old, ai_name, state) == "verified":
+            progress(f"{pair}: verified finished earlier, not re-planned (re-check: `ai migrate-session -s -a`)")
+            continue
+        if live is None:
+            live = attaching_live()
+        if old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir()):
+            progress(f"{pair}: re-planning read-only (not verified)")
+            left, _live, _planned = judge_pair(
+                repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
+            )
+        else:
+            progress(f"{pair}: finishing")
+            noted = noted_deferral(old, ai_name, state)
+            try:
+                result = finish_session(
+                    repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
+                )
+            except Exception as exc:  # a finish that raises is a part left, never a launch
+                left = {"migration": f"failed: {' '.join(str(exc).split()) or type(exc).__name__}"}
+            else:
+                for move in result.moves:
+                    reporter.detail("migrate", move.describe())
+                left = left_after(result)
+                if not left:
+                    reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+                elif deferred_only(left):
+                    # Only the parts writing the running NEW's own files are left: they wait for it to stop.
+                    _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+                    left = {}
+                for straggler in result.references_left:
+                    reporter.warning("migrate", f"migration {old} -> {ai_name}: reference left: {straggler}")
+        if left:
+            partial.append((old, repo, left))
+    for old, repo, left in partial:
+        named = "; ".join(f"{part} ({status})" for part, status in left.items())
+        if allow_partial:
+            reporter.warning(
+                "migrate",
+                f"launching {ai_name} with the migration {old} -> {ai_name} partial "
+                f"({ALLOW_PARTIAL_MIGRATION_OPTS[1]}); parts left: {named}",
+            )
+            continue
+        if live:
+            reporter.warning(
+                "migrate",
+                f"attaching to the running {ai_name} with the migration {old} -> {ai_name} partial; "
+                f"parts left: {named}; once {ai_name} exits, finish it with `{finish_command(old, ai_name, repo)}`",
+            )
+            continue
+        reporter.error(
+            "migrate",
+            f"refusing to launch {ai_name}: the migration {old} -> {ai_name} is partial; parts left: {named}; "
+            f"finish it with `{finish_command(old, ai_name, repo)}`, then launch again",
+        )
+    if partial and not (allow_partial or live):
+        raise PartialMigrationRefusal(
+            "; ".join(
+                f"migration {old} -> {ai_name} partial, run `{finish_command(old, ai_name, repo)}`"
+                for old, repo, _left in partial
+            )
+        )
+
+
+def _report_deferral(
+    reporter: LaunchReporter, old: str, ai_name: str, repo: Path, parts: list[str], noted: list[str] | None
+) -> None:
+    """Warn once that a finish deferred ``parts`` while ``ai_name`` runs; later, only a progress line."""
+    from .session_migrate_status import deferral_report
+
+    first, line = deferral_report(old, ai_name, repo, parts, noted)
+    if first:
+        reporter.warning("migrate", line)
+    else:
+        reporter.phase("migrate").outcome(line)
+
+
+def _in_own_tmux_session(tmux_session: str) -> bool:
+    """Whether this process runs in a pane of ``tmux_session``, as tmux itself reports for ``$TMUX_PANE``."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if not os.environ.get("TMUX") or not pane:
+        return False
+    try:
+        res = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0 and res.stdout.strip() == tmux_session
+
+
+def _finish_migrations_on_restart(tmux_session: str, ai_name: str, reporter: LaunchReporter) -> None:
+    """Finish each migration to ``ai_name`` this host records unfinished, as its supervisor restarts the agent.
+
+    The session wrapper calls this between one agent's exit and the next agent's start, the
+    restart's equivalent of the launch-time finish in :func:`_finish_recorded_migrations`. No
+    agent of this session runs then, but its own tmux session still hosts ``ai_name``, so that
+    one tmux session, and only once tmux confirms this process runs inside it, is left out of
+    the finish's live check. Every other check stands: a live agent named OLD or inside OLD's
+    slot, or any tmux session hosting OLD, refuses the finish, and a live agent named
+    ``ai_name`` or inside its slot, or another tmux session hosting it, makes the finish defer
+    the parts that write that session's files and do the rest. A finish that refuses, raises
+    or leaves a part never stops the restart: each such pair is one warning naming the
+    ``--finish`` command, except a pair left with deferred parts only, which warns only the
+    first time (:func:`_report_deferral`). Only a pair with no ``finished`` row is tried, so a
+    restart with nothing pending costs one ledger read.
+    """
+    from .session_migrate import _session_variants, _tmux_names, finish_session, noted_deferral, pending_finishes
+    from .session_migrate_status import deferred_only, finish_command, left_after
+
+    pending = pending_finishes(ai_name, _config.get_xdg_state_home())
+    if not pending:
+        return
+    own = tmux_session if tmux_session in _session_variants(ai_name) and _in_own_tmux_session(tmux_session) else None
+
+    def others() -> list[str]:
+        return [name for name in _tmux_names() if name != own]
+
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
+
+    for old, repo in pending:
+        pair = f"migration {old} -> {ai_name}"
+        command = finish_command(old, ai_name, repo)
+        progress(f"{pair}: finishing before the agent restarts")
+        noted = noted_deferral(old, ai_name)
         try:
-            result = finish_session(repo, old, ai_name)
-        except Exception as exc:  # a finish failure must never block the launch
+            result = finish_session(
+                repo, old, ai_name, regenerate_script=_engine_script_from_meta, tmux_names=others, progress=progress
+            )
+        except Exception as exc:  # a refused or failed finish never stops the restart
             reason = " ".join(str(exc).split()) or type(exc).__name__
-            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
+            reporter.warning("migrate", f"{pair} not finished: {reason}; restarting the agent; run `{command}`")
             continue
         for move in result.moves:
             reporter.detail("migrate", move.describe())
-        if result.failed:
-            reason = " ".join("; ".join([*result.kept, *result.warnings]).split())
-            reporter.warning("migrate", f"migration {old} -> {ai_name} not finished: {reason}; retry with {retry}")
+        left = left_after(result)
+        if deferred_only(left):
+            _report_deferral(reporter, old, ai_name, repo, sorted(left), noted)
+        elif left:
+            named = "; ".join(f"{part} ({status})" for part, status in left.items())
+            reporter.warning("migrate", f"{pair} partial; parts left: {named}; restarting the agent; run `{command}`")
         else:
-            reporter.phase("migrate").outcome(f"finished the migration {old} -> {ai_name}")
+            progress(f"finished the migration {old} -> {ai_name}")
+        for straggler in result.references_left:
+            reporter.warning("migrate", f"{pair}: reference left: {straggler}")
 
 
 def _legacy_launch_name(repo_alias: str, name: str) -> str | None:
@@ -3599,8 +3964,14 @@ def _auto_migrate_legacy_launch(
             f"kept legacy session {old}: {old} -> {target} is already recorded; finish with `{manual} --finish -y`",
         )
         return session_id, ai_name
+
+    def progress(line: str) -> None:
+        reporter.phase("migrate").outcome(line)
+
     try:
-        plan = migrate_session(repo_root, old, target, dry_run=True, regenerate_script=_engine_script_from_meta)
+        plan = migrate_session(
+            repo_root, old, target, dry_run=True, regenerate_script=_engine_script_from_meta, progress=progress
+        )
     except Exception as exc:
         reason = " ".join(str(exc).split()) or type(exc).__name__
         reporter.warning("migrate", f"kept legacy session {old}: {reason}; migrate manually with `{manual}`")
@@ -3612,7 +3983,7 @@ def _auto_migrate_legacy_launch(
         )
         return session_id, ai_name
     try:
-        result = migrate_session(repo_root, old, target, regenerate_script=_engine_script_from_meta)
+        result = migrate_session(repo_root, old, target, regenerate_script=_engine_script_from_meta, progress=progress)
     except Exception as exc:
         reason = " ".join(str(exc).split()) or type(exc).__name__
         reporter.warning("migrate", f"automatic migration {old} -> {target} failed: {reason}; retry with `{manual}`")
@@ -3762,7 +4133,7 @@ def _resolve_session_identity(
     """``(tmux session, ai_name)`` for this launch.
 
     With human names resolved off (and no ``--name``), or for an explicit index slot,
-    this is :func:`ai_cli.session.build_session_name` exactly as before. Otherwise the
+    use the index resolver and honor migration records for that repository. Otherwise the
     title is composed by AC-DT-1 and its token is reserved in the name registry before
     anything else exists; a dry run plans the same title and reserves nothing.
     """
@@ -3770,9 +4141,58 @@ def _resolve_session_identity(
     from . import name_registry as _names
 
     def index_names() -> tuple[str, str]:
-        return _session.build_session_name(
-            engine, naming_prefix, name, config, is_remote=is_remote, use_tmux=use_tmux, legacy_prefix=legacy_prefix
+        from .session_migrate import recorded_migrations
+        from .session_migrate_status import moved_on, recorded_pairs
+
+        clean = _session._slot_name(name, naming_prefix)
+        explicit = _session._is_explicit_slot(clean)
+        allocated = is_remote and name.startswith(f"{engine}-")
+        repo_root = _config._find_project_dir(repo).resolve()
+        if not is_remote and not repo_root.is_dir():
+            with contextlib.suppress(RuntimeError):
+                if root := _session.detect_repo_root():
+                    repo_root = Path(root).resolve()
+        state = _config.get_xdg_state_home()
+        retired_names = {old for old, _, recorded_repo in recorded_migrations(state) if recorded_repo == repo_root}
+        target = _session.build_session_name(
+            engine,
+            naming_prefix,
+            name,
+            config,
+            is_remote=is_remote,
+            use_tmux=use_tmux,
+            legacy_prefix=legacy_prefix,
+            retired_names=retired_names,
         )
+        if explicit:
+            typed_title = _session._session_slot_name(engine, name) if name.startswith(f"{engine}-") else name
+            old = typed_title if typed_title in retired_names else target[1]
+            onward = moved_on(old, repo_root, state) if old in retired_names else None
+            if onward is not None:
+                title = onward[0]
+                reporter.phase("session").outcome(f"{old} migrated to {title}")
+                prefix, _, slot = title.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                return existing or (_session_id(engine, title, is_remote), title)
+            if old in retired_names and not (repo_root / ".worktrees" / old).is_dir():
+                prefix, _, slot = old.rpartition("-")
+                existing = _session._resolve_explicit_tmux_slot(engine, prefix, slot) if use_tmux else None
+                if existing:
+                    return existing
+                _naming_exit(
+                    reporter,
+                    f"{old} has a migration record but no existing destination slot. "
+                    f"Check it with `ai migrate-session -s -a {old}` before launching.",
+                    1,
+                )
+        elif allocated:
+            # The remote allocator can return the migrated title even in index naming mode.
+            title = _session._session_slot_name(engine, name)
+            if (repo_root / ".worktrees" / title).is_dir() and any(
+                recorded_repo == repo_root for _, recorded_repo in recorded_pairs(title, state)
+            ):
+                return name, title
+        return target
 
     try:
         flag = naming.label_flag
@@ -3786,7 +4206,9 @@ def _resolve_session_identity(
         _naming_exit(reporter, str(exc), 1)
     registry = discovery.registry
     host = _session_naming.host_id()
-    policy_config = _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.GitRegistry) else None
+    policy_config = (
+        _names.read_policy_file(registry.policy_file) if isinstance(registry, _names.FleetRegistry) else None
+    )
     try:
         settings = session_title.resolve_settings(
             enabled_flag=naming.session_names,
@@ -3808,7 +4230,9 @@ def _resolve_session_identity(
         name_commands.publish_pending(registry)
 
     clean = _session._slot_name(name, naming_prefix)
-    name_set = _names.known_names(registry)
+    with reporter.phase("session", "reading the name registry") as read_phase:
+        name_set = _names.known_names(registry)
+        read_phase.outcome(f"name registry read, {len(name_set)} names")
     positional = session_title.classify_positional(clean, name_set)
     if positional.kind == "slot" and not naming.custom:
         return index_names()
@@ -3856,7 +4280,7 @@ def _resolve_session_identity(
         return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
-    except (_names.NoNameListError, _names.PolicyUnknownError) as exc:
+    except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
         _naming_exit(reporter, str(exc), 1)
     except _session_naming.NamePoolExhaustedError as exc:
         _naming_exit(reporter, str(exc), 1)
@@ -3884,32 +4308,197 @@ def _title_held_here(snapshot, naming_prefix: str, positional, host: str) -> str
     return None
 
 
-def _held_title_without_session(naming_prefix: str, name: str) -> str | None:
-    """The title this machine holds for ``name`` here, for -r to relaunch when no session runs it."""
+def _held_title(naming_prefix: str, clean: str):
+    """``(title this machine holds for clean, positional)``; the title is None when no row here holds it.
+
+    Raises :class:`ai_cli.name_registry.RegistryError` when the registry cannot be read:
+    a resume must refuse on that, never read it as "nothing is held".
+    """
     from . import name_registry as _names
     from . import session_title
 
-    try:
-        registry = _names.discover().registry
-    except _names.RegistryError:
-        return None
+    registry = _names.discover().registry
     if registry is None:
-        return None
+        return None, None
     try:
         snapshot = registry.snapshot()
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
-    positional = session_title.classify_positional(
-        _session._slot_name(name, naming_prefix), _names.known_names(registry)
-    )
+    positional = session_title.classify_positional(clean, _names.known_names(registry))
     if positional.kind != "title" or positional.name is None:
-        return None
+        return None, positional
     host = _session_naming.host_id()
     title = _session_naming.compose_session_name(naming_prefix, positional.value)
     row = snapshot.rows.get(positional.name) or {}
     if row.get("title") == title and row.get("machine") == host:
+        return title, positional
+    return _title_held_here(snapshot, naming_prefix, positional, host), positional
+
+
+@dataclass(frozen=True)
+class _ResumeTarget:
+    """What ``-r NAME`` reaches: a running tmux session to attach, or a stopped title to relaunch."""
+
+    session: str = ""
+    title: str = ""
+
+
+def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str | None:
+    """``title`` as its worktree is named on disk, or as its saved Claude Code transcript is titled.
+
+    A registry row alone is not evidence: the allocator writes one seconds before the
+    session exists, and a resume that trusted it relaunched a name minted for a typo.
+    """
+    if not title or repo_root is None:
+        return None
+    matches = _session._matching_worktrees(Path(repo_root) / _session.WORKTREE_DIR, title)
+    if len(matches) > 1:
+        joined = ", ".join(str(path) for path in matches)
+        raise _session.SessionSlotAmbiguityError(f"ambiguous existing worktrees for {title}: {joined}")
+    if matches:
+        return matches[0].name
+    if engine == "c" and _find_cc_session_candidates_by_title(Path(repo_root), title):
         return title
-    return _title_held_here(snapshot, naming_prefix, positional, host)
+    return None
+
+
+def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path | None") -> list[str]:
+    """Every title a resume could reach here: live tmux sessions and session worktrees of this repository."""
+    titles = set()
+    for session_name in _session._tmux_session_names():
+        title = _session._session_slot_name(engine, session_name)
+        if any(title.casefold().startswith(f"{prefix.casefold()}-") for prefix in prefixes):
+            titles.add(title)
+    if repo_root is not None:
+        with contextlib.suppress(OSError):
+            titles.update(path.name for path in (Path(repo_root) / _session.WORKTREE_DIR).iterdir() if path.is_dir())
+    return sorted(titles)
+
+
+def _resolve_resume_target(
+    engine: str,
+    naming_prefix: str,
+    legacy_prefix: str,
+    name: str,
+    *,
+    is_remote: bool,
+    bare: bool,
+    repo_root: "Path | None",
+    reporter: LaunchReporter,
+) -> _ResumeTarget:
+    """The existing session ``-r NAME`` names, or a refusal that has reserved and created nothing.
+
+    In order: a running tmux session (any suffix style, local or ``-r`` form, the full
+    title or just its slot); then a stopped session, proved by its worktree or transcript,
+    under the title this machine holds for NAME in the registry, the title NAME composes,
+    or NAME's legacy form from before the host alias joined the name. Nothing here writes.
+    """
+    import difflib
+
+    from . import name_registry as _names
+
+    remote_seg = "-r" if is_remote else ""
+    prefix = f"{engine}{remote_seg}-{naming_prefix}-"
+    clean = _session._slot_name(name, naming_prefix) if name else ""
+    # A full tmux name (what the remote allocator hands back) is matched as given; a
+    # title typed in full is reduced to its slot so the prefix is not applied twice.
+    query = name if name and _session.session_name_for(prefix, name) == name else clean
+    if not bare:
+        session = _session.resolve_session(prefix, query)
+        if not session and legacy_prefix.casefold() != naming_prefix.casefold():
+            # Migration window: a session named before the host alias joined the name.
+            session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+        if session:
+            return _ResumeTarget(session=session)
+    wanted = _session_naming.compose_session_name(naming_prefix, clean) if clean else f"{prefix}*"
+    positional = None
+    if clean:
+        try:
+            held, positional = _held_title(naming_prefix, clean)
+        except _names.RegistryError as exc:
+            _naming_exit(
+                reporter,
+                f"cannot resume {name}: the session-name registry cannot be read ({exc}). "
+                "Nothing was reserved or created, and no new name is allocated in its place.",
+                1,
+            )
+        candidates = [held, wanted]
+        if legacy_prefix.casefold() != naming_prefix.casefold():
+            candidates.append(
+                _session_naming.compose_session_name(legacy_prefix, _session._slot_name(name, legacy_prefix))
+            )
+        for candidate in candidates:
+            found = _session_evidence(engine, repo_root, candidate or "")
+            if found:
+                return _ResumeTarget(title=found)
+    host = _session_naming.host_id()
+    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix), repo_root)
+    close = difflib.get_close_matches(wanted, pool, n=5, cutoff=0.6) or pool[:5]
+    holds = "tmux session or worktree" if engine != "c" else "tmux session, worktree or transcript"
+    if positional is not None and positional.kind == "title":
+        new_command = f"ai {engine} --name {positional.name}"
+    else:
+        new_command = f"ai {engine} {name}".rstrip()
+    lines = [
+        f"no session named {wanted} exists on {host}: no {holds} holds it. Nothing was reserved or created.",
+        f"  closest existing sessions here: {', '.join(close)}"
+        if close
+        else f"  no session of this repository exists on {host}",
+        f"  to start a NEW session instead, run `{new_command}` without -r"
+        + (" (with -R, from the machine that launches it)" if is_remote else ""),
+    ]
+    if not is_remote:
+        lines.append(f"  a session on the remote host is resumed with -R: `ai {engine} TITLE -R -r`")
+    _naming_exit(reporter, "\n".join(lines), 1)
+
+
+def _new_session_note(engine: str, name: str, naming_prefix: str, title: str) -> str | None:
+    """The line saying a positional word started a NEW session, when the title is not what was typed.
+
+    ``ai c cos`` meant as a resume and ``ai c cos`` meant as a label look the same; the
+    reserved title (``...-cos-rae``) is the only difference, so it is said before anything
+    is created rather than discovered afterwards.
+    """
+    typed = _session._slot_name(name, naming_prefix) if name else ""
+    if not typed or title.casefold().endswith(typed.casefold()):
+        return None
+    return (
+        f"new session {title}: '{name}' is not the title of an existing session, so it labels a new one; "
+        f"to resume an existing session instead, run `ai {engine} TITLE -r`"
+    )
+
+
+_T = TypeVar("_T")
+
+
+def _registry_step(reporter: LaunchReporter | None, start: str, done: str, call: Callable[[], _T]) -> _T:
+    """``call()``, a name-registry fetch or push, as a timed ``session`` phase.
+
+    On a loaded host a registry fetch has been measured at 16 to 27 s and a push at 30 s,
+    so each prints a start line, a heartbeat and a timed end line. A registry error ends
+    the phase with that outcome and is re-raised for the caller, whose fallback or
+    refusal decides what the launch does next. A caller with no reporter (``None``)
+    gets the plain call, with nothing printed.
+    """
+    from . import name_registry as _names
+
+    if reporter is None:
+        return call()
+    with reporter.phase("session", start) as phase:
+        try:
+            result = call()
+        except _names.RegistryError as exc:
+            phase.outcome(f"did not complete: {exc}")
+            failure = exc
+        else:
+            phase.outcome(done)
+            return result
+    raise failure
+
+
+def _fetch_name_registry(registry, reporter: LaunchReporter | None):
+    """``registry.snapshot()`` as a timed phase."""
+    return _registry_step(reporter, "fetching the name registry", "name registry fetched", registry.snapshot)
 
 
 def _reattach_title(
@@ -3935,12 +4524,12 @@ def _reattach_title(
     existing = (
         _session._resolve_explicit_tmux_slot(engine, naming_prefix, positional.value)
         if use_tmux
-        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value)
+        else _session._resolve_explicit_bare_slot(engine, naming_prefix, positional.value, is_remote=is_remote)
     )
     if existing:
         return existing
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(positional.name)
@@ -3951,12 +4540,45 @@ def _reattach_title(
         return _session_id(engine, held_title, is_remote), held_title
     holder = snapshot.holder(positional.name)
     held = f"{positional.name} is held by {holder}" if holder else f"no session on {host} is named {title}"
-    _naming_exit(
-        reporter,
-        f"{held}. A first name is chosen with --name, never positionally: to launch a new session under it, "
-        f"run with `--name {positional.name}`.",
-        2,
+    held_here = [
+        str(row.get("title") or "")
+        for row in snapshot.rows.values()
+        if row.get("machine") == host and str(row.get("title") or "").startswith(f"{naming_prefix}-")
+    ]
+    pool = sorted(set(_resumable_titles(engine, (naming_prefix,), None)) | set(held_here))
+    close = _closest_titles(positional.value, pool, naming_prefix)
+    lines = [f"{held}."]
+    if close:
+        reattach = f"ai {engine} {close[0][len(naming_prefix) + 1 :]}" + (" -R" if is_remote else "")
+        lines.append(f"  closest existing sessions here: {', '.join(close)}")
+        lines.append(f"  to reattach to {close[0]}, run `{reattach}`" + (" with your other flags" if is_remote else ""))
+    lines.append(
+        "  A first name is chosen with --name, never positionally: to launch a NEW session under it, "
+        f"run with `--name {positional.name}`."
     )
+    _naming_exit(reporter, "\n".join(lines), 2)
+
+
+def _closest_titles(word: str, titles: "list[str]", naming_prefix: str, limit: int = 5) -> list[str]:
+    """Titles under ``naming_prefix`` whose slot, or a trailing part of it, is close to ``word``.
+
+    A title can carry a role before its name (``{prefix}-lead-ana``), so a typed ``ana``
+    or a near miss such as ``ena`` is compared with every trailing part of the slot
+    (``lead-ana``, ``ana``), not only with the whole slot.
+    """
+    import difflib
+
+    stem = f"{naming_prefix}-".casefold()
+    wanted = word.casefold()
+    scored = []
+    for title in titles:
+        if not title.casefold().startswith(stem):
+            continue
+        parts = title[len(stem) :].casefold().split("-")
+        score = max(difflib.SequenceMatcher(None, wanted, "-".join(parts[i:])).ratio() for i in range(len(parts)))
+        if score >= 0.6:
+            scored.append((-score, title))
+    return [title for _, title in sorted(scored)[:limit]]
 
 
 def _reserve_label_title(
@@ -3968,7 +4590,7 @@ def _reserve_label_title(
     title = f"{slot.stem}-{label}"
     token = label.rsplit("-", 1)[-1]
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(token)
@@ -3977,14 +4599,19 @@ def _reserve_label_title(
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
-                else _session._resolve_explicit_bare_slot(engine, slot.stem, label)
+                else _session._resolve_explicit_bare_slot(engine, slot.stem, label, is_remote=is_remote)
             )
             return existing or (_session_id(engine, title, is_remote), title)
         _naming_exit(reporter, f"the label's last token {token} is held by {snapshot.holder(token)}", 2)
     if dry_run:
         reporter.phase("session").outcome(f"planned {title} (label token {token}; reserves nothing)")
         return _session_id(engine, title, is_remote), title
-    reservation = _names.reserve_label(registry, slot, label)
+    reservation = _registry_step(
+        reporter,
+        "reserving the label in the name registry",
+        "label reserved",
+        lambda: _names.reserve_label(registry, slot, label),
+    )
     reporter.detail("session", f"reserved the label token {token} for {reservation.title}")
     return _session_id(engine, reservation.title, is_remote), reservation.title
 
@@ -4001,7 +4628,7 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
     from . import name_registry as _names
 
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError as exc:
         raise name_prompt.PromptExit(
             name_prompt.EXIT_UNREACHABLE,
@@ -4012,9 +4639,11 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
     if dry_run:
         verdict, reason = _names.check_hand_chosen(snapshot, value.lower(), slot, words)
         title = slot.title_for(value.lower())
-        if verdict in ("held", "confusable", "word", "limits"):
+        if verdict in ("held", "rejected", "confusable", "word", "limits"):
             _naming_exit(reporter, f"dry run: {reason}", 2)
-        note = "would ask to add it to the name database" if verdict == "unknown" else "free"
+        note = {"unknown": "would ask to add it to the name database", "spare": "this machine's spare"}.get(
+            verdict, "free"
+        )
         reporter.phase("session").outcome(f"planned {title} ({note}; reserves nothing)")
         return _session_id(engine, title, is_remote), title
     io = name_prompt.PromptIO(
@@ -4042,7 +4671,7 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
     spool = _names.read_spool()
     fetch_failure: Exception | None = None
     try:
-        snapshot = registry.snapshot()
+        snapshot = _fetch_name_registry(registry, reporter)
     except _names.RegistryUnreachableError as exc:
         snapshot = None
         fetch_failure = exc
@@ -4065,7 +4694,12 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
     try:
         if snapshot is None:
             raise fetch_failure or _names.RegistryUnreachableError("the registry fetch did not complete")
-        reservation = _names.reserve_picked(registry, slot, spool=spool, words=words)
+        reservation = _registry_step(
+            reporter,
+            "reserving a name in the name registry",
+            "name reserved",
+            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words),
+        )
     except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
         reservation = _names.take_spare(registry, slot, cause=str(failure))
         reporter.warning("session", f"offline: using reserved spare {reservation.name} ({failure})")
@@ -4106,6 +4740,8 @@ def _do_session_launch(
     replay_recipe: dict | None = None,
     attach: bool = True,
     naming: "_NamingRequest | None" = None,
+    allow_partial_migration: bool = False,
+    probe: bool = False,
 ) -> None:
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
@@ -4166,7 +4802,11 @@ def _do_session_launch(
         # -p names the repo the session runs in, so its .envrc decides, not the cwd's.
         _direnv_root = Path.cwd()
         if project and not remote:
-            _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project, project))
+            try:
+                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+            except _config.ProjectPrefixError as exc:
+                reporter.error("request", str(exc))
+                sys.exit(1)
             if _named_dir.is_dir():
                 _direnv_root = _named_dir
         _direnv_result = _direnv_setup.ensure_direnv(_direnv_root, config, auto_install=not dry_run)
@@ -4176,8 +4816,7 @@ def _do_session_launch(
         if _direnv_result.installed:
             reporter.detail("direnv", _direnv_result.detail or "ready")
 
-    # Auto-promote to remote mode when running directly on a non-Mac host so
-    # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
+    # Only the explicit remote-origin flag marks a session launched by another host.
     if replay_recipe is None:
         is_remote = _session._resolve_is_remote(is_remote)
 
@@ -4190,7 +4829,7 @@ def _do_session_launch(
         except _config.RemoteMachineError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
-    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias))
+    reporter.phase("host").outcome(_launch_hosts_text(remote_cfg, remote_alias, is_remote=is_remote))
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
@@ -4221,9 +4860,9 @@ def _do_session_launch(
         if "/" in project or "\\" in project:
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        _lp_aliases = _config.get_project_aliases()
-        _lp_name = _lp_aliases.get(project, project)
         try:
+            _lp_aliases = _config.get_project_aliases()
+            _lp_name = _lp_aliases.get(project.lower(), project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -4245,6 +4884,12 @@ def _do_session_launch(
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
+    if is_remote and project:
+        try:
+            _config.validate_remote_project(project, project_prefix)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
@@ -4375,9 +5020,11 @@ def _do_session_launch(
         if _tmux_report.versions_disagree:
             reporter.error(
                 "tmux",
-                "tmux client is "
-                f"{_tmux_report.client_version} but the running server is "
+                f"{_tmux_report.kind} client is "
+                f"{_tmux_report.client_version} ({_tmux_report.path}) but the running server is "
                 f"{_tmux_report.server_version}.\n"
+                "  With more than one tmux installed, the server may belong to the other one: stop it\n"
+                "  with that tmux's own `tmux kill-server`, and keep one tmux first on PATH.\n"
                 "  A session created now would be unattachable: the server "
                 "accepts new-session, then the\n"
                 "  attach fails with 'open terminal failed: not a terminal', "
@@ -4394,7 +5041,7 @@ def _do_session_launch(
     # refuses to nest ("sessions should be nested with care"). That refusal used to come
     # at the very end, after a name was reserved and the worktree synchronized, leaving
     # the name held by a session that never ran. Refuse here, above every write.
-    if not remote and not bare and attach and os.environ.get("TMUX"):
+    if not remote and not bare and attach and not detached and os.environ.get("TMUX"):
         reporter.error(
             "tmux",
             "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"
@@ -4438,13 +5085,13 @@ def _do_session_launch(
         if compact_transport.must_refuse:
             reporter.error("compact", _compact_transport.refusal_message(compact_transport))
             sys.exit(1)
+        # A platform-limited launch is a detail, not a warning: nothing the operator
+        # can do at launch clears it, so repeating it on every launch is noise. It
+        # stays discoverable in `ai doctor`, in `-v` launches and in the launch log.
         if compact_transport.platform_limited:
-            reporter.warning("compact", _compact_transport.advisory_message(compact_transport))
+            reporter.detail("compact", _compact_transport.advisory_message(compact_transport))
         else:
             reporter.detail("compact", compact_transport.detail)
-
-    engine_short = engine
-    remote_seg = "-r" if is_remote else ""
 
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
@@ -4481,12 +5128,16 @@ def _do_session_launch(
         port = str(remote_cfg.get("port", 22))
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
-        aliases = _config.get_project_aliases()
+        try:
+            aliases = _config.get_project_aliases()
+        except _config.ProjectPrefixError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project, raw_project)
+        remote_project = aliases.get(raw_project.lower(), raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
@@ -4584,6 +5235,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(_remote_arg)}"
         if resume:
             remote_cmd += " --resume"
+        if allow_partial_migration:
+            remote_cmd += f" {ALLOW_PARTIAL_MIGRATION_OPTS[1]}"
         # The local wrapper owns transport state, an iTerm profile, and its
         # cleanup command.  It must use the exact session identity the remote
         # launch will create.  Guessing ``...-1`` for unnamed launches made all
@@ -4597,50 +5250,57 @@ def _do_session_launch(
         # An unnumbered chief request (`ai cos -R`, `ai c chief -R`) means whichever
         # chief the remote host has, which only that host's registration can say: a slot
         # allocated here would be the next free index, a second chief the remote refuses.
-        chief_unnumbered = "--chief" in (remote_args or []) and not _chief_of_staff.is_numbered_slot(
-            _chief_of_staff.chief_slot(name)
+        # A -N/--name chief is left to the remote host too, which checks its running chief
+        # before it reserves the name; the name rides in remote_args.
+        remote_picks_chief = "--chief" in (remote_args or []) and (
+            bool(naming and naming.custom) or not _chief_of_staff.is_numbered_slot(_chief_of_staff.chief_slot(name))
         )
-        if chief_unnumbered:
-            reporter.phase("session").outcome(f"{name} (the remote host selects its chief)")
+        # The tmux session the pane is titled after. For an unnumbered chief only the remote
+        # host knows it, so it is asked; the placeholder below stands in when it cannot say.
+        remote_pane_session = ""
+        if remote_picks_chief:
+            remote_pane_session = _request_remote_chief_session(preflight_ssh_args, remote_shell, remote_args or [])
+            reporter.phase("session").outcome(f"{remote_pane_session or name} (the remote host selects its chief)")
         else:
-            with reporter.phase("session", "allocating remote session") as _session_phase:
+            # With -r the remote host is asked for the existing session NAME names, and it
+            # refuses rather than reserving one when there is none.
+            _session_step = "finding the remote session to resume" if resume else "allocating remote session"
+            with reporter.phase("session", _session_step) as _session_phase:
                 try:
-                    remote_session_id, _ = _request_remote_session_allocation(
+                    remote_session_id, remote_ai_name = _request_remote_session_allocation(
                         preflight_ssh_args,
                         engine,
                         remote_prefix,
                         name,
                         remote_shell,
-                        [*_naming_cli_args(naming or _NamingRequest()), "--project", remote_project],
+                        [
+                            *_naming_cli_args(naming or _NamingRequest()),
+                            "--project",
+                            remote_project,
+                            *(["--resume"] if resume else []),
+                        ],
                     )
                 except RuntimeError as exc:
                     reporter.error("session", str(exc))
                     sys.exit(1)
-                _session_phase.outcome(f"resolved {remote_session_id}")
+                _new_note = None if resume else _new_session_note(engine, name, remote_prefix, remote_ai_name)
+                _session_phase.outcome(_new_note or f"resolved {remote_session_id}")
         if remote_session_id:
             for _naming_arg in _remote_launch_naming_args(naming or _NamingRequest()):
                 remote_cmd += f" {_naming_arg}"
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
-        # Mosh restores the terminal after a remote command exits, erasing its
-        # stderr before it prints its own exit message. Save the real command's
-        # stderr during this one attempt so the local loop can retrieve it with
-        # a read-only SSH command if mosh exits immediately.
         remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
-        mosh_remote_cmd = (
-            f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
-            'mkdir -p "$(dirname "$diagnostic_file")"; '
-            f'{remote_cmd} 2>"$diagnostic_file"; '
-            "status=$?; "
-            'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
-            'else cat "$diagnostic_file" >&2; fi; '
-            'exit "$status"'
-        )
+        mosh_remote_cmd = _mosh_remote_command(remote_cmd, remote_diagnostic_file)
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
-        _r_ai_name = remote_session_id or _session._new_session_display_name(engine, remote_prefix, name, True)
+        _r_ai_name = (
+            remote_session_id
+            or remote_pane_session
+            or _session._new_session_display_name(engine, remote_prefix, name, True)
+        )
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(
             _r_ai_name,
@@ -4681,10 +5341,12 @@ def _do_session_launch(
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
-            _track_launch(reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote)
+            _record_id = _track_launch(
+                reporter, kind="remote", name=name, session_name=_r_ai_name, remote=_registry_remote
+            )
             try:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
-                _asyncio.run(
+                _transport_code = _asyncio.run(
                     _transport._run_transport_loop(
                         ssh_args,
                         mosh_args,
@@ -4694,11 +5356,12 @@ def _do_session_launch(
                         tailscale_host=host,
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
+                        on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     )
                 )
             finally:
                 _transport._maybe_stop_vpn_watcher()
-            sys.exit(0)
+            sys.exit(_transport_code or 0)
         else:
             # Pure SSH transport — no VPN switching.
             if sys.platform == "win32":
@@ -4729,6 +5392,7 @@ def _do_session_launch(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
                     on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
 
@@ -4871,6 +5535,7 @@ def _do_session_launch(
                         "repo alias", project_prefix, f"use {registered_alias!r} for the owning repository"
                     )
         legacy_titles = []
+        legacy_repo = None
         requested_title = _session_naming.launch_title(name)
         if requested_title.startswith(f"{project_prefix.lower()}-") and launch_naming.legacy_prefix:
             legacy_titles = (
@@ -4878,14 +5543,15 @@ def _do_session_launch(
                 if not bare
                 else []
             )
-            owner = _session.detect_repo_root() or _config._project_root(Path.cwd())
-            if (Path(owner) / ".worktrees" / requested_title).is_dir():
+            legacy_repo = Path(_session.detect_repo_root() or _config._project_root(Path.cwd()))
+            if (legacy_repo / ".worktrees" / requested_title).is_dir():
                 legacy_titles.append(requested_title)
         _session_naming.validate_launch_input(
             name,
             repo_alias=project_prefix.lower(),
             host_alias=_session_naming.resolve_host_alias() if replay_recipe is not None else launch_naming.host_alias,
             legacy_titles=legacy_titles,
+            legacy_repo=legacy_repo,
         )
         if naming and naming.custom:
             _session_naming.validate_session_text(naming.custom)
@@ -4893,7 +5559,6 @@ def _do_session_launch(
         reporter.error("session", str(exc))
         sys.exit(1)
     naming_prefix = launch_naming.prefix
-    prefix = f"{engine_short}{remote_seg}-{naming_prefix}-"
 
     worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
 
@@ -4915,9 +5580,51 @@ def _do_session_launch(
             reporter=reporter,
         )
 
-    if dry_run:
+    # -r/--resume NAME reaches an existing session or refuses, and it is decided HERE,
+    # above the dry-run exit and every write: a resume that fell through to naming
+    # reserved a fresh first name for a NAME no session held.
+    resume_target: _ResumeTarget | None = None
+    if resume and replay_recipe is None:
         try:
-            session_id, ai_name = resolve_identity(plan_only=True)
+            _resume_root = _session.detect_repo_root()
+        except RuntimeError:
+            _resume_root = None
+        try:
+            resume_target = _resolve_resume_target(
+                engine,
+                naming_prefix,
+                project_prefix,
+                name,
+                is_remote=is_remote,
+                bare=bare,
+                repo_root=Path(_resume_root) if _resume_root else None,
+                reporter=reporter,
+            )
+        except _session.SessionSlotAmbiguityError as exc:
+            reporter.error("resume", str(exc))
+            sys.exit(1)
+
+    if dry_run:
+        if resume_target is not None and resume_target.session:
+            _out.emit(
+                Tag.PLAN,
+                "plan",
+                "\n".join(
+                    [
+                        "dry run -- nothing was created, started, or reaped.",
+                        f"  engine     {_engine_display_name(engine)}",
+                        f"  action     attach to tmux session {resume_target.session}",
+                        "  created    nothing",
+                    ]
+                ),
+            )
+            return
+        try:
+            session_id, ai_name = (
+                (_session_id(engine, resume_target.title, is_remote), resume_target.title)
+                if resume_target is not None
+                else resolve_identity(plan_only=True)
+            )
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
@@ -4954,38 +5661,24 @@ def _do_session_launch(
     # worktrees requires tmux; the two concerns were only ever coupled by the
     # order of these statements.
 
-    # -r/--resume means "re-attach to the running tmux session". In bare mode
-    # there is no tmux session to attach to, and the engine's own conversation
-    # resume is already applied unconditionally below, so the flag is a no-op
-    # rather than an error.
-    if resume and not bare:
-        session = _session.resolve_session(prefix, name)
-        if not session:
-            # Migration window: a session named before the host alias joined the name.
-            session = _session.resolve_session(f"{engine_short}{remote_seg}-{project_prefix}-", name)
-        # A title this machine holds with no session running it (the session died, or
-        # never started) is relaunched under the same title. A name held by another
-        # machine, or not held at all, is still refused.
-        held_title = None if session or not name else _held_title_without_session(naming_prefix, name)
-        if held_title:
-            reporter.detail("resume", f"no tmux session runs {held_title}; relaunching it under the title it holds")
-        elif not session:
-            reporter.error(
-                "resume",
-                f"no running session to resume: '{_session.session_name_for(prefix, name) if name else prefix + '*'}' "
-                "is not a tmux session on this host; drop -r/--resume to start it",
-            )
-            sys.exit(1)
-        else:
-            _session_launch_state.reattach(session)
-            if not is_remote:
-                _track_launch(reporter, kind="local", name=name, session_name=session)
-            reporter.handoff(engine=_engine_display_name(engine), session=session)
-            _resume_suspended_panes(session)
-            if not attach:
-                _report_detached_launch(session, reporter)
-                return
-            _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
+    # -r/--resume attaches to the running tmux session it resolved above. A stopped
+    # session it resolved is relaunched under its own title below, which resumes its
+    # worktree and conversation; in bare mode that relaunch is the only form.
+    if resume_target is not None and resume_target.title:
+        reporter.phase("resume").outcome(
+            f"no tmux session runs {resume_target.title}; relaunching it from its worktree and conversation"
+        )
+    if resume_target is not None and resume_target.session:
+        session = resume_target.session
+        _session_launch_state.reattach(session)
+        if not is_remote:
+            _track_launch(reporter, kind="local", name=name, session_name=session)
+        reporter.handoff(engine=_engine_display_name(engine), session=session)
+        _resume_suspended_panes(session)
+        if not attach:
+            _report_detached_launch(session, reporter)
+            return
+        _exec_handoff("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -4997,6 +5690,8 @@ def _do_session_launch(
         if replay_recipe is not None:
             session_id = replay_recipe["session_name"]
             ai_name = session_id.removeprefix(f"{engine}-").removeprefix("r-")
+        elif resume_target is not None:
+            session_id, ai_name = _session_id(engine, resume_target.title, is_remote), resume_target.title
         else:
             session_id, ai_name = resolve_identity(plan_only=False)
     except _session.SessionSlotAmbiguityError as exc:
@@ -5015,9 +5710,36 @@ def _do_session_launch(
         is_remote=is_remote,
         reporter=reporter,
     )
-    reporter.phase("session").outcome(f"resolved {ai_name}")
-    if replay_recipe is None:
-        _finish_recorded_migrations(ai_name, reporter)
+    if probe:
+        _new_note = f"probe session {ai_name}: no first name, never relaunched, not a canonical session"
+    else:
+        _new_note = (
+            _new_session_note(engine, name, naming_prefix, ai_name)
+            if replay_recipe is None and resume_target is None
+            else None
+        )
+    reporter.phase("session").outcome(_new_note or f"resolved {ai_name}")
+    if probe and _holds_canonical_record(session_id):
+        reporter.error(
+            "session",
+            f"{session_id} is the title of a canonical session this machine records, and a "
+            f"{'/'.join(PROBE_OPTS)} launch never takes one over. Nothing was created. "
+            f"Give the probe its own label: `ai {engine} {PROBE_OPTS[0]} NAME`.",
+        )
+        sys.exit(1)
+    # A recipe replay starts NEW's tmux session too, so it is the same safe moment. A partial
+    # migration raises here, before the worktree, tmux or engine is touched. A launch that
+    # will attach to NEW's live tmux session (the same test the worktree sync makes below)
+    # finishes only what is safe while NEW runs, so a part left only warns: refusing it would
+    # leave the running session unreachable until it is stopped.
+    _finish_recorded_migrations(
+        ai_name,
+        reporter,
+        allow_partial=allow_partial_migration,
+        attaching_live=lambda: (
+            replay_recipe is None and not bare and not use_sandbox and _tmux_session_has_live_pane(session_id)
+        ),
+    )
     if engine == "c":
         _queue_migration_context(ai_name, session_id, reporter)
 
@@ -5034,7 +5756,11 @@ def _do_session_launch(
             repair_bare_worktree_config(_repair_root)
         with reporter.phase("worktree", "creating isolated worktree") as _worktree_phase:
             try:
-                worktree_result = _session.create_worktree(ai_name, with_status=True)
+                worktree_result = (
+                    _session.create_worktree(ai_name, with_status=True, probe=True)
+                    if probe
+                    else _session.create_worktree(ai_name, with_status=True)
+                )
             except RuntimeError as exc:
                 reporter.error(
                     "worktree",
@@ -5069,14 +5795,19 @@ def _do_session_launch(
             )
         from .canonical_worktrees import CanonicalWorktreeRegistryError, register_canonical_worktree
 
-        try:
-            registry_action, registry_path = register_canonical_worktree(
-                worktree_path, engine=engine, session_name=session_id
-            )
-        except CanonicalWorktreeRegistryError as exc:
-            reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
-            sys.exit(1)
-        reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
+        if probe:
+            # A probe's worktree is scratch: recording it would tell every deletion guard
+            # it is a session home that must never be reaped.
+            reporter.detail("worktree", "probe worktree: not recorded as a canonical session worktree")
+        else:
+            try:
+                registry_action, registry_path = register_canonical_worktree(
+                    worktree_path, engine=engine, session_name=session_id
+                )
+            except CanonicalWorktreeRegistryError as exc:
+                reporter.error("worktree", f"{exc}; refusing to launch an unprotected canonical session worktree.")
+                sys.exit(1)
+            reporter.detail("worktree", f"canonical registry {registry_action}: {registry_path}")
         # A launch that is about to ATTACH to a running engine must leave its checkout's
         # git state alone: the sync below resets the index, rebases the branch and
         # stashes/pops uncommitted edits, all under an agent that is working in that
@@ -5228,6 +5959,8 @@ def _do_session_launch(
 
     def _register_run_state(*, new_start):
         try:
+            if detached:
+                _process_manager._start_stale_session_reaper_for_launch()
             if replay_recipe is not None:
                 _session_launch_state.reattach(session_id)
                 return
@@ -5247,6 +5980,7 @@ def _do_session_launch(
                     "is_remote": is_remote,
                 },
                 extra_args=list(extra_args),
+                probe=probe,
             )
         except Exception as exc:
             reporter.error("session", f"cannot persist session launch state: {type(exc).__name__}; launch refused")
@@ -5336,7 +6070,7 @@ def _do_session_launch(
             replay_recipe["shell"] if replay_recipe is not None and replay_bare else _session_shell_or_exit()
         )
         _direnv = _direnv_prefix(target_root)
-        if not is_remote and not detached:
+        if not is_remote and not detached and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if replay_bare and replay_recipe is not None:
             command = replay_recipe["command"]
@@ -5525,7 +6259,7 @@ def _do_session_launch(
         )
         if (active_window.stdout or "").strip() != "wake-watch":
             _iterm2._rename_tmux_window(session_id, ai_name)
-        if not is_remote:
+        if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         _resume_suspended_panes(session_id)
@@ -5656,7 +6390,7 @@ def _do_session_launch(
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
         if not is_remote:
             _start_session_wake_watcher(config, identity.session_id, ai_name)
-        if not is_remote:
+        if not is_remote and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
         if not attach:
             _report_detached_launch(session_id, reporter)
@@ -5698,9 +6432,14 @@ def _session_command(engine: str):
         dry_run=False,
         remote_args=(),
         naming=None,
+        allow_partial_migration=False,
+        probe=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
+        # The remote side of -R prints its own launcher lines beside the launching machine's;
+        # each is marked with this host so the two headers are told apart.
+        previous_origin = _out.set_origin(_session_naming.host_id() or "host") if is_remote else None
         # Startup hooks happen only when launching a new session.
         launch_log = create_launch_log(name or engine)
         launch_log.install_stderr()
@@ -5711,7 +6450,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,
@@ -5746,9 +6485,12 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_log.mirror_path:
+                        # The re-run launch is the one that may refuse, so it keeps the copy.
+                        os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
                     _exec_handoff(ai_bin, [ai_bin, *sys.argv[1:]])
                 _tunnel._ensure_nats_tunnel(config)
-                if engine == "c" and not remote:
+                if not remote:
                     _process_manager._start_stale_session_reaper_for_launch()
             _do_session_launch(
                 engine=engine,
@@ -5773,10 +6515,14 @@ def _session_command(engine: str):
                 remote_args=list(remote_args),
                 attach=sys.stdin.isatty(),
                 naming=naming,
+                allow_partial_migration=allow_partial_migration,
+                probe=probe,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
             _out.attach_file_sink(previous_file_sink)
+            if previous_origin is not None:
+                _out.set_origin(previous_origin)
             # Released here, not at process exit: Windows refuses to delete or prune a
             # file another handle still holds, and a launch that returns may be followed
             # by another in the same process.
@@ -5863,14 +6609,7 @@ def _restart_launch_target(target, check, options, *, json_output=False, event_c
         argv += ["-j"]
         if event_completion:
             argv.append("--event-completion")
-        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
-        if remote.get("identity_file"):
-            ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
-        ssh += [f"{remote.get('user', 'user')}@{remote['host']}"]
-        shell = _resolve_remote_shell(ssh)
-        result = subprocess.run(
-            [*ssh, f"{shell} -l -c {shlex.quote(shlex.join(argv))}"], capture_output=True, text=True, check=False
-        )
+        result = subprocess.run(_remote_ai_command(remote, argv), capture_output=True, text=True, check=False)
         # Pass through only structured results, never remote diagnostics.
         try:
             report = json.loads(result.stdout)
@@ -5953,7 +6692,7 @@ class _ChiefFlagCommand(click.Command):
         return parser
 
 
-class _ChiefAliasGroup(click.Group):
+class _ChiefAliasGroup(RootHelpGroup):
     """Routes each ``[chief_of_staff] command_aliases`` name to ``ai cos``, read at call time."""
 
     command_class = _ChiefFlagCommand
@@ -5968,13 +6707,16 @@ class _ChiefAliasGroup(click.Group):
     name="ai",
     cls=_ChiefAliasGroup,
     invoke_without_command=True,
-    context_settings={"help_option_names": ["-h", "--help"]},
+    context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
 )
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
+    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+
+    Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
+    prints a command's full help."""
     _out.utf8_stdout_on_windows()
     if version:
         _out.raw(Untagged.VERSION, _pkg_version_string())
@@ -5984,6 +6726,89 @@ def _cli_group(ctx, version, restart_session, restart_check, restart_json, event
     if ctx.invoked_subcommand is None:
         _out.raw(Untagged.HELP, ctx.get_help())
         ctx.exit(0)
+
+
+def _receive_remote_exit(record_id):
+    from .session_exit import receive_remote_exit
+
+    return receive_remote_exit(record_id)
+
+
+@_cli_group.command(
+    "exit-session",
+    help="Persist a final exit and stop the exact recorded session processes. Without NAME, require a verified "
+    "ancestor session record. Older supervisors without recorded process identities must first be relaunched. "
+    "Self-exit hands cleanup to an independent worker; cleanup failures remain in the registry for retry. "
+    "Remote mirrors use an acknowledged owning-host generation receipt.",
+)
+@click.argument("name", required=False)
+@click.option("-r", "--remote", is_flag=True, help="Request an owning-host exit through the recorded remote mirror")
+@click.option(
+    "-t", "--timeout", default=5.0, type=click.FloatRange(min=0), show_default=True, help="Seconds per teardown wait"
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Show the verified exit without writing or signalling")
+def cmd_exit_session(name, remote, timeout, dry_run):
+    import math
+
+    from . import session_exit
+    from . import session_run_state as state
+
+    if not math.isfinite(timeout):
+        raise click.BadParameter("must be finite", param_hint="--timeout")
+    try:
+        mirror = session_exit.remote_mirror(name)
+        if mirror:
+            session_exit.request_remote_exit(mirror, timeout=timeout, dry_run=dry_run)
+            _out.emit(
+                Tag.SESSION,
+                "exit",
+                f"{name}: "
+                + ("Would exit on owning host" if dry_run else "exited; owning-host generation acknowledged"),
+            )
+            return
+        if remote:
+            raise ValueError("remote receipts require a named remote mirror; remote exit unresolved")
+        row, targets, self_exit = session_exit.resolve_exit(name)
+        name = row["name"]
+        if dry_run:
+            _out.emit(Tag.SESSION, "exit", f"Would exit {name}; verified targets: {targets}")
+            return
+        agent = session_exit.ProcessIdentity(**targets["agent"]) if targets.get("agent") else None
+        supervisor = session_exit.ProcessIdentity(**targets["supervisor"]) if targets.get("supervisor") else None
+        tmux = session_exit.TmuxIdentity(**targets["tmux"]) if targets.get("tmux") else None
+        if self_exit:
+            state.request_manual_exit(name, host=row["owning_host"], generation=row["generation"], targets=targets)
+            _out.emit(Tag.SESSION, "exit", f"{name}: exited in registry; handing teardown to an independent worker")
+            session_exit.detach_cleanup(name, host=row["owning_host"], generation=row["generation"], timeout=timeout)
+            return
+        result = session_exit.exit_session(
+            name,
+            host=row["owning_host"],
+            generation=row["generation"],
+            timeout=timeout,
+            agent=agent,
+            supervisor=supervisor,
+            tmux=tmux,
+        )
+        if not result.complete:
+            detail = (
+                "registry committed; cleanup incomplete"
+                if result.registry_committed
+                else "exit not committed; nothing signalled"
+            )
+            raise click.ClickException(f"{name}: {detail}: {'; '.join(result.errors)}")
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        session_exit.psutil.Error,
+        _session_registry.RegistryError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        prefix = "cannot verify current session: " if name is None else ""
+        raise click.ClickException(prefix + str(exc)) from exc
+    _out.emit(Tag.SESSION, "exit", f"{name}: exited; verified process cleanup complete")
 
 
 @_cli_group.command("clear-restart-request", help="Clear a fenced restart request after its recorded target has exited")
@@ -6005,8 +6830,25 @@ def _session_options(func):
     """Decorator that adds the shared session-launch options."""
     func = click.pass_context(func)
     func = click.argument("name", required=False, default="")(func)
-    func = click.option("-r", "--resume", is_flag=True, help="Resume an existing session")(func)
+    func = click.option(
+        "-r",
+        "--resume",
+        is_flag=True,
+        help=(
+            "Resume the existing session NAME names (its title, first name or index; running or stopped). "
+            "Refuses, creating nothing, when no session holds NAME"
+        ),
+    )(func)
     func = click.option("-o", "--once", is_flag=True, help="Run once without tmux auto-resume loop")(func)
+    func = click.option(
+        *PROBE_OPTS,
+        "probe",
+        is_flag=True,
+        help=(
+            "Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree "
+            "outside the repository that is not a canonical session worktree, no boot relaunch"
+        ),
+    )(func)
     func = click.option("-b", "--bare", is_flag=True, help="Run bare tool without tmux at all")(func)
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
@@ -6026,6 +6868,15 @@ def _session_options(func):
         "--dry-run",
         is_flag=True,
         help="Print the resolved launch plan and exit; creates and starts nothing",
+    )(func)
+    func = click.option(
+        *ALLOW_PARTIAL_MIGRATION_OPTS,
+        "allow_partial_migration",
+        is_flag=True,
+        help=(
+            "Start the session even though a recorded migration to its name is partial; "
+            "the parts left are written into the launch log"
+        ),
     )(func)
     func = click.option(
         "-F",
@@ -6140,6 +6991,44 @@ def _running_chief(registration: dict | None, naming_prefix: str, session_name: 
     return (*found[0], False) if found else None
 
 
+def _requested_chief_slot(session_name: str, naming: "_NamingRequest") -> str:
+    """The chief slot a launch asks for; ``-N NAME`` makes it ``<session name>-NAME``, as its title is."""
+    return _chief_of_staff.chief_slot(f"{session_name}-{naming.custom}" if naming.custom else session_name)
+
+
+def _running_chief_session(machine_key: str, fm_home: str, custom: str = "") -> str:
+    """The tmux session of the chief running on this machine, or ``""``; nothing is written.
+
+    A dispatching machine asks for this when it launches an unnumbered or ``-N``-named
+    chief here, so its terminal title, colour lease and cleanup command name the session
+    that exists (``ai internal resolve-chief-session``). With ``custom`` only the chief of
+    that name answers: the launch refuses any other. A live registration answers on its
+    own; only the fallback search of tmux session names needs this host's naming prefix,
+    and with none it finds nothing.
+    """
+    try:
+        chief_project = _chief_of_staff.required_setting("project")
+        chief_name = _chief_of_staff.required_setting("session_name").casefold()
+        home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
+        existing = _chief_of_staff.read_registration(home)
+    except _chief_of_staff.ChiefOfStaffError:
+        return ""
+    naming_prefix = ""
+    try:
+        prefix = _config.resolve_project_prefix_by_name(chief_project)
+        naming_prefix = _session_naming.resolve_launch_naming(prefix, _config.load_config(), dry_run=True).prefix
+    except (_config.ProjectPrefixError, _session_naming.HostAliasError, _session_naming.NamingConventionError):
+        pass
+    running = _running_chief(existing, naming_prefix, chief_name)
+    if running is None:
+        return ""
+    if custom and _chief_of_staff.chief_slot(running[0]) != _requested_chief_slot(
+        chief_name, _NamingRequest(custom=custom)
+    ):
+        return ""
+    return running[1]
+
+
 def _prepare_chief_launch(
     engine: str, machine_key: str, fm_home: str, options: dict, naming: "_NamingRequest | None" = None
 ) -> list[str]:
@@ -6194,12 +7083,15 @@ def _prepare_chief_launch(
             f"{chief_project}: pass `-p {alias}` (or drop -p)"
         )
     options["project"] = chief_project
+    naming = naming or _NamingRequest()
     if options.get("remote"):
         options["name"] = session_name
+        # -N/--name picks the chief, so the remote host must see it to check its running chief.
         return [
             "--chief",
             *(["--machine-key", machine_key] if machine_key else []),
             *(["--fm-home", fm_home] if fm_home else []),
+            *(["--name", naming.custom] if naming.custom else []),
         ]
     try:
         instance_key_prefix = _chief_of_staff.required_setting("instance_key_prefix")
@@ -6241,7 +7133,13 @@ def _prepare_chief_launch(
         )
         _out.emit(Tag.COS, "register", f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", err=True)
 
-    requested_slot = _chief_of_staff.chief_slot(session_name)
+    requested_slot = _requested_chief_slot(session_name, naming)
+    named = bool(naming.custom)
+
+    def asked_for(slot: str) -> bool:
+        # A -N/--name request is for that chief only; an unnumbered one means any of its name.
+        return slot == requested_slot if named else _chief_of_staff.same_chief(requested_slot, slot)
+
     running = _running_chief(existing, naming_prefix, chief_name)
     resuming = False
     # The session name the chief being resumed was recorded under.
@@ -6249,7 +7147,7 @@ def _prepare_chief_launch(
     if running is not None:
         agent, target, registered = running
         running_slot = _chief_of_staff.chief_slot(agent)
-        if not _chief_of_staff.same_chief(requested_slot, running_slot):
+        if not asked_for(running_slot):
             _out.error(
                 Tag.COS,
                 "start",
@@ -6295,7 +7193,7 @@ def _prepare_chief_launch(
         options["resume"] = False
     elif existing is not None and existing.get("native_agent_name"):
         registered_slot = _chief_of_staff.chief_slot(str(existing.get("native_agent_name")))
-        if _chief_of_staff.same_chief(requested_slot, registered_slot):
+        if asked_for(registered_slot):
             _out.emit(
                 Tag.COS,
                 "start",
@@ -6310,6 +7208,9 @@ def _prepare_chief_launch(
                 # In tmux mode -r means "attach to the running session", and there is none:
                 # the relaunch under the same name is what resumes the conversation.
                 options["resume"] = False
+    if resuming and named:
+        # The chief already holds its name: reattach to that title rather than reserve it again.
+        naming = replace(naming, custom=None, session_names=True)
 
     try:
         tmux_target, ai_name = _resolve_session_identity(
@@ -6320,7 +7221,7 @@ def _prepare_chief_launch(
             is_remote=is_remote,
             use_tmux=not bare,
             legacy_prefix=launch_naming.legacy_prefix,
-            naming=naming or _NamingRequest(),
+            naming=naming,
             repo=chief_project,
             repo_alias=prefix,
             host_alias=launch_naming.host_alias,
@@ -6384,6 +7285,36 @@ def _prepare_chief_launch(
     return []
 
 
+def _probe_naming(naming: _NamingRequest, options: dict, *, chief: bool) -> _NamingRequest:
+    """The naming a ``-t/--probe`` launch takes: an index title under the ``probe`` label.
+
+    A probe is never a canonical session, so every flag that would name, reach or host
+    one is refused before anything is written. ``options["name"]`` becomes ``probe`` or
+    ``probe-NAME``, and the launch names it by index, never from the name registry.
+    """
+    conflicts = [
+        flag
+        for flag, given in (
+            ("-r/--resume", options.get("resume")),
+            ("-N/--name", naming.custom),
+            ("-w/--with-name", naming.with_name),
+            ("-u/--no-name", naming.no_name),
+            ("-S/--session-names", naming.session_names is True),
+            ("-F/--chief", chief),
+            ("-R/--remote", options.get("remote")),
+        )
+        if given
+    ]
+    if conflicts:
+        raise click.UsageError(
+            f"{'/'.join(PROBE_OPTS)} launches a throwaway session that holds no first name and is never "
+            f"resumed, relaunched or hosted remotely, so it cannot be combined with {', '.join(conflicts)}"
+        )
+    name = str(options.get("name") or "")
+    options["name"] = f"probe-{name}" if name else "probe"
+    return replace(naming, session_names=False)
+
+
 def _dispatch_session(engine: str, ctx, options: dict) -> None:
     """Route one engine command's options to the ordinary or the chief-of-staff launch.
 
@@ -6398,11 +7329,19 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"-p/--project got {project!r}, which starts with '-'; no project alias does. "
             f"Did you mean `-p {project.lstrip('-')}`?"
         )
+    name = str(options.get("name") or "")
+    if any(char.isspace() for char in name):
+        # A shell that does not split a variable on spaces (zsh, unquoted) passes
+        # `session-1 -p myproject` as ONE argument: the launch never sees -p, derives the
+        # project from the cwd, and names a new session after the whole string.
+        raise click.UsageError(
+            f"NAME {name!r} contains whitespace, and no session name does. If it holds options, "
+            f"pass each as its own argument: `ai {engine} {' '.join(name.split())}`"
+        )
     chief = options.pop("chief", False)
     machine_key = options.pop("machine_key", "")
     fm_home = options.pop("fm_home", "")
     naming = _NamingRequest.from_options(options)
-    name = str(options.get("name") or "")
     chief_name = _chief_of_staff.setting("session_name").casefold()
     if chief_name and name.casefold() == chief_name and ctx.args and ctx.args[0].isdigit():
         # `ai c chief 1` is `ai c chief-1`: the number is the chief's index, not an
@@ -6419,6 +7358,8 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
             f"{name!r} looks like a chief-of-staff name but is not {chief_name} or {chief_name}-N; "
             f"launch the chief as `ai c {chief_name}[-N]`, or add a suffix with `ai c --chief SUFFIX`"
         )
+    if options.get("probe"):
+        naming = _probe_naming(naming, options, chief=chief)
     remote_args: list[str] = []
     try:
         if chief:
@@ -6449,7 +7390,19 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     help=(
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
-        "--finish -y` would; a finish that fails is reported and the launch continues."
+        "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
+        "re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is "
+        "still partial, the launch is refused: it starts nothing, prints the parts left and the "
+        "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
+        "When the session is already running, nothing can be finished, so attaching to it warns "
+        "with the parts left and the --finish command to run once it exits.\n\n"
+        "Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one "
+        "on the remote host. TITLE is the session's title, ending in a first name "
+        "(myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. "
+        "Without -r, a NAME that is not an existing title labels a NEW session, and the "
+        "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.\n\n"
+        "For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a "
+        "session home, and it can be removed like any scratch worktree once it exits."
     ),
 )
 @_session_options
@@ -6616,10 +7569,29 @@ def cmd_doctor(dry_run):
     else:
         zsh_note = f"could not be provisioned: {_zsh.detail or 'no reason reported'}"
 
+    # Harness-driven compaction is the one capability a Windows launch loses without
+    # saying so at launch (the launch reports it only under -v), so this is where an
+    # operator finds out. Resolved exactly as a bare launch would resolve it.
+    tmux_hosts = tmux_ok and not _tmux_setup.config_opts_out(config)
+    if tmux_hosts:
+        tmux_detail = "tmux runs here"
+    elif sys.platform == "win32":
+        tmux_detail = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+    else:
+        tmux_detail = "tmux does not host sessions here"
+    compact = _compact_transport.resolve(tmux_usable=tmux_hosts, tmux_detail=tmux_detail, config=config)
+    if compact.platform_limited:
+        compact_note = _compact_transport.advisory_message(compact)
+    elif compact.must_refuse:
+        compact_note = f"launches without tmux are refused: {compact.pty_detail}"
+    else:
+        compact_note = f"harness-driven via {compact.detail}"
+
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
         ("tmux", tmux_ok, tmux_note),
         ("zsh", _zsh.installed, zsh_note),
+        ("compact", compact.usable, compact_note),
     ):
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 
@@ -6632,7 +7604,7 @@ def cmd_doctor(dry_run):
         return
 
     envrc = _direnv_setup.find_envrc(root)
-    result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run)
+    result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run, full=True)
     if result.installed:
         _out.emit(Tag.DOCTOR, "check", f"  OK    direnv    {result.detail or result.tool or 'usable'}")
         return
@@ -6666,44 +7638,6 @@ def cmd_memory_watch():
 @_cli_group.group("quota", help="Claude weekly-quota tracking and statusline helpers")
 def cmd_quota_group():
     pass
-
-
-@cmd_quota_group.group("watch", help="Quota-watch Circus daemon management")
-def cmd_quota_watch_group():
-    pass
-
-
-@cmd_quota_watch_group.command("start", help="Register quota-watch with Circus and start it")
-@click.option(
-    "--auto",
-    is_flag=True,
-    default=False,
-    hidden=True,
-    help="Per-session auto-start path — gated on [quota_watch] auto_start in config.toml.",
-)
-def cmd_quota_watch_start(auto):
-    _process_manager._cmd_quota_watch_start(auto=auto)
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("stop", help="Stop quota-watch")
-def cmd_quota_watch_stop():
-    _process_manager._cmd_quota_watch_stop()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("status", help="Show quota-watch Circus status")
-def cmd_quota_watch_status():
-    _process_manager._cmd_quota_watch_status()
-    sys.exit(0)
-
-
-@cmd_quota_watch_group.command("run", help="Run quota-watch daemon (Circus entry point)")
-@click.option("-i", "--interval", "poll_interval", default=300, show_default=True, help="Poll interval in seconds")
-def cmd_quota_watch_run(poll_interval):
-    from .quota import quota_watch
-
-    sys.exit(quota_watch(poll_interval))
 
 
 @_cli_group.group("session-reaper", help="Independently managed stale-session reaper")
@@ -6747,11 +7681,11 @@ def cmd_quota_history():
     sys.exit(quota_history())
 
 
-@cmd_quota_group.command("scrape", help="Scrape /usage from a fresh CC session")
-def cmd_quota_scrape():
-    from .quota import quota_scrape
+@cmd_quota_group.command("publish", help="Publish the statusline's current native quota reading to NATS")
+def cmd_quota_publish():
+    from .quota import quota_publish
 
-    sys.exit(quota_scrape())
+    sys.exit(quota_publish())
 
 
 @cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")
@@ -6970,16 +7904,55 @@ def cmd_copier_update(dry_run, project, inspect_output, no_isolate, no_push):
     sys.exit(cast(int, exit_code))
 
 
-@_cli_group.command(
+class _LayoutGroup(HelpGroup):
+    """``ai layout NAME`` applies the layout NAME unless NAME is one of the group's commands."""
+
+    _PUBLIC_COMMANDS = frozenset({"list", "profiles", "validate"})
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] not in self._PUBLIC_COMMANDS and not args[0].startswith("-"):
+            return "_apply", self.commands["_apply"], args
+        return super().resolve_command(ctx, args)
+
+
+@_cli_group.group(
     "layout",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Apply a tmux pane layout",
+    cls=_LayoutGroup,
+    subcommand_metavar="NAME | COMMAND [ARGS]...",
+    help="Apply a tmux pane layout. `ai layout NAME` applies the layout file NAME; "
+    "the commands below list, validate or regenerate profiles for a layout instead.",
 )
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_layout(args):
+def cmd_layout():
+    pass
+
+
+def _run_layout(args: list[str]) -> None:
     from .layout import run_layout_command
 
-    sys.exit(run_layout_command(list(args)))
+    sys.exit(run_layout_command(args))
+
+
+@cmd_layout.command("_apply", hidden=True)
+@click.argument("name")
+def cmd_layout_apply(name):
+    _run_layout([name])
+
+
+@cmd_layout.command("list", help="List the available layout files")
+def cmd_layout_list():
+    _run_layout(["list"])
+
+
+@cmd_layout.command("validate", help="Check a layout file against the layout schema without applying it")
+@click.argument("name")
+def cmd_layout_validate(name):
+    _run_layout(["validate", name])
+
+
+@cmd_layout.command("profiles", help="Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it")
+@click.argument("name")
+def cmd_layout_profiles(name):
+    _run_layout(["profiles", name])
 
 
 @_cli_group.group("iterm2", help="iTerm2 session tracking")
@@ -7184,7 +8157,7 @@ def cmd_color(color_arg):
 
 @_cli_group.command(
     "migrate-transcript",
-    help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
+    help="Move a Claude Code session transcript from one project root to another, such as from a repo root to its worktree",
 )
 @click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("-t", "--title", default="", help="Select the source session by its customTitle (session name)")
@@ -7600,6 +8573,31 @@ def _print_migration(result) -> None:
         _out.emit(Tag.MIGRATE, "migrate", "part | status")
         for part, status in result.parts.items():
             _out.emit(Tag.MIGRATE, "migrate", f"{part} | {status}")
+    _print_references(result)
+
+
+def _print_references(result) -> None:
+    """The references step of a completed migration, then whether it finished clean or with leftovers."""
+    if not result.references_checked:
+        return
+    from .session_migrate_status import finish_command
+
+    for note in result.reference_notes:
+        _out.emit(Tag.MIGRATE, "migrate", f"  {note}")
+    for left in result.references_left:
+        _out.emit(Tag.MIGRATE, "migrate", f"  reference left: {left}", err=True)
+    pair = f"{result.old} -> {result.new}"
+    if not result.references_left:
+        _out.emit(Tag.MIGRATE, "migrate", f"{pair}: finished")
+        return
+    repo = result.new_worktree.parent.parent
+    _out.emit(
+        Tag.MIGRATE,
+        "migrate",
+        f"{pair}: finished with leftovers ({len(result.references_left)} left); rewrite each, then re-check "
+        f"with `{finish_command(result.old, result.new, repo)}`",
+        err=True,
+    )
 
 
 def _print_migration_refusal(reason: str, *, partial: bool = False) -> None:
@@ -7619,11 +8617,17 @@ def _migration_stem(repo_root: Path) -> str:
     )
 
 
+def _migrate_progress(line: str) -> None:
+    """One progress line of a slow ``ai migrate-session`` step, on stderr at default verbosity."""
+    _out.emit(Tag.MIGRATE, "migrate", line, err=True)
+
+
 def _migrate_session_for_names(repo_root: Path, old: str, new: str, **kwargs):
     from .session_migrate import migrate_session
 
     if kwargs.get("regenerate_script") is None:
         kwargs["regenerate_script"] = _engine_script_from_meta
+    kwargs.setdefault("progress", _migrate_progress)
     return migrate_session(repo_root, old, new, **kwargs)
 
 
@@ -7665,7 +8669,9 @@ def _migrate_one_to_name(
             machine=host,
             client="claude-code",
         )
-        snapshot = registry.snapshot(fetch=not dry_run)
+        # Preview the current holds too: a cached list can omit a confusable name
+        # that the writing run would fetch and refuse before reserving anything.
+        snapshot = registry.snapshot()
         notes: list[str] = []
         if dry_run:
             snapshot, notes = _names.dry_run_snapshot(registry, snapshot)
@@ -7718,17 +8724,19 @@ def _migrate_one_to_name(
                 "done earlier" if pending.get("status") == "complete" else "would do" if dry_run else "done now"
             )
             _print_migration(result)
-            return 0
+            return 1 if result.references_left else 0
         words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
         if name:
-            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words)
-            if verdict != "ok":
+            verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
+            if verdict not in ("ok", "spare"):
                 if verdict == "unknown":
                     reason += f"; add it with `ai add-name {name}` first"
                 raise AdoptionError(reason)
             planned = name
         else:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, words=words)
+            request, _warnings = _names.pick_request(
+                registry, snapshot, slot, max_length=max_length, words=words, session=old
+            )
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
             repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True
@@ -7772,7 +8780,7 @@ def _migrate_one_to_name(
         )
         _print_migration(done.result)
     _out.emit(Tag.MIGRATE, "migrate", f"migrated {old} to {done.new}")
-    return 1 if done.result is not None and done.result.failed else 0
+    return 1 if done.result is not None and (done.result.failed or done.result.references_left) else 0
 
 
 def _migrate_all_to_names(
@@ -7876,10 +8884,328 @@ def _migrate_all_to_names(
             continue
         if done.result is not None:
             _print_migration(done.result)
-            if done.result.failed:
+            if done.result.failed or done.result.references_left:
                 refused += 1
         _out.emit(Tag.MIGRATE, "migrate", f"migrated {entry.title} to {done.new}")
     return 1 if refused else 0
+
+
+#: Seconds the installed ``ai`` may take to answer the migration-format probe or to update itself.
+_INSTALLED_PROBE_TIMEOUT_SECONDS = 60
+_INSTALLED_UPDATE_TIMEOUT_SECONDS = 15 * 60
+_INSTALLED_UPDATE_COMMAND = "ai update --force"
+
+
+def _installed_migration_format() -> tuple[str | None, int | None]:
+    """The ``ai`` on ``PATH``, which a session wrapper runs, and the migration format it reads.
+
+    A build from before ``ai internal get-migration-format`` answers "unknown action", which
+    reads as format 0. The format is ``None`` when the probe cannot tell: no ``ai`` on
+    ``PATH``, a timeout, or any other failure.
+    """
+    ai_bin = shutil.which("ai")
+    if ai_bin is None:
+        return None, None
+    try:
+        done = subprocess.run(
+            [ai_bin, "internal", "get-migration-format"],
+            capture_output=True,
+            text=True,
+            timeout=_INSTALLED_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ai_bin, None
+    answer = done.stdout.strip()
+    if done.returncode == 0 and answer.isdigit():
+        return ai_bin, int(answer)
+    if "unknown action: get-migration-format" in done.stderr:
+        return ai_bin, 0
+    return ai_bin, None
+
+
+def _require_current_installed_build(*, dry_run: bool) -> None:
+    """Update an installed ``ai`` older than :data:`MIGRATION_FORMAT`, or exit 2 before any write.
+
+    The migrated session relaunches under the installed build, so one that predates a step
+    this migration writes reads stale state. A dry run only names the skew.
+    """
+    from .session_migrate import MIGRATION_FORMAT
+
+    ai_bin, found = _installed_migration_format()
+    if found is not None and found >= MIGRATION_FORMAT:
+        return
+    if found is None:
+        what = f"could not read the migration format of the installed `ai` ({ai_bin or 'none on PATH'})"
+    else:
+        what = (
+            f"the installed `ai` ({ai_bin}) reads migration format {found}, "
+            f"older than format {MIGRATION_FORMAT} this migration writes"
+        )
+    if dry_run:
+        _out.emit(
+            Tag.MIGRATE, "migrate", f"dry run: {what}; a real run updates it first (`{_INSTALLED_UPDATE_COMMAND}`)"
+        )
+        return
+    if ai_bin is not None and found is not None:
+        _out.emit(Tag.MIGRATE, "migrate", f"{what}; updating it with `{_INSTALLED_UPDATE_COMMAND}`")
+        project_path = _find_aicli_project_path(_config.load_config())
+        try:
+            updated = subprocess.run(
+                [ai_bin, "update", "--force", "--quiet"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=_INSTALLED_UPDATE_TIMEOUT_SECONDS,
+                check=False,
+                env=_out.record_relay_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            what = f"{what}; the update did not run: {exc}"
+        else:
+            ai_bin, found = _installed_migration_format()
+            if updated.returncode == 0 and found is not None and found >= MIGRATION_FORMAT:
+                _out.emit(Tag.MIGRATE, "migrate", f"updated the installed `ai` to migration format {found}")
+                return
+            said = (updated.stderr or updated.stdout).strip().splitlines()[-1:]
+            what = (
+                f"{what}; the update exited {updated.returncode}"
+                + (f" ({said[0]})" if said else "")
+                + f" and the installed build reads format {found}"
+            )
+    reason = (
+        f"{what}. The migrated session relaunches under that build; run `{_INSTALLED_UPDATE_COMMAND}` "
+        "and repeat this command"
+    )
+    _out.error(Tag.MIGRATE, "migrate", reason)
+    _print_migration_refusal(reason)
+    sys.exit(2)
+
+
+def _first_name(title: str, repo_root: Path) -> str | None:
+    """The first name ending ``title`` (``ivy`` in ``myrepo-box-ivy``), read under the repo's stem."""
+    from . import migrate_names
+
+    try:
+        parts = migrate_names.split_title(title, _migration_stem(repo_root))
+    except (_session_naming.HostAliasError, _config.ProjectPrefixError):
+        return None
+    return parts.tail if parts else None
+
+
+def _names_pair(name: str, pair: tuple[str, str, Path]) -> bool:
+    """Whether ``name`` is the recorded pair's OLD, its NEW or the first name of its NEW."""
+    return name in pair[:2] or name == _first_name(pair[1], pair[2])
+
+
+def _resolve_finish(old: str, new: str, to_name: str | None, repo: Path | None) -> tuple[str, str, Path | None]:
+    """The recorded ``(old, new, repo)`` a ``--finish`` given one name, or both, refers to.
+
+    One name matches a pair this host's ledger records when it is the pair's OLD, its NEW
+    or the first name of its NEW; ``-t NAME`` and a positional name must both match. Both
+    names given positionally keep the cwd's repo when the ledger does not record them, so a
+    migration from before the ledger still finishes. ``-r`` always wins over the record's repo.
+    Zero or several matching pairs exit 2 with what was searched.
+    """
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+
+    pairs = recorded_migrations()
+    if old and new:
+        hits = [pair for pair in pairs if pair[:2] == (old, new)]
+        return old, new, repo or (hits[-1][2] if hits else None)
+    names = [name for name in (old, to_name) if name]
+    hits = [pair for pair in pairs if all(_names_pair(name, pair) for name in names)]
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], repo or hits[0][2]
+    searched = " and ".join(names)
+    ledger = _config.get_xdg_state_home() / MIGRATION_LEDGER
+    if not hits:
+        reason = f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in {ledger})"
+        _out.error(Tag.MIGRATE, "migrate", reason)
+        _print_migration_refusal(reason)
+        sys.exit(2)
+    lines = [f"{searched} matches {len(hits)} recorded migrations in {ledger}; run the one you mean:"]
+    lines += [f"  ai migrate-session {o} {n} --finish -r {r}" for o, n, r in hits]
+    _out.error(Tag.MIGRATE, "migrate", "\n".join(lines))
+    _print_migration_refusal(f"{searched} names more than one recorded migration")
+    sys.exit(2)
+
+
+_STATUS_HEADER = "old | new | repo | state | parts left | finish with"
+
+
+def _recorded_pairs(names: list[str]) -> list[tuple[str, str, Path]] | None:
+    """Each pair this host records, narrowed to those every one of ``names`` matches; ``None`` after an error."""
+    from .session_migrate import MIGRATION_LEDGER, recorded_migrations
+
+    pairs = recorded_migrations()
+    if names:
+        pairs = [pair for pair in pairs if all(_names_pair(name, pair) for name in names)]
+        if not pairs:
+            searched = " and ".join(names)
+            _out.error(
+                Tag.MIGRATE,
+                "migrate",
+                f"no migration this host records matches {searched} (OLD, NEW or NEW's first name in "
+                f"{_config.get_xdg_state_home() / MIGRATION_LEDGER})",
+            )
+            return None
+    return pairs
+
+
+def _replan_recorded(old: str, new: str, repo: Path) -> tuple[dict[str, str], str, bool]:
+    """``(parts left, live refusal or "", whether the plan ran)`` for one recorded pair, read-only."""
+    from .session_migrate_status import judge_pair
+
+    return judge_pair(repo, old, new, progress=_migrate_progress)
+
+
+def _migration_row(old: str, new: str, repo: Path, state: str, left: dict[str, str]) -> str:
+    from .session_migrate import MIGRATION_LEDGER
+    from .session_migrate_status import finish_command, moved_on
+
+    if not left and state == "complete":
+        onward = moved_on(new, repo, _config.get_xdg_state_home())
+        note = (
+            f"- (slot moved on to {onward[0]} ({onward[1]}), per {_config.get_xdg_state_home() / MIGRATION_LEDGER})"
+            if onward
+            else "-"
+        )
+        return f"{old} | {new} | {repo} | complete | {note} | -"
+    parts = "; ".join(f"{part} ({status})" for part, status in left.items()) or "-"
+    return f"{old} | {new} | {repo} | {state} | {parts} | {finish_command(old, new, repo)}"
+
+
+def _migration_status(names: list[str], *, every: bool) -> int:
+    """``ai migrate-session -s/--status [NAME]``: each recorded pair, re-planned read-only; 1 if any is partial.
+
+    Without ``every`` a pair whose latest ledger row is a verified ``finished`` is not listed.
+    """
+    from .session_migrate import MIGRATION_LEDGER
+    from .session_migrate_status import finish_state
+
+    state = _config.get_xdg_state_home()
+    pairs = _recorded_pairs(names)
+    if pairs is None:
+        return 2
+    listed = [pair for pair in pairs if every or finish_state(pair[0], pair[1], state) != "verified"]
+    if not listed:
+        _out.emit(
+            Tag.MIGRATE,
+            "migrate",
+            f"{len(pairs)} recorded migration(s), each verified finished; -a/--all re-plans them too"
+            if pairs
+            else f"no migration recorded in {state / MIGRATION_LEDGER}",
+        )
+        return 0
+    partial = 0
+    _out.emit(Tag.MIGRATE, "migrate", _STATUS_HEADER)
+    for old, new, repo in listed:
+        left, _live, _planned = _replan_recorded(old, new, repo)
+        partial += bool(left)
+        _out.emit(Tag.MIGRATE, "migrate", _migration_row(old, new, repo, "partial" if left else "complete", left))
+    return 1 if partial else 0
+
+
+def _finish_all_recorded(*, dry_run: bool, yes: bool) -> int:
+    """``ai migrate-session --finish -a/--all``: finish every stopped partial migration this host records.
+
+    Every recorded pair is re-planned read-only, a verified ``finished`` row or not. A partial
+    pair whose sessions are stopped is finished through :func:`finish_session`'s writing run,
+    then re-planned again for its row. A live pair, or one that cannot be planned, is skipped
+    and named. One summary row per pair; 1 if any pair is left partial or skipped.
+    """
+    from .session_adopt import AdoptionError, LiveSessionError
+    from .session_migrate import MIGRATION_LEDGER, _one_line, finish_session
+
+    pairs = _recorded_pairs([]) or []
+    if not pairs:
+        _out.emit(Tag.MIGRATE, "migrate", f"no migration recorded in {_config.get_xdg_state_home() / MIGRATION_LEDGER}")
+        return 0
+    rows: dict[tuple[str, str, Path], tuple[str, dict[str, str]]] = {}
+    for old, new, repo in pairs:
+        left, live, planned = _replan_recorded(old, new, repo)
+        if not left:
+            rows[(old, new, repo)] = ("complete", left)
+        elif not planned:
+            rows[(old, new, repo)] = ("skipped: could not plan", left)
+        elif live:
+            rows[(old, new, repo)] = (f"skipped: live ({_one_line(live)})", left)
+        else:
+            rows[(old, new, repo)] = ("would finish", left)
+    todo = [pair for pair, (state, _left) in rows.items() if state == "would finish"]
+
+    def _summary() -> int:
+        _out.emit(Tag.MIGRATE, "migrate", _STATUS_HEADER)
+        for (old, new, repo), (state, left) in rows.items():
+            _out.emit(Tag.MIGRATE, "migrate", _migration_row(old, new, repo, state, left))
+        return 1 if any(state != "complete" for state, _left in rows.values()) else 0
+
+    if not todo or dry_run:
+        if todo:
+            _require_current_installed_build(dry_run=True)
+            _out.emit(Tag.MIGRATE, "migrate", f"dry run: {len(todo)} migration(s) would be finished; nothing written")
+        return _summary()
+    _require_current_installed_build(dry_run=False)
+    if not yes:
+        _summary()
+        if not _out.confirm(Tag.MIGRATE, "migrate", f"Finish {len(todo)} migration(s)?"):
+            _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)
+            return 1
+    for old, new, repo in todo:
+        try:
+            result = finish_session(
+                repo, old, new, regenerate_script=_engine_script_from_meta, progress=_migrate_progress
+            )
+        except LiveSessionError as exc:
+            left, _live, _planned = _replan_recorded(old, new, repo)
+            rows[(old, new, repo)] = (f"skipped: live ({_one_line(str(exc))})", left)
+            continue
+        except (AdoptionError, RuntimeError) as exc:
+            _out.error(Tag.MIGRATE, "migrate", f"{old} -> {new}: {exc}")
+            rows[(old, new, repo)] = ("partial", {"migration": f"failed: {_one_line(str(exc))}"})
+            continue
+        _print_migration(result)
+        left, _live, _planned = _replan_recorded(old, new, repo)
+        state = "partial" if left else "finished with leftovers" if result.references_left else "complete"
+        rows[(old, new, repo)] = (state, left)
+    return _summary()
+
+
+def _remote_ai_command(remote: dict, argv: list[str]) -> list[str]:
+    """The ssh command that runs ``argv`` non-interactively under the ``remote`` machine's login shell."""
+    ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-p", str(remote.get("port", 22))]
+    if remote.get("identity_file"):
+        ssh += ["-i", str(Path(remote["identity_file"]).expanduser())]
+    ssh += [f"{remote.get('user', 'user')}@{remote['host']}"]
+    shell = _resolve_remote_shell(ssh)
+    return [*ssh, f"{shell} -l -c {shlex.quote(shlex.join(argv))}"]
+
+
+def _remote_migration_status(names: list[str], *, every: bool) -> int:
+    """``ai migrate-session -s -R``: the same status on the default remote machine, its output relayed."""
+    try:
+        remote = _config.get_remote_machine(_config.load_config())
+    except _config.RemoteMachineError as exc:
+        _out.error(Tag.MIGRATE, "migrate", str(exc))
+        return 2
+    if not remote.get("host"):
+        _out.error(Tag.MIGRATE, "migrate", "-R/--remote needs a remote machine; none is configured")
+        return 2
+    argv = ["ai", "migrate-session", "--status", *names, *(["--all"] if every else [])]
+    try:
+        done = subprocess.run(_remote_ai_command(remote, argv), capture_output=True, text=True, check=False)
+    except OSError as exc:
+        _out.error(Tag.MIGRATE, "migrate", f"could not start ssh to {remote['host']}: {exc}")
+        return 2
+    _out.relay(Tag.MIGRATE, "migrate", done.stdout, err=False)
+    _out.relay(Tag.MIGRATE, "migrate", done.stderr, err=True)
+    if done.returncode in (0, 1, 2):
+        return done.returncode
+    _out.error(
+        Tag.MIGRATE, "migrate", f"`{shlex.join(argv)}` on {remote['host']} exited {done.returncode}; no status read"
+    )
+    return 2
 
 
 @_cli_group.command(
@@ -7897,6 +9223,29 @@ def _migrate_all_to_names(
         "store is named as needing its publish step. With --finish it re-keys only when this "
         "host records that OLD was migrated to NEW; --beads-only does just that re-key, and "
         "runs while NEW is live.\n\n"
+        "--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the "
+        "pair and its repo in this host's migration record, from any directory; a name matching no "
+        "pair, or several, is refused with exit 2 and what it matched.\n\n"
+        "Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds "
+        "nothing left records the migration finished (verified); otherwise the run names each part "
+        "left as NOT finished and exits 1. A hook is done only when its --dry-run prints "
+        "`migrate-status: done`.\n\n"
+        "A run that finishes then looks for references to OLD left behind. It runs the "
+        "`[migrate_session] references_command` from config.toml, if one is set, with `--old OLD --new NEW`, "
+        "and scans the repo's tracked files for OLD and its tmux session names as whole words. Each "
+        "reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; "
+        "a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.\n\n"
+        "-s/--status [NAME] lists, read-only, each migration this host records that is not verified "
+        "finished (-a/--all: every one), re-planned as complete or partial with the parts left and "
+        "the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, "
+        "and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default "
+        "remote machine.\n\n"
+        "-f/--finish -a/--all re-plans every recorded migration on this host, verified or not, and "
+        "finishes each partial one whose sessions are stopped, so a migration recorded before a fix "
+        "(or stuck on a refusal since fixed) needs no hand run. A live pair, or one it cannot plan, "
+        "is skipped and named. It checks the installed `ai` once, lists what it would finish and asks "
+        "unless -y is given, and with -n/--dry-run writes nothing. It prints one row per pair and "
+        "exits 1 if any pair is left partial or skipped.\n\n"
         "With -t/--to-name [NAME], reserve a first name (NAME, or the shortest free one) and migrate "
         "OLD to it; with -a/--all -T/--to-names, list every index-named session of the repo on this "
         "host, and with -y migrate each stopped one. -L/--max-length N picks names of at most N "
@@ -7920,7 +9269,12 @@ def _migrate_all_to_names(
     "-f",
     "--finish",
     is_flag=True,
-    help="The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included",
+    help=(
+        "The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; "
+        "with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every "
+        "step except those writing NEW's open transcript and task files, which it defers and names; a "
+        "running OLD refuses it"
+    ),
 )
 @click.option(
     "-b",
@@ -7937,12 +9291,28 @@ def _migrate_all_to_names(
     default=None,
     help="Reserve a first name (this one, or the shortest free one) and migrate OLD to it",
 )
-@click.option("-a", "--all", "sweep", is_flag=True, help="With -T/--to-names: every index-named session here")
+@click.option(
+    "-s",
+    "--status",
+    is_flag=True,
+    help="List each recorded migration not verified finished as complete or partial, read-only",
+)
+@click.option("-R", "--remote", is_flag=True, help="With -s/--status: run it on the default remote machine")
+@click.option(
+    "-a",
+    "--all",
+    "sweep",
+    is_flag=True,
+    help=(
+        "With -T/--to-names: every index-named session here; with -s/--status: every recorded migration; "
+        "with -f/--finish: finish every stopped partial migration this host records"
+    ),
+)
 @click.option("-T", "--to-names", is_flag=True, help="With -a/--all: migrate each one to a picked first name")
 @click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
 @click.option("-O", "--over-limit", is_flag=True, help="With -a -T: only names longer than max_name_length")
 def cmd_migrate_session(
-    old, new, repo, dry_run, yes, finish, beads_only, to_name, sweep, to_names, max_length, over_limit
+    old, new, repo, dry_run, yes, finish, beads_only, to_name, status, remote, sweep, to_names, max_length, over_limit
 ):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
@@ -7972,10 +9342,30 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if remote or status:
+        # Exit 2, not the CLI's usage exit 1, which --status already means "a pair is partial".
+        others = (repo, dry_run, yes, finish, beads_only, to_name is not None, to_names, max_length, over_limit)
+        if not status or any(other not in (None, False) for other in others):
+            _out.error(Tag.MIGRATE, "migrate", "-s/--status takes NAME, -a/--all and -R/--remote only")
+            sys.exit(2)
+        names = [name for name in (old, new) if name]
+        sys.exit(_remote_migration_status(names, every=sweep) if remote else _migration_status(names, every=sweep))
+    if finish and sweep and not to_names:
+        others = (old, new, repo, beads_only, to_name is not None, max_length, over_limit)
+        if any(other not in (None, False, "") for other in others):
+            _out.error(Tag.MIGRATE, "migrate", "-f/--finish -a/--all takes -n/--dry-run and -y/--yes only")
+            sys.exit(2)
+        sys.exit(_finish_all_recorded(dry_run=dry_run, yes=yes))
+    if finish and not (sweep or to_names or over_limit) and (old or to_name):
+        if to_name and new:
+            raise click.UsageError("--finish takes OLD and NEW, or one of them, or -t/--to-name NAME")
+        old, new, repo = _resolve_finish(old, new, to_name, repo)
+        to_name = None
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
     if sweep or to_names or over_limit:
         if not (sweep and to_names):
             raise click.UsageError("-a/--all and -T/--to-names go together")
+        _require_current_installed_build(dry_run=dry_run or not yes)
         sys.exit(
             _migrate_all_to_names(
                 repo_root, write=yes and not dry_run, dry_run=dry_run, max_length=max_length, over_limit=over_limit
@@ -7984,21 +9374,32 @@ def cmd_migrate_session(
     if to_name is not None:
         if not old or new:
             raise click.UsageError("--to-name takes OLD and no NEW: `ai migrate-session OLD --to-name [NAME]`")
+        _require_current_installed_build(dry_run=dry_run)
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
+    if not beads_only:
+        _require_current_installed_build(dry_run=dry_run)
 
     def _run(preview: bool):
         if beads_only:
-            return rekey_beads(repo_root, old, new, dry_run=preview)
-        if finish:
-            return finish_session(repo_root, old, new, dry_run=preview)
-        return migrate_session(repo_root, old, new, dry_run=preview, regenerate_script=_engine_script_from_meta)
+            return rekey_beads(repo_root, old, new, dry_run=preview, progress=_migrate_progress)
+        run = finish_session if finish else migrate_session
+        return run(
+            repo_root,
+            old,
+            new,
+            dry_run=preview,
+            regenerate_script=_engine_script_from_meta,
+            progress=_migrate_progress,
+        )
 
     try:
         result = _run(True)
         if not dry_run:
-            if not yes:
+            # A live session refuses the writing run, so there is nothing to confirm, unless the
+            # finish defers only NEW's own files and writes the rest.
+            if not yes and (not result.live or result.deferred):
                 _print_migration(result)
                 if not _out.confirm(Tag.MIGRATE, "migrate", f"Migrate {old} to {new}?"):
                     _out.emit(Tag.MIGRATE, "migrate", "Aborted.", err=True)
@@ -8010,7 +9411,7 @@ def cmd_migrate_session(
         sys.exit(2)
 
     _print_migration(result)
-    sys.exit(1 if result.failed else 0)
+    sys.exit(1 if result.failed or result.references_left else 0)
 
 
 def _print_retirement(result) -> None:
@@ -8032,6 +9433,8 @@ def _print_retirement(result) -> None:
             "retire",
             f"  canonical registry: drop {result.registry_entries} entry(ies) for {result.worktree}",
         )
+    if result.session_rows:
+        _out.emit(Tag.RETIRE, "retire", f"  session registry: drop {result.session_rows} row(s) for {result.name}")
     _out.emit(Tag.RETIRE, "retire", f"  ledger: append to {result.ledger}")
     if result.project_dir is not None:
         _out.emit(Tag.RETIRE, "retire", f"  Claude Code project dir left in place: {result.project_dir}")
@@ -8296,103 +9699,195 @@ def cmd_watch_vpn():
     sys.exit(0)
 
 
-@_cli_group.command(
-    "ps",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Process hygiene — show/kill stale ai-cli processes",
-)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_ps(args):
+def _ps_options(func):
+    func = click.option(
+        "-r", "--refresh", is_flag=True, help="Re-check the remote host over SSH instead of using the cached result"
+    )(func)
+    return click.option(
+        "-f", "--force", is_flag=True, help="With clean: also kill suspect processes, and do not prompt"
+    )(func)
+
+
+def _run_ps(action: list[str], force: bool, refresh: bool) -> None:
     from .process_hygiene import cmd_ps as _cmd_ps
 
-    sys.exit(_cmd_ps(list(args), _config.load_config()))
+    args = [*action, *(["--force"] if force else []), *(["--refresh"] if refresh else [])]
+    sys.exit(_cmd_ps(args, _config.load_config()))
 
 
-@_cli_group.command(
-    "sync",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Sync CC session data (JSONL + memory files) across machines",
+@_cli_group.group(
+    "ps",
+    invoke_without_command=True,
+    help="Process hygiene — show/kill stale ai-cli processes. With no command, list every managed "
+    "process on this machine and the configured remote host, with its orphan score.",
 )
-@click.argument("action", required=False, default="")
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_sync(action, args):
-    if not action:
-        _out.emit(
-            Tag.SYNC,
-            "usage",
-            "Usage: ai sync [push|pull|conflicts|resolve|watch|cleanup|repair-worktree] "
-            "[-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]",
-        )
-        sys.exit(1)
-    from .sync import (
-        _cc_projects_dir,
-        clean_worktree_cc_dirs,
-        get_local_prefix,
-        repair_worktree_cc_dir,
-        sync_conflicts,
-        sync_pull,
-        sync_push,
-        sync_resolve,
-        sync_watch,
+@_ps_options
+@click.pass_context
+def cmd_ps(ctx, force, refresh):
+    if ctx.invoked_subcommand is None:
+        _run_ps([], force, refresh)
+    if force or refresh:
+        raise click.UsageError(f"put -f/--force and -r/--refresh after the command: ai ps {ctx.invoked_subcommand} -f")
+
+
+@cmd_ps.command(
+    "clean",
+    help="Kill orphaned processes after a confirmation prompt; suspect ones only with -f/--force",
+)
+@_ps_options
+def cmd_ps_clean(force, refresh):
+    _run_ps(["clean"], force, refresh)
+
+
+@cmd_ps.command(
+    "cron",
+    help="Non-destructive maintenance: remove stale transport files and refresh the remote cache. "
+    "Never kills a process.",
+)
+@_ps_options
+def cmd_ps_cron(force, refresh):
+    _run_ps(["cron"], force, refresh)
+
+
+@_cli_group.group("sync", help="Sync CC session data (JSONL + memory files) across machines")
+def cmd_sync():
+    pass
+
+
+def _sync_flags(**flags: bool) -> list[str]:
+    return [f"--{name.replace('_', '-')}" for name, given in flags.items() if given]
+
+
+def _memories_only_option(func):
+    return click.option("-m", "--memories-only", is_flag=True, help="Sync memory files only, not session transcripts")(
+        func
     )
 
-    flags = list(args)
-    if action == "push":
-        sys.exit(sync_push(flags))
-    elif action == "pull":
-        sys.exit(sync_pull(flags))
-    elif action == "conflicts":
-        sys.exit(sync_conflicts(flags))
-    elif action == "resolve":
-        sys.exit(sync_resolve(flags))
-    elif action == "watch":
-        sys.exit(sync_watch(flags))
-    elif action == "repair-worktree":
-        positional = [a for a in flags if not a.startswith("-")]
-        if len(positional) < 2:
-            _out.emit(
-                Tag.SYNC,
-                "usage",
-                "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
-                "Example: ai sync repair-worktree myproject wt-1\n"
-                "Copies all conversations from the main project CC dir into the worktree CC dir\n"
-                "so they are accessible from the worktree session.",
-                err=True,
-            )
-            sys.exit(1)
-        project_name = positional[0]
-        wt_name = positional[1]
-        dry_run = "-n" in flags or "--dry-run" in flags
-        verbose = "-v" in flags or "--verbose" in flags
-        copied = repair_worktree_cc_dir(
-            project_name=project_name,
-            wt_name=wt_name,
-            cc_projects_dir=_cc_projects_dir(),
-            local_prefix=get_local_prefix(),
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-        sys.exit(0 if copied >= 0 else 1)
-    elif action == "cleanup":
-        dry_run = "-n" in flags or "--dry-run" in flags
-        verbose = "-v" in flags or "--verbose" in flags
-        removed_jsonl, removed_lock = clean_worktree_cc_dirs(
-            _cc_projects_dir(),
-            get_local_prefix(),
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-        verb = "Would remove" if dry_run else "Removed"
-        _out.emit(Tag.SYNC, "cleanup", f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
-        sys.exit(0)
-    else:
-        _out.emit(
-            Tag.SYNC,
-            "usage",
-            f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
-            err=True,
-        )
-        sys.exit(1)
+
+def _dry_run_option(func):
+    return click.option("-n", "--dry-run", is_flag=True, help="Report what would change without writing anything")(func)
+
+
+def _verbose_option(func):
+    return click.option("-v", "--verbose", is_flag=True, help="Print each file as it is processed")(func)
+
+
+def _force_option(func):
+    return click.option("-f", "--force", is_flag=True, help="Overwrite the other side's changes instead of stopping")(
+        func
+    )
+
+
+@cmd_sync.command(
+    "push",
+    help="Push local CC data to the staging repo and server. Exits 2 when conflicts were preserved.",
+)
+@_memories_only_option
+@_dry_run_option
+@_verbose_option
+@_force_option
+def cmd_sync_push(memories_only, dry_run, verbose, force):
+    from .sync import sync_push
+
+    sys.exit(sync_push(_sync_flags(memories_only=memories_only, dry_run=dry_run, verbose=verbose, force=force)))
+
+
+@cmd_sync.command(
+    "pull",
+    help="Pull from the staging repo and apply it to the local CC projects dir. Exits 2 when conflicts were preserved.",
+)
+@_memories_only_option
+@_dry_run_option
+@_verbose_option
+@_force_option
+@click.option(
+    "-p", "--prefer-remote", is_flag=True, help="When a memory file differs on both sides, apply the remote copy"
+)
+def cmd_sync_pull(memories_only, dry_run, verbose, force, prefer_remote):
+    from .sync import sync_pull
+
+    flags = _sync_flags(
+        memories_only=memories_only, dry_run=dry_run, verbose=verbose, force=force, prefer_remote=prefer_remote
+    )
+    sys.exit(sync_pull(flags))
+
+
+@cmd_sync.command("conflicts", help="List unresolved conflict files and recent conflict log entries")
+def cmd_sync_conflicts():
+    from .sync import sync_conflicts
+
+    sys.exit(sync_conflicts([]))
+
+
+@cmd_sync.command(
+    "resolve",
+    help="Resolve accumulated conflict files: delete transcript conflict backups and merge memory "
+    "conflicts. Exits 1 when a memory file could not be merged automatically.",
+)
+@_dry_run_option
+@_verbose_option
+def cmd_sync_resolve(dry_run, verbose):
+    from .sync import sync_resolve
+
+    sys.exit(sync_resolve(_sync_flags(dry_run=dry_run, verbose=verbose)))
+
+
+@cmd_sync.command(
+    "watch",
+    help="Listen for pull requests from other machines and run `ai sync pull --force` on each. "
+    "Exits 2 when a watcher is already running.",
+)
+@click.option(
+    "-a",
+    "--auto",
+    is_flag=True,
+    help="Started by a session launch: exit quietly when [sync] auto_watch is off for this machine",
+)
+@_verbose_option
+def cmd_sync_watch(auto, verbose):
+    from .sync import sync_watch
+
+    sys.exit(sync_watch(_sync_flags(auto=auto, verbose=verbose)))
+
+
+@cmd_sync.command("cleanup", help="Remove stale transcript copies and orphan lock dirs from worktree CC dirs")
+@_dry_run_option
+@_verbose_option
+def cmd_sync_cleanup(dry_run, verbose):
+    from .sync import _cc_projects_dir, clean_worktree_cc_dirs, get_local_prefix
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(
+        _cc_projects_dir(),
+        get_local_prefix(),
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    verb = "Would remove" if dry_run else "Removed"
+    _out.emit(Tag.SYNC, "cleanup", f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
+    sys.exit(0)
+
+
+@cmd_sync.command(
+    "repair-worktree",
+    help="Copy every conversation from a project's main CC dir into a worktree's CC dir, so the "
+    "worktree session can resume them. Example: ai sync repair-worktree myproject wt-1",
+)
+@click.argument("project")
+@click.argument("worktree")
+@_dry_run_option
+@_verbose_option
+def cmd_sync_repair_worktree(project, worktree, dry_run, verbose):
+    from .sync import _cc_projects_dir, get_local_prefix, repair_worktree_cc_dir
+
+    copied = repair_worktree_cc_dir(
+        project_name=project,
+        wt_name=worktree,
+        cc_projects_dir=_cc_projects_dir(),
+        local_prefix=get_local_prefix(),
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    sys.exit(0 if copied >= 0 else 1)
 
 
 @_cli_group.group("ws", help="Workspace-wide operations across all repos")

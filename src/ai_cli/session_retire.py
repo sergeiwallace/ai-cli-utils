@@ -9,6 +9,8 @@ canonical-registry entry, and nothing else of value:
   stay, so the anchor plus the branch is the recovery path;
 * the checkout goes through ``git worktree remove`` without ``--force``;
 * the canonical-registry entry for the slot is dropped under the registry's lock;
+* this machine's session run-state rows for NAME (every engine and ``-r`` variant)
+  are dropped, so ``ai sessions list`` stops showing the retired session;
 * one JSON line is appended to ``<state>/session-retirements.jsonl``.
 
 The Claude Code project directory (transcripts, memory) is left in place and
@@ -43,12 +45,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config as _config
+from . import session_registry as _session_registry
 from .branch_rename import anchor_ref
 from .canonical_worktrees import CanonicalWorktreeRegistryError, unregister_canonical_worktree
 from .cc_migrate import cc_project_dir
 from .git_repair import _git_env
 from .session_adopt import AdoptionError
-from .session_migrate import _refuse_live, _session_variants, _tmux_names
+from .session_migrate import _names_old_session, _refuse_live, _session_variants, _tmux_names
 from .stale_session_reaper import (
     DEFAULT_STALE_AFTER_SECONDS,
     HEARTBEAT_VERSION,
@@ -87,6 +90,7 @@ class RetireResult:
     branch: str | None
     anchors: list[Anchor] = field(default_factory=list)
     registry_entries: int = 0
+    session_rows: int = 0
     project_dir: Path | None = None
     ledger: Path | None = None
     dry_run: bool = False
@@ -301,6 +305,30 @@ def _plan_anchors(repo: Path, name: str, branch: str | None) -> list[Anchor]:
     return anchors
 
 
+def _drop_session_rows(name: str, *, dry_run: bool) -> int:
+    """Drop this machine's run-state rows for ``name`` (every engine and remote variant)."""
+    names = set(_session_variants(name))
+    if not _session_registry.registry_path().exists():
+        return 0
+    if dry_run:
+        rows = _session_registry.load_registry()["sessions"]
+        return sum(1 for r in rows if _names_old_session(r, names) and r.get("kind") == "local")
+    dropped: list[dict] = []
+
+    def drop(doc: dict) -> bool:
+        kept = []
+        for record in doc["sessions"]:
+            if _names_old_session(record, names) and record.get("kind") == "local":
+                dropped.append(record)
+            else:
+                kept.append(record)
+        doc["sessions"] = kept
+        return bool(dropped)
+
+    _session_registry._mutate(drop, timeout=2)
+    return len(dropped)
+
+
 def retire_session(
     repo_root: Path,
     name: str,
@@ -369,6 +397,10 @@ def retire_session(
         ledger=state / LEDGER_FILENAME,
         dry_run=dry_run,
     )
+    try:
+        result.session_rows = _drop_session_rows(name, dry_run=True)
+    except _session_registry.RegistryError as exc:
+        result.warnings.append(f"the session registry cannot be read, so its rows for {name} stay: {exc}")
     if dry_run:
         return result
 
@@ -390,6 +422,11 @@ def retire_session(
         result.registry_entries = unregister_canonical_worktree(wt, dry_run=False)
     except CanonicalWorktreeRegistryError as exc:
         result.warnings.append(f"the checkout is removed but its registry entry stays: {exc}")
+    if result.session_rows:
+        try:
+            result.session_rows = _drop_session_rows(name, dry_run=False)
+        except (_session_registry.RegistryError, OSError) as exc:
+            result.warnings.append(f"the checkout is removed but its session registry rows stay: {exc}")
 
     state.mkdir(parents=True, exist_ok=True)
     row = {

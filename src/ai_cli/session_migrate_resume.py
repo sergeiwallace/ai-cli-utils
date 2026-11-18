@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import session_migrate as m
-from .venv_relocate import needs_relocation
+from .venv_relocate import needs_relocation, repoint_checkout_record, stale_checkout_record
 
 # Include absent optional parts so dry and real runs expose the same inventory.
 PARTS = (
     "worktree",
     "name registry",
     "virtual environment",
+    "venv back-pointer",
     "branch",
     "canonical registry",
     "provenance owner",
@@ -23,8 +24,12 @@ PARTS = (
     "session-home marker",
     "agent worktree",
     "agent branch",
+    "agent project dir",
     "project dir",
     "transcript title",
+    "sub-agent record",
+    "job name",
+    "job record",
     "held output",
     "memory file",
     "memory index",
@@ -40,15 +45,19 @@ PARTS = (
     "watcher lock",
     "slot lock",
     "leftover slot",
+    "agent container entry",
+    "agent container file",
     "agent container",
     "beads issue",
+    "beads store",
 )
 
 
 @dataclass
 class HomePlan:
     moves: list[m.PlannedMove] = field(default_factory=list)
-    actions: list[Callable[[], object]] = field(default_factory=list)
+    #: ``(part, action)``: each write and the part it is reported under.
+    actions: list[tuple[str, Callable[[], object]]] = field(default_factory=list)
 
 
 def _stale_transcript(path: Path, old_wt: Path, new_wt: Path, old: str) -> bool:
@@ -78,7 +87,7 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
 
     def add(kind, source, dest, action):
         plan.moves.append(m.PlannedMove(kind, str(source), str(dest), "rewrite"))
-        plan.actions.append(action)
+        plan.actions.append((kind, action))
 
     old_branch, new_branch = f"wt-{old}", f"wt-{new}"
     branch = m.rename_branch_anchored(repo, old_branch, new_branch, dry_run=True)
@@ -104,10 +113,13 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
     )
     if ownership.provenance_state == "present" or (ownership.stamp_value and ownership.stamp_value != str(new_wt)):
         plan.moves += [m.PlannedMove(*line) for line in m._agents.describe_worktree_ownership(ownership)]
-        plan.actions.append(lambda: _ownership(ownership, new_branch))
+        plan.actions.append(("provenance owner", lambda: _ownership(ownership, new_branch)))
     venv = new_wt / ".venv"
     if needs_relocation(venv, old_wt):
         add("virtual environment", venv, new_wt, lambda: m.relocate_venv(venv, old_wt, new_wt))
+    record = stale_checkout_record(venv, old_wt)
+    if record is not None:
+        add("venv back-pointer", record, new_wt, lambda: repoint_checkout_record(record, old_wt, new_wt))
     old_pd, new_pd = m.cc_project_dir(old_wt, home), m.cc_project_dir(new_wt, home)
     if old_pd.exists() and new_pd.exists():
         raise m.MigrationError(f"both project directories exist: {old_pd} and {new_pd}; refusing to merge")
@@ -124,7 +136,16 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
                 m.neutralise_worktree_state(dest, new_wt)
 
             add("transcript title", path, dest, rewrite)
+    for move in m.plan_job_names(project, old, new, home):
+        plan.moves.append(move)
+        plan.actions.append((move.kind, lambda record=Path(move.source): _job_name(record, old, new)))
     return plan
+
+
+def _job_name(record: Path, old: str, new: str) -> None:
+    warning = m.apply_job_name(record, old, new)
+    if warning:
+        raise m.MigrationError(warning)
 
 
 def _ownership(plan, branch):
@@ -133,9 +154,11 @@ def _ownership(plan, branch):
         raise m.MigrationError("; ".join(warnings))
 
 
-def apply_home(plan: HomePlan, result: m.MigrationResult) -> None:
-    for action in plan.actions:
-        action()
+def apply_home(plan: HomePlan, result: m.MigrationResult, *, skip: frozenset[str] = frozenset()) -> None:
+    """Run each planned write, except those of a part in ``skip``."""
+    for kind, action in plan.actions:
+        if kind not in skip:
+            action()
 
 
 def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:
@@ -151,11 +174,14 @@ def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:
 def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
     parts: dict[str, str] = dict.fromkeys(PARTS, "done earlier" if resumed else "skipped: no matching artifact")
     parts["name registry"] = "skipped: direct rename"
+    deferred = f"deferred: {result.new} is running; stop it with `ai sessions stop {result.new}`"
 
     def assign(part: str, status: str):
         def rank(value):
             if value.startswith("failed:"):
                 return 5
+            if value.startswith("deferred:"):
+                return 4
             if value.startswith("skipped:") and not any(
                 word in value for word in ("no matching", "informational", "missing", "unconfigured", "unreadable")
             ):
@@ -172,15 +198,19 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
             continue  # Hook status is carried by its explicit planned/applying step.
         if move.action == "already done":
             status = "done earlier"
+        elif move.action == m.DEFERRED:
+            status = deferred
         elif move.action.startswith(("skipped:", "left alone", "kept", "left in place")) or move.action == "conflict":
             status = f"{'' if move.action.startswith('skipped:') else 'skipped: '}{move.action} {move.dest}".strip()
         elif move.action == "report" and not move.kind.startswith("hook "):
             status = "skipped: informational"
+        elif move.action == "publish needed":
+            status = "skipped: publish needed, no publish command is configured"
         else:
             status = "would do" if result.dry_run else "done now"
         assign(move.kind, status)
     if result.task_moves:
-        assign("task namespace", "would do" if result.dry_run else "done now")
+        assign("task namespace", deferred if result.deferred else "would do" if result.dry_run else "done now")
     if result.resume_moves:
         assign("resume", "would do" if result.dry_run else "done now")
     for warning in result.warnings:
@@ -213,6 +243,8 @@ def run(repo: Path, old: str, new: str, **kwargs) -> m.MigrationResult:
     else:
         # Freeze the read-only plan before any writes, including hook preflights.
         preview = call(repo, old, new, **{**kwargs, "dry_run": True})
+        if preview.live:
+            raise m.LiveSessionError(preview.live)
         try:
             if resumed and not m.migration_recorded(old, new, state):
                 m._record_migration(state, old, new, repo, new_wt)

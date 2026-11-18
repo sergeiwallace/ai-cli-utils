@@ -38,8 +38,8 @@ After `ai session-migrate OLD NEW`, the home worktree and moved agent worktrees 
 registered at their new paths and use their new branch names, but two ownership records
 can still identify the old session and old path:
 
-- `aih-provenance.json` retains `owner_session: OLD`.
-- `branch.<branch>.aih-agent-worktree` retains the pre-migration worktree path.
+- `app-provenance.json` retains `owner_session: OLD`.
+- `branch.<branch>.app-agent-worktree` retains the pre-migration worktree path.
 
 Consumers of those records can therefore treat a live migrated worktree as unowned or
 associate its branch with a path that no longer exists.
@@ -53,7 +53,7 @@ worktree or agent worktree carrying either ownership record.
 
 1. Create a registered session worktree and one agent worktree.
 2. Give each worktree a provenance record whose `owner_session` is the old session name.
-3. Set each checked-out branch's `aih-agent-worktree` configuration value to the old path.
+3. Set each checked-out branch's `app-agent-worktree` configuration value to the old path.
 4. Run `ai session-migrate OLD NEW`.
 5. Resolve each moved worktree's provenance through `git rev-parse --git-path` and inspect
    the renamed branch's configuration.
@@ -101,7 +101,7 @@ the first write. After that particular move succeeds, the migration:
 - changes only `owner_session` when a readable provenance object names the old session;
 - atomically replaces that existing record without creating one when it is absent;
 - reports and skips missing or unreadable provenance records without aborting migration; and
-- updates an existing `aih-agent-worktree` branch key to the moved path under the branch
+- updates an existing `app-agent-worktree` branch key to the moved path under the branch
   name that actually survives the rename.
 
 Dry-run mode emits the same planned actions and performs none of the writes.

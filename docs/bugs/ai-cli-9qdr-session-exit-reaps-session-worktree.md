@@ -80,21 +80,21 @@ for roughly five months because the triggering combination had not occurred.
 
 ### Why it is a defect rather than intended hygiene
 
-ai-harness `docs/procedures/worktree-workflow.md` states the ratified rule verbatim:
+automation framework `docs/procedures/worktree-workflow.md` states the ratified rule verbatim:
 
 > **NEVER delete a canonical `ai c`/`ai g` session worktree.** Those are long-lived session
 > homes, not disposable scratch space, and they are never a cleanup candidate whatever their
 > merge status or cleanliness.
 
 Cleanliness was precisely the condition this teardown used to justify deleting one.
-ai-harness's own `scripts/worktree_audit.py` implements a hard `KEEP_CANONICAL_SESSION` veto,
+automation framework's own `scripts/worktree_audit.py` implements a hard `KEEP_CANONICAL_SESSION` veto,
 evaluated before any other classification question, specifically so its audit path cannot do
 this. So two components of one fleet implemented opposite policies on the same object, and
 the rule lived in a different repository from the violating code, which is how they drifted
 apart without anyone noticing.
 
-Exposure was fleet-wide, not specific to `session-1`. ai-harness's `is_canonical_session()`
-returns True for `session-1`, `session-2`, `session-3`, `aih-4` and `ai-cli-1`.
+Exposure was fleet-wide, not specific to `session-1`. automation framework's `is_canonical_session()`
+returns True for `session-1`, `session-2`, `session-3`, `app-4` and `ai-cli-1`.
 
 `git status --porcelain` was also the reap's only safety test. It reports uncommitted and
 untracked files but says nothing about whether commits exist anywhere else, so a worktree
@@ -106,7 +106,7 @@ commits reachable, so this was recoverable rather than destructive, but the chec
 | Hypothesis | Why it was rejected |
 |---|---|
 | A stray `rm -rf`, or a crash mid-write | `git worktree prune --dry-run` was empty and the admin entry was gone too. A directory removal outside git leaves an orphaned entry that prune reports. |
-| ai-harness `worktree_audit.py --delete` swept it | That path deletes the branch alongside the worktree, and it carries a canonical veto that refuses `session-1` outright. `wt-session-1` survived. |
+| automation framework `worktree_audit.py --delete` swept it | That path deletes the branch alongside the worktree, and it carries a canonical veto that refuses `session-1` outright. `wt-session-1` survived. |
 | A session-end hook in the harness | The removal is fully explained by a call site inside ai-cli-utils, reproduced end to end below. No harness hook was involved. |
 | A new regression from a recent change | `git log -S` on both call sites returns only `121c9c9` (2026-04-19). The code had not changed. |
 | It only affects oddly configured worktrees | Reproduced on a clean scratch repo with nothing unusual, and for three different canonical session names. |
@@ -131,7 +131,7 @@ Coverage:
    after teardown (the positive contract, and the exact `session-1` scenario);
 3. a worktree whose branch holds commits present on no remote also survives (the severity
    case that porcelain-clean concealed);
-4. the same for `session-1`, `aih-4` and `ai-cli-1`, so the assertion is about the class of
+4. the same for `session-1`, `app-4` and `ai-cli-1`, so the assertion is about the class of
    canonical session names rather than one instance.
 
 ### A false-pass caught while writing them

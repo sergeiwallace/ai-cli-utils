@@ -187,9 +187,9 @@ machine's bootstrap has run — re-baseline first, since the bootstrap may resol
 ## Handoff
 
 - CC task and Beads issue: **not created at fix time.** The `Task*` tools are unavailable in the
-  reporting session (see `ai-harness`'s `docs/bugs/aih-335-task-tool-permanently-disabled.md`), and
+  reporting session (see `automation framework`'s `docs/bugs/app-335-task-tool-permanently-disabled.md`), and
   this machine's Beads store has not been bootstrapped yet. Both records are to be created once the
-  `ai-harness` bootstrap has run on this machine, and this doc linked from them.
+  `automation framework` bootstrap has run on this machine, and this doc linked from them.
 
 ## Fix Log
 

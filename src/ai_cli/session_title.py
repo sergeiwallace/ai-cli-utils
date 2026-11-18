@@ -120,7 +120,7 @@ def resolve_limits(registry: reg.Registry, snapshot: reg.Snapshot | None = None)
     """The two length limits and where they came from; a local value that has no effect is warned about."""
     local = _config.load_config().get("session_names", {})
     local_keys = [key for key in ("min_name_length", "max_name_length") if isinstance(local, dict) and key in local]
-    if isinstance(registry, reg.GitRegistry):
+    if isinstance(registry, reg.FleetRegistry):
         policy = (snapshot or reg.last_known_snapshot(registry)).policy
         low, high = name_list.limits(policy)
         warning = None

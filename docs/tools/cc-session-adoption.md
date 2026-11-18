@@ -372,7 +372,12 @@ Four rules, each of which is wrong in the other direction:
   `lsof`) leaves it **where it is** — not migrated, so it cannot block the new
   name, and not deleted, because nothing proved it dead.
 - **Never overwrite.** An existing target belongs to whoever already holds the
-  new name and may be its only copy, so it is reported and left alone.
+  new name and may be its only copy, so it is reported and left alone. The one
+  exception is a poller marker, `pollers/<name>__<id>.notified`, when both copies
+  hold one integer epoch. The marker only records that the poller's fault was
+  announced, so the two copies agree, and the rename keeps the later timestamp
+  under the new name and removes the old one (`... merged (keeps the later
+  timestamp N)`). A marker holding anything else is reported and left alone.
 
 `--dry-run` reports every rename it would make and renames nothing, including the
 lock removals.
@@ -502,9 +507,12 @@ ai c myrepo-box-3                             # resume under the new name
 |---|---|
 | Worktree `.worktrees/OLD` | `git worktree move` (uncommitted work included); a nested registered worktree is refused |
 | Branch `wt-OLD` | renamed to `wt-NEW` when `wt-NEW` is free, whether it is checked out or parked behind a topic branch (a checked-out topic branch stays checked out); its tip is first anchored at `refs/preserved/migrate-session/wt-OLD`, which stays, so a refused rename never loses it |
-| `branch.*.aih-session-home` markers naming the old path | repointed at the new path |
+| `branch.*.app-session-home` markers naming the old path | repointed at the new path |
 | Canonical-session registry entry | path and session name rewritten, first-registration time kept |
 | `~/.claude/projects/<old-slug>/` (transcripts, sidecars, slot memory) | renamed to the new slug; each transcript's top-level cwd fields repointed (history text untouched), `customTitle` and `agentName` OLD rewritten to NEW, stale worktree binding cleared (step 2b); `--finish` and a re-run find and rewrite a transcript still carrying either |
+| `~/.claude/jobs/<first 8 characters of a moved transcript's session id>/state.json` | `name` OLD (or a numbered copy, `OLD (N)`) rewritten to NEW, only when the record's `sessionId` or `resumeSessionId` is that transcript's; Claude Code renames a resumed session to this record's user-set name whatever `--name` the launch passed, so a record left naming OLD brings the session back as OLD. `--finish` and a re-run find and rewrite a record still naming OLD |
+| `~/.claude/jobs/<short id>/state.json` of OLD's session (its `sessionId` or `resumeSessionId` is one of OLD's transcripts) or with its `cwd` in the slot or a moved agent worktree, whatever its state | `cwd` repointed at the moved path, and `linkScanPath` (the transcript Claude Code scans) at the renamed project directory, OLD's own or the one of the job's cwd (`job record: <path> (rewrite: cwd = ...; linkScanPath = ...)`); every other field kept. `--finish` and a re-run find and rewrite a record still naming a moved path |
+| Agent-tool sub-agent records under OLD's transcripts, `<session id>/subagents/agent-<id>.meta.json` and `agent-<id>.jsonl` | the meta file's `worktreePath` and `inheritedWorktreePath`, the worktree a resume starts the sub-agent in, and the transcript's top-level cwd fields repointed at the moved slot or agent worktree (`sub-agent record: <path> (rewrite: ...)`), so a sub-agent launched before the migration resumes from NEW. A record naming a worktree that did not move (reaped, or held by a live process) is left byte-identical. `--finish` also repoints a record an earlier migration moved the worktree of: a leaf `.worktrees/OLD-agents/<leaf>` gone and `.worktrees/NEW-agents/<leaf>` present |
 | `memory/.held-output-OLD-NN-<slug>.md` replay files in the main tree's and the slot's project directories | renamed to `.held-output-NEW-NN-<slug>.md`, bodies byte-identical; an existing target is skipped |
 | `~/.claude/tasks/OLD/` | merged into `tasks/NEW/` (renumbered on collision), `.highwatermark` carried; the old directory is removed when only `.highwatermark`/`.lock` remain, else left with a warning naming what it holds |
 | `~/.claude/resume/` artifacts keyed OLD | re-keyed to NEW (step 4b rules) |
@@ -516,42 +524,102 @@ ai c myrepo-box-3                             # resume under the new name
 | `launch-logs/<name>-<stamp>-<pid>.log` for OLD and each of its tmux names (`c-OLD`, `c-r-OLD`, ...) | renamed for NEW, so NEW's 20-per-name retention prunes them; a log under the slot number alone (`3-<stamp>`) names no session and stays |
 | The chief-of-staff registration `ai cos` wrote, when it names OLD (`<chief home>/state/chief-session.json`, and `registry.json`'s `chief_of_staff_session` and `chief_routes.native_agent_name`) | rewritten for NEW, tmux target included; `vp_sessions` is left to its hook. Kept and named, exiting 1, while its tmux target is live; a file that cannot be read refuses the migration |
 | Agent worktrees `<repo>/.worktrees/OLD-agents/<leaf>` and branches `wt/OLD/<leaf>`, in the slot's repo and every repo under `[project] projects_dir` | each worktree moved to `.worktrees/NEW-agents/<leaf>` and the emptied container removed; each branch renamed to `wt/NEW/<leaf>`, checked out or parked, its tip anchored first; markers naming the old slot or a moved worktree rewritten under the new branch name. One a live Claude Code process works in is left with its branch (`held by pid N`); a destination that exists is skipped; a git refusal warns, the rest still move, and the command exits 1 |
-| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`) |
+| Agent worktrees under a host-prefixed container `<repo>/.worktrees/<host>--OLD-agents/<leaf>` | moved to `<host>--NEW-agents/<leaf>` with their branches, as above, when checked out on `wt/OLD/<leaf>` or on an already renamed `wt/NEW/<leaf>` (so `--finish` repairs a directory left behind its branch); a worktree there on another session's branch is left alone, and the container is removed once empty |
+| Agent project directories `~/.claude/projects/<slug of .worktrees/OLD-agents/...>` and `<slug of .worktrees/<host>--OLD-agents/...>`, the agent's worktree reaped or not | renamed to the slug of the same path under the NEW container (`agent project dir: <old> -> <new>`), each transcript's top-level cwd fields repointed. A directory whose transcript records a cwd outside an OLD agents container is another session's and stays; one whose worktree stays (held or skipped) stays with it; one past Claude Code's 200-character slug cap is not derivable and stays; an existing target is never merged into (`SKIPPED (target exists)`), and the command exits 1 |
+| An entry of `.worktrees/OLD-agents/` that `git worktree list` does not name and that holds no registered worktree (its registration pruned, so its `.git` file names a `.git/worktrees/<name>` that is gone, or never made) | archived by a rename, never a copy and delete, into `<state>/session-migration-archive/<UTC date>/OLD-to-NEW/agent-container/<entry>` (`agent container entry: <path> (archived: <archive path>)`), and recorded in an `archived` ledger row; when the state directory is on another filesystem than the container, into the same layout under `<repo>/.worktrees/session-migration-archive/`. While any process has its cwd in such an entry nothing is archived and the container is kept (`kept: pid N works in <entry>`), exiting 1; a rename that fails keeps the entry and names the error. A `git worktree list` that cannot be read archives nothing |
+| An emptied container `.worktrees/OLD-agents/` (its last worktree reaped before the migration, or its unregistered entries archived) | removed, with any empty subdirectory; one still holding a file stays and is named in the report (`agent container: <path> (kept: holds <entries>)`), and the command exits 1. `-n` names the same fate (`would be removed: empty` or `kept: ...`), counting the agent worktrees the run moves out as gone, and removes nothing |
 | A slot `.worktrees/OLD` in another repo under `[project] projects_dir` (a cross-repo worktree the session worked in) | retired with `ai retire-session`'s own checks and steps when it is clean and its commit is contained in, or landed on, its upstream or `origin/main`: tips anchored under `refs/preserved/retire-session/`, branches kept, checkout removed, ledger row written. Otherwise kept and named with the reason (`leftover slot: <path> (kept: <reason>)`), and the command exits 1. A slot with its own Claude Code project directory is a session home and is always kept |
 | `memory/<words>-OLD.md` and `memory/<words>-OLD-<N>.md` (`active-work-OLD.md`, `.resume-OLD-12.md`) in the main tree's and the slot's project directories | renamed to NEW, bodies byte-identical; a file whose name ends in a longer session's name (`active-work-kg-OLD.md` while `kg-OLD` exists as a task namespace or slot) is left alone; each `MEMORY.md` beside them has those file names and their `[[stem]]` links rewritten and nothing else, and is replaced only if no other session changed it meanwhile |
 | `ai-watcher-lock-<engine>-OLD` | removed when the pid it names is not running; kept when that pid runs or the file names none. Never carried to NEW |
 | `.worktrees/.OLD.lock` (the launcher's slot lock) | removed when a non-blocking exclusive lock on it succeeds, kept while a process holds it <!-- gitignored-path-ok: names the file the command removes, not evidence --> |
-| Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing: each store it changed is named `publish needed`, and publishing it is a separate step. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
-| State of other tools | each hook in `migrate-session.d/` is planned with `--dry-run` (a refusal refuses the migration) and run after the core moves ([hook contract](../reference/migrate-session-hooks.md)) |
+| Beads issues assigned to OLD, in the slot's repo and every directory under `[project] projects_dir` that has a `.beads/` store | each issue whose assignee is exactly OLD and whose status is not `closed` is re-keyed with `bd --sandbox --actor OLD update <id> --assignee NEW --if-assignee OLD`, then given a comment naming the migration (`beads issue: <id> [OLD] (<store>) -> NEW`). Acting as OLD hands OLD's own in-progress claim over without `--force`, which bd refuses beside `--if-assignee`; `--if-assignee` leaves an issue someone else picked up meanwhile. A similar name (`OLD3`) is never matched. `--sandbox` keeps bd from pushing. A host that configures a publish command (`migrate-session-publish.d/beads.toml`, see `docs/reference/migrate-session-hooks.md`) has it run once per changed store and the store re-read, and a failed publish or an issue still on OLD exits 1; without one, each store it changed is named `publish needed`. A store bd cannot read (an error or a timeout) is named, never counted as holding none, and the command exits 1. Each completed migration is recorded in `session-migrations.jsonl` in the state directory |
+| State of other tools | each hook in `migrate-session.d/` is planned with `--dry-run` (a refusal refuses the migration; under `--finish` it only skips that hook, reported as pending) and run after the core moves ([hook contract](../reference/migrate-session-hooks.md)) |
 
 ### Per-session state found left under OLD (AI-CLI-2oes)
 
 Each class an earlier migration left keyed by the old name, where it lives, who owns it,
-and what a migration now does with it. The ai-harness classes run as `migrate-session.d/` hooks
-(`scripts/session_rekey_cli.py <class>`, installed by ai-harness's held-hook step); each one
+and what a migration now does with it. The automation framework classes run as `migrate-session.d/` hooks
+(`scripts/session_rekey_cli.py <class>`, installed by automation framework's held-hook step); each one
 lists what it plans in `--dry-run`, runs again in `--finish`, names a file it cannot read and
 exits non-zero, and leaves a live claim in place, named, exiting 1 so `--finish` is re-run once
 it is free.
 
 | Class | Location | Key | Owner | Disposition |
 |---|---|---|---|---|
-| Chief-of-staff registration | `$XDG_STATE_HOME/firstmate/chief-of-staff/<machine key>/state/chief-session.json`, and `registry.json`'s chief fields beside it | `native_agent_name`, `session` (`<name>@<host>`), `tmux_target` | ai-cli-utils (`ai cos`) | **migrate** (core). Left while its tmux target is live |
-| Chief registry VP row | the same `registry.json`, `vp_sessions[]` | `vp_id` `<name>@<host>` | ai-harness (`chief_of_staff.merge_inventory`) | **migrate** with its enrolment (hook `chief-of-staff`), so the chief does not enrol the session twice. **Keep as history** when NEW already has its own row: the chief ages the old one out as `gone`. Left while the chief that writes the file runs, because it rewrites the file without a lock |
-| Worktree determinations | `$XDG_STATE_HOME/ai-harness/worktree-lifecycle/index.json` and the per-repo reap ledgers it indexes | `worktree_path` / `candidate_id` inside `.worktrees/OLD` or `.worktrees/OLD-agents` | ai-harness (`worktree_determinations.py`) | **keep as history**, each named (hook `worktree-determinations`): a determination judged one path at a proof digest that includes the branch the migration renames, so it cannot carry, and the reconciler asks once at the new path. The ledgers are append-only |
-| Work-queue session files | `~/.claude/state/wq/session-<host>_OLD.json`, `heartbeat-<host>_OLD`, `goal-cleared-<host>_OLD` (and `unknown_OLD`, the id used when no machine resolved) | wq id `<host>/<name>` | ai-harness (`wq_hooks.py`, `queue_waker.py`) | **remove when proved stale** (hook `work-queue`): the record is rewritten at every start and names a transcript path the migration moved; the heartbeat is a throttle stamp; the goal-cleared mark is a byte offset into a transcript the migration rewrote. Left while the heartbeat is inside the waker's three-window lease |
-| Peer-relay cursors | `$XDG_STATE_HOME/ai-harness/peer-relay/<project slug>__<session id>.{offset,seen.json}` | project slug of `.worktrees/OLD` or `OLD-agents/<leaf>` | ai-harness (`peer_relay_verify.py`) | seen set **migrated** to the new slug (hook `peer-relay`); offset **removed** (it no longer lands on a line once the transcript's cwd fields are rewritten; first sight starts at end of file); both removed when NEW has its own cursor or no transcript remains. Left while the old transcript has not moved |
+| Chief-of-staff registration | `$XDG_STATE_HOME/coordinator/chief-of-staff/<machine key>/state/chief-session.json`, and `registry.json`'s chief fields beside it | `native_agent_name`, `session` (`<name>@<host>`), `tmux_target` | ai-cli-utils (`ai cos`) | **migrate** (core). Left while its tmux target is live |
+| Chief registry VP row | the same `registry.json`, `vp_sessions[]` | `vp_id` `<name>@<host>` | automation framework (`chief_of_staff.merge_inventory`) | **migrate** with its enrolment (hook `chief-of-staff`), so the chief does not enrol the session twice. **Keep as history** when NEW already has its own row: the chief ages the old one out as `gone`. Left while the chief that writes the file runs, because it rewrites the file without a lock |
+| Worktree determinations | `$XDG_STATE_HOME/automation framework/worktree-lifecycle/index.json` and the per-repo reap ledgers it indexes | `worktree_path` / `candidate_id` inside `.worktrees/OLD` or `.worktrees/OLD-agents` | automation framework (`worktree_determinations.py`) | **keep as history**, each named (hook `worktree-determinations`): a determination judged one path at a proof digest that includes the branch the migration renames, so it cannot carry, and the reconciler asks once at the new path. The ledgers are append-only |
+| Work-queue session files | `~/.claude/state/wq/session-<host>_OLD.json`, `heartbeat-<host>_OLD`, `goal-cleared-<host>_OLD` (and `unknown_OLD`, the id used when no machine resolved) | wq id `<host>/<name>` | automation framework (`wq_hooks.py`, `queue_waker.py`) | **remove when proved stale** (hook `work-queue`): the record is rewritten at every start and names a transcript path the migration moved; the heartbeat is a throttle stamp; the goal-cleared mark is a byte offset into a transcript the migration rewrote. Left while the heartbeat is inside the waker's three-window lease |
+| Peer-relay cursors | `$XDG_STATE_HOME/automation framework/peer-relay/<project slug>__<session id>.{offset,seen.json}` | project slug of `.worktrees/OLD` or `OLD-agents/<leaf>` | automation framework (`peer_relay_verify.py`) | seen set **migrated** to the new slug (hook `peer-relay`); offset **removed** (it no longer lands on a line once the transcript's cwd fields are rewritten; first sight starts at end of file); both removed when NEW has its own cursor or no transcript remains. Left while the old transcript has not moved |
 | Launch logs | `$XDG_STATE_HOME/ai-cli-utils/launch-logs/<name>-<stamp>-<pid>.log` | the name the launch was given | ai-cli-utils (`launch_logging.py`) | **migrate** (core) |
-| Resume evidence | `~/.claude/resume/evidence/<key>-<attempt id>-<reason>.txt` | resume key | ai-cli-utils resume rekey (written by ai-harness's `EvidenceObserver`) | **migrate** (core): the matcher now accepts a hyphenated suffix after the id |
-| Resume attempt records | `~/.claude/resume/attempts/<key>-<id>.json`, body field `key` | resume key, read from the body | ai-harness (`context_supervisor.ResumeStore`) | **migrate** (hook `compact-lifecycle`): the core renames the file but not the body, and the supervisor reads the key from the body, so a renamed record was invisible to NEW while the supervisor kept logging `CC-REAUTH-REFUSED key=OLD`; the hook sets `key` to NEW and repoints `evidence_path` at the moved capture |
-| Buzz keys `OLD-<2 hex>@<host>.key` | `$XDG_CONFIG_HOME/ai-harness/buzz/` | a sub-agent's own identity | ai-harness (`buzz_channel.py`) | **keep**, each named (hook `buzz`): a different identity from OLD's, retired by the notifier with its agent; only OLD's own key `OLD@<host>.key` is carried |
+| Resume evidence | `~/.claude/resume/evidence/<key>-<attempt id>-<reason>.txt` | resume key | ai-cli-utils resume rekey (written by automation framework's `EvidenceObserver`) | **migrate** (core): the matcher now accepts a hyphenated suffix after the id |
+| Resume attempt records | `~/.claude/resume/attempts/<key>-<id>.json`, body field `key` | resume key, read from the body | automation framework (`context_supervisor.ResumeStore`) | **migrate** (hook `compact-lifecycle`): the core renames the file but not the body, and the supervisor reads the key from the body, so a renamed record was invisible to NEW while the supervisor kept logging `CC-REAUTH-REFUSED key=OLD`; the hook sets `key` to NEW and repoints `evidence_path` at the moved capture |
+| Buzz keys `OLD-<2 hex>@<host>.key` | `$XDG_CONFIG_HOME/automation framework/buzz/` | a sub-agent's own identity | automation framework (`buzz_channel.py`) | **keep**, each named (hook `buzz`): a different identity from OLD's, retired by the notifier with its agent; only OLD's own key `OLD@<host>.key` is carried |
 
 `ai migrate-session OLD NEW --finish` completes a migration whose slot already moved
 to NEW: a migration run before one of these steps existed, or one whose agent worktree
 a live process held. It repeats every step keyed by the old name that is safe to
 repeat (agent worktrees, branches, containers and markers; launcher state, maps and
 locks; held-output and memory files; the task namespace and resume tree; every hook)
-and refuses while `.worktrees/OLD` is still a registered slot or either session is
-running. `-n` prints its plan with nothing written.
+and refuses while `.worktrees/OLD` is still a registered slot or OLD is running; stop
+it with `ai sessions stop OLD` first. A hook that refuses its
+`--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
+other parts and hooks still run, and the command exits 1 so it is re-run.
+
+A running NEW does not refuse the finish. NEW counts as running when a Claude Code
+process is named NEW or runs inside its slot, or when a tmux session hosts it. The
+finish then does every step except the ones that write files the running session holds
+open: the project directory and transcript titles (`project dir`, `transcript title`),
+the sub-agent and background-job records (`sub-agent record`, `job record`, `job
+name`) and the task namespace. Each of those reads `deferred while live` in the plan
+and `deferred: NEW is running; stop it with ai sessions stop NEW` in the parts table.
+Every other part runs, including the venv back-pointers, the resume and poller keys,
+held output, memory files, launcher state and hooks. On this host's record of the
+migration the run appends a ledger row with `"deferred_recorded": true` and the
+deferred parts, warns `NOT finished` naming them and the `--finish` command, and exits
+1. The pair stays pending, so the next finish after NEW stops does the rest and
+records it `finished`.
+
+When NEW already holds its own copy of something OLD still holds, NEW's copy is kept,
+since it belongs to the session now running under NEW, and OLD's is neither merged
+into it nor deleted. It moves into a dated archive under the state directory,
+`session-migration-archive/<UTC date>/OLD-to-NEW/<part>/`, never over a file already
+archived there, and a ledger row with `"archive_recorded": true` lists each archived
+file as `{part, source, archive, kept}`. The part then counts as done, its line reading
+`archived OLD, NEW kept`, so a second `--finish` finds nothing left. The core does this
+for a resume artifact (a `logs/NEW.log` NEW wrote while `logs/OLD.log` was still
+there); a hook does it for its own state and names each file it archived on a
+`migrate-archived: <path>` line (`docs/reference/migrate-session-hooks.md`), which the
+same ledger row records. `-n` plans each archive as `archive OLD, keep NEW` and moves
+nothing. `-n` prints its
+plan with nothing written, and runs while either session is live: its first line,
+`live session: ...`, names the running session. For a running OLD it says a writing
+run refuses until it is stopped with `ai sessions stop NAME`, and the writing run keeps
+that refusal and exits 2 before its first write. For a running NEW it says a writing
+run does every other step and names the parts it defers until NEW is stopped. Without
+`-y`, a writing run that will defer asks for confirmation as any other writing run does.
+
+`--finish` needs only one name. `ai migrate-session NEW --finish`, the old name,
+NEW's first name (`cleo` in `myrepo-box-cleo`) or `ai migrate-session --finish -t
+cleo` looks the name up in this host's `session-migrations.jsonl` (in the state
+directory), as the OLD or NEW of a recorded pair or the first name of its NEW, and
+finishes that pair in the repo the row records, whatever the current directory;
+`-r` overrides the recorded repo. A positional name and `-t` together must both
+match the same pair. A name matching no recorded pair exits 2 naming the ledger it
+searched; one matching several exits 2 and lists `ai migrate-session OLD NEW
+--finish -r <repo>` for each. Both names given positionally also take the recorded
+repo, and keep the current directory's repo when no row names them.
+
+The migrated session relaunches under the `ai` on `PATH`, not the build running the
+migration, so before writing anything every migration (`--finish` and `--to-name`
+included; `--beads-only` excepted) asks that `ai` for the migration record format it
+reads (`ai internal get-migration-format`). A build from before that probe answers
+none, read as 0. When the number is lower than the format this build writes, it runs
+`ai update --force` and asks again; when the update fails, cannot run, or still
+leaves an older build, or when the probe cannot tell (no `ai` on `PATH`, a timeout),
+the command exits 2 naming the build and `ai update --force`, with nothing written.
+`-n` names the skew and updates nothing. Each ledger row carries the format it was
+written in as `"format"`.
 
 `--finish` also re-keys the Beads issues still assigned to OLD, but only when this
 host's `session-migrations.jsonl` (in the state directory) has a row naming
@@ -566,16 +634,139 @@ plan. `--finish` refuses while either session runs; `ai migrate-session OLD NEW
 --beads-only` does only this re-key, under the same ledger rule, and runs while
 NEW is live, so a migrated session already back at work need not exit for it.
 
-A `--finish` that re-keyed on that row and left nothing undone appends a row with
-`"finished": true` for the pair; the ledger is append-only, so the migration's own
-row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, and the
-remote side of `-R`) checks the ledger once the session name is resolved and,
-before the worktree or the session exists, runs the finish of each pair migrated
-to NEW with no later `finished` row: the same planner, hooks and Beads rule as
-`--finish -y`. That covers a migration made while NEW was live, which `--finish`
-itself could never complete. A finish that refuses or leaves work undone is
-reported on one line naming the pair and the `--finish -y` command to retry,
-records nothing, and the launch continues. A dry run (`-d`) finishes nothing.
+The migration's row lists the session ids of the transcripts it moved
+(`"transcripts"`), and a `--finish` on that row appends a
+`"transcripts_recorded": true` row for each transcript that no row names yet and
+that it retitles or that began (its first timestamped record) before the pair's
+first migration row, on a finished pair too. `ai c NEW` resumes a listed transcript ahead of a
+more recently active one also titled NEW, such as one a relaunch started before the
+migration finished.
+
+Every writing run, a full migration, `--finish` or `--to-name`, ends with a read-only
+re-plan of the pair: the `--finish -n` plan, read part by part. A part is done when
+it reads `done earlier`, or a skip that finds nothing to carry (`no matching
+artifact`, `informational`, `unconfigured`, `missing`, and the `direct rename` of
+the name registry); a hook is done only when its `--dry-run` prints
+`migrate-status: done`. Anything else, an unreadable store, a hook without a status
+line, or a plan that refuses, is a part left. When nothing is left and this host's
+ledger records the pair, the run appends a row with `"finished": true` and
+`"verified": true` for it. Otherwise it appends nothing, marks each part left
+`failed` in the table, warns `NOT finished` naming each one and the `--finish`
+command, and exits 1; `--to-name` then marks the name registry entry incomplete. A
+`finished` row written before this rule carries no `verified` and counts as
+unverified. The ledger is append-only, so the migration's own
+row is never rewritten. Every `ai c NEW` launch (and `ai g`/`ai p`/`ai cx`, the
+remote side of `-R`, and a detached replay of NEW's recorded recipe by
+`ai sessions relaunch`) checks the ledger once the session name is resolved and,
+before the worktree or the session exists, judges every pair migrated to NEW once.
+A pair with no later `finished` row is finished: the same planner, hooks and Beads
+rule as `--finish -y`, verified by that run's own re-plan. A pair whose
+latest row is a verified `finished` is trusted and not re-planned: that row is the
+proof of record, and `--status -a` or `--finish` re-checks it on demand. A pair
+whose `finished` row carries no `verified` is re-planned read-only. Before each pair
+the launch prints a line naming it and what it is about to do, and while the finish
+or re-plan runs it prints a line as each slow step starts and as it ends with its
+elapsed time: each hook's dry run and live run, each Beads store's read, re-key and
+publish, the scan of other repos and the verifying re-plan. `ai migrate-session`
+prints the same lines. If any pair is still partial, because its finish refused,
+raised or left a part, the launch is refused: it starts nothing, prints one line per
+pair naming the parts left and the `ai migrate-session OLD NEW --finish -r REPO`
+command, records nothing, and exits 1. `ai sessions relaunch` refuses each such
+session the same way, records the refusal as its relaunch reason, still relaunches
+the others, and exits 1. A ledger row naming NEW in a migration record format newer
+than the running `ai` reads refuses the launch with `ai update --force`.
+
+A pending pair is finished at launch even while NEW is running, as far as a running
+NEW allows: every step runs except the ones `--finish` defers for a running NEW. A pair
+whose only parts left are those deferred ones never refuses the launch. The first
+launch that defers them prints one warning naming the parts, the `ai sessions stop NEW`
+step and the `--finish` command; the ledger row that finish records makes every later
+launch print only a progress line saying they are still deferred. A launch or
+restart once NEW has stopped finishes them.
+
+A launch that will attach to NEW's tmux session while it has a live pane finishes
+each pending pair that way. A pair whose `finished` row is not verified is re-planned
+read-only, and a pair still partial with anything other than deferred parts is one
+warning naming the parts left and the `--finish` command to run once NEW exits; the
+launch then attaches. Refusing it would leave the running session unreachable until it
+is stopped. A bare or `--sandbox` launch, which replaces rather than attaches, and a
+launch of a stopped NEW are judged as above.
+
+A running NEW whose agent exits and is restarted by its own tmux supervisor never
+goes back through `ai c`, so the session wrapper finishes each pair still pending
+itself, after the old agent has exited and before the replacement starts. Only a pair
+with no later `finished` row is tried, and a restart with none costs one ledger read.
+The finish runs as `--finish -y` does, with one exception: NEW's own tmux session,
+once tmux confirms the wrapper runs inside it, does not count as live. A live agent
+named OLD or running inside OLD's slot, and any tmux session hosting OLD, still refuse
+the finish. A live agent named NEW or running inside NEW's slot, or another tmux
+session hosting NEW, makes it defer the parts that write NEW's open files and do the
+rest. A refused, failed or partial finish is one warning naming the `--finish`
+command, and the agent restarts anyway. A finish left with deferred parts only warns
+the first time, as a launch does, and prints a progress line on each later restart.
+A supervisor
+still running under OLD finishes nothing: OLD is the session being migrated away from.
+
+`-P/--allow-partial-migration` on `ai c` (and `ai g`/`ai p`/`ai cx`, forwarded to
+the remote side of `-R`) and on `ai sessions relaunch` starts the session anyway.
+It is read only from that invocation's command line, never from config, the
+environment or a boot recipe. The launch prints one warning per partial pair naming
+the parts left, which also goes into the launch log, and records nothing, so the
+next `--status` still lists the pair as partial. It does not override the
+newer-format refusal. A dry run (`-d`) finishes and re-plans nothing.
+
+`ai migrate-session -s/--status` lists, without writing anything, every pair this
+host's ledger records whose latest row is not a verified `finished`, so every
+migration recorded before the re-plan rule is listed. It re-plans each one as
+`--finish -n` would and prints one row per pair:
+
+```text
+old | new | repo | state | parts left | finish with
+myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | partial | slot lock (would do); memory file (would do) | ai migrate-session myrepo-3 myrepo-box-3 --finish -r /home/user/projects/myrepo
+```
+
+A pair reads `complete` when its re-plan finds nothing left, and `partial` with each
+part left otherwise; a pair whose repo or `.worktrees/NEW` is gone reads `partial`
+with `slot (missing: ...)`, unless the ledger records NEW's own later migration in the
+same repo to a slot that exists (followed through each later rename). Such a pair reads
+`complete`, its parts column naming the slot it moved on to and the ledger that says so;
+its OLD-keyed parts are not re-planned, since there is no NEW slot to plan them in. `-a/--all` re-plans the verified pairs too. A NAME
+(`--status NAME`, or OLD and NEW) narrows the listing to the pairs it names, matched
+as `--finish` matches one name: the pair's OLD, its NEW or NEW's first name; a NAME
+matching no pair exits 2. It runs while NEW is live, since its plan is a `--finish`
+dry run, and it writes nothing, the ledger and the hooks' state included (each hook
+gets only `--dry-run`). It exits 1 if any listed pair is partial, else 0, and 2 on a
+usage error: `-s` takes only NAME, `-a` and `-R`.
+
+`-R/--remote` runs the same `ai migrate-session --status` on the default remote
+machine (`[remote]`, or `[remote] default` among `[remote.machines]`) over the
+non-interactive ssh route `ai c -R -X` (restart) uses (`BatchMode=yes`, the remote
+login shell), and prints its rows and exit code. An unreachable host, or one whose
+`ai` exits with any other code, exits 2 saying so.
+
+`ai migrate-session --finish -a/--all` finishes every partial migration this host
+records whose sessions are stopped, so a migration recorded before a fix landed, or
+one a hook refused before the hook was fixed, needs no hand run. It re-plans every
+recorded pair the way `--status -a` does, verified or not, so a pair whose only
+`finished` row carries no `verified` is re-planned like an unfinished one. Each
+partial pair whose sessions are stopped is finished by the same writing run as
+`--finish -y` for that pair, verified-finished rule included, and then re-planned
+again for its row. A pair with a live session is skipped, and its row's state names
+the session; so is a pair that goes live between the plan and its finish. A pair it
+cannot plan (its slot gone, or a plan that raises) reads `skipped: could not plan`.
+The installed `ai` is checked once for the whole sweep. Without `-y` it prints the
+rows, each partial stopped pair reading `would finish`, and asks; `-n/--dry-run`
+prints the same rows and writes nothing. It ends with one row per pair, in the
+`--status` columns:
+
+```text
+old | new | repo | state | parts left | finish with
+myrepo-3 | myrepo-box-3 | /home/user/projects/myrepo | complete | - | -
+other-1 | other-box-1 | /home/user/projects/other | skipped: live (tmux session c-other-box-1 hosts other-box-1; ...) | slot lock (would do) | ai migrate-session other-1 other-box-1 --finish -r /home/user/projects/other
+```
+
+It exits 0 when every pair reads `complete`, 1 when any is left partial or skipped
+(or the prompt is declined), and 2 on a usage error: `-f -a` takes only `-n` and `-y`.
 
 Run with `-r <repo>` on a repo whose `.worktrees/OLD` is a migrated session's
 leftover (its branch already starts `wt/NEW/`, it has no Claude Code project
@@ -584,18 +775,20 @@ with or without `--finish`, does only the cleanup: it retires every old-name slo
 proved landed and removes every empty `OLD-agents` container, in every repo, and
 keeps and names the rest. Because it touches nothing NEW could be using, it runs
 while NEW is live in its own slot. It still refuses while a process named OLD runs
-or any process works inside that slot.
+or any process works inside that slot; its `--finish -n` plans anyway and names that
+process on a `live session:` line.
 
 Left alone deliberately: the rest of the repo-root memory directory (shared by every session
 of the repo, and keyed by neither name nor slot), the hashed `session-heartbeats/` and
 `session-leases/` entries (recreated by the next launch), and conversation text
 that mentions the old path.
 
-Refused before anything is written, `-n` included: a slot that is not a
+Refused before anything is written, `-n` included (a `--finish -n` excepted, as above): a slot that is not a
 registered worktree (use `adopt-session`), an existing `.worktrees/NEW` or
 project directory for it, a running Claude Code process named OLD/NEW or working
-inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent:
-exit the session and end the tmux session first). A destination file that exists
+inside the slot, and a tmux session `c-OLD` (its wrapper would restart the agent).
+Both refusals name `ai sessions stop OLD`, which stops the session for good: a plain
+`/exit` inside a managed session is a restart. A destination file that exists
 is reported and skipped, never overwritten.
 
 A `.venv` inside the worktree moves with it, and its console scripts, `pyvenv.cfg`,
@@ -705,7 +898,8 @@ Scripts that previously treated a named migration's exit 0 as success must now
 handle exit 1 when a hook fails: the naming row remains incomplete until the
 original command succeeds. Scripts that distinguished refusals by exit 1 must
 accept exit 2. `--finish` remains available, and launches still finish pending
-ledger pairs. No migration automatically publishes changed issue stores.
+ledger pairs, refusing to start while one stays partial. No migration automatically
+publishes changed issue stores.
 
 A hook's time-sensitive checks can expire between planning and execution. The
 agent-mail snapshot warning explicitly names this limitation. See the

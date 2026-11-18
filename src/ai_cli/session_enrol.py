@@ -12,7 +12,7 @@ import click
 import portalocker
 import psutil
 
-from . import config, output
+from . import config, output, session_reconcile
 from . import session_registry as registry
 from . import session_run_state as state
 from .output import Untagged
@@ -148,6 +148,8 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
         raise ValueError("session name check failed: expected a c-, g-, p- or cx- session name")
     engine = name.split("-", 1)[0]
 
+    if not dry_run:
+        session_reconcile.reconcile(names={name})
     snapshot = registry.load_registry()
     matches = [r for r in snapshot["sessions"] if r.get("name") == name]
     if len(matches) > 1 or (matches and matches[0].get("kind") != "local"):
@@ -195,7 +197,8 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
         current_record = current_matches[0] if current_matches else prepared_record
         if not current_matches:
             doc["sessions"].append(current_record)
-        current_record.update(boot_recipe=recipe, owning_host=recipe["owning_host"], relaunch="never")
+        current_record.update(boot_recipe=recipe, owning_host=recipe["owning_host"])
+        state.default_relaunch(current_record)
         return True
 
     registry._mutate(change, timeout=2)
@@ -354,7 +357,7 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
         if not current:
             doc["sessions"].append(record)
         record.update(boot_recipe=recipe, owning_host=host)
-        record.setdefault("relaunch", "never")
+        state.default_relaunch(record)
         return True
 
     registry._mutate(change, timeout=2)

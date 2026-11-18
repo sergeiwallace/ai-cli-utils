@@ -86,7 +86,7 @@ Also update `~/projects/CLAUDE.md`: remove the `/propagate is deprecated` note a
 
 ```bash
 ai copier-update [--dry-run] [--project PROJECT]
-```text
+```
 
 **Discovery:** scan `Path("~/projects").expanduser().glob("*/.copier-answers.yml")`, parse YAML, filter where `_src_path` contains `project-template`. No hardcoded list — new projects are picked up automatically.
 
@@ -141,13 +141,13 @@ if [[ -f "$config_changed_file" ]]; then
         fi
     fi
 fi
-```text
+```
 
 `IDLE_THRESHOLD` defaults to 90 seconds, configurable via `config.toml`:
 ```toml
 [session]
 config_reload_idle_secs = 90   # seconds to wait before auto-restarting idle session
-```text
+```
 
 #### B. `config-reload-check.sh` (no change needed)
 

@@ -392,3 +392,38 @@ def test_given_a_registered_session_worktree_when_created_again_then_it_is_retur
 
     assert again == first
     assert sentinel.read_text() == "uncommitted\n"
+
+
+def test_given_a_session_slot_whose_git_registration_is_gone_when_created_then_it_is_moved_aside_and_relaunched(
+    repo, monkeypatch
+):
+    """A slot whose ``.git`` file names a deleted admin directory must not stop the launch.
+
+    Windows reaches this state: when a slot's two linkage records spell its path
+    differently, ``git worktree list`` reports it prunable and a prune removes its
+    ``.git/worktrees/<slot>`` directory. ``git worktree repair`` then answers
+    "unable to locate repository", so nothing can relink it. Nothing in git refers
+    to the slot any more, so moving it aside loses nothing: its commits are on its
+    branch in the repository, and its uncommitted files move with it.
+    """
+    monkeypatch.chdir(repo)
+    slot = create_worktree("session-dead")
+    assert slot is not None
+    (slot / "draft.md").write_text("uncommitted work\n")
+    admin = (
+        Path(_git("rev-parse", "--git-common-dir", cwd=repo).stdout.strip()).resolve() / "worktrees" / "session-dead"
+    )
+    assert admin.is_dir()
+    for entry in sorted(admin.rglob("*"), reverse=True):
+        entry.unlink() if entry.is_file() else entry.rmdir()
+    admin.rmdir()
+    assert _git("worktree", "repair", str(slot), cwd=repo, check=False).returncode != 0
+
+    created = create_worktree("session-dead")
+
+    recovered = next(slot.parent.glob("session-dead-orphaned-*"))
+    assert created == slot
+    assert slot in registered_worktrees(repo), "the slot must end up a real registered worktree"
+    assert (slot / "README.md").read_text() == "base\n"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-dead"
+    assert (recovered / "draft.md").read_text() == "uncommitted work\n", "uncommitted files move, never vanish"

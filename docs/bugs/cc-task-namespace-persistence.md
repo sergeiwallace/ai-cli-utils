@@ -147,13 +147,13 @@ which is exactly why it was exposed.
 
 Recommendations, in priority order at the time of diagnosis:
 
-1. **Correct the external skill's documented premise — completed (AIH-676).**
+1. **Correct the external skill's documented premise — completed (historical-task).**
    At the time of this investigation it was named `/task-panel`; its current
    name is `/load-task-panel`, at `~/.claude/skills/load-task-panel/SKILL.md`.
    The premise that the key is "the first 8 hex chars of the transcript UUID
    (older CC) or the full UUID" was corrected: with agent-teams on, it is the
    team name, built from a per-process id that changes on every restart.
-2. **Rewrite that skill's recovery steps 3a–3f — completed (AIH-676).** The
+2. **Rewrite that skill's recovery steps 3a–3f — completed (historical-task).** The
    current `/load-task-panel` procedure derives live namespaces from
    `leadSessionId`/`name` in `~/.claude/teams/*/config.json`, not `sessionId`
    from `~/.claude/sessions/*.json`.

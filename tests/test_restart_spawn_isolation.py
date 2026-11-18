@@ -6,8 +6,15 @@ import sys
 from pathlib import Path
 
 import pytest
+from process_wait import scaled
+
+# The child pytest run's budget. The test itself is bounded a minute past it, so the
+# child's own timeout reports first instead of the suite-wide 300 s bound ending this
+# worker: the pinned-conversation target has taken 526 s on a macOS runner.
+_CHILD_BUDGET_S = scaled(300)
 
 
+@pytest.mark.timeout(_CHILD_BUDGET_S + 60)
 @pytest.mark.parametrize(
     "target",
     [
@@ -55,7 +62,7 @@ def test_given_restart_mocks_when_tests_finish_then_spawn_functions_are_restored
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=300,
+        timeout=_CHILD_BUDGET_S,
         check=False,
     )
     assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-2000:]

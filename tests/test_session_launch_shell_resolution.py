@@ -36,6 +36,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
+from legacy_run_state import legacy_run_state_helpers  # noqa: F401  (autouse fixture)
 from process_ownership import watch_tmux_directory
 from process_wait import process_wait_seconds
 
@@ -525,7 +526,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     """An agent exit after the fast-crash window must still be bounded.
 
     This runs the generated Pi session script in a real tmux pane. The stand-in
-    takes four seconds before each successful exit, so the existing ``elapsed < 3``
+    takes four seconds before each failure, so the existing ``elapsed < 3``
     circuit breaker cannot stop it. The session must instead stop after a bounded
     sequence of unsuccessful starts and preserve a diagnostic in the pane.
     """
@@ -543,7 +544,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
         "count=$((count + 1))\n"
         f'printf "%s\\n" "$count" > "{launches}"\n'
         "sleep 4\n"
-        "exit 0\n"
+        "exit 1\n"
     )
     fake_pi.chmod(0o755)
     fake_ai = fake_bin / "ai"
@@ -643,7 +644,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
     assert launches.read_text().strip() == "3", "the breaker must stop the third consecutive failure"
 
 
-def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_session_keeps_restarting(
+def test_given_agents_that_each_ran_healthily_when_they_fail_three_times_then_session_keeps_restarting(
     real_tmux_socket, tmp_path
 ):
     """The consecutive-exit breaker must count only consecutive SHORT runs.
@@ -671,7 +672,7 @@ def test_given_agents_that_each_ran_healthily_when_they_exit_three_times_then_se
         f'printf "%s\\n" "$count" > "{launches}"\n'
         f'if [ "$count" -ge 4 ]; then touch "{fourth}"; sleep 60; fi\n'
         "sleep 6\n"
-        "exit 0\n"
+        "exit 1\n"
     )
     fake_pi.chmod(0o755)
     fake_ai = fake_bin / "ai"

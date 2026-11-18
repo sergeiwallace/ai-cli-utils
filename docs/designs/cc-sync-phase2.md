@@ -6,8 +6,8 @@ status: approved
 source: myproject
 ---
 
-> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> **Migrated from `myproject` (historical-task, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the historical-task repo-ownership
 > migration. `myproject/docs/designs/cc-sync-phase2.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
@@ -18,7 +18,7 @@ source: myproject
 
 **Created:** 2026-03-23
 
-**Task:** SW-642 (Phase 2)
+**Task:** historical-task (Phase 2)
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -127,7 +127,7 @@ Two subcommands under `ai sync`:
 ```bash
 ai sync push [--memories-only] [--dry-run] [--verbose]
 ai sync pull [--memories-only] [--dry-run] [--verbose]
-```text
+```
 
 **`ai sync push`** — Stages local CC data into the staging repo, commits, pushes to the remote bare repo, and applies changes on the remote machine.
 
@@ -161,7 +161,7 @@ git init --bare ~/.claude-sync-staging.git
 git init ~/.claude-sync-staging
 cd ~/.claude-sync-staging
 git remote add origin ssh://root@192.0.2.1/root/.claude-sync-staging.git
-```text
+```
 
 The `ai sync` command checks for the staging repo on first run and initializes it if absent, so the user never needs to run the setup manually.
 
@@ -238,7 +238,7 @@ JSONL conversation files (`*.jsonl`) are append-only structured logs. Each line 
 {"type":"human","text":"Fix the bug in config.py"}
 {"type":"assistant","text":"I'll look at config.py...","tool_use":[{"id":"tu_1",...}]}
 {"type":"tool_result","tool_use_id":"tu_1","content":"..."}
-```text
+```
 
 Interleaving two conversations by timestamp would produce a file where tool results reference tool uses from a different conversation. CC would fail to load this.
 
@@ -253,19 +253,16 @@ Before applying synced files to `~/.claude/projects/`, the sync command checks w
 ```python
 def is_cc_active_on_server(server_host: str) -> bool:
     """Check if any Claude Code process is running on the server."""
-    result = subprocess.run(
-        ["ssh", server_host, "pgrep", "-f", "claude"],
-        capture_output=True, timeout=10
-    )
+    result = subprocess.run(["ssh", server_host, "pgrep", "-f", "claude"], capture_output=True, timeout=10)
     return result.returncode == 0
-```text
+```
 
 If CC is active on the server, `ai sync push` prints a warning and aborts:
 
 ```yaml
 WARNING: Claude Code is active on server. Sync aborted.
 Exit the server CC session first, or use --force to sync anyway.
-```text
+```
 
 The `--force` flag overrides the safety check. This is acceptable because the memory files are small and CC re-reads them on access — the risk is a brief inconsistency, not corruption.
 
@@ -280,7 +277,7 @@ The check is only needed for a hypothetical future scenario where the server pus
 ```yaml
 WARNING: Claude Code is active locally. Sync will modify files CC may have loaded.
 Proceeding anyway — run `ai sync pull` after your session to be safe, or use --force.
-```text
+```
 
 ### Conflict Notification
 
@@ -294,11 +291,15 @@ def notify_conflicts(conflicts: list[str]) -> None:
     summary = ", ".join(conflicts[:3])
     if len(conflicts) > 3:
         summary += f" (+{len(conflicts) - 3} more)"
-    subprocess.run([
-        "osascript", "-e",
-        f'display notification "{summary}" with title "ai sync: conflict detected" subtitle "Review .conflict files or check ~/.claude-sync-conflicts.log"'
-    ], capture_output=True)
-```text
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            f'display notification "{summary}" with title "ai sync: conflict detected" subtitle "Review .conflict files or check ~/.claude-sync-conflicts.log"',
+        ],
+        capture_output=True,
+    )
+```
 
 The notification is visible immediately as a banner, even if the sync ran silently via a start/stop hook.
 
@@ -309,7 +310,7 @@ Each conflict appends a structured entry:
 ```text
 2026-03-23T14:30:00 CONFLICT memory myproject/memory/project_current_work.md — .conflict file written
 2026-03-23T14:30:00 CONFLICT jsonl  myproject/conversations.jsonl — remote saved as conflict-2026-03-23T14-30-00.jsonl
-```text
+```
 
 Format: `<ISO-timestamp> CONFLICT <type> <bare-path> — <action taken>`
 
@@ -352,7 +353,7 @@ Phase 2 hooks replace Phase 1's `sync-cc-to-server.sh` call with `ai sync` comma
     ]
   }
 }
-```text
+```
 
 On every CC session exit, `ai sync push` stages all local CC data, commits to the staging repo, and pushes to the server. The `|| true` ensures the hook exits 0 even if the server is unreachable (non-blocking — sync failure should not break the CC exit flow).
 
@@ -369,7 +370,7 @@ On every CC session exit, `ai sync push` stages all local CC data, commits to th
     ]
   }
 }
-```text
+```
 
 On every CC session start, `ai sync pull --memories-only` fetches the latest memories from the server. The `timeout 5` wrapper hard-caps the hook at 5 seconds — if the server is slow or unreachable, CC starts normally after a 5-second delay at most. The `|| true` ensures the hook always exits 0.
 
@@ -414,7 +415,7 @@ The staging repo mirrors the `~/.claude/projects/` structure but with normalized
 ├── companion/
 │   └── ...
 └── ...
-```text
+```
 
 **Key properties:**
 - Each top-level directory is a bare project name (or project + worktree suffix)
@@ -433,7 +434,7 @@ projects: myproject, aurion
 files: 12 changed
 memories: 8 files
 jsonl: 4 files
-```text
+```
 
 Format specification:
 - **Line 1:** `sync {push|pull} from {mac|server} <ISO-8601-timestamp>`
@@ -445,7 +446,7 @@ This format enables `git log --oneline` to show a clear sync history:
 a1b2c3d sync push from mac 2026-03-23T14:30:00
 e4f5g6h sync push from mac 2026-03-23T10:15:00
 i7j8k9l sync push from server 2026-03-22T22:00:00
-```text
+```
 
 ### Conflict File Naming
 
@@ -454,14 +455,14 @@ i7j8k9l sync push from server 2026-03-22T22:00:00
 ```text
 ~/.claude/projects/-Users-user-projects-myproject/memory/project_current_work.md           # original, untouched
 ~/.claude/projects/-Users-user-projects-myproject/memory/project_current_work.md.conflict  # conflicted version with markers
-```text
+```
 
 **JSONL files:** Conflicts are written with a `conflict-<timestamp>` prefix:
 
 ```text
 ~/.claude/projects/-Users-user-projects-myproject/conversations.jsonl                      # local version, untouched
 ~/.claude/projects/-Users-user-projects-myproject/conflict-2026-03-23T14-30-00.jsonl       # remote version
-```text
+```
 
 The timestamp uses a filesystem-safe ISO format (hyphens instead of colons). This ensures conflict files sort chronologically and are visually identifiable.
 
@@ -490,7 +491,8 @@ The `ai sync` subcommand follows the existing pattern in `ai-cli/src/ai_cli/main
 # In cli() function, before main argparse:
 if len(sys.argv) > 1 and sys.argv[1] == "sync":
     if len(sys.argv) == 2:
-        print("Usage: ai sync [push|pull]"); sys.exit(1)
+        print("Usage: ai sync [push|pull]")
+        sys.exit(1)
     action = sys.argv[2]
     flags = sys.argv[3:]  # --memories-only, --dry-run, --verbose, --force
     if action == "push":
@@ -498,9 +500,10 @@ if len(sys.argv) > 1 and sys.argv[1] == "sync":
     elif action == "pull":
         sync_pull(flags)
     else:
-        print(f"Unknown sync action: {action}"); sys.exit(1)
+        print(f"Unknown sync action: {action}")
+        sys.exit(1)
     sys.exit(0)
-```text
+```
 
 The sync logic itself lives in a new module: `ai_cli/sync.py`. This keeps the main entry point clean and allows the sync module to be tested independently.
 
@@ -513,7 +516,7 @@ ai-cli: src/ai_cli/
 ├── sync.py          # NEW: ai sync push/pull implementation
 ├── messaging.py     # NATS messaging
 └── notifications.py # System notifications
-```text
+```
 
 ### Hook Config Updates
 
@@ -538,7 +541,7 @@ Phase 2 modifies `~/.claude/settings.json` on both machines.
     ]
   }
 }
-```text
+```
 
 **Server (after Phase 2b):**
 
@@ -559,7 +562,7 @@ Phase 2 modifies `~/.claude/settings.json` on both machines.
     ]
   }
 }
-```text
+```
 
 Both machines get identical hook configs. The `ai sync` command determines the correct path prefix and remote target based on which machine it is running on.
 
@@ -654,7 +657,7 @@ Phase 2 is split into two sub-phases to allow testing the core sync logic before
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|------------|------------|
 | **Staging repo corruption** (bad merge, interrupted push) | Sync breaks until repo is repaired. No CC data loss — staging repo is a copy, not the source of truth. | Low | `ai sync` validates repo health before each operation. If corrupt, prints repair instructions (`git reset --hard origin/main`) or re-initializes from scratch. The staging repo is disposable — nuking and re-creating it loses only sync history, not CC data. |
-| **Auto-dream race condition** (SW-644) | Anthropic's auto-dream rewrites `MEMORY.md` asynchronously. A sync push/pull mid-dream could stage a partially-written file. | Low (auto-dream not yet on our account) | Deferred to SW-644. Current mitigation: sync is discrete and transactional (commit-then-apply, not continuous). When auto-dream ships, review whether a lock/signal is needed. |
+| **Auto-dream race condition** (historical-task) | Anthropic's auto-dream rewrites `MEMORY.md` asynchronously. A sync push/pull mid-dream could stage a partially-written file. | Low (auto-dream not yet on our account) | Deferred to historical-task. Current mitigation: sync is discrete and transactional (commit-then-apply, not continuous). When auto-dream ships, review whether a lock/signal is needed. |
 | **Concurrent writes on both machines** | Both machines edit the same memory file between syncs. Git merge produces conflict markers instead of clean file. | Low (sequential usage is the norm) | Three-way merge handles non-overlapping edits. Overlapping edits produce `.conflict` files with clear resolution path. Worst case: user spends 30 seconds resolving a conflict. |
 | **Server-to-Mac NAT detection gap** | Cannot detect if Mac CC is active when pushing from server. Risk of writing to files CC has open on Mac. | Medium | Deferred — see Open Questions. Current mitigation: server `ai sync push` only writes to the staging bare repo, not to Mac's `~/.claude/projects/`. The Mac pulls at its own initiative (start hook). This eliminates the push-to-active-CC risk entirely for server-to-Mac direction. |
 | **Stale lock file (CC crash)** | If CC crashes without firing the stop hook, `~/.claude/.sync-lock` persists. Server would refuse to sync thinking CC is active. | Medium | Write PID into the lock file. Before honoring the lock, check if the PID is still running. If not, delete the stale lock and proceed. Also apply a mtime-based timeout (e.g., lock older than 2 hours is considered stale). |

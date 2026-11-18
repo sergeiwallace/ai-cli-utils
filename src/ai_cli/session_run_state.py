@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import portalocker
@@ -15,9 +16,10 @@ from . import config
 from . import session_registry as registry
 
 LOGGER = logging.getLogger(__name__)
+WIND_DOWN_CAUSE = "maintenance_wind_down"
 DEFAULTS = {
     "on_boot": False,
-    "causes": ["host_reboot", "terminal_quit_or_crash"],
+    "causes": ["host_reboot", "terminal_quit_or_crash", "maintenance_wind_down"],
     "network_wait_seconds": 120,
     "network_probe": "api.anthropic.com:443",
 }
@@ -35,14 +37,14 @@ def settings() -> dict:
     cfg = config.load_config()
     result = DEFAULTS | cfg.get("session_relaunch", {})
     if not isinstance(result["causes"], list) or any(c not in DEFAULTS["causes"] for c in result["causes"]):
-        raise ValueError("session_relaunch.causes permits only host_reboot and terminal_quit_or_crash")
+        raise ValueError(f"session_relaunch.causes permits only {', '.join(DEFAULTS['causes'])}")
     result["publish"] = PUBLISH_DEFAULTS | result.get("publish", {})
     result["publish"]["host"] = result["publish"]["host"] or cfg.get("machine", {}).get("host_id", "")
     return result
 
 
 def run_state(record: dict) -> str:
-    return record.get("run_state") or ("exited" if record.get("ended_at") else "running")
+    return record.get("run_state") or ("exited" if record.get("ended_at") else "unknown")
 
 
 def cause(record: dict, boot_id: str | None = None) -> str:
@@ -55,48 +57,117 @@ def cause(record: dict, boot_id: str | None = None) -> str:
     return "host_reboot" if stored != boot_id else "terminal_quit_or_crash"
 
 
-def valid_boot_recipe(record: dict) -> bool:
-    """Accept structured owning-host recipes, never terminal history or shell text."""
+BOOT_RECIPE_REFUSAL = "unsupported or incomplete boot recipe"
+_ENGINES = ("c", "g", "p", "cx")
+
+
+def _string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(arg, str) and "\0" not in arg for arg in value)
+
+
+def boot_recipe_problem(record: dict) -> str | None:
+    """The first field that keeps a record's boot recipe from replaying, None when it replays.
+
+    Only structured owning-host recipes are accepted, never terminal history or shell text.
+    """
     recipe = record.get("boot_recipe")
     if not isinstance(recipe, dict):
-        return False
+        return "the record has no boot_recipe"
     engine = recipe.get("engine")
     name = recipe.get("session_name")
     options = recipe.get("options")
-    if (
-        engine not in ("c", "g", "p", "cx")
-        or not isinstance(name, str)
-        or not re.fullmatch(r"[A-Za-z0-9_-]+", name)
-        or name != record.get("name")
-        or not name.startswith(f"{engine}-")
-        or recipe.get("owning_host") != record.get("owning_host")
-        or not recipe.get("owning_host")
-        or not isinstance(recipe.get("cwd"), str)
-        or not Path(recipe["cwd"]).is_absolute()
-        or not isinstance(recipe.get("project"), str)
-        or not isinstance(options, dict)
-        or options.get("remote")
-    ):
-        return False
+    host = recipe.get("owning_host")
+    cwd = recipe.get("cwd")
+    if engine not in _ENGINES:
+        return f"engine {engine!r} is not one of {', '.join(_ENGINES)}"
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        return f"session_name {name!r} is not a valid session name"
+    if name != record.get("name"):
+        return f"session_name {name!r} differs from the record name {record.get('name')!r}"
+    if not name.startswith(f"{engine}-"):
+        return f"session_name {name!r} does not start with the engine prefix {engine + '-'!r}"
+    if not host:
+        return "owning_host is missing"
+    if host != record.get("owning_host"):
+        return f"owning_host {host!r} differs from the record's owning_host {record.get('owning_host')!r}"
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        return f"cwd {cwd!r} is not an absolute path"
+    if not isinstance(recipe.get("project"), str):
+        return "project is not a string"
+    if not isinstance(options, dict):
+        return "options is not a mapping"
+    if options.get("remote"):
+        return "options.remote is set"
     for key in ("argv", "extra_args"):
-        value = recipe.get(key)
-        if not isinstance(value, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in value):
-            return False
+        if not _string_list(recipe.get(key)):
+            return f"{key} is not a list of strings"
     if recipe["argv"][:2] != ["ai", engine]:
-        return False
+        return f"argv does not start with 'ai {engine}'"
     if options.get("bare"):
-        command = recipe.get("command")
-        return (
-            isinstance(recipe.get("shell"), str)
-            and bool(recipe["shell"])
-            and isinstance(command, list)
-            and bool(command)
-            and all(isinstance(arg, str) and "\0" not in arg for arg in command)
-        )
-    return True
+        shell, command = recipe.get("shell"), recipe.get("command")
+        if not (isinstance(shell, str) and shell and _string_list(command) and command):
+            return "a bare recipe needs a non-empty shell and command list"
+    return None
 
 
-def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive: bool | None) -> str | None:
+def valid_boot_recipe(record: dict) -> bool:
+    return boot_recipe_problem(record) is None
+
+
+def boot_recipe_refusal(record: dict) -> str | None:
+    """``unsupported or incomplete boot recipe: <field reason>``, None when the recipe replays."""
+    problem = boot_recipe_problem(record)
+    return None if problem is None else f"{BOOT_RECIPE_REFUSAL}: {problem}"
+
+
+NOT_RUNNING_AT_REBOOT = "so it was not running when the host went down"
+
+
+def _epoch(stamp: object) -> float | None:
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def not_running_at_reboot(record: dict, *, boot_id: str | None, booted: float | None) -> str | None:
+    """Why a record this boot would replay was not running when the host went down, else None.
+
+    Replay brings back what the reboot stopped. A reservation an earlier boot made that
+    never started, an exit recorded before this boot began (except a maintenance wind-down,
+    which stops a session for the reboot), and a run an earlier boot's relaunch already
+    judged and nothing started since were all down before the reboot. ``booted`` is this
+    boot's start in epoch seconds; an exit that cannot be placed against it is refused.
+    """
+    current = run_state(record)
+    if current == "relaunched":
+        return f"reserved by an earlier boot's relaunch but never started, {NOT_RUNNING_AT_REBOOT}"
+    decided = (record.get("boot_decision") or {}).get("boot_id")
+    if boot_id and record.get("boot_id") != boot_id and decided and decided not in (boot_id, record.get("boot_id")):
+        return f"kept down by an earlier boot's relaunch and not started since, {NOT_RUNNING_AT_REBOOT}"
+    settled = cause(record, boot_id)
+    if current != "exited" or settled == WIND_DOWN_CAUSE:
+        return None
+    exited = record.get("supervisor_exit") or record.get("exit") or {}
+    ended = _epoch(record.get("ended_at")) or _epoch(exited.get("at"))
+    if booted is None or ended is None:
+        return "the exit cannot be placed before or after this boot's start"
+    if ended < booted:
+        return f"exited ({settled}) before this boot, {NOT_RUNNING_AT_REBOOT}"
+    return None
+
+
+def boot_veto(
+    record: dict,
+    *,
+    cfg: dict,
+    host: str,
+    boot_id: str | None,
+    alive: bool | None,
+    booted: float | None = None,
+) -> str | None:
     """Return the first winning boot veto; every policy obeys the same safety order."""
     if not cfg["on_boot"]:
         return "session_relaunch.on_boot is off"
@@ -118,9 +189,22 @@ def boot_veto(record: dict, *, cfg: dict, host: str, boot_id: str | None, alive:
         return f"policy {policy} forbids boot relaunch"
     if settled not in cfg["causes"]:
         return f"cause {settled} is disabled by profile"
-    if not valid_boot_recipe(record):
-        return "unsupported or incomplete boot recipe"
-    return None
+    return not_running_at_reboot(record, boot_id=boot_id, booted=booted) or boot_recipe_refusal(record)
+
+
+def default_relaunch(record: dict) -> None:
+    """Give ``record`` the automatic boot policy unless one was chosen for it.
+
+    ``relaunch_set_by`` records who wrote ``relaunch``: ``owner`` for ``ai sessions policy``,
+    ``default`` for an automatic writer (launch, enrolment, recovery, repair).
+    The automatic policy is ``never`` for a probe and ``auto`` for every other session. It
+    replaces only a missing policy or one an automatic writer set. An owner's value, and an
+    unattributed value written before ``relaunch_set_by`` existed, are left as they are;
+    ``ai sessions repair-policy`` is the one place that judges an unattributed ``never``.
+    """
+    if "relaunch" in record and record.get("relaunch_set_by") != "default":
+        return
+    record.update(relaunch="never" if record.get("probe") else "auto", relaunch_set_by="default")
 
 
 def tombstone_path(name: str, host: str) -> Path:
@@ -135,8 +219,15 @@ def _find(doc: dict, name: str) -> dict:
     raise ValueError(f"session {name!r} is not registered; refusing an untracked transition")
 
 
-def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> dict:
-    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach."""
+def register(name: str, *, recipe: dict, host: str, new_start: bool = False, probe: bool = False) -> dict:
+    """Upsert the owning-host recipe, preserving lifecycle and policy on reattach.
+
+    A ``probe`` session is marked as one and its default relaunch policy is ``never``, so
+    boot replay vetoes it and a prune drops its row once its session is gone. An ordinary
+    new start of a probe's record clears the mark and gives it the default ``auto``; the
+    launch refuses a probe whose title a canonical record already holds, so a probe never
+    reaches one here. A policy its owner set survives both.
+    """
     result = {}
 
     def upsert(doc):
@@ -152,14 +243,20 @@ def register(name: str, *, recipe: dict, host: str, new_start: bool = False) -> 
                 launcher_pid=os.getpid(),
             )
             doc["sessions"].append(existing)
+        if new_start and not probe and existing.pop("probe", None) and existing.get("relaunch_set_by") != "owner":
+            # An ordinary launch that takes a probe's title makes the record canonical again.
+            existing.update(relaunch="auto", relaunch_set_by="default")
         if new_start:
             existing["boot_recipe"] = recipe
             existing["cwd"] = recipe["cwd"]
             existing["relaunch_argv"] = recipe["argv"]
+            existing.update(launcher_pid=os.getpid(), launched_at=registry._now())
         else:
             existing.setdefault("boot_recipe", recipe)
         existing.setdefault("owning_host", host)
-        existing.setdefault("relaunch", "auto")
+        if probe:
+            existing["probe"] = True
+        default_relaunch(existing)
         result.update(existing)
         return True
 
@@ -195,7 +292,13 @@ def can_begin(name: str) -> None:
             raise ValueError("session has an invalid boot recipe; refusing an untracked start")
 
 
-def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict | None = None) -> str:
+def begin(
+    name: str,
+    *,
+    command: list[str] | None = None,
+    recovery_recipe: dict | None = None,
+    supervisor: dict | None = None,
+) -> str:
     """Acquire a fresh supervisor generation before starting any agent."""
     generation = str(uuid.uuid4())
 
@@ -226,14 +329,16 @@ def begin(name: str, *, command: list[str] | None = None, recovery_recipe: dict 
                 record = matches[0]
             if not record.get("boot_recipe"):
                 record.update(boot_recipe=recovery_recipe, owning_host=host)
-                # Recover tracking without opting a pre-feature session into boot replay.
-                record.setdefault("relaunch", "never")
+                default_relaunch(record)
         record = _find(doc, name)
         if not record.get("boot_recipe"):
             raise ValueError("session has no boot recipe; refusing an untracked start")
         if command is not None:
             record["boot_recipe"]["command"] = command
         record.update(generation=generation, transition_seq=0)
+        record.pop("supervisor_identity", None)
+        if supervisor is not None:
+            record["supervisor_identity"] = dict(supervisor, generation=generation)
         return True
 
     registry._mutate(change, timeout=2)
@@ -259,8 +364,15 @@ def mark(
         record = _find(doc, name)
         if generation is not None and generation != record.get("generation"):
             raise ValueError("stale supervisor generation")
-        seq = sequence if sequence is not None else time.monotonic_ns()
-        if seq <= record.get("transition_seq", 0):
+        teardown = exit_teardown(record)
+        if teardown and teardown.get("generation") == record.get("generation"):
+            raise ValueError("manual exit fenced this supervisor generation")
+        # The monotonic clock restarts at boot, so an unsequenced (manual) transition is
+        # ordered after the stored one: a supervisor that died with the host left a
+        # sequence no reading in this boot can exceed.
+        stored = record.get("transition_seq", 0)
+        seq = sequence if sequence is not None else max(time.monotonic_ns(), stored + 1)
+        if seq <= stored:
             raise ValueError("stale supervisor transition sequence")
         safety = tombstone_path(name, record.get("owning_host", ""))
         if (
@@ -274,7 +386,13 @@ def mark(
         if state == "running":
             record.update(exit=None, ended_at=None, supervisor_exit=None, boot_id=registry.current_boot_id())
         else:
-            registry.record_exit(record["id"], cause=cause, evidence=evidence or {}, at=now, _document=doc)
+            settled, details = cause, dict(evidence or {})
+            # The wrapper's clean exit says manual_exit; a wind-down of this run asked for it first.
+            request = record.pop("wind_down", None) or {}
+            if cause == "manual_exit" and request.get("generation") == record.get("generation"):
+                settled = WIND_DOWN_CAUSE
+                details["wind_down_requested_at"] = request.get("at")
+            registry.record_exit(record["id"], cause=settled, evidence=details, at=now, _document=doc)
             record["supervisor_exit"] = dict(record["exit"])
             record["ended_at"] = now
         accepted.update(record)
@@ -312,6 +430,14 @@ def mark(
         return False
 
 
+def request_wind_down(record: dict) -> None:
+    """Mark this run so its next clean exit is recorded as a maintenance wind-down."""
+    now = registry._now()
+    record.update(
+        wind_down={"cause": WIND_DOWN_CAUSE, "generation": record.get("generation"), "at": now}, changed_at=now
+    )
+
+
 def mark_running(name: str, **kwargs) -> bool:
     return mark(name, "running", **kwargs)
 
@@ -340,3 +466,55 @@ def reconcile_safety() -> None:
         return changed
 
     registry._mutate(recover, timeout=2)
+
+
+def exit_teardown(record: dict) -> dict:
+    """Read cleanup evidence from lifecycle fields preserved across reattachment."""
+    return ((record.get("supervisor_exit") or {}).get("evidence") or {}).get("teardown") or {}
+
+
+def request_manual_exit(name: str, *, host: str, generation: str, targets: dict) -> dict:
+    """Commit a manual exit and its cleanup identities, or raise without authorizing signals.
+
+    Unlike ``mark_exited``, a safety-only fallback is a failure for this operation.
+    Repeating the request retains the original transition and resumes its cleanup.
+    """
+    accepted = {}
+
+    def change(doc):
+        record = _find(doc, name)
+        if not generation or record.get("generation") != generation or record.get("owning_host") != host:
+            raise ValueError("session host or generation mismatch")
+        previous = exit_teardown(record)
+        if previous.get("generation") == generation:
+            if any(targets.values()) and previous["targets"] != targets:
+                raise ValueError("cleanup identities differ from the committed exit")
+            accepted.update(record)
+            return False
+        now = registry._now()
+        record.update(
+            run_state="exited",
+            changed_at=now,
+            ended_at=now,
+            transition_seq=record.get("transition_seq", 0) + 1,
+        )
+        record.pop("wind_down", None)
+        registry.record_exit(
+            record["id"],
+            cause="manual_exit",
+            evidence={"teardown": {"generation": generation, "targets": targets, "errors": []}},
+            at=now,
+            _document=doc,
+        )
+        record["supervisor_exit"] = dict(record["exit"])
+        accepted.update(record)
+        return True
+
+    def fallback(_doc):
+        path = tombstone_path(name, host)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        registry._write(path, {"name": name, "generation": generation, "deny_boot": True, "record": accepted})
+        raise OSError("registry exit commit failed; recovery evidence retained")
+
+    registry._mutate(change, write_failure=fallback, timeout=2)
+    return accepted

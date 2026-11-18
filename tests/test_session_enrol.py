@@ -84,7 +84,9 @@ def add_record(world, **changes):
 
 
 @pytest.mark.parametrize("engine", ["c", "g", "p", "cx"])
-def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_and_policy_change(enrolled_world, engine):
+def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_changes_and_policy_survives(
+    enrolled_world, engine
+):
     w = enrolled_world
     w.name = f"{engine}-myproject-1"
     before = add_record(w, relaunch_argv=["ai", engine, "1", "-p", "myproject", "--once"])
@@ -97,7 +99,7 @@ def test_given_registry_record_when_enrolled_then_ac_e_1_only_recipe_and_policy_
     assert recipe["engine"] == engine and recipe["project"] == "myproject"
     assert recipe["options"]["once"]
     after = registry.load_registry()["sessions"][0]
-    assert after == before | {"boot_recipe": recipe, "relaunch": "never"}
+    assert after == before | {"boot_recipe": recipe}
     assert state.valid_boot_recipe(after)
     w.signal.assert_not_called()
     w.command.assert_not_called()
@@ -110,7 +112,8 @@ def test_given_generated_script_when_enrolled_then_ac_e_2_record_and_recipe_pres
     recipe = json.loads(result.output)
     record = registry.load_registry()["sessions"][0]
     assert record["name"] == w.name and record["kind"] == "local"
-    assert record["relaunch"] == "never" and record["boot_recipe"] == recipe
+    assert (record["relaunch"], record["relaunch_set_by"]) == ("auto", "default")
+    assert record["boot_recipe"] == recipe
     assert recipe["owning_host"] == "host-a" and recipe["cwd"] == str(w.cwd)
     assert recipe["project"] == "myproject"
     assert recipe["options"]["is_remote"] and recipe["options"]["sandbox"]
@@ -332,11 +335,12 @@ def test_given_enrolled_remote_session_when_restarted_then_ac_e_7_activation_gat
     session = old_session.replace("c-", "c-r-", 1)
     script = w.script.with_name(f"{session}.sh")
     meta = w.meta | {"session": session, "is_remote": True}
+    # Render against the registry the supervisor will own: its policy reader is pinned.
+    monkeypatch.setattr(registry, "registry_path", lambda: w.root / "enrol-registry.json")
     script.write_text(main._engine_script_from_meta(meta), encoding="utf-8")
     (script.parent.parent / f"session-meta-{session}.json").write_text(json.dumps(meta), encoding="utf-8")
     w.record["tmux"] = w.record["tmux"].replace(old_session, session)
     w.write()
-    monkeypatch.setattr(registry, "registry_path", lambda: w.root / "enrol-registry.json")
     monkeypatch.setenv("AI_HOST", "host-a")
     monkeypatch.setattr(session_enrol, "inspect_pane", lambda name: (str(w.cwd), ["bash", str(script)]))
     result = CliRunner().invoke(main._cli_group, ["sessions", "enrol", session])
@@ -358,7 +362,7 @@ def test_given_enrolled_remote_session_when_restarted_then_ac_e_7_activation_gat
     gate = Mock(wraps=session_restart.activation_gate)
     monkeypatch.setattr(session_restart, "activation_gate", gate)
     code, report, _ = w.cli("-X", w.record["sessionId"])
-    assert gate.call_count > 0
+    assert gate.call_count > 0, report
     if activation:
         assert code == 0 and report["reason"] == "restarted", report
         assert report["local"] == "VERIFIED" and report["peer"] == "VERIFIED"

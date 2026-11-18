@@ -34,7 +34,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -114,8 +113,12 @@ _POLICY_TABLES: dict[str, frozenset[str] | None] = {
         {"words_url", "words_digest", "words_member", "max_edit_distance", "extra_words", "keep_names"}
     ),
     "repos": None,
+    "registry_backend": None,
+    "registry_dolt_ref": None,
 }
 POLICY_SCHEMA = 1
+# The policy schema a fleet on the Dolt database publishes; the git-tree store refuses it.
+DOLT_POLICY_SCHEMA = 2
 
 
 class RegistryError(RuntimeError):
@@ -140,6 +143,19 @@ class PolicyUnknownError(RegistryError):
 
 class NoNameListError(RegistryError):
     """The registry has no usable available-name list."""
+
+
+class NameStatusError(RegistryError):
+    """The registry's name-status data is missing or unreadable, so no name counts as approved."""
+
+
+NAME_STATUSES = ("unreviewed", "rejected", "approved")
+# The values the earlier approval-status record used, as an import reads them.
+LEGACY_STATUSES = {"excluded": "rejected", "needs-review": "unreviewed"}
+SCOPE_KINDS = ("repo", "host", "session")
+# A spare the cutover import holds for an old offline client; ordinary commands never release it.
+QUARANTINED = "cutover-quarantined"
+VERDICT_VALUES = ("approved", "rejected")
 
 
 def utc_now() -> str:
@@ -348,10 +364,14 @@ def unknown_policy_keys(policy: dict) -> list[str]:
     return unknown
 
 
-def require_known_policy(policy: dict) -> dict:
-    """``policy`` itself, or :class:`PolicyUnknownError` naming what this version cannot apply."""
+def require_known_policy(policy: dict, schemas: tuple[int, ...] = (POLICY_SCHEMA,)) -> dict:
+    """``policy`` itself, or :class:`PolicyUnknownError` naming what this version cannot apply.
+
+    ``schemas`` are the policy schemas the registry backend in use applies: a schema
+    another backend publishes refuses here exactly as an unknown one does.
+    """
     schema = policy.get("schema", POLICY_SCHEMA)
-    if schema != POLICY_SCHEMA:
+    if schema not in schemas:
         raise PolicyUnknownError(
             f"the published naming policy has schema {schema!r}, which this version does not know: update ai-cli-utils"
         )
@@ -379,18 +399,56 @@ class Snapshot:
     names: list[str] | None = None
     generation: dict | None = None
     fetched: bool = True
+    # The claim value each hold carries; only the database backends record one.
+    claimants: dict[str, str] = field(default_factory=dict)
+    # Each pool name's general status and each scoped verdict; None on the git-tree store,
+    # which has no status model.
+    statuses: dict[str, dict] | None = None
+    verdicts: dict[tuple[str, str, str], dict] | None = None
+    meta: dict[str, str] = field(default_factory=dict)
+    policy_schemas: tuple[int, ...] = (POLICY_SCHEMA,)
 
     @property
     def policy(self) -> dict:
         """The published policy every allocation applies; refuses when none is usable."""
         if self.generation is None or not isinstance(self.generation.get("policy"), dict):
             raise NoNameListError(f"the registry has no {GENERATION_JSON}; run `ai sync-names` to publish one")
-        return require_known_policy(self.generation["policy"])
+        return require_known_policy(self.generation["policy"], self.policy_schemas)
 
     @property
     def available(self) -> frozenset[str]:
         """Every name that may be used: the generated list plus every name added by hand."""
         return frozenset(self.names or ()) | frozenset(self.manual)
+
+    def _require_statuses(self) -> dict[str, dict]:
+        if self.statuses is None:
+            raise NameStatusError(f"the registry at {self.tip or 'this host'} keeps no name status")
+        missing = sorted(name for name in self.available if name not in self.statuses)
+        if missing:
+            raise NameStatusError(
+                f"the registry has no status for {', '.join(missing[:5])}{' and more' if len(missing) > 5 else ''}, "
+                "so no name is treated as approved"
+            )
+        unreadable = sorted(name for name, entry in self.statuses.items() if entry.get("status") not in NAME_STATUSES)
+        if unreadable:
+            raise NameStatusError(
+                f"cannot read the status of {', '.join(unreadable[:5])} (not one of {', '.join(NAME_STATUSES)}), "
+                "so no name is treated as approved: update ai-cli-utils"
+            )
+        return self.statuses
+
+    def status_of(self, name: str) -> str:
+        """``name``'s general status; a name outside the pool is unreviewed."""
+        return self._require_statuses().get(name, {}).get("status", "unreviewed")
+
+    def approved(self) -> frozenset[str] | None:
+        """Every name approved in general; None on a store with no status model (the git tree)."""
+        if self.statuses is None:
+            return None
+        return frozenset(name for name, entry in self._require_statuses().items() if entry["status"] == "approved")
+
+    def verdicts_for(self, name: str) -> dict[tuple[str, str], dict]:
+        return {(kind, value): entry for (held, kind, value), entry in (self.verdicts or {}).items() if held == name}
 
     def generated(self) -> frozenset[str]:
         if not self.names:
@@ -461,39 +519,46 @@ class Registry:
 
     kind = ""
     location = ""
+    policy_schemas: tuple[int, ...] = (POLICY_SCHEMA,)
 
     def __init__(self, *, timeout_s: float = DEFAULT_TIMEOUT_S, attempts: int = DEFAULT_ATTEMPTS) -> None:
         self.timeout_s = timeout_s
         self.attempts = attempts
+        self.last_claimants: dict[str, str] = {}
 
     def snapshot(self, *, fetch: bool = True) -> Snapshot:
         raise NotImplementedError
 
-    def transact(self, build: Build) -> Change | None:
+    def transact(self, build: Build, *, exempt: bool = False) -> Change | None:
         """Run ``build`` against the current tip and publish its change, retrying on a lost race.
 
         ``build`` is the operation's complete guard plus the writes it implies. It runs
         again from scratch against every new tip, so a precondition another writer broke
         in the meantime is seen and either refused or, for a picked name, picked again.
         Returns the published change, or None when ``build`` decided nothing needs writing.
+        ``exempt`` lets an import or seed write while a database's writes are turned off.
         """
         raise NotImplementedError
 
+    def find_names(self, filters: dict[str, str | None]) -> list[dict]:
+        """The pool names matching every filter, from one query; only a database registry has one."""
+        raise WriteRefusedError("searching names needs the database registry; this one is a git tree")
 
-class GitRegistry(Registry):
-    """The shared registry: one ref of a sibling repository, written with plumbing."""
+    def history(self, name: str) -> list[dict]:
+        """Every past value of ``name``'s status, verdicts and hold; only the fleet's Dolt registry keeps it."""
+        raise WriteRefusedError("name history needs the fleet registry on Dolt; this registry keeps no history")
+
+
+class FleetRegistry(Registry):
+    """A registry shared through a sibling repository that ships ``config/session-names.toml``."""
 
     kind = "fleet"
 
-    def __init__(
-        self, repo: Path, *, ref: str, remote: str, policy_file: Path, timeout_s: float, attempts: int
-    ) -> None:
+    def __init__(self, repo: Path, *, remote: str, policy_file: Path, timeout_s: float, attempts: int) -> None:
         super().__init__(timeout_s=timeout_s, attempts=attempts)
         self.repo = repo
-        self.ref = ref
         self.remote = remote
         self.policy_file = policy_file
-        self.location = f"{remote} {ref} ({repo})"
 
     # -- git plumbing
     def _env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -548,6 +613,17 @@ class GitRegistry(Registry):
             return _config.read_registry_push_timeout(_config.load_config(read_only=True))
         except ValueError as exc:
             raise RegistryError(str(exc)) from exc
+
+
+class GitRegistry(FleetRegistry):
+    """The shared registry as a git tree: one ref of a sibling repository, written with plumbing."""
+
+    def __init__(
+        self, repo: Path, *, ref: str, remote: str, policy_file: Path, timeout_s: float, attempts: int
+    ) -> None:
+        super().__init__(repo, remote=remote, policy_file=policy_file, timeout_s=timeout_s, attempts=attempts)
+        self.ref = ref
+        self.location = f"{remote} {ref} ({repo})"
 
     def _fetch(self) -> str | None:
         # Offering only the last fetched tip keeps negotiation from walking every local ref,
@@ -652,7 +728,8 @@ class GitRegistry(Registry):
             return False
         raise RegistryUnreachableError(f"could not push {self.ref} to {self.remote}: {output.strip()}")
 
-    def transact(self, build: Build) -> Change | None:
+    def transact(self, build: Build, *, exempt: bool = False) -> Change | None:
+        del exempt
         for _attempt in range(self.attempts):
             snapshot = self.snapshot()
             change = build(snapshot)
@@ -663,70 +740,6 @@ class GitRegistry(Registry):
         raise RegistryContendedError(
             f"the registry write lost the race to other writers {self.attempts} times in a row; nothing was written"
         )
-
-
-class LocalRegistry(Registry):
-    """The registry of an install with no shared one: the same tree as files, under a lock."""
-
-    kind = "local"
-
-    def __init__(self, root: Path, *, timeout_s: float = DEFAULT_TIMEOUT_S, attempts: int = DEFAULT_ATTEMPTS) -> None:
-        super().__init__(timeout_s=timeout_s, attempts=attempts)
-        self.root = root
-        self.location = str(root)
-
-    def _seed(self) -> None:
-        available = self.root / NAMES_TXT
-        if available.exists():
-            return
-        available.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(name_list.DATA_DIR / name_list.NAMES_FILE, available)
-        shutil.copyfile(name_list.DATA_DIR / name_list.GENERATION_FILE, self.root / GENERATION_JSON)
-
-    @contextlib.contextmanager
-    def _locked(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
-        try:
-            with portalocker.Lock(str(self.root / "registry.lock"), mode="a", timeout=self.timeout_s * self.attempts):
-                yield
-        except portalocker.exceptions.LockException as exc:
-            raise RegistryContendedError(f"the local registry {self.root} stayed locked; nothing was written") from exc
-
-    def _read(self) -> Snapshot:
-        files: dict[str, bytes] = {}
-        if self.root.is_dir():
-            for path in self.root.rglob("*"):
-                relative = path.relative_to(self.root).as_posix()
-                if path.is_file() and not relative.endswith(".lock") and not path.name.startswith("."):
-                    files[relative] = path.read_bytes()
-        blobs = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
-        return parse_tree(files, blobs, tip=None)
-
-    def snapshot(self, *, fetch: bool = True) -> Snapshot:
-        del fetch
-        with self._locked():
-            self._seed()
-            return self._read()
-
-    def transact(self, build: Build) -> Change | None:
-        with self._locked():
-            self._seed()
-            change = build(self._read())
-            if change is None or not change.writes:
-                return None
-            for relative, data in change.writes.items():
-                target = self.root / relative
-                if data is None:
-                    target.unlink(missing_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                fd, staged = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                Path(staged).replace(target)
-            return change
 
 
 # --- discovery -------------------------------------------------------------------------
@@ -769,8 +782,8 @@ def read_policy_file(path: Path) -> dict:
         raise RegistryError(f"cannot read {path}: {exc}") from exc
 
 
-def local_registry_root() -> Path:
-    return _config.get_xdg_data_home() / "session-names"
+def local_registry_path() -> Path:
+    return _config.get_xdg_data_home() / "session-names.sqlite3"
 
 
 def discover() -> Discovery:
@@ -785,8 +798,12 @@ def discover() -> Discovery:
         policy_file = repo / POLICY_MARKER
         if policy_file.is_file():
             policy = read_policy_file(policy_file)
-            ref = policy.get("registry_ref")
             remote = policy.get("registry_remote", "origin")
+            if policy.get("registry_backend") == "dolt":
+                return Discovery(_dolt_registry(repo, policy, policy_file))
+            if policy.get("registry_backend") not in (None, "git"):
+                raise RegistryError(f"{policy_file} names registry_backend {policy.get('registry_backend')!r}")
+            ref = policy.get("registry_ref")
             if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
                 raise RegistryError(f"{policy_file} names no registry_ref under refs/heads/")
             return Discovery(
@@ -805,7 +822,30 @@ def discover() -> Discovery:
             f"the repository that ships {FLEET_PROJECTS_MARKER.as_posix()} has no {POLICY_MARKER.as_posix()}: "
             "its checkout predates human session names, so index names are kept",
         )
-    return Discovery(LocalRegistry(local_registry_root()))
+    from .name_sqlite import SqliteRegistry
+
+    return Discovery(SqliteRegistry(local_registry_path()))
+
+
+def _dolt_registry(repo: Path, policy: dict, policy_file: Path) -> Registry:
+    from .name_dolt import DEFAULT_DOLT_REF, DoltRegistry
+
+    if policy.get("schema") != DOLT_POLICY_SCHEMA:
+        raise RegistryError(f"{policy_file} selects the Dolt registry, which needs schema = {DOLT_POLICY_SCHEMA}")
+    ref = policy.get("registry_dolt_ref", DEFAULT_DOLT_REF)
+    if not isinstance(ref, str) or not ref.startswith("refs/dolt/") or ref == "refs/dolt/data":
+        raise RegistryError(
+            f"{policy_file} names registry_dolt_ref {ref!r}: it must be its own ref under refs/dolt/, "
+            "never refs/dolt/data"
+        )
+    return DoltRegistry(
+        repo,
+        dolt_ref=ref,
+        remote=str(policy.get("registry_remote", "origin")),
+        policy_file=policy_file,
+        timeout_s=float(policy.get("publish_timeout_s", DEFAULT_TIMEOUT_S)),
+        attempts=int(policy.get("publish_attempts", DEFAULT_ATTEMPTS)),
+    )
 
 
 # --- allocation ------------------------------------------------------------------------
@@ -948,7 +988,58 @@ def held_titles(snapshot: Snapshot, spool: dict[str, dict] | None = None) -> fro
 
 
 def policy_source(registry: Registry) -> str:
-    return str(registry.policy_file) if isinstance(registry, GitRegistry) else "the local config"
+    return str(registry.policy_file) if isinstance(registry, FleetRegistry) else "the local config"
+
+
+def rejecting_scope(snapshot: Snapshot, name: str, slot: Slot, session: str | None = None) -> str | None:
+    """The scope a verdict rejects ``name`` in for this launch (``host box-one``), or None.
+
+    The launch's scopes are its repository, its host and its session: the session a
+    migration renames (``session``), or the title the new session would get.
+    """
+    sessions = {slot.title_for(name), *([session] if session else [])}
+    for (kind, value), entry in sorted(snapshot.verdicts_for(name).items()):
+        if entry.get("verdict") != "rejected":
+            continue
+        if (kind == "repo" and value == slot.repo) or (kind == "host" and value == slot.machine):
+            return f"{kind} {value}"
+        if kind == "session" and value in sessions:
+            return f"session {value}"
+    return None
+
+
+def session_approves(snapshot: Snapshot, name: str, slot: Slot, session: str | None = None) -> bool:
+    """Whether a verdict approves ``name`` for the launching session."""
+    sessions = {slot.title_for(name), *([session] if session else [])}
+    return any(
+        kind == "session" and value in sessions and entry.get("verdict") == "approved"
+        for (kind, value), entry in snapshot.verdicts_for(name).items()
+    )
+
+
+def scoped_rejections(snapshot: Snapshot, slot: Slot, session: str | None = None) -> frozenset[str]:
+    """Every pool name a verdict rejects for this launch."""
+    names = {held for held, _kind, _value in (snapshot.verdicts or {})}
+    return frozenset(name for name in names if rejecting_scope(snapshot, name, slot, session))
+
+
+def hand_choice_refusal(
+    snapshot: Snapshot, name: str, slot: Slot, session: str | None = None
+) -> tuple[str, str] | None:
+    """``("rejected", reason)`` when the status model refuses a hand-chosen ``name``, else None.
+
+    A scoped rejection for the launch's repository, host or session refuses first; a
+    general rejection refuses unless a verdict approves the name for this session. An
+    unreviewed name may be chosen by hand. A store with no status model refuses nothing.
+    """
+    if snapshot.statuses is None:
+        return None
+    scope = rejecting_scope(snapshot, name, slot, session)
+    if scope:
+        return "rejected", f"{name} is rejected for {scope} (`ai find-names -k KIND` lists scoped verdicts)"
+    if snapshot.status_of(name) == "rejected" and not session_approves(snapshot, name, slot, session):
+        return "rejected", f"{name} is rejected as a session name (`ai list-names --pool` lists each name's status)"
+    return None
 
 
 def pick_request(
@@ -960,8 +1051,13 @@ def pick_request(
     max_length: int | None = None,
     words: frozenset[str] | None = None,
     extra_held: frozenset[str] = frozenset(),
+    session: str | None = None,
 ):
-    """The picker's request for ``slot`` under the published policy, and any warning it raised."""
+    """The picker's request for ``slot`` under the published policy, and any warning it raised.
+
+    Only approved names are candidates, and none a verdict rejects for this launch;
+    ``session`` is the session a migration renames. Unusable status data refuses.
+    """
     from . import session_naming
 
     policy = snapshot.policy
@@ -985,6 +1081,8 @@ def pick_request(
         manual=frozenset(snapshot.manual),
         passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
         max_edit_distance=int(confusable.get("max_edit_distance", 1)),
+        approved=snapshot.approved(),
+        rejected=scoped_rejections(snapshot, slot, session),
     )
     return request, [warning] if warning else []
 
@@ -996,6 +1094,11 @@ def _spare_writes(
     from . import session_naming
 
     policy = snapshot.policy
+    approved = snapshot.approved()
+    host_rejected = frozenset(
+        held for (held, kind, value), row in (snapshot.verdicts or {}).items()
+        if kind == "host" and value == slot.machine and row.get("verdict") == "rejected"
+    )  # fmt: skip
     shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
     writes: dict[str, bytes | None] = {}
     added: list[str] = []
@@ -1017,6 +1120,8 @@ def _spare_writes(
             manual=frozenset(snapshot.manual),
             passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
             max_edit_distance=int(policy.get("confusable", {}).get("max_edit_distance", 1)),
+            approved=approved,
+            rejected=host_rejected,
         )
         try:
             name = session_naming.pick_name(request, rng).name
@@ -1067,12 +1172,24 @@ def reserve_picked(
     return change.result  # type: ignore[return-value]
 
 
-def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozenset[str]) -> tuple[str, str]:
+def check_hand_chosen(
+    snapshot: Snapshot,
+    name: str,
+    slot: Slot,
+    words: frozenset[str],
+    *,
+    spool: dict[str, dict] | None = None,
+    session: str | None = None,
+) -> tuple[str, str]:
     """``(verdict, reason)`` for a name chosen by hand, under the snapshot's published policy.
 
-    The checks run in the order the hand-chosen flow states them: ``held``, then
-    ``confusable`` (one edit from a held name, or a strict-prefix title pair), then
-    ``word``. A name in the database is then ``ok`` inside the limits and ``limits``
+    A held name that is an unactivated spare of the slot's own machine, and not in that
+    machine's offline ``spool`` (read from disk when None), is ``spare``: the reservation
+    takes it by activating the row. Any other held name is ``held``. Then ``rejected``
+    (:func:`hand_choice_refusal`; ``session`` is the session a migration renames), then
+    reserved aliases and ``agents`` are refused as ``word``. Other names are checked for
+    ``confusable`` (one edit from a held name, or a strict-prefix title pair) and common
+    words. A name in the database is then ``ok`` inside the limits and ``limits``
     outside them; a name not in the database is ``unknown`` whatever its length,
     because the flow asks whether to add it before it checks the limits.
     """
@@ -1081,7 +1198,12 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     policy = snapshot.policy
     holder = snapshot.holder(name)
     if holder:
+        if _is_own_spare(snapshot, name, slot, read_spool() if spool is None else spool):
+            return "spare", f"{name} is this machine's spare"
         return "held", f"{name} is held by {holder}"
+    refusal = hand_choice_refusal(snapshot, name, slot, session)
+    if refusal:
+        return refusal
     if name in alias_words() | {slot.repo_alias, slot.host_alias, "agents"}:
         return "word", f"reserved name rule refused {name!r}: it is a repo or host alias; choose another name"
     if _TOKEN_RE.fullmatch(name):
@@ -1112,6 +1234,52 @@ def check_hand_chosen(snapshot: Snapshot, name: str, slot: Slot, words: frozense
     return ("limits", reason) if reason else ("ok", "")
 
 
+def _is_own_spare(snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict]) -> bool:
+    row = snapshot.rows.get(name)
+    return row is not None and row["kind"] == "spare" and row.get("machine") == slot.machine and name not in spool
+
+
+def _take_own_spare(
+    snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict], words: frozenset[str] | None
+) -> tuple[dict, dict[str, bytes | None], list[str]]:
+    """The session row this machine's spare ``name`` becomes, the writes that activate it and
+    refill the pool to ``offline_spares``, and the spares added."""
+    title = slot.title_for(name)
+    row = activate_spare(
+        snapshot.rows[name],
+        title=title,
+        repo=slot.repo,
+        repo_alias=slot.repo_alias,
+        label=slot.label,
+        client=slot.client,
+        worktree=slot.worktree_for(title),
+    )
+    writes: dict[str, bytes | None] = {row_path(name): checked_row(row)}
+    remaining = replace(snapshot, rows={token: r for token, r in snapshot.rows.items() if token != name})
+    spares, added = _spare_writes(remaining, slot, held_tokens(snapshot, spool), words, None)
+    writes.update(spares)
+    return row, writes, added
+
+
+class _SpoolLockNeeded(Exception):
+    """A build found this machine's own spare while ``spool.lock`` was not held."""
+
+
+def _transact_hand_chosen(registry: Registry, build_for: Callable[[bool], Callable[[Snapshot], Change]]) -> Change:
+    """Run a hand-chosen build, again under ``spool.lock`` when it would take this machine's own spare.
+
+    Only the own-spare path takes the lock, as an offline activation does, so an offline
+    launch on this machine cannot take the same spare between the spool read and the push.
+    """
+    try:
+        change = registry.transact(build_for(False))
+    except _SpoolLockNeeded:
+        with spool_lock(lock_wait(registry)):
+            change = registry.transact(build_for(True))
+    assert change is not None
+    return change
+
+
 def limits_text(policy: dict) -> str:
     low, high = name_list.limits(policy)
     return f"the configured limit is {low} to {high} letters (config/session-names.toml [limits])"
@@ -1136,10 +1304,22 @@ def reserve_hand_chosen(
 
     The checks run again on every fetched tip; a name another writer made unusable in
     the meantime raises :class:`HandChosenRefusedError` with the reason the new tip gave.
+    A name that is this machine's own spare is activated in place, under ``spool.lock``
+    so an offline launch cannot take it meanwhile.
     """
 
-    def build(snapshot: Snapshot) -> Change:
-        verdict, reason = check_hand_chosen(snapshot, name, slot, words)
+    def build_for(locked: bool) -> Callable[[Snapshot], Change]:
+        return lambda snapshot: build(snapshot, locked)
+
+    def build(snapshot: Snapshot, locked: bool) -> Change:
+        spool = read_spool()
+        verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool)
+        if verdict == "spare":
+            if not locked:
+                raise _SpoolLockNeeded
+            row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+            reservation = Reservation(name, row["title"], row, spares_added=added)
+            return Change(writes, f"session-names: activate {name} ({row['title']}@{slot.machine})", result=reservation)
         if verdict not in ("ok", "unknown") or (verdict == "unknown" and not add):
             raise HandChosenRefusedError(verdict, reason)
         if verdict == "unknown":
@@ -1167,9 +1347,7 @@ def reserve_hand_chosen(
         reservation = Reservation(name, title, row, added_to_database=verdict == "unknown")
         return Change(writes, f"session-names: reserve {name} ({title}@{slot.machine})", result=reservation)
 
-    change = registry.transact(build)
-    assert change is not None
-    return change.result  # type: ignore[return-value]
+    return _transact_hand_chosen(registry, build_for).result  # type: ignore[return-value]
 
 
 def _manual_record(name: str, added_by: str, via: str, reason: str | None) -> dict:
@@ -1227,6 +1405,113 @@ def remove_name(registry: Registry, name: str) -> None:
     registry.transact(build)
 
 
+def _unknown_names(snapshot: Snapshot, names: list[str]) -> list[str]:
+    return sorted({name for name in names if name not in snapshot.available})
+
+
+def set_name_status(
+    registry: Registry,
+    names: list[str],
+    status: str,
+    *,
+    actor: str,
+    recorded_by: str,
+    reason: str | None = None,
+    legacy: bool = False,
+) -> list[str]:
+    """Give every name in ``names`` the general ``status`` in one commit; returns the names it changed.
+
+    Refuses the whole call when any name is outside the pool. ``legacy`` accepts the
+    earlier record's ``excluded`` and ``needs-review``, stored as ``rejected`` and
+    ``unreviewed``; the public command passes only the three canonical values.
+    """
+    from . import name_schema
+
+    if legacy:
+        status = LEGACY_STATUSES.get(status, status)
+    if status not in NAME_STATUSES:
+        raise WriteRefusedError(f"{status!r} is not a name status; use one of {', '.join(NAME_STATUSES)}")
+
+    def build(snapshot: Snapshot) -> Change | None:
+        if snapshot.statuses is None:
+            raise WriteRefusedError("this registry keeps no name status; it arrives with the database registry")
+        unknown = _unknown_names(snapshot, names)
+        if unknown:
+            raise WriteRefusedError(
+                "; ".join(f"{name} is not in the name database" for name in unknown)
+                + "; add each with `ai add-name NAME` first. Nothing was written"
+            )
+        stamp = utc_now()
+        entry = {"status": status, "actor": actor, "recorded_by": recorded_by, "set_at": stamp, "reason": reason}
+        changed = sorted({name for name in names if snapshot.statuses.get(name, {}).get("status") != status})
+        if not changed:
+            return None
+        writes: dict[str, bytes | None] = {
+            name_schema.status_path(name): name_schema.canonical(entry).encode() for name in changed
+        }
+        return Change(writes, f"session-names: set-name-status {status} {' '.join(changed)} ({actor})", result=changed)
+
+    change = registry.transact(build)
+    return change.result if change is not None else []  # type: ignore[return-value]
+
+
+def set_name_verdict(
+    registry: Registry,
+    names: list[str],
+    verdict: str,
+    *,
+    scope_kind: str,
+    scope_value: str,
+    actor: str,
+    recorded_by: str,
+    reason: str | None = None,
+    delete: bool = False,
+) -> list[str]:
+    """Write one scoped verdict per name, keyed by name and scope, in one commit; or remove them.
+
+    With ``delete``, only a verdict whose value is ``verdict`` is removed. Refuses the
+    whole call when the scope kind is unknown or any name is outside the pool.
+    """
+    from . import name_schema
+
+    if scope_kind not in SCOPE_KINDS:
+        raise WriteRefusedError(f"{scope_kind!r} is not a verdict scope; use one of {', '.join(SCOPE_KINDS)}")
+    if verdict not in VERDICT_VALUES:
+        raise WriteRefusedError(f"{verdict!r} is not a verdict; use one of {', '.join(VERDICT_VALUES)}")
+    if not scope_value:
+        raise WriteRefusedError("a verdict needs the repository, host or session it applies to")
+
+    def build(snapshot: Snapshot) -> Change | None:
+        if snapshot.verdicts is None:
+            raise WriteRefusedError("this registry keeps no verdicts; they arrive with the database registry")
+        unknown = _unknown_names(snapshot, names)
+        if unknown:
+            raise WriteRefusedError(
+                "; ".join(f"{name} is not in the name database" for name in unknown) + ". Nothing was written"
+            )
+        writes: dict[str, bytes | None] = {}
+        entry = {"verdict": verdict, "actor": actor, "recorded_by": recorded_by, "set_at": utc_now(), "reason": reason}
+        for name in sorted(set(names)):
+            current = snapshot.verdicts.get((name, scope_kind, scope_value))
+            path = name_schema.verdict_path(name, scope_kind, scope_value)
+            if delete:
+                if current is not None and current.get("verdict") == verdict:
+                    writes[path] = None
+            elif current is None or current.get("verdict") != verdict or current.get("reason") != reason:
+                writes[path] = name_schema.canonical(entry).encode()
+        if not writes:
+            return None
+        action = "remove" if delete else "set"
+        return Change(
+            writes,
+            f"session-names: {action} {verdict} for {scope_kind} {scope_value}: {' '.join(sorted(set(names)))} ({actor})",
+            result=sorted(name_schema.parse_verdict_path(path)[0] for path in writes),
+        )
+
+    change = registry.transact(build)
+    return change.result if change is not None else []  # type: ignore[return-value]
+
+
 def last_known_snapshot(registry: Registry) -> Snapshot:
     """The last fetched tip, fetched once first when this checkout has never fetched the registry.
 
@@ -1236,7 +1521,7 @@ def last_known_snapshot(registry: Registry) -> Snapshot:
     empty registry. Never call it under a lock others wait on.
     """
     snapshot = registry.snapshot(fetch=False)
-    if isinstance(registry, GitRegistry) and snapshot.tip is None:
+    if isinstance(registry, FleetRegistry) and snapshot.tip is None:
         return registry.snapshot()
     return snapshot
 
@@ -1359,15 +1644,23 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
     """
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
+        approved = snapshot.approved()
         spool = read_spool()
         free = sorted(
-            (row for row in snapshot.rows_of(slot.machine, "spare") if row["token"] not in spool),
+            (
+                row
+                for row in snapshot.rows_of(slot.machine, "spare")
+                if row["token"] not in spool
+                and (approved is None or row["token"] in approved)
+                and not rejecting_scope(snapshot, row["token"], slot)
+            ),
             key=lambda row: (len(row["token"]), row["token"]),
         )
         if not free:
             because = f" ({cause})" if cause else ""
             raise SparesExhaustedError(
-                f"the registry is unreachable{because} and this machine has no unactivated spare name left; "
+                f"the registry is unreachable{because} and this machine has no unactivated spare name left "
+                "that is approved; "
                 "once online, "
                 "run `ai reconcile-names` to publish the activations and replenish the spares"
             )
@@ -1435,7 +1728,7 @@ class SyncResult:
     count: int | None = None
 
 
-def policy_revision(registry: GitRegistry) -> tuple[str | None, str | None]:
+def policy_revision(registry: FleetRegistry) -> tuple[str | None, str | None]:
     """The commit that last changed the policy file in this checkout, and its committer time."""
     relative = registry.policy_file.relative_to(registry.repo).as_posix()
     result = registry._git("log", "-1", "--format=%H%x00%cI", "HEAD", "--", relative, check=False)
@@ -1446,7 +1739,7 @@ def policy_revision(registry: GitRegistry) -> tuple[str | None, str | None]:
     return commit, committed_at
 
 
-def ancestry_state(registry: GitRegistry, ref_commit: str | None, local_commit: str | None) -> str:
+def ancestry_state(registry: FleetRegistry, ref_commit: str | None, local_commit: str | None) -> str:
     """One of :data:`ANCESTRY_STATES`, comparing the ref's recorded policy revision with this checkout's."""
     if not local_commit or not ref_commit:
         return "incomparable"
@@ -1479,7 +1772,7 @@ def sync_names(
     """
     digest = name_list.policy_digest(local_policy)
     commit = committed_at = None
-    if isinstance(registry, GitRegistry):
+    if isinstance(registry, FleetRegistry):
         with contextlib.suppress(RegistryError):
             registry._git(
                 "fetch", "--no-tags", "--quiet", registry.remote, timeout=registry.fetch_timeout_s(), check=False
@@ -1490,7 +1783,7 @@ def sync_names(
     def decide(snapshot: Snapshot) -> tuple[str, bool]:
         if snapshot.generation is None:
             state = "local-newer"
-        elif isinstance(registry, GitRegistry):
+        elif isinstance(registry, FleetRegistry):
             state = ancestry_state(registry, snapshot.generation.get("policy_commit"), commit)
         else:
             state = "local-newer"
@@ -1545,7 +1838,7 @@ def local_policy(registry: Registry) -> dict:
     On a shared registry the two length limits come only from that file. A local
     install takes them from ``[session_names]`` in config.toml, then the defaults.
     """
-    if isinstance(registry, GitRegistry):
+    if isinstance(registry, FleetRegistry):
         return name_list.fleet_policy(read_policy_file(registry.policy_file))
     policy = json.loads(json.dumps(name_list.DEFAULT_POLICY))
     table = _config.load_config().get("session_names", {})
@@ -1578,7 +1871,11 @@ def dry_run_snapshot(registry: Registry, snapshot: Snapshot) -> tuple[Snapshot, 
             "`ai sync-names` publishes may differ from this plan's"
         )
     names = name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
-    return replace(snapshot, names=names, generation={"policy": policy}), notes
+    statuses = snapshot.statuses
+    if statuses is not None:
+        # The plan treats the shipped names as a local install does: approved.
+        statuses = {**{name: {"status": "approved"} for name in names}, **statuses}
+    return replace(snapshot, names=names, generation={"policy": policy}, statuses=statuses), notes
 
 
 # --- release ---------------------------------------------------------------------------------
@@ -1658,6 +1955,7 @@ class ReconcileReport:
     spares_added: list[str] = field(default_factory=list)
     held: dict[str, str] = field(default_factory=dict)
     recovered: list[str] = field(default_factory=list)
+    top_up_skipped: str | None = None
 
 
 def _renaming(snapshot: Snapshot, row: dict) -> bool:
@@ -1733,6 +2031,9 @@ def reconcile(
         if title is None:
             policy = snapshot.policy
             for row in snapshot.rows_of(machine, "spare"):
+                # A cutover-quarantined spare stays held until the cutover reconciles it.
+                if row.get("state") == QUARANTINED:
+                    continue
                 if row["token"] not in spool and _over_limits(row["token"], policy):
                     spares[row["token"]] = snapshot.blobs.get(row["token"], "")
         if dry_run:
@@ -1763,6 +2064,7 @@ def reconcile(
                 if (
                     row is not None
                     and row["kind"] == "spare"
+                    and row.get("state") != QUARANTINED
                     and tip.blobs.get(token) == blob
                     and row.get("machine") == machine
                     and token not in current_spool
@@ -1771,17 +2073,15 @@ def reconcile(
                     writes[row_path(token)] = None
                     spares_out.append(token)
             held = held_tokens(tip, current_spool) - set(released) - set(spares_out)
-            remaining = Snapshot(
-                tip=tip.tip,
-                rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out},
-                blobs=tip.blobs,
-                manual=tip.manual,
-                migrations=tip.migrations,
-                names=tip.names,
-                generation=tip.generation,
+            remaining = replace(
+                tip, rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out}
             )
             slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
-            top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            try:
+                top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
+            except NameStatusError as exc:
+                top_up, added = {}, []
+                report.top_up_skipped = f"{exc}; no unverified spare was created"
             writes.update(top_up)
             if not writes:
                 return None
@@ -1962,13 +2262,31 @@ def reserve_for_migration(
     """Reserve the migration's new name and declare the rename as ``intent``, in one commit."""
     from . import session_naming
 
-    def build(snapshot: Snapshot) -> Change:
+    def build_for(locked: bool) -> Callable[[Snapshot], Change]:
+        return lambda snapshot: build(snapshot, locked)
+
+    def build(snapshot: Snapshot, locked: bool) -> Change:
         if name is None:
-            request, warnings = pick_request(registry, snapshot, slot, max_length=max_length, words=words)
+            request, warnings = pick_request(
+                registry, snapshot, slot, max_length=max_length, words=words, session=old_title
+            )
             pick = session_naming.pick_name(request, rng)
             chosen, tier = pick.name, pick.tier
         else:
-            verdict, reason = check_hand_chosen(snapshot, name, slot, words)
+            spool = read_spool()
+            verdict, reason = check_hand_chosen(snapshot, name, slot, words, spool=spool, session=old_title)
+            if verdict == "spare":
+                if not locked:
+                    raise _SpoolLockNeeded
+                row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+                writes[migration_path(old_title)] = encode_json(
+                    migration_record(old_title, row["title"], slot.machine, slot.client)
+                )
+                return Change(
+                    writes,
+                    f"session-names: activate {name} ({row['title']}@{slot.machine}) for the rename of {old_title}",
+                    result=Reservation(name, row["title"], row, spares_added=added),
+                )
             if verdict != "ok":
                 raise HandChosenRefusedError(
                     verdict, reason if verdict != "unknown" else f"{reason}; add it with `ai add-name {name}` first"
@@ -1995,9 +2313,7 @@ def reserve_for_migration(
             result=Reservation(chosen, title, row, warnings=warnings),
         )
 
-    change = registry.transact(build)
-    assert change is not None
-    return change.result  # type: ignore[return-value]
+    return _transact_hand_chosen(registry, build_for).result  # type: ignore[return-value]
 
 
 def complete_migration(registry: Registry, old_title: str, machine: str) -> bool:
@@ -2041,6 +2357,11 @@ def release_failed_migration(registry: Registry, old_title: str, machine: str) -
         new_token = str(record["new_title"]).rsplit("-", 1)[-1]
         writes: dict[str, bytes | None] = {migration_path(old_title): None}
         row = snapshot.rows.get(new_token)
+        if row is not None and row.get("state") == "migration-incomplete":
+            raise WriteRefusedError(
+                f"{new_token} is migration-incomplete: its recorded survivors are under {record['new_title']}, so it "
+                "is not released; run the same `ai migrate-session` command again"
+            )
         if row is not None and row.get("title") == record["new_title"] and row.get("machine") == machine:
             writes[row_path(new_token)] = None
         return Change(writes, f"session-names: release {new_token} after the failed rename of {old_title}")

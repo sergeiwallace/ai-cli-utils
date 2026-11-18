@@ -1,20 +1,16 @@
-"""quota-watch auto-start config gate.
-
-Root cause: `session_script.py`'s per-session `ai quota watch start` was
-unconditional, so the notification-firing daemon silently re-registered on
-every `ai c`/`ai g` launch and stayed running — redundant with the CC
-statusline, which already surfaces weekly usage. `_cmd_quota_watch_start(auto=)`
-now gates the *auto-start* path only on `[quota_watch] auto_start` (default
-off); an explicit, user-typed `ai quota watch start` always registers.
-"""
+"""Circus process management: the stale-session reaper watcher lifecycle."""
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from process_wait import scaled
 
 from ai_cli import process_manager
 
@@ -24,51 +20,6 @@ def posix_reaper_platform():
     """Run the Circus start path on every OS; Circus itself is mocked in these tests."""
     with patch("ai_cli.process_manager._native_windows", return_value=False):
         yield
-
-
-def test_auto_start_noop_when_config_disabled():
-    with patch("ai_cli.config.load_config", return_value={"quota_watch": {"auto_start": False}}):
-        with patch("ai_cli.process_manager._ensure_circusd") as mock_ensure:
-            process_manager._cmd_quota_watch_start(auto=True)
-    mock_ensure.assert_not_called()
-
-
-def test_auto_start_noop_when_config_section_absent():
-    # Default posture — no [quota_watch] section at all — must also no-op.
-    with patch("ai_cli.config.load_config", return_value={}):
-        with patch("ai_cli.process_manager._ensure_circusd") as mock_ensure:
-            process_manager._cmd_quota_watch_start(auto=True)
-    mock_ensure.assert_not_called()
-
-
-def test_auto_start_registers_when_config_enabled(tmp_path):
-    with patch("ai_cli.config.load_config", return_value={"quota_watch": {"auto_start": True}}):
-        with patch(
-            "ai_cli.process_manager._ensure_circusd",
-            return_value=f"ipc://{tmp_path}/circus.endpoint",
-        ) as mock_ensure:
-            with patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path):
-                with patch("circus.client.CircusClient") as mock_client_cls:
-                    process_manager._cmd_quota_watch_start(auto=True)
-    mock_ensure.assert_called_once()
-    add_calls = [c for c in mock_client_cls.return_value.send_message.call_args_list if c.args[:1] == ("add",)]
-    assert len(add_calls) == 1
-    assert add_calls[0].kwargs["name"] == "quota-watch"
-    assert add_calls[0].kwargs["start"] is True
-
-
-def test_explicit_start_ignores_config_even_when_disabled(tmp_path):
-    # `auto=False` (a bare, explicitly-typed `ai quota watch start`) must always
-    # register regardless of the auto_start flag — explicit intent wins.
-    with patch("ai_cli.config.load_config", return_value={"quota_watch": {"auto_start": False}}):
-        with patch(
-            "ai_cli.process_manager._ensure_circusd",
-            return_value=f"ipc://{tmp_path}/circus.endpoint",
-        ) as mock_ensure:
-            with patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path):
-                with patch("circus.client.CircusClient"):
-                    process_manager._cmd_quota_watch_start(auto=False)
-    mock_ensure.assert_called_once()
 
 
 @pytest.mark.usefixtures("posix_reaper_platform")
@@ -172,6 +123,57 @@ def test_given_claude_launch_when_reaper_start_is_scheduled_then_launch_does_not
         stdout=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+_REPLACING_THEN_REAL_REAPER_TESTS = """
+from unittest.mock import Mock
+
+import pytest
+
+from ai_cli import process_manager
+
+REAL_START = process_manager._start_stale_session_reaper_for_launch
+
+
+def test_replaces_the_reaper_start(monkeypatch):
+    monkeypatch.setattr(process_manager, "_start_stale_session_reaper_for_launch", Mock())
+
+
+@pytest.mark.real_reaper_spawn
+def test_then_sees_the_real_reaper_start():
+    assert process_manager._start_stale_session_reaper_for_launch is REAL_START
+"""
+
+
+def test_given_a_test_monkeypatching_the_reaper_start_when_a_real_reaper_test_runs_next_then_it_gets_the_real_function(
+    tmp_path,
+):
+    """The suite's reaper no-op must not outlive the test that overrode it on one worker.
+
+    Run as a real pytest session, in a fixed order, with the suite's own conftest loaded as a
+    plugin: the order xdist and random ordering only reach some of the time.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "test_reaper_order.py").write_text(_REPLACING_THEN_REAL_REAPER_TESTS, encoding="utf-8")
+    tests_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(tests_dir), str(tests_dir.parent / "src"), env.get("PYTHONPATH")])
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:randomly", "-p", "conftest", "-q"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=scaled(120),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout, result.stdout
 
 
 @pytest.mark.real_reaper_spawn

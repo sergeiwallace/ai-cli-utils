@@ -2,6 +2,7 @@
 
 import os
 import select
+import shlex
 import subprocess
 import sys
 import threading
@@ -175,6 +176,42 @@ def test_given_dead_pane_when_resumed_without_terminal_then_launch_returns_nonze
     assert result.returncode == 1, result.stderr
     assert "has no live pane after launch" in result.stderr
     assert "running detached" not in result.stderr
+
+
+def test_given_tmux_pane_when_named_session_relaunches_then_new_session_is_detached(detached_cli, tmp_path):
+    script = tmp_path / "relaunch.py"
+    output = tmp_path / "relaunch-output"
+    status = tmp_path / "relaunch-status"
+    source = _LAUNCH.replace(
+        'main._cli_group.main(args=args, prog_name="ai")',
+        """from ai_cli import session_registry as registry
+    recipe = {
+        "session_name": "c-myproject-tst-1", "owning_host": "host-a", "cwd": str(Path.cwd()),
+        "project": "myproject", "engine": "c", "options": {"no_direnv": True}, "extra_args": [],
+        "shell": "sh", "argv": ["ai", "c", "c-myproject-tst-1", "--project-prefix", "myproject"],
+    }
+    registry._mutate(lambda doc: doc["sessions"].append({
+        "id": "record-1", "name": recipe["session_name"], "kind": "local", "owning_host": "host-a",
+        "boot_recipe": recipe,
+    }) or True)
+    try:
+        main._cli_group.main(args=["sessions", "relaunch", recipe["session_name"]], prog_name="ai")
+    except SystemExit as exc:
+        Path(sys.argv[2]).write_text(str(exc.code))""",
+    )
+    script.write_text(source)
+    command = shlex.join([sys.executable, str(script), "relaunch", str(status)])
+    command += " > " + shlex.quote(str(output)) + " 2>&1; exec sleep 60"
+    subprocess.run(["tmux", "new-session", "-d", "-s", "caller", command], check=True, cwd=tmp_path)
+    deadline = time.monotonic() + 30
+    while not status.exists():
+        assert time.monotonic() < deadline, output.read_text() if output.exists() else "no relaunch output"
+        time.sleep(0.05)
+    assert status.read_text() == "0", output.read_text()
+    assert _panes().returncode == 0, output.read_text()
+    assert "relaunched detached" in output.read_text()
+    caller = subprocess.run(["tmux", "has-session", "-t", "=caller"], capture_output=True, check=False)
+    assert caller.returncode == 0, "relaunch closed its caller's pane"
 
 
 @pytest.mark.parametrize("mode", ["new", "existing", "resume", "once"])

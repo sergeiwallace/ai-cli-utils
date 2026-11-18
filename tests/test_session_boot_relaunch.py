@@ -1,5 +1,6 @@
 """Boot decisions and detached replay use isolated state and a fake tmux."""
 
+import json
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -15,6 +16,9 @@ from ai_cli import main, session_commands
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
+#: The launch guard itself, captured before any fixture replaces it.
+_REAL_FINISH = main._finish_recorded_migrations
 
 
 @pytest.fixture
@@ -113,7 +117,7 @@ def test_given_safety_tombstone_when_checked_then_boot_refuses_before_liveness(b
 @pytest.mark.parametrize("missing", ["cwd", "session_name", "options", "engine", "owning_host", "argv"])
 def test_given_incomplete_recipe_when_checked_then_ac_2_10_replay_is_refused(boot_record, missing):
     del boot_record["boot_recipe"][missing]
-    assert decide(boot_record) == "unsupported or incomplete boot recipe"
+    assert decide(boot_record).startswith("unsupported or incomplete boot recipe: ")
 
 
 def test_given_missing_boot_identity_when_checked_then_unknown_is_refused(boot_record):
@@ -133,7 +137,7 @@ def boot_cli(boot_record, monkeypatch):
     launches = []
     real_launch = session_commands._launch_recipe
     monkeypatch.setattr(
-        session_commands, "_launch_recipe", lambda record: launches.append(deepcopy(record)), raising=False
+        session_commands, "_launch_recipe", lambda record, **_kwargs: launches.append(deepcopy(record)), raising=False
     )
     publish = Mock()
     monkeypatch.setattr(session_commands.session_state_publish, "publish", publish)
@@ -157,7 +161,7 @@ def test_given_switch_off_when_cli_runs_then_ac_2_6_nothing_launches_and_off_is_
 def test_given_reboot_when_cli_runs_twice_then_ac_2_7_reservation_precedes_only_spawn(boot_cli):
     observed = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         observed.append(registry.load_registry()["sessions"][0]["relaunched_boot_id"])
 
     with pytest.MonkeyPatch.context() as patcher:
@@ -177,7 +181,7 @@ def test_given_attempt_then_reattach_when_retried_then_ac_2_11_reservation_and_p
 
     calls = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         calls.append(record)
         if failed:
             raise RuntimeError("example launch failure")
@@ -224,9 +228,10 @@ def detached_launch(boot_record, monkeypatch):
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        text, code = "", 0
+        text, error, code = "", "", 0
         if argv[:2] == ["tmux", "has-session"]:
             code = 0 if existing[0] else 1
+            error = "" if existing[0] else "can't find session"
         elif argv[:2] == ["tmux", "new-session"]:
             text = "$1\n"
             existing[0] = True
@@ -234,7 +239,7 @@ def detached_launch(boot_record, monkeypatch):
             marker[0] = argv[-1]
         elif argv[:2] == ["tmux", "display-message"]:
             text = f"$1\t{boot_record['name']}\t{marker[0]}"
-        return subprocess.CompletedProcess(argv, code, text, "")
+        return subprocess.CompletedProcess(argv, code, text, error)
 
     monkeypatch.setattr(main.subprocess, "run", run)
     monkeypatch.setattr(main, "_exec_handoff", Mock(side_effect=AssertionError("must not attach or exec")))
@@ -250,11 +255,12 @@ def detached_launch(boot_record, monkeypatch):
     )
     for module, names in (
         (main._session, ["cleanup_stale_sessions", "build_session_name"]),
-        (main, ["_finish_recorded_migrations", "_start_session_wake_watcher"]),
+        (main, ["_start_session_wake_watcher"]),
         (main._iterm2, ["_emit_iterm2_profile_setup", "_configure_tmux_for_iterm2", "_rename_tmux_window"]),
     ):
         for name in names:
             monkeypatch.setattr(module, name, Mock(side_effect=AssertionError(f"unexpected boot action: {name}")))
+    monkeypatch.setattr(main, "_finish_recorded_migrations", Mock())
     monkeypatch.setattr(main._iterm2, "_load_iterm2_config", dict)
     monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *a, **kw: None)
     monkeypatch.setattr(main._config, "get_session_map", lambda *a: {})
@@ -267,6 +273,16 @@ def detached_launch(boot_record, monkeypatch):
     for variable in ("ITERM_SESSION_ID", "TERM_PROGRAM", "TMUX"):
         monkeypatch.delenv(variable, raising=False)
     return calls, script
+
+
+def test_given_detached_replay_when_launched_then_periodic_observer_is_scheduled(
+    detached_launch, boot_record, monkeypatch
+):
+    start = Mock()
+    monkeypatch.setattr(main._process_manager, "_start_stale_session_reaper_for_launch", start)
+    session_commands._launch_recipe(boot_record)
+    start.assert_called_once_with()
+    assert any(argv[:2] == ["tmux", "new-session"] for argv, _kwargs in detached_launch[0])
 
 
 @pytest.mark.parametrize("mode", ["ordinary", "indexed-reattach", "named-reattach", "remote", "once", "bare"])
@@ -306,6 +322,25 @@ def test_given_detached_boot_launch_when_attach_used_later_then_ac_2_5_existing_
     with pytest.raises(SystemExit):
         main._do_attach(boot_record["name"])
     handoff.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", boot_record["name"]])
+
+
+def test_given_remote_origin_recipe_when_replayed_then_tmux_and_wrapper_keep_the_remote_identity(
+    detached_launch, boot_record
+):
+    name = "c-r-myproject-host-1"
+    boot_record["name"] = name
+    recipe = boot_record["boot_recipe"]
+    recipe["session_name"] = name
+    recipe["options"]["is_remote"] = True
+    recipe["argv"][2] = name
+    recipe["argv"].append("--is-remote")
+    session_commands._launch_recipe(boot_record)
+    calls, script = detached_launch
+    created = [argv for argv, _ in calls if argv[:2] == ["tmux", "new-session"]]
+    assert len(created) == 1
+    assert created[0][created[0].index("-s") + 1] == name
+    assert script.call_args.args[2] == name
+    assert script.call_args.kwargs["is_remote"] is True
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
@@ -362,7 +397,7 @@ def test_given_forbidden_final_exit_when_cli_runs_then_ac_2_8_winning_cause_is_l
 def test_given_overlapping_boot_invocation_when_reserved_then_ac_2_7_only_one_spawns(boot_cli, monkeypatch):
     nested = []
 
-    def launch(record):
+    def launch(record, **_kwargs):
         nested.append(boot_cli.invoke())
 
     monkeypatch.setattr(session_commands, "_launch_recipe", launch)
@@ -633,3 +668,284 @@ def test_given_default_host_identity_when_named_relaunch_then_registry_host_owns
     assert result.exit_code == 0, result.output
     assert len(named_cli.launches) == 1
     assert named_cli.launches[0]["boot_recipe"]["session_name"] == "c-myproject-host-1"
+
+
+PARTIAL = "c-myproject-host-2"
+
+
+@pytest.fixture
+def partial_boot(boot_cli, detached_launch, boot_record, monkeypatch, tmp_path):
+    """Two boot records; the ledger records a migration to the second's name whose finish cannot run.
+
+    The recorded repo is gone, so the launch-time finish raises: the migration is partial.
+    """
+    from ai_cli.session_migrate import MIGRATION_FORMAT, MIGRATION_LEDGER
+
+    monkeypatch.setattr(session_commands, "_launch_recipe", boot_cli.real_launch)
+    monkeypatch.setattr(state.config, "load_config", lambda **_kwargs: boot_cli.cfg)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", _REAL_FINISH)
+    second = deepcopy(boot_record)
+    second.update(id="record-2", name=PARTIAL)
+    second["boot_recipe"].update(session_name=PARTIAL, argv=["ai", "c", PARTIAL, "--project-prefix", "myproject"])
+    registry._mutate(lambda doc: doc["sessions"].append(second) or True)
+    repo = tmp_path / "gone"
+    ledger = main._config.get_xdg_state_home() / MIGRATION_LEDGER
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    row = {"old": "myproject-old-2", "new": "myproject-host-2", "repo": str(repo), "format": MIGRATION_FORMAT}
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return SimpleNamespace(
+        cli=boot_cli,
+        calls=detached_launch[0],
+        finish=f"ai migrate-session myproject-old-2 myproject-host-2 --finish -r {repo}",
+    )
+
+
+def _created(calls) -> list[str]:
+    return [argv[argv.index("-s") + 1] for argv, _kw in calls if argv[:2] == ["tmux", "new-session"]]
+
+
+def _reasons() -> dict[str, str]:
+    return {r["name"]: r["boot_decision"]["reason"] for r in registry.load_registry()["sessions"]}
+
+
+def test_given_a_partial_migration_when_boot_relaunch_runs_then_it_is_refused_and_the_others_relaunch(partial_boot):
+    result = partial_boot.cli.invoke()
+
+    assert result.exit_code == 1, result.output
+    assert _created(partial_boot.calls) == ["c-myproject-host-1"], "the partial session starts nothing"
+    reasons = _reasons()
+    assert reasons["c-myproject-host-1"] == "relaunched detached"
+    assert reasons[PARTIAL].startswith("refused: ")
+    assert partial_boot.finish in reasons[PARTIAL]
+    refusal = [line for line in result.output.splitlines() if "refusing to launch myproject-host-2" in line]
+    assert len(refusal) == 1, result.output
+    assert "parts left: migration (failed:" in refusal[0]
+    assert partial_boot.finish in refusal[0]
+    assert "allow-partial" not in refusal[0], "the refusal names the finish, not the override"
+
+
+def test_given_a_partial_migration_when_named_relaunch_runs_then_it_is_refused_with_the_finish_command(partial_boot):
+    result = CliRunner().invoke(main._cli_group, ["sessions", "relaunch", PARTIAL])
+
+    assert result.exit_code == 1, result.output
+    assert _created(partial_boot.calls) == []
+    assert partial_boot.finish in result.output
+
+
+@pytest.mark.parametrize("flag", ["-P", "--allow-partial-migration"])
+def test_given_the_override_when_relaunch_runs_then_the_partial_session_starts_and_its_log_names_the_parts(
+    partial_boot, flag
+):
+    result = CliRunner().invoke(main._cli_group, ["sessions", "relaunch", PARTIAL, flag])
+
+    assert result.exit_code == 0, result.output
+    assert _created(partial_boot.calls) == [PARTIAL]
+    warnings = [line for line in result.output.splitlines() if "with the migration myproject-old-2" in line]
+    assert len(warnings) == 1, result.output
+    assert "parts left: migration (failed:" in warnings[0]
+    logs = sorted((main._config.get_xdg_state_home() / "launch-logs").glob(f"{PARTIAL}-*.log"))
+    assert len(logs) == 1
+    assert "parts left: migration (failed:" in logs[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]])
+@pytest.mark.parametrize(
+    ("recipe_change", "reason"),
+    [
+        (
+            {"session_name": "c-myproject-old-1"},
+            "session_name 'c-myproject-old-1' differs from the record name 'c-myproject-host-1'",
+        ),
+        ({"engine": "x"}, "engine 'x' is not one of c, g, p, cx"),
+        (
+            {"engine": "g", "argv": ["ai", "g", "c-myproject-host-1"]},
+            "session_name 'c-myproject-host-1' does not start with the engine prefix 'g-'",
+        ),
+        ({"owning_host": "host-old"}, "owning_host 'host-old' differs from the record's owning_host 'host-a'"),
+        ({"cwd": "relative/dir"}, "cwd 'relative/dir' is not an absolute path"),
+        ({"project": None}, "project is not a string"),
+        ({"options": {"remote": True}}, "options.remote is set"),
+        ({"argv": ["ai", "g", "c-myproject-host-1"]}, "argv does not start with 'ai c'"),
+        ({"extra_args": "--model"}, "extra_args is not a list of strings"),
+        ({"options": {"bare": True}}, "a bare recipe needs a non-empty shell and command list"),
+    ],
+)
+def test_given_one_bad_recipe_field_when_named_relaunch_then_refusal_names_that_field(
+    named_cli, monkeypatch, recipe_change, reason, dry_run
+):
+    registry._mutate(lambda doc: doc["sessions"][0]["boot_recipe"].update(recipe_change) or True)
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: False)
+    result = named_cli.invoke("c-myproject-host-1", *dry_run)
+    assert result.exit_code != 0
+    assert f"c-myproject-host-1: unsupported or incomplete boot recipe: {reason}" in result.output
+    assert not named_cli.launches
+
+
+def test_given_record_owned_under_another_host_id_when_named_relaunch_then_refusal_names_both_hosts(
+    named_cli, monkeypatch
+):
+    def rehost(doc):
+        doc["sessions"][0]["owning_host"] = "host-old"
+        doc["sessions"][0]["boot_recipe"]["owning_host"] = "host-old"
+        return True
+
+    registry._mutate(rehost)
+    monkeypatch.setattr(registry, "_local_session_alive", lambda name: False)
+    result = named_cli.invoke("c-myproject-host-1")
+    assert result.exit_code != 0
+    assert "foreign or remote session; not owned by this host" in result.output
+    assert "its owning_host is 'host-old' and this host is 'host-a'" in result.output
+    assert not named_cli.launches
+
+
+@pytest.mark.parametrize("missing", ["cwd", "session_name", "owning_host", "argv", "options", "engine"])
+def test_given_recipe_missing_a_field_when_boot_checked_then_veto_names_it(boot_record, missing):
+    del boot_record["boot_recipe"][missing]
+    veto = decide(boot_record)
+    assert veto.startswith("unsupported or incomplete boot recipe: ")
+    assert missing in veto.removeprefix("unsupported or incomplete boot recipe: ")
+
+
+# A reboot is simulated by changing the boot id and the boot time; AI-CLI-facu.
+BOOTED_AT = 1_800_000_000.0
+
+
+@pytest.fixture
+def rebooted(boot_cli, monkeypatch):
+    from ai_cli import session_reconcile
+
+    monkeypatch.setattr(session_reconcile, "boot_time", lambda: BOOTED_AT)
+    monkeypatch.setattr(session_reconcile, "_process_alive", lambda record: False)
+
+    def reboot(boot_id, booted):
+        monkeypatch.setattr(registry, "current_boot_id", lambda: boot_id)
+        monkeypatch.setattr(session_reconcile, "boot_time", lambda: booted)
+
+    boot_cli.reboot = reboot
+    return boot_cli
+
+
+def _row():
+    return registry.load_registry()["sessions"][0]
+
+
+def _update(**fields):
+    registry._mutate(lambda doc: doc["sessions"][0].update(fields) or True)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_running_row_kept_down_by_policy_when_boot_relaunch_runs_then_the_row_is_settled_exited(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(relaunch="never")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    row = _row()
+    assert state.run_state(row) == "exited"
+    assert row["exit"]["cause"] == "host_reboot"
+    assert row["exit"]["evidence"]["source"] == "boot_relaunch"
+    assert row["boot_decision"]["reason"] == "policy never forbids boot relaunch"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_row_kept_down_at_one_boot_when_policy_turns_auto_before_the_next_boot_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(relaunch="never")
+    assert rebooted.invoke().exit_code == 0
+    _update(relaunch="auto", relaunch_set_by="default")
+    rebooted.reboot("next-boot", BOOTED_AT + 86_400)
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_legacy_row_judged_by_an_earlier_boot_and_never_started_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(
+        boot_decision={"boot_id": "middle-boot", "cause": "host_reboot", "reason": "policy never forbids boot relaunch"}
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+    assert _row()["exit"]["cause"] == "unknown"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_given_crash_exit_recorded_before_this_boot_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted, monkeypatch, platform
+):
+    monkeypatch.setattr(session_commands.sys, "platform", platform)
+    _update(
+        run_state="exited",
+        ended_at="2027-01-14T00:00:00Z",
+        supervisor_exit={"cause": "terminal_quit_or_crash", "at": "2027-01-14T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "not running when the host went down" in result.output
+
+
+def test_given_crash_exit_recorded_in_this_boot_when_boot_relaunch_runs_then_it_is_relaunched(rebooted):
+    _update(
+        run_state="exited",
+        ended_at="2027-01-16T00:00:00Z",
+        supervisor_exit={"cause": "terminal_quit_or_crash", "at": "2027-01-16T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 1
+
+
+def test_given_wind_down_before_this_boot_when_boot_relaunch_runs_then_it_is_relaunched(rebooted):
+    rebooted.cfg["session_relaunch"]["causes"] = ["host_reboot", "maintenance_wind_down"]
+    _update(
+        run_state="exited",
+        ended_at="2027-01-14T00:00:00Z",
+        supervisor_exit={"cause": "maintenance_wind_down", "at": "2027-01-14T00:00:00Z"},
+    )
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 1
+
+
+def test_given_reservation_from_an_earlier_boot_that_never_started_when_boot_relaunch_runs_then_it_is_not_relaunched(
+    rebooted,
+):
+    _update(run_state="relaunched", relaunched_boot_id="previous-boot")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "never started" in result.output
+    assert state.run_state(_row()) == "exited"
+
+
+def test_given_row_replayed_and_running_in_one_boot_when_the_host_reboots_again_then_it_is_relaunched(rebooted):
+    assert rebooted.invoke().exit_code == 0
+    assert len(rebooted.launches) == 1
+    generation = state.begin("c-myproject-host-1")
+    assert state.mark_running("c-myproject-host-1", generation=generation, sequence=1)
+    rebooted.reboot("next-boot", BOOTED_AT + 86_400)
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert len(rebooted.launches) == 2
+
+
+def test_given_remote_row_on_the_launcher_host_when_boot_relaunch_runs_then_it_is_neither_replayed_nor_settled(
+    rebooted,
+):
+    _update(kind="remote", name="c-r-myproject-1")
+    result = rebooted.invoke()
+    assert result.exit_code == 0, result.output
+    assert not rebooted.launches
+    assert "foreign or remote session" in result.output
+    assert _row()["run_state"] == "running"

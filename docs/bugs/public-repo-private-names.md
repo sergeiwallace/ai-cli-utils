@@ -117,7 +117,7 @@ the call site signals that this particular string is policy-relevant.
 | # | Date | What was tried | Outcome |
 |---|------|----------------|---------|
 | 1 | 2026-04-06 (`15899d6`) | Manual full-repo privacy sweep | Correct as far as it went, and it genuinely cleaned `src/`+`tests/`. But it added no standing check, so the rule decayed back to prose and the name returned within four months. |
-| 2 | 2026-07-28 (this fix, first attempt at the `docs/` half) | A substitution script without the account-name lookahead | **Rejected before commit.** It rewrote four legitimate `github.com/<account>/ai-harness` URLs in `docs/README.md` into a broken account. Reverted; the script was rewritten so every pattern carries the same lookahead the guard uses, plus a per-file assertion that legitimate account usage is byte-identical afterwards. This is the exact over-fix the discriminating pattern exists to prevent, and it happened anyway on the first pass. |
+| 2 | 2026-07-28 (this fix, first attempt at the `docs/` half) | A substitution script without the account-name lookahead | **Rejected before commit.** It rewrote four legitimate `github.com/<account>/automation framework` URLs in `docs/README.md` into a broken account. Reverted; the script was rewritten so every pattern carries the same lookahead the guard uses, plus a per-file assertion that legitimate account usage is byte-identical afterwards. This is the exact over-fix the discriminating pattern exists to prevent, and it happened anyway on the first pass. |
 
 ## Fix
 
@@ -182,7 +182,7 @@ here.
 - [x] **Does not flag author/metadata files.** The pattern over `LICENSE`, `pyproject.toml`,
       `SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CLAUDE-full.md`, `.github/`,
       `assets/`, `.copier-answers.yml`, `demo/`, `renovate.json5`: no hits.
-- [x] **Legitimate URL count is unchanged.** `github.com/<account>/ai-harness` in
+- [x] **Legitimate URL count is unchanged.** `github.com/<account>/automation framework` in
       `docs/README.md`: 4 at `HEAD`, 4 after the fix.
 
 **Widening rings.**
@@ -271,6 +271,20 @@ under `docs/` (including `docs/plans/archive/`). New `tests/test_public_repo_hyg
 
 The `docs/` substitution was reverted once and redone after the first version rewrote four
 legitimate GitHub URLs; see Prior Fix Attempts.
+
+### 2026-11-11 — generated audit provenance sanitized at publication
+
+A repository audit record can legitimately retain internal provenance while its generated public
+wiki page must not reproduce that provenance. The wiki builder previously sanitized machine
+receipts only, then scanned audit Markdown unchanged, so a valid new audit round made the complete
+wiki build fail before creating an artifact.
+
+The regression test builds a real temporary repository containing a representative audit carrier.
+It was RED on the unfixed builder because publication stopped with one tracker reference and one
+environment reference. Audit Markdown and machine receipts now share the same public-provenance
+rendering before both policy validation and page generation. Ordinary documentation remains under
+the fail-closed policy. The focused wiki suite passes, and the repository wiki builds all planned
+pages without excluding the audit record.
 
 <!-- /doc:region name="fix_log" -->
 

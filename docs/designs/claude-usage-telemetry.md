@@ -80,7 +80,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 
 ### Decision Summary
 
-<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+<!-- Recommendation-vs-choice tracking (historical-task): track the AI recommendation and the human
   choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
   - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
   here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
@@ -88,7 +88,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
   - Chosen: the human's final pick. Fill when decided.
   - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
   WHY the human chose differently — that "why" is the highest-value datapoint.
-  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+  Full rules: automation framework docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
@@ -103,7 +103,7 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 | 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons, (E) adaptive-width with color/bold | (E) adaptive-width | `Week`/`Son` when terminal wide enough; `W`/`S` when narrow; both styled with bold + distinct color as field headers | **Approved** |
 | 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show dimmed placeholder + background scrape, (b) omit until populated | (a) dimmed placeholder + scrape | Consistent with D6 and weekly pace behavior; prevents layout jitter | **Approved** |
 
-<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+<!-- DECISION FORMATTING (historical-task) — applies when filling in REAL option content below:
   each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
   each on its own line — a blank line before each header, and a hard newline between the header
   and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
@@ -706,6 +706,17 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 ```
 
 ## Integration
+
+> **2026-11-15 (AI-CLI-pyaz):** every `/usage` scrape is retired. The statusline writes
+> Claude Code's native `rate_limits` values to a state file (`[quota] state_file`, default
+> `~/.claude/state/quota.json`), and `ai quota publish` sends the seven-day reading to the three
+> targets below when it is current (at most `[quota] max_age_seconds`, default 1800, old, with its
+> reset time not yet passed). Otherwise it exits 0 and publishes nothing. An external scheduler calls it
+> in place of `ai quota scrape`. Removed with the scrape: `ai quota scrape`, the
+> `quota.scrape.request.<host>` subject, the Fable backoff scrape, and the `ai quota watch` daemon,
+> whose loop ran the scrape. Fable weekly data has no source until Claude Code reports a Fable
+> window; readers of `quota.db` see its last stored value or none. The bullets below describe the
+> original design.
 
 - **Claude Code**: statusLine hook in `~/.claude/settings.json` on both machines
 - **ai-cli**: `ai quota` subcommands for scrape, status, history, sync, statusline-part

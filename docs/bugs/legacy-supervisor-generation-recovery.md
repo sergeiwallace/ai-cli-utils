@@ -120,7 +120,8 @@ Same-named remote connection records remain separate and unchanged. Existing
 recipes retain normal generation acquisition after a configured host-label
 change; metadata never replaces their recorded owner. Newly
 recovered legacy sessions use relaunch policy `never` to avoid silently enabling
-boot replay. Calls without metadata continue to refuse unregistered sessions.
+boot replay. (Superseded: recovered sessions now default to `auto`, recorded as a
+default; see [enrolled-sessions-default-to-relaunch-never.md](enrolled-sessions-default-to-relaunch-never.md).) Calls without metadata continue to refuse unregistered sessions.
 
 The legacy child installs INT/TERM traps before invoking Python. These return
 the clean-stop statuses understood by old supervisors. Exhausting retries or
@@ -309,7 +310,8 @@ The registry transaction preserves existing ownership, policy, generations and
 connection records. Concurrent enrolment returns `already-registered` for the
 loser without another write. Pane PID and script bytes are rechecked before
 the transaction; changed evidence is refused. New records default to policy
-`never`, preserving the earlier recovery safety contract. Existing incomplete
+`never`, preserving the earlier recovery safety contract (since superseded by the
+default `auto`; see [enrolled-sessions-default-to-relaunch-never.md](enrolled-sessions-default-to-relaunch-never.md)). Existing incomplete
 records retain their recorded launch arguments when constructing their recipe.
 The original named enrolment command and its output contract remain unchanged.
 

@@ -27,7 +27,7 @@ Coverage index (non-authoritative):
 | Ask entry | Where covered |
 |-----------|---------------|
 | "migrate ... cc session / worktree / cc tasks / memory / resume message files" | Shipped by #253; parity preserved (T-01 inventory) |
-| "any held doc files" | Gap 1 (T-01), gaps 2-3 (T-04, ai-harness side, reached through T-02) |
+| "any held doc files" | Gap 1 (T-01), gaps 2-3 (T-04, automation framework side, reached through T-02) |
 | "any other relevant artifacts as appropriate" | Gaps 4-6 (T-01, T-03), unmeasured classes (D-5) |
 | "update ... migrate command tooling to also migrate any other artifacts ... that aren't migrated autonomously but should be" | Whole plan; D-5 records what is deliberately deferred and why |
 | "add whatever commands or modules / code etc." | New modules T-02, T-03; new `held` verb T-04 |
@@ -36,7 +36,7 @@ Coverage index (non-authoritative):
 
 **Created:** 2026-10-12
 
-**Task:** AI-CLI-6xyr (this repo); companion ai-harness task for the held-store verb.
+**Task:** AI-CLI-6xyr (this repo); companion automation framework task for the held-store verb.
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -54,7 +54,7 @@ Coverage index (non-authoritative):
   - [T-01: Core artifacts the migration still leaves behind (gaps 1, 4, 6)](#t-01-core-artifacts-the-migration-still-leaves-behind-gaps-1-4-6)
   - [T-02: External rekey hooks (the public package reaches private tooling)](#t-02-external-rekey-hooks-the-public-package-reaches-private-tooling)
   - [T-03: Session-named agent worktrees and branches across every repo (gap 5)](#t-03-session-named-agent-worktrees-and-branches-across-every-repo-gap-5)
-  - [T-04: held migrate verb in ai-harness (gaps 2 and 3)](#t-04-held-migrate-verb-in-ai-harness-gaps-2-and-3)
+  - [T-04: held migrate verb in automation framework (gaps 2 and 3)](#t-04-held-migrate-verb-in-automation framework-gaps-2-and-3)
   - [T-05: adopt-session runs the hooks (adopt parity)](#t-05-session-adopt-runs-the-hooks-adopt-parity)
   - [T-06: hooks for the classes D-5 deferred](#t-06-hooks-for-the-classes-d-5-deferred)
 - [Batch Plan](#batch-plan)
@@ -77,7 +77,7 @@ Coverage index (non-authoritative):
 branch, transcript project directory, task namespace, resume tree, launcher state and iTerm2 record.
 A live migration on 2026-10-12 measured six classes it left behind (the gap list on `AI-CLI-6xyr`):
 held-output replay files in the main tree's memory directory, the git-tracked held store and its
-landing-pad worktree (owned by ai-harness), the parked canonical branch when the worktree's HEAD is a
+landing-pad worktree (owned by automation framework), the parked canonical branch when the worktree's HEAD is a
 topic branch, session-named agent worktrees and `wt/<session>/*` branches across every repo, and the
 emptied task namespace directory. This plan carries each of them, every one listed in `--dry-run`
 and moved under the same refuse-if-live guard, and adds the one extension point (D-1) that lets
@@ -90,7 +90,7 @@ to the existing `PlannedMove` planner so that task can share it unchanged.
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` in ai-harness is AUTHORITATIVE):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` in automation framework is AUTHORITATIVE):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -146,7 +146,7 @@ dir exists. Every one keeps a parity AC (the existing seven tests stay green unc
 **Batch:** 1
 
 Implements D-1. A drop-in directory of small TOML files declares external commands that
-`migrate-session` runs with the old and new names. Private tooling (the ai-harness `held migrate`
+`migrate-session` runs with the old and new names. Private tooling (the automation framework `held migrate`
 verb of T-04, and later Agent Mail / Buzz / issue-tracker rekeys) joins the migration by dropping a
 file in, and the public package never names it.
 
@@ -195,7 +195,7 @@ apply call from `session_migrate.py`. For every git repository directly under th
   `<repo>/.worktrees/<new>-agents/<leaf>` via `git worktree move`; the emptied container is removed;
 - every local branch `wt/<old>/<leaf>` is renamed to `wt/<new>/<leaf>` through
   `branch_rename.rename_branch_anchored` (T-01), whether or not it is checked out;
-- every `branch.<renamed>.aih-session-home` marker whose value names the old slot is rewritten to the
+- every `branch.<renamed>.app-session-home` marker whose value names the old slot is rewritten to the
   new slot (the key follows the branch automatically under `git branch -m`).
 
 A worktree in which a live Claude Code process has its cwd (`live_sessions`) is not moved; it is
@@ -218,13 +218,13 @@ keeps a consistent view. The migration does not refuse for it (it is not the ses
 
 **Dependencies:** T-01 (`branch_rename`)
 
-### T-04: held migrate verb in ai-harness (gaps 2 and 3)
+### T-04: held migrate verb in automation framework (gaps 2 and 3)
 
 **Size:** M
-**Batch:** 1 (ai-harness repo; lands through its own PR)
+**Batch:** 1 (automation framework repo; lands through its own PR)
 
 Adds `held_cli.py migrate --old <slug> --new <slug> [--machine <m>] [--dry-run] [--json]
-[--provenance-file]` to ai-harness `scripts/held_cli.py`, implementing D-4. For every store
+[--provenance-file]` to automation framework `scripts/held_cli.py`, implementing D-4. For every store
 `held_cli stores` routes to:
 
 1. If the old landing pad `<store>/.worktrees/<m>--<old>-agents/held-<old>` exists on
@@ -245,7 +245,7 @@ scratch check. Also add a guard test to `tests/test_ref_delete_guard.py`: with t
 enabled, `git branch -m` of a packed, unintegrated branch is refused, and the same rename succeeds
 after `refs/preserved/migrate-session/<branch>` is written at its tip (the premise of D-2).
 
-**Deliverables (ai-harness):**
+**Deliverables (automation framework):**
 
 - Files modified: `scripts/held_cli.py`, `docs/held/README.md` (verb list), `tests/test_held_cli.py`, `tests/test_ref_delete_guard.py`, `install.sh` (drops the hook file of T-02 into `migrate-session.d/held.toml`, idempotent)
 
@@ -319,7 +319,7 @@ cache is keyed by the session id too.
 
 | Batch | Tasks | Focus | Exit gate |
 |-------|-------|-------|-----------|
-| 1 | T-01, T-02, T-04 | Core gaps, the hook contract, the ai-harness verb (parallel; T-04 in its own repo) | All batch ACs checked; ai-cli-utils `ruff check`, `ruff format --check`, `pyright src/`, `pytest` green; ai-harness `held_cli` + guard tests green; both PRs merged and content-verified on `origin/main` |
+| 1 | T-01, T-02, T-04 | Core gaps, the hook contract, the automation framework verb (parallel; T-04 in its own repo) | All batch ACs checked; ai-cli-utils `ruff check`, `ruff format --check`, `pyright src/`, `pytest` green; automation framework `held_cli` + guard tests green; both PRs merged and content-verified on `origin/main` |
 | 2 | T-03 | Agent worktrees and branches across repos | All T-03 ACs checked; same ai-cli-utils gate green; PR merged and content-verified |
 | 3 | T-05, T-06 | Adopt parity; the classes D-5 deferred (T-06 in the private harness repository) | All T-05/T-06 ACs checked; both gates green; both PRs merged and content-verified |
 
@@ -356,7 +356,7 @@ cache is keyed by the session id too.
 
 ### T-04
 
-- [x] AC-4.1 … AC-4.7: shipped in ai-harness #3138 (squash `2d5f464ff`): `held_cli.py migrate`
+- [x] AC-4.1 … AC-4.7: shipped in automation framework #3138 (squash `2d5f464ff`): `held_cli.py migrate`
   with its tests in `tests/test_held_cli.py`, the guard-premise test in
   `tests/test_ref_delete_guard.py` (a packed, unanchored branch's `git branch -m` is refused until
   `refs/preserved/migrate-session/<branch>` holds its tip) and `install.sh` Step 5q writing
@@ -388,7 +388,7 @@ cache is keyed by the session id too.
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
-| D-1 | How the public package reaches private session-keyed tooling | (a) drop-in hook directory, (b) hard-coded call to the ai-harness verb, (c) print the command only | (a) | (a) | No | Public package stays generic; hooks extend refuse-if-live; config over code | `Resolved` |
+| D-1 | How the public package reaches private session-keyed tooling | (a) drop-in hook directory, (b) hard-coded call to the automation framework verb, (c) print the command only | (a) | (a) | No | Public package stays generic; hooks extend refuse-if-live; config over code | `Resolved` |
 | D-2 | Renaming a branch a ref-deletion guard refuses | (a) anchor under `refs/preserved/migrate-session/` then `git branch -m`, (b) `git branch -c` + guarded delete, (c) leave unrenamed and report | (a) | (a) | No | Only sanctioned by-hand anchor namespace; also the crash-safe shape | `Resolved` |
 | D-3 | Scope of gap 5 | (a) move worktrees and rename every `wt/<old>/*` branch, skipping live-held, (b) worktrees only, (c) report only | (a) | (a) | No | Ownership is inferred from the names; a half rename is a wrong owner | `Resolved` |
 | D-4 | How the held store moves | (a) commit in the new pad, print the ship command, (b) commit and ship | (a) | (a) | No | `ship` needs a forge CLI absent on a fleet host; a half-ship is worse than a durable pad commit | `Resolved` |
@@ -402,7 +402,7 @@ cache is keyed by the session id too.
 #### D-1: How the public package reaches private session-keyed tooling — ✅ Resolved: (a) drop-in hook directory
 
 **Context.** The held store, its landing pad, Agent Mail and Buzz identities and tracker assignees are
-all keyed by the session name, and all live in private tooling (ai-harness). `ai-cli-utils` is a
+all keyed by the session name, and all live in private tooling (automation framework). `ai-cli-utils` is a
 public package that must not name them. The migration must still list and move them in one run.
 
 ##### (a) Drop-in hook directory (`<config>/migrate-session.d/*.toml`)
@@ -412,7 +412,7 @@ public package that must not name them. The migration must still list and move t
 - The public package stays generic: it runs "external rekey hooks", nothing more.
 - A hook that refuses in dry-run refuses the whole migration, so private artifacts join the
   refuse-if-live guard instead of trailing behind it.
-- Config over code: ai-harness `install.sh` drops one file; adding a class later is one more file.
+- Config over code: automation framework `install.sh` drops one file; adding a class later is one more file.
 - A TOML `argv` list is OS-portable; no executable bits or shell strings.
 
 **Cons:**
@@ -420,7 +420,7 @@ public package that must not name them. The migration must still list and move t
 - A hook failure after the core moves cannot be rolled back; the repair is re-running the hook.
 - Hooks run with the user's privileges on the user's say-so (a config file), like every tool here.
 
-##### (b) Hard-code a call to the ai-harness verb
+##### (b) Hard-code a call to the automation framework verb
 
 **Pros:**
 
@@ -503,7 +503,7 @@ is not.
 
 > **Decision:** ✅ Resolved — (a) anchor under `refs/preserved/migrate-session/` then `git branch -m`
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-2; decision-topic=guarded-branch-rename-path; governs=module:src/ai_cli/branch_rename.py; normalized-proposition=every branch rename the migration performs writes a refs/preserved/migrate-session anchor at the tip first; applicability=repo:ai-cli-utils,ai-harness; outcome-id=anchored-rename; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-2; decision-topic=guarded-branch-rename-path; governs=module:src/ai_cli/branch_rename.py; normalized-proposition=every branch rename the migration performs writes a refs/preserved/migrate-session anchor at the tip first; applicability=repo:ai-cli-utils,automation framework; outcome-id=anchored-rename; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The leftover-refs Con is accepted: a ref is forty bytes, the namespace is already the fleet's
 by-hand anchor, and the anchors are listed in the dry run so their count is visible before the run.
@@ -518,7 +518,7 @@ The premise (an anchored packed branch renames under the enabled guard) is pinne
 **Context.** A session's delegated work lives in `<repo>/.worktrees/<session>-agents/<leaf>` on
 `wt/<session>/<leaf>` across every repo it touched (measured: hundreds of branches in one repo, a
 dozen worktrees in another). The lifecycle tooling infers the owner from the session segment and
-from `aih-session-home` markers; after a rename the old name is a dead owner.
+from `app-session-home` markers; after a rename the old name is a dead owner.
 
 ##### (a) Move every agent worktree and rename every `wt/<old>/*` branch, in every repo under the projects dir, skipping any worktree a live process holds
 
@@ -597,7 +597,7 @@ CLI (absent on at least one fleet host).
 
 > **Decision:** ✅ Resolved — (a) commit in the pad, print the ship command
 <!-- decision-record: chosen-option=(a); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-4; decision-topic=held-store-migration-landing; governs=script:ai-harness/scripts/held_cli.py#migrate; normalized-proposition=held migrate commits in the new landing pad and prints the ship command instead of shipping; applicability=repo:ai-harness; outcome-id=held-migrate-verb; relation=different-question; related-decision-id=AI-CLI-6xyr/D-1; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-4; decision-topic=held-store-migration-landing; governs=script:automation framework/scripts/held_cli.py#migrate; normalized-proposition=held migrate commits in the new landing pad and prints the ship command instead of shipping; applicability=repo:automation framework; outcome-id=held-migrate-verb; relation=different-question; related-decision-id=AI-CLI-6xyr/D-1; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
 The stale-main-tree Con is mitigated by the printed command (relayed by the hook into the migration's
 own output) and by the pad being the authoritative read for the session's items.
@@ -627,7 +627,7 @@ changed by a separate owner.
 - Targets an identity form in flux; a renamed Buzz key collides with the one already minted.
 - Needs tracker writes and mail-board registration from a public package's run.
 
-##### (b) Defer to a follow-up ai-harness hook (D-1); ledgers never rewritten
+##### (b) Defer to a follow-up automation framework hook (D-1); ledgers never rewritten
 
 **Pros:**
 
@@ -642,9 +642,9 @@ changed by a separate owner.
 
 > **Decision:** ✅ Resolved — (b) defer through the hook; ledgers never rewritten
 <!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=us.anthropic.claude-fable-5-1[1m]; ai-effort=high; ai-profile=architect/coordinator -->
-<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-5; decision-topic=unmeasured-session-keyed-classes; governs=issue:ai-harness-follow-up; normalized-proposition=Agent Mail, Buzz and tracker assignee rekeys land as a later ai-harness hook; lifecycle ledgers are never rewritten; applicability=repo:ai-harness; outcome-id=follow-up-filed; relation=different-question; related-decision-id=AI-CLI-6xyr/D-1; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+<!-- decision-lineage: decision-id=AI-CLI-6xyr/D-5; decision-topic=unmeasured-session-keyed-classes; governs=issue:automation framework-follow-up; normalized-proposition=Agent Mail, Buzz and tracker assignee rekeys land as a later automation framework hook; lifecycle ledgers are never rewritten; applicability=repo:automation framework; outcome-id=follow-up-filed; relation=different-question; related-decision-id=AI-CLI-6xyr/D-1; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
 
-The Con is mitigated by filing the follow-up in ai-harness before this run closes (its id is recorded
+The Con is mitigated by filing the follow-up in automation framework before this run closes (its id is recorded
 in the Approval Log) and by the migration's output ending with the hook summary, so an operator sees
 which hooks ran.
 
@@ -730,8 +730,8 @@ the proof it needs is the poller's last pass, no older than five minutes.
 | Date | Decision | Actor | Notes |
 |------|----------|-------|-------|
 | 2026-10-12 | D-1 … D-5 resolved | Coordinating AI (claude, us.anthropic.claude-fable-5-1[1m]) | Authority test passed for each: reversible, inside the operator's pre-approved run, no interface outside the two repos |
-| 2026-10-12 | D-5 follow-up filed | Coordinating AI | The deferred classes (Agent Mail state, Buzz identity merge, tracker assignee; ledgers never rewritten) are an ai-harness issue filed the same day and linked from the owning ai-harness task |
-| 2026-10-13 | Batch 1 exit gate met | Coordinating AI | #261 (this repo) and ai-harness #3138 merged, verified by content on `origin/main`, main trees synced, the T-01/T-02 child worktree reaped with proof |
+| 2026-10-12 | D-5 follow-up filed | Coordinating AI | The deferred classes (Agent Mail state, Buzz identity merge, tracker assignee; ledgers never rewritten) are an automation framework issue filed the same day and linked from the owning automation framework task |
+| 2026-10-13 | Batch 1 exit gate met | Coordinating AI | #261 (this repo) and automation framework #3138 merged, verified by content on `origin/main`, main trees synced, the T-01/T-02 child worktree reaped with proof |
 | 2026-10-13 | D-5 deferral closed; D-6 resolved | Implementing AI (claude, us.anthropic.claude-opus-5-5[1m]) | T-05 and T-06 added; Authority test passed for D-6: reversible, inside the requested scope, no interface outside the two repos |
 
 <!-- /doc:region name="overview" -->

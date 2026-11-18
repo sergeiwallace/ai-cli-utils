@@ -143,9 +143,10 @@ def test_given_term_resistant_pane_tree_when_owned_session_is_killed_then_no_pan
             )
             assert marked.returncode == 0
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not child_pid_file.exists():
+            # write_text creates the file before it writes, so wait for the pid itself.
+            while time.monotonic() < deadline and not (child_pid_file.exists() and child_pid_file.read_text()):
                 time.sleep(0.05)
-            assert child_pid_file.exists(), "pane process did not start its child"
+            assert child_pid_file.exists() and child_pid_file.read_text(), "pane process did not start its child"
             child_pid = int(child_pid_file.read_text())
             pane = subprocess.run(
                 [*tmux_command, "display-message", "-p", "-t", session_id, "#{pane_pid}"],

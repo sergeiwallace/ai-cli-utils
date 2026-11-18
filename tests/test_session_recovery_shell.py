@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 from conftest import tmux_runnable
+from legacy_run_state import legacy_run_state_helpers, legacy_state_functions  # noqa: F401  (autouse fixture)
 from process_ownership import watch_tmux_directory
 from process_wait import process_wait_seconds
 
@@ -115,11 +116,12 @@ class _RemoteSession:
         # in, as on Debian and Ubuntu) run the full-screen newuser wizard, which clears
         # the pane before the stop line and banner can be read.
         (home / ".zshrc").write_text("# test home\n")
-        script.write_text(
-            get_engine_script(
-                "c", "recovery", session, "c-recovery-", "recovery", worktree_dir=str(tmp_path), is_remote=True
+        with legacy_state_functions():
+            script.write_text(
+                get_engine_script(
+                    "c", "recovery", session, "c-recovery-", "recovery", worktree_dir=str(tmp_path), is_remote=True
+                )
             )
-        )
         script.chmod(0o700)
         inherited = {key: value for key, value in os.environ.items() if not key.startswith("DIRENV_")}
         created = subprocess.run(

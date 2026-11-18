@@ -131,6 +131,66 @@ def test_given_a_setuid_process_in_the_tree_when_the_watcher_reaps_then_the_rest
             directory.rmdir()
 
 
+def test_given_a_pane_child_orphaned_in_a_group_of_its_own_when_the_watcher_reaps_then_it_is_gone_too(tmp_path):
+    """A pane process that left its group and lost its parent is no longer the server's descendant.
+
+    The session wrapper parks an exec helper in a process group of its own until the
+    supervisor wakes it. When the supervisor dies first, the helper is reparented away
+    from the tmux server and waits for good. Measured: one stayed alive for hours after
+    its run. It never leaves the pane's session, so that is where cleanup must find it.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="ai-cli-orphan-"))
+    sock = directory / "tmux.sock"
+    orphan_record = tmp_path / "orphan"
+    pane = textwrap.dedent(f"""
+        import os, time
+        if os.fork() == 0:
+            os.setpgid(0, 0)
+            if os.fork() == 0:
+                with open({str(orphan_record)!r} + ".tmp", "w") as out:
+                    out.write(str(os.getpid()))
+                os.replace({str(orphan_record)!r} + ".tmp", {str(orphan_record)!r})
+                time.sleep(300)
+            os._exit(0)
+        time.sleep(300)
+    """)
+    processes = []
+    try:
+        subprocess.run(
+            ["tmux", "-S", str(sock), "new-session", "-d", "-s", "test-session", sys.executable, "-c", pane],
+            check=True,
+        )
+        server = subprocess.run(
+            ["tmux", "-S", str(sock), "display-message", "-p", "#{pid}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        root = psutil.Process(int(server.stdout))
+        assert _wait(orphan_record.exists), "the pane never forked its orphan"
+        orphan = psutil.Process(int(orphan_record.read_text(encoding="utf-8")))
+        assert _wait(lambda: orphan not in root.children(recursive=True)), "the orphan was never reparented"
+        assert os.getpgid(orphan.pid) != os.getpgid(root.pid)
+        processes = [root, *root.children(recursive=True), orphan]
+        reader, writer = os.pipe()
+        os.close(writer)
+        with pytest.MonkeyPatch.context() as patched, os.fdopen(reader) as closed_pipe:
+            patched.setattr(sys, "stdin", closed_pipe)
+            process_ownership._watch_tmux_directory(directory, "tmux")
+        assert _wait(lambda: not any(_alive(p) for p in processes)), _describe(processes)
+        assert not directory.exists()
+    finally:
+        for process in reversed(processes):
+            with contextlib.suppress(psutil.Error):
+                if _alive(process):
+                    process.kill()
+        if directory.exists():
+            for socket in directory.iterdir():
+                assert socket.is_socket()
+                socket.unlink()
+            directory.rmdir()
+
+
 @pytest.mark.parametrize(
     ("fixture_module", "fixture_name", "outcome"),
     [

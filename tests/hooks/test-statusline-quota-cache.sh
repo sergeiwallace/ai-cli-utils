@@ -10,6 +10,26 @@
 
 set -euo pipefail
 
+# One owned scratch root for the whole run. The EXIT trap is installed before
+# anything else is created, so an unexpected failure or an interrupt cannot
+# leave directories behind. Background refresh children started by the
+# statusline script record their pid under $ROOT/<group>/pids/ and are stopped
+# by exact pid before the files they use are deleted.
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/statusline-quota-cache.XXXXXX")
+_cleanup() {
+    local f p
+    for f in "$ROOT"/*/pids/*; do
+        [[ -f "$f" ]] || continue
+        p="${f##*/}"
+        kill "$p" 2>/dev/null || true
+    done
+    for p in $(jobs -p); do
+        kill "$p" 2>/dev/null || true
+    done
+    rm -rf "$ROOT"
+}
+trap _cleanup EXIT
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.."
 SCRIPT="$REPO_ROOT/src/ai_cli/data/statusline-command.sh"
 PASS=0
@@ -107,6 +127,9 @@ install_fake_ai() {
     cat > "$tmpdir/bin/ai" <<FAKE
 #!/usr/bin/env bash
 if [[ "\$1 \$2" == "quota statusline-part" ]]; then
+    mkdir -p "$tmpdir/pids"
+    : > "$tmpdir/pids/\$\$"
+    trap 'rm -f "$tmpdir/pids/\$\$"' EXIT
     echo "CALL" >> "\${CALL_LOG:-/dev/null}"
     [[ "$sleep_ms" -gt 0 ]] && sleep $sleep_secs
     echo "$return_value"
@@ -122,7 +145,7 @@ echo ""
 
 # 1. Fresh cache (< 30s): no Python call, cached value shown
 echo "Group: fresh cache"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 10 "📊 CACHED"
 install_fake_ai "$TMPDIR" "📊 NEW"
 output=$(run_script "$TMPDIR")
@@ -134,7 +157,7 @@ rm -rf "$TMPDIR"
 # 2. Stale cache (60s): serve stale value, fire background refresh
 echo ""
 echo "Group: stale cache (serve-stale path)"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 60 "📊 STALE"
 install_fake_ai "$TMPDIR" "📊 FRESH" 100
 output=$(run_script "$TMPDIR")
@@ -145,10 +168,16 @@ _assert_eq "stale cache: exactly 1 background refresh call" "1" "$(call_count "$
 wait 2>/dev/null || true
 rm -rf "$TMPDIR"
 
+# Test hook: a deliberate failure part-way through, used by the cleanup check below.
+if [[ -n "${QUOTA_TEST_FORCE_FAILURE:-}" ]]; then
+    echo "forced failure" >&2
+    false
+fi
+
 # 3. Very old cache (> 300s): synchronous fetch, fresh value shown
 echo ""
 echo "Group: very old cache (sync fetch)"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 400 "📊 VERY_OLD"
 install_fake_ai "$TMPDIR" "📊 SYNC_FRESH"
 output=$(run_script "$TMPDIR")
@@ -160,7 +189,7 @@ rm -rf "$TMPDIR"
 # 4. No cache (first call): synchronous fetch
 echo ""
 echo "Group: no cache (first call)"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 install_fake_ai "$TMPDIR" "📊 FIRST"
 output=$(run_script "$TMPDIR")
 _assert_contains "no cache: fresh value shown" "$output" "FIRST"
@@ -170,7 +199,7 @@ rm -rf "$TMPDIR"
 # 5. After sync fetch: cache file written with correct format
 echo ""
 echo "Group: cache file format"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 install_fake_ai "$TMPDIR" "📊 WRITTEN"
 run_script "$TMPDIR" >/dev/null
 cache_file="$TMPDIR/.ai-sl-quota-${REAL_UID}"
@@ -203,7 +232,7 @@ rm -rf "$TMPDIR"
 # 6. Lock file present (fresh, < 120s): no additional background refresh
 echo ""
 echo "Group: lock file / stampede prevention"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 60 "📊 STALE"
 write_lock "$TMPDIR" 30  # lock is 30s old — fresh
 install_fake_ai "$TMPDIR" "📊 NEW"
@@ -213,7 +242,7 @@ _assert_eq "fresh lock present: no background refresh" "0" "$(call_count "$TMPDI
 rm -rf "$TMPDIR"
 
 # 7. Lock file present but stale (> 120s): replaced, background refresh fires
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 90 "📊 STALE"
 write_lock "$TMPDIR" 130  # lock is 130s old — stale
 install_fake_ai "$TMPDIR" "📊 REFRESHED" 50
@@ -224,7 +253,7 @@ wait 2>/dev/null || true
 rm -rf "$TMPDIR"
 
 # 8. After background refresh: cache is updated with fresh value
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 60 "📊 STALE"
 install_fake_ai "$TMPDIR" "📊 BACKGROUND_RESULT" 50
 run_script "$TMPDIR" >/dev/null 2>&1
@@ -250,7 +279,7 @@ rm -rf "$TMPDIR"
 # 9. Concurrent invocations with stale cache: only 1 background refresh fires
 echo ""
 echo "Group: concurrent invocation safety"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 60 "📊 STALE"
 install_fake_ai "$TMPDIR" "📊 CONCURRENT" 50
 # Fire 5 concurrent script invocations
@@ -268,7 +297,7 @@ rm -rf "$TMPDIR"
 # 10. Concurrent invocations with no cache: all see cache miss simultaneously
 # At most all 5 fire synchronously (unavoidable cold start race), but the second
 # invocation to complete writes the cache, reducing the window for subsequent ones.
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 install_fake_ai "$TMPDIR" "📊 COLD" 50
 for _ in $(seq 1 5); do
     run_script "$TMPDIR" >/dev/null &
@@ -279,7 +308,7 @@ _assert_le "5 concurrent cold-start invocations: at most 5 sync calls" 5 "$count
 rm -rf "$TMPDIR"
 
 # 11. Lock file removed after background refresh completes
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d "$ROOT/group.XXXXXX")
 write_cache "$TMPDIR" 60 "📊 STALE"
 install_fake_ai "$TMPDIR" "📊 DONE" 50
 run_script "$TMPDIR" >/dev/null 2>&1
@@ -294,6 +323,17 @@ else
     FAIL=$(( FAIL + 1 ))
 fi
 rm -rf "$TMPDIR"
+
+# 12. A failing run leaves no scratch directories behind (EXIT trap).
+echo ""
+echo "Group: cleanup on failure"
+outer=$(mktemp -d "$ROOT/outer.XXXXXX")
+if QUOTA_TEST_FORCE_FAILURE=1 TMPDIR="$outer" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+    echo "  FAIL: forced-failure run unexpectedly succeeded"
+    FAIL=$(( FAIL + 1 ))
+else
+    _assert_eq "failed run leaves no scratch entries" "0" "$(find "$outer" -mindepth 1 | wc -l | tr -d ' ')"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

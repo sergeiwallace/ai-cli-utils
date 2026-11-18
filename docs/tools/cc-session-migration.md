@@ -37,6 +37,13 @@ the newest transcript currently titled OLD instead, as long as every transcript
 titled NEW was started after that migration. A transcript titled NEW that is
 older than the migration is the session's own retitled history and still wins.
 
+A session relaunched under NEW before its migration finished starts a second
+transcript titled NEW, which can then be the most recently active one. The
+ledger names the transcripts each migration moved, so when several transcripts
+are titled NEW the resume takes the newest moved one, and its note names each
+transcript it skipped because no migration moved it. A slot with no migration on
+record still resumes the most recently active transcript titled NEW.
+
 So if the conversation you want was actually run at the repo root — e.g. a plain
 `claude --name myproject-2` after `ai c 2` failed to launch — its transcript sits
 in the repo root's project directory where step 2 can never find it. The fix is

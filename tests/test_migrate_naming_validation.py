@@ -34,7 +34,7 @@ def registered_repo(tmp_path, monkeypatch):
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
     subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], check=True)
     settings = {"project_registry": {str(repo): {"prefix": "myrepo"}}}
-    monkeypatch.setattr(config, "load_config", lambda: settings)
+    monkeypatch.setattr(config, "load_config", lambda *, read_only=False: settings)
     monkeypatch.setattr(session, "is_current_project_resolved", lambda: True)
     monkeypatch.setattr(session, "_tmux_session_names", list)
     monkeypatch.chdir(repo)

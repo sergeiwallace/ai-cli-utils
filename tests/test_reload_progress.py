@@ -43,6 +43,7 @@ import psutil
 import pyte
 from process_wait import process_wait_seconds, scaled
 
+from ai_cli import session_run_state
 from ai_cli.session_script import get_engine_script, resolve_session_shell
 
 REPO = Path(__file__).resolve().parents[1]
@@ -60,6 +61,50 @@ _SGR = re.compile(r"\x1b\[[0-9;]*m")
 _RELOAD_ROW = "reloading (attempt "
 # A rendered record may lead with its datetime element.
 _SESSION_LINE = re.compile(r"^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{2,5} )?\[session\] reload: ")
+
+
+@contextlib.contextmanager
+def harness_environment(state: Path, home: Path, config_home: Path):
+    """Point this process at the harness's own state while a script is generated.
+
+    The generated script bakes in the registry and safety paths of the process that renders it, and
+    the supervisor persists run state through the loaded installation rather than the stand-in `ai`
+    on PATH, so a script rendered outside this scope would name the wrong registry.
+    """
+    names = ("XDG_STATE_HOME", "HOME", "XDG_CONFIG_HOME")
+    saved = {name: os.environ.get(name) for name in names}
+    os.environ.update(XDG_STATE_HOME=str(state), HOME=str(home), XDG_CONFIG_HOME=str(config_home))
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@contextlib.contextmanager
+def _harness_state(state: Path, home: Path, config_home: Path, worktree: Path):
+    """Register the session where the supervisor's pinned installation will look for it."""
+    with harness_environment(state, home, config_home):
+        session_run_state.register(
+            SESSION,
+            recipe={
+                "engine": "c",
+                "session_name": SESSION,
+                "owning_host": "host-a",
+                "argv": ["ai", "c", "1"],
+                "extra_args": [],
+                "options": {},
+                "cwd": str(worktree),
+                "project": "myproject",
+            },
+            host="host-a",
+        )
+        generation = session_run_state.begin(SESSION)
+        (state / "ai-cli-utils" / "harness-generation").write_text(generation, encoding="utf-8")
+        yield
 
 
 class Session:
@@ -93,6 +138,7 @@ class Session:
         worktree.mkdir()
         home = tmp_path / "home"
         (home / "zdotdir").mkdir(parents=True)
+        (home / "zdotdir" / ".zshrc").write_text("", encoding="utf-8")
         config_dir = tmp_path / "config" / "ai-cli-utils"
         config_dir.mkdir(parents=True)
         if config:
@@ -104,17 +150,18 @@ class Session:
         )
         shell = resolve_session_shell()
         assert shell, "the suite needs zsh or bash"
-        script.write_text(
-            get_engine_script(
-                "c",
-                "session-1",
-                SESSION,
-                "test-",
-                "myproject",
-                worktree_dir=str(worktree),
-                launch_log_path=str(launch_log) if launch_log is not None else None,
+        with _harness_state(state, home, tmp_path / "config", worktree):
+            script.write_text(
+                get_engine_script(
+                    "c",
+                    "session-1",
+                    SESSION,
+                    "test-",
+                    "myproject",
+                    worktree_dir=str(worktree),
+                    launch_log_path=str(launch_log) if launch_log is not None else None,
+                )
             )
-        )
         script.chmod(0o700)
         if update_pending:
             # A stamp the template did not bake in: each child reloads after its agent exits.
@@ -189,7 +236,8 @@ class Session:
         fakes = {
             "ai": (
                 "#!/bin/sh\n"
-                f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+                f'if [ "$1" = sessions ] && [ "$2" = _begin ]; then cat {state / "ai-cli-utils" / "harness-generation"}; exit 0; fi\n'
+                f'if [ "$1" = sessions ] && {{ [ "$2" = _sequence ] || [ "$2" = mark ]; }}; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
                 'if [ "$1" = ps ] && [ "$2" = cron ]; then\n'
                 f"  n=$(cat {counter} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {counter}\n"
                 f'  case " {" ".join(map(str, reload_on))} " in *" $n "*)\n'
@@ -215,6 +263,7 @@ class Session:
                 "sys.stdout.write(f'agent-output {index + 1}\\n')\n"
                 "sys.stdout.flush()\n"
                 "time.sleep(runs[min(index, len(runs) - 1)])\n"
+                "sys.exit(1)\n"
             ),
             # With an owned tmux session the supervisor's ownership fence passes silently at exit,
             # so nothing but its EXIT trap can close a row it left open.
@@ -277,6 +326,21 @@ class Session:
         assert code is not None, f"the session never ended; screen: {self.rows()}"
         self._reader.join(timeout=scaled(10))
         return code
+
+    def wait_for_shell(self) -> None:
+        deadline = time.monotonic() + _CEILING_SECONDS
+        while time.monotonic() < deadline:
+            self._track()
+            if b"Returning to an interactive shell." in self.received:
+                return
+            assert self.process.poll() is None, f"the session ended early; screen: {self.rows()}"
+            time.sleep(0.1)
+        pytest.fail(f"the shell never started; screen: {self.rows()}")
+
+    def exit_shell(self) -> None:
+        self.wait_for_shell()
+        os.write(self._master, b"exit\n")
+        assert self.wait_for_exit() == 0
 
     def stopped(self) -> list[str]:
         self._track()
@@ -342,6 +406,36 @@ def _reload_rows(rows: list[str]) -> list[int]:
     return [index for index, row in enumerate(rows) if _RELOAD_ROW in row]
 
 
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_given_quick_agent_exit_when_session_ends_then_no_interactive_shell_starts(
+    session_factory, monkeypatch, exit_code
+):
+    original = Session._fakes
+
+    def fakes(bin_dir, *args):
+        original(bin_dir, *args)
+        agent = bin_dir / "claude"
+        source = agent.read_text(encoding="utf-8")
+        assert "sys.exit(1)" in source
+        agent.write_text(source.replace("sys.exit(1)", f"sys.exit({exit_code})"), encoding="utf-8")
+
+    monkeypatch.setattr(Session, "_fakes", staticmethod(fakes))
+    session = session_factory(reload_on=(), agent_runs=(0.0,), renderer=False)
+    deadline = time.monotonic() + _CEILING_SECONDS
+    while session.process.poll() is None and time.monotonic() < deadline:
+        if b"Returning to an interactive shell." in session.received:
+            pytest.fail(f"a failed start opened an interactive shell; screen: {session.rows()}")
+        time.sleep(0.1)
+    assert session.wait_for_exit() == 0
+    assert len(session.agents()) == 1
+    if exit_code:
+        assert b"exited too quickly" in session.received
+    else:
+        assert b"Returning to the calling shell." in session.received
+        assert b"exited too quickly" not in session.received
+    assert b"Returning to an interactive shell." not in session.received
+
+
 def test_given_repeated_reloads_on_a_pty_when_the_supervisor_restarts_then_one_row_updates_in_place(
     session_factory,
 ):
@@ -402,26 +496,22 @@ def test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_o
         next_text = "agent-output 1"
     elif closer == "record":
         # The second child finds a recorded double Ctrl+C and exits before closing the row, so the
-        # supervisor's own closing message is the next line written.
+        # supervisor's final-exit message is the next line written.
         session = session_factory(reload_on=(1,), exit_on_cron=2)
-        session.wait_for_exit()
-        next_text = "skipping tmux session cleanup"
+        assert session.wait_for_exit() == 0
+        next_text = "Auto-restart stopped. Returning to the calling shell."
     else:
         session = session_factory(reload_on=(1,), exit_on_cron=2, own_tmux_session=True)
-        session.wait_for_exit()
-        next_text = None
+        assert session.wait_for_exit() == 0
+        next_text = "Auto-restart stopped. Returning to the calling shell."
     screen = session.screen()
     rows = [row.rstrip() for row in screen.display]
 
     reload_rows = _reload_rows(rows)
     assert len(reload_rows) == 1, rows
     assert re.search(r"reloading \(attempt 1, \d+s\)$", rows[reload_rows[0]]), rows
-    if next_text is None:
-        assert (screen.cursor.y, screen.cursor.x) == (reload_rows[0] + 1, 0), rows
-        assert rows[reload_rows[0] + 1] == "", rows
-    else:
-        assert any(row.startswith(next_text) or f" {next_text}" in row for row in rows[reload_rows[0] + 1 :]), rows
-        assert next_text not in rows[reload_rows[0]], rows
+    assert any(row.startswith(next_text) or f" {next_text}" in row for row in rows[reload_rows[0] + 1 :]), rows
+    assert next_text not in rows[reload_rows[0]], rows
 
 
 def test_given_redirected_output_when_reloads_repeat_then_each_is_one_plain_counted_line(session_factory):
@@ -457,10 +547,10 @@ def test_given_tostop_on_the_pty_when_reloads_repeat_then_the_supervisor_is_neve
     assert "attempt 3" in session.rows()[_reload_rows(session.rows())[0]]
 
 
-def test_given_a_reload_then_a_normal_agent_exit_when_reloading_again_then_the_count_restarts_at_1(
+def test_given_a_reload_then_an_agent_failure_when_reloading_again_then_the_count_restarts_at_1(
     session_factory,
 ):
-    # Child 1 reloads, child 2 runs an agent that exits normally after 4s, child 3 reloads, child 4 runs.
+    # Child 1 reloads, child 2 runs an agent that fails after 4s, child 3 reloads, child 4 runs.
     session = session_factory(reload_on=(1, 3), agent_runs=(4.0, 600.0))
     session.wait_for_agents(2)
     rows = session.rows()

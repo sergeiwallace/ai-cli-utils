@@ -48,6 +48,7 @@ def launch(tmp_path, monkeypatch):
     def fake_run(argv, **kwargs):
         state.calls.append((argv, kwargs))
         stdout = ""
+        stderr = ""
         code = 0
         if argv[:2] == [sys.executable, str(script)]:
             assert argv[2:] == ["show", "--json"]
@@ -62,6 +63,8 @@ def launch(tmp_path, monkeypatch):
                 stdout = "tmux 3.7c"
             elif argv[1] == "has-session":
                 code = 0 if state.existing else 1
+                # Real tmux names the missing session; an unexplained failure means "unknown".
+                stderr = "" if state.existing else "can't find session: c-myproject-tst-1"
             elif argv[1] == "new-session":
                 stdout = "$1\n"
             elif argv[1] == "set-option" and "@ai_cli_session_generation" in argv:
@@ -75,7 +78,7 @@ def launch(tmp_path, monkeypatch):
                     stdout = state.active_window
                 elif "@ai_cli_session_generation" in argv[-1]:
                     stdout = f"$1\tc-myproject-tst-1\t{state.generation}"
-        return subprocess.CompletedProcess(argv, code, stdout, "")
+        return subprocess.CompletedProcess(argv, code, stdout, stderr)
 
     def fake_execvp(file, argv):
         state.execs.append(argv)

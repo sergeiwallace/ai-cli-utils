@@ -8,6 +8,7 @@ here reaches the network or a real remote.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import subprocess
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from process_ownership import reap, spawn_owned
 
 from ai_cli import config as _config
 from ai_cli import name_list, session_naming
@@ -575,17 +577,21 @@ def test_given_two_offline_launches_and_one_spare_when_both_run_then_exactly_one
     import os
 
     env = dict(os.environ)
-    children = [
-        subprocess.Popen(
-            [sys.executable, "-c", _TAKE_SPARE_CHILD, str(fleet.repo), REF, HOST],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        for _ in range(2)
-    ]
-    outcomes = [json.loads(child.communicate(timeout=60)[0]) for child in children]
+    with contextlib.ExitStack() as stack:
+        children = []
+        for _ in range(2):
+            child = spawn_owned(
+                [sys.executable, "-c", _TAKE_SPARE_CHILD, str(fleet.repo), REF, HOST],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            # Owned the moment it exists, so a failed second spawn, a timeout or a bad
+            # result below cannot leave a worker running after this test.
+            stack.callback(reap, child)
+            children.append(child)
+        outcomes = [json.loads(child.communicate(timeout=60)[0]) for child in children]
 
     assert sorted("took" in outcome for outcome in outcomes) == [False, True]
     refused = next(outcome for outcome in outcomes if "refused" in outcome)
@@ -658,7 +664,11 @@ def test_given_a_row_breaking_its_kind_invariants_when_written_then_it_is_refuse
         reg.checked_row(row)
 
 
-def test_given_no_sibling_registry_when_discovered_then_the_local_registry_is_used_under_a_lock(tmp_path, monkeypatch):
+def test_given_no_sibling_registry_when_discovered_then_the_local_sqlite_registry_is_used_under_a_lock(
+    tmp_path, monkeypatch
+):
+    from ai_cli.name_sqlite import SqliteRegistry
+
     projects = tmp_path / "projects"
     (projects / "plainrepo").mkdir(parents=True)
     monkeypatch.setenv("PROJECTS_DIR", str(projects))
@@ -668,17 +678,17 @@ def test_given_no_sibling_registry_when_discovered_then_the_local_registry_is_us
 
     registry = reg.discover().registry
 
-    assert isinstance(registry, reg.LocalRegistry)
+    assert isinstance(registry, SqliteRegistry)
     # The data home is $XDG_DATA_HOME/ai-cli-utils on POSIX and %LOCALAPPDATA%\ai-cli-utils on Windows.
-    assert registry.root == _config.get_xdg_data_home() / "session-names"
+    assert registry.path == _config.get_xdg_data_home() / "session-names.sqlite3"
     reservation = reg.reserve_picked(registry, _slot(), words=frozenset())
-    assert (registry.root / "names" / f"{reservation.name}.json").is_file()
+    assert reservation.name in reg.discover().registry.snapshot().rows
     assert reservation.name in name_list.read_names(name_list.DATA_DIR / name_list.NAMES_FILE)
     import portalocker
 
     registry.timeout_s, registry.attempts = 0.2, 1
     with (
-        portalocker.Lock(str(registry.root / "registry.lock"), mode="a", timeout=1),
+        portalocker.Lock(str(registry.path.with_suffix(".lock")), mode="a", timeout=1),
         pytest.raises(reg.RegistryContendedError),
     ):
         reg.reserve_picked(registry, _slot(), words=frozenset())
@@ -1167,3 +1177,15 @@ def test_given_a_newer_regeneration_landing_first_when_a_sync_retries_then_it_pu
     assert result.published is False
     assert json.loads(_remote_file(fleet, reg.GENERATION_JSON))["policy_commit"] == newer
     assert commit != newer
+
+
+def test_given_a_case_run_per_registry_backend_when_collected_then_only_the_dolt_case_gets_the_dolt_bound(
+    request, registry_backend
+):
+    from conftest import DOLT_TEST_TIMEOUT_S
+
+    marker = request.node.get_closest_marker("timeout")
+    if registry_backend == "dolt":
+        assert marker.args == (DOLT_TEST_TIMEOUT_S,)
+    else:
+        assert marker is None or marker.args != (DOLT_TEST_TIMEOUT_S,)

@@ -7,7 +7,6 @@ agent client, registry or messaging service outside this test is used.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -22,15 +21,25 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import reap_tree, watch_session
+from process_wait import process_wait_seconds
 
 from ai_cli import config, main, session_restart, session_run_state
-from ai_cli.process_probe import probe_for
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_ID = "22222222-2222-4222-8222-222222222222"
 SESSION = "c-myproject-box-1"
 TITLE = "myproject-box-1"
 _REAL_SOCKET = socket.socket
+# Every exec in these fixtures can cost a second or more on a loaded host, and one restart
+# starts dozens of them, so fixed 5 s and 60 s bounds let a fixture agent's start, its
+# shutdown or a replacement's verification time out before it had a chance to finish.
+# Scaled with host load; each wait still returns as soon as its condition holds.
+_PROCESS_WAIT_SECONDS = process_wait_seconds()
+# The suite's default 300 s bound (pyproject) is for a test that waits on nothing. These tests
+# chain several real-process waits of up to _PROCESS_WAIT_SECONDS each, which reaches 240 s on a
+# loaded runner, so their bound is derived from the same load scale.
+pytestmark = pytest.mark.timeout(300 + 4 * _PROCESS_WAIT_SECONDS)
 
 
 class _ModuleView:
@@ -55,8 +64,21 @@ def restart_ipc():
         pytest.skip("sandbox prohibits local sockets required for the exec acknowledgement")
 
 
-def _wait_for(check, process, timeout=60):
-    deadline = time.monotonic() + timeout
+def _launch_records(path):
+    """Every complete record the fixture agent appended to ``path``, oldest first.
+
+    The agent opens the file for append before it writes, so a reader can find it
+    existing and empty, or holding a line still being written. Only a line ended by
+    its newline is a whole record.
+    """
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.split("\n")[:-1] if line]
+
+
+def _wait_for(check, process):
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         value = check()
         if value:
@@ -202,7 +224,10 @@ elif args[:2] == ['internal', 'restart-pin']:
     status, transcript = child_pin(args[2], args[3])
     if transcript: print(transcript)
     sys.exit(status)
-elif args[:2] in (['sessions', '_begin'], ['sessions', '_sequence']): print('1')
+elif args[:1] == ['sessions'] and args[1:2] and args[1] in ('_begin', '_sequence', 'mark'):
+    # The supervisor persists run state through its own pinned installation, so the
+    # fixture's registry is the only state both sides can agree on.
+    os.execv(sys.executable, [sys.executable, '-m', 'ai_cli.main', *args])
 """,
         encoding="utf-8",
     )
@@ -270,7 +295,9 @@ print(json.dumps({'status': 'seen', 'complete': True, 'observed_at': time.time()
         .read_text(encoding="utf-8")
         .replace("__PROJECT_DIR__", str(cwd))
     )
-    if getattr(request, "param", None) in ("fenced", "dead-fenced"):
+    # "current" runs the program session_script.py generates today; the fenced
+    # variants run it with a failed restart request already recorded.
+    if getattr(request, "param", None) in ("current", "fenced", "dead-fenced"):
         shell = binaries / "session-shell"
         shell.write_text(
             preamble
@@ -297,7 +324,7 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
         fenced: dict = {"status": "failed"}
         if request.param == "dead-fenced":
             target = subprocess.Popen([sys.executable, "-c", "pass"])
-            target.wait(timeout=5)
+            target.wait(timeout=_PROCESS_WAIT_SECONDS)
             fenced.update(
                 version=1,
                 request_id=OTHER_ID,
@@ -306,7 +333,8 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
                 old_agent_identity={"backend": "procfs", "marker": 1},
                 launch_log_path=str(launch_log),
             )
-        session_restart._atomic_json(session_restart.state_paths(SESSION)[2], fenced)
+        if request.param != "current":
+            session_restart._atomic_json(session_restart.state_paths(SESSION)[2], fenced)
     else:
         source = legacy
     main._write_launch_script_if_changed(script, source)
@@ -323,33 +351,14 @@ os.execv({str(binaries / "bash")!r}, ['bash', *sys.argv[1:]])
     )
     (root / "supervisor-pid").write_text(str(process.pid), encoding="utf-8")
     try:
-        # This shared-module patch must unwind before the conftest spawn guard.
-        with patch.object(session_restart.subprocess, "run", fixture_run):
-            yield root, script, process
+        # The wrapper respawns its children for good, so it must end with this test even
+        # when the test process is killed and this finally never runs.
+        with watch_session(process):
+            # This shared-module patch must unwind before the conftest spawn guard.
+            with patch.object(session_restart.subprocess, "run", fixture_run):
+                yield root, script, process
     finally:
-        # Only test-owned PIDs are eligible. Capture births before signalling;
-        # never use a group or a pattern, even for fixture cleanup.
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.Error:
-            children = []
-        targets = [(child.pid, probe_for().capture_identity(child.pid)) for child in children]
-        targets.append((process.pid, probe_for().capture_identity(process.pid)))
-        for pid, identity in reversed(targets):
-            if identity is not None and probe_for().capture_identity(pid) == identity:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGTERM)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=5)
-        for pid, identity in targets:
-            if (
-                identity is not None
-                and probe_for().capture_identity(pid) == identity
-                and not probe_for().has_ended(pid)
-            ):
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGKILL)
-        process.wait(timeout=5)
+        reap_tree(process)
         diagnostics.close()
 
 
@@ -407,9 +416,8 @@ def test_given_failed_request_when_recovered_then_ac_a_3_same_child_resumes(fenc
             },
         )
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    replacement = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     assert (root / "child-launches").read_text(encoding="utf-8") == children
-    replacement = json.loads(launches.read_text(encoding="utf-8").splitlines()[0])
     assert replacement["argv"][replacement["argv"].index("--resume") + 1] == SESSION_ID
     assert supervisor.poll() is None
 
@@ -432,7 +440,7 @@ def test_given_dead_fenced_target_when_command_clears_then_remedy_named_and_same
     assert audit["actor"]["pid"] == os.getpid()
     assert audit["proof"]["state"] == "gone"
     launches = root / "launches"
-    _wait_for(lambda: launches.exists() and launches.read_text(encoding="utf-8"), supervisor)
+    _wait_for(lambda: _launch_records(launches), supervisor)
     assert (root / "child-launches").read_text(encoding="utf-8") == children
     assert supervisor.poll() is None
 
@@ -448,9 +456,7 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
     launches_path = root / "launches"
 
     def launches():
-        if not launches_path.exists():
-            return []
-        return [json.loads(line) for line in launches_path.read_text(encoding="utf-8").splitlines()]
+        return _launch_records(launches_path)
 
     initial = _wait_for(launches, supervisor)[0]
     old_child = initial["ppid"]
@@ -478,8 +484,8 @@ def test_given_old_supervisor_when_restart_then_pinned_conversation(
         "restart_session": {
             "min_uptime_seconds": 4,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }
@@ -531,10 +537,7 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
 ):
     root, script, supervisor = supervisor_fixture
     launches = root / "launches"
-    initial = _wait_for(
-        lambda: json.loads(launches.read_text(encoding="utf-8").splitlines()[0]) if launches.exists() else None,
-        supervisor,
-    )
+    initial = _wait_for(lambda: _launch_records(launches), supervisor)[0]
     observed = time.monotonic()
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     original_kill = os.kill
@@ -561,8 +564,8 @@ def test_given_old_supervisor_when_event_restart_then_exec_receipt_without_polli
         "restart_session": {
             "min_uptime_seconds": 0,
             "settle_seconds": 0,
-            "term_grace_seconds": 5,
-            "relaunch_timeout_seconds": 60,
+            "term_grace_seconds": _PROCESS_WAIT_SECONDS,
+            "relaunch_timeout_seconds": _PROCESS_WAIT_SECONDS,
             "cooldown_seconds": 0,
         }
     }

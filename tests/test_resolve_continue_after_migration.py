@@ -137,3 +137,20 @@ def test_given_a_partly_migrated_slot_when_bare_launching_new_then_resumes_the_t
     command = _bare_engine_command("c", NEW, slot["cwd"], None, "gemini", "--no-sandbox", [])
 
     assert command[-4:] == ["--resume", REAL, "--name", NEW]
+
+
+def test_given_two_fresh_transcripts_titled_new_when_resolving_a_partly_migrated_slot_then_the_note_names_the_old_one(
+    slot,
+):
+    transcripts = _partly_migrated(slot)
+    _transcript(
+        slot, STRAY, [NEW], MIGRATED_AT + timedelta(hours=2, minutes=2), MIGRATED_AT + timedelta(hours=2, minutes=3)
+    )
+    _record_migration(slot)
+
+    code, out, err = _resolve(slot)
+
+    assert code == 0
+    assert out.strip() == str(transcripts["real"])
+    assert f"Resuming {REAL}, which the migration to '{NEW}' left under its old title" in err
+    assert "Resuming the most recently active one" not in err

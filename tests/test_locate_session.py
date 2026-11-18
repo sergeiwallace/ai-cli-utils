@@ -20,6 +20,8 @@ from ai_cli import name_registry as reg
 from ai_cli import session_locate
 from ai_cli.main import _cli_group
 
+pytestmark = pytest.mark.usefixtures("registry_backend")
+
 ADDED = [
     "list-names",
     "locate-session",
@@ -33,8 +35,30 @@ ADDED = [
     "release-name",
     "reassign-name",
     "probe-transcripts",
+    "set-name-status",
+    "set-name-verdict",
+    "import-names",
+    "seed-name-verdicts",
+    "list-migrations",
+    "find-names",
 ]
-VERBS = {"list", "locate", "add", "remove", "sync", "check", "show", "reconcile", "release", "reassign", "probe"}
+VERBS = {
+    "list",
+    "locate",
+    "add",
+    "remove",
+    "sync",
+    "check",
+    "show",
+    "reconcile",
+    "release",
+    "reassign",
+    "probe",
+    "set",
+    "import",
+    "seed",
+    "find",
+}
 
 
 @pytest.fixture

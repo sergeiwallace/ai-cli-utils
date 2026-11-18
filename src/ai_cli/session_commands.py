@@ -1,5 +1,6 @@
 """Session lifecycle and publication commands."""
 
+import contextlib
 import json
 import os
 import re
@@ -10,30 +11,56 @@ import sys
 import time
 from contextlib import ExitStack
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import click
+import psutil
 
-from . import output, session_boot_unit, session_publish_timer, session_state_publish
+from . import (
+    config,
+    output,
+    session_boot_unit,
+    session_list_view,
+    session_publish_timer,
+    session_reconcile,
+    session_state_publish,
+)
 from . import session_registry as registry
 from . import session_run_state as state
+from .cli_help import HelpGroup
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
+from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_enrol import enrol, heal_live_sessions
 
 
-@click.group("sessions", help="Session run state and publication")
-def sessions():
-    pass
+@click.group(
+    "sessions",
+    cls=HelpGroup,
+    invoke_without_command=True,
+    help="List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs "
+    "`ai sessions list` with the [sessions_list] defaults and the machine profile's visibility limits",
+)
+@click.pass_context
+def sessions(ctx):
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(list_sessions)
 
 
 sessions.add_command(enrol)
 
 
-@sessions.command("mark")
+@sessions.command(
+    "mark",
+    help="Record a session's run state in the registry: running, or exited with a cause (-c) and "
+    "optional JSON evidence (-e)",
+)
 @click.argument("name")
 @click.argument("status", type=click.Choice(["running", "exited"]))
-@click.option("-c", "--cause", type=click.Choice(registry.EXIT_CAUSES))
+@click.option(
+    "-c", "--cause", type=click.Choice(registry.EXIT_CAUSES), help="Why the session exited; required with exited"
+)
 @click.option("-e", "--evidence", default="{}", help="Exit evidence as a JSON object")
 @click.option("--generation", hidden=True)
 @click.option("--sequence", type=int, hidden=True)
@@ -46,16 +73,40 @@ def mark(name, status, cause, evidence, generation, sequence):
         raise click.UsageError("-e/--evidence must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise click.UsageError("-e/--evidence must be a JSON object")
+    if status == "exited" and generation:
+        row = state._find(registry.load_registry(), name)
+        if (
+            row.get("generation") == generation
+            and state.run_state(row) == "exited"
+            and state.exit_teardown(row).get("generation") == generation
+        ):
+            # The exit worker already committed the final state. Preserve its
+            # cleanup targets and errors while the supervisor acknowledges it.
+            return
     if not state.mark(
         name, status, cause=cause or "unknown", evidence=parsed, generation=generation, sequence=sequence
     ):
         raise click.ClickException("session state persistence refused; retry before returning to the shell")
 
 
+@sessions.command("_exit-receipt", hidden=True)
+@click.argument("name")
+@click.argument("generation", required=False)
+@click.argument("timeout", type=click.FloatRange(min=0), default=5.0)
+def exit_receipt(name, generation, timeout):
+    from .session_exit import owning_receipt
+
+    try:
+        output.raw(Untagged.JSON, json.dumps(owning_receipt(name, generation, timeout)))
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_begin", hidden=True)
 @click.argument("name")
 @click.option("--launch-metadata", hidden=True, help="Generated launcher metadata for registration recovery")
-def begin(name, launch_metadata):
+@click.option("--supervisor-pid", type=int, hidden=True)
+def begin(name, launch_metadata, supervisor_pid):
     # Acquisition precedes the generated shell's terminal reset. A previous
     # agent may have left extended keys enabled, encoding Ctrl+C as text. Use
     # the controlling terminal: stdout is a captured generation-token reply.
@@ -68,7 +119,7 @@ def begin(name, launch_metadata):
         def interrupted(_signum, _frame):
             # Old supervisors already check this file before considering a
             # respawn; they otherwise retry a child's ordinary SIGINT status.
-            marker = state.config.get_xdg_state_home() / f"session-int-exit-{name}"
+            marker = int_exit_marker(name)
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
             raise KeyboardInterrupt
@@ -122,7 +173,16 @@ def begin(name, launch_metadata):
             if not state.valid_boot_recipe({"name": name, "owning_host": host, "boot_recipe": recipe}):
                 raise ValueError("invalid launch recovery recipe")
         heal_live_sessions()
-        output.raw(Untagged.INTERNAL_REPLY, state.begin(name, recovery_recipe=recipe))
+        import psutil
+
+        supervisor = None
+        if supervisor_pid is not None:
+            parent = psutil.Process(supervisor_pid)
+            supervisor = {"pid": parent.pid, "started_at": parent.create_time()}
+        output.raw(
+            Untagged.INTERNAL_REPLY,
+            state.begin(name, recovery_recipe=recipe, supervisor=supervisor),
+        )
     except Exception as exc:
         raise click.ClickException(f"cannot acquire a durable supervisor generation: {exc}") from exc
     finally:
@@ -130,12 +190,60 @@ def begin(name, launch_metadata):
             signal.signal(signal.SIGINT, previous_int)
 
 
+_BIND_TMUX_ATTEMPTS = 4
+# Per attempt. Starting the tmux client is itself an exec, which on a loaded host took over
+# the 2 s that teardown allows, on every attempt, so the launch ended before its child ran.
+_BIND_TMUX_TIMEOUT_SECONDS = 10
+
+
+@sessions.command("_bind-exit-tmux", hidden=True)
+@click.argument("name")
+@click.argument("generation")
+@click.argument("session_id")
+@click.argument("token")
+def bind_exit_tmux(name, generation, session_id, token):
+    from .session_exit import TmuxIdentity, _tmux_server
+
+    if not re.fullmatch(r"\$[0-9]+", session_id) or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise click.ClickException("invalid tmux identity")
+    # This runs before the supervisor starts its child, and a failure ends the launch, so a tmux
+    # server that is merely slow to answer on a loaded host must not be mistaken for a missing one.
+    server = None
+    for attempt in range(_BIND_TMUX_ATTEMPTS):
+        try:
+            server = _tmux_server(TmuxIdentity(session_id, token), timeout=_BIND_TMUX_TIMEOUT_SECONDS)
+            break
+        except ValueError as exc:
+            if attempt == _BIND_TMUX_ATTEMPTS - 1:
+                raise click.ClickException(str(exc)) from exc
+            time.sleep(0.5)
+    if server is None:
+        raise click.ClickException("tmux ownership is absent")
+
+    def bind(doc):
+        row = state._find(doc, name)
+        supervisor = row.get("supervisor_identity") or {}
+        if row.get("generation") != generation or supervisor.get("generation") != generation:
+            raise ValueError("stale supervisor generation")
+        supervisor["tmux"] = {"session_id": session_id, "generation": token}
+        return True
+
+    try:
+        registry._mutate(bind, timeout=2)
+    except (ValueError, OSError, registry.RegistryError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @sessions.command("_sequence", hidden=True)
 def sequence():
     output.raw(Untagged.INTERNAL_REPLY, str(time.monotonic_ns()))
 
 
-@sessions.command("publish")
+@sessions.command(
+    "publish",
+    help="Publish a snapshot of the session registry to the configured publication repo, when it "
+    "has unpublished changes and the debounce window has passed",
+)
 @click.option("-n", "--now", is_flag=True, help="Ignore the debounce window")
 @click.option("-t", "--tick", is_flag=True, help="Run one publication timer tick")
 def publish(now, tick):
@@ -143,9 +251,122 @@ def publish(now, tick):
     output.emit(output.Tag.SESSIONS, "sync", result.reason)
 
 
-@sessions.command("list")
-@click.option("-j", "--json", "as_json", is_flag=True, help="Print JSON")
-def list_sessions(as_json):
+def _local_host(doc: dict, cfg: dict | None = None) -> str:
+    if cfg is None:
+        cfg = config.load_config(read_only=True)
+    return cfg.get("machine", {}).get("host_id") or doc["machine"]
+
+
+def _group_hosts(cfg: dict, group_host: str, local: str, published_local: str) -> tuple[dict[str, bool], list[str]]:
+    """Resolve remote group members to publication IDs and flag legacy aliases with no ID mapping."""
+    members = cfg.get("machine", {}).get("session_group_members")
+    if members is None:
+        if not group_host:
+            with contextlib.suppress(config.RemoteMachineError):
+                group_host = config.resolve_remote_machine_alias(cfg) or config.get_remote_machine(cfg).get(
+                    "host_id", ""
+                )
+        if not group_host:
+            return {}, [
+                "No other machine host group members are configured. "
+                "Set [machine] session_group_members on each group host."
+            ]
+        members = [group_host]
+    if not isinstance(members, list):
+        return {}, ["Set [machine] session_group_members to a list of publication host IDs."]
+
+    remote = cfg.get("remote", {})
+    machines = remote.get("machines", {}) if isinstance(remote, dict) else {}
+    hosts = {}
+    notes = []
+    for index, member in enumerate(members, start=1):
+        if member in (local, published_local):
+            continue
+        alias = isinstance(member, str) and isinstance(machines, dict) and member in machines
+        try:
+            machine = config.get_remote_machine(cfg, member) if alias else {}
+        except config.RemoteMachineError:
+            machine = {"host_id": None}
+        host = machine.get("host_id", member)
+        if not isinstance(host, str) or not session_state_publish.HOST_ID.fullmatch(host):
+            name = member if isinstance(member, str) and session_state_publish.HOST_ID.fullmatch(member) else index
+            notes.append(
+                f"Group member {name}: its publication host ID could not be resolved. "
+                "Set the host ID in [machine] session_group_members or [remote.machines.<alias>] host_id."
+            )
+        elif host not in (local, published_local):
+            hosts[host] = hosts.get(host, True) and alias and "host_id" not in machine
+    return hosts, notes
+
+
+def _earlier_boot_gone(record: dict, boot: str | None) -> bool:
+    """Whether a running record is from an earlier boot of this host and is proved gone.
+
+    Only the reader's view changes: the record keeps its running state for the boot relaunch.
+    """
+    if state.run_state(record) != "running" or not boot or record.get("boot_id") in (None, "", boot):
+        return False
+    return session_reconcile.liveness_blocker(record) is None
+
+
+def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
+    rows = []
+    for name, fields in doc["sessions"].items():
+        if not isinstance(fields, dict):
+            continue
+        rows.append(
+            session_list_view.Row(
+                host=host,
+                name=str(name),
+                status=str(fields.get("run_state") or "unknown"),
+                cause=str(fields.get("cause") or ""),
+                changed=str(fields.get("changed_at") or ""),
+                relaunch=str(fields.get("relaunch") or "auto"),
+            )
+        )
+    return rows
+
+
+@sessions.command(
+    "list",
+    help="List sessions as a table grouped by host, active sessions first. Personal profiles include their "
+    "machine host group by default. Work, client and unclassified profiles show this host only. "
+    "-a/--all adds exited, stale and unknown rows. -S/--scope requests host, group or fleet within the machine "
+    "profile's limit. -g/--group-by and -s/--sort-by override the [sessions_list] "
+    "defaults in config.toml. A running record from an earlier boot of this host that tmux and the process "
+    "table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone",
+)
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print this host's registry records as JSON")
+@click.option("-a", "--all", "show_all", is_flag=True, default=None, help="Include exited, stale and unknown sessions")
+@click.option(
+    "-S",
+    "--scope",
+    type=click.Choice(session_list_view.SCOPES),
+    help="Request this host, its machine host group, or all publishing hosts within the profile's limit",
+)
+@click.option("-g", "--group-by", type=click.Choice(session_list_view.GROUP_KEYS), help="Column to group rows by")
+@click.option(
+    "-s",
+    "--sort-by",
+    metavar="KEYS",
+    help=f"Comma-separated sort keys, first key first: {', '.join(session_list_view.SORT_KEYS)}",
+)
+def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_by=None):
+    if as_json and scope in ("group", "fleet"):
+        raise click.UsageError("-j/--json prints this host's registry only; drop -S/--scope or -j")
+    try:
+        cfg = config.load_config(read_only=True)
+        view = session_list_view.settings(cfg)
+        if not as_json:
+            scope = session_list_view.effective_scope(cfg.get("machine", {}), scope or view["scope"])
+        if sort_by is not None:
+            view["sort_by"] = session_list_view.parse_sort(sort_by, "-s/--sort-by")
+    except session_list_view.ViewError as exc:
+        raise click.UsageError(str(exc)) from exc
+    session_reconcile.reconcile()
+    session_reconcile.age_out()
+    doc = registry.load_registry()
+    boot = registry.current_boot_id()
     records = [
         {
             "name": r["name"],
@@ -153,20 +374,256 @@ def list_sessions(as_json):
             "cause": state.cause(r) if state.run_state(r) == "exited" else "",
             "changed_at": r.get("changed_at", ""),
             "relaunch": r.get("relaunch", "auto"),
+            "earlier_boot_gone": _earlier_boot_gone(r, boot),
         }
-        for r in registry.load_registry()["sessions"]
+        for r in doc["sessions"]
     ]
     if as_json:
         output.raw(Untagged.JSON, json.dumps(records))
+        return
+    local = _local_host(doc, cfg)
+    rows = [
+        session_list_view.Row(
+            host=local,
+            name=r["name"],
+            status=session_list_view.STALE if r["earlier_boot_gone"] else r["run_state"],
+            cause=session_list_view.STALE_CAUSE if r["earlier_boot_gone"] else r["cause"],
+            changed=r["changed_at"],
+            relaunch=r["relaunch"],
+        )
+        for r in records
+    ]
+    notes = []
+    if scope != "host":
+        published_local = cfg.get("session_relaunch", {}).get("publish", {}).get("host") or local
+        # None means fleet scope. An empty group needs no snapshot fetch.
+        wanted, notes = (
+            _group_hosts(cfg, view["group_host"], local, published_local) if scope == "group" else (None, [])
+        )
+        if wanted is None or wanted:
+            snapshots = session_state_publish.read_snapshots()
+            if snapshots.problem:
+                notes.append(snapshots.problem)
+            hosts = snapshots.hosts if wanted is None else wanted
+            for host in sorted(hosts):
+                if host in (local, published_local):
+                    continue
+                published = snapshots.hosts.get(host)
+                if published is None:
+                    if snapshots.problem:
+                        continue
+                    if wanted and wanted[host]:
+                        notes.append(
+                            f"{host}: no snapshot matches this remote alias. "
+                            "Set [remote.machines.<alias>] host_id to its publication host ID "
+                            "and run `ai sessions publish` on that host."
+                        )
+                    else:
+                        notes.append(
+                            f"{host}: no readable session snapshot was published. Run `ai sessions publish` on {host}."
+                        )
+                    continue
+                rows += _snapshot_rows(host, published)
+                notes.append(f"{host}: published snapshot from {published.get('published_at') or 'an unknown time'}")
+    group = group_by or view["group_by"]
+    everything = view["show_all"] if show_all is None else show_all
+    groups = session_list_view.arrange(
+        rows, local_host=local, group_by=group, sort_by=view["sort_by"], show_all=everything
+    )
+    if groups:
+        headers, cells = session_list_view.table(groups, group)
+        output.table(headers, cells)
     else:
-        for record in records:
-            output.emit(output.Tag.SESSIONS, "list", "\t".join(record.values()))
+        shown = "sessions" if everything else "running sessions"
+        hint = "" if everything else "; -a/--all shows every row"
+        output.emit(output.Tag.SESSIONS, "list", f"no {shown} recorded{hint}")
+    for note in notes:
+        output.emit(output.Tag.SESSIONS, "list", note)
+
+
+_SESSION_SLUG = r"[A-Za-z0-9_-]+"
 
 
 def _session_slug(_ctx, _param, value):
-    if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+    if value is not None and not re.fullmatch(_SESSION_SLUG, value):
         raise click.BadParameter("invalid session name; use only letters, digits, underscores and hyphens")
     return value
+
+
+def int_exit_marker(tmux_session: str) -> Path:
+    """The file whose presence tells ``tmux_session``'s supervisor to stop instead of relaunching."""
+    return state.config.get_xdg_state_home() / f"session-int-exit-{tmux_session}"
+
+
+STOP_TIMEOUT_SECONDS = 30.0
+
+
+@dataclass
+class StopReport:
+    """What :func:`stop_session` did, and what still runs in the slot afterwards."""
+
+    name: str
+    #: tmux sessions whose live supervisor was given the stop marker.
+    marked: list[str] = field(default_factory=list)
+    supervisors: list[int] = field(default_factory=list)
+    #: Claude Code pids sent SIGTERM.
+    signalled: list[int] = field(default_factory=list)
+    #: Each process or tmux session still in the slot when the wait ended.
+    remaining: list[str] = field(default_factory=list)
+
+    @property
+    def found(self) -> bool:
+        return bool(self.marked or self.signalled or self.remaining)
+
+    @property
+    def stopped(self) -> bool:
+        return not self.remaining
+
+
+def _pane_pids(tmux_session: str) -> list[int]:
+    try:
+        listed = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if listed.returncode != 0:
+        return []
+    return [int(token) for token in (listed.stdout or "").split() if token.isdigit()]
+
+
+def _slot_processes(probe, supervisors: dict[int, object]) -> set[int]:
+    """The pids running under ``supervisors``, read only while each supervisor is still the captured process."""
+    found: set[int] = set()
+    for pid, identity in supervisors.items():
+        with contextlib.suppress(psutil.Error):
+            children = {child.pid for child in psutil.Process(pid).children(recursive=True)}
+            if probe.capture_identity(pid) == identity:
+                found |= children
+    return found
+
+
+def _agent_identity(probe, session) -> object | None:
+    """The process identity of a live Claude Code record, or None when the record cannot prove it."""
+    try:
+        record = json.loads(session.record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if probe.start_time_match(session.pid, normalize_proc_start(record.get("procStart"))) is not StartTimeMatch.MATCH:
+        return None
+    return probe.capture_identity(session.pid)
+
+
+def stop_session(
+    name: str,
+    *,
+    timeout: float = STOP_TIMEOUT_SECONDS,
+    claude_home: Path | None = None,
+    poll_seconds: float = 0.2,
+) -> StopReport:
+    """Stop the session ``name`` so its supervisor exits instead of relaunching the agent.
+
+    A supervisor generated by ``session_script.py`` treats an agent exit as a restart
+    unless its stop marker exists, and deletes that marker when it starts, so the
+    marker is written only for a tmux session whose supervisor is running now. Then
+    each Claude Code process recorded under ``name``, or running under one of those
+    supervisors whatever name its record carries (as after a rename), is sent SIGTERM,
+    by its pid and only when its record's ``procStart`` proves which process holds
+    that pid. The call returns once nothing is left in the slot or ``timeout`` elapses.
+    """
+    from .session_adopt import live_sessions
+    from .session_migrate import _session_variants, _tmux_names
+
+    if not re.fullmatch(_SESSION_SLUG, name):
+        raise ValueError(f"invalid session name: {name!r}")
+    probe = probe_for()
+    report = StopReport(name=name)
+    variants = set(_session_variants(name))
+    tracked: dict[int, object] = {}
+    for tmux_session in sorted(set(_tmux_names()) & variants):
+        live = {
+            pid: identity
+            for pid in _pane_pids(tmux_session)
+            if not probe.has_ended(pid) and (identity := probe.capture_identity(pid))
+        }
+        if not live:
+            continue
+        marker = int_exit_marker(tmux_session)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("stop\n", encoding="utf-8")
+        report.marked.append(tmux_session)
+        report.supervisors.extend(live)
+        tracked.update(live)
+    slot = _slot_processes(probe, tracked)
+
+    def in_slot(session) -> bool:
+        return session.name == name or session.pid in slot
+
+    for session in live_sessions(claude_home):
+        if not in_slot(session):
+            continue
+        identity = _agent_identity(probe, session)
+        if identity is None:
+            continue
+        # On Windows os.kill with SIGTERM terminates the process outright; there is no handler to run.
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(session.pid, signal.SIGTERM)
+        report.signalled.append(session.pid)
+        tracked[session.pid] = identity
+
+    def occupants() -> list[str]:
+        found = [
+            f"supervisor pid {pid}"
+            for pid in report.supervisors
+            if not probe.has_ended(pid) and probe.capture_identity(pid) == tracked[pid]
+        ]
+        for session in live_sessions(claude_home):
+            if not in_slot(session):
+                continue
+            if session.pid in report.signalled or _agent_identity(probe, session) is not None:
+                found.append(f"Claude Code pid {session.pid}")
+            else:
+                found.append(f"Claude Code pid {session.pid} (its record cannot prove the pid; not signalled)")
+        found.extend(f"tmux session {tmux}" for tmux in sorted(set(_tmux_names()) & variants))
+        return found
+
+    deadline = time.monotonic() + timeout
+    while (remaining := occupants()) and time.monotonic() < deadline:
+        time.sleep(poll_seconds)
+    report.remaining = remaining
+    if report.stopped:
+        session_reconcile.reconcile(names=variants)
+    return report
+
+
+@sessions.command("stop", help="Stop a managed session so its wrapper does not relaunch the agent")
+@click.argument("name", callback=_session_slug)
+@click.option(
+    "-t",
+    "--timeout",
+    type=click.FloatRange(min=0),
+    default=STOP_TIMEOUT_SECONDS,
+    show_default=True,
+    help="Seconds to wait for the session to exit",
+)
+def stop(name, timeout):
+    report = stop_session(name, timeout=timeout)
+    if not report.found:
+        output.emit(output.Tag.SESSIONS, "stop", f"nothing is running for {name}")
+        return
+    for tmux_session in report.marked:
+        output.emit(output.Tag.SESSIONS, "stop", f"{tmux_session}: stop marker written for its supervisor")
+    for pid in report.signalled:
+        output.emit(output.Tag.SESSIONS, "stop", f"{name}: sent SIGTERM to Claude Code pid {pid}")
+    if report.stopped:
+        output.emit(output.Tag.SESSIONS, "stop", f"{name}: stopped; nothing is left running in its slot")
+        return
+    raise click.ClickException(f"{name}: still running after {timeout:g}s: {', '.join(report.remaining)}")
 
 
 def _owned_record(doc: dict, slug: str) -> dict:
@@ -177,25 +634,123 @@ def _owned_record(doc: dict, slug: str) -> dict:
     for record in matches:
         if record.get("kind") == "local" and record.get("owning_host") == host:
             return record
-    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host")
+    owners = sorted({str(r.get("owning_host")) for r in matches if r.get("kind") == "local"})
+    detail = f"; its owning_host is {', '.join(map(repr, owners))} and this host is {host!r}" if owners else ""
+    raise click.ClickException(f"{slug}: foreign or remote session; not owned by this host{detail}")
+
+
+@sessions.command(
+    "wind-down",
+    help="Stop a running session for a maintenance window, recording maintenance_wind_down so the "
+    "boot relaunch or a named relaunch brings it back",
+)
+@click.argument("slug", callback=_session_slug)
+@click.option(
+    "-t",
+    "--timeout",
+    type=click.FloatRange(min=0),
+    default=STOP_TIMEOUT_SECONDS,
+    show_default=True,
+    help="Seconds to wait for the session to exit",
+)
+@click.option("-d", "--dry-run", is_flag=True, help="Check the session and print the plan without writing or stopping")
+def wind_down(slug, timeout, dry_run):
+    """Record the wind-down cause first, then end the session through its wrapper's clean exit."""
+    selected = {}
+
+    def change(doc):
+        record = _owned_record(doc, slug)
+        alive = registry._local_session_alive(slug)
+        if alive is None:
+            raise click.ClickException(f"{slug}: tmux liveness could not be established")
+        if not alive:
+            raise click.ClickException(f"{slug}: not running; nothing to wind down")
+        refusal = state.boot_recipe_refusal(record)
+        if refusal:
+            raise click.ClickException(f"{slug}: {refusal}; it could not be relaunched")
+        if not dry_run:
+            state.request_wind_down(record)
+        selected.update(deepcopy(record))
+        return True
+
+    if dry_run:
+        change(registry.load_registry())
+        output.emit(output.Tag.SESSIONS, "session", f"{slug}: would record {state.WIND_DOWN_CAUSE} and stop it")
+        return
+    registry._mutate(change, timeout=2)
+    engine = selected["boot_recipe"]["engine"]
+    report = stop_session(slug.removeprefix(f"{engine}-"), timeout=timeout)
+    if not report.stopped:
+        raise click.ClickException(f"{slug}: still running after {timeout:g}s: {', '.join(report.remaining)}")
+    record = _owned_record(registry.load_registry(), slug)
+    settled = state.cause(record, registry.current_boot_id())
+    if state.run_state(record) != "exited" or settled != state.WIND_DOWN_CAUSE:
+        raise click.ClickException(
+            f"{slug}: stopped, but its record shows {state.run_state(record)} with cause {settled}"
+        )
+    output.emit(output.Tag.SESSIONS, "session", f"{slug}: stopped; exit cause {settled} recorded")
 
 
 @sessions.command("policy")
 @click.argument("slug", callback=_session_slug)
 @click.argument("policy", type=click.Choice(["auto", "never", "always"]))
 def policy(slug, policy):
-    """Set a local session's boot relaunch policy and queue publication."""
+    """Set a local session's boot relaunch policy as its owner's choice and queue publication.
+
+    No automatic write replaces it afterwards. It records relaunch_changed_at and leaves
+    changed_at, the run-state time the list shows, unchanged.
+    """
 
     def change(doc):
         record = _owned_record(doc, slug)
-        record.update(relaunch=policy, changed_at=registry._now())
+        record.update(relaunch=policy, relaunch_set_by="owner", relaunch_changed_at=registry._now())
         return True
 
     registry._mutate(change, timeout=2)
     output.emit(output.Tag.SESSIONS, "session", f"{slug}: relaunch policy {policy}")
 
 
-def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
+@sessions.command("repair-policy")
+@click.option("-d", "--dry-run", is_flag=True, help="Print what would change without writing")
+def repair_policy(dry_run):
+    """Give this host's sessions left at an unattributed never the default boot policy auto.
+
+    Enrolment and recovery once wrote never for every session they registered, without
+    recording who chose it. Each local record of this host that is not a probe, has policy
+    never and has no relaunch_set_by becomes auto with relaunch_set_by default. A policy set
+    with `ai sessions policy` records its owner and is left alone. A never set by hand before
+    relaunch_set_by existed cannot be told apart and is repaired too, so set it again.
+    Running it twice changes nothing the second time.
+    """
+    found = []
+
+    def change(doc):
+        host = _local_host(doc)
+        for record in doc["sessions"]:
+            if (
+                record.get("kind") == "local"
+                and record.get("owning_host") == host
+                and not record.get("probe")
+                and record.get("relaunch") == "never"
+                and "relaunch_set_by" not in record
+            ):
+                found.append(record["name"])
+                record.update(relaunch="auto", relaunch_set_by="default")
+        return bool(found) and not dry_run
+
+    if dry_run:
+        change(registry.load_registry())
+    else:
+        registry._mutate(change, timeout=2)
+    verb = "would set" if dry_run else "set"
+    for name in found:
+        output.emit(output.Tag.SESSIONS, "session", f"{name}: relaunch policy never {verb} to auto (default)")
+    if not found:
+        output.emit(output.Tag.SESSIONS, "session", "nothing to repair")
+
+
+def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migration: bool = False) -> None:
+    from .launch_logging import create_launch_log
     from .main import _do_session_launch
 
     recipe = record["boot_recipe"]
@@ -204,6 +759,10 @@ def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
     prefix = argv[argv.index("--project-prefix") + 1] if "--project-prefix" in argv else ""
     previous_cwd = Path.cwd()
     previous_reason = os.environ.get(LAUNCH_REASON_VAR)
+    # A replay writes a launch log like `ai c` does, so what it reported, such as the parts of
+    # a partial migration it was told to start past, can be read after the fact.
+    launch_log = create_launch_log(record["name"])
+    previous_sink = output.attach_file_sink(launch_log.write_line)
     try:
         os.chdir(recipe["cwd"])
         os.environ[LAUNCH_REASON_VAR] = (
@@ -227,8 +786,11 @@ def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
             no_direnv=options.get("no_direnv", False),
             detached=True,
             replay_recipe=recipe,
+            allow_partial_migration=allow_partial_migration,
         )
     finally:
+        output.attach_file_sink(previous_sink)
+        launch_log.close()
         os.chdir(previous_cwd)
         if previous_reason is None:
             os.environ.pop(LAUNCH_REASON_VAR, None)
@@ -236,7 +798,16 @@ def _launch_recipe(record: dict, *, cause: str | None = None) -> None:
             os.environ[LAUNCH_REASON_VAR] = previous_reason
 
 
-def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None) -> str | None:
+def _launch_failure(exc: BaseException) -> str:
+    """The recorded reason a replay did not start: a partial-migration refusal names its finish command."""
+    from .main import PartialMigrationRefusal
+
+    if isinstance(exc, PartialMigrationRefusal):
+        return f"refused: {exc.reason}"
+    return f"launch failed ({type(exc).__name__})"
+
+
+def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None, booted: float | None = None) -> str | None:
     alive = False
     if (
         cfg["on_boot"]
@@ -245,7 +816,54 @@ def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None) -> str 
         and not state.tombstone_path(record["name"], host).exists()
     ):
         alive = registry._local_session_alive(record["name"])
-    return state.boot_veto(record, cfg=cfg, host=host, boot_id=boot_id, alive=alive)
+    return state.boot_veto(record, cfg=cfg, host=host, boot_id=boot_id, alive=alive, booted=booted)
+
+
+def _earlier_boot_run(record: dict, host: str, boot: str | None) -> bool:
+    """Whether ``record`` still claims a run of this host that an earlier boot started."""
+    if record.get("kind") != "local" or record.get("owning_host") != host or not boot:
+        return False
+    if state.tombstone_path(record["name"], host).exists():
+        return False
+    current = state.run_state(record)
+    if current == "relaunched":
+        return record.get("relaunched_boot_id") != boot
+    return current in ("running", "unknown") and bool(record.get("boot_id")) and record["boot_id"] != boot
+
+
+_LIVENESS_VETOES = ("tmux session already exists", "tmux liveness could not be established")
+
+
+def _settle_earlier_boot_run(doc: dict, record: dict, *, boot: str, veto: str, down: bool) -> None:
+    """Record the exit of a run the reboot ended, which this pass does not replay.
+
+    Left as it was, the row would read running for good and a later boot would replay a
+    session that was not running then. A run the reboot ended settles as ``host_reboot``;
+    one that was already down before the reboot settles as ``unknown``.
+    """
+    now = registry._now()
+    evidence = {
+        "source": "boot_relaunch",
+        "checked_at": now,
+        "boot_id": boot,
+        "record_boot_id": record.get("boot_id"),
+        "veto": veto,
+        "tmux_alive": False,
+        "process_alive": False,
+    }
+    for key in ("exit", "supervisor_exit", "changed_at", "ended_at"):
+        if record.get(key) is not None:
+            evidence[f"previous_{key}"] = deepcopy(record[key])
+    registry.record_exit(
+        record["id"], cause="unknown" if down else "host_reboot", evidence=evidence, at=now, _document=doc
+    )
+    record.update(
+        run_state="exited",
+        changed_at=now,
+        ended_at=now,
+        supervisor_exit=dict(record["exit"]),
+        transition_seq=max(time.monotonic_ns(), record.get("transition_seq", 0) + 1),
+    )
 
 
 def _wait_for_boot_recipe(recipe: dict, cfg: dict) -> str | None:
@@ -271,7 +889,7 @@ def _wait_for_boot_recipe(recipe: dict, cfg: dict) -> str | None:
         time.sleep(min(1, remaining))
 
 
-def _relaunch_named(slug: str, *, dry_run: bool) -> None:
+def _relaunch_named(slug: str, *, dry_run: bool, allow_partial_migration: bool = False) -> None:
     selected = {}
 
     def select(doc):
@@ -280,8 +898,9 @@ def _relaunch_named(slug: str, *, dry_run: bool) -> None:
         if alive is not False:
             reason = "tmux session already exists" if alive else "tmux liveness could not be established"
             raise click.ClickException(f"{slug}: {reason}")
-        if not state.valid_boot_recipe(record):
-            raise click.ClickException(f"{slug}: unsupported or incomplete boot recipe")
+        refusal = state.boot_recipe_refusal(record)
+        if refusal:
+            raise click.ClickException(f"{slug}: {refusal}")
         if not dry_run:
             now = registry._now()
             record.update(
@@ -298,10 +917,10 @@ def _relaunch_named(slug: str, *, dry_run: bool) -> None:
     registry._mutate(select, timeout=2)
     failed = False
     try:
-        _launch_recipe(selected, cause="remote_request")
+        _launch_recipe(selected, cause="remote_request", allow_partial_migration=allow_partial_migration)
         reason = "relaunched detached"
     except (Exception, SystemExit) as exc:
-        reason = f"launch failed ({type(exc).__name__})"
+        reason = _launch_failure(exc)
         failed = True
 
     def finish(doc):
@@ -322,34 +941,66 @@ def _relaunch_named(slug: str, *, dry_run: bool) -> None:
 @click.argument("slug", required=False, callback=_session_slug)
 @click.option("-b", "--boot", is_flag=True, help="Replay eligible owning-host sessions after boot")
 @click.option("-d", "--dry-run", is_flag=True, help="Print decisions without writing or launching")
-def relaunch(slug, boot, dry_run):
-    """Relaunch recorded sessions detached, without a terminal application."""
+@click.option(
+    "-P",
+    "--allow-partial-migration",
+    is_flag=True,
+    help="Relaunch a session even though a recorded migration to its name is partial; the parts left "
+    "are written into its launch log",
+)
+def relaunch(slug, boot, dry_run, allow_partial_migration):
+    """Relaunch recorded sessions detached, without a terminal application.
+
+    A session whose recorded migration is partial is refused, with the parts left and the
+    command that finishes it; the others still relaunch, and the command exits 1.
+
+    A session whose boot recipe cannot replay is refused as "unsupported or incomplete boot
+    recipe: " followed by the first field that failed, in a dry run too. A session recorded
+    under another host id is refused naming both host ids.
+    """
     if boot == (slug is not None):
         raise click.UsageError("provide either a session name or --boot, never both")
     if sys.platform == "win32":
         raise click.ClickException("boot relaunch is supported on macOS and Linux")
     if slug is not None:
-        _relaunch_named(slug, dry_run=dry_run)
+        if not dry_run:
+            session_reconcile.reconcile(names={slug})
+        _relaunch_named(slug, dry_run=dry_run, allow_partial_migration=allow_partial_migration)
         return
+    if not dry_run:
+        session_reconcile.reconcile()
     heal_live_sessions(dry_run=dry_run)
     cfg = state.settings()
     doc = registry.load_registry()
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
     boot_id = registry.current_boot_id() if cfg["on_boot"] else None
+    this_boot = registry.current_boot_id()
+    booted = session_reconcile.boot_time()
     failed = False
     if not cfg["on_boot"]:
         output.emit(output.Tag.SESSIONS, "session", "session_relaunch.on_boot is off")
         state.LOGGER.info("session_relaunch.on_boot is off")
     for snapshot in doc["sessions"]:
-        veto = _boot_check(snapshot, cfg, host, boot_id)
+        veto = _boot_check(snapshot, cfg, host, boot_id, booted)
         if dry_run:
             reason = veto or f"would relaunch detached: {state.cause(snapshot, boot_id)}"
             output.emit(output.Tag.SESSIONS, "session", f"{snapshot['name']}: {reason}")
             continue
         readiness = _wait_for_boot_recipe(snapshot["boot_recipe"], cfg) if veto is None else None
+        # No process survives a reboot; tmux and the process table still prove it before a
+        # row that is not replayed is settled.
+        gone = (
+            veto not in (None, *_LIVENESS_VETOES)
+            and _earlier_boot_run(snapshot, host, this_boot)
+            and registry._local_session_alive(snapshot["name"]) is False
+            and session_reconcile._process_alive(snapshot) is False
+        )
+        down = gone and state.not_running_at_reboot(snapshot, boot_id=this_boot, booted=None) is not None
         selected = {}
 
-        def reserve(current, snapshot=snapshot, readiness=readiness, selected=selected, initial_veto=veto):
+        def reserve(
+            current, snapshot=snapshot, readiness=readiness, selected=selected, initial_veto=veto, gone=gone, down=down
+        ):
             for record in current["sessions"]:
                 if (record.get("kind"), record.get("owning_host"), record.get("name")) != (
                     snapshot.get("kind"),
@@ -357,7 +1008,7 @@ def relaunch(slug, boot, dry_run):
                     snapshot.get("name"),
                 ):
                     continue
-                reason = _boot_check(record, cfg, host, boot_id) or initial_veto or readiness
+                reason = _boot_check(record, cfg, host, boot_id, booted) or initial_veto or readiness
                 # A concurrent explicit launch can change the recipe during the wait.
                 if reason is None and record.get("boot_recipe") != snapshot.get("boot_recipe"):
                     reason = "boot recipe changed during readiness wait"
@@ -369,6 +1020,16 @@ def relaunch(slug, boot, dry_run):
                 }
                 if reason is None:
                     record.update(relaunched_boot_id=boot_id, run_state="relaunched", changed_at=registry._now())
+                elif (
+                    gone
+                    and this_boot is not None
+                    and reason not in _LIVENESS_VETOES
+                    and all(
+                        record.get(key) == snapshot.get(key)
+                        for key in ("generation", "run_state", "boot_id", "transition_seq", "relaunched_boot_id")
+                    )
+                ):
+                    _settle_earlier_boot_run(current, record, boot=this_boot, veto=reason, down=down)
                 selected.update(record=deepcopy(record), veto=reason)
                 return True
             return False
@@ -379,10 +1040,10 @@ def relaunch(slug, boot, dry_run):
         record, veto = selected["record"], selected["veto"]
         if veto is None:
             try:
-                _launch_recipe(record)
+                _launch_recipe(record, allow_partial_migration=allow_partial_migration)
                 reason = "relaunched detached"
             except (Exception, SystemExit) as exc:
-                reason = f"launch failed ({type(exc).__name__}); boot reservation retained"
+                reason = f"{_launch_failure(exc)}; boot reservation retained"
                 failed = True
 
             def finish(current, record=record, reason=reason):
@@ -413,8 +1074,16 @@ def publish_timer():
     pass
 
 
+_TIMER_HELP = {
+    "install": "Install and enable the background timer that publishes session state; "
+    "removes it instead when no publication repo is configured",
+    "uninstall": "Disable and remove the publication timer",
+    "status": "Report whether the publication timer is installed, current and active",
+}
+
+
 def _timer_command(action):
-    @click.command(action)
+    @click.command(action, help=_TIMER_HELP[action])
     def command():
         output.emit(output.Tag.SESSIONS, "configure", session_publish_timer.manage(action))
 
@@ -430,8 +1099,16 @@ def boot_unit():
     pass
 
 
+_BOOT_UNIT_HELP = {
+    "install": "Write the boot relaunch service and enable it, or disable and remove it, as "
+    "session_relaunch.on_boot (or -b/--on-boot) asks",
+    "uninstall": "Disable and remove the boot relaunch service",
+    "status": "Report whether the boot relaunch service is installed, current and enabled",
+}
+
+
 def _boot_unit_command(action):
-    @click.command(action)
+    @click.command(action, help=_BOOT_UNIT_HELP[action])
     @click.option("-d", "--dry-run", is_flag=True, help="Print the unit, path and actions without making changes")
     def command(dry_run, on_boot=None):
         try:

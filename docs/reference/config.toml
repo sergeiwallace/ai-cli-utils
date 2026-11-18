@@ -1,0 +1,467 @@
+## ai-cli-utils configuration
+
+[launch]
+## Refresh these Claude Code plugins before every start, including automatic restarts.
+## Each command has a 10-second timeout; failures warn and never prevent launch.
+## Example: ["example-plugin@example-marketplace"]. Empty refreshes nothing.
+# refresh_plugins = []
+
+[restart_session]
+## Safe restart defaults, read on every call. External commands belong in
+## restart-session.d/*.toml beside this file.
+# context_threshold_pct = 20
+# compaction_fresh_turns = 1
+# context_window_tokens = 0
+# settle_seconds = 60
+# min_uptime_seconds = 1800
+# cooldown_seconds = 3600
+# term_grace_seconds = 20
+# relaunch_timeout_seconds = 180
+# request_lifetime_floor_seconds = 1
+# mechanism = "kill"
+# pre_step = true
+# compaction_wait_seconds = 1800
+# auto = false
+# auto_interval_seconds = 600
+
+[naming]
+## Which session-name conventions `ai` accepts, read on every launch. During a cutover
+## both work. Modes (alias_convention, legacy_convention):
+##   both:        true,  "full" (default)
+##   alias only:  true,  "off"
+##   legacy only: false, "full"
+##   neither:     false, "off" (refuses new launches)
+## false + "reach" is invalid: reaching old slots alone cannot name a new session.
+## alias_convention: the {repo-alias}-{host-alias}-{slug?}-{N} form.
+## legacy_convention: the old {repo-alias}-{N} form, including a bare `ai c N`:
+##   "off"   never reached or created
+##   "reach" an existing old-named slot is still reached, nothing new is named that way
+##   "full"  also reached, and a launch with no host alias (or alias_convention = false)
+##           names the session the old way instead of refusing
+## auto_migrate: on an interactive `ai c N`, move a stopped old-form slot to the
+## alias form before launching it. Automatic restart and non-interactive launches
+## never migrate a slot.
+# alias_convention = true
+# legacy_convention = "full"
+# auto_migrate = true
+
+[migrate_session]
+## After `ai migrate-session` finishes, it looks for references to the old name left behind.
+## Read on every migration. references_command runs once per finished migration, as
+## `<argv> --old OLD --new NEW` in the migrated repository; it may rewrite references, and
+## prints `migrate-reference-left: <where>` for each it could not. A non-zero exit or any
+## such line makes the run report "finished with leftovers" and exit 1. Unset, the step is
+## skipped. The built-in scan of the repository's tracked files always runs and never
+## rewrites; a hit whose path matches a references_allow glob (a rename map, a naming
+## example) is not a leftover. The default allows .beads/**, where the migration's own
+## re-key comments name the old session.
+# references_command = ["python3", "~/bin/sweep_references.py"]
+# references_allow = [".beads/**", "docs/renames.md"]
+
+[relaunch]
+## When a Claude Code session exits with "Move to background and exit", the
+## conversation keeps running as a background session. On relaunch, ai attaches to
+## it instead of opening a second copy, but only after `claude agents --json` shows
+## the session live. Read on every relaunch.
+## Optional: a command that names the background session id. It is run as
+## `<command> --session <ai session name> --pane-capture <file>`, where the file
+## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
+## id on stdout is an answer; anything else is no answer. The id is only a hint:
+## it is attached only if `claude agents --json` lists it as a live background
+## session. Unset (the default) skips the command; ai then attaches only when exactly
+## one live background session has this session's name and directory.
+# background_session_resolver = "/path/to/resolver-command"
+# background_session_resolver_timeout_seconds = 10
+## Seconds a relaunch holds instead of resuming beside a live background copy (a busy
+## copy, several matches, an unreadable agents list) before it parks and says why.
+# background_hold_timeout_seconds = 300
+## Maximum resolver attempts before the same hold parks. With the five-second retry
+## interval, the default normally parks within one minute even if the clock stalls.
+# background_hold_max_attempts = 12
+## Seconds before relaunch resolution in which an idle row with a pid can be recognized
+## as the copy created by the exiting client. Older matching rows remain ambiguous.
+# background_exit_copy_window_seconds = 30
+## Seconds allowed for each fresh AI_HOST lookup (login shell, then tmux).
+## Read at every agent launch; unavailable values leave the inherited host in place.
+# host_refresh_timeout_seconds = 5
+## Where a parked relaunch appends its one-line record (default: relaunch-hold.log in the
+## launcher's state directory).
+# background_hold_log = "/path/to/log"
+
+[gemini]
+## Projects that should NOT be sandboxed by default
+## (Matches the project prefix in your project registry TOML)
+# sandbox_whitelist = ["session"]
+## Set true only after AI-CLI-43 confirms billing credit status.
+## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
+# paid_fallback_enabled = false
+## Command used to launch gemini-cli. Override if the binary is not on PATH
+## (e.g. "npx @google/gemini-cli" for npx-only installs).
+# command = "gemini"
+
+[pi]
+## Provider passed to `pi --provider ...` on every launch. pi's own built-in
+## default (google) is silently unready unless you have separately configured
+## Google credentials for it -- ai-cli-utils always passes an explicit provider
+## rather than relying on that default. Run `pi auth check --provider <name>`
+## to see which providers are actually ready on this machine.
+# provider = "openai-codex"
+
+[project_prefixes]
+## Task-prefix overrides, keyed by project directory name. Consulted before the
+## project registry and before the default 3-character truncation. Use these when
+## two repositories would otherwise collapse to the same prefix (for example
+## "myapp-frontend" and "myapp-backend" both truncate to "mya").
+# myapp-frontend = "mfe"
+# myapp-backend = "mbe"
+
+[project_registry]
+## Repository-root → task-prefix registry. Add entries with `ai register`;
+## do not derive prefixes from directory names. Example:
+## "/home/user/projects/myproject" = { prefix = "MYPROJECT", type = "tool" }
+
+[behavior]
+## Enable system notifications on task completion
+notify_on_exit = true
+
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
+
+[worktree]
+## Enable automatic git worktree isolation for new sessions
+enabled = true
+## Prefix of the git-config markers your worktree tooling writes on a session's branches
+## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
+## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
+## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
+## rewrites them; unset, it leaves no such markers to rewrite.
+# marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
+
+[direnv]
+## Preflight direnv on session launch: when a .envrc applies but direnv is not
+## usable, try one unattended install (scoop/winget/choco, brew, or the system
+## package manager when running as root) and otherwise print per-OS remediation.
+## A launch is never blocked by this -- direnv only supplies the project
+## environment, so its absence degrades a session rather than ending it.
+##
+## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
+## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
+## additionally needs bash on PATH (Git for Windows supplies one).
+# enabled = true
+
+[worktree_upstream]
+## Integration branch for session worktrees, keyed by repository directory name.
+## A new worktree is based on, and tracks, this branch instead of "main". Set it
+## for any repository whose routine work does not land on main directly -- for
+## example a shared repository on a pull-request workflow, where main is the
+## branch nobody pushes to. When a repository is absent from this table, the
+## branch its own checkout is on is used, and "main" only when that is main.
+# myproject = "workspace"
+
+[session]
+## Limits launch-time auxiliary-state housekeeping only; it never ends a tmux
+## session. `ai c` keeps the independent stale-session reaper running.
+stale_session_timeout = 15
+## Wrap sessions in tmux? Default true. Set false to make bare mode the default
+## (equivalent to always passing -b/--bare). tmux is a C binary and cannot be
+## installed by pip/uv, so machines without it should set this false.
+## Trade-off: without tmux you lose detach/reattach (`ai ls`, `ai attach`),
+## sessions surviving a dropped SSH connection, and remote access from another
+## device. If you only run sessions in a local terminal, false is fine.
+# use_tmux = true
+## Allow a harness-owned pty to carry the auto-compact prompt injection on the bare
+## paths? Default true. A session's submission transport is fixed by the terminal
+## that owns it and cannot be added later, so `ai c` requires EITHER tmux or a pty
+## and refuses at launch when it can get neither. Setting this false makes tmux the
+## only accepted transport: every bare launch is then refused rather than started
+## without a way to compact. The pty carries the submission only -- your own
+## terminal stays the terminal, and the pty path gives you no detach/reattach and no
+## scrollback (install tmux for those).
+# use_pty = true
+## Restart Claude Code when it exits inside a tmux session? Default true; missing also
+## means true. false lets the session end at the agent's next exit. The supervisor reads
+## this from this file at every exit, so a change applies at the next exit, no relaunch.
+# auto_restart = true
+
+[session_names]
+## Every key here ships commented out. Unset, a key comes from the shared name
+## registry's policy file: its [hosts.<host id>] table, then its [defaults]. A key
+## set here overrides that policy on this machine.
+## Name each new session with a short human first name in place of an index:
+## {repo-alias}-{host-alias}-[{label}-]{name}, for example myproject-box-ada.
+## A name is unique on every machine that shares a name registry. Set false for
+## index names ({repo-alias}-{host-alias}-[{label}-]{N}). -S/--session-names and
+## -I/--no-session-names override this for one launch. Built-in default: false.
+# enabled = true
+## With a label (`ai c review`): "keep" names the session myproject-box-review-ada,
+## "drop" names it myproject-box-review. -w/--with-name and -u/--no-name override it.
+# name_with_label = "keep"
+## Name length limits, used only where no shared name registry exists. A shared
+## registry's limits apply to every machine that uses it, and these then have no effect.
+# min_name_length = 3
+# max_name_length = 4
+## Seconds one fetch, and one push, of a shared name registry may take before the
+## registry counts as unreachable, each read on every call. Separate from the
+## registry's publish timeout.
+# registry_fetch_timeout_seconds = 60
+# registry_push_timeout_seconds = 60
+## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
+## 300 on Windows.
+# registry_clone_timeout_seconds = 60
+
+[session_relaunch]
+on_boot = false
+causes = ["host_reboot", "terminal_quit_or_crash"]
+network_wait_seconds = 120
+network_probe = "api.anthropic.com:443"
+
+[session_relaunch.exit_persistence]
+## Bounds for final-exit persistence, captured before loading the project environment.
+deadline_seconds = 30.0
+command_timeout_seconds = 10.0
+backoff_seconds = 0.25
+max_backoff_seconds = 2.0
+
+[session_relaunch.publish]
+repo = ""
+remote = "origin"
+ref_prefix = "refs/heads/fleet-sessions/"
+debounce_seconds = 60
+host = ""
+
+[session_registry]
+## Hours a session row stays in `ai sessions list` once its session is proved gone
+## (no tmux session and no agent process; for a remote row, the host's tmux has no
+## such session). A row from an earlier boot counts from this boot's start. Read on
+## every call; 0 keeps every row.
+# stale_row_retention_hours = 72
+
+[sessions_list]
+## How `ai sessions` and `ai sessions list` choose, group and order their rows. Read on
+## every call; a flag on the command overrides each one. Reference:
+## docs/reference/sessions-list-defaults.toml.
+## Column the table groups rows by: "host", "status", "relaunch" or "none".
+group_by = "host"
+## Sort keys, first key first: "status" (running, relaunched, unknown, exited), "name",
+## "changed" (newest first), "host" (this host first) and "relaunch".
+sort_by = ["status", "name"]
+## false lists running sessions only; true adds exited and unknown ones (-a/--all).
+show_all = false
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
+
+[stale_session_reaper]
+## The independently supervised reaper evaluates candidates in observe mode by
+## default. `ai c` starts its Circus watcher when needed. On native Windows,
+## where tmux is unavailable, startup is a no-op.
+## Set mode = "reap" only after reviewing observe-mode logs.
+mode = "observe"
+## A heartbeat must be older than this same-boot monotonic interval before it can
+## corroborate an ended pane-leader snapshot.
+stale_after_seconds = 600
+
+[remote]
+## Default alias for remote AI sessions. Each machine lives under
+## [remote.machines.<alias>]. `ai c -R` uses this machine; pass
+## `ai c -R -m <alias>` to choose another configured machine for one launch.
+# default = "server"
+
+#[remote.machines.server]
+## Remote server for AI sessions
+# host = "1.2.3.4"
+## Publication host ID when the SSH alias and the snapshot ref use different names.
+# host_id = "host-b"
+# user = "ubuntu"
+# port = 22
+# identity_file = ""
+# transport = "mosh"     # "ssh" or "mosh"
+# project = "my-project" # default project (directory name under ~/projects/)
+## Optional VS Code Remote-SSH/SSH config alias for iTerm2 Cmd-click routing.
+# vscode_authority = "server"
+## VPN poll interval in seconds for the watch-vpn daemon (default: 3)
+# vpn_poll_interval = 3
+## SSH keepalive for the interactive session (AI-CLI-w679). An established session sends
+## nothing while you read rather than type, and an idle flow is what gets reaped -- by a
+## managed SSH channel's idle timeout (20 minutes by default), or by a NAT or corporate
+## firewall on a shorter one, which shows up as `Shared connection to <host> closed.` The
+## probes both detect a dead peer and, being real traffic, stop the flow counting as idle.
+## Lower the interval on a network that disconnects sooner than the default survives.
+# server_alive_interval = 30
+## How many unanswered probes before ssh gives up (default: 3, so 3 x interval).
+# server_alive_count_max = 3
+## Reattach after a dropped link (AI-CLI-w679). The remote session runs under tmux, so a
+## dropped connection leaves it detached and intact -- reattaching loses nothing. Bounded so
+## a host that is genuinely gone produces a few attempts rather than an infinite loop.
+## Applies to the `transport = "ssh"` path; mosh already survives a drop by design.
+# reconnect_attempts = 10
+## Seconds before the first reattach; doubles per attempt, capped at 30s.
+# reconnect_backoff = 2
+## A connection that stayed up this many seconds was working, so the drop that ends it starts
+## a fresh attempt budget: the budget bounds one outage, not the life of the session.
+# reconnect_stable_seconds = 300
+## A failed attempt whose ssh/ProxyCommand stderr names an expired or rejected credential
+## does not spend reconnect_attempts: re-authenticate and it reattaches by itself. It keeps
+## retrying (30s backoff, doubling to 15 minutes) for up to this many seconds of continuous
+## credential failure, which should outlast your credential's own lifetime.
+# reconnect_auth_wait_seconds = 14400
+## Case-insensitive regexes that mark stderr as a credential fault. Replaces the built-in
+## list (expired tokens, failed SSO refresh, "Permission denied (") when set.
+# reconnect_auth_patterns = ["token (has |is )?expired", "permission denied \("]
+
+[sync]
+## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.
+# remote_host = "user@host"
+# staging_dir = "~/.claude-sync-staging"
+# remote_url = "ssh://user@host/home/user/.claude-sync-staging.git"
+##
+## Start the sync watcher automatically when a session launches. Default true.
+## Set false on a machine that does not participate in session sync at all: the
+## launch then starts no watcher, while `ai sync push`, `pull` and `watch` remain
+## available by hand. Sync moves CC session data between machines, so a single-machine
+## setup has nothing for it to do.
+# auto_watch = false
+
+[project]
+## Name of the main project directory
+# main_project = "myproject"
+## Base directory for all projects (default: ~/projects)
+# projects_dir = "~/projects"
+## Path to a persistent, version-controlled project registry shared by every
+## machine. Prefix resolution prefers it over the main-project registry and over
+## [project_registry] below, and it is read wherever you happen to be -- the
+## repository holding it does not have to be the working directory. Use the same
+## [[projects]] schema as the main-project registry:
+##     [[projects]]
+##     name = "myproject"
+##     task_prefix = "MYPROJECT"
+# fleet_registry = "~/projects/myconfig-repo/config.toml"
+## The sibling repository under projects_dir that supplies your environment's shared
+## tooling: its config/machine-host-aliases.toml is the authoritative host-alias registry,
+## and its scripts/dolt_server.py and scripts/wake_sidecar_cli.py are run when present.
+## Unset: those are looked for only in the current repository, and every sibling's alias
+## registry is read with equal weight.
+# environment_repo = "myenv"
+
+[chief_of_staff]
+## Settings for `ai cos` / `-F/--chief`. A chief launch that needs one of these and finds
+## it unset refuses and names it; nothing here has a built-in default.
+## The repository every chief launches into, whatever repository you run the command from.
+# project = "myenv"
+## The session-name segment that marks a chief: `ai c chief`, `ai c chief-2`.
+# session_name = "chief"
+## The registry records the chief as <instance_key_prefix>/<machine-key>.
+# instance_key_prefix = "example-chief"
+## Directory holding one chief home per machine key; relative to $XDG_STATE_HOME unless
+## absolute or starting with ~. -H/--fm-home names a home directly instead.
+# homes_dir = "myenv/chief-of-staff"
+## Extra subcommand names that behave exactly like `ai cos`; one naming a built-in
+## command is refused.
+# command_aliases = ["mychief"]
+## Extra long-flag names (without the leading --) that behave exactly like --chief on
+## every engine command; one naming an existing option is refused.
+# flag_aliases = ["mychief"]
+
+[messaging]
+# NATS server URLs for fleet messaging (heartbeats, events)
+nats_servers = ["nats://localhost:4222"]
+## Machine ids (see [machine] host_id) that open an SSH tunnel to the configured remote
+## machine when the local NATS port is unreachable. Read on every connect. Empty (the
+## default) opens no tunnel on any machine.
+# tunnel_hosts = ["my-workstation"]
+## Local port of the NATS SSH tunnel, started on demand when this is set. Unset (the
+## default) starts no tunnel.
+# tunnel_port = 4223
+
+[machine]
+## Identifier for this machine.
+## Auto-detected from the AI_HOST env var, then the marker_file below, then the hostname;
+## set manually to override. Worth setting by hand on a cloud host, where the hostname names
+## a lease rather than a machine and this key is written once and never re-detected.
+## Example values: "laptop", "build-server", "work-laptop"
+# host_id = ""
+## A file your provisioning writes holding this machine's host id, read when AI_HOST is
+## unset (a git hook, a cron job or an agent shell often has no login profile). Unset: no
+## marker is read.
+# marker_file = "/etc/myenv/machine"
+## OS type for this machine. Auto-detected from sys.platform on first run.
+## Values: "windows", "macos", "linux"
+# os_type = ""
+## "personal" permits group listing by default. "work", "client", and unset are host only.
+# profile_class = "personal"
+## Personal profiles can restrict listing to "host" or explicitly permit "fleet".
+# sessions_list_scope = "group"
+## Set the same publication host IDs on each machine in the host group, including
+## machines with no outbound SSH target. A configured SSH alias can use host_id above.
+# session_group_members = ["host-a", "host-b"]
+
+[sidecar]
+## Start the optional wake sidecar during a local session launch.
+enabled = false
+## Use "machine", "session" (a detached tmux watcher per session), or "both".
+mode = "machine"
+## Declare that the operating system starts the sidecar instead of the launcher.
+boot = false
+## When the [project] environment_repo checkout is present, its machine profile is authoritative and these values are ignored.
+
+[update]
+## Additional venv paths to install ai-cli-utils into after 'ai update'
+## Useful if you have tools or virtual environments that depend on ai-cli-utils
+# extra_venvs = ["/home/user/projects/mytool/.venv"]
+
+[cdp]
+## Chrome/Chromium binary path for CDP debug server (auto-detected if not set)
+# binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+## Persistent Chrome profile directory for CDP sessions (survives restarts)
+## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
+# profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
+## Port `ai cdp start` opens when -p/--port is not given.
+# port = 9222
+
+[gemini_billing]
+## GCP project that holds the BigQuery billing export dataset.
+## Required for `ai spend gemini` to show actual billed amounts.
+# gcp_project_id = "my-gcp-project"
+## Fully-qualified BigQuery table ID for the GCP detailed billing export.
+## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
+# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
+## Default port for the Chrome DevTools Protocol endpoint
+# port = 9222
+
+[workspace]
+## VS Code .code-workspace file paths for 'ai ws pull'
+## local_path is the default; --remote uses remote_path; --workspace PATH overrides both
+# local_path = "~/projects/myorg/local.code-workspace"
+# remote_path = "~/projects/myorg/remote.code-workspace"
+
+[usage_api]
+## REST API base URL and key for pushing CC usage events.
+## Obtain from your usage-tracking backend instance.
+## This section was renamed; if your own config.toml has a filled-in predecessor
+## section for it, see the CHANGELOG [Unreleased] entry for the old header name.
+# api_url = "https://usage.example.com"
+# api_key = "ua-api-..."
+
+[dolt_server]
+## Explicit path to scripts/dolt_server.py, the optional local Dolt sql-server
+## supervisor run before each session launch (ai c/g/p/cx). Only needed when it is
+## not in the [project] environment_repo checkout under projects_dir (default
+## ~/projects) -- otherwise it is found there automatically.
+## Read fresh on every launch, so editing this takes effect immediately: no CC
+## session or agent needs to restart, unlike an environment-variable override.
+# script_path = "~/projects/myenv/scripts/dolt_server.py"
