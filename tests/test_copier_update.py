@@ -1538,6 +1538,104 @@ def _cli_update(projects: Path) -> tuple[int, str]:
     return exit_code, stdout + stderr
 
 
+@pytest.fixture
+def mirror_projects(tmp_path):
+    repos = _copier_project_from(tmp_path, _FEATURE_QUESTIONS, {})
+    source = repos["projects"] / "ai-harness"
+    shutil.copytree(repos["project"], source)
+
+    template = repos["author"] / "template"
+    (template / "feature.txt").write_text("redacted update\n")
+    (template / "docs").mkdir()
+    (template / "docs" / "feature.txt").write_text("unrelated addition\n")
+    _git_output(repos["author"], "add", "template/docs/feature.txt")
+    _publish_template_change(repos["author"], _FEATURE_QUESTIONS)
+    return repos["projects"], source, repos["project"]
+
+
+def _add_mirror_row(source: Path, canonical: str, consumer_path: str) -> None:
+    config = source / "config" / "canonical-readme-sync.toml"
+    config.parent.mkdir(exist_ok=True)
+    with config.open("a", encoding="utf-8") as file:
+        file.write(
+            f'[[readme]]\ncanonical = "{canonical}"\nconsumer_repo = "project-template"\n'
+            f'consumer_path = "{consumer_path}"\n'
+        )
+    _git_output(source, "add", "--", config.relative_to(source).as_posix())
+    _git_output(source, "commit", "-m", "Register mirror")
+
+
+@pytest.mark.parametrize("isolate", [False, True], ids=["direct", "isolated"])
+def test_given_mirror_source_when_updating_then_keeps_canonical_copy_and_applies_other_changes(
+    mirror_projects, isolate, capsys
+):
+    projects, source, _ = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+    (source / "feature.txt").write_text("canonical copy\n")
+    _git_output(source, "commit", "-am", "Edit canonical copy")
+
+    with patch("ai_cli.copier_update._file_recovery_issue") as file_issue:
+        result = run_copier_update(
+            projects_dir=projects, project_filter=source.name, isolate=isolate, push=False, inspect=isolate
+        )
+
+    if isolate:
+        assert isinstance(result, CopierUpdateInspection)
+        assert result.exit_code == 0
+        (delivery,) = result.delivered_updates
+        assert "feature.txt" not in delivery.changed_files
+        content = delivery.changed_files["docs/feature.txt"]
+        assert content is not None
+        assert content.splitlines() == [b"unrelated addition"]
+    else:
+        assert result == 0
+        assert (source / "docs" / "feature.txt").read_text() == "unrelated addition\n"
+    assert (source / "feature.txt").read_text() == "canonical copy\n"
+    file_issue.assert_not_called()
+    (line,) = [line for line in capsys.readouterr().out.splitlines() if f"{source.name}..." in line]
+    assert "skipped" in line and "feature.txt" in line and "canonical-readme-sync" in line
+
+
+def test_given_other_consumer_when_updating_then_receives_redacted_mirror(mirror_projects, capsys):
+    projects, source, consumer = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+
+    assert run_copier_update(projects_dir=projects, project_filter=consumer.name, isolate=False) == 0
+
+    assert (consumer / "feature.txt").read_text() == "redacted update\n"
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_given_new_mirror_row_when_updating_again_then_skips_its_rendered_path(mirror_projects, capsys):
+    projects, source, consumer = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+    assert run_copier_update(projects_dir=projects, project_filter=consumer.name, isolate=False) == 0
+    _add_mirror_row(source, "docs/canonical.txt", "template/message.txt.jinja")
+    capsys.readouterr()
+
+    assert run_copier_update(projects_dir=projects, project_filter=source.name, isolate=False) == 0
+
+    assert (source / "message.txt").read_text() == "myproject original\n"
+    (line,) = [line for line in capsys.readouterr().out.splitlines() if f"{source.name}..." in line]
+    assert "message.txt" in line and "message.txt.jinja" not in line
+
+
+@pytest.mark.parametrize("unreadable", [False, True], ids=["missing", "unreadable"])
+def test_given_unavailable_mirror_config_when_updating_then_warns_once_and_skips_nothing(
+    mirror_projects, unreadable, capsys
+):
+    projects, source, consumer = mirror_projects
+    if unreadable:
+        (source / "config" / "canonical-readme-sync.toml").mkdir(parents=True)
+
+    assert run_copier_update(projects_dir=projects, isolate=False) == 0
+
+    assert (source / "feature.txt").read_text() == "redacted update\n"
+    assert (consumer / "feature.txt").read_text() == "redacted update\n"
+    (warning,) = capsys.readouterr().err.splitlines()
+    assert "Warning" in warning and "canonical-readme-sync.toml" in warning
+
+
 def test_given_non_default_stored_answers_when_updating_through_cli_then_they_survive_and_files_render_the_same(
     tmp_path,
 ):
@@ -1812,7 +1910,7 @@ def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writ
                     )
 
     assert exit_code == 0
-    assert stderr == ""
+    assert "canonical-readme-sync.toml" in stderr
     payload = json.loads(inspection_output.read_text())
     assert payload["exit_code"] == 0
     assert len(payload["delivered_updates"]) == 1
@@ -1899,7 +1997,7 @@ def test_run_isolated_mixed_results(tmp_path, capsys):
     """_run_isolated aggregates: any conflict → EX_PARTIAL_MUTATION."""
     projects = [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
 
-    def fake(pd, cb, push=True):
+    def fake(pd, cb, **kwargs):
         return {"a": ("ok", ""), "b": ("nochange", ""), "c": ("conflict", ["x.py"])}[pd.name]
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
@@ -1915,7 +2013,7 @@ def test_run_isolated_all_clean(tmp_path, capsys):
     """All ok/nochange → exit 0."""
     projects = [tmp_path / "a", tmp_path / "b"]
 
-    def fake(pd, cb, push=True):
+    def fake(pd, cb, **kwargs):
         return ("ok", "") if pd.name == "a" else ("nochange", "")
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
@@ -1941,7 +2039,7 @@ def test_given_transient_failure_when_isolated_updates_run_then_returns_ex_tempf
 def test_given_partial_and_clean_failures_when_isolated_updates_run_then_partial_takes_precedence(tmp_path):
     projects = [tmp_path / "partial", tmp_path / "config"]
 
-    def fake(project_dir, copier_bin, push=True):
+    def fake(project_dir, copier_bin, **kwargs):
         if project_dir.name == "partial":
             return "pushfail", RecoveredPushFailure("refs/backup/example", "push rejected")
         return "failed", "worktree add failed: branch already exists"

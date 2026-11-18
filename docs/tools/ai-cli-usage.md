@@ -41,6 +41,7 @@ there, not here.
   - [ai iterm2 restore](#ai-iterm2-restore)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
+  - [ai copier-update](#ai-copier-update)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
   - [ai ps](#ai-ps)
@@ -1024,6 +1025,14 @@ Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on net
 - `status` — lists alive/dead tunnels, cleans stale PID files.
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
+
+### ai copier-update
+
+Each run reads `ai-harness/config/canonical-readme-sync.toml` under the configured projects
+directory. When updating the source repository, both isolated and direct updates skip the files
+that the template mirrors from that repository. The per-project line lists the skipped paths and
+the reason. Other projects still receive the template copies. If the command cannot read the mirror
+mapping, `ai copier-update` prints one warning and continues without mirror exclusions.
 
 ### ai update
 
