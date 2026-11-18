@@ -361,3 +361,118 @@ def test_the_refusal_is_reached_only_through_the_disagreement(fake_tmux) -> None
     assert tmux_setup.probe().versions_disagree is True, (
         "positive control: the mismatch this guard exists for IS detected"
     )
+
+
+@pytest.mark.parametrize(
+    ("printed", "expected"),
+    [
+        ("tmux 3.7c", "3.7c"),
+        ("tmux 3.4", "3.4"),
+        ("tmux next-3.8", "next-3.8"),
+        ("tmux 3.8-rc", "3.8-rc"),
+        ("tmux 3.6a (windows port, built 2026-10-13)", "3.6a"),
+    ],
+)
+def test_given_a_tmux_build_when_its_version_is_probed_then_the_version_token_is_kept(fake_tmux, printed, expected):
+    """A build that appends text after its version must not report that text as the version.
+
+    The old reading kept the last whitespace token, so a build printing a trailing build
+    date reported ``2026-10-13)`` as its version.
+    """
+    fake_tmux["client"] = printed.removeprefix("tmux ")
+    fake_tmux["server"] = None
+
+    assert tmux_setup.probe().client_version == expected
+
+
+def test_given_tmux_prints_no_version_token_when_probed_then_the_raw_text_is_reported(fake_tmux) -> None:
+    fake_tmux["client"] = "unknown build"
+    fake_tmux["server"] = None
+
+    assert tmux_setup.probe().client_version == "unknown build"
+
+
+def test_given_the_server_reports_a_trailing_zero_when_compared_then_the_versions_agree(fake_tmux) -> None:
+    fake_tmux["client"] = "3.4"
+    fake_tmux["server"] = "3.4.0"
+
+    assert tmux_setup.probe().versions_disagree is False
+
+
+def test_given_client_and_server_differ_when_reported_then_the_warning_names_the_client_binary(fake_tmux) -> None:
+    fake_tmux["which"] = "/opt/other/bin/tmux"
+    fake_tmux["client"] = NEWER_CLIENT
+    fake_tmux["server"] = OLDER_SERVER
+
+    lines = tmux_setup.report_lines(report=tmux_setup.probe(), bare=False, reason="default")
+
+    warning = next(text for phase, text in lines if phase == "Warning")
+    assert "/opt/other/bin/tmux" in warning
+
+
+# --------------------------------------------------------------------------
+# psmux, the native Windows multiplexer that installs itself as `tmux`.
+# Its `-V` prints two lines: "tmux <version>" for tools that parse tmux, then
+# "psmux <version> (<commit> <date>)" for people (psmux src/cli.rs print_version).
+# Its server answers `#{version}` with the same bare version (src/format.rs).
+# --------------------------------------------------------------------------
+
+PSMUX_V_AFTER_TMUX_PREFIX = "3.4.0\npsmux 3.4.0 (a1b2c3d 2026-10-13)"
+
+
+def test_given_psmux_on_path_when_probed_then_its_version_and_kind_are_read(fake_tmux) -> None:
+    fake_tmux["client"] = PSMUX_V_AFTER_TMUX_PREFIX
+    fake_tmux["server"] = None
+
+    report = tmux_setup.probe()
+
+    assert report.client_version == "3.4.0"
+    assert report.kind == "psmux"
+
+
+def test_given_a_psmux_client_and_its_own_server_when_probed_then_the_launch_is_not_refused(fake_tmux) -> None:
+    """The measured failure: one psmux install refused itself as "2026-10-13)" against "3.4.0"."""
+    fake_tmux["client"] = PSMUX_V_AFTER_TMUX_PREFIX
+    fake_tmux["server"] = "3.4.0"
+
+    assert tmux_setup.probe().versions_disagree is False
+
+
+def test_given_psmux_when_reported_then_the_launch_output_names_psmux(fake_tmux) -> None:
+    fake_tmux["which"] = "C:/Users/user/AppData/Local/Microsoft/WinGet/Links/tmux.EXE"
+    fake_tmux["client"] = PSMUX_V_AFTER_TMUX_PREFIX
+    fake_tmux["server"] = "3.4.0"
+
+    lines = tmux_setup.report_lines(report=tmux_setup.probe(), bare=False, reason="default")
+
+    first = next(text for phase, text in lines if phase == "tmux")
+    assert first.startswith("psmux 3.4.0 at ")
+    assert not any(phase == "Warning" for phase, _ in lines)
+
+
+def test_given_a_psmux_client_and_a_different_server_when_reported_then_the_warning_names_psmux_and_the_binary(
+    fake_tmux,
+) -> None:
+    fake_tmux["which"] = "C:/Users/user/AppData/Local/Microsoft/WinGet/Links/tmux.EXE"
+    fake_tmux["client"] = PSMUX_V_AFTER_TMUX_PREFIX
+    fake_tmux["server"] = OLDER_SERVER
+
+    lines = tmux_setup.report_lines(report=tmux_setup.probe(), bare=False, reason="default")
+
+    warning = next(text for phase, text in lines if phase == "Warning")
+    assert "psmux client 3.4.0" in warning
+    assert "WinGet/Links/tmux.EXE" in warning
+    assert OLDER_SERVER in warning
+
+
+def test_given_a_tmux_build_when_probed_then_its_kind_is_tmux(fake_tmux) -> None:
+    fake_tmux["client"] = NEWER_CLIENT
+
+    assert tmux_setup.probe().kind == "tmux"
+
+
+def test_given_a_three_part_tmux_version_when_probed_then_the_whole_version_is_kept(fake_tmux) -> None:
+    fake_tmux["client"] = "3.5.1"
+    fake_tmux["server"] = None
+
+    assert tmux_setup.probe().client_version == "3.5.1"
